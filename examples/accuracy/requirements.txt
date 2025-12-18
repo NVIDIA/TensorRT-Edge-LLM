@@ -1,0 +1,6 @@
+evaluate==0.4.5
+datasets==4.0.0
+tqdm==4.67.1
+rouge_score==0.1.2
+absl-py==2.3.1
+huggingface-hub==0.36.0

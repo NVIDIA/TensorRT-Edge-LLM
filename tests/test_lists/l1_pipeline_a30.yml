@@ -1,0 +1,9 @@
+# L1 Pipeline Tests
+
+# Core functionality tests
+tests:
+  - tests/defs/test_common.py::test_build_project
+  - tests/defs/test_common.py::test_unit_tests
+  # INT4 VLM tests (Qwen3-VL-2B)
+  - tests/defs/test_vlm_pipeline.py::test_engine_build[Qwen3-VL-2B-Instruct-int4_awq-mxsl8192-mxbs2-mxil8192-mnit128-mxit8192-mxpiit512]
+  - tests/defs/test_vlm_pipeline.py::test_inference[Qwen3-VL-2B-Instruct-int4_awq-mxsl8192-mxbs2-mxil8192-mnit128-mxit8192-mxpiit512-vlm_basic]

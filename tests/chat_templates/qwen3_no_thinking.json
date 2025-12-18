@@ -1,0 +1,21 @@
+{
+  "model_path": "Qwen3-0.6B",
+  "roles": {
+    "system": {
+      "prefix": "",
+      "suffix": ""
+    },
+    "user": {
+      "prefix": "",
+      "suffix": ""
+    },
+    "assistant": {
+      "prefix": "",
+      "suffix": ""
+    }
+  },
+  "content_types": {},
+  "generation_prompt": "",
+  "default_system_prompt": ""
+}
+

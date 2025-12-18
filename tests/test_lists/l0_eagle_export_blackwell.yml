@@ -1,0 +1,4 @@
+# L0 Export Tests - Model export and python package smoke tests
+# Model export for speculative decoding tests
+tests:
+  - tests/defs/test_model_export.py::test_vlm_model_export[Qwen2.5-VL-7B-Instruct-nvfp4-eagle-v1-nvfp4]

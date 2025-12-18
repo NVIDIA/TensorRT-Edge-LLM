@@ -1,0 +1,23 @@
+# L0 Pipeline Tests - Core pipeline functionality smoke tests  
+
+# Core functionality tests
+tests:
+  - tests/defs/test_common.py::test_build_project
+  - tests/defs/test_common.py::test_unit_tests
+  # FP16 LLM tests
+  - tests/defs/test_llm_pipeline.py::test_engine_build[Qwen2.5-0.5B-Instruct-fp16-mxsl4096-mxbs4-mxil2048]
+  - tests/defs/test_llm_pipeline.py::test_inference[Qwen2.5-0.5B-Instruct-fp16-mxsl4096-mxbs4-mxil2048-llm_basic]
+  # FP16 LLM tests with LoRA
+  - tests/defs/test_llm_pipeline.py::test_engine_build[Qwen2.5-0.5B-Instruct-fp16-mxsl4096-mxbs4-mxil2048-mxlr64]
+  - tests/defs/test_llm_pipeline.py::test_inference[Qwen2.5-0.5B-Instruct-fp16-mxsl4096-mxbs4-mxil2048-mxlr64-llm_lora]
+  # MMLU accuracy tests for LLM
+  - tests/defs/test_llm_pipeline.py::test_inference[Qwen2.5-0.5B-Instruct-fp16-mxsl4096-mxbs4-mxil2048-mmlu_0-bs4]
+  # INT4 VLM tests (Qwen3-VL-2B)
+  - tests/defs/test_vlm_pipeline.py::test_engine_build[Qwen3-VL-2B-Instruct-int4_awq-mxsl8192-mxbs2-mxil8192-mnit128-mxit8192-mxpiit512]
+  - tests/defs/test_vlm_pipeline.py::test_inference[Qwen3-VL-2B-Instruct-int4_awq-mxsl8192-mxbs2-mxil8192-mnit128-mxit8192-mxpiit512-vlm_basic]
+  # INT4_GPTQ VLM tests (InternVL3-1B)
+  - tests/defs/test_vlm_pipeline.py::test_engine_build[InternVL3-1B-GPTQ-Int4-int4_gptq-mxsl12288-mxbs2-mxil12288-mnit256-mxit12288-mxpiit1792]
+  - tests/defs/test_vlm_pipeline.py::test_inference[InternVL3-1B-GPTQ-Int4-int4_gptq-mxsl12288-mxbs2-mxil12288-mnit256-mxit12288-mxpiit1792-vlm_basic]
+  # INT8 LLM tests
+  - tests/defs/test_llm_pipeline.py::test_engine_build[Qwen3-0.6B-int8_sq-mxsl8192-mxbs2-mxil8192]
+  - tests/defs/test_llm_pipeline.py::test_inference[Qwen3-0.6B-int8_sq-mxsl8192-mxbs2-mxil8192-mmlu_5-bs2]
