@@ -1,0 +1,72 @@
+# Global exclude pattern
+exclude: |
+    (?x)^(
+        3rdParty/.*|
+        cpp/common/json/jsmn\.h$|
+    )$
+
+repos:
+-   repo: https://github.com/pycqa/isort
+    rev: 6.0.1
+    hooks:
+    -   id: isort
+-   repo: https://github.com/Lucas-C/pre-commit-hooks.git
+    rev: v1.5.5
+    hooks:
+    -   id: remove-crlf
+    -   id: insert-license
+        files: \.py$
+        exclude: kernelSrcs/.*
+        args:
+        - --license-filepath
+        - LICENSE_HEADER
+        - --comment-style
+        - "#"
+        - --detect-license-in-X-top-lines=20
+    -   id: insert-license
+        files: \.(cpp|cu|cuh|h|hpp)$
+        exclude: |
+            (?x)^(
+                .*cubin.cpp$ |
+                .*_cubin.h |
+                kernelSrcs/xqa/.* |
+                3rdParty/.*
+            )$
+        args:
+        - --license-filepath
+        - LICENSE_HEADER
+        - --comment-style
+        - /*| *| */
+        - --detect-license-in-X-top-lines=20
+-   repo: https://github.com/google/yapf
+    rev: v0.43.0
+    hooks:
+    -   id: yapf
+-   repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: v20.1.8
+    hooks:
+    -   id: clang-format
+        types_or: [c++, c, cuda]
+        exclude: |
+            (?x)^(
+                .*cubin.cpp$ |
+                .*_cubin.h |
+                kernelSrcs/xqa/.* |
+                3rdParty/.*
+            )$
+-   repo: https://github.com/cheshirekow/cmake-format-precommit
+    rev: v0.6.13
+    hooks:
+    -   id: cmake-format
+-   repo: https://github.com/codespell-project/codespell
+    rev: v2.4.1
+    hooks:
+    -   id: codespell
+        args:
+        - --ignore-words-list=rouge,inout,atleast,strat,nd,subtile,thrid,ans,datas,thw
+        exclude: '.*\.json$'
+-   repo: https://github.com/PyCQA/autoflake
+    rev: v2.3.1
+    hooks:
+    -   id: autoflake
+        args: [--remove-all-unused-imports, --remove-unused-variables, --in-place, --recursive]

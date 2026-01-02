@@ -1,0 +1,24 @@
+{
+  "model_path": "phi4mm",
+  "roles": {
+    "system": {
+      "prefix": "<|system|>",
+      "suffix": "<|end|>"
+    },
+    "user": {
+      "prefix": "<|user|>",
+      "suffix": "<|end|>"
+    },
+    "assistant": {
+      "prefix": "<|assistant|>",
+      "suffix": "<|end|>"
+    }
+  },
+  "content_types": {
+    "image": {
+      "format": "<|endoftext10|>"
+    }
+  },
+  "generation_prompt": "<|assistant|>",
+  "default_system_prompt": ""
+}

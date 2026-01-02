@@ -1,0 +1,15 @@
+pytest>=7.0.0
+pytest-timeout>=2.1.0
+pytest-xdist>=3.0.0
+pytest-html>=3.1.0
+pyyaml>=6.0
+psutil>=5.9.0
+packaging>=24.2
+pillow>=11.3.0
+logbar>=0.1.7
+accelerate>=1.10.1
+threadpoolctl>=3.6.0
+tokenicer>=0.0.5
+pypcre>=0.2.5
+device-smi>=0.5.1
+optimum==2.0.0

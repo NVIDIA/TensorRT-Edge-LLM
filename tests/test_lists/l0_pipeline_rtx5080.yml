@@ -1,0 +1,19 @@
+# L0 Pipeline Tests - Core pipeline functionality smoke tests  
+
+# Core functionality tests
+tests:
+  - tests/defs/test_common.py::test_build_project
+  - tests/defs/test_common.py::test_unit_tests
+  # FP8 LLM tests
+  - tests/defs/test_llm_pipeline.py::test_engine_build[Qwen2.5-0.5B-Instruct-fp8-mxsl4096-mxbs4-mxil2048]
+  - tests/defs/test_llm_pipeline.py::test_inference[Qwen2.5-0.5B-Instruct-fp8-mxsl4096-mxbs4-mxil2048-llm_basic]
+  # MMLU accuracy tests for LLM
+  - tests/defs/test_llm_pipeline.py::test_inference[Qwen2.5-0.5B-Instruct-fp8-mxsl4096-mxbs4-mxil2048-mmlu_0-bs4]
+  # VLM tests with NVFP4 + FP8 lm_head + FP8 ViT
+  - tests/defs/test_vlm_pipeline.py::test_engine_build[InternVL3-1B-nvfp4-lmfp8-mxsl12288-mxbs2-mxil12288-mnit256-mxit12288-mxpiit1792-vitfp8]
+  - tests/defs/test_vlm_pipeline.py::test_inference[InternVL3-1B-nvfp4-lmfp8-mxsl12288-mxbs2-mxil12288-mnit256-mxit12288-mxpiit1792-vlm_basic-vitfp8]
+  # MMMU accuracy tests for VLM
+  - tests/defs/test_vlm_pipeline.py::test_inference[InternVL3-1B-nvfp4-lmfp8-mxsl12288-mxbs2-mxil12288-mnit256-mxit12288-mxpiit1792-mmmu-bs2-vitfp8]
+  # VLM tests with NVFP4 precision (Qwen3-VL)
+  - tests/defs/test_vlm_pipeline.py::test_engine_build[Qwen3-VL-4B-Instruct-nvfp4-mxsl8192-mxbs2-mxil8192-mnit128-mxit8192-mxpiit512]
+  - tests/defs/test_vlm_pipeline.py::test_inference[Qwen3-VL-4B-Instruct-nvfp4-mxsl8192-mxbs2-mxil8192-mnit128-mxit8192-mxpiit512-vlm_basic]

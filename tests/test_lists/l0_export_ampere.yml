@@ -1,0 +1,9 @@
+# L0 Export Tests - Model export and python package smoke tests
+# Model export tests
+tests:
+  - tests/defs/test_package.py::test_package_import
+  - tests/defs/test_package.py::test_command_line_tools
+  - tests/defs/test_model_export.py::test_llm_model_export[Qwen2.5-0.5B-Instruct-fp16-lora]
+  - tests/defs/test_model_export.py::test_llm_model_export[Qwen3-0.6B-int8_sq]
+  - tests/defs/test_model_export.py::test_vlm_model_export[InternVL3-1B-GPTQ-Int4-int4_gptq]
+  - tests/defs/test_model_export.py::test_vlm_model_export[Qwen3-VL-2B-Instruct-int4_awq]

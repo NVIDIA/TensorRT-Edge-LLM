@@ -1,0 +1,49 @@
+{
+    "batch_size": 1,
+    "temperature": 1.0,
+    "top_p": 1.0,
+    "top_k": 50,
+    "max_generate_length": 128,
+    "available_lora_weights": {
+        "diagrams2sql": "$LORA_WEIGHTS_DIR/processed_adapter_model.safetensors"
+    },
+    "requests": [
+        {
+            "messages": [
+                {   
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "image": "examples/multimodal/pics/database_er.jpeg"
+                        },
+                        {
+                            "type": "text",
+                            "text": "Extract data in JSON format"
+                        }
+                    ]
+                }
+            ],
+            "reference": "Here is the data extracted from the diagram in JSON format:\n\n```json\n{\n  \"entity1\": \"Student\",\n  \"relationship\": \"Enrolled in\",\n  \"entity2\": \"Course\"\n}\n```\n\nThis JSON object represents the relationship between a student and a course, as indicated by the diagram."
+        },
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "image": "examples/multimodal/pics/database_er.jpeg"
+                        },
+                        {
+                            "type": "text",
+                            "text": "Extract data in JSON format."
+                        }
+                    ]
+                }
+            ],
+            "lora_name": "diagrams2sql",
+            "reference": "```json\n{\n  \"relationship\": {\n    \"type\": \"Enrolled in\",\n    \"subject\": \"Student\",\n    \"object\": \"Course\"\n  }\n}\n```"
+        }
+    ]
+}

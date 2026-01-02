@@ -1,0 +1,37 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#pragma once
+
+#include <string>
+
+namespace trt_edgellm
+{
+namespace version
+{
+
+//! Runtime version string in format major.minor.patch.build
+inline constexpr char const* kRUNTIME_VERSION = "0.4.0.1";
+
+//! Check if model version matches runtime version
+//! @param modelVersion Version string from model's config.json
+//! @return True if versions match, false otherwise
+//! Logs warning if versions don't match or have invalid format
+bool checkVersion(std::string const& modelVersion);
+
+} // namespace version
+} // namespace trt_edgellm

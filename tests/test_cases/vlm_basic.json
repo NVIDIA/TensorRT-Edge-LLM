@@ -1,0 +1,49 @@
+{
+    "batch_size": 1,
+    "temperature": 1.0,
+    "top_p": 1.0,
+    "top_k": 50,
+    "max_generate_length": 128,
+    "requests": [
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "image": "examples/multimodal/pics/woman_and_dog.jpeg"
+                        },
+                        {
+                            "type": "text",
+                            "text": "Please describe the image."
+                        }
+                    ]
+                }
+            ],
+            "reference": "The image depicts a serene beach scene during what appears to be either sunrise or sunset, as indicated by the warm, golden light illuminating the sky and the horizon. A woman is sitting on the sand, wearing a plaid shirt and dark pants. She is interacting with a light-colored dog, possibly a Labrador Retriever, which is wearing a colorful harness. The dog is sitting on the sand, and the woman is extending her hand towards the dog, possibly giving it a high-five or a treat. The beach is relatively empty, with only a few footprints visible in the sand, and the ocean is calm with gentle waves."
+        },
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "image": "examples/multimodal/pics/red_panda.jpeg"
+                        },
+                        {
+                            "type": "image",
+                            "image": "examples/multimodal/pics/giant_panda.jpeg"
+                        },
+                        {
+                            "type": "text",
+                            "text": "Please compare the following two images."
+                        }
+                    ]
+                }
+            ],
+            "reference": "The two images depict different animals and settings:\n\n1. **First Image (Left):**  \n   - The animal is a red panda, characterized by its reddish-brown fur, white face, and black markings around the eyes and ears.  \n   - It is perched on a wooden structure, possibly in a zoo or a similar environment, with a naturalistic background of trees and branches.  \n   - The red panda appears to be looking directly at the camera.\n\n2. **Second Image (Right):**  \n   - The animal is a giant panda, known for its distinctive black-and-white fur pattern.  \n   - It"
+        }
+    ]
+}

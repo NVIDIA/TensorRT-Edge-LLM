@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tensorrt-edgellm"
+dynamic = ["version"]
+description = "A Python package for quantizing and exporting LLMs for edge deployment"
+readme = "README.md"
+keywords = [
+    "nvidia",
+    "tensorrt",
+    "deeplearning",
+    "inference",
+    "edge",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.12",
+]
+requires-python = ">=3.8"
+dependencies = [
+    "torch~=2.9.1",
+    "transformers==4.57.1",
+    "nvidia-modelopt[torch]==0.39.0",
+    "nvidia-modelopt[onnx]==0.39.0",
+    "onnx==1.19.0",
+    "datasets==4.0.0",
+    "tqdm~=4.67.1",
+    "numpy~=2.2.6",
+    "peft~=0.18.0",
+    "backoff~=2.2.1"
+]
+
+[project.optional-dependencies]
+dev = [
+]
+
+[project.scripts]
+tensorrt-edgellm-quantize-llm = "tensorrt_edgellm.scripts.quantize_llm:main"
+tensorrt-edgellm-quantize-draft = "tensorrt_edgellm.scripts.quantize_draft:main"
+tensorrt-edgellm-export-visual = "tensorrt_edgellm.scripts.export_visual:main"
+tensorrt-edgellm-export-llm = "tensorrt_edgellm.scripts.export_llm:main"
+tensorrt-edgellm-export-draft = "tensorrt_edgellm.scripts.export_draft:main"
+tensorrt-edgellm-insert-lora = "tensorrt_edgellm.scripts.insert_lora:main"
+tensorrt-edgellm-process-lora = "tensorrt_edgellm.scripts.process_lora_weights:main"
+tensorrt-edgellm-merge-lora = "tensorrt_edgellm.scripts.merge_lora:main"
+tensorrt-edgellm-reduce-vocab = "tensorrt_edgellm.scripts.reduce_vocab:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["tensorrt_edgellm*"]
+
+[tool.setuptools.package-data]
+tensorrt_edgellm = ["README.md"]
+"tensorrt_edgellm.chat_templates" = ["templates/*.json"]
+
+[tool.setuptools.dynamic]
+version = {attr = "tensorrt_edgellm.version.__version__"}

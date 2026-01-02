@@ -1,0 +1,5 @@
+sphinx
+nvidia-sphinx-theme
+breathe
+myst-parser
+sphinxcontrib-mermaid
