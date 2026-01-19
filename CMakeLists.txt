@@ -147,7 +147,7 @@ if(BUILD_UNIT_TESTS)
   target_compile_definitions(unitTest
                              PRIVATE PROJECT_ROOT_DIR="${CMAKE_SOURCE_DIR}")
   target_link_libraries(unitTest PRIVATE gtest gtest_main edgellmCore
-                                         ${CUDART_LIB} ${CUDA_DRIVER_LIB})
+                                         ${NVINFER_LIB} ${CUDART_LIB} ${CUDA_DRIVER_LIB})
   add_cross_build_link_options(unitTest)
 endif()
 

@@ -20,6 +20,7 @@
 #include <gtest/gtest.h>
 #include <memory>
 
+using namespace trt_edgellm;
 using namespace trt_edgellm::logger;
 
 class TRTCompatibilityTest : public ::testing::Test
