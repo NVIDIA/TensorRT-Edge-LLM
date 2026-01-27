@@ -19,10 +19,10 @@ using various quantization schemes supported by NVIDIA ModelOpt.
 Usage:
     # Quantize with FP8 quantization
     python quantize_llm.py --model_dir /path/to/model --output_dir /path/to/output --quantization fp8
-    
+
     # Quantize without quantization (default)
     python quantize_llm.py --model_dir /path/to/model --output_dir /path/to/output
-    
+
     # Quantize with different quantization for LM head
     python quantize_llm.py --model_dir /path/to/model --output_dir /path/to/output --quantization fp8 --lm_head_quantization fp8
 """
@@ -38,7 +38,7 @@ from tensorrt_edgellm.quantization.llm_quantization import \
 def main() -> None:
     """
     Main function that parses command line arguments and quantizes the model.
-    
+
     This function sets up argument parsing for the quantization script and calls
     the quantize_and_save_llm function with the provided parameters.
     """
@@ -67,7 +67,7 @@ def main() -> None:
     parser.add_argument("--dataset_dir",
                         type=str,
                         required=False,
-                        default="cnn_dailymail",
+                        default="abisee/cnn_dailymail",
                         help="Dataset name or path for calibration data")
     parser.add_argument(
         "--lm_head_quantization",
