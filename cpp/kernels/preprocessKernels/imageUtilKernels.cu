@@ -432,11 +432,11 @@ __global__ void initAttentionMaskKernel(
     auto const start = cuSeqlens[bIdx];
     auto const end = cuSeqlens[bIdx + 1];
     auto const tIdx = threadIdx.x;
-    auto const tidy = threadIdx.y;
+    auto const tIdy = threadIdx.y;
 
-    for (auto i = start + tIdx; i < end; i += 16)
+    for (auto i = start + tIdy; i < end; i += 16)
     {
-        for (auto j = start + tidy; j < end; j += 16)
+        for (auto j = start + tIdx; j < end; j += 16)
         {
             auto const posIdx = i * curHW + j;
             attentionMask[posIdx] = __float2half(0.0f);
