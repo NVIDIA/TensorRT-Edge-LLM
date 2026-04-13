@@ -69,6 +69,9 @@ struct LLMGenerationRequest
         std::vector<Message> messages; //!< Structured messages (required - use chat template format)
         std::vector<rt::imageUtils::ImageData> imageBuffers; //!< Optional image data for multimodal inputs
         std::vector<rt::audioUtils::AudioData> audioBuffers; //!< Optional audio data for multimodal inputs (Qwen3-Omni)
+        std::string preparedVisualInputPath; //!< Optional path to preprocessed visual inputs (pixel_values + image_grid_thw)
+        std::string dumpPrefillKVCachePath; //!< Optional output path to dump prefill KV cache as safetensors
+        bool prefillOnly{false}; //!< If true, stop after prefill (useful with dumpPrefillKVCachePath)
 
         mutable FormattedRequest formatted; //!< Formatted request (populated by tokenizer or user-provided)
     };

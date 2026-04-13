@@ -133,5 +133,15 @@ bool MultimodalRunner::preprocessSystemPrompt([[maybe_unused]] std::string const
     return true;
 }
 
+bool MultimodalRunner::preprocessPreparedVisual([[maybe_unused]] rt::LLMGenerationRequest const& request,
+    [[maybe_unused]] std::vector<std::vector<int32_t>>& batchedInputIds,
+    [[maybe_unused]] tokenizer::Tokenizer const* tokenizer, [[maybe_unused]] rt::Tensor& ropeRotaryCosSinDevice,
+    [[maybe_unused]] rt::Tensor const& pixelValues, [[maybe_unused]] rt::Tensor const& imageGridTHW,
+    [[maybe_unused]] cudaStream_t stream)
+{
+    LOG_ERROR("preprocessPreparedVisual is not implemented for this multimodal runner");
+    return false;
+}
+
 } // namespace rt
 } // namespace trt_edgellm

@@ -91,6 +91,26 @@ public:
         = 0;
 
     /*!
+     * @brief Preprocess using already prepared visual inputs from an external pipeline.
+     *
+     * This bypasses image decoding / resize / patchification in TRT runtime and instead
+     * consumes tensors equivalent to processor outputs such as `pixel_values` and `image_grid_thw`.
+     *
+     * @param request Generation request with text/messages
+     * @param batchedInputIds Output batched input token IDs
+     * @param tokenizer Tokenizer instance
+     * @param ropeRotaryCosSinDevice RoPE cache tensor
+     * @param pixelValues Preprocessed visual input tensor [num_patches, input_dim]
+     * @param imageGridTHW Image grid tensor [num_images, 3]
+     * @param stream CUDA stream
+     * @return True on success, false on failure
+     */
+    virtual bool preprocessPreparedVisual(rt::LLMGenerationRequest const& request,
+        std::vector<std::vector<int32_t>>& batchedInputIds, tokenizer::Tokenizer const* tokenizer,
+        [[maybe_unused]] rt::Tensor& ropeRotaryCosSinDevice, [[maybe_unused]] rt::Tensor const& pixelValues,
+        [[maybe_unused]] rt::Tensor const& imageGridTHW, cudaStream_t stream);
+
+    /*!
      * @brief Used for KVCache saving where we need to conduct the tokenization of the system prompt and generate
      * ND-Rope parameters for the system prompt.
      * @details This function may be a no-op for some multimodal runners and only performs nontrivial work for some

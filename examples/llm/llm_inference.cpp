@@ -60,7 +60,12 @@ enum LLMInferenceOptionId : int
     EAGLE_DRAFT_STEP = 912,
     EAGLE_VERIFY_TREE_SIZE = 913,
     BATCH_SIZE = 914,
-    MAX_GENERATE_LENGTH = 915
+    MAX_GENERATE_LENGTH = 915,
+    DUMP_KV_CACHE = 916,
+    EXPERT_ENGINE = 917,
+    NUM_CANDIDATES = 918,
+    MULTI_SEQ = 919,
+    DIFFUSION_STEPS = 920
 };
 
 // Struct to hold Eagle-specific arguments for speculative decoding
@@ -98,6 +103,11 @@ struct LLMInferenceArgs
     // For other sampling parameters (temperature, top_p, top_k), please specify them in the input JSON file
     int32_t batchSize{-1};         // -1 means use value from input file
     int64_t maxGenerateLength{-1}; // -1 means use value from input file
+    std::string dumpKVCache{""};
+    std::string expertEngine{""};   // Path to Expert TRT engine for diffusion (empty = disabled)
+    int32_t numCandidates{6};
+    bool multiSeq{false};
+    int32_t numDiffusionSteps{10};
     EagleArgs eagleArgs;
 };
 
@@ -152,7 +162,12 @@ bool parseLLMInferenceArgs(LLMInferenceArgs& args, int argc, char* argv[])
         {"eagleDraftStep", required_argument, 0, LLMInferenceOptionId::EAGLE_DRAFT_STEP},
         {"eagleVerifyTreeSize", required_argument, 0, LLMInferenceOptionId::EAGLE_VERIFY_TREE_SIZE},
         {"batchSize", required_argument, 0, LLMInferenceOptionId::BATCH_SIZE},
-        {"maxGenerateLength", required_argument, 0, LLMInferenceOptionId::MAX_GENERATE_LENGTH}, {0, 0, 0, 0}};
+        {"maxGenerateLength", required_argument, 0, LLMInferenceOptionId::MAX_GENERATE_LENGTH},
+        {"dumpKVCache", required_argument, 0, LLMInferenceOptionId::DUMP_KV_CACHE},
+        {"expertEngine", required_argument, 0, LLMInferenceOptionId::EXPERT_ENGINE},
+        {"numCandidates", required_argument, 0, LLMInferenceOptionId::NUM_CANDIDATES},
+        {"multiSeq", no_argument, 0, LLMInferenceOptionId::MULTI_SEQ},
+        {"numDiffusionSteps", required_argument, 0, LLMInferenceOptionId::DIFFUSION_STEPS}, {0, 0, 0, 0}};
 
     int opt;
     while ((opt = getopt_long(argc, argv, "", inferenceOptions, nullptr)) != -1)
@@ -265,6 +280,11 @@ bool parseLLMInferenceArgs(LLMInferenceArgs& args, int argc, char* argv[])
                 return false;
             }
             break;
+        case LLMInferenceOptionId::DUMP_KV_CACHE: args.dumpKVCache = optarg; break;
+        case LLMInferenceOptionId::EXPERT_ENGINE: args.expertEngine = optarg; break;
+        case LLMInferenceOptionId::NUM_CANDIDATES: args.numCandidates = std::stoi(optarg); break;
+        case LLMInferenceOptionId::MULTI_SEQ: args.multiSeq = true; break;
+        case LLMInferenceOptionId::DIFFUSION_STEPS: args.numDiffusionSteps = std::stoi(optarg); break;
         default: return false;
         }
     }
@@ -447,6 +467,9 @@ std::pair<std::unordered_map<std::string, std::string>, std::vector<rt::LLMGener
 
                 // Get per-conversation LoRA name if present
                 std::string requestLoraName = "";
+                std::string preparedVisualInputPath = "";
+                std::string dumpPrefillKVCachePath = "";
+                bool prefillOnly = requestItem.value("prefill_only", false);
                 if (requestItem.contains("lora_name") && !requestItem["lora_name"].is_null())
                 {
                     requestLoraName = requestItem["lora_name"].get<std::string>();
@@ -455,6 +478,14 @@ std::pair<std::unordered_map<std::string, std::string>, std::vector<rt::LLMGener
                     check::check(
                         requestLoraName.empty() || loraWeightsMap.find(requestLoraName) != loraWeightsMap.end(),
                         "LoRA name '" + requestLoraName + "' not found in available_lora_weights");
+                }
+                if (requestItem.contains("prepared_visual_input") && !requestItem["prepared_visual_input"].is_null())
+                {
+                    preparedVisualInputPath = requestItem["prepared_visual_input"].get<std::string>();
+                }
+                if (requestItem.contains("dump_prefill_kv_cache") && !requestItem["dump_prefill_kv_cache"].is_null())
+                {
+                    dumpPrefillKVCachePath = requestItem["dump_prefill_kv_cache"].get<std::string>();
                 }
 
                 // Validate that all requests in this batch use the same LoRA weights
@@ -546,11 +577,14 @@ std::pair<std::unordered_map<std::string, std::string>, std::vector<rt::LLMGener
                             else if (msgContent.type == "image")
                             {
                                 msgContent.content = contentItemJson["image"].get<std::string>();
-                                // TODO: Need to consider multi-turn conversation, and whether to load all images.
-                                auto image = rt::imageUtils::loadImageFromFile(msgContent.content);
-                                if (image.buffer != nullptr)
+                                if (preparedVisualInputPath.empty())
                                 {
-                                    imageBuffers.push_back(std::move(image));
+                                    // TODO: Need to consider multi-turn conversation, and whether to load all images.
+                                    auto image = rt::imageUtils::loadImageFromFile(msgContent.content);
+                                    if (image.buffer != nullptr)
+                                    {
+                                        imageBuffers.push_back(std::move(image));
+                                    }
                                 }
                             }
                             else if (msgContent.type == "audio")
@@ -609,6 +643,9 @@ std::pair<std::unordered_map<std::string, std::string>, std::vector<rt::LLMGener
                 request.messages = std::move(chatMessages);
                 request.imageBuffers = std::move(imageBuffers);
                 request.audioBuffers = std::move(audioBuffers);
+                request.preparedVisualInputPath = std::move(preparedVisualInputPath);
+                request.dumpPrefillKVCachePath = std::move(dumpPrefillKVCachePath);
+                request.prefillOnly = prefillOnly;
                 batchRequest.requests.push_back(std::move(request));
             }
 
@@ -718,6 +755,20 @@ int main(int argc, char* argv[])
         {
             LOG_WARNING("Failed to capture CUDA graph for decoding usage, proceeding with normal engine execution.");
         }
+        if (!args.expertEngine.empty())
+        {
+            rt::AlpamayoExpertConfig expertCfg;
+            expertCfg.numCandidates = args.numCandidates;
+            expertCfg.multiSeq = args.multiSeq;
+            expertCfg.numDiffusionSteps = args.numDiffusionSteps;
+            llmInferenceRuntime->initExpertRunner(args.expertEngine, expertCfg, stream);
+            LOG_INFO("Expert runner initialized: %s", args.expertEngine.c_str());
+        }
+        if (!args.dumpKVCache.empty())
+        {
+            llmInferenceRuntime->setKVCacheDumpPath(args.dumpKVCache);
+            LOG_INFO("KV cache dump enabled, prefix: %s", args.dumpKVCache.c_str());
+        }
     }
 
     // Perform warmup runs if requested
@@ -817,6 +868,7 @@ int main(int argc, char* argv[])
             // Validate UTF-8 for output text (inputs are always valid)
             // If invalid UTF-8 detected, error message is returned and original text is logged
             responseJson["output_text"] = sanitizeUtf8ForJson(outputText);
+            responseJson["output_ids"] = requestStatus ? nlohmann::json(response.outputIds[batchIdx]) : nlohmann::json::array();
             responseJson["request_idx"] = requestIdx;
             responseJson["batch_idx"] = batchIdx;
             // Store messages for reference

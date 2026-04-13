@@ -98,7 +98,7 @@ add_library(
   ${RUNTIME_CPP_SRCS}
   ${PROFILER_CPP_SRCS})
 target_include_directories(edgellmCore PRIVATE ${COMMON_INCLUDE_DIRS})
-target_link_libraries(edgellmCore PRIVATE dl)
+target_link_libraries(edgellmCore PRIVATE dl curand)
 # Apply FMHA SM exclusion definitions
 target_compile_definitions(edgellmCore PRIVATE ${FMHA_EXCLUDE_DEFINITIONS})
 # Enable separable compilation for MoE Marlin kernel templates

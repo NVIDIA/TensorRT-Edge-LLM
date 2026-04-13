@@ -768,6 +768,136 @@ bool QwenViTRunner::preprocess(rt::LLMGenerationRequest const& request,
     return true;
 }
 
+bool QwenViTRunner::preprocessPreparedVisual(rt::LLMGenerationRequest const& request,
+    std::vector<std::vector<int32_t>>& batchedInputIds, tokenizer::Tokenizer const* tokenizer,
+    rt::Tensor& ropeRotaryCosSinDevice, rt::Tensor const& pixelValues, rt::Tensor const& imageGridTHW,
+    cudaStream_t stream)
+{
+    try
+    {
+        check::check(pixelValues.getShape().getNumDims() == 2, "pixelValues must be 2D [num_patches, input_dim]");
+        check::check(pixelValues.getDataType() == nvinfer1::DataType::kHALF, "pixelValues must be FP16");
+        check::check(
+            imageGridTHW.getShape().getNumDims() == 2 && imageGridTHW.getShape()[1] == 3, "imageGridTHW must be [N, 3]");
+
+        int64_t const numImages = imageGridTHW.getShape()[0];
+        std::vector<int64_t> imageGridTHWHostVec(numImages * 3);
+        CUDA_CHECK(cudaMemcpyAsync(imageGridTHWHostVec.data(), imageGridTHW.rawPointer(),
+            sizeof(int64_t) * numImages * 3, cudaMemcpyDeviceToHost, stream));
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+
+        std::vector<std::vector<int64_t>> imageGridTHWs;
+        imageGridTHWs.reserve(numImages);
+        std::vector<int64_t> imageTokenLengths;
+        imageTokenLengths.reserve(numImages);
+        std::vector<int64_t> numImagesPerRequest;
+        numImagesPerRequest.reserve(request.requests.size());
+
+        for (int64_t i = 0; i < numImages; ++i)
+        {
+            int64_t t = imageGridTHWHostVec[i * 3 + 0];
+            int64_t h = imageGridTHWHostVec[i * 3 + 1];
+            int64_t w = imageGridTHWHostVec[i * 3 + 2];
+            imageGridTHWs.push_back({t, h, w});
+            imageTokenLengths.push_back(t * h * w / (mConfig.mergeSize * mConfig.mergeSize));
+        }
+
+        // Count image items per request from message contents.
+        // For prepared_visual_input, the request may intentionally omit raw image content and
+        // provide a text-only prompt plus externally prepared pixel_values/image_grid_thw.
+        // In that case, infer the per-request image count from imageGridTHW for the single
+        // request we currently support.
+        int64_t totalImageCount = 0;
+        for (auto const& req : request.requests)
+        {
+            int64_t requestImageCount = 0;
+            for (auto const& msg : req.messages)
+            {
+                for (auto const& content : msg.contents)
+                {
+                    if (content.type == "image")
+                    {
+                        requestImageCount++;
+                    }
+                }
+            }
+            numImagesPerRequest.push_back(requestImageCount);
+            totalImageCount += requestImageCount;
+        }
+        if (totalImageCount == 0)
+        {
+            check::check(request.requests.size() == 1,
+                "prepared_visual_input without raw image messages currently supports a single request only");
+            numImagesPerRequest[0] = numImages;
+            totalImageCount = numImages;
+        }
+        check::check(totalImageCount == numImages, "imageGridTHW image count does not match request image count");
+
+        // Populate mVitInput directly from the prepared processor output.
+        int64_t const totalSeqLength = pixelValues.getShape()[0];
+        check::check(pixelValues.getShape()[1] == mConfig.inputDim, "pixelValues input dim mismatch");
+        check::check(mVitInput.reshape({totalSeqLength, mConfig.inputDim}), "Tensor reshape failed");
+        CUDA_CHECK(cudaMemcpyAsync(mVitInput.rawPointer(), pixelValues.rawPointer(),
+            totalSeqLength * mConfig.inputDim * sizeof(half), cudaMemcpyDeviceToDevice, stream));
+
+        // Build cu_seqlens and auxiliary tensors exactly like imagePreprocess tail.
+        int32_t* cuSeqlensData = mCuSeqlensHost.dataPointer<int32_t>();
+        cuSeqlensData[0] = 0;
+        int64_t cuSeqlensSize = 1;
+        int64_t maxSeqLen = 0;
+        for (auto const& grid : imageGridTHWs)
+        {
+            int64_t curSeqLength = grid[0] * grid[1] * grid[2];
+            int32_t prevCuSeqlen = cuSeqlensData[cuSeqlensSize - 1];
+            cuSeqlensData[cuSeqlensSize++] = static_cast<int32_t>(prevCuSeqlen + curSeqLength);
+            maxSeqLen = std::max(maxSeqLen, curSeqLength);
+        }
+
+        int64_t const totalImageTokens = totalSeqLength / (mConfig.mergeSize * mConfig.mergeSize);
+        check::check(mOutputEmbedding.reshape({totalImageTokens, mConfig.outHiddenSize}), "Tensor reshape failed");
+        check::check(mMaxSeqLenCarrier.reshape({maxSeqLen}), "Tensor reshape failed");
+
+        check::check(mCuSeqlens.reshape({cuSeqlensSize}), "Tensor reshape failed");
+        CUDA_CHECK(cudaMemcpyAsync(mCuSeqlens.rawPointer(), mCuSeqlensHost.rawPointer(),
+            cuSeqlensSize * sizeof(int32_t), cudaMemcpyHostToDevice, stream));
+
+        check::check(mRotaryPosEmb.reshape({totalSeqLength, mConfig.vitPosEmbDim}), "Tensor reshape failed");
+        for (size_t i = 0; i < imageGridTHWs.size(); ++i)
+        {
+            kernel::initRotaryPosEmbQwenViT(
+                mRotaryPosEmb, imageGridTHWs[i], mConfig.mergeSize, cuSeqlensData[i], 10000.0f, 1.0f, stream);
+        }
+
+        if (mModelType == multimodal::ModelType::QWEN3_VL
+            || mModelType == multimodal::ModelType::QWEN3_OMNI_VISION_ENCODER)
+        {
+            check::check(mFastPosEmbIdx.reshape({4, totalSeqLength}), "Tensor reshape failed");
+            check::check(mFastPosEmbWeight.reshape({4, totalSeqLength}), "Tensor reshape failed");
+            for (size_t i = 0; i < imageGridTHWs.size(); ++i)
+            {
+                kernel::initFastPosEmbedQwenViT(mFastPosEmbIdx, mFastPosEmbWeight, imageGridTHWs[i], mConfig.mergeSize,
+                    mConfig.numGridPerSide, cuSeqlensData[i], stream);
+            }
+            for (int64_t i = 0; i < mConfig.numDeepstackFeatures; ++i)
+            {
+                check::check(
+                    mDeepstackFeatures[i].reshape({totalImageTokens, mConfig.outHiddenSize}), "Tensor reshape failed");
+            }
+        }
+        mLastImageGridTHWs = imageGridTHWs;
+
+        textPreprocess(request, batchedInputIds, numImagesPerRequest, imageTokenLengths, tokenizer);
+        generateMropeParams(batchedInputIds, imageGridTHWs, ropeRotaryCosSinDevice, stream);
+    }
+    catch (std::exception const& e)
+    {
+        LOG_ERROR("QwenViTRunner::preprocessPreparedVisual() failed: %s", e.what());
+        return false;
+    }
+
+    return true;
+}
+
 bool QwenViTRunner::preprocessSystemPrompt(std::string const& systemPrompt, tokenizer::Tokenizer const* tokenizer,
     rt::Tensor& ropeRotaryCosSinDevice, cudaStream_t stream)
 {

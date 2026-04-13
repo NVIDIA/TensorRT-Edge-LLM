@@ -18,9 +18,11 @@
 #pragma once
 
 #include "common/hashUtils.h"
+#include "common/safetensorsUtils.h"
 #include "multimodal/multimodalRunner.h"
 #include "profiling/metrics.h"
 #include "profiling/timer.h"
+#include "runtime/alpamayoExpertRunner.h"
 #include "runtime/llmEngineRunner.h"
 #include "runtime/llmRuntimeUtils.h"
 #include "tokenizer/tokenizer.h"
@@ -117,6 +119,20 @@ public:
                              : metrics::MultimodalMetrics{};
     }
 
+    /*! \brief Enable dumping the KV cache to disk after each prefill+decode.
+     *  When non-empty, every successful request in handleRequest() writes the
+     *  KV cache (and shape metadata) to <path>.req<idx>.bin / <path>.req<idx>.shape.json.
+     */
+    void setKVCacheDumpPath(std::string const& path) noexcept { mKVCacheDumpPath = path; }
+
+    /*! \brief Initialize the Expert runner for inline diffusion after VLM decode.
+     *  When set, handleRequest() runs Expert diffusion instead of (or in addition to) dumping KV cache.
+     */
+    void initExpertRunner(std::string const& expertEnginePath, AlpamayoExpertConfig const& config, cudaStream_t stream)
+    {
+        mExpertRunner = std::make_unique<AlpamayoExpertRunner>(expertEnginePath, config, stream);
+    }
+
 private:
     /*! \brief Helper structure to hold token counting results
      */
@@ -176,6 +192,17 @@ private:
     //! \throws std::runtime_error if system prompt is malformed, or a CUDA operation fails
     bool setUpForPrefillExecution(std::vector<std::vector<int32_t>> const& batchedInputIds,
         std::vector<std::string> const& systemPrompts, std::string const& loraWeightsName, cudaStream_t stream);
+
+    //! Dump the current prefill KV cache for a single-batch request.
+    //! Saves a safetensors file containing:
+    //! - kv_cache: [num_layers, 2, num_kv_heads, seq_len, head_dim]
+    //! - sequence_length: [1] int32
+    //! - input_ids: [seq_len] int32
+    bool dumpCurrentPrefillKVCache(std::string const& outputPath, int32_t sequenceLength, cudaStream_t stream);
+
+    std::unique_ptr<AlpamayoExpertRunner> mExpertRunner{nullptr};
+    std::string mKVCacheDumpPath{};             //!< Optional path prefix to dump KV cache after decode (Path A)
+    int64_t mKVCacheDumpReqIdx{0};              //!< Counter for dump file naming
 };
 } // namespace rt
 } // namespace trt_edgellm

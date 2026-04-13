@@ -42,7 +42,7 @@ constexpr int kReasonableMaxBatchSize = 16;
 // Validation limits for message parsing.
 constexpr size_t kMaxMessageContentSizeBytes = 128 * 1024; // 128KB per content item
 constexpr size_t kMaxMessagesPerRequest = 64;
-constexpr size_t kMaxContentItemsPerMessage = 16;
+constexpr size_t kMaxContentItemsPerMessage = 64; // Alpamayo uses 4 cameras x 4 frames = 16 images + text items
 
 } // namespace security
 

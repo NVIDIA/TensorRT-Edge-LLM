@@ -27,6 +27,7 @@
 #include "common/safetensorsUtils.h"
 #include "kernels/embeddingKernels/embeddingKernels.h"
 #include "kernels/kvCacheUtilKernels/kvCacheUtilsKernels.h"
+#include "kernels/alpamayoExpertKernels/alpamayoExpertKernels.h"
 #include "multimodal/multimodalRunner.h"
 #include "profiling/metrics.h"
 #include "profiling/nvtx_wrapper.h"
@@ -525,8 +526,10 @@ bool LLMInferenceRuntime::handleRequest(
         request.requests.begin(), request.requests.end(), [](auto const& req) { return !req.audioBuffers.empty(); });
     bool hasVision = std::any_of(
         request.requests.begin(), request.requests.end(), [](auto const& req) { return !req.imageBuffers.empty(); });
+    bool hasPreparedVision = std::any_of(request.requests.begin(), request.requests.end(),
+        [](auto const& req) { return !req.preparedVisualInputPath.empty(); });
 
-    if ((hasAudio && mAudioRunner) || (hasVision && mVisionRunner))
+    if ((hasAudio && mAudioRunner) || ((hasVision || hasPreparedVision) && mVisionRunner))
     {
         // Mark multimodal preprocessing and inference for NVTX profiling
         NVTX_SCOPED_RANGE(nvtx_multimodal, "MULTIMODAL_PROCESSING", nvtx_colors::ORANGE);
@@ -550,11 +553,48 @@ bool LLMInferenceRuntime::handleRequest(
         }
 
         // Process vision inputs (if present)
-        if (hasVision && mVisionRunner)
+        if ((hasVision || hasPreparedVision) && mVisionRunner)
         {
             LOG_INFO("Processing vision inputs");
-            if (!mVisionRunner->preprocess(
-                    request, batchedInputIds, mTokenizer.get(), mLLMEngineRunner->getRopeCosSinCacheTensor(), stream))
+            bool visionStatus = false;
+            if (hasPreparedVision)
+            {
+                check::check(activeBatchSize == 1, "prepared_visual_input currently supports batch_size == 1 only");
+                check::check(!hasVision, "prepared_visual_input cannot be mixed with raw image inputs in the same request");
+                std::vector<rt::Tensor> preparedTensors;
+                if (!safetensors::loadSafetensors(request.requests[0].preparedVisualInputPath, preparedTensors, stream))
+                {
+                    LOG_ERROR("Failed to load prepared visual input from: %s",
+                        request.requests[0].preparedVisualInputPath.c_str());
+                    return false;
+                }
+
+                rt::Tensor const* pixelValues = nullptr;
+                rt::Tensor const* imageGridTHW = nullptr;
+                for (auto const& tensor : preparedTensors)
+                {
+                    if (tensor.getName() == "pixel_values")
+                    {
+                        pixelValues = &tensor;
+                    }
+                    else if (tensor.getName() == "image_grid_thw")
+                    {
+                        imageGridTHW = &tensor;
+                    }
+                }
+                check::check(pixelValues != nullptr, "prepared_visual_input is missing tensor 'pixel_values'");
+                check::check(imageGridTHW != nullptr, "prepared_visual_input is missing tensor 'image_grid_thw'");
+
+                visionStatus = mVisionRunner->preprocessPreparedVisual(request, batchedInputIds, mTokenizer.get(),
+                    mLLMEngineRunner->getRopeCosSinCacheTensor(), *pixelValues, *imageGridTHW, stream);
+            }
+            else
+            {
+                visionStatus = mVisionRunner->preprocess(
+                    request, batchedInputIds, mTokenizer.get(), mLLMEngineRunner->getRopeCosSinCacheTensor(), stream);
+            }
+
+            if (!visionStatus)
             {
                 LOG_ERROR("LLMInferenceRuntime(): Vision preprocessing failed. This request cannot be handled.");
                 return false;
@@ -634,6 +674,17 @@ bool LLMInferenceRuntime::handleRequest(
             {
                 outputIds[i].push_back(hostSelectedTokenIdsData[i]);
                 finishedStates[i] = hostSelectedTokenIdsData[i] == mTokenizer->getEosId();
+                // Early stop AFTER <traj_future_start> when Expert runner is active.
+                // We need traj_future_start to be processed by the decoder (one more iteration)
+                // so its KV cache entry exists. Stop on the token AFTER it.
+                if (mExpertRunner && outputIds[i].size() >= 2)
+                {
+                    int32_t prevToken = outputIds[i][outputIds[i].size() - 2];
+                    if (prevToken == mExpertRunner->getConfig().trajFutureStartTokenId)
+                    {
+                        finishedStates[i] = true;
+                    }
+                }
                 if (finishedStates[i])
                 {
                     unFinishedBatchNum--;
@@ -748,6 +799,35 @@ bool LLMInferenceRuntime::handleRequest(
     // Record prefill metrics
     mPrefillMetrics.recordRun(tokenCount.totalReusedTokens, tokenCount.totalComputedTokens);
 
+    bool const hasPrefillDumpRequest = std::any_of(request.requests.begin(), request.requests.end(),
+        [](auto const& req) { return !req.dumpPrefillKVCachePath.empty(); });
+    bool const hasPrefillOnlyRequest
+        = std::any_of(request.requests.begin(), request.requests.end(), [](auto const& req) { return req.prefillOnly; });
+
+    if (hasPrefillDumpRequest || hasPrefillOnlyRequest)
+    {
+        check::check(activeBatchSize == 1,
+            "dump_prefill_kv_cache / prefill_only currently supports batch_size == 1 only");
+
+        if (!request.requests[0].dumpPrefillKVCachePath.empty())
+        {
+            int32_t const sequenceLength = mHostContextLengths.dataPointer<int32_t>()[0];
+            if (!dumpCurrentPrefillKVCache(request.requests[0].dumpPrefillKVCachePath, sequenceLength, stream))
+            {
+                LOG_ERROR("LLMInferenceRuntime(): Failed to dump request prefill KV cache to %s",
+                    request.requests[0].dumpPrefillKVCachePath.c_str());
+                return false;
+            }
+        }
+
+        if (request.requests[0].prefillOnly)
+        {
+            response.outputIds.assign(activeBatchSize, {});
+            response.outputTexts.assign(activeBatchSize, "");
+            return true;
+        }
+    }
+
     // Reshape for decoding step
     check::check(mInputsEmbeds.reshape({activeBatchSize, 1, mEngineConfig.hiddenSize}), "Tensor reshape failed");
 
@@ -799,6 +879,336 @@ bool LLMInferenceRuntime::handleRequest(
     {
         mGenerationMetrics.recordRun(totalGeneratedTokens);
     }
+
+    // ===== KV cache dump after decode (Path A) =====
+    if (!mKVCacheDumpPath.empty())
+    {
+        auto& linearKVCache = mLLMEngineRunner->getLinearKVCache();
+        auto cacheConfig = linearKVCache.getConfig();
+        auto kvCacheBuffer = linearKVCache.getKVCacheBuffer();
+
+        int32_t totalGenLen = static_cast<int32_t>(outputIds[0].size());
+        int32_t totalSeqLen = prefillSequenceLength + totalGenLen - 1;
+
+        rt::Coords dumpShape{cacheConfig.numAttentionLayers, 2, cacheConfig.numKVHeads,
+            static_cast<int64_t>(totalSeqLen), cacheConfig.headDim};
+        rt::Tensor dumpTensor(dumpShape, rt::DeviceType::kGPU,
+            cacheConfig.kvCacheTypeTRT, "LLMInferenceRuntime::dumpKVCache");
+        kernel::saveKVCacheIntoTensor(dumpTensor, kvCacheBuffer, 0, stream);
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+
+        int64_t numBytes = dumpTensor.getMemoryCapacity();
+        std::vector<uint8_t> hostBuf(numBytes);
+        CUDA_CHECK(cudaMemcpy(hostBuf.data(), dumpTensor.rawPointer(), numBytes, cudaMemcpyDeviceToHost));
+
+        std::string binPath = mKVCacheDumpPath + ".req" + std::to_string(mKVCacheDumpReqIdx) + ".bin";
+        std::string metaPath = mKVCacheDumpPath + ".req" + std::to_string(mKVCacheDumpReqIdx) + ".shape.json";
+        {
+            std::ofstream binOut(binPath, std::ios::binary);
+            binOut.write(reinterpret_cast<char const*>(hostBuf.data()), numBytes);
+        }
+        {
+            std::ofstream metaOut(metaPath);
+            metaOut << "{\n";
+            metaOut << "  \"shape\": [" << cacheConfig.numAttentionLayers << ", 2, "
+                    << cacheConfig.numKVHeads << ", " << totalSeqLen << ", "
+                    << cacheConfig.headDim << "],\n";
+            metaOut << "  \"dtype\": " << static_cast<int>(cacheConfig.kvCacheTypeTRT) << ",\n";
+            metaOut << "  \"prefill_seq_len\": " << prefillSequenceLength << ",\n";
+            metaOut << "  \"total_seq_len\": " << totalSeqLen << ",\n";
+            metaOut << "  \"num_generated\": " << (totalGenLen - 1) << ",\n";
+            metaOut << "  \"num_bytes\": " << numBytes << ",\n";
+            metaOut << "  \"req_idx\": " << mKVCacheDumpReqIdx << ",\n";
+            std::vector<int32_t> hostInputIds(prefillSequenceLength);
+            CUDA_CHECK(cudaMemcpy(hostInputIds.data(), mInputIds.rawPointer(),
+                prefillSequenceLength * sizeof(int32_t), cudaMemcpyDeviceToHost));
+            metaOut << "  \"input_ids\": [";
+            for (int32_t i = 0; i < prefillSequenceLength; ++i) {
+                if (i > 0) metaOut << ", ";
+                metaOut << hostInputIds[i];
+            }
+            metaOut << "],\n";
+            metaOut << "  \"output_ids\": [";
+            for (size_t i = 0; i < outputIds[0].size(); ++i) {
+                if (i > 0) metaOut << ", ";
+                metaOut << outputIds[0][i];
+            }
+            metaOut << "]\n";
+            metaOut << "}\n";
+        }
+        LOG_INFO("Dumped KV cache (post-decode): %s (%ld bytes, total_seq_len=%d, generated=%d)",
+            binPath.c_str(), numBytes, totalSeqLen, totalGenLen - 1);
+        mKVCacheDumpReqIdx++;
+    }
+    // ===== end KV cache dump =====
+    // ===== Run Expert diffusion with multi-sequence VLM decode =====
+    if (mExpertRunner)
+    {
+        auto& linearKVCache = mLLMEngineRunner->getLinearKVCache();
+        auto cacheConfig = linearKVCache.getConfig();
+        auto const& expertCfg = mExpertRunner->getConfig();
+        int32_t const numCandidates = expertCfg.numCandidates;
+        int32_t const L = cacheConfig.numAttentionLayers;
+        int32_t const H = cacheConfig.numKVHeads;
+        int32_t const D = cacheConfig.headDim;
+
+        int32_t truncSeqLen = mExpertRunner->findTrajFutureStart(outputIds[0], prefillSequenceLength);
+        if (truncSeqLen < 0)
+        {
+            LOG_WARNING("ExpertRunner: <traj_future_start> not found, skipping expert");
+        }
+        else if (!expertCfg.multiSeq)
+        {
+            // ── Single-sequence mode ──
+            LOG_INFO("ExpertRunner: single-seq, truncKV=%d", truncSeqLen);
+            auto kvBuf = linearKVCache.getKVCacheBuffer();
+            rt::Tensor vlmKV({L, 2, H, static_cast<int64_t>(truncSeqLen), D},
+                rt::DeviceType::kGPU, cacheConfig.kvCacheTypeTRT, "vlmKV");
+            kernel::saveKVCacheIntoTensor(vlmKV, kvBuf, 0, stream);
+
+            rt::Tensor actions({expertCfg.numCandidates, expertCfg.numDiffusionTokens, expertCfg.actionDim},
+                rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "actions");
+            mExpertRunner->runDiffusion(vlmKV, truncSeqLen, expertCfg.ropeDelta, actions, stream);
+
+            std::vector<float> hostAct(expertCfg.numCandidates * expertCfg.numDiffusionTokens * expertCfg.actionDim);
+            CUDA_CHECK(cudaMemcpy(hostAct.data(), actions.rawPointer(),
+                hostAct.size() * sizeof(float), cudaMemcpyDeviceToHost));
+            float minV = *std::min_element(hostAct.begin(), hostAct.end());
+            float maxV = *std::max_element(hostAct.begin(), hostAct.end());
+            LOG_INFO("ExpertRunner: actions [%.4f, %.4f]", minV, maxV);
+            if (!mKVCacheDumpPath.empty())
+            {
+                std::string p = mKVCacheDumpPath + ".req" + std::to_string(mKVCacheDumpReqIdx - 1) + ".actions.bin";
+                std::ofstream o(p, std::ios::binary);
+                o.write(reinterpret_cast<char const*>(hostAct.data()), hostAct.size() * sizeof(float));
+                LOG_INFO("ExpertRunner: dumped %s", p.c_str());
+            }
+        }
+        else
+        {
+            // ── Multi-sequence mode: decode N times from prefill checkpoint ──
+            LOG_INFO("ExpertRunner: multi-seq mode, %d candidates", numCandidates);
+
+            // Candidate 0: already decoded, extract its KV
+            auto kvBuf0 = linearKVCache.getKVCacheBuffer();
+            rt::Tensor cand0KV({L, 2, H, static_cast<int64_t>(truncSeqLen), D},
+                rt::DeviceType::kGPU, cacheConfig.kvCacheTypeTRT, "cand0KV");
+            kernel::saveKVCacheIntoTensor(cand0KV, kvBuf0, 0, stream);
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+            LOG_INFO("ExpertRunner: cand 0 done (truncLen=%d)", truncSeqLen);
+
+            // Save the full KV buffer state (for restoration)
+            size_t const kvBufBytes = kvBuf0.getMemoryCapacity();
+            rt::Tensor savedFullKV({static_cast<int64_t>(kvBufBytes)}, rt::DeviceType::kGPU,
+                nvinfer1::DataType::kUINT8, "savedFullKV");
+            CUDA_CHECK(cudaMemcpyAsync(savedFullKV.rawPointer(), kvBuf0.rawPointer(),
+                kvBufBytes, cudaMemcpyDeviceToDevice, stream));
+
+            // Also save KV lengths
+            auto& kvLengths = linearKVCache.getKVCacheLengths();
+            rt::Tensor savedKVLens({kvLengths.getShape()[0]}, rt::DeviceType::kGPU,
+                nvinfer1::DataType::kINT32, "savedKVLens");
+            CUDA_CHECK(cudaMemcpyAsync(savedKVLens.rawPointer(), kvLengths.rawPointer(),
+                kvLengths.getMemoryCapacity(), cudaMemcpyDeviceToDevice, stream));
+
+            // Create prefill-only checkpoint: reset KV lengths to prefillSequenceLength
+            int32_t prefillLenHost = prefillSequenceLength;
+            rt::Tensor savedPrefillKV({static_cast<int64_t>(kvBufBytes)}, rt::DeviceType::kGPU,
+                nvinfer1::DataType::kUINT8, "savedPrefillKV");
+            CUDA_CHECK(cudaMemcpyAsync(savedPrefillKV.rawPointer(), kvBuf0.rawPointer(),
+                kvBufBytes, cudaMemcpyDeviceToDevice, stream));
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+
+            // Collect all candidate KVs and truncation lengths
+            std::vector<rt::Tensor> candKVs;
+            candKVs.push_back(std::move(cand0KV));
+            std::vector<int32_t> candTruncLens;
+            candTruncLens.push_back(truncSeqLen);
+
+            // Decode candidates 1..N-1
+            for (int32_t ci = 1; ci < numCandidates; ++ci)
+            {
+                // Restore prefill KV state
+                CUDA_CHECK(cudaMemcpyAsync(linearKVCache.getKVCacheBuffer().rawPointer(),
+                    savedPrefillKV.rawPointer(), kvBufBytes, cudaMemcpyDeviceToDevice, stream));
+                CUDA_CHECK(cudaMemcpyAsync(kvLengths.rawPointer(), &prefillLenHost,
+                    sizeof(int32_t), cudaMemcpyHostToDevice, stream));
+                CUDA_CHECK(cudaStreamSynchronize(stream));
+
+                // Decode loop
+                std::vector<int32_t> candIds;
+                candIds.push_back(outputIds[0][0]);  // first token same for all (from prefill)
+                bool candDone = false;
+                int32_t candIter = 1;
+
+                check::check(mInputsEmbeds.reshape({1, 1, mEngineConfig.hiddenSize}), "reshape failed");
+
+                while (!candDone && candIter < maxGenerationLength)
+                {
+                    int32_t lastTok = candIds.back();
+                    CUDA_CHECK(cudaMemcpyAsync(mSelectedIndices.rawPointer(), &lastTok,
+                        sizeof(int32_t), cudaMemcpyHostToDevice, stream));
+                    kernel::embeddingLookup(mSelectedIndices, mEmbeddingTable, mInputsEmbeds, stream);
+
+                    bool ok = mLLMEngineRunner->executeVanillaDecodingStep(
+                        mInputsEmbeds, mOutputLogits, rt::OptionalOutputTensor{std::nullopt}, stream);
+                    if (!ok) break;
+
+                    SamplingParams params(1, mEngineConfig.outputVocabSize,
+                        request.temperature, request.topK, request.topP);
+                    trt_edgellm::topKtopPSamplingFromLogits(
+                        mOutputLogits, mSelectedIndices, params, mSamplingWorkspace, stream);
+                    if (mEngineConfig.reducedVocabSize > 0)
+                        trt_edgellm::mapReducedVocabToFullVocab(mSelectedIndices, mVocabMappingTable, stream);
+
+                    int32_t sampled;
+                    CUDA_CHECK(cudaMemcpyAsync(&sampled, mSelectedIndices.rawPointer(),
+                        sizeof(int32_t), cudaMemcpyDeviceToHost, stream));
+                    CUDA_CHECK(cudaStreamSynchronize(stream));
+                    candIds.push_back(sampled);
+
+                    if (candIds.size() >= 2)
+                    {
+                        int32_t prev = candIds[candIds.size() - 2];
+                        if (prev == expertCfg.trajFutureStartTokenId)
+                            candDone = true;
+                    }
+                    if (sampled == mTokenizer->getEosId())
+                        candDone = true;
+
+                    ++candIter;
+                }
+
+                int32_t candTrunc = mExpertRunner->findTrajFutureStart(candIds, prefillSequenceLength);
+                if (candTrunc < 0) candTrunc = truncSeqLen;
+
+                auto candBuf = linearKVCache.getKVCacheBuffer();
+                rt::Tensor candKV({L, 2, H, static_cast<int64_t>(candTrunc), D},
+                    rt::DeviceType::kGPU, cacheConfig.kvCacheTypeTRT,
+                    ("cand" + std::to_string(ci) + "KV").c_str());
+                kernel::saveKVCacheIntoTensor(candKV, candBuf, 0, stream);
+                CUDA_CHECK(cudaStreamSynchronize(stream));
+
+                candKVs.push_back(std::move(candKV));
+                candTruncLens.push_back(candTrunc);
+                LOG_INFO("ExpertRunner: cand %d done (truncLen=%d, decoded %d)", ci, candTrunc, candIter);
+            }
+
+            // Use minimum truncation length across candidates
+            int32_t minTrunc = *std::min_element(candTruncLens.begin(), candTruncLens.end());
+
+            // Stack KV caches: per-candidate (L,2,H,S,D) fp16 → combined (L*2,N,H,S,D) fp32
+            int64_t const L2 = L * 2;
+            int32_t const T = expertCfg.numDiffusionTokens;
+            int32_t const A = expertCfg.actionDim;
+
+            rt::Tensor stackedKV({L2, static_cast<int64_t>(numCandidates), H,
+                static_cast<int64_t>(minTrunc), D},
+                rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "stackedKV");
+
+            int64_t const sliceElems = static_cast<int64_t>(H) * minTrunc * D;
+            for (int32_t c = 0; c < numCandidates; ++c)
+            {
+                // Reshape single candidate to (L2, 1, H, minTrunc, D) fp32
+                rt::Tensor tmp({L2, 1, H, static_cast<int64_t>(minTrunc), D},
+                    rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "tmp");
+                kernel::kvCacheReshapeRepeat(tmp.dataPointer<float>(),
+                    reinterpret_cast<half const*>(candKVs[c].rawPointer()),
+                    L, H, minTrunc, D, 1, stream);
+
+                // Copy into stacked[:, c, :, :, :]
+                for (int64_t l = 0; l < L2; ++l)
+                {
+                    float* dst = stackedKV.dataPointer<float>() + l * numCandidates * sliceElems + c * sliceElems;
+                    float const* src2 = tmp.dataPointer<float>() + l * sliceElems;
+                    CUDA_CHECK(cudaMemcpyAsync(dst, src2, sliceElems * sizeof(float),
+                        cudaMemcpyDeviceToDevice, stream));
+                }
+            }
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+
+            // Build Expert inputs and run diffusion
+            int32_t const totalMaskLen = minTrunc + T;
+            int64_t basePos = static_cast<int64_t>(minTrunc) + expertCfg.ropeDelta;
+
+            rt::Tensor posIds({3, static_cast<int64_t>(numCandidates), static_cast<int64_t>(T)},
+                rt::DeviceType::kGPU, nvinfer1::DataType::kINT64, "posIds");
+            kernel::buildPositionIds(posIds.dataPointer<int64_t>(), numCandidates, T, basePos, stream);
+
+            rt::Tensor mask({numCandidates, 1, T, static_cast<int64_t>(totalMaskLen)},
+                rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "mask");
+            CUDA_CHECK(cudaMemsetAsync(mask.rawPointer(), 0,
+                static_cast<size_t>(numCandidates) * T * totalMaskLen * sizeof(float), stream));
+
+            rt::Tensor noisyAct({numCandidates, T, A},
+                rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "noisyAct");
+            curandGenerator_t rng;
+            curandCreateGenerator(&rng, CURAND_RNG_PSEUDO_DEFAULT);
+            curandSetPseudoRandomGeneratorSeed(rng, expertCfg.seed);
+            curandSetStream(rng, stream);
+            check::check((numCandidates * T * A) % 2 == 0, "curandGenerateNormal requires even element count");
+            curandGenerateNormal(rng, noisyAct.dataPointer<float>(), numCandidates * T * A, 0.0f, 1.0f);
+
+            rt::Tensor predVel({numCandidates, T, A},
+                rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "predVel");
+            rt::Tensor ts({numCandidates, 1, 1}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "ts");
+
+            auto* ctx = mExpertRunner->getContext();
+            nvinfer1::Dims dims;
+            dims.nbDims = 3; dims.d[0] = numCandidates; dims.d[1] = T; dims.d[2] = A;
+            ctx->setInputShape("noisy_action", dims);
+            dims.d[0] = numCandidates; dims.d[1] = 1; dims.d[2] = 1;
+            ctx->setInputShape("timestep", dims);
+            dims.d[0] = 3; dims.d[1] = numCandidates; dims.d[2] = T;
+            ctx->setInputShape("position_ids", dims);
+            dims.nbDims = 4; dims.d[0] = numCandidates; dims.d[1] = 1; dims.d[2] = T; dims.d[3] = totalMaskLen;
+            ctx->setInputShape("attention_mask", dims);
+            dims.nbDims = 5; dims.d[0] = L2; dims.d[1] = numCandidates; dims.d[2] = H;
+            dims.d[3] = minTrunc; dims.d[4] = D;
+            ctx->setInputShape("kv_cache", dims);
+
+            ctx->setTensorAddress("noisy_action", noisyAct.rawPointer());
+            ctx->setTensorAddress("timestep", ts.rawPointer());
+            ctx->setTensorAddress("position_ids", posIds.rawPointer());
+            ctx->setTensorAddress("attention_mask", mask.rawPointer());
+            ctx->setTensorAddress("kv_cache", stackedKV.rawPointer());
+            ctx->setTensorAddress("pred_velocity", predVel.rawPointer());
+
+            int32_t const nSteps = expertCfg.numDiffusionSteps;
+            float const dt = 1.0f / static_cast<float>(nSteps);
+            int32_t const actElems = numCandidates * T * A;
+            for (int32_t step = 0; step < nSteps; ++step)
+            {
+                kernel::fillTimestep(ts.dataPointer<float>(), numCandidates, step * dt, stream);
+                auto ok = ctx->enqueueV3(stream);
+                check::check(ok, "Expert enqueueV3 failed in multi-seq diffusion step");
+                kernel::eulerUpdate(noisyAct.dataPointer<float>(), predVel.dataPointer<float>(), dt, actElems, stream);
+            }
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+            curandDestroyGenerator(rng);
+
+            std::vector<float> hostAct(actElems);
+            CUDA_CHECK(cudaMemcpy(hostAct.data(), noisyAct.rawPointer(), actElems * sizeof(float), cudaMemcpyDeviceToHost));
+            float minV = *std::min_element(hostAct.begin(), hostAct.end());
+            float maxV = *std::max_element(hostAct.begin(), hostAct.end());
+            LOG_INFO("ExpertRunner: multi-seq done, %d cands, actions [%.4f, %.4f]", numCandidates, minV, maxV);
+
+            if (!mKVCacheDumpPath.empty())
+            {
+                std::string p = mKVCacheDumpPath + ".req" + std::to_string(mKVCacheDumpReqIdx - 1) + ".actions.bin";
+                std::ofstream o(p, std::ios::binary);
+                o.write(reinterpret_cast<char const*>(hostAct.data()), hostAct.size() * sizeof(float));
+                LOG_INFO("ExpertRunner: dumped %s", p.c_str());
+            }
+
+            // Restore original KV state
+            CUDA_CHECK(cudaMemcpyAsync(linearKVCache.getKVCacheBuffer().rawPointer(),
+                savedFullKV.rawPointer(), kvBufBytes, cudaMemcpyDeviceToDevice, stream));
+            CUDA_CHECK(cudaMemcpyAsync(kvLengths.rawPointer(), savedKVLens.rawPointer(),
+                kvLengths.getMemoryCapacity(), cudaMemcpyDeviceToDevice, stream));
+        }
+    }
+    // ===== end Expert diffusion =====
 
     // Clean the response field and fill the generated outputIds and decoded texts.
     response.outputIds.clear();
@@ -1039,6 +1449,42 @@ bool LLMInferenceRuntime::genAndSaveSystemPromptKVCache(
     CUDA_CHECK(cudaStreamSynchronize(stream));
     LOG_DEBUG("LLMInferenceRuntime(): The KVCache is saved for the prompt: {%s}", prompt.c_str());
 
+    return true;
+}
+
+bool LLMInferenceRuntime::dumpCurrentPrefillKVCache(
+    std::string const& outputPath, int32_t sequenceLength, cudaStream_t stream)
+{
+    check::check(sequenceLength > 0, "sequenceLength must be positive for prefill KV cache dump");
+
+    auto& linearKVCache = mLLMEngineRunner->getLinearKVCache();
+    auto const cacheConfig = linearKVCache.getConfig();
+    auto kvCacheBuffer = linearKVCache.getKVCacheBuffer();
+
+    rt::Tensor kvCacheContent({cacheConfig.numAttentionLayers, 2, cacheConfig.numKVHeads, sequenceLength,
+                                  cacheConfig.headDim},
+        rt::DeviceType::kGPU, cacheConfig.kvCacheTypeTRT, "kv_cache");
+    kernel::saveKVCacheIntoTensor(kvCacheContent, kvCacheBuffer, /*batchIdx=*/0, stream);
+
+    rt::Tensor sequenceLengthTensor({1}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT32, "sequence_length");
+    sequenceLengthTensor.dataPointer<int32_t>()[0] = sequenceLength;
+
+    rt::Tensor inputIdsTensor({sequenceLength}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT32, "input_ids");
+    CUDA_CHECK(cudaMemcpyAsync(inputIdsTensor.rawPointer(), mInputIds.rawPointer(), sequenceLength * sizeof(int32_t),
+        cudaMemcpyDeviceToHost, stream));
+
+    std::vector<rt::Tensor> tensors;
+    tensors.push_back(std::move(kvCacheContent));
+    tensors.push_back(std::move(sequenceLengthTensor));
+    tensors.push_back(std::move(inputIdsTensor));
+
+    if (!safetensors::saveSafetensors(outputPath, tensors, stream))
+    {
+        LOG_ERROR("LLMInferenceRuntime(): Failed to save safetensors to %s", outputPath.c_str());
+        return false;
+    }
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    LOG_INFO("LLMInferenceRuntime(): Prefill KV cache dumped to %s", outputPath.c_str());
     return true;
 }
 

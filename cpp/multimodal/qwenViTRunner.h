@@ -84,6 +84,11 @@ public:
     bool preprocess(rt::LLMGenerationRequest const& request, std::vector<std::vector<int32_t>>& batchedInputIds,
         tokenizer::Tokenizer const* tokenizer, rt::Tensor& ropeRotaryCosSinDevice, cudaStream_t stream) override;
 
+    bool preprocessPreparedVisual(rt::LLMGenerationRequest const& request,
+        std::vector<std::vector<int32_t>>& batchedInputIds, tokenizer::Tokenizer const* tokenizer,
+        rt::Tensor& ropeRotaryCosSinDevice, rt::Tensor const& pixelValues, rt::Tensor const& imageGridTHW,
+        cudaStream_t stream) override;
+
     //! \brief Encode the system prompt and generate ND-RoPE parameters for the system prompt for KVCache saving.
     //! \param[in] systemPrompt System prompt string
     //! \param[in] tokenizer Tokenizer for text processing
