@@ -57,6 +57,7 @@ constexpr auto PALE_GREEN = NVTX_RGB(150, 255, 150);
 // Pink/Purple tones
 constexpr auto PINK = NVTX_RGB(255, 150, 200);
 constexpr auto MAGENTA = NVTX_RGB(255, 0, 128);
+constexpr auto PURPLE = NVTX_RGB(128, 0, 128);
 
 } // namespace nvtx_colors
 
