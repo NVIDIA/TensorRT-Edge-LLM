@@ -322,7 +322,7 @@ int main(int argc, char* argv[])
     });
 
     // Handle 404 for other endpoints
-    server.SetErrorHandler([](const httplib::Request& req, httplib::Response& res) {
+    server.set_error_handler([](const httplib::Request& req, httplib::Response& res) {
         if (res.status == 404)
         {
             res.set_content(server::formatErrorResponse("Not found", "not_found_error").dump(),
