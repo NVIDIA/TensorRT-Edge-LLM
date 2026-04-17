@@ -157,7 +157,8 @@ set(COMMON_INCLUDE_DIRS
     ${CMAKE_SOURCE_DIR}/cpp
     ${CMAKE_SOURCE_DIR}/examples/multimodal
     ${CMAKE_SOURCE_DIR}/3rdParty/nlohmannJson/include
-    ${CMAKE_SOURCE_DIR}/3rdParty/stb)
+    ${CMAKE_SOURCE_DIR}/3rdParty/stb
+    ${CMAKE_SOURCE_DIR}/3rdParty/cpp-httplib)
 
 add_library(commonLibraryExt INTERFACE)
 target_link_libraries(commonLibraryExt INTERFACE ${NVINFER_LIB} ${CUDART_LIB})
