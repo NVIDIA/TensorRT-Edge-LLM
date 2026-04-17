@@ -827,6 +827,20 @@ bool Tokenizer::applyChatTemplate(rt::LLMGenerationRequest::Request const& reque
             {
                 formattedMessage += contentItem.content;
             }
+            else if (contentItem.type == "image_url")
+            {
+                // image_url maps to image content type in chat template
+                // Insert the image placeholder format (e.g., <|vision_start|><|image_pad|><|vision_end|>)
+                auto contentTypeIt = mChatTemplate.contentTypes.find("image");
+                if (contentTypeIt != mChatTemplate.contentTypes.end())
+                {
+                    formattedMessage += contentTypeIt->second.format;
+                }
+                else
+                {
+                    LOG_WARNING("No 'image' content type defined in chat template for image_url");
+                }
+            }
             else
             {
                 // Get content type format

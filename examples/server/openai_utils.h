@@ -17,6 +17,7 @@
 
 #pragma once
 
+#include "common/checkMacros.h"
 #include "runtime/llmRuntimeUtils.h"
 #include "runtime/imageUtils.h"
 #include "tokenizer/tokenizer.h"
@@ -24,6 +25,7 @@
 #include <chrono>
 #include <random>
 #include <string>
+#include <vector>
 
 namespace trt_edgellm
 {
@@ -31,6 +33,87 @@ namespace server
 {
 
 using Json = nlohmann::json;
+
+// Base64 decode function
+inline std::vector<unsigned char> base64Decode(const std::string& encoded)
+{
+    static const int decodeTable[256] = {
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 62, -1, -1, -1, 63,
+        52, 53, 54, 55, 56, 57, 58, 59, 60, 61, -1, -1, -1, -1, -1, -1,
+        -1,  0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14,
+        15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, -1, -1, -1, -1, -1,
+        -1, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+        41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
+    };
+
+    std::vector<unsigned char> decoded;
+    decoded.reserve(encoded.size() * 3 / 4);
+
+    int val = 0;
+    int valb = -8;
+
+    for (unsigned char c : encoded)
+    {
+        if (decodeTable[c] == -1)
+        {
+            break;  // Stop at padding or invalid character
+        }
+        val = (val << 6) + decodeTable[c];
+        valb += 6;
+        if (valb >= 0)
+        {
+            decoded.push_back(static_cast<unsigned char>((val >> valb) & 0xFF));
+            valb -= 8;
+        }
+    }
+
+    return decoded;
+}
+
+// Parse data URL: data:image/{format};base64,{data}
+// Returns decoded image data, or empty vector if not a data URL
+inline std::vector<unsigned char> parseDataUrl(const std::string& url, std::string& format)
+{
+    const std::string dataPrefix = "data:image/";
+    if (url.substr(0, dataPrefix.size()) != dataPrefix)
+    {
+        return {};  // Not a data URL
+    }
+
+    // Find format (e.g., jpeg, png, webp)
+    size_t formatEnd = url.find(';', dataPrefix.size());
+    if (formatEnd == std::string::npos)
+    {
+        return {};
+    }
+
+    format = url.substr(dataPrefix.size(), formatEnd - dataPrefix.size());
+
+    // Check for base64 encoding
+    size_t base64Start = url.find("base64,", formatEnd);
+    if (base64Start == std::string::npos)
+    {
+        return {};
+    }
+
+    size_t dataStart = base64Start + 7;  // Length of "base64,"
+    std::string base64Data = url.substr(dataStart);
+
+    // Remove any whitespace or URL encoding artifacts
+    base64Data.erase(base64Data.find_last_not_of(" \t\n\r\f\v") + 1);
+
+    return base64Decode(base64Data);
+}
 
 // Generate unique completion ID (chatcmpl-xxxxxxxx)
 inline std::string generateCompletionId()
@@ -142,25 +225,52 @@ inline bool parseOpenAIRequest(const Json& requestJson,
 
                     std::string url = imageUrl["url"].get<std::string>();
 
-                    // Extract file path from URL (support file:// scheme or direct path)
-                    std::string imagePath;
-                    if (url.substr(0, 7) == "file://")
+                    // Try to parse as data URL (base64 encoded image)
+                    std::string imageFormat;
+                    auto decodedData = parseDataUrl(url, imageFormat);
+
+                    if (!decodedData.empty())
                     {
-                        imagePath = url.substr(7);
+                        // Base64 data URL - load from decoded memory
+                        LOG_INFO("Loading base64 image (format: %s, size: %zu bytes)",
+                            imageFormat.c_str(), decodedData.size());
+                        msgContent.content = "base64_image:" + imageFormat;
+
+                        auto image = rt::imageUtils::loadImageFromMemory(
+                            decodedData.data(), decodedData.size());
+                        if (image.buffer != nullptr)
+                        {
+                            LOG_INFO("Base64 image loaded successfully (width: %lld, height: %lld)",
+                                image.width, image.height);
+                            imageBuffers.push_back(std::move(image));
+                        }
+                        else
+                        {
+                            LOG_WARNING("Failed to load base64 image");
+                        }
                     }
                     else
                     {
-                        // Assume it's a direct file path
-                        imagePath = url;
-                    }
+                        // Extract file path from URL (support file:// scheme or direct path)
+                        std::string imagePath;
+                        if (url.substr(0, 7) == "file://")
+                        {
+                            imagePath = url.substr(7);
+                        }
+                        else
+                        {
+                            // Assume it's a direct file path
+                            imagePath = url;
+                        }
 
-                    msgContent.content = imagePath;
+                        msgContent.content = imagePath;
 
-                    // Load image
-                    auto image = rt::imageUtils::loadImageFromFile(imagePath);
-                    if (image.buffer != nullptr)
-                    {
-                        imageBuffers.push_back(std::move(image));
+                        // Load image from file
+                        auto image = rt::imageUtils::loadImageFromFile(imagePath);
+                        if (image.buffer != nullptr)
+                        {
+                            imageBuffers.push_back(std::move(image));
+                        }
                     }
                 }
                 else
@@ -251,8 +361,27 @@ inline Json formatOpenAIResponse(const rt::LLMGenerationResponse& response,
     }
     else
     {
-        // Without tokenizer, return null
-        usage = nullptr;
+        // Without tokenizer, estimate based on character count (~4 chars per token)
+        std::string inputText;
+        for (const auto& msg : request.requests[0].messages)
+        {
+            for (const auto& content : msg.contents)
+            {
+                if (content.type == "text")
+                {
+                    inputText += content.content + " ";
+                }
+            }
+        }
+        std::string outputText = response.outputTexts.empty() ? "" : response.outputTexts[0];
+
+        // Rough estimate: ~4 characters per token
+        int64_t promptTokens = static_cast<int64_t>(inputText.size() / 4) + 1;
+        int64_t completionTokens = static_cast<int64_t>(outputText.size() / 4) + 1;
+
+        usage["prompt_tokens"] = promptTokens;
+        usage["completion_tokens"] = completionTokens;
+        usage["total_tokens"] = promptTokens + completionTokens;
     }
     responseJson["usage"] = usage;
 
