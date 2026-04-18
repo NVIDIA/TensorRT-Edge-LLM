@@ -22,6 +22,7 @@
 #include "runtime/llmRuntimeUtils.h"
 #include "tokenizer/tokenizer.h"
 #include <cuda_runtime.h>
+#include <chrono>
 #include <filesystem>
 #include <getopt.h>
 #include <httplib.h>
@@ -246,6 +247,7 @@ int main(int argc, char* argv[])
 
     // POST /v1/chat/completions - OpenAI API endpoint
     server.Post("/v1/chat/completions", [&runtime, &modelId, &stream](const httplib::Request& req, httplib::Response& res) {
+        auto startTime = std::chrono::high_resolution_clock::now();
         LOG_INFO("Received request: /v1/chat/completions");
 
         // Parse JSON request body
@@ -275,9 +277,30 @@ int main(int argc, char* argv[])
             return;
         }
 
+        // Log input prompt
+        std::string inputPrompt;
+        for (const auto& msg : llmRequest.requests[0].messages)
+        {
+            for (const auto& content : msg.contents)
+            {
+                if (content.type == "text")
+                {
+                    inputPrompt += "[" + msg.role + "] " + content.content + "\n";
+                }
+                else if (content.type == "image_url")
+                {
+                    inputPrompt += "[" + msg.role + "] <image>\n";
+                }
+            }
+        }
+        LOG_INFO("Input prompt:\n%s", inputPrompt.c_str());
+
         // Execute inference
+        auto inferenceStartTime = std::chrono::high_resolution_clock::now();
         rt::LLMGenerationResponse llmResponse;
         bool success = runtime->handleRequest(llmRequest, llmResponse, stream);
+        auto inferenceEndTime = std::chrono::high_resolution_clock::now();
+        auto inferenceDuration = std::chrono::duration_cast<std::chrono::milliseconds>(inferenceEndTime - inferenceStartTime).count();
 
         if (!success || llmResponse.outputTexts.empty())
         {
@@ -288,12 +311,19 @@ int main(int argc, char* argv[])
             return;
         }
 
+        // Log output
+        LOG_INFO("Output: %s", llmResponse.outputTexts[0].c_str());
+        LOG_INFO("Inference time: %ld ms", inferenceDuration);
+
         // Format response in OpenAI API format
         Json responseJson = server::formatOpenAIResponse(llmResponse, modelId, llmRequest, nullptr);
 
         res.status = 200;
         res.set_content(responseJson.dump(), "application/json");
-        LOG_INFO("Request completed successfully");
+
+        auto endTime = std::chrono::high_resolution_clock::now();
+        auto totalDuration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count();
+        LOG_INFO("Total request time: %ld ms", totalDuration);
     });
 
     // GET /v1/models - List available models
