@@ -34,6 +34,7 @@ from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
     Qwen2_5_VLPatchMerger, Qwen2_5_VLVisionAttention, Qwen2_5_VLVisionBlock,
     apply_rotary_pos_emb_vision)
 
+from ..llm_models.layers.vit_attention_plugin import vit_attention_plugin
 from ..onnx_export.onnx_utils import export_onnx
 
 
@@ -44,6 +45,7 @@ class Qwen2_5_VLVisionAttentionPatch(Qwen2_5_VLVisionAttention):
 
     def __init__(self, config: Any) -> None:
         super().__init__(config)
+        self.use_vit_attention_plugin = False
 
     def forward(self, hidden_states: torch.Tensor,
                 attention_mask: torch.Tensor,
@@ -60,11 +62,23 @@ class Qwen2_5_VLVisionAttentionPatch(Qwen2_5_VLVisionAttention):
             Attention output
         """
         seq_length = hidden_states.shape[0]
-        q, k, v = self.qkv(hidden_states).reshape(seq_length, 3,
-                                                  self.num_heads,
-                                                  -1).permute(1, 0, 2,
-                                                              3).unbind(0)
         cos, sin = position_embeddings
+        qkv = self.qkv(hidden_states)
+
+        if self.use_vit_attention_plugin:
+            attn_output = vit_attention_plugin(
+                qkv.unsqueeze(0),
+                cos,
+                sin,
+                attention_mask,
+                self.num_heads,
+                self.head_dim,
+                1,
+            ).squeeze(0)
+            return self.proj(attn_output)
+
+        q, k, v = qkv.reshape(seq_length, 3, self.num_heads,
+                              -1).permute(1, 0, 2, 3).unbind(0)
         q, k = apply_rotary_pos_emb_vision(q, k, cos, sin)
 
         q = q.transpose(0, 1)
@@ -382,6 +396,7 @@ def export_qwen2_5_vl_visual(
     model: Qwen2_5_VisionTransformerPretrainedModelPatch,
     output_dir: str,
     torch_dtype: torch.dtype,
+    use_vit_attention_plugin: bool = False,
 ) -> None:
     """
     Export Qwen2.5-VL visual model to ONNX format.
@@ -393,7 +408,12 @@ def export_qwen2_5_vl_visual(
         model: Patched Qwen2.5-VL vision transformer model
         output_dir: Directory to save the exported ONNX model
         torch_dtype: PyTorch data type for the model
+        use_vit_attention_plugin: Whether to export attention as trt::ViTAttentionPlugin
     """
+    if use_vit_attention_plugin:
+        for module in model.modules():
+            if isinstance(module, Qwen2_5_VLVisionAttentionPatch):
+                module.use_vit_attention_plugin = True
 
     # Prepare dummy input sizes (will be replaced by dynamic axes)
     grid_t = 1

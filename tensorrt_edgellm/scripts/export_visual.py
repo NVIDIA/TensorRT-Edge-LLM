@@ -84,6 +84,12 @@ def main() -> None:
         help=
         "Device to load the model on (default: cuda, options: cpu, cuda, cuda:0, cuda:1, etc.)"
     )
+    parser.add_argument(
+        "--use_vit_attention_plugin",
+        action="store_true",
+        help=
+        "Export supported visual attention layers as trt::ViTAttentionPlugin nodes."
+    )
 
     args = parser.parse_args()
 
@@ -93,7 +99,8 @@ def main() -> None:
                       dtype=args.dtype,
                       quantization=args.quantization,
                       dataset_dir=args.dataset_dir,
-                      device=args.device)
+                      device=args.device,
+                      use_vit_attention_plugin=args.use_vit_attention_plugin)
         print("Visual model export completed successfully!")
     except Exception as e:
         print(f"Error during visual model export: {e}")

@@ -39,6 +39,8 @@ from tensorrt_edgellm.visual_models.qwen2_vl_model import (
 from tensorrt_edgellm.visual_models.qwen3_vl_model import (
     Qwen3VLVisionModelPatch, export_qwen3_vl_visual)
 
+from ..llm_models.layers.vit_attention_plugin import \
+    register_vit_attention_plugin_onnx_symbolic_functions
 from ..llm_models.model_utils import load_hf_model
 from .config_export import export_vision_config
 
@@ -48,7 +50,8 @@ def visual_export(model_dir: str,
                   dtype: str,
                   quantization: Optional[str],
                   dataset_dir: Optional[str] = "lmms-lab/MMMU",
-                  device: str = "cuda") -> str:
+                  device: str = "cuda",
+                  use_vit_attention_plugin: bool = False) -> str:
     """
     Export visual model using the appropriate wrapper based on model architecture.
     
@@ -62,6 +65,7 @@ def visual_export(model_dir: str,
         dtype: Data type for export (currently only "fp16" supported)
         quantization: Quantization type ("fp8" or None)
         device: Device to load the model on (default: "cuda", options: cpu, cuda, cuda:0, cuda:1, etc.)
+        use_vit_attention_plugin: Whether to export supported visual attention as trt::ViTAttentionPlugin.
     
     Returns:
         str: Path to the output directory where the exported model is saved
@@ -76,6 +80,8 @@ def visual_export(model_dir: str,
     assert quantization in [
         "fp8", None
     ], f"Only fp8 or None is supported for quantization. You passed: {quantization}"
+    if use_vit_attention_plugin:
+        register_vit_attention_plugin_onnx_symbolic_functions()
 
     # Load the model and processor
     try:
@@ -126,7 +132,8 @@ def visual_export(model_dir: str,
                                             processor, dataset_dir)
 
         # Export using the wrapper's export function
-        export_qwen2_5_vl_visual(wrapped_model, output_dir, torch_dtype)
+        export_qwen2_5_vl_visual(wrapped_model, output_dir, torch_dtype,
+                                 use_vit_attention_plugin)
 
     elif model_type == 'qwen3_vl':
         print(f"Exporting Qwen3-VL visual model from {model_dir}")
