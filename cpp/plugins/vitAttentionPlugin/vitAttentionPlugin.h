@@ -20,7 +20,9 @@ constexpr char const* kVIT_ATTENTION_PLUGIN_VERSION{"1"};
 class ViTAttentionPlugin : public nvinfer1::IPluginV2DynamicExt
 {
 public:
-    ViTAttentionPlugin(std::string const& name, int32_t numHeads, int32_t headSize, int32_t qkvFused);
+    ViTAttentionPlugin(
+        std::string const& name, int32_t numHeads, int32_t headSize, int32_t qkvFused, int32_t maskType,
+        int32_t maxSeqLen);
     ViTAttentionPlugin(std::string const& name, void const* data, size_t length);
 
     ViTAttentionPlugin() = delete;
@@ -74,6 +76,8 @@ protected:
     int32_t mNumHeads{};
     int32_t mHeadSize{};
     int32_t mQKVFused{};
+    int32_t mMaskType{};
+    int32_t mMaxSeqLen{};
     nvinfer1::DataType mDataType{nvinfer1::DataType::kFLOAT};
 };
 

@@ -57,9 +57,9 @@ vit_attention_plugin_schema = OpSchema(
             type_str="T_Rope",
         ),
         OpSchema.FormalParameter(
-            name="attention_mask",
-            description="Additive attention mask [1|B|B*H, S, S]",
-            type_str="T",
+            name="mask_or_cu_seqlens",
+            description="Additive attention mask [1|B|B*H, S, S] or INT32 cu_seqlens [num_segments + 1]",
+            type_str="T_Mask",
         ),
     ],
     outputs=[
@@ -79,6 +79,11 @@ vit_attention_plugin_schema = OpSchema(
             "T_Rope",
             ["tensor(float)", "tensor(float16)", "tensor(bfloat16)"],
             "RoPE tensor data type.",
+        ),
+        (
+            "T_Mask",
+            ["tensor(float)", "tensor(float16)", "tensor(int32)"],
+            "Dense additive mask or packed INT32 cumulative sequence lengths.",
         ),
     ],
     attributes=[
@@ -100,21 +105,28 @@ vit_attention_plugin_schema = OpSchema(
             description="Whether the input projection is fused QKV.",
             required=True,
         ),
+        OpSchema.Attribute(
+            name="mask_type",
+            type=OpSchema.AttrType.INT,
+            description="0: dense additive mask, 1: packed cu_seqlens block segments.",
+            required=True,
+        ),
     ],
 )
 onnx.defs.register_schema(vit_attention_plugin_schema)
 
 
-@symbolic_helper.parse_args("v", "v", "v", "v", "i", "i", "i")
+@symbolic_helper.parse_args("v", "v", "v", "v", "i", "i", "i", "i")
 def symbolic_vit_attention_plugin(
     g: torch.onnx._internal.torchscript_exporter.jit_utils.GraphContext,
     qkv: torch._C.Value,
     cos: torch._C.Value,
     sin: torch._C.Value,
-    attention_mask: torch._C.Value,
+    mask_or_cu_seqlens: torch._C.Value,
     num_heads: int,
     head_size: int,
     qkv_fused: int,
+    mask_type: int,
 ):
     """Custom ViT attention plugin operation for ONNX export."""
     attn_output = g.op(
@@ -122,10 +134,11 @@ def symbolic_vit_attention_plugin(
         qkv,
         cos,
         sin,
-        attention_mask,
+        mask_or_cu_seqlens,
         num_heads_i=num_heads,
         head_size_i=head_size,
         qkv_fused_i=qkv_fused,
+        mask_type_i=mask_type,
     )
 
     qkv_type = qkv.type()
@@ -141,10 +154,11 @@ def vit_attention_plugin(
     qkv: torch.Tensor,
     cos: torch.Tensor,
     sin: torch.Tensor,
-    attention_mask: torch.Tensor,
+    mask_or_cu_seqlens: torch.Tensor,
     num_heads: int,
     head_size: int,
     qkv_fused: int = 1,
+    mask_type: int = 0,
 ) -> torch.Tensor:
     """
     Dummy TensorRT operation for ViT attention, not used in actual inference.
@@ -157,10 +171,12 @@ def vit_attention_plugin(
         qkv: Fused QKV tensor of shape [batch_size, seq_len, 3 * num_heads * head_size].
         cos: RoPE cosine tensor of shape [seq_len, head_size].
         sin: RoPE sine tensor of shape [seq_len, head_size].
-        attention_mask: Additive attention mask of shape [1|B|B*H, seq_len, seq_len].
+        mask_or_cu_seqlens: Additive attention mask of shape [1|B|B*H, seq_len, seq_len] when mask_type is 0,
+            or INT32 cu_seqlens of shape [num_segments + 1] when mask_type is 1.
         num_heads: Number of attention heads.
         head_size: Size of each attention head.
         qkv_fused: Whether QKV is fused.
+        mask_type: 0 for dense additive mask, 1 for packed cu_seqlens block segments.
 
     Returns:
         Attention output tensor of shape [batch_size, seq_len, num_heads * head_size].
@@ -171,6 +187,9 @@ def vit_attention_plugin(
         qkv_size == 3 * num_heads * head_size
     ), f"qkv_size {qkv_size} should equal 3 * num_heads * head_size {3 * num_heads * head_size}"
     assert qkv.dtype == torch.float16, f"qkv {qkv.dtype} should be in float16"
+    assert mask_type in (0, 1), f"Unsupported mask_type {mask_type}"
+    if mask_type == 1:
+        assert mask_or_cu_seqlens.dtype == torch.int32, "cu_seqlens should be INT32 when mask_type is 1"
 
     return torch.zeros(
         batch_size,

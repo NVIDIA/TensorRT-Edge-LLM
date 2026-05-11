@@ -26,6 +26,18 @@ namespace
 constexpr char const* kPLUGIN_VERSION{kVIT_ATTENTION_PLUGIN_VERSION};
 constexpr char const* kPLUGIN_NAME{kVIT_ATTENTION_PLUGIN_NAME};
 
+constexpr int32_t kDENSE_ADDITIVE_MASK_TYPE{static_cast<int32_t>(ViTAttentionMaskType::kDenseAdditive)};
+constexpr int32_t kPACKED_CU_SEQLENS_MASK_TYPE{static_cast<int32_t>(ViTAttentionMaskType::kPackedCuSeqLens)};
+
+constexpr int32_t kIN_QKV_IDX{0};
+constexpr int32_t kIN_ROPE_COS_IDX{1};
+constexpr int32_t kIN_ROPE_SIN_IDX{2};
+constexpr int32_t kIN_ATTENTION_MASK_IDX{3};
+constexpr int32_t kOUT_ATTENTION_IDX{0};
+
+constexpr int32_t kNUM_INPUTS{4};
+constexpr int32_t kNUM_OUTPUTS{1};
+
 bool isDebugEnabled()
 {
     static bool initialized = false;
@@ -57,11 +69,15 @@ bool isDebugEnabled()
 
 } // namespace
 
-ViTAttentionPlugin::ViTAttentionPlugin(std::string const& name, int32_t numHeads, int32_t headSize, int32_t qkvFused)
+ViTAttentionPlugin::ViTAttentionPlugin(
+    std::string const& name, int32_t numHeads, int32_t headSize, int32_t qkvFused, int32_t maskType,
+    int32_t maxSeqLen)
     : mLayerName(name)
     , mNumHeads(numHeads)
     , mHeadSize(headSize)
     , mQKVFused(qkvFused)
+    , mMaskType(maskType)
+    , mMaxSeqLen(maxSeqLen)
 {
 }
 
@@ -71,13 +87,16 @@ ViTAttentionPlugin::ViTAttentionPlugin(std::string const& name, void const* data
     deserializeValue(&data, &length, &mNumHeads);
     deserializeValue(&data, &length, &mHeadSize);
     deserializeValue(&data, &length, &mQKVFused);
+    deserializeValue(&data, &length, &mMaskType);
+    deserializeValue(&data, &length, &mMaxSeqLen);
 }
 
 ViTAttentionPlugin::~ViTAttentionPlugin() {}
 
 nvinfer1::IPluginV2DynamicExt* ViTAttentionPlugin::clone() const noexcept
 {
-    ViTAttentionPlugin* plugin = new ViTAttentionPlugin(mLayerName, mNumHeads, mHeadSize, mQKVFused);
+    ViTAttentionPlugin* plugin
+        = new ViTAttentionPlugin(mLayerName, mNumHeads, mHeadSize, mQKVFused, mMaskType, mMaxSeqLen);
     plugin->setPluginNamespace(mNamespace.c_str());
     return plugin;
 }
@@ -110,28 +129,84 @@ bool ViTAttentionPlugin::supportsFormatCombination(
     int32_t nbInputs,
     int32_t nbOutputs) noexcept
 {
-    auto const& desc = inOut[pos];
-    if (desc.format != nvinfer1::TensorFormat::kLINEAR)
+    // Support ViT attention inputs:
+    //      QKV tensor (linear FP16/FP32 dense, linear FP16 packed-cu-seqlens) with shape [B, S, 3 * H * D]
+    //      RoPE cos/sin tensors, matching the QKV type.
+    //      Dense additive mask matching the QKV type, or packed cu_seqlens with INT32 type.
+    //
+    // Support ViT attention outputs:
+    //      attention result, matching the QKV type, with shape [B, S, H * D].
+    auto checkQKV = [this](nvinfer1::PluginTensorDesc const& tensorDesc) {
+        bool status{true};
+        if (mMaskType == kPACKED_CU_SEQLENS_MASK_TYPE)
+        {
+            status &= tensorDesc.type == DataType::kHALF;
+        }
+        else
+        {
+            status &= tensorDesc.type == DataType::kFLOAT || tensorDesc.type == DataType::kHALF;
+        }
+        status &= tensorDesc.format == TensorFormat::kLINEAR;
+        return status;
+    };
+
+    auto checkRopeCosSin = [&inOut](nvinfer1::PluginTensorDesc const& tensorDesc) {
+        bool status{true};
+        status &= tensorDesc.type == inOut[kIN_QKV_IDX].type;
+        status &= tensorDesc.format == TensorFormat::kLINEAR;
+        return status;
+    };
+
+    auto checkAttentionMask = [this, &inOut](nvinfer1::PluginTensorDesc const& tensorDesc) {
+        bool status{true};
+        if (mMaskType == kPACKED_CU_SEQLENS_MASK_TYPE)
+        {
+            status &= tensorDesc.type == DataType::kINT32;
+        }
+        else
+        {
+            status &= tensorDesc.type == inOut[kIN_QKV_IDX].type;
+        }
+        status &= tensorDesc.format == TensorFormat::kLINEAR;
+        return status;
+    };
+
+    auto checkAttentionOutput = [&inOut](nvinfer1::PluginTensorDesc const& tensorDesc) {
+        bool status{true};
+        status &= tensorDesc.type == inOut[kIN_QKV_IDX].type;
+        status &= tensorDesc.format == TensorFormat::kLINEAR;
+        return status;
+    };
+
+    if (nbInputs != kNUM_INPUTS || nbOutputs != kNUM_OUTPUTS)
     {
         return false;
     }
 
-    if (desc.type != nvinfer1::DataType::kFLOAT && desc.type != nvinfer1::DataType::kHALF)
-    {
-        return false;
-    }
-
-    if (pos == 0)
-    {
-        return true;
-    }
+    bool result{true};
 
     if (pos < nbInputs)
     {
-        return inOut[0].type == desc.type;
+        switch (pos)
+        {
+        case kIN_QKV_IDX: result = checkQKV(inOut[pos]); break;
+        case kIN_ROPE_COS_IDX:
+        case kIN_ROPE_SIN_IDX: result = checkRopeCosSin(inOut[pos]); break;
+        case kIN_ATTENTION_MASK_IDX: result = checkAttentionMask(inOut[pos]); break;
+        default: result = false; break;
+        }
+    }
+    else
+    {
+        int32_t const outPos = pos - nbInputs;
+        switch (outPos)
+        {
+        case kOUT_ATTENTION_IDX: result = checkAttentionOutput(inOut[pos]); break;
+        default: result = false; break;
+        }
     }
 
-    return inOut[0].type == desc.type;
+    return result;
 }
 
 void ViTAttentionPlugin::configurePlugin(
@@ -152,7 +227,9 @@ size_t ViTAttentionPlugin::getWorkspaceSize(
     PluginTensorDesc const& qkvInputDesc = inputs[0];
     int32_t const runtimeBatchSize = static_cast<int32_t>(qkvInputDesc.dims.d[0]);
     int32_t const runtimeSeqLen = static_cast<int32_t>(qkvInputDesc.dims.d[1]);
-    return ViTAttentionRunner::getWorkspaceSize(runtimeBatchSize, runtimeSeqLen, mNumHeads, mHeadSize);
+    return ViTAttentionRunner::getWorkspaceSize(
+        qkvInputDesc.type, runtimeBatchSize, runtimeSeqLen, mNumHeads, mHeadSize,
+        static_cast<ViTAttentionMaskType>(mMaskType));
 }
 
 int32_t ViTAttentionPlugin::enqueue(
@@ -190,6 +267,11 @@ int32_t ViTAttentionPlugin::enqueue(
             LOG_ERROR("Unsupported ViTAttentionPlugin configuration.");
             return 1;
         }
+        if (mMaskType != kDENSE_ADDITIVE_MASK_TYPE && mMaskType != kPACKED_CU_SEQLENS_MASK_TYPE)
+        {
+            LOG_ERROR("Unsupported ViTAttentionPlugin mask_type.");
+            return 1;
+        }
 
         if (inputDesc[1].dims.nbDims != 2 || inputDesc[1].dims.d[0] != runtimeSeqLen
             || inputDesc[1].dims.d[1] != mHeadSize)
@@ -203,18 +285,44 @@ int32_t ViTAttentionPlugin::enqueue(
             LOG_ERROR("ViTAttentionPlugin RoPE sine input shape must be [S, head_size].");
             return 1;
         }
-        if (inputDesc[3].dims.nbDims != 3 || inputDesc[3].dims.d[1] != runtimeSeqLen
-            || inputDesc[3].dims.d[2] != runtimeSeqLen)
+        int32_t maskRows{};
+        if (mMaskType == kDENSE_ADDITIVE_MASK_TYPE)
         {
-            LOG_ERROR("ViTAttentionPlugin attention mask input shape must be [1|B|B*H, S, S].");
+            if (inputDesc[3].dims.nbDims != 3 || inputDesc[3].dims.d[1] != runtimeSeqLen
+                || inputDesc[3].dims.d[2] != runtimeSeqLen)
+            {
+                LOG_ERROR("ViTAttentionPlugin attention mask input shape must be [1|B|B*H, S, S].");
+                return 1;
+            }
+            maskRows = static_cast<int32_t>(inputDesc[3].dims.d[0]);
+        }
+        else
+        {
+            if (inputDesc[3].type != DataType::kINT32 || inputDesc[3].dims.nbDims != 1 || inputDesc[3].dims.d[0] < 2)
+            {
+                LOG_ERROR("ViTAttentionPlugin cu_seqlens input shape must be [num_segments + 1] with INT32 type.");
+                return 1;
+            }
+            if (!ViTAttentionRunner::canImplementFMHA(mDataType, mHeadSize))
+            {
+                LOG_ERROR("ViTAttentionPlugin cu_seqlens mode requires FP16 with head_size 64 or 128.");
+                return 1;
+            }
+            maskRows = static_cast<int32_t>(inputDesc[3].dims.d[0]);
+        }
+
+        int32_t const maxSeqLen = mMaxSeqLen > 0 ? mMaxSeqLen : runtimeSeqLen;
+        if (mMaskType == kPACKED_CU_SEQLENS_MASK_TYPE && maxSeqLen > runtimeSeqLen)
+        {
+            LOG_ERROR("ViTAttentionPlugin max_seq_len cannot exceed runtime sequence length.");
             return 1;
         }
 
-        PLUGIN_DEBUG_LOG("dispatching ViT attention kernel: B=%d, S=%d, H=%d, D=%d", runtimeBatchSize, runtimeSeqLen,
-            mNumHeads, mHeadSize);
+        PLUGIN_DEBUG_LOG("dispatching ViT attention kernel: B=%d, S=%d, maxS=%d, H=%d, D=%d, mask_type=%d",
+            runtimeBatchSize, runtimeSeqLen, maxSeqLen, mNumHeads, mHeadSize, mMaskType);
 
-        int32_t const maskRows = static_cast<int32_t>(inputDesc[3].dims.d[0]);
-        ViTAttentionRunner runner(mDataType, runtimeBatchSize, runtimeSeqLen, mNumHeads, mHeadSize, maskRows);
+        ViTAttentionRunner runner(mDataType, runtimeBatchSize, runtimeSeqLen, maxSeqLen, mNumHeads, mHeadSize, maskRows,
+            static_cast<ViTAttentionMaskType>(mMaskType));
         runner.dispatch(inputs[0], inputs[1], inputs[2], inputs[3], outputs[0], workspace, stream);
         return 0;
     }
@@ -227,7 +335,7 @@ int32_t ViTAttentionPlugin::enqueue(
 
 size_t ViTAttentionPlugin::getSerializationSize() const noexcept
 {
-    return sizeof(mNumHeads) + sizeof(mHeadSize) + sizeof(mQKVFused);
+    return sizeof(mNumHeads) + sizeof(mHeadSize) + sizeof(mQKVFused) + sizeof(mMaskType) + sizeof(mMaxSeqLen);
 }
 
 void ViTAttentionPlugin::serialize(void* buffer) const noexcept
@@ -235,6 +343,8 @@ void ViTAttentionPlugin::serialize(void* buffer) const noexcept
     serializeValue(&buffer, mNumHeads);
     serializeValue(&buffer, mHeadSize);
     serializeValue(&buffer, mQKVFused);
+    serializeValue(&buffer, mMaskType);
+    serializeValue(&buffer, mMaxSeqLen);
 }
 
 char const* ViTAttentionPlugin::getPluginType() const noexcept
@@ -285,6 +395,8 @@ ViTAttentionPluginCreator::ViTAttentionPluginCreator()
     mPluginAttributes.emplace_back(PluginField("num_heads", nullptr, PluginFieldType::kINT32, 1));
     mPluginAttributes.emplace_back(PluginField("head_size", nullptr, PluginFieldType::kINT32, 1));
     mPluginAttributes.emplace_back(PluginField("qkv_fused", nullptr, PluginFieldType::kINT32, 1));
+    mPluginAttributes.emplace_back(PluginField("mask_type", nullptr, PluginFieldType::kINT32, 1));
+    mPluginAttributes.emplace_back(PluginField("max_seq_len", nullptr, PluginFieldType::kINT32, 1));
     mFieldCollection.nbFields = mPluginAttributes.size();
     mFieldCollection.fields = mPluginAttributes.data();
 }
@@ -322,6 +434,8 @@ nvinfer1::IPluginV2* ViTAttentionPluginCreator::createPlugin(
         std::optional<int32_t> numHeads = parsePluginScalarField<int32_t>("num_heads", fc);
         std::optional<int32_t> headSize = parsePluginScalarField<int32_t>("head_size", fc);
         std::optional<int32_t> qkvFused = parsePluginScalarField<int32_t>("qkv_fused", fc);
+        std::optional<int32_t> maskType = parsePluginScalarField<int32_t>("mask_type", fc);
+        std::optional<int32_t> maxSeqLen = parsePluginScalarField<int32_t>("max_seq_len", fc);
 
         if (!numHeads.has_value() || !headSize.has_value())
         {
@@ -329,7 +443,10 @@ nvinfer1::IPluginV2* ViTAttentionPluginCreator::createPlugin(
         }
 
         int32_t qkvFusedValue = qkvFused.value_or(1);
-        return new ViTAttentionPlugin(std::string(name), numHeads.value(), headSize.value(), qkvFusedValue);
+        int32_t maskTypeValue = maskType.value_or(kDENSE_ADDITIVE_MASK_TYPE);
+        int32_t maxSeqLenValue = maxSeqLen.value_or(0);
+        return new ViTAttentionPlugin(
+            std::string(name), numHeads.value(), headSize.value(), qkvFusedValue, maskTypeValue, maxSeqLenValue);
     }
     catch (std::exception const&)
     {

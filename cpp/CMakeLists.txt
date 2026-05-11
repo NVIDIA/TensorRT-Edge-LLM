@@ -21,13 +21,13 @@ set(CMAKE_CUDA_FLAGS_RELEASE
 set(CMAKE_CUDA_FLAGS_DEBUG "")
 
 # Generate Core C++ static library for LLM-SDK
-file(GLOB_RECURSE COMMON_CPP_SRCS "common/*.cpp")
-file(GLOB_RECURSE KERNELS_CPP_SRCS "kernels/*.cpp")
-file(GLOB_RECURSE KERNELS_CU_SRCS "kernels/*.cu")
-file(GLOB_RECURSE SAMPLER_CU_SRCS "sampler/*.cu")
-file(GLOB_RECURSE MULTIMODAL_CPP_SRCS "multimodal/*.cpp")
-file(GLOB_RECURSE RUNTIME_CPP_SRCS "runtime/*.cpp")
-file(GLOB_RECURSE PROFILER_CPP_SRCS "profiling/*.cpp")
+file(GLOB_RECURSE COMMON_CPP_SRCS CONFIGURE_DEPENDS "common/*.cpp")
+file(GLOB_RECURSE KERNELS_CPP_SRCS CONFIGURE_DEPENDS "kernels/*.cpp")
+file(GLOB_RECURSE KERNELS_CU_SRCS CONFIGURE_DEPENDS "kernels/*.cu")
+file(GLOB_RECURSE SAMPLER_CU_SRCS CONFIGURE_DEPENDS "sampler/*.cu")
+file(GLOB_RECURSE MULTIMODAL_CPP_SRCS CONFIGURE_DEPENDS "multimodal/*.cpp")
+file(GLOB_RECURSE RUNTIME_CPP_SRCS CONFIGURE_DEPENDS "runtime/*.cpp")
+file(GLOB_RECURSE PROFILER_CPP_SRCS CONFIGURE_DEPENDS "profiling/*.cpp")
 
 add_library(edgellmKernels STATIC ${KERNELS_CPP_SRCS} ${KERNELS_CU_SRCS}
                                   ${COMMON_CPP_SRCS})
@@ -46,19 +46,20 @@ add_library(
 target_include_directories(edgellmCore PRIVATE ${COMMON_INCLUDE_DIRS})
 
 # Generate tokenizer C++ static library
-file(GLOB_RECURSE TOKENIZER_CPP_SRCS "tokenizer/*.cpp")
+file(GLOB_RECURSE TOKENIZER_CPP_SRCS CONFIGURE_DEPENDS "tokenizer/*.cpp")
 add_library(edgellmTokenizer STATIC ${TOKENIZER_CPP_SRCS})
 target_include_directories(edgellmTokenizer PRIVATE ${COMMON_INCLUDE_DIRS})
 
 # Generate builder C++ static library
-file(GLOB_RECURSE BUILDER_CPP_SRCS "builder/*.cpp")
+file(GLOB_RECURSE BUILDER_CPP_SRCS CONFIGURE_DEPENDS "builder/*.cpp")
 add_library(edgellmBuilder STATIC ${BUILDER_CPP_SRCS} ${COMMON_CPP_SRCS})
 target_include_directories(edgellmBuilder PRIVATE ${ONNX_PARSER_INCLUDE_DIR}
                                                   ${COMMON_INCLUDE_DIRS})
 target_link_libraries(edgellmBuilder PRIVATE ${NV_ONNX_PARSER_LIB})
 
 # Generate the TensorRT plugin shared libraries
-file(GLOB_RECURSE PLUGIN_CPP_SRCS "plugins/*.cpp")
+file(GLOB_RECURSE PLUGIN_CPP_SRCS CONFIGURE_DEPENDS "plugins/*.cpp")
+list(FILTER PLUGIN_CPP_SRCS EXCLUDE REGEX ".*/test\\.cpp$")
 add_library(NvInfer_edgellm_plugin SHARED ${PLUGIN_CPP_SRCS})
 set_target_properties(NvInfer_edgellm_plugin PROPERTIES VERSION 1.0 SOVERSION 1)
 set_target_properties(NvInfer_edgellm_plugin PROPERTIES LIBRARY_OUTPUT_DIRECTORY

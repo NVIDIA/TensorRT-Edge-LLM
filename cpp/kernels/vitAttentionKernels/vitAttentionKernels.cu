@@ -147,6 +147,33 @@ __global__ void precomputeViTRoPEQKKernel(
 }
 
 template <typename T>
+__global__ void buildRopedPackedQKVKernel(T const* qkv, T const* cos, T const* sin, T* ropedQkv,
+    int32_t totalElems, int32_t seqLen, int32_t numHeads, int32_t headSize)
+{
+    int32_t const idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= totalElems)
+    {
+        return;
+    }
+
+    int32_t const dim = idx % headSize;
+    int32_t const headIdx = (idx / headSize) % numHeads;
+    int32_t const tokenIdx = (idx / (headSize * numHeads)) % seqLen;
+    int32_t const batchIdx = idx / (headSize * numHeads * seqLen);
+
+    int32_t const hiddenSize = numHeads * headSize;
+    int64_t const tokenBase
+        = (static_cast<int64_t>(batchIdx) * seqLen + tokenIdx) * 3 * hiddenSize + headIdx * headSize;
+    int64_t const qBase = tokenBase;
+    int64_t const kBase = tokenBase + hiddenSize;
+    int64_t const vBase = tokenBase + 2 * hiddenSize;
+
+    ropedQkv[qBase + dim] = fromFloat<T>(applyRoPE(qkv, cos, sin, qBase, tokenIdx, dim, headSize));
+    ropedQkv[kBase + dim] = fromFloat<T>(applyRoPE(qkv, cos, sin, kBase, tokenIdx, dim, headSize));
+    ropedQkv[vBase + dim] = qkv[vBase + dim];
+}
+
+template <typename T>
 __global__ void computeViTAttentionFusedOutputKernel(float const* qRope, float const* kRope, T const* qkv,
     T const* attentionMask, T* output, int32_t batchSize, int32_t seqLen, int32_t numHeads, int32_t headSize,
     int32_t maskRows, float scale)
@@ -278,6 +305,22 @@ void launchViTAttention(nvinfer1::DataType dataType, void const* qkv, void const
     {
         throw std::runtime_error("Unsupported data type for ViT attention kernel.");
     }
+}
+
+void launchBuildRopedPackedQKV(nvinfer1::DataType dataType, void const* qkv, void const* cos, void const* sin,
+    void* ropedQkv, int32_t batchSize, int32_t seqLen, int32_t numHeads, int32_t headSize, cudaStream_t stream)
+{
+    if (dataType != nvinfer1::DataType::kHALF)
+    {
+        throw std::runtime_error("ViT FMHA path only supports FP16 packed QKV.");
+    }
+
+    constexpr int32_t kBlockSize = 256;
+    int32_t const totalElems = batchSize * seqLen * numHeads * headSize;
+    int32_t const gridSize = (totalElems + kBlockSize - 1) / kBlockSize;
+    buildRopedPackedQKVKernel<half><<<gridSize, kBlockSize, 0, stream>>>(static_cast<half const*>(qkv),
+        static_cast<half const*>(cos), static_cast<half const*>(sin), static_cast<half*>(ropedQkv), totalElems,
+        seqLen, numHeads, headSize);
 }
 
 } // namespace kernel

@@ -8,29 +8,41 @@
 #include <NvInferRuntime.h>
 #include <cuda_runtime_api.h>
 
+#include <cstdint>
+
 namespace trt_edgellm
 {
+
+enum class ViTAttentionMaskType : int32_t
+{
+    kDenseAdditive = 0,
+    kPackedCuSeqLens = 1,
+};
 
 class ViTAttentionRunner
 {
 public:
-    ViTAttentionRunner(nvinfer1::DataType dataType, int32_t batchSize, int32_t seqLen, int32_t numHeads,
-        int32_t headSize, int32_t maskRows);
+    ViTAttentionRunner(nvinfer1::DataType dataType, int32_t batchSize, int32_t seqLen, int32_t maxSeqLen,
+        int32_t numHeads, int32_t headSize, int32_t maskRows, ViTAttentionMaskType maskType);
 
     static bool canImplement(nvinfer1::DataType dataType, int32_t numHeads, int32_t headSize);
-    static size_t getWorkspaceSize(int32_t batchSize, int32_t seqLen, int32_t numHeads, int32_t headSize);
+    static bool canImplementFMHA(nvinfer1::DataType dataType, int32_t headSize);
+    static size_t getWorkspaceSize(nvinfer1::DataType dataType, int32_t batchSize, int32_t seqLen, int32_t numHeads,
+        int32_t headSize, ViTAttentionMaskType maskType);
 
     void dispatch(
-        void const* qkv, void const* cos, void const* sin, void const* attentionMask, void* output, void* workspace,
-        cudaStream_t stream) const;
+        void const* qkv, void const* cos, void const* sin, void const* maskOrCuSeqLens, void* output,
+        void* workspace, cudaStream_t stream) const;
 
 private:
     nvinfer1::DataType mDataType;
     int32_t mBatchSize;
     int32_t mSeqLen;
+    int32_t mMaxSeqLen;
     int32_t mNumHeads;
     int32_t mHeadSize;
     int32_t mMaskRows;
+    ViTAttentionMaskType mMaskType;
 };
 
 namespace kernel
@@ -39,6 +51,9 @@ namespace kernel
 void launchViTAttention(nvinfer1::DataType dataType, void const* qkv, void const* cos, void const* sin,
     void const* attentionMask, void* output, float* softmaxWorkspace, int32_t batchSize, int32_t seqLen,
     int32_t numHeads, int32_t headSize, int32_t maskRows, cudaStream_t stream);
+
+void launchBuildRopedPackedQKV(nvinfer1::DataType dataType, void const* qkv, void const* cos, void const* sin,
+    void* ropedQkv, int32_t batchSize, int32_t seqLen, int32_t numHeads, int32_t headSize, cudaStream_t stream);
 
 } // namespace kernel
 } // namespace trt_edgellm

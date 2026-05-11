@@ -1,0 +1,100 @@
+diff --git a/cpp/kernels/fmha_v2/setup.py b/cpp/kernels/fmha_v2/setup.py
+index 3d4698384..000000000 100644
+--- a/cpp/kernels/fmha_v2/setup.py
++++ b/cpp/kernels/fmha_v2/setup.py
+@@ -1980,6 +1980,9 @@ def selected_mask_types(kspec):
+     causal_mask = '1'
+     sliding_or_chunked_causal_mask = '1'
+     custom_mask = '1'
++    if "GENERATE_EDGE_LLM_VIT" in os.environ:
++        return '1', '0', '0', '0'
++
+     # only generate certain needed combinations of input_layout and mask types for trt-llm.
+     if "GENERATE_CUBIN" in os.environ:
+         if kspec.sage_block_sizes:
+@@ -4959,6 +4962,57 @@ def enumerate_hmma_flash_kernels_edge_llm(specs,
+                 enable_attn_logit_softcapping=enable_attn_logit_softcapping,
+                 is_mtp=False))
+ 
++
++# Note this will be used in TRT-Edge-LLM for ViT packed non-causal attention.
++def enumerate_hmma_flash_kernels_edge_llm_vit(specs, sm=80, dtype='fp16'):
++    sm_mma = 0
++    if sm in [70, 72]:
++        sm_mma = 70
++    elif sm in [75]:
++        sm_mma = 75
++    elif sm in [80, 86, 87, 89, 90, 100, 120, 101, 121]:
++        sm_mma = 80
++
++    # ViT uses fused QKV and non-causal segment attention. Keep this list
++    # intentionally narrow so the generated cubin set stays small.
++    # Qwen2.5-VL's vision tower uses hidden_size=1280 / 16 heads = 80.
++    vit_head_dim_q_kv_step = [
++        [0, 64, 64, 32],
++        [0, 80, 64, 32],
++        [0, 128, 64, 32],
++        [1, 128, 64, 128],
++    ]
++    for (tiled, head_size, q_loop_step,
++                    kv_loop_step) in vit_head_dim_q_kv_step:
++        specs.append(
++            kernel_spec(
++                sm=sm,
++                sm_mma=sm_mma,
++                dtype=dtype,
++                flash_attention=True,
++                tiled=tiled,
++                seq_len=0,  # means any sequence here
++                kv_loop_step=kv_loop_step,
++                limit_qk_fragments=False,
++                limit_v_fragments=False,
++                head_size=head_size,
++                head_size_v=0,
++                warps_m=4,
++                warps_n=1,
++                version=2,
++                interleaved=False,
++                ldgsts_q=True,
++                ldgsts_k=True,
++                ldgsts_v=True,
++                share_smem_k_v=False,
++                loop_step=q_loop_step,
++                has_noloop=1,
++                noloop_step=q_loop_step,
++                unroll_threshold=1,
++                has_scale_max=False,
++                ctas_per_head=1,
++                input_layout=InputLayout.PACKED_QKV,
++                enable_attn_logit_softcapping=False,
++                is_mtp=False))
++
+ 
+ def enumerate_qgmma_kernels(specs, sm=90):
+     specs.append(
+@@ -6217,6 +6286,25 @@ def enumerate_kernels():
+ 
+     # Current fp16 384 kernel does 1x8 (smem limit), STEP=48. FP16 does not currently have noloop.
+ 
++    if 'GENERATE_EDGE_LLM_VIT' in os.environ:
++        if "ENABLE_SM12X" in os.environ:
++            sm_list = [120]
++        else:
++            sm_list = [80, 86, 87, 89, 100, 101]
++
++        for sm in sm_list:
++            enumerate_hmma_flash_kernels_edge_llm_vit(specs, sm=sm, dtype='fp16')
++
++        # TRT-EdgeLLM uses the head_interleaved=False mode.
++        if 'GENERATE_CUBIN' in os.environ:
++            specs = [
++                kspec._replace(head_interleaved=False) for kspec in specs
++            ]
++
++        specs_names = [(kspec, *encode_name(kspec)) for kspec in specs]
++        generate_files(specs_names)
++        return
++
+     if 'GENERATE_EDGE_LLM' in os.environ:
+         if "ENABLE_SM12X" in os.environ:
+             sm_list = [120, 121]
