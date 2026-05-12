@@ -66,6 +66,9 @@ class Qwen2_5_VLVisionAttentionPatch(Qwen2_5_VLVisionAttention):
         qkv = self.qkv(hidden_states)
 
         if self.use_vit_attention_plugin:
+            cos = cos.to(dtype=qkv.dtype)
+            sin = sin.to(dtype=qkv.dtype)
+            attention_mask = attention_mask.to(dtype=qkv.dtype)
             attn_output = vit_attention_plugin(
                 qkv.unsqueeze(0),
                 cos,

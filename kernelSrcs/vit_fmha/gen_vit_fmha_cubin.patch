@@ -2,17 +2,16 @@ diff --git a/cpp/kernels/fmha_v2/setup.py b/cpp/kernels/fmha_v2/setup.py
 index 3d4698384..000000000 100644
 --- a/cpp/kernels/fmha_v2/setup.py
 +++ b/cpp/kernels/fmha_v2/setup.py
-@@ -1980,6 +1980,9 @@ def selected_mask_types(kspec):
+@@ -1980,6 +1980,8 @@ def selected_mask_types(kspec):
      causal_mask = '1'
      sliding_or_chunked_causal_mask = '1'
      custom_mask = '1'
-+    if "GENERATE_EDGE_LLM_VIT" in os.environ:
-+        return '1', '0', '0', '0'
++    return '1', '0', '0', '0'
 +
      # only generate certain needed combinations of input_layout and mask types for trt-llm.
      if "GENERATE_CUBIN" in os.environ:
          if kspec.sage_block_sizes:
-@@ -4959,6 +4962,57 @@ def enumerate_hmma_flash_kernels_edge_llm(specs,
+@@ -4959,6 +4962,59 @@ def enumerate_hmma_flash_kernels_edge_llm(specs,
                  enable_attn_logit_softcapping=enable_attn_logit_softcapping,
                  is_mtp=False))
  
@@ -24,7 +23,7 @@ index 3d4698384..000000000 100644
 +        sm_mma = 70
 +    elif sm in [75]:
 +        sm_mma = 75
-+    elif sm in [80, 86, 87, 89, 90, 100, 120, 101, 121]:
++    elif sm in [80, 86, 87, 89, 90, 100, 120, 121]:
 +        sm_mma = 80
 +
 +    # ViT uses fused QKV and non-causal segment attention. Keep this list
@@ -72,29 +71,33 @@ index 3d4698384..000000000 100644
  
  def enumerate_qgmma_kernels(specs, sm=90):
      specs.append(
-@@ -6217,6 +6286,25 @@ def enumerate_kernels():
+@@ -6217,4 +6286,19 @@ def enumerate_kernels():
  
      # Current fp16 384 kernel does 1x8 (smem limit), STEP=48. FP16 does not currently have noloop.
  
-+    if 'GENERATE_EDGE_LLM_VIT' in os.environ:
-+        if "ENABLE_SM12X" in os.environ:
-+            sm_list = [120]
-+        else:
-+            sm_list = [80, 86, 87, 89, 100, 101]
++    sm_list = [80, 86, 87, 89, 90, 100, 120]
 +
-+        for sm in sm_list:
-+            enumerate_hmma_flash_kernels_edge_llm_vit(specs, sm=sm, dtype='fp16')
++    for sm in sm_list:
++        enumerate_hmma_flash_kernels_edge_llm_vit(specs, sm=sm, dtype='fp16')
 +
-+        # TRT-EdgeLLM uses the head_interleaved=False mode.
-+        if 'GENERATE_CUBIN' in os.environ:
-+            specs = [
-+                kspec._replace(head_interleaved=False) for kspec in specs
-+            ]
++    # TRT-EdgeLLM uses the head_interleaved=False mode.
++    if 'GENERATE_CUBIN' in os.environ:
++        specs = [
++            kspec._replace(head_interleaved=False) for kspec in specs
++        ]
 +
-+        specs_names = [(kspec, *encode_name(kspec)) for kspec in specs]
-+        generate_files(specs_names)
-+        return
++    specs_names = [(kspec, *encode_name(kspec)) for kspec in specs]
++    generate_files(specs_names)
++    return
 +
      if 'GENERATE_EDGE_LLM' in os.environ:
-         if "ENABLE_SM12X" in os.environ:
-             sm_list = [120, 121]
+
+diff --git a/cpp/kernels/fmha_v2/Makefile b/cpp/kernels/fmha_v2/Makefile
+index 5f14c8fecc..0000000000 100644
+--- a/cpp/kernels/fmha_v2/Makefile
++++ b/cpp/kernels/fmha_v2/Makefile
+@@ -109,3 +109,3 @@ ifndef ENABLE_SM120
+-GENCODE_SM120 =
++GENCODE_SM120 = -gencode=arch=compute_120,code=\"sm_120\"
+ else
+ GENCODE_SM120 = -gencode=arch=compute_120,code=\"sm_120\"

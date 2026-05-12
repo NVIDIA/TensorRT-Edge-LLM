@@ -111,12 +111,18 @@ vit_attention_plugin_schema = OpSchema(
             description="0: dense additive mask, 1: packed cu_seqlens block segments.",
             required=True,
         ),
+        OpSchema.Attribute(
+            name="max_seq_len",
+            type=OpSchema.AttrType.INT,
+            description="Maximum packed segment length when mask_type is 1; unused for dense additive masks.",
+            required=True,
+        ),
     ],
 )
 onnx.defs.register_schema(vit_attention_plugin_schema)
 
 
-@symbolic_helper.parse_args("v", "v", "v", "v", "i", "i", "i", "i")
+@symbolic_helper.parse_args("v", "v", "v", "v", "i", "i", "i", "i", "i")
 def symbolic_vit_attention_plugin(
     g: torch.onnx._internal.torchscript_exporter.jit_utils.GraphContext,
     qkv: torch._C.Value,
@@ -127,6 +133,7 @@ def symbolic_vit_attention_plugin(
     head_size: int,
     qkv_fused: int,
     mask_type: int,
+    max_seq_len: int,
 ):
     """Custom ViT attention plugin operation for ONNX export."""
     attn_output = g.op(
@@ -139,6 +146,7 @@ def symbolic_vit_attention_plugin(
         head_size_i=head_size,
         qkv_fused_i=qkv_fused,
         mask_type_i=mask_type,
+        max_seq_len_i=max_seq_len,
     )
 
     qkv_type = qkv.type()
@@ -159,6 +167,7 @@ def vit_attention_plugin(
     head_size: int,
     qkv_fused: int = 1,
     mask_type: int = 0,
+    max_seq_len: int = 0,
 ) -> torch.Tensor:
     """
     Dummy TensorRT operation for ViT attention, not used in actual inference.
@@ -177,6 +186,7 @@ def vit_attention_plugin(
         head_size: Size of each attention head.
         qkv_fused: Whether QKV is fused.
         mask_type: 0 for dense additive mask, 1 for packed cu_seqlens block segments.
+        max_seq_len: Maximum packed segment length when mask_type is 1. Unused for dense additive masks.
 
     Returns:
         Attention output tensor of shape [batch_size, seq_len, num_heads * head_size].
@@ -190,6 +200,7 @@ def vit_attention_plugin(
     assert mask_type in (0, 1), f"Unsupported mask_type {mask_type}"
     if mask_type == 1:
         assert mask_or_cu_seqlens.dtype == torch.int32, "cu_seqlens should be INT32 when mask_type is 1"
+        assert max_seq_len > 0, "max_seq_len should be positive when mask_type is 1"
 
     return torch.zeros(
         batch_size,
