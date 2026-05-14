@@ -22,7 +22,7 @@ class ViTAttentionPlugin : public nvinfer1::IPluginV2DynamicExt
 public:
     ViTAttentionPlugin(
         std::string const& name, int32_t numHeads, int32_t headSize, int32_t qkvFused, int32_t maskType,
-        int32_t maxSeqLen);
+        int32_t maxSeqLen, int32_t maskBlockSize);
     ViTAttentionPlugin(std::string const& name, void const* data, size_t length);
 
     ViTAttentionPlugin() = delete;
@@ -78,6 +78,7 @@ protected:
     int32_t mQKVFused{};
     int32_t mMaskType{};
     int32_t mMaxSeqLen{};
+    int32_t mMaskBlockSize{};
     nvinfer1::DataType mDataType{nvinfer1::DataType::kFLOAT};
 };
 

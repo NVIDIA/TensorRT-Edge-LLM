@@ -288,7 +288,7 @@ void dispatchViTFMHA(nvinfer1::DataType dataType, int32_t smVersion, int32_t num
 
 ViTAttentionRunner::ViTAttentionRunner(
     nvinfer1::DataType dataType, int32_t batchSize, int32_t seqLen, int32_t maxSeqLen, int32_t numHeads,
-    int32_t headSize, int32_t maskRows, ViTAttentionMaskType maskType)
+    int32_t headSize, int32_t maskRows, int32_t maskBlockSize, ViTAttentionMaskType maskType)
     : mDataType(dataType)
     , mBatchSize(batchSize)
     , mSeqLen(seqLen)
@@ -296,6 +296,7 @@ ViTAttentionRunner::ViTAttentionRunner(
     , mNumHeads(numHeads)
     , mHeadSize(headSize)
     , mMaskRows(maskRows)
+    , mMaskBlockSize(maskBlockSize)
     , mMaskType(maskType)
 {
 }
@@ -362,7 +363,7 @@ void ViTAttentionRunner::dispatch(
 
     float* softmaxWorkspace = static_cast<float*>(workspace);
     kernel::launchViTAttention(mDataType, qkv, cos, sin, maskOrCuSeqLens, output, softmaxWorkspace,
-        mBatchSize, mSeqLen, mNumHeads, mHeadSize, mMaskRows, stream);
+        mBatchSize, mSeqLen, mNumHeads, mHeadSize, mMaskRows, mMaskBlockSize, mMaskType, stream);
     CUDA_CHECK(cudaPeekAtLastError());
 }
 

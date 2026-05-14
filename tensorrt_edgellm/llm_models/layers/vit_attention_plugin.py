@@ -58,7 +58,11 @@ vit_attention_plugin_schema = OpSchema(
         ),
         OpSchema.FormalParameter(
             name="mask_or_cu_seqlens",
-            description="Additive attention mask [1|B|B*H, S, S] or INT32 cu_seqlens [num_segments + 1]",
+            description=(
+                "Additive attention mask [1|B|B*H, S, S], INT32 "
+                "cu_seqlens [num_segments + 1], or compact INT32 block "
+                "validity mask [1|B|B*H, num_blocks]"
+            ),
             type_str="T_Mask",
         ),
     ],
@@ -108,7 +112,10 @@ vit_attention_plugin_schema = OpSchema(
         OpSchema.Attribute(
             name="mask_type",
             type=OpSchema.AttrType.INT,
-            description="0: dense additive mask, 1: packed cu_seqlens block segments.",
+            description=(
+                "0: dense additive mask, 1: packed cu_seqlens block segments, "
+                "2: compact block validity mask."
+            ),
             required=True,
         ),
         OpSchema.Attribute(
@@ -117,12 +124,18 @@ vit_attention_plugin_schema = OpSchema(
             description="Maximum packed segment length when mask_type is 1; unused for dense additive masks.",
             required=True,
         ),
+        OpSchema.Attribute(
+            name="mask_block_size",
+            type=OpSchema.AttrType.INT,
+            description="Sequence tokens represented by one compact mask block when mask_type is 2.",
+            required=True,
+        ),
     ],
 )
 onnx.defs.register_schema(vit_attention_plugin_schema)
 
 
-@symbolic_helper.parse_args("v", "v", "v", "v", "i", "i", "i", "i", "i")
+@symbolic_helper.parse_args("v", "v", "v", "v", "i", "i", "i", "i", "i", "i")
 def symbolic_vit_attention_plugin(
     g: torch.onnx._internal.torchscript_exporter.jit_utils.GraphContext,
     qkv: torch._C.Value,
@@ -134,6 +147,7 @@ def symbolic_vit_attention_plugin(
     qkv_fused: int,
     mask_type: int,
     max_seq_len: int,
+    mask_block_size: int,
 ):
     """Custom ViT attention plugin operation for ONNX export."""
     attn_output = g.op(
@@ -147,6 +161,7 @@ def symbolic_vit_attention_plugin(
         qkv_fused_i=qkv_fused,
         mask_type_i=mask_type,
         max_seq_len_i=max_seq_len,
+        mask_block_size_i=mask_block_size,
     )
 
     qkv_type = qkv.type()
@@ -168,6 +183,7 @@ def vit_attention_plugin(
     qkv_fused: int = 1,
     mask_type: int = 0,
     max_seq_len: int = 0,
+    mask_block_size: int = 0,
 ) -> torch.Tensor:
     """
     Dummy TensorRT operation for ViT attention, not used in actual inference.
@@ -181,12 +197,14 @@ def vit_attention_plugin(
         cos: RoPE cosine tensor of shape [seq_len, head_size].
         sin: RoPE sine tensor of shape [seq_len, head_size].
         mask_or_cu_seqlens: Additive attention mask of shape [1|B|B*H, seq_len, seq_len] when mask_type is 0,
-            or INT32 cu_seqlens of shape [num_segments + 1] when mask_type is 1.
+            INT32 cu_seqlens of shape [num_segments + 1] when mask_type is 1, or compact INT32 block mask of
+            shape [1|B|B*H, num_blocks] when mask_type is 2.
         num_heads: Number of attention heads.
         head_size: Size of each attention head.
         qkv_fused: Whether QKV is fused.
-        mask_type: 0 for dense additive mask, 1 for packed cu_seqlens block segments.
+        mask_type: 0 for dense additive mask, 1 for packed cu_seqlens block segments, 2 for compact block masks.
         max_seq_len: Maximum packed segment length when mask_type is 1. Unused for dense additive masks.
+        mask_block_size: Tokens represented by one compact mask block when mask_type is 2.
 
     Returns:
         Attention output tensor of shape [batch_size, seq_len, num_heads * head_size].
@@ -197,10 +215,17 @@ def vit_attention_plugin(
         qkv_size == 3 * num_heads * head_size
     ), f"qkv_size {qkv_size} should equal 3 * num_heads * head_size {3 * num_heads * head_size}"
     assert qkv.dtype == torch.float16, f"qkv {qkv.dtype} should be in float16"
-    assert mask_type in (0, 1), f"Unsupported mask_type {mask_type}"
+    assert mask_type in (0, 1, 2), f"Unsupported mask_type {mask_type}"
     if mask_type == 1:
         assert mask_or_cu_seqlens.dtype == torch.int32, "cu_seqlens should be INT32 when mask_type is 1"
         assert max_seq_len > 0, "max_seq_len should be positive when mask_type is 1"
+    if mask_type == 2:
+        assert mask_or_cu_seqlens.dtype == torch.int32, "compact block mask should be INT32 when mask_type is 2"
+        assert mask_or_cu_seqlens.dim() == 2, "compact block mask should have shape [rows, num_blocks]"
+        assert mask_block_size > 0, "mask_block_size should be positive when mask_type is 2"
+        assert (
+            mask_or_cu_seqlens.shape[1] * mask_block_size == seq_len
+        ), "compact block mask requires num_blocks * mask_block_size == seq_len"
 
     return torch.zeros(
         batch_size,

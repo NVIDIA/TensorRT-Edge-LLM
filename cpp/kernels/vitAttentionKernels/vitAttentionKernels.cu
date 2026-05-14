@@ -19,6 +19,7 @@ namespace kernel
 
 namespace
 {
+constexpr int32_t kCOMPACT_BLOCK_MASK_TYPE{static_cast<int32_t>(ViTAttentionMaskType::kCompactBlock)};
 
 template <typename T>
 __device__ __forceinline__ float toFloat(T value)
@@ -119,6 +120,27 @@ __device__ __forceinline__ int32_t getMaskRow(int32_t batchIdx, int32_t headIdx,
 }
 
 template <typename T>
+__device__ __forceinline__ float getAttentionBias(void const* attentionMask, int32_t maskType, int32_t maskRows,
+    int32_t maskBlockSize, int32_t batchIdx, int32_t headIdx, int32_t qIdx, int32_t kIdx, int32_t batchSize,
+    int32_t numHeads, int32_t seqLen)
+{
+    int32_t const maskRow = getMaskRow(batchIdx, headIdx, batchSize, numHeads, maskRows);
+    if (maskType == kCOMPACT_BLOCK_MASK_TYPE)
+    {
+        int32_t const blockSize = maskBlockSize > 0 ? maskBlockSize : seqLen;
+        int32_t const numBlocks = (seqLen + blockSize - 1) / blockSize;
+        int32_t const blockIdx = kIdx / blockSize;
+        int32_t const* compactMask = static_cast<int32_t const*>(attentionMask);
+        int32_t const valid = compactMask[static_cast<int64_t>(maskRow) * numBlocks + blockIdx];
+        return valid != 0 ? 0.0F : -INFINITY;
+    }
+
+    T const* denseMask = static_cast<T const*>(attentionMask);
+    int64_t const maskBase = static_cast<int64_t>(maskRow) * seqLen * seqLen + static_cast<int64_t>(qIdx) * seqLen;
+    return toFloat(denseMask[maskBase + kIdx]);
+}
+
+template <typename T>
 __global__ void precomputeViTRoPEQKKernel(
     T const* qkv, T const* cos, T const* sin, float* qRope, float* kRope, int32_t totalElems, int32_t seqLen,
     int32_t numHeads, int32_t headSize)
@@ -175,8 +197,8 @@ __global__ void buildRopedPackedQKVKernel(T const* qkv, T const* cos, T const* s
 
 template <typename T>
 __global__ void computeViTAttentionFusedOutputKernel(float const* qRope, float const* kRope, T const* qkv,
-    T const* attentionMask, T* output, int32_t batchSize, int32_t seqLen, int32_t numHeads, int32_t headSize,
-    int32_t maskRows, float scale)
+    void const* attentionMask, T* output, int32_t batchSize, int32_t seqLen, int32_t numHeads, int32_t headSize,
+    int32_t maskRows, int32_t maskBlockSize, int32_t maskType, float scale)
 {
     int32_t const row = blockIdx.x;
     int32_t const qIdx = row % seqLen;
@@ -191,8 +213,6 @@ __global__ void computeViTAttentionFusedOutputKernel(float const* qRope, float c
     int64_t const qBase = ((static_cast<int64_t>(batchIdx) * numHeads + headIdx) * seqLen + qIdx) * headSize;
     int64_t const qkvBatchBase = static_cast<int64_t>(batchIdx) * seqLen * 3 * hiddenSize;
     int64_t const outputBase = (static_cast<int64_t>(batchIdx) * seqLen + qIdx) * hiddenSize + headIdx * headSize;
-    int32_t const maskRow = getMaskRow(batchIdx, headIdx, batchSize, numHeads, maskRows);
-    int64_t const maskBase = static_cast<int64_t>(maskRow) * seqLen * seqLen + static_cast<int64_t>(qIdx) * seqLen;
 
     float localMax = -INFINITY;
     for (int32_t kIdx = threadIdx.x; kIdx < seqLen; kIdx += blockDim.x)
@@ -203,7 +223,9 @@ __global__ void computeViTAttentionFusedOutputKernel(float const* qRope, float c
         {
             dot += qRope[qBase + dim] * kRope[kBase + dim];
         }
-        float score = dot * scale + toFloat(attentionMask[maskBase + kIdx]);
+        float score = dot * scale
+            + getAttentionBias<T>(attentionMask, maskType, maskRows, maskBlockSize, batchIdx, headIdx, qIdx, kIdx,
+                batchSize, numHeads, seqLen);
         scores[kIdx] = score;
         localMax = fmaxf(localMax, score);
     }
@@ -261,9 +283,9 @@ __global__ void computeViTAttentionFusedOutputKernel(float const* qRope, float c
 }
 
 template <typename T>
-void launchViTAttentionTyped(T const* qkv, T const* cos, T const* sin, T const* attentionMask, T* output,
+void launchViTAttentionTyped(T const* qkv, T const* cos, T const* sin, void const* attentionMask, T* output,
     float* softmaxWorkspace, int32_t batchSize, int32_t seqLen, int32_t numHeads, int32_t headSize, int32_t maskRows,
-    cudaStream_t stream)
+    int32_t maskBlockSize, ViTAttentionMaskType maskType, cudaStream_t stream)
 {
     constexpr int32_t kSoftmaxBlockSize = 256;
     constexpr int32_t kOutputBlockSize = 256;
@@ -280,26 +302,28 @@ void launchViTAttentionTyped(T const* qkv, T const* cos, T const* sin, T const* 
         qkv, cos, sin, qRope, kRope, totalRopeElems, seqLen, numHeads, headSize);
 
     computeViTAttentionFusedOutputKernel<T><<<rows, kSoftmaxBlockSize, sharedBytes, stream>>>(
-        qRope, kRope, qkv, attentionMask, output, batchSize, seqLen, numHeads, headSize, maskRows, scale);
+        qRope, kRope, qkv, attentionMask, output, batchSize, seqLen, numHeads, headSize, maskRows, maskBlockSize,
+        static_cast<int32_t>(maskType), scale);
 }
 
 } // namespace
 
 void launchViTAttention(nvinfer1::DataType dataType, void const* qkv, void const* cos, void const* sin,
     void const* attentionMask, void* output, float* softmaxWorkspace, int32_t batchSize, int32_t seqLen,
-    int32_t numHeads, int32_t headSize, int32_t maskRows, cudaStream_t stream)
+    int32_t numHeads, int32_t headSize, int32_t maskRows, int32_t maskBlockSize, ViTAttentionMaskType maskType,
+    cudaStream_t stream)
 {
     if (dataType == nvinfer1::DataType::kHALF)
     {
         launchViTAttentionTyped<half>(static_cast<half const*>(qkv), static_cast<half const*>(cos),
-            static_cast<half const*>(sin), static_cast<half const*>(attentionMask), static_cast<half*>(output),
-            softmaxWorkspace, batchSize, seqLen, numHeads, headSize, maskRows, stream);
+            static_cast<half const*>(sin), attentionMask, static_cast<half*>(output), softmaxWorkspace, batchSize,
+            seqLen, numHeads, headSize, maskRows, maskBlockSize, maskType, stream);
     }
     else if (dataType == nvinfer1::DataType::kFLOAT)
     {
         launchViTAttentionTyped<float>(static_cast<float const*>(qkv), static_cast<float const*>(cos),
-            static_cast<float const*>(sin), static_cast<float const*>(attentionMask), static_cast<float*>(output),
-            softmaxWorkspace, batchSize, seqLen, numHeads, headSize, maskRows, stream);
+            static_cast<float const*>(sin), attentionMask, static_cast<float*>(output), softmaxWorkspace, batchSize,
+            seqLen, numHeads, headSize, maskRows, maskBlockSize, maskType, stream);
     }
     else
     {
