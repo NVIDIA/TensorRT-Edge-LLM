@@ -132,7 +132,11 @@ Tensor::Tensor(Coords const& shape, DeviceType deviceType, nvinfer1::DataType da
         throw std::runtime_error("Construction of Tensor object with zero volume is prohibited");
     }
 
-    if (dataType == DataType::kINT4 || dataType == DataType::kFP4)
+    if (dataType == DataType::kINT4
+#if NV_TENSORRT_MAJOR > 10 || (NV_TENSORRT_MAJOR == 10 && NV_TENSORRT_MINOR >= 8)
+        || dataType == DataType::kFP4
+#endif
+    )
     {
         throw std::runtime_error("Sub-type like kInt4 or kFP4 are not supported");
     }

@@ -1,0 +1,2 @@
+/usr/bin/aarch64-linux-gnu-ar qc libedgellmTokenizer.a CMakeFiles/edgellmTokenizer.dir/tokenizer/preTokenizer.cpp.o CMakeFiles/edgellmTokenizer.dir/tokenizer/tokenEncoder.cpp.o CMakeFiles/edgellmTokenizer.dir/tokenizer/tokenizer.cpp.o CMakeFiles/edgellmTokenizer.dir/tokenizer/tokenizerUtils.cpp.o CMakeFiles/edgellmTokenizer.dir/tokenizer/unicodeData.cpp.o
+/usr/bin/aarch64-linux-gnu-ranlib libedgellmTokenizer.a

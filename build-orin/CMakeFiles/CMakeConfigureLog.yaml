@@ -1,0 +1,498 @@
+
+---
+events:
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/usr/local/lib/python3.12/dist-packages/cmake/data/share/cmake-3.31/Modules/CMakeDetermineSystem.cmake:200 (message)"
+      - "CMakeLists.txt:18 (project)"
+    message: |
+      The target system is: Linux -  - aarch64
+      The host system is: Linux - 5.15.148-tegra - aarch64
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/usr/local/lib/python3.12/dist-packages/cmake/data/share/cmake-3.31/Modules/CMakeDetermineCompilerId.cmake:17 (message)"
+      - "/usr/local/lib/python3.12/dist-packages/cmake/data/share/cmake-3.31/Modules/CMakeDetermineCompilerId.cmake:64 (__determine_compiler_id_test)"
+      - "/usr/local/lib/python3.12/dist-packages/cmake/data/share/cmake-3.31/Modules/CMakeDetermineCXXCompiler.cmake:126 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "CMakeLists.txt:18 (project)"
+    message: |
+      Compiling the CXX compiler identification source file "CMakeCXXCompilerId.cpp" failed.
+      Compiler: /usr/bin/aarch64-linux-gnu-g++ 
+      Build flags: 
+      Id flags: -c;--target=aarch64-linux-gnu 
+      
+      The output was:
+      1
+      aarch64-linux-gnu-g++: error: unrecognized command-line option ‘--target=aarch64-linux-gnu’
+      
+      
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/usr/local/lib/python3.12/dist-packages/cmake/data/share/cmake-3.31/Modules/CMakeDetermineCompilerId.cmake:17 (message)"
+      - "/usr/local/lib/python3.12/dist-packages/cmake/data/share/cmake-3.31/Modules/CMakeDetermineCompilerId.cmake:64 (__determine_compiler_id_test)"
+      - "/usr/local/lib/python3.12/dist-packages/cmake/data/share/cmake-3.31/Modules/CMakeDetermineCXXCompiler.cmake:126 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "CMakeLists.txt:18 (project)"
+    message: |
+      Compiling the CXX compiler identification source file "CMakeCXXCompilerId.cpp" succeeded.
+      Compiler: /usr/bin/aarch64-linux-gnu-g++ 
+      Build flags: 
+      Id flags:  
+      
+      The output was:
+      0
+      
+      
+      Compilation of the CXX compiler identification source "CMakeCXXCompilerId.cpp" produced "a.out"
+      
+      The CXX compiler identification is GNU, found in:
+        /workspace/forks/TensorRT-Edge-LLM/build-orin/CMakeFiles/3.31.1/CompilerIdCXX/a.out
+      
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/usr/local/lib/python3.12/dist-packages/cmake/data/share/cmake-3.31/Modules/CMakeDetermineCompilerId.cmake:1237 (message)"
+      - "/usr/local/lib/python3.12/dist-packages/cmake/data/share/cmake-3.31/Modules/CMakeDetermineCUDACompiler.cmake:75 (CMAKE_DETERMINE_COMPILER_ID_VENDOR)"
+      - "CMakeLists.txt:18 (project)"
+    message: |
+      Checking whether the CUDA compiler is NVIDIA using "" matched "nvcc: NVIDIA \\(R\\) Cuda compiler driver":
+      nvcc: NVIDIA (R) Cuda compiler driver
+      Copyright (c) 2005-2024 NVIDIA Corporation
+      Built on Tue_Oct_29_23:53:06_PDT_2024
+      Cuda compilation tools, release 12.6, V12.6.85
+      Build cuda_12.6.r12.6/compiler.35059454_0
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/usr/local/lib/python3.12/dist-packages/cmake/data/share/cmake-3.31/Modules/CMakeDetermineCompilerId.cmake:17 (message)"
+      - "/usr/local/lib/python3.12/dist-packages/cmake/data/share/cmake-3.31/Modules/CMakeDetermineCompilerId.cmake:53 (__determine_compiler_id_test)"
+      - "/usr/local/lib/python3.12/dist-packages/cmake/data/share/cmake-3.31/Modules/CMakeDetermineCUDACompiler.cmake:131 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "CMakeLists.txt:18 (project)"
+    message: |
+      Compiling the CUDA compiler identification source file "CMakeCUDACompilerId.cu" succeeded.
+      Compiler: /usr/local/cuda/bin/nvcc 
+      Build flags: -Xcompiler=-fPIC 
+      Id flags: --keep;--keep-dir;tmp;-ccbin=/usr/bin/aarch64-linux-gnu-g++ -v
+      
+      The output was:
+      0
+      #$ _NVVM_BRANCH_=nvvm
+      #$ _SPACE_= 
+      #$ _CUDART_=cudart
+      #$ _HERE_=/usr/local/cuda/bin
+      #$ _THERE_=/usr/local/cuda/bin
+      #$ _TARGET_SIZE_=
+      #$ _TARGET_DIR_=
+      #$ _TARGET_DIR_=targets/aarch64-linux
+      #$ TOP=/usr/local/cuda/bin/..
+      #$ CICC_PATH=/usr/local/cuda/bin/../nvvm/bin
+      #$ NVVMIR_LIBRARY_DIR=/usr/local/cuda/bin/../nvvm/libdevice
+      #$ LD_LIBRARY_PATH=/usr/local/cuda/bin/../lib:/usr/local/lib/python3.12/dist-packages/torch/lib:/usr/local/lib/python3.12/dist-packages/torch_tensorrt/lib:/usr/local/cuda/compat/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64
+      #$ PATH=/usr/local/cuda/bin/../nvvm/bin:/usr/local/cuda/bin:/usr/local/lib/python3.12/dist-packages/torch_tensorrt/bin:/usr/local/mpi/bin:/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/ucx/bin:/opt/amazon/efa/bin:/opt/tensorrt/bin
+      #$ INCLUDES="-I/usr/local/cuda/bin/../targets/aarch64-linux/include"  
+      #$ LIBRARIES=  "-L/usr/local/cuda/bin/../targets/aarch64-linux/lib/stubs" "-L/usr/local/cuda/bin/../targets/aarch64-linux/lib"
+      #$ CUDAFE_FLAGS=
+      #$ PTXAS_FLAGS=
+      #$ rm tmp/a_dlink.reg.c
+      #$ "/usr/bin"/aarch64-linux-gnu-g++ -D__CUDA_ARCH_LIST__=520 -D__NV_LEGACY_LAUNCH -E -x c++ -D__CUDACC__ -D__NVCC__  -fPIC "-I/usr/local/cuda/bin/../targets/aarch64-linux/include"    -D__CUDACC_VER_MAJOR__=12 -D__CUDACC_VER_MINOR__=6 -D__CUDACC_VER_BUILD__=85 -D__CUDA_API_VER_MAJOR__=12 -D__CUDA_API_VER_MINOR__=6 -D__NVCC_DIAG_PRAGMA_SUPPORT__=1 -include "cuda_runtime.h" "CMakeCUDACompilerId.cu" -o "tmp/CMakeCUDACompilerId.cpp4.ii" 
+      #$ cudafe++ --c++17 --gnu_version=130200 --display_error_number --orig_src_file_name "CMakeCUDACompilerId.cu" --orig_src_path_name "/workspace/forks/TensorRT-Edge-LLM/build-orin/CMakeFiles/3.31.1/CompilerIdCUDA/CMakeCUDACompilerId.cu" --allow_managed --unsigned_chars --unsigned_wchar_t  --m64 --parse_templates --gen_c_file_name "tmp/CMakeCUDACompilerId.cudafe1.cpp" --stub_file_name "CMakeCUDACompilerId.cudafe1.stub.c" --gen_module_id_file --module_id_file_name "tmp/CMakeCUDACompilerId.module_id" "tmp/CMakeCUDACompilerId.cpp4.ii" 
+      #$ "/usr/bin"/aarch64-linux-gnu-g++ -D__CUDA_ARCH__=520 -D__CUDA_ARCH_LIST__=520 -D__NV_LEGACY_LAUNCH -E -x c++  -DCUDA_DOUBLE_MATH_FUNCTIONS -D__CUDACC__ -D__NVCC__  -fPIC "-I/usr/local/cuda/bin/../targets/aarch64-linux/include"    -D__CUDACC_VER_MAJOR__=12 -D__CUDACC_VER_MINOR__=6 -D__CUDACC_VER_BUILD__=85 -D__CUDA_API_VER_MAJOR__=12 -D__CUDA_API_VER_MINOR__=6 -D__NVCC_DIAG_PRAGMA_SUPPORT__=1 -include "cuda_runtime.h" "CMakeCUDACompilerId.cu" -o "tmp/CMakeCUDACompilerId.cpp1.ii" 
+      #$ "$CICC_PATH/cicc" --c++17 --gnu_version=130200 --display_error_number --orig_src_file_name "CMakeCUDACompilerId.cu" --orig_src_path_name "/workspace/forks/TensorRT-Edge-LLM/build-orin/CMakeFiles/3.31.1/CompilerIdCUDA/CMakeCUDACompilerId.cu" --allow_managed --unsigned_chars --unsigned_wchar_t   -arch compute_52 -m64 --no-version-ident -ftz=0 -prec_div=1 -prec_sqrt=1 -fmad=1 --include_file_name "CMakeCUDACompilerId.fatbin.c" -tused --module_id_file_name "tmp/CMakeCUDACompilerId.module_id" --gen_c_file_name "tmp/CMakeCUDACompilerId.cudafe1.c" --stub_file_name "tmp/CMakeCUDACompilerId.cudafe1.stub.c" --gen_device_file_name "tmp/CMakeCUDACompilerId.cudafe1.gpu"  "tmp/CMakeCUDACompilerId.cpp1.ii" -o "tmp/CMakeCUDACompilerId.ptx"
+      #$ ptxas -arch=sm_52 -m64  "tmp/CMakeCUDACompilerId.ptx"  -o "tmp/CMakeCUDACompilerId.sm_52.cubin" 
+      #$ fatbinary --create="tmp/CMakeCUDACompilerId.fatbin" -64 --cicc-cmdline="-ftz=0 -prec_div=1 -prec_sqrt=1 -fmad=1 " "--image3=kind=elf,sm=52,file=tmp/CMakeCUDACompilerId.sm_52.cubin" "--image3=kind=ptx,sm=52,file=tmp/CMakeCUDACompilerId.ptx" --embedded-fatbin="tmp/CMakeCUDACompilerId.fatbin.c" 
+      #$ "/usr/bin"/aarch64-linux-gnu-g++ -D__CUDA_ARCH__=520 -D__CUDA_ARCH_LIST__=520 -D__NV_LEGACY_LAUNCH -c -x c++  -DCUDA_DOUBLE_MATH_FUNCTIONS -fPIC -Wno-psabi "-I/usr/local/cuda/bin/../targets/aarch64-linux/include"   "tmp/CMakeCUDACompilerId.cudafe1.cpp" -o "tmp/CMakeCUDACompilerId.o" 
+      #$ nvlink -m64 --arch=sm_52 --register-link-binaries="tmp/a_dlink.reg.c"    "-L/usr/local/cuda/bin/../targets/aarch64-linux/lib/stubs" "-L/usr/local/cuda/bin/../targets/aarch64-linux/lib" -cpu-arch=AARCH64 "tmp/CMakeCUDACompilerId.o"  -lcudadevrt  -o "tmp/a_dlink.sm_52.cubin" --host-ccbin "/usr/bin/aarch64-linux-gnu-g++"
+      #$ fatbinary --create="tmp/a_dlink.fatbin" -64 --cicc-cmdline="-ftz=0 -prec_div=1 -prec_sqrt=1 -fmad=1 " -link "--image3=kind=elf,sm=52,file=tmp/a_dlink.sm_52.cubin" --embedded-fatbin="tmp/a_dlink.fatbin.c" 
+      #$ "/usr/bin"/aarch64-linux-gnu-g++ -D__CUDA_ARCH_LIST__=520 -D__NV_LEGACY_LAUNCH -c -x c++ -DFATBINFILE="\\"tmp/a_dlink.fatbin.c\\"" -DREGISTERLINKBINARYFILE="\\"tmp/a_dlink.reg.c\\"" -I. -D__NV_EXTRA_INITIALIZATION= -D__NV_EXTRA_FINALIZATION= -D__CUDA_INCLUDE_COMPILER_INTERNAL_HEADERS__  -fPIC -Wno-psabi "-I/usr/local/cuda/bin/../targets/aarch64-linux/include"    -D__CUDACC_VER_MAJOR__=12 -D__CUDACC_VER_MINOR__=6 -D__CUDACC_VER_BUILD__=85 -D__CUDA_API_VER_MAJOR__=12 -D__CUDA_API_VER_MINOR__=6 -D__NVCC_DIAG_PRAGMA_SUPPORT__=1 "/usr/local/cuda/bin/crt/link.stub" -o "tmp/a_dlink.o" 
+      #$ "/usr/bin"/aarch64-linux-gnu-g++ -D__CUDA_ARCH_LIST__=520 -D__NV_LEGACY_LAUNCH -fPIC -Wl,--start-group "tmp/a_dlink.o" "tmp/CMakeCUDACompilerId.o"   "-L/usr/local/cuda/bin/../targets/aarch64-linux/lib/stubs" "-L/usr/local/cuda/bin/../targets/aarch64-linux/lib"  -lcudadevrt  -lcudart_static  -lrt -lpthread  -ldl  -Wl,--end-group -o "a.out" 
+      
+      
+      Compilation of the CUDA compiler identification source "CMakeCUDACompilerId.cu" produced "a.out"
+      
+      The CUDA compiler identification is NVIDIA, found in:
+        /workspace/forks/TensorRT-Edge-LLM/build-orin/CMakeFiles/3.31.1/CompilerIdCUDA/a.out
+      The host compiler identification is GNU
+      
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/usr/local/lib/python3.12/dist-packages/cmake/data/share/cmake-3.31/Modules/Internal/CMakeNVCCParseImplicitInfo.cmake:128 (message)"
+      - "/usr/local/lib/python3.12/dist-packages/cmake/data/share/cmake-3.31/Modules/CMakeDetermineCUDACompiler.cmake:242 (cmake_nvcc_parse_implicit_info)"
+      - "CMakeLists.txt:18 (project)"
+    message: |
+      Parsed CUDA nvcc implicit link information:
+        found 'PATH=' string: [/usr/local/cuda/bin/../nvvm/bin:/usr/local/cuda/bin:/usr/local/lib/python3.12/dist-packages/torch_tensorrt/bin:/usr/local/mpi/bin:/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/ucx/bin:/opt/amazon/efa/bin:/opt/tensorrt/bin]
+        found 'LIBRARIES=' string: ["-L/usr/local/cuda/bin/../targets/aarch64-linux/lib/stubs" "-L/usr/local/cuda/bin/../targets/aarch64-linux/lib"]
+        found 'INCLUDES=' string: ["-I/usr/local/cuda/bin/../targets/aarch64-linux/include"  ]
+        considering line: [#$ rm tmp/a_dlink.reg.c]
+        considering line: ["/usr/bin"/aarch64-linux-gnu-g++ -D__CUDA_ARCH_LIST__=520 -D__NV_LEGACY_LAUNCH -E -x c++ -D__CUDACC__ -D__NVCC__  -fPIC "-I/usr/local/cuda/bin/../targets/aarch64-linux/include"    -D__CUDACC_VER_MAJOR__=12 -D__CUDACC_VER_MINOR__=6 -D__CUDACC_VER_BUILD__=85 -D__CUDA_API_VER_MAJOR__=12 -D__CUDA_API_VER_MINOR__=6 -D__NVCC_DIAG_PRAGMA_SUPPORT__=1 -include "cuda_runtime.h" "CMakeCUDACompilerId.cu" -o "tmp/CMakeCUDACompilerId.cpp4.ii" ]
+        considering line: [cudafe++ --c++17 --gnu_version=130200 --display_error_number --orig_src_file_name "CMakeCUDACompilerId.cu" --orig_src_path_name "/workspace/forks/TensorRT-Edge-LLM/build-orin/CMakeFiles/3.31.1/CompilerIdCUDA/CMakeCUDACompilerId.cu" --allow_managed --unsigned_chars --unsigned_wchar_t  --m64 --parse_templates --gen_c_file_name "tmp/CMakeCUDACompilerId.cudafe1.cpp" --stub_file_name "CMakeCUDACompilerId.cudafe1.stub.c" --gen_module_id_file --module_id_file_name "tmp/CMakeCUDACompilerId.module_id" "tmp/CMakeCUDACompilerId.cpp4.ii" ]
+        considering line: ["/usr/bin"/aarch64-linux-gnu-g++ -D__CUDA_ARCH__=520 -D__CUDA_ARCH_LIST__=520 -D__NV_LEGACY_LAUNCH -E -x c++  -DCUDA_DOUBLE_MATH_FUNCTIONS -D__CUDACC__ -D__NVCC__  -fPIC "-I/usr/local/cuda/bin/../targets/aarch64-linux/include"    -D__CUDACC_VER_MAJOR__=12 -D__CUDACC_VER_MINOR__=6 -D__CUDACC_VER_BUILD__=85 -D__CUDA_API_VER_MAJOR__=12 -D__CUDA_API_VER_MINOR__=6 -D__NVCC_DIAG_PRAGMA_SUPPORT__=1 -include "cuda_runtime.h" "CMakeCUDACompilerId.cu" -o "tmp/CMakeCUDACompilerId.cpp1.ii" ]
+        considering line: ["$CICC_PATH/cicc" --c++17 --gnu_version=130200 --display_error_number --orig_src_file_name "CMakeCUDACompilerId.cu" --orig_src_path_name "/workspace/forks/TensorRT-Edge-LLM/build-orin/CMakeFiles/3.31.1/CompilerIdCUDA/CMakeCUDACompilerId.cu" --allow_managed --unsigned_chars --unsigned_wchar_t   -arch compute_52 -m64 --no-version-ident -ftz=0 -prec_div=1 -prec_sqrt=1 -fmad=1 --include_file_name "CMakeCUDACompilerId.fatbin.c" -tused --module_id_file_name "tmp/CMakeCUDACompilerId.module_id" --gen_c_file_name "tmp/CMakeCUDACompilerId.cudafe1.c" --stub_file_name "tmp/CMakeCUDACompilerId.cudafe1.stub.c" --gen_device_file_name "tmp/CMakeCUDACompilerId.cudafe1.gpu"  "tmp/CMakeCUDACompilerId.cpp1.ii" -o "tmp/CMakeCUDACompilerId.ptx"]
+        considering line: [ptxas -arch=sm_52 -m64  "tmp/CMakeCUDACompilerId.ptx"  -o "tmp/CMakeCUDACompilerId.sm_52.cubin" ]
+        considering line: [fatbinary --create="tmp/CMakeCUDACompilerId.fatbin" -64 --cicc-cmdline="-ftz=0 -prec_div=1 -prec_sqrt=1 -fmad=1 " "--image3=kind=elf,sm=52,file=tmp/CMakeCUDACompilerId.sm_52.cubin" "--image3=kind=ptx,sm=52,file=tmp/CMakeCUDACompilerId.ptx" --embedded-fatbin="tmp/CMakeCUDACompilerId.fatbin.c" ]
+        considering line: ["/usr/bin"/aarch64-linux-gnu-g++ -D__CUDA_ARCH__=520 -D__CUDA_ARCH_LIST__=520 -D__NV_LEGACY_LAUNCH -c -x c++  -DCUDA_DOUBLE_MATH_FUNCTIONS -fPIC -Wno-psabi "-I/usr/local/cuda/bin/../targets/aarch64-linux/include"   "tmp/CMakeCUDACompilerId.cudafe1.cpp" -o "tmp/CMakeCUDACompilerId.o" ]
+        considering line: [nvlink -m64 --arch=sm_52 --register-link-binaries="tmp/a_dlink.reg.c"    "-L/usr/local/cuda/bin/../targets/aarch64-linux/lib/stubs" "-L/usr/local/cuda/bin/../targets/aarch64-linux/lib" -cpu-arch=AARCH64 "tmp/CMakeCUDACompilerId.o"  -lcudadevrt  -o "tmp/a_dlink.sm_52.cubin" --host-ccbin "/usr/bin/aarch64-linux-gnu-g++"]
+          ignoring nvlink line
+        considering line: [fatbinary --create="tmp/a_dlink.fatbin" -64 --cicc-cmdline="-ftz=0 -prec_div=1 -prec_sqrt=1 -fmad=1 " -link "--image3=kind=elf,sm=52,file=tmp/a_dlink.sm_52.cubin" --embedded-fatbin="tmp/a_dlink.fatbin.c" ]
+        considering line: ["/usr/bin"/aarch64-linux-gnu-g++ -D__CUDA_ARCH_LIST__=520 -D__NV_LEGACY_LAUNCH -c -x c++ -DFATBINFILE="\\"tmp/a_dlink.fatbin.c\\"" -DREGISTERLINKBINARYFILE="\\"tmp/a_dlink.reg.c\\"" -I. -D__NV_EXTRA_INITIALIZATION= -D__NV_EXTRA_FINALIZATION= -D__CUDA_INCLUDE_COMPILER_INTERNAL_HEADERS__  -fPIC -Wno-psabi "-I/usr/local/cuda/bin/../targets/aarch64-linux/include"    -D__CUDACC_VER_MAJOR__=12 -D__CUDACC_VER_MINOR__=6 -D__CUDACC_VER_BUILD__=85 -D__CUDA_API_VER_MAJOR__=12 -D__CUDA_API_VER_MINOR__=6 -D__NVCC_DIAG_PRAGMA_SUPPORT__=1 "/usr/local/cuda/bin/crt/link.stub" -o "tmp/a_dlink.o" ]
+        considering line: ["/usr/bin"/aarch64-linux-gnu-g++ -D__CUDA_ARCH_LIST__=520 -D__NV_LEGACY_LAUNCH -fPIC -Wl,--start-group "tmp/a_dlink.o" "tmp/CMakeCUDACompilerId.o"   "-L/usr/local/cuda/bin/../targets/aarch64-linux/lib/stubs" "-L/usr/local/cuda/bin/../targets/aarch64-linux/lib"  -lcudadevrt  -lcudart_static  -lrt -lpthread  -ldl  -Wl,--end-group -o "a.out" ]
+          extracted link line: ["/usr/bin"/aarch64-linux-gnu-g++ -D__CUDA_ARCH_LIST__=520 -D__NV_LEGACY_LAUNCH -fPIC -Wl,--start-group "tmp/a_dlink.o" "tmp/CMakeCUDACompilerId.o"   "-L/usr/local/cuda/bin/../targets/aarch64-linux/lib/stubs" "-L/usr/local/cuda/bin/../targets/aarch64-linux/lib"  -lcudadevrt  -lcudart_static  -lrt -lpthread  -ldl  -Wl,--end-group -o "a.out" ]
+        considering line: []
+        extracted link launcher absolute path: [/usr/bin/aarch64-linux-gnu-g++]
+      
+        link line regex: [^( *|.*[/\\])(ld[0-9]*(\\.[a-z]+)?|CMAKE_LINK_STARTFILE-NOTFOUND|([^/\\]+-)?ld|collect2)[^/\\]*( |$)]
+        link line: [cuda-fake-ld "/usr/bin"/aarch64-linux-gnu-g++ -D__CUDA_ARCH_LIST__=520 -D__NV_LEGACY_LAUNCH -fPIC -Wl,--start-group "tmp/a_dlink.o" "tmp/CMakeCUDACompilerId.o"   "-L/usr/local/cuda/bin/../targets/aarch64-linux/lib/stubs" "-L/usr/local/cuda/bin/../targets/aarch64-linux/lib"  -lcudadevrt  -lcudart_static  -lrt -lpthread  -ldl  -Wl,--end-group -o "a.out" ]
+          arg [cuda-fake-ld] ==> ignore
+          arg [/usr/bin/aarch64-linux-gnu-g++] ==> ignore
+          arg [-D__CUDA_ARCH_LIST__=520] ==> ignore
+          arg [-D__NV_LEGACY_LAUNCH] ==> ignore
+          arg [-fPIC] ==> ignore
+          arg [-Wl,--start-group] ==> ignore
+          arg [tmp/a_dlink.o] ==> ignore
+          arg [tmp/CMakeCUDACompilerId.o] ==> ignore
+          arg [-L/usr/local/cuda/bin/../targets/aarch64-linux/lib/stubs] ==> dir [/usr/local/cuda/bin/../targets/aarch64-linux/lib/stubs]
+          arg [-L/usr/local/cuda/bin/../targets/aarch64-linux/lib] ==> dir [/usr/local/cuda/bin/../targets/aarch64-linux/lib]
+          arg [-lcudadevrt] ==> lib [cudadevrt]
+          arg [-lcudart_static] ==> lib [cudart_static]
+          arg [-lrt] ==> lib [rt]
+          arg [-lpthread] ==> lib [pthread]
+          arg [-ldl] ==> lib [dl]
+          arg [-Wl,--end-group] ==> ignore
+          arg [-o] ==> ignore
+          arg [a.out] ==> ignore
+        collapse library dir [/usr/local/cuda/bin/../targets/aarch64-linux/lib/stubs] ==> [/usr/local/cuda/targets/aarch64-linux/lib/stubs]
+        collapse library dir [/usr/local/cuda/bin/../targets/aarch64-linux/lib] ==> [/usr/local/cuda/targets/aarch64-linux/lib]
+        implicit libs: [cudadevrt;cudart_static;rt;pthread;dl]
+        implicit objs: []
+        implicit dirs: [/usr/local/cuda/targets/aarch64-linux/lib/stubs;/usr/local/cuda/targets/aarch64-linux/lib]
+        implicit fwks: []
+      
+      
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/usr/local/lib/python3.12/dist-packages/cmake/data/share/cmake-3.31/Modules/Internal/CMakeNVCCParseImplicitInfo.cmake:146 (message)"
+      - "/usr/local/lib/python3.12/dist-packages/cmake/data/share/cmake-3.31/Modules/CMakeDetermineCUDACompiler.cmake:242 (cmake_nvcc_parse_implicit_info)"
+      - "CMakeLists.txt:18 (project)"
+    message: |
+      Parsed CUDA nvcc include information:
+        found 'PATH=' string: [/usr/local/cuda/bin/../nvvm/bin:/usr/local/cuda/bin:/usr/local/lib/python3.12/dist-packages/torch_tensorrt/bin:/usr/local/mpi/bin:/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/ucx/bin:/opt/amazon/efa/bin:/opt/tensorrt/bin]
+        found 'LIBRARIES=' string: ["-L/usr/local/cuda/bin/../targets/aarch64-linux/lib/stubs" "-L/usr/local/cuda/bin/../targets/aarch64-linux/lib"]
+        found 'INCLUDES=' string: ["-I/usr/local/cuda/bin/../targets/aarch64-linux/include"  ]
+        considering line: [#$ rm tmp/a_dlink.reg.c]
+        considering line: ["/usr/bin"/aarch64-linux-gnu-g++ -D__CUDA_ARCH_LIST__=520 -D__NV_LEGACY_LAUNCH -E -x c++ -D__CUDACC__ -D__NVCC__  -fPIC "-I/usr/local/cuda/bin/../targets/aarch64-linux/include"    -D__CUDACC_VER_MAJOR__=12 -D__CUDACC_VER_MINOR__=6 -D__CUDACC_VER_BUILD__=85 -D__CUDA_API_VER_MAJOR__=12 -D__CUDA_API_VER_MINOR__=6 -D__NVCC_DIAG_PRAGMA_SUPPORT__=1 -include "cuda_runtime.h" "CMakeCUDACompilerId.cu" -o "tmp/CMakeCUDACompilerId.cpp4.ii" ]
+        considering line: [cudafe++ --c++17 --gnu_version=130200 --display_error_number --orig_src_file_name "CMakeCUDACompilerId.cu" --orig_src_path_name "/workspace/forks/TensorRT-Edge-LLM/build-orin/CMakeFiles/3.31.1/CompilerIdCUDA/CMakeCUDACompilerId.cu" --allow_managed --unsigned_chars --unsigned_wchar_t  --m64 --parse_templates --gen_c_file_name "tmp/CMakeCUDACompilerId.cudafe1.cpp" --stub_file_name "CMakeCUDACompilerId.cudafe1.stub.c" --gen_module_id_file --module_id_file_name "tmp/CMakeCUDACompilerId.module_id" "tmp/CMakeCUDACompilerId.cpp4.ii" ]
+        considering line: ["/usr/bin"/aarch64-linux-gnu-g++ -D__CUDA_ARCH__=520 -D__CUDA_ARCH_LIST__=520 -D__NV_LEGACY_LAUNCH -E -x c++  -DCUDA_DOUBLE_MATH_FUNCTIONS -D__CUDACC__ -D__NVCC__  -fPIC "-I/usr/local/cuda/bin/../targets/aarch64-linux/include"    -D__CUDACC_VER_MAJOR__=12 -D__CUDACC_VER_MINOR__=6 -D__CUDACC_VER_BUILD__=85 -D__CUDA_API_VER_MAJOR__=12 -D__CUDA_API_VER_MINOR__=6 -D__NVCC_DIAG_PRAGMA_SUPPORT__=1 -include "cuda_runtime.h" "CMakeCUDACompilerId.cu" -o "tmp/CMakeCUDACompilerId.cpp1.ii" ]
+        considering line: ["$CICC_PATH/cicc" --c++17 --gnu_version=130200 --display_error_number --orig_src_file_name "CMakeCUDACompilerId.cu" --orig_src_path_name "/workspace/forks/TensorRT-Edge-LLM/build-orin/CMakeFiles/3.31.1/CompilerIdCUDA/CMakeCUDACompilerId.cu" --allow_managed --unsigned_chars --unsigned_wchar_t   -arch compute_52 -m64 --no-version-ident -ftz=0 -prec_div=1 -prec_sqrt=1 -fmad=1 --include_file_name "CMakeCUDACompilerId.fatbin.c" -tused --module_id_file_name "tmp/CMakeCUDACompilerId.module_id" --gen_c_file_name "tmp/CMakeCUDACompilerId.cudafe1.c" --stub_file_name "tmp/CMakeCUDACompilerId.cudafe1.stub.c" --gen_device_file_name "tmp/CMakeCUDACompilerId.cudafe1.gpu"  "tmp/CMakeCUDACompilerId.cpp1.ii" -o "tmp/CMakeCUDACompilerId.ptx"]
+        considering line: [ptxas -arch=sm_52 -m64  "tmp/CMakeCUDACompilerId.ptx"  -o "tmp/CMakeCUDACompilerId.sm_52.cubin" ]
+        considering line: [fatbinary --create="tmp/CMakeCUDACompilerId.fatbin" -64 --cicc-cmdline="-ftz=0 -prec_div=1 -prec_sqrt=1 -fmad=1 " "--image3=kind=elf,sm=52,file=tmp/CMakeCUDACompilerId.sm_52.cubin" "--image3=kind=ptx,sm=52,file=tmp/CMakeCUDACompilerId.ptx" --embedded-fatbin="tmp/CMakeCUDACompilerId.fatbin.c" ]
+        considering line: ["/usr/bin"/aarch64-linux-gnu-g++ -D__CUDA_ARCH__=520 -D__CUDA_ARCH_LIST__=520 -D__NV_LEGACY_LAUNCH -c -x c++  -DCUDA_DOUBLE_MATH_FUNCTIONS -fPIC -Wno-psabi "-I/usr/local/cuda/bin/../targets/aarch64-linux/include"   "tmp/CMakeCUDACompilerId.cudafe1.cpp" -o "tmp/CMakeCUDACompilerId.o" ]
+        considering line: [nvlink -m64 --arch=sm_52 --register-link-binaries="tmp/a_dlink.reg.c"    "-L/usr/local/cuda/bin/../targets/aarch64-linux/lib/stubs" "-L/usr/local/cuda/bin/../targets/aarch64-linux/lib" -cpu-arch=AARCH64 "tmp/CMakeCUDACompilerId.o"  -lcudadevrt  -o "tmp/a_dlink.sm_52.cubin" --host-ccbin "/usr/bin/aarch64-linux-gnu-g++"]
+          ignoring nvlink line
+        considering line: [fatbinary --create="tmp/a_dlink.fatbin" -64 --cicc-cmdline="-ftz=0 -prec_div=1 -prec_sqrt=1 -fmad=1 " -link "--image3=kind=elf,sm=52,file=tmp/a_dlink.sm_52.cubin" --embedded-fatbin="tmp/a_dlink.fatbin.c" ]
+        considering line: ["/usr/bin"/aarch64-linux-gnu-g++ -D__CUDA_ARCH_LIST__=520 -D__NV_LEGACY_LAUNCH -c -x c++ -DFATBINFILE="\\"tmp/a_dlink.fatbin.c\\"" -DREGISTERLINKBINARYFILE="\\"tmp/a_dlink.reg.c\\"" -I. -D__NV_EXTRA_INITIALIZATION= -D__NV_EXTRA_FINALIZATION= -D__CUDA_INCLUDE_COMPILER_INTERNAL_HEADERS__  -fPIC -Wno-psabi "-I/usr/local/cuda/bin/../targets/aarch64-linux/include"    -D__CUDACC_VER_MAJOR__=12 -D__CUDACC_VER_MINOR__=6 -D__CUDACC_VER_BUILD__=85 -D__CUDA_API_VER_MAJOR__=12 -D__CUDA_API_VER_MINOR__=6 -D__NVCC_DIAG_PRAGMA_SUPPORT__=1 "/usr/local/cuda/bin/crt/link.stub" -o "tmp/a_dlink.o" ]
+        considering line: ["/usr/bin"/aarch64-linux-gnu-g++ -D__CUDA_ARCH_LIST__=520 -D__NV_LEGACY_LAUNCH -fPIC -Wl,--start-group "tmp/a_dlink.o" "tmp/CMakeCUDACompilerId.o"   "-L/usr/local/cuda/bin/../targets/aarch64-linux/lib/stubs" "-L/usr/local/cuda/bin/../targets/aarch64-linux/lib"  -lcudadevrt  -lcudart_static  -lrt -lpthread  -ldl  -Wl,--end-group -o "a.out" ]
+          extracted link line: ["/usr/bin"/aarch64-linux-gnu-g++ -D__CUDA_ARCH_LIST__=520 -D__NV_LEGACY_LAUNCH -fPIC -Wl,--start-group "tmp/a_dlink.o" "tmp/CMakeCUDACompilerId.o"   "-L/usr/local/cuda/bin/../targets/aarch64-linux/lib/stubs" "-L/usr/local/cuda/bin/../targets/aarch64-linux/lib"  -lcudadevrt  -lcudart_static  -lrt -lpthread  -ldl  -Wl,--end-group -o "a.out" ]
+        considering line: []
+        extracted link launcher absolute path: [/usr/bin/aarch64-linux-gnu-g++]
+      
+        link line regex: [^( *|.*[/\\])(ld[0-9]*(\\.[a-z]+)?|CMAKE_LINK_STARTFILE-NOTFOUND|([^/\\]+-)?ld|collect2)[^/\\]*( |$)]
+        link line: [cuda-fake-ld "/usr/bin"/aarch64-linux-gnu-g++ -D__CUDA_ARCH_LIST__=520 -D__NV_LEGACY_LAUNCH -fPIC -Wl,--start-group "tmp/a_dlink.o" "tmp/CMakeCUDACompilerId.o"   "-L/usr/local/cuda/bin/../targets/aarch64-linux/lib/stubs" "-L/usr/local/cuda/bin/../targets/aarch64-linux/lib"  -lcudadevrt  -lcudart_static  -lrt -lpthread  -ldl  -Wl,--end-group -o "a.out" ]
+          arg [cuda-fake-ld] ==> ignore
+          arg [/usr/bin/aarch64-linux-gnu-g++] ==> ignore
+          arg [-D__CUDA_ARCH_LIST__=520] ==> ignore
+          arg [-D__NV_LEGACY_LAUNCH] ==> ignore
+          arg [-fPIC] ==> ignore
+          arg [-Wl,--start-group] ==> ignore
+          arg [tmp/a_dlink.o] ==> ignore
+          arg [tmp/CMakeCUDACompilerId.o] ==> ignore
+          arg [-L/usr/local/cuda/bin/../targets/aarch64-linux/lib/stubs] ==> dir [/usr/local/cuda/bin/../targets/aarch64-linux/lib/stubs]
+          arg [-L/usr/local/cuda/bin/../targets/aarch64-linux/lib] ==> dir [/usr/local/cuda/bin/../targets/aarch64-linux/lib]
+          arg [-lcudadevrt] ==> lib [cudadevrt]
+          arg [-lcudart_static] ==> lib [cudart_static]
+          arg [-lrt] ==> lib [rt]
+          arg [-lpthread] ==> lib [pthread]
+          arg [-ldl] ==> lib [dl]
+          arg [-Wl,--end-group] ==> ignore
+          arg [-o] ==> ignore
+          arg [a.out] ==> ignore
+        collapse library dir [/usr/local/cuda/bin/../targets/aarch64-linux/lib/stubs] ==> [/usr/local/cuda/targets/aarch64-linux/lib/stubs]
+        collapse library dir [/usr/local/cuda/bin/../targets/aarch64-linux/lib] ==> [/usr/local/cuda/targets/aarch64-linux/lib]
+        implicit libs: [cudadevrt;cudart_static;rt;pthread;dl]
+        implicit objs: []
+        implicit dirs: [/usr/local/cuda/targets/aarch64-linux/lib/stubs;/usr/local/cuda/targets/aarch64-linux/lib]
+        implicit fwks: []
+      
+      
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "/usr/local/lib/python3.12/dist-packages/cmake/data/share/cmake-3.31/Modules/CMakeDetermineCompilerABI.cmake:74 (try_compile)"
+      - "/usr/local/lib/python3.12/dist-packages/cmake/data/share/cmake-3.31/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:18 (project)"
+    checks:
+      - "Detecting CXX compiler ABI info"
+    directories:
+      source: "/workspace/forks/TensorRT-Edge-LLM/build-orin/CMakeFiles/CMakeScratch/TryCompile-sAkrO8"
+      binary: "/workspace/forks/TensorRT-Edge-LLM/build-orin/CMakeFiles/CMakeScratch/TryCompile-sAkrO8"
+    cmakeVariables:
+      CMAKE_CUDA_ARCHITECTURES: "87"
+      CMAKE_CXX_COMPILER_TARGET: "aarch64-linux-gnu"
+      CMAKE_CXX_FLAGS: ""
+      CMAKE_CXX_FLAGS_DEBUG: "-g"
+      CMAKE_CXX_SCAN_FOR_MODULES: "OFF"
+      CMAKE_C_COMPILER_TARGET: "aarch64-linux-gnu"
+      CMAKE_EXE_LINKER_FLAGS: ""
+    buildResult:
+      variable: "CMAKE_CXX_ABI_COMPILED"
+      cached: true
+      stdout: |
+        Change Dir: '/workspace/forks/TensorRT-Edge-LLM/build-orin/CMakeFiles/CMakeScratch/TryCompile-sAkrO8'
+        
+        Run Build Command(s): /usr/local/lib/python3.12/dist-packages/cmake/data/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_83568/fast
+        /usr/bin/gmake  -f CMakeFiles/cmTC_83568.dir/build.make CMakeFiles/cmTC_83568.dir/build
+        gmake[1]: Entering directory '/workspace/forks/TensorRT-Edge-LLM/build-orin/CMakeFiles/CMakeScratch/TryCompile-sAkrO8'
+        Building CXX object CMakeFiles/cmTC_83568.dir/CMakeCXXCompilerABI.cpp.o
+        /usr/bin/aarch64-linux-gnu-g++   -v -o CMakeFiles/cmTC_83568.dir/CMakeCXXCompilerABI.cpp.o -c /usr/local/lib/python3.12/dist-packages/cmake/data/share/cmake-3.31/Modules/CMakeCXXCompilerABI.cpp
+        Using built-in specs.
+        COLLECT_GCC=/usr/bin/aarch64-linux-gnu-g++
+        OFFLOAD_TARGET_NAMES=nvptx-none
+        OFFLOAD_TARGET_DEFAULT=1
+        Target: aarch64-linux-gnu
+        Configured with: ../src/configure -v --with-pkgversion='Ubuntu 13.2.0-23ubuntu4' --with-bugurl=file:///usr/share/doc/gcc-13/README.Bugs --enable-languages=c,ada,c++,go,d,fortran,objc,obj-c++,m2 --prefix=/usr --with-gcc-major-version-only --program-suffix=-13 --program-prefix=aarch64-linux-gnu- --enable-shared --enable-linker-build-id --libexecdir=/usr/libexec --without-included-gettext --enable-threads=posix --libdir=/usr/lib --enable-nls --enable-clocale=gnu --enable-libstdcxx-debug --enable-libstdcxx-time=yes --with-default-libstdcxx-abi=new --enable-libstdcxx-backtrace --enable-gnu-unique-object --disable-libquadmath --disable-libquadmath-support --enable-plugin --enable-default-pie --with-system-zlib --enable-libphobos-checking=release --with-target-system-zlib=auto --enable-objc-gc=auto --enable-multiarch --enable-fix-cortex-a53-843419 --disable-werror --enable-offload-targets=nvptx-none=/build/gcc-13-dIwDw0/gcc-13-13.2.0/debian/tmp-nvptx/usr --enable-offload-defaulted --without-cuda-driver --enable-checking=release --build=aarch64-linux-gnu --host=aarch64-linux-gnu --target=aarch64-linux-gnu
+        Thread model: posix
+        Supported LTO compression algorithms: zlib zstd
+        gcc version 13.2.0 (Ubuntu 13.2.0-23ubuntu4) 
+        COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_83568.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mlittle-endian' '-mabi=lp64' '-dumpdir' 'CMakeFiles/cmTC_83568.dir/'
+         /usr/libexec/gcc/aarch64-linux-gnu/13/cc1plus -quiet -v -imultiarch aarch64-linux-gnu -D_GNU_SOURCE /usr/local/lib/python3.12/dist-packages/cmake/data/share/cmake-3.31/Modules/CMakeCXXCompilerABI.cpp -quiet -dumpdir CMakeFiles/cmTC_83568.dir/ -dumpbase CMakeCXXCompilerABI.cpp.cpp -dumpbase-ext .cpp -mlittle-endian -mabi=lp64 -version -fasynchronous-unwind-tables -fstack-protector-strong -Wformat -Wformat-security -fstack-clash-protection -o /tmp/ccohBZdi.s
+        GNU C++17 (Ubuntu 13.2.0-23ubuntu4) version 13.2.0 (aarch64-linux-gnu)
+        	compiled by GNU C version 13.2.0, GMP version 6.3.0, MPFR version 4.2.1, MPC version 1.3.1, isl version isl-0.26-GMP
+        
+        GGC heuristics: --param ggc-min-expand=100 --param ggc-min-heapsize=131072
+        ignoring duplicate directory "/usr/include/aarch64-linux-gnu/c++/13"
+        ignoring nonexistent directory "/usr/local/include/aarch64-linux-gnu"
+        ignoring nonexistent directory "/usr/lib/gcc/aarch64-linux-gnu/13/include-fixed/aarch64-linux-gnu"
+        ignoring nonexistent directory "/usr/lib/gcc/aarch64-linux-gnu/13/include-fixed"
+        ignoring nonexistent directory "/usr/lib/gcc/aarch64-linux-gnu/13/../../../../aarch64-linux-gnu/include"
+        #include "..." search starts here:
+        #include <...> search starts here:
+         /usr/include/c++/13
+         /usr/include/aarch64-linux-gnu/c++/13
+         /usr/include/c++/13/backward
+         /usr/lib/gcc/aarch64-linux-gnu/13/include
+         /usr/local/include
+         /usr/include/aarch64-linux-gnu
+         /usr/include
+        End of search list.
+        Compiler executable checksum: ca86b4a3b882c14ba30e3a0fcc6dbf7f
+        COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_83568.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mlittle-endian' '-mabi=lp64' '-dumpdir' 'CMakeFiles/cmTC_83568.dir/'
+         as -v -EL -mabi=lp64 -o CMakeFiles/cmTC_83568.dir/CMakeCXXCompilerABI.cpp.o /tmp/ccohBZdi.s
+        GNU assembler version 2.42 (aarch64-linux-gnu) using BFD version (GNU Binutils for Ubuntu) 2.42
+        COMPILER_PATH=/usr/libexec/gcc/aarch64-linux-gnu/13/:/usr/libexec/gcc/aarch64-linux-gnu/13/:/usr/libexec/gcc/aarch64-linux-gnu/:/usr/lib/gcc/aarch64-linux-gnu/13/:/usr/lib/gcc/aarch64-linux-gnu/
+        LIBRARY_PATH=/usr/lib/gcc/aarch64-linux-gnu/13/:/usr/lib/gcc/aarch64-linux-gnu/13/../../../aarch64-linux-gnu/:/usr/lib/gcc/aarch64-linux-gnu/13/../../../../lib/:/lib/aarch64-linux-gnu/:/lib/../lib/:/usr/lib/aarch64-linux-gnu/:/usr/lib/../lib/:/usr/local/cuda/lib64/stubs/:./:/usr/lib/gcc/aarch64-linux-gnu/13/../../../:/lib/:/usr/lib/
+        COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_83568.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mlittle-endian' '-mabi=lp64' '-dumpdir' 'CMakeFiles/cmTC_83568.dir/CMakeCXXCompilerABI.cpp.'
+        Linking CXX executable cmTC_83568
+        /usr/local/lib/python3.12/dist-packages/cmake/data/bin/cmake -E cmake_link_script CMakeFiles/cmTC_83568.dir/link.txt --verbose=1
+        Using built-in specs.
+        COLLECT_GCC=/usr/bin/aarch64-linux-gnu-g++
+        COLLECT_LTO_WRAPPER=/usr/libexec/gcc/aarch64-linux-gnu/13/lto-wrapper
+        OFFLOAD_TARGET_NAMES=nvptx-none
+        OFFLOAD_TARGET_DEFAULT=1
+        Target: aarch64-linux-gnu
+        Configured with: ../src/configure -v --with-pkgversion='Ubuntu 13.2.0-23ubuntu4' --with-bugurl=file:///usr/share/doc/gcc-13/README.Bugs --enable-languages=c,ada,c++,go,d,fortran,objc,obj-c++,m2 --prefix=/usr --with-gcc-major-version-only --program-suffix=-13 --program-prefix=aarch64-linux-gnu- --enable-shared --enable-linker-build-id --libexecdir=/usr/libexec --without-included-gettext --enable-threads=posix --libdir=/usr/lib --enable-nls --enable-clocale=gnu --enable-libstdcxx-debug --enable-libstdcxx-time=yes --with-default-libstdcxx-abi=new --enable-libstdcxx-backtrace --enable-gnu-unique-object --disable-libquadmath --disable-libquadmath-support --enable-plugin --enable-default-pie --with-system-zlib --enable-libphobos-checking=release --with-target-system-zlib=auto --enable-objc-gc=auto --enable-multiarch --enable-fix-cortex-a53-843419 --disable-werror --enable-offload-targets=nvptx-none=/build/gcc-13-dIwDw0/gcc-13-13.2.0/debian/tmp-nvptx/usr --enable-offload-defaulted --without-cuda-driver --enable-checking=release --build=aarch64-linux-gnu --host=aarch64-linux-gnu --target=aarch64-linux-gnu
+        Thread model: posix
+        Supported LTO compression algorithms: zlib zstd
+        gcc version 13.2.0 (Ubuntu 13.2.0-23ubuntu4) 
+        COMPILER_PATH=/usr/libexec/gcc/aarch64-linux-gnu/13/:/usr/libexec/gcc/aarch64-linux-gnu/13/:/usr/libexec/gcc/aarch64-linux-gnu/:/usr/lib/gcc/aarch64-linux-gnu/13/:/usr/lib/gcc/aarch64-linux-gnu/
+        LIBRARY_PATH=/usr/lib/gcc/aarch64-linux-gnu/13/:/usr/lib/gcc/aarch64-linux-gnu/13/../../../aarch64-linux-gnu/:/usr/lib/gcc/aarch64-linux-gnu/13/../../../../lib/:/lib/aarch64-linux-gnu/:/lib/../lib/:/usr/lib/aarch64-linux-gnu/:/usr/lib/../lib/:/usr/local/cuda/lib64/stubs/:./:/usr/lib/gcc/aarch64-linux-gnu/13/../../../:/lib/:/usr/lib/
+        COLLECT_GCC_OPTIONS='-v' '-o' 'cmTC_83568' '-shared-libgcc' '-mlittle-endian' '-mabi=lp64' '-dumpdir' 'cmTC_83568.'
+         /usr/libexec/gcc/aarch64-linux-gnu/13/collect2 -plugin /usr/libexec/gcc/aarch64-linux-gnu/13/liblto_plugin.so -plugin-opt=/usr/libexec/gcc/aarch64-linux-gnu/13/lto-wrapper -plugin-opt=-fresolution=/tmp/ccm9fVHQ.res -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc -plugin-opt=-pass-through=-lc -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc --build-id --eh-frame-hdr --hash-style=gnu --as-needed -dynamic-linker /lib/ld-linux-aarch64.so.1 -X -EL -maarch64linux --fix-cortex-a53-843419 -pie -z now -z relro -o cmTC_83568 /usr/lib/gcc/aarch64-linux-gnu/13/../../../aarch64-linux-gnu/Scrt1.o /usr/lib/gcc/aarch64-linux-gnu/13/../../../aarch64-linux-gnu/crti.o /usr/lib/gcc/aarch64-linux-gnu/13/crtbeginS.o -L/usr/lib/gcc/aarch64-linux-gnu/13 -L/usr/lib/gcc/aarch64-linux-gnu/13/../../../aarch64-linux-gnu -L/usr/lib/gcc/aarch64-linux-gnu/13/../../../../lib -L/lib/aarch64-linux-gnu -L/lib/../lib -L/usr/lib/aarch64-linux-gnu -L/usr/lib/../lib -L/usr/local/cuda/lib64/stubs -L. -L/usr/lib/gcc/aarch64-linux-gnu/13/../../.. -v CMakeFiles/cmTC_83568.dir/CMakeCXXCompilerABI.cpp.o -lstdc++ -lm -lgcc_s -lgcc -lc -lgcc_s -lgcc /usr/lib/gcc/aarch64-linux-gnu/13/crtendS.o /usr/lib/gcc/aarch64-linux-gnu/13/../../../aarch64-linux-gnu/crtn.o
+        collect2 version 13.2.0
+        /usr/bin/ld -plugin /usr/libexec/gcc/aarch64-linux-gnu/13/liblto_plugin.so -plugin-opt=/usr/libexec/gcc/aarch64-linux-gnu/13/lto-wrapper -plugin-opt=-fresolution=/tmp/ccm9fVHQ.res -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc -plugin-opt=-pass-through=-lc -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc --build-id --eh-frame-hdr --hash-style=gnu --as-needed -dynamic-linker /lib/ld-linux-aarch64.so.1 -X -EL -maarch64linux --fix-cortex-a53-843419 -pie -z now -z relro -o cmTC_83568 /usr/lib/gcc/aarch64-linux-gnu/13/../../../aarch64-linux-gnu/Scrt1.o /usr/lib/gcc/aarch64-linux-gnu/13/../../../aarch64-linux-gnu/crti.o /usr/lib/gcc/aarch64-linux-gnu/13/crtbeginS.o -L/usr/lib/gcc/aarch64-linux-gnu/13 -L/usr/lib/gcc/aarch64-linux-gnu/13/../../../aarch64-linux-gnu -L/usr/lib/gcc/aarch64-linux-gnu/13/../../../../lib -L/lib/aarch64-linux-gnu -L/lib/../lib -L/usr/lib/aarch64-linux-gnu -L/usr/lib/../lib -L/usr/local/cuda/lib64/stubs -L. -L/usr/lib/gcc/aarch64-linux-gnu/13/../../.. -v CMakeFiles/cmTC_83568.dir/CMakeCXXCompilerABI.cpp.o -lstdc++ -lm -lgcc_s -lgcc -lc -lgcc_s -lgcc /usr/lib/gcc/aarch64-linux-gnu/13/crtendS.o /usr/lib/gcc/aarch64-linux-gnu/13/../../../aarch64-linux-gnu/crtn.o
+        GNU ld (GNU Binutils for Ubuntu) 2.42
+        COLLECT_GCC_OPTIONS='-v' '-o' 'cmTC_83568' '-shared-libgcc' '-mlittle-endian' '-mabi=lp64' '-dumpdir' 'cmTC_83568.'
+        /usr/bin/aarch64-linux-gnu-g++  -v -Wl,-v CMakeFiles/cmTC_83568.dir/CMakeCXXCompilerABI.cpp.o -o cmTC_83568
+        gmake[1]: Leaving directory '/workspace/forks/TensorRT-Edge-LLM/build-orin/CMakeFiles/CMakeScratch/TryCompile-sAkrO8'
+        
+      exitCode: 0
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/usr/local/lib/python3.12/dist-packages/cmake/data/share/cmake-3.31/Modules/CMakeDetermineCompilerABI.cmake:182 (message)"
+      - "/usr/local/lib/python3.12/dist-packages/cmake/data/share/cmake-3.31/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:18 (project)"
+    message: |
+      Parsed CXX implicit include dir info: rv=done
+        found start of include info
+        found start of implicit include info
+          add: [/usr/include/c++/13]
+          add: [/usr/include/aarch64-linux-gnu/c++/13]
+          add: [/usr/include/c++/13/backward]
+          add: [/usr/lib/gcc/aarch64-linux-gnu/13/include]
+          add: [/usr/local/include]
+          add: [/usr/include/aarch64-linux-gnu]
+          add: [/usr/include]
+        end of search list found
+        collapse include dir [/usr/include/c++/13] ==> [/usr/include/c++/13]
+        collapse include dir [/usr/include/aarch64-linux-gnu/c++/13] ==> [/usr/include/aarch64-linux-gnu/c++/13]
+        collapse include dir [/usr/include/c++/13/backward] ==> [/usr/include/c++/13/backward]
+        collapse include dir [/usr/lib/gcc/aarch64-linux-gnu/13/include] ==> [/usr/lib/gcc/aarch64-linux-gnu/13/include]
+        collapse include dir [/usr/local/include] ==> [/usr/local/include]
+        collapse include dir [/usr/include/aarch64-linux-gnu] ==> [/usr/include/aarch64-linux-gnu]
+        collapse include dir [/usr/include] ==> [/usr/include]
+        implicit include dirs: [/usr/include/c++/13;/usr/include/aarch64-linux-gnu/c++/13;/usr/include/c++/13/backward;/usr/lib/gcc/aarch64-linux-gnu/13/include;/usr/local/include;/usr/include/aarch64-linux-gnu;/usr/include]
+      
+      
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/usr/local/lib/python3.12/dist-packages/cmake/data/share/cmake-3.31/Modules/CMakeDetermineCompilerABI.cmake:218 (message)"
+      - "/usr/local/lib/python3.12/dist-packages/cmake/data/share/cmake-3.31/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:18 (project)"
+    message: |
+      Parsed CXX implicit link information:
+        link line regex: [^( *|.*[/\\])(ld[0-9]*(\\.[a-z]+)?|CMAKE_LINK_STARTFILE-NOTFOUND|([^/\\]+-)?ld|collect2)[^/\\]*( |$)]
+        linker tool regex: [^[ 	]*(->|")?[ 	]*(([^"]*[/\\])?(ld[0-9]*(\\.[a-z]+)?))("|,| |$)]
+        ignore line: [Change Dir: '/workspace/forks/TensorRT-Edge-LLM/build-orin/CMakeFiles/CMakeScratch/TryCompile-sAkrO8']
+        ignore line: []
+        ignore line: [Run Build Command(s): /usr/local/lib/python3.12/dist-packages/cmake/data/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_83568/fast]
+        ignore line: [/usr/bin/gmake  -f CMakeFiles/cmTC_83568.dir/build.make CMakeFiles/cmTC_83568.dir/build]
+        ignore line: [gmake[1]: Entering directory '/workspace/forks/TensorRT-Edge-LLM/build-orin/CMakeFiles/CMakeScratch/TryCompile-sAkrO8']
+        ignore line: [Building CXX object CMakeFiles/cmTC_83568.dir/CMakeCXXCompilerABI.cpp.o]
+        ignore line: [/usr/bin/aarch64-linux-gnu-g++   -v -o CMakeFiles/cmTC_83568.dir/CMakeCXXCompilerABI.cpp.o -c /usr/local/lib/python3.12/dist-packages/cmake/data/share/cmake-3.31/Modules/CMakeCXXCompilerABI.cpp]
+        ignore line: [Using built-in specs.]
+        ignore line: [COLLECT_GCC=/usr/bin/aarch64-linux-gnu-g++]
+        ignore line: [OFFLOAD_TARGET_NAMES=nvptx-none]
+        ignore line: [OFFLOAD_TARGET_DEFAULT=1]
+        ignore line: [Target: aarch64-linux-gnu]
+        ignore line: [Configured with: ../src/configure -v --with-pkgversion='Ubuntu 13.2.0-23ubuntu4' --with-bugurl=file:///usr/share/doc/gcc-13/README.Bugs --enable-languages=c ada c++ go d fortran objc obj-c++ m2 --prefix=/usr --with-gcc-major-version-only --program-suffix=-13 --program-prefix=aarch64-linux-gnu- --enable-shared --enable-linker-build-id --libexecdir=/usr/libexec --without-included-gettext --enable-threads=posix --libdir=/usr/lib --enable-nls --enable-clocale=gnu --enable-libstdcxx-debug --enable-libstdcxx-time=yes --with-default-libstdcxx-abi=new --enable-libstdcxx-backtrace --enable-gnu-unique-object --disable-libquadmath --disable-libquadmath-support --enable-plugin --enable-default-pie --with-system-zlib --enable-libphobos-checking=release --with-target-system-zlib=auto --enable-objc-gc=auto --enable-multiarch --enable-fix-cortex-a53-843419 --disable-werror --enable-offload-targets=nvptx-none=/build/gcc-13-dIwDw0/gcc-13-13.2.0/debian/tmp-nvptx/usr --enable-offload-defaulted --without-cuda-driver --enable-checking=release --build=aarch64-linux-gnu --host=aarch64-linux-gnu --target=aarch64-linux-gnu]
+        ignore line: [Thread model: posix]
+        ignore line: [Supported LTO compression algorithms: zlib zstd]
+        ignore line: [gcc version 13.2.0 (Ubuntu 13.2.0-23ubuntu4) ]
+        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_83568.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mlittle-endian' '-mabi=lp64' '-dumpdir' 'CMakeFiles/cmTC_83568.dir/']
+        ignore line: [ /usr/libexec/gcc/aarch64-linux-gnu/13/cc1plus -quiet -v -imultiarch aarch64-linux-gnu -D_GNU_SOURCE /usr/local/lib/python3.12/dist-packages/cmake/data/share/cmake-3.31/Modules/CMakeCXXCompilerABI.cpp -quiet -dumpdir CMakeFiles/cmTC_83568.dir/ -dumpbase CMakeCXXCompilerABI.cpp.cpp -dumpbase-ext .cpp -mlittle-endian -mabi=lp64 -version -fasynchronous-unwind-tables -fstack-protector-strong -Wformat -Wformat-security -fstack-clash-protection -o /tmp/ccohBZdi.s]
+        ignore line: [GNU C++17 (Ubuntu 13.2.0-23ubuntu4) version 13.2.0 (aarch64-linux-gnu)]
+        ignore line: [	compiled by GNU C version 13.2.0  GMP version 6.3.0  MPFR version 4.2.1  MPC version 1.3.1  isl version isl-0.26-GMP]
+        ignore line: []
+        ignore line: [GGC heuristics: --param ggc-min-expand=100 --param ggc-min-heapsize=131072]
+        ignore line: [ignoring duplicate directory "/usr/include/aarch64-linux-gnu/c++/13"]
+        ignore line: [ignoring nonexistent directory "/usr/local/include/aarch64-linux-gnu"]
+        ignore line: [ignoring nonexistent directory "/usr/lib/gcc/aarch64-linux-gnu/13/include-fixed/aarch64-linux-gnu"]
+        ignore line: [ignoring nonexistent directory "/usr/lib/gcc/aarch64-linux-gnu/13/include-fixed"]
+        ignore line: [ignoring nonexistent directory "/usr/lib/gcc/aarch64-linux-gnu/13/../../../../aarch64-linux-gnu/include"]
+        ignore line: [#include "..." search starts here:]
+        ignore line: [#include <...> search starts here:]
+        ignore line: [ /usr/include/c++/13]
+        ignore line: [ /usr/include/aarch64-linux-gnu/c++/13]
+        ignore line: [ /usr/include/c++/13/backward]
+        ignore line: [ /usr/lib/gcc/aarch64-linux-gnu/13/include]
+        ignore line: [ /usr/local/include]
+        ignore line: [ /usr/include/aarch64-linux-gnu]
+        ignore line: [ /usr/include]
+        ignore line: [End of search list.]
+        ignore line: [Compiler executable checksum: ca86b4a3b882c14ba30e3a0fcc6dbf7f]
+        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_83568.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mlittle-endian' '-mabi=lp64' '-dumpdir' 'CMakeFiles/cmTC_83568.dir/']
+        ignore line: [ as -v -EL -mabi=lp64 -o CMakeFiles/cmTC_83568.dir/CMakeCXXCompilerABI.cpp.o /tmp/ccohBZdi.s]
+        ignore line: [GNU assembler version 2.42 (aarch64-linux-gnu) using BFD version (GNU Binutils for Ubuntu) 2.42]
+        ignore line: [COMPILER_PATH=/usr/libexec/gcc/aarch64-linux-gnu/13/:/usr/libexec/gcc/aarch64-linux-gnu/13/:/usr/libexec/gcc/aarch64-linux-gnu/:/usr/lib/gcc/aarch64-linux-gnu/13/:/usr/lib/gcc/aarch64-linux-gnu/]
+        ignore line: [LIBRARY_PATH=/usr/lib/gcc/aarch64-linux-gnu/13/:/usr/lib/gcc/aarch64-linux-gnu/13/../../../aarch64-linux-gnu/:/usr/lib/gcc/aarch64-linux-gnu/13/../../../../lib/:/lib/aarch64-linux-gnu/:/lib/../lib/:/usr/lib/aarch64-linux-gnu/:/usr/lib/../lib/:/usr/local/cuda/lib64/stubs/:./:/usr/lib/gcc/aarch64-linux-gnu/13/../../../:/lib/:/usr/lib/]
+        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'CMakeFiles/cmTC_83568.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-shared-libgcc' '-mlittle-endian' '-mabi=lp64' '-dumpdir' 'CMakeFiles/cmTC_83568.dir/CMakeCXXCompilerABI.cpp.']
+        ignore line: [Linking CXX executable cmTC_83568]
+        ignore line: [/usr/local/lib/python3.12/dist-packages/cmake/data/bin/cmake -E cmake_link_script CMakeFiles/cmTC_83568.dir/link.txt --verbose=1]
+        ignore line: [Using built-in specs.]
+        ignore line: [COLLECT_GCC=/usr/bin/aarch64-linux-gnu-g++]
+        ignore line: [COLLECT_LTO_WRAPPER=/usr/libexec/gcc/aarch64-linux-gnu/13/lto-wrapper]
+        ignore line: [OFFLOAD_TARGET_NAMES=nvptx-none]
+        ignore line: [OFFLOAD_TARGET_DEFAULT=1]
+        ignore line: [Target: aarch64-linux-gnu]
+        ignore line: [Configured with: ../src/configure -v --with-pkgversion='Ubuntu 13.2.0-23ubuntu4' --with-bugurl=file:///usr/share/doc/gcc-13/README.Bugs --enable-languages=c ada c++ go d fortran objc obj-c++ m2 --prefix=/usr --with-gcc-major-version-only --program-suffix=-13 --program-prefix=aarch64-linux-gnu- --enable-shared --enable-linker-build-id --libexecdir=/usr/libexec --without-included-gettext --enable-threads=posix --libdir=/usr/lib --enable-nls --enable-clocale=gnu --enable-libstdcxx-debug --enable-libstdcxx-time=yes --with-default-libstdcxx-abi=new --enable-libstdcxx-backtrace --enable-gnu-unique-object --disable-libquadmath --disable-libquadmath-support --enable-plugin --enable-default-pie --with-system-zlib --enable-libphobos-checking=release --with-target-system-zlib=auto --enable-objc-gc=auto --enable-multiarch --enable-fix-cortex-a53-843419 --disable-werror --enable-offload-targets=nvptx-none=/build/gcc-13-dIwDw0/gcc-13-13.2.0/debian/tmp-nvptx/usr --enable-offload-defaulted --without-cuda-driver --enable-checking=release --build=aarch64-linux-gnu --host=aarch64-linux-gnu --target=aarch64-linux-gnu]
+        ignore line: [Thread model: posix]
+        ignore line: [Supported LTO compression algorithms: zlib zstd]
+        ignore line: [gcc version 13.2.0 (Ubuntu 13.2.0-23ubuntu4) ]
+        ignore line: [COMPILER_PATH=/usr/libexec/gcc/aarch64-linux-gnu/13/:/usr/libexec/gcc/aarch64-linux-gnu/13/:/usr/libexec/gcc/aarch64-linux-gnu/:/usr/lib/gcc/aarch64-linux-gnu/13/:/usr/lib/gcc/aarch64-linux-gnu/]
+        ignore line: [LIBRARY_PATH=/usr/lib/gcc/aarch64-linux-gnu/13/:/usr/lib/gcc/aarch64-linux-gnu/13/../../../aarch64-linux-gnu/:/usr/lib/gcc/aarch64-linux-gnu/13/../../../../lib/:/lib/aarch64-linux-gnu/:/lib/../lib/:/usr/lib/aarch64-linux-gnu/:/usr/lib/../lib/:/usr/local/cuda/lib64/stubs/:./:/usr/lib/gcc/aarch64-linux-gnu/13/../../../:/lib/:/usr/lib/]
+        ignore line: [COLLECT_GCC_OPTIONS='-v' '-o' 'cmTC_83568' '-shared-libgcc' '-mlittle-endian' '-mabi=lp64' '-dumpdir' 'cmTC_83568.']
+        link line: [ /usr/libexec/gcc/aarch64-linux-gnu/13/collect2 -plugin /usr/libexec/gcc/aarch64-linux-gnu/13/liblto_plugin.so -plugin-opt=/usr/libexec/gcc/aarch64-linux-gnu/13/lto-wrapper -plugin-opt=-fresolution=/tmp/ccm9fVHQ.res -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc -plugin-opt=-pass-through=-lc -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc --build-id --eh-frame-hdr --hash-style=gnu --as-needed -dynamic-linker /lib/ld-linux-aarch64.so.1 -X -EL -maarch64linux --fix-cortex-a53-843419 -pie -z now -z relro -o cmTC_83568 /usr/lib/gcc/aarch64-linux-gnu/13/../../../aarch64-linux-gnu/Scrt1.o /usr/lib/gcc/aarch64-linux-gnu/13/../../../aarch64-linux-gnu/crti.o /usr/lib/gcc/aarch64-linux-gnu/13/crtbeginS.o -L/usr/lib/gcc/aarch64-linux-gnu/13 -L/usr/lib/gcc/aarch64-linux-gnu/13/../../../aarch64-linux-gnu -L/usr/lib/gcc/aarch64-linux-gnu/13/../../../../lib -L/lib/aarch64-linux-gnu -L/lib/../lib -L/usr/lib/aarch64-linux-gnu -L/usr/lib/../lib -L/usr/local/cuda/lib64/stubs -L. -L/usr/lib/gcc/aarch64-linux-gnu/13/../../.. -v CMakeFiles/cmTC_83568.dir/CMakeCXXCompilerABI.cpp.o -lstdc++ -lm -lgcc_s -lgcc -lc -lgcc_s -lgcc /usr/lib/gcc/aarch64-linux-gnu/13/crtendS.o /usr/lib/gcc/aarch64-linux-gnu/13/../../../aarch64-linux-gnu/crtn.o]
+          arg [/usr/libexec/gcc/aarch64-linux-gnu/13/collect2] ==> ignore
+          arg [-plugin] ==> ignore
+          arg [/usr/libexec/gcc/aarch64-linux-gnu/13/liblto_plugin.so] ==> ignore
+          arg [-plugin-opt=/usr/libexec/gcc/aarch64-linux-gnu/13/lto-wrapper] ==> ignore
+          arg [-plugin-opt=-fresolution=/tmp/ccm9fVHQ.res] ==> ignore
+          arg [-plugin-opt=-pass-through=-lgcc_s] ==> ignore
+          arg [-plugin-opt=-pass-through=-lgcc] ==> ignore
+          arg [-plugin-opt=-pass-through=-lc] ==> ignore
+          arg [-plugin-opt=-pass-through=-lgcc_s] ==> ignore
+          arg [-plugin-opt=-pass-through=-lgcc] ==> ignore
+          arg [--build-id] ==> ignore
+          arg [--eh-frame-hdr] ==> ignore
+          arg [--hash-style=gnu] ==> ignore
+          arg [--as-needed] ==> ignore
+          arg [-dynamic-linker] ==> ignore
+          arg [/lib/ld-linux-aarch64.so.1] ==> ignore
+          arg [-X] ==> ignore
+          arg [-EL] ==> ignore
+          arg [-maarch64linux] ==> ignore
+          arg [--fix-cortex-a53-843419] ==> ignore
+          arg [-pie] ==> ignore
+          arg [-znow] ==> ignore
+          arg [-zrelro] ==> ignore
+          arg [-o] ==> ignore
+          arg [cmTC_83568] ==> ignore
+          arg [/usr/lib/gcc/aarch64-linux-gnu/13/../../../aarch64-linux-gnu/Scrt1.o] ==> obj [/usr/lib/gcc/aarch64-linux-gnu/13/../../../aarch64-linux-gnu/Scrt1.o]
+          arg [/usr/lib/gcc/aarch64-linux-gnu/13/../../../aarch64-linux-gnu/crti.o] ==> obj [/usr/lib/gcc/aarch64-linux-gnu/13/../../../aarch64-linux-gnu/crti.o]
+          arg [/usr/lib/gcc/aarch64-linux-gnu/13/crtbeginS.o] ==> obj [/usr/lib/gcc/aarch64-linux-gnu/13/crtbeginS.o]
+          arg [-L/usr/lib/gcc/aarch64-linux-gnu/13] ==> dir [/usr/lib/gcc/aarch64-linux-gnu/13]
+          arg [-L/usr/lib/gcc/aarch64-linux-gnu/13/../../../aarch64-linux-gnu] ==> dir [/usr/lib/gcc/aarch64-linux-gnu/13/../../../aarch64-linux-gnu]
+          arg [-L/usr/lib/gcc/aarch64-linux-gnu/13/../../../../lib] ==> dir [/usr/lib/gcc/aarch64-linux-gnu/13/../../../../lib]
+          arg [-L/lib/aarch64-linux-gnu] ==> dir [/lib/aarch64-linux-gnu]
+          arg [-L/lib/../lib] ==> dir [/lib/../lib]
+          arg [-L/usr/lib/aarch64-linux-gnu] ==> dir [/usr/lib/aarch64-linux-gnu]
+          arg [-L/usr/lib/../lib] ==> dir [/usr/lib/../lib]
+          arg [-L/usr/local/cuda/lib64/stubs] ==> dir [/usr/local/cuda/lib64/stubs]
+          arg [-L.] ==> ignore
+          arg [-L/usr/lib/gcc/aarch64-linux-gnu/13/../../..] ==> dir [/usr/lib/gcc/aarch64-linux-gnu/13/../../..]
+          arg [-v] ==> ignore
+          arg [CMakeFiles/cmTC_83568.dir/CMakeCXXCompilerABI.cpp.o] ==> ignore
+          arg [-lstdc++] ==> lib [stdc++]
+          arg [-lm] ==> lib [m]
+          arg [-lgcc_s] ==> lib [gcc_s]
+          arg [-lgcc] ==> lib [gcc]
+          arg [-lc] ==> lib [c]
+          arg [-lgcc_s] ==> lib [gcc_s]
+          arg [-lgcc] ==> lib [gcc]
+          arg [/usr/lib/gcc/aarch64-linux-gnu/13/crtendS.o] ==> obj [/usr/lib/gcc/aarch64-linux-gnu/13/crtendS.o]
+          arg [/usr/lib/gcc/aarch64-linux-gnu/13/../../../aarch64-linux-gnu/crtn.o] ==> obj [/usr/lib/gcc/aarch64-linux-gnu/13/../../../aarch64-linux-gnu/crtn.o]
+        ignore line: [collect2 version 13.2.0]
+        ignore line: [/usr/bin/ld -plugin /usr/libexec/gcc/aarch64-linux-gnu/13/liblto_plugin.so -plugin-opt=/usr/libexec/gcc/aarch64-linux-gnu/13/lto-wrapper -plugin-opt=-fresolution=/tmp/ccm9fVHQ.res -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc -plugin-opt=-pass-through=-lc -plugin-opt=-pass-through=-lgcc_s -plugin-opt=-pass-through=-lgcc --build-id --eh-frame-hdr --hash-style=gnu --as-needed -dynamic-linker /lib/ld-linux-aarch64.so.1 -X -EL -maarch64linux --fix-cortex-a53-843419 -pie -z now -z relro -o cmTC_83568 /usr/lib/gcc/aarch64-linux-gnu/13/../../../aarch64-linux-gnu/Scrt1.o /usr/lib/gcc/aarch64-linux-gnu/13/../../../aarch64-linux-gnu/crti.o /usr/lib/gcc/aarch64-linux-gnu/13/crtbeginS.o -L/usr/lib/gcc/aarch64-linux-gnu/13 -L/usr/lib/gcc/aarch64-linux-gnu/13/../../../aarch64-linux-gnu -L/usr/lib/gcc/aarch64-linux-gnu/13/../../../../lib -L/lib/aarch64-linux-gnu -L/lib/../lib -L/usr/lib/aarch64-linux-gnu -L/usr/lib/../lib -L/usr/local/cuda/lib64/stubs -L. -L/usr/lib/gcc/aarch64-linux-gnu/13/../../.. -v CMakeFiles/cmTC_83568.dir/CMakeCXXCompilerABI.cpp.o -lstdc++ -lm -lgcc_s -lgcc -lc -lgcc_s -lgcc /usr/lib/gcc/aarch64-linux-gnu/13/crtendS.o /usr/lib/gcc/aarch64-linux-gnu/13/../../../aarch64-linux-gnu/crtn.o]
+        linker tool for 'CXX': /usr/bin/ld
+        collapse obj [/usr/lib/gcc/aarch64-linux-gnu/13/../../../aarch64-linux-gnu/Scrt1.o] ==> [/usr/lib/aarch64-linux-gnu/Scrt1.o]
+        collapse obj [/usr/lib/gcc/aarch64-linux-gnu/13/../../../aarch64-linux-gnu/crti.o] ==> [/usr/lib/aarch64-linux-gnu/crti.o]
+        collapse obj [/usr/lib/gcc/aarch64-linux-gnu/13/../../../aarch64-linux-gnu/crtn.o] ==> [/usr/lib/aarch64-linux-gnu/crtn.o]
+        collapse library dir [/usr/lib/gcc/aarch64-linux-gnu/13] ==> [/usr/lib/gcc/aarch64-linux-gnu/13]
+        collapse library dir [/usr/lib/gcc/aarch64-linux-gnu/13/../../../aarch64-linux-gnu] ==> [/usr/lib/aarch64-linux-gnu]
+        collapse library dir [/usr/lib/gcc/aarch64-linux-gnu/13/../../../../lib] ==> [/usr/lib]
+        collapse library dir [/lib/aarch64-linux-gnu] ==> [/lib/aarch64-linux-gnu]
+        collapse library dir [/lib/../lib] ==> [/lib]
+        collapse library dir [/usr/lib/aarch64-linux-gnu] ==> [/usr/lib/aarch64-linux-gnu]
+        collapse library dir [/usr/lib/../lib] ==> [/usr/lib]
+        collapse library dir [/usr/local/cuda/lib64/stubs] ==> [/usr/local/cuda/lib64/stubs]
+        collapse library dir [/usr/lib/gcc/aarch64-linux-gnu/13/../../..] ==> [/usr/lib]
+        implicit libs: [stdc++;m;gcc_s;gcc;c;gcc_s;gcc]
+        implicit objs: [/usr/lib/aarch64-linux-gnu/Scrt1.o;/usr/lib/aarch64-linux-gnu/crti.o;/usr/lib/gcc/aarch64-linux-gnu/13/crtbeginS.o;/usr/lib/gcc/aarch64-linux-gnu/13/crtendS.o;/usr/lib/aarch64-linux-gnu/crtn.o]
+        implicit dirs: [/usr/lib/gcc/aarch64-linux-gnu/13;/usr/lib/aarch64-linux-gnu;/usr/lib;/lib/aarch64-linux-gnu;/lib;/usr/local/cuda/lib64/stubs]
+        implicit fwks: []
+      
+      
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/usr/local/lib/python3.12/dist-packages/cmake/data/share/cmake-3.31/Modules/Internal/CMakeDetermineLinkerId.cmake:40 (message)"
+      - "/usr/local/lib/python3.12/dist-packages/cmake/data/share/cmake-3.31/Modules/CMakeDetermineCompilerABI.cmake:255 (cmake_determine_linker_id)"
+      - "/usr/local/lib/python3.12/dist-packages/cmake/data/share/cmake-3.31/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:18 (project)"
+    message: |
+      Running the CXX compiler's linker: "/usr/bin/ld" "-v"
+      GNU ld (GNU Binutils for Ubuntu) 2.42
+...

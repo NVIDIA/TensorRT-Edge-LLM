@@ -1,0 +1,2 @@
+/usr/bin/aarch64-linux-gnu-ar qc libexampleUtils.a CMakeFiles/exampleUtils.dir/memoryMonitor.cpp.o CMakeFiles/exampleUtils.dir/profileFormatter.cpp.o
+/usr/bin/aarch64-linux-gnu-ranlib libexampleUtils.a
