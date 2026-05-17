@@ -1,2 +1,0 @@
-/usr/bin/aarch64-linux-gnu-ar qc libedgellmBuilder.a CMakeFiles/edgellmBuilder.dir/builder/builder.cpp.o CMakeFiles/edgellmBuilder.dir/common/fileUtils.cpp.o CMakeFiles/edgellmBuilder.dir/common/mmapReader.cpp.o CMakeFiles/edgellmBuilder.dir/common/safetensorsUtils.cpp.o CMakeFiles/edgellmBuilder.dir/common/stringUtils.cpp.o CMakeFiles/edgellmBuilder.dir/common/tensor.cpp.o CMakeFiles/edgellmBuilder.dir/common/tensorUtils.cpp.o CMakeFiles/edgellmBuilder.dir/common/version.cpp.o
-/usr/bin/aarch64-linux-gnu-ranlib libedgellmBuilder.a
