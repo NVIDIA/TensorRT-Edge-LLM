@@ -94,32 +94,49 @@ void invokeScatter(rt::Tensor const& source, rt::Tensor const& indices, rt::Tens
 //! \brief Fused non-streaming assistant preamble construction for TTS input projection
 //!
 //! Builds the complete non-streaming prefill buffer in one pass.
-//! Total rows written = 8 + textLen + 2 (= seqLen + 2).
+//! Two layouts based on whether a language conditioning ID is provided:
 //!
-//! Row layout (written at outputOffset):
-//!   [0-2]:        projected[0-2]                            (role tokens)
-//!   [3]:          ttsPadEmbed + talkerEmbTable[codecNothinkId]
-//!   [4]:          ttsPadEmbed + talkerEmbTable[codecThinkBosId]
-//!   [5]:          ttsPadEmbed + talkerEmbTable[codecThinkEosId]
-//!   [6]:          ttsPadEmbed + talkerEmbTable[speakerId]
-//!   [7]:          ttsBosEmbed + talkerEmbTable[codecPadId]
-//!   [8..8+N-2]:   projected[3+i] + talkerEmbTable[codecPadId]  (text tokens, N=textLen)
-//!   [8+N-1]:      projected[3+N-1] + talkerEmbTable[codecBosId]  (last text = start-of-generation)
-//!   [8+N]:        ttsEosEmbed + talkerEmbTable[codecPadId]
-//!   [8+N+1]:      ttsPadEmbed + talkerEmbTable[codecBosId]
+//! No-language path (langId < 0):
+//!   Total rows = 8 + textLen + 2 (= seqLen + 2). Uses codecNothinkId at row 3.
+//!     [0-2]:        projected[0-2]
+//!     [3]:          ttsPadEmbed + talkerEmbTable[codecNothinkId]
+//!     [4]:          ttsPadEmbed + talkerEmbTable[codecThinkBosId]
+//!     [5]:          ttsPadEmbed + talkerEmbTable[codecThinkEosId]
+//!     [6]:          ttsPadEmbed + talkerEmbTable[speakerId]
+//!     [7]:          ttsBosEmbed + talkerEmbTable[codecPadId]
+//!     [8..8+N-1]:   projected[3+i] + talkerEmbTable[codecPad/codecBos]  (last row uses codecBosId)
+//!     [8+N]:        ttsEosEmbed + talkerEmbTable[codecPadId]
+//!     [8+N+1]:      ttsPadEmbed + talkerEmbTable[codecBosId]
+//!
+//! Language path (langId >= 0, CustomVoice with language conditioning):
+//!   Total rows = 9 + textLen + 2 (= seqLen + 3 = original-seqLen + 2, since N is also +1 upstream).
+//!   Uses codecThinkId at row 3 and injects langId at row 5.
+//!     [0-2]:        projected[0-2]
+//!     [3]:          ttsPadEmbed + talkerEmbTable[codecThinkId]      (NOTE: think, not no-think)
+//!     [4]:          ttsPadEmbed + talkerEmbTable[codecThinkBosId]
+//!     [5]:          ttsPadEmbed + talkerEmbTable[langId]            (NEW row, language embed)
+//!     [6]:          ttsPadEmbed + talkerEmbTable[codecThinkEosId]
+//!     [7]:          ttsPadEmbed + talkerEmbTable[speakerId]
+//!     [8]:          ttsBosEmbed + talkerEmbTable[codecPadId]
+//!     [9..9+N-1]:   projected[3+i] + talkerEmbTable[codecPad/codecBos]  (last row uses codecBosId)
+//!     [9+N]:        ttsEosEmbed + talkerEmbTable[codecPadId]
+//!     [9+N+1]:      ttsPadEmbed + talkerEmbTable[codecBosId]
 //!
 //! \param projected      MLP output [seqLen, H] (FP16)
 //! \param ttsPadEmbed/ttsBosEmbed/ttsEosEmbed  TTS special embeddings [H] (FP16)
 //! \param talkerEmbTable Talker embedding table [vocabSize, H] (FP16)
-//! \param codecNothinkId..codecBosId  Codec token IDs used in rows [3-8+N+1]
-//! \param speakerId      Speaker codec token ID (row 6)
-//! \param textLen        Number of text token rows (N = seqLen - 8)
-//! \param output         Full output buffer [8+N+2, H] (FP16)
-//! \param stream         CUDA stream
+//! \param codecNothinkId  Codec no-think control token (used when langId < 0)
+//! \param codecThinkId    Codec think control token (used when langId >= 0)
+//! \param codecThinkBosId/codecThinkEosId/codecPadId/codecBosId  Codec control IDs
+//! \param speakerId       Speaker codec token ID
+//! \param langId          Language codec token ID; if < 0, no-language path is used
+//! \param textLen         Number of text token rows (N)
+//! \param output          Full output buffer (FP16)
+//! \param stream          CUDA stream
 void invokeAssistantPreamble(rt::Tensor const& projected, rt::Tensor const& ttsPadEmbed, rt::Tensor const& ttsBosEmbed,
-    rt::Tensor const& ttsEosEmbed, rt::Tensor const& talkerEmbTable, int32_t codecNothinkId, int32_t codecThinkBosId,
-    int32_t codecThinkEosId, int32_t speakerId, int32_t codecPadId, int32_t codecBosId, int32_t textLen,
-    rt::Tensor& output, cudaStream_t stream);
+    rt::Tensor const& ttsEosEmbed, rt::Tensor const& talkerEmbTable, int32_t codecNothinkId, int32_t codecThinkId,
+    int32_t codecThinkBosId, int32_t codecThinkEosId, int32_t speakerId, int32_t codecPadId, int32_t codecBosId,
+    int32_t langId, int32_t textLen, rt::Tensor& output, cudaStream_t stream);
 
 //! \brief Fused residual connection for TTS decode input
 //!

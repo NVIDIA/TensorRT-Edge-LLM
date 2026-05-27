@@ -48,6 +48,8 @@ struct ParsedInput
     std::vector<std::vector<Message>> requests;
     // Per-request speaker name (parallel to requests). Falls back to top-level "speaker" default.
     std::vector<std::string> requestSpeakers;
+    // Per-request CustomVoice language (parallel to requests). Falls back to top-level "language" default.
+    std::vector<std::string> requestLanguages;
     bool applyChatTemplate{true};
     bool addGenerationPrompt{true};
     bool enableThinking{false};
@@ -56,6 +58,7 @@ struct ParsedInput
     float talkerTopP{1.0f};
     float repetitionPenalty{1.05f};
     std::string speakerName{""};
+    std::string language{""};
     int32_t maxAudioLength{4096};
 };
 
@@ -89,6 +92,7 @@ ParsedInput parseInputFile(std::filesystem::path const& inputFilePath, int32_t b
     result.talkerTopP = inputData.value("talker_top_p", 1.0f);
     result.repetitionPenalty = inputData.value("repetition_penalty", 1.05f);
     result.speakerName = inputData.value("speaker", "");
+    result.language = inputData.value("language", "");
     result.maxAudioLength = inputData.value("max_audio_length", 4096);
 
     check::check(
@@ -104,6 +108,7 @@ ParsedInput parseInputFile(std::filesystem::path const& inputFilePath, int32_t b
             "Each request must contain a 'messages' array");
 
         std::string requestSpeaker = requestItem.value("speaker", result.speakerName);
+        std::string requestLanguage = requestItem.value("language", result.language);
 
         auto const& messagesArray = requestItem["messages"];
         check::check(messagesArray.size() <= limits::security::kMaxMessagesPerRequest,
@@ -145,6 +150,7 @@ ParsedInput parseInputFile(std::filesystem::path const& inputFilePath, int32_t b
         }
         result.requests.push_back(std::move(messages));
         result.requestSpeakers.push_back(std::move(requestSpeaker));
+        result.requestLanguages.push_back(std::move(requestLanguage));
     }
 
     return result;
@@ -381,6 +387,7 @@ int main(int argc, char** argv)
         talkerReq.addGenerationPrompt = input.addGenerationPrompt;
         talkerReq.enableThinking = input.enableThinking;
         talkerReq.speakerName = input.requestSpeakers[requestIdx];
+        talkerReq.language = input.requestLanguages[requestIdx];
         talkerReq.maxAudioLength = input.maxAudioLength;
         talkerReq.messages = input.requests[requestIdx];
 

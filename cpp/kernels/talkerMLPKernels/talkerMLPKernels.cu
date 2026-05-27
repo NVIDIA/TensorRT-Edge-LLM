@@ -453,10 +453,12 @@ void invokeScatter(rt::Tensor const& source, rt::Tensor const& indices, rt::Tens
 template <int32_t VEC_SIZE = 8>
 __global__ void assistantPreambleKernel(half const* __restrict__ projected, half const* __restrict__ ttsPadEmbed,
     half const* __restrict__ ttsBosEmbed, half const* __restrict__ ttsEosEmbed, half const* __restrict__ embTable,
-    int32_t codecNothinkId, int32_t codecThinkBosId, int32_t codecThinkEosId, int32_t speakerId, int32_t codecPadId,
-    int32_t codecBosId, int32_t textLen, int32_t hiddenDim, half* __restrict__ output)
+    int32_t codecNothinkId, int32_t codecThinkId, int32_t codecThinkBosId, int32_t codecThinkEosId, int32_t speakerId,
+    int32_t codecPadId, int32_t codecBosId, int32_t langId, int32_t textLen, int32_t hiddenDim,
+    half* __restrict__ output)
 {
-    constexpr int32_t kFixedPrefixLen = 8; // rows 0-7
+    // No-lang: 8 fixed prefix rows (0-7); lang: 9 fixed prefix rows (0-8) with langId injected at row 5.
+    int32_t const kFixedPrefixLen = (langId >= 0) ? 9 : 8;
     int32_t const rowIdx = blockIdx.x;
     int32_t const numVecs = hiddenDim / VEC_SIZE;
 
@@ -468,42 +470,91 @@ __global__ void assistantPreambleKernel(half const* __restrict__ projected, half
 
     if (rowIdx < kFixedPrefixLen)
     {
-        switch (rowIdx)
+        if (langId < 0)
         {
-        case 0: srcA = projected; break;
-        case 1: srcA = projected + hiddenDim; break;
-        case 2: srcA = projected + 2 * hiddenDim; break;
-        case 3:
-            srcA = ttsPadEmbed;
-            srcB = embTable + static_cast<int64_t>(codecNothinkId) * hiddenDim;
-            break;
-        case 4:
-            srcA = ttsPadEmbed;
-            srcB = embTable + static_cast<int64_t>(codecThinkBosId) * hiddenDim;
-            break;
-        case 5:
-            srcA = ttsPadEmbed;
-            srcB = embTable + static_cast<int64_t>(codecThinkEosId) * hiddenDim;
-            break;
-        case 6:
-            srcA = ttsPadEmbed;
-            srcB = embTable + static_cast<int64_t>(speakerId) * hiddenDim;
-            break;
-        default: // rowIdx == 7
-            srcA = ttsBosEmbed;
-            srcB = embTable + static_cast<int64_t>(codecPadId) * hiddenDim;
-            break;
+            // No-language path (8-row prefix)
+            switch (rowIdx)
+            {
+            case 0: srcA = projected; break;
+            case 1: srcA = projected + hiddenDim; break;
+            case 2: srcA = projected + 2 * hiddenDim; break;
+            case 3:
+                srcA = ttsPadEmbed;
+                srcB = embTable + static_cast<int64_t>(codecNothinkId) * hiddenDim;
+                break;
+            case 4:
+                srcA = ttsPadEmbed;
+                srcB = embTable + static_cast<int64_t>(codecThinkBosId) * hiddenDim;
+                break;
+            case 5:
+                srcA = ttsPadEmbed;
+                srcB = embTable + static_cast<int64_t>(codecThinkEosId) * hiddenDim;
+                break;
+            case 6:
+                srcA = ttsPadEmbed;
+                srcB = embTable + static_cast<int64_t>(speakerId) * hiddenDim;
+                break;
+            default: // rowIdx == 7
+                srcA = ttsBosEmbed;
+                srcB = embTable + static_cast<int64_t>(codecPadId) * hiddenDim;
+                break;
+            }
+        }
+        else
+        {
+            // Language path (9-row prefix): codecThinkId at row 3, langId injected at row 5,
+            // codecThinkEosId shifted to row 6, speaker to row 7, codecPad/ttsBos to row 8.
+            switch (rowIdx)
+            {
+            case 0: srcA = projected; break;
+            case 1: srcA = projected + hiddenDim; break;
+            case 2: srcA = projected + 2 * hiddenDim; break;
+            case 3:
+                srcA = ttsPadEmbed;
+                srcB = embTable + static_cast<int64_t>(codecThinkId) * hiddenDim;
+                break;
+            case 4:
+                srcA = ttsPadEmbed;
+                srcB = embTable + static_cast<int64_t>(codecThinkBosId) * hiddenDim;
+                break;
+            case 5:
+                srcA = ttsPadEmbed;
+                srcB = embTable + static_cast<int64_t>(langId) * hiddenDim;
+                break;
+            case 6:
+                srcA = ttsPadEmbed;
+                srcB = embTable + static_cast<int64_t>(codecThinkEosId) * hiddenDim;
+                break;
+            case 7:
+                srcA = ttsPadEmbed;
+                srcB = embTable + static_cast<int64_t>(speakerId) * hiddenDim;
+                break;
+            default: // rowIdx == 8
+                srcA = ttsBosEmbed;
+                srcB = embTable + static_cast<int64_t>(codecPadId) * hiddenDim;
+                break;
+            }
         }
     }
     else if (rowIdx < kFixedPrefixLen + textLen)
     {
-        // Text token rows: projected[3 + (rowIdx-8)] + embTable[codec]
-        // Last text row uses codecBosId (start-of-generation marker);
-        // all preceding text rows use codecPadId. Matches PyTorch reference:
-        //   assistant_codec_hidden = [zeros(3), no-think, thinkBos, thinkEos, speaker, codecPad, codecBos]
+        // Text token rows: projected[3 + (rowIdx-kFixedPrefixLen)] + embTable[codec]
+        //
+        // PyTorch reference (modeling_qwen3_tts.py, non_streaming_mode branch) builds the
+        // codec embed for text rows as embed([codec_pad_id] * (text_len + 1)), i.e. every
+        // text row uses codec_pad_id and the trailing tts_eos row also uses codec_pad_id.
+        // codec_bos_id is reserved for the very last row (tts_pad + codec_bos), not the last
+        // text row. Legacy (no-language) path: keep the original kernel's behaviour of using
+        // codec_bos on the last text row to avoid silently changing established outputs.
         int32_t const textIdx = rowIdx - kFixedPrefixLen;
         srcA = projected + static_cast<int64_t>(3 + textIdx) * hiddenDim;
-        int32_t const codecId = (rowIdx == kFixedPrefixLen + textLen - 1) ? codecBosId : codecPadId;
+        // Keep both paths consistent with the existing pristine behaviour: last text row uses
+        // codec_bos, preceding rows use codec_pad. The Python reference's non_streaming_mode
+        // branch puts codec_pad on every text row, but bumping the language path to that layout
+        // in isolation caused the talker to runaway-generate (188 frames vs ~24 expected); the
+        // codec_bos marker on the final text row appears load-bearing for the kernel/sampler.
+        bool const isLastTextRow = (rowIdx == kFixedPrefixLen + textLen - 1);
+        int32_t const codecId = isLastTextRow ? codecBosId : codecPadId;
         srcB = embTable + static_cast<int64_t>(codecId) * hiddenDim;
     }
     else if (rowIdx == kFixedPrefixLen + textLen)
@@ -539,16 +590,16 @@ __global__ void assistantPreambleKernel(half const* __restrict__ projected, half
 }
 
 void invokeAssistantPreamble(rt::Tensor const& projected, rt::Tensor const& ttsPadEmbed, rt::Tensor const& ttsBosEmbed,
-    rt::Tensor const& ttsEosEmbed, rt::Tensor const& talkerEmbTable, int32_t codecNothinkId, int32_t codecThinkBosId,
-    int32_t codecThinkEosId, int32_t speakerId, int32_t codecPadId, int32_t codecBosId, int32_t textLen,
-    rt::Tensor& output, cudaStream_t stream)
+    rt::Tensor const& ttsEosEmbed, rt::Tensor const& talkerEmbTable, int32_t codecNothinkId, int32_t codecThinkId,
+    int32_t codecThinkBosId, int32_t codecThinkEosId, int32_t speakerId, int32_t codecPadId, int32_t codecBosId,
+    int32_t langId, int32_t textLen, rt::Tensor& output, cudaStream_t stream)
 {
     constexpr int32_t kVecSize = 8;
 
     int32_t const hiddenDim = static_cast<int32_t>(projected.getShape()[1]);
     int32_t const numVecs = hiddenDim / kVecSize;
-    // totalRows = 8 fixed prefix + textLen text rows + 2 suffix rows
-    int32_t const totalRows = 8 + textLen + 2;
+    int32_t const kFixedPrefixLen = (langId >= 0) ? 9 : 8;
+    int32_t const totalRows = kFixedPrefixLen + textLen + 2;
 
     // 128 threads covers H=1024 with VEC_SIZE=8 in one pass
     dim3 const block(std::min(numVecs, 128));
@@ -562,8 +613,8 @@ void invokeAssistantPreamble(rt::Tensor const& projected, rt::Tensor const& ttsP
     half* outPtr = static_cast<half*>(output.rawPointer());
 
     assistantPreambleKernel<kVecSize><<<grid, block, 0, stream>>>(projPtr, padPtr, bosPtr, eosPtr, embPtr,
-        codecNothinkId, codecThinkBosId, codecThinkEosId, speakerId, codecPadId, codecBosId, textLen, hiddenDim,
-        outPtr);
+        codecNothinkId, codecThinkId, codecThinkBosId, codecThinkEosId, speakerId, codecPadId, codecBosId, langId,
+        textLen, hiddenDim, outPtr);
     CUDA_CHECK(cudaPeekAtLastError());
 }
 

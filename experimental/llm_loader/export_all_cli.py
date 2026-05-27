@@ -1077,6 +1077,12 @@ def _patch_tts_config(model_dir: str, out_dir: str) -> None:
         if key in talker_cfg:
             cfg[key] = talker_cfg[key]
 
+    # CustomVoice language conditioning map: language name -> codec token id.
+    # Required by the runtime to inject the language-row in the 9-row prefix
+    # for CustomVoice checkpoints. Optional for non-CustomVoice models.
+    if "codec_language_id" in talker_cfg:
+        cfg["codec_language_id"] = talker_cfg["codec_language_id"]
+
     # thinker_hidden_size and text_vocab_size
     # Qwen3-Omni exposes ``thinker_hidden_size`` directly on talker_config;
     # Qwen3-TTS uses ``text_hidden_size`` — accept either.
