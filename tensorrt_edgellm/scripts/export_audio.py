@@ -104,6 +104,14 @@ def main() -> None:
                      quantization=args.quantization,
                      export_models=args.export_models,
                      dataset_dir=args.dataset_dir)
+    except Exception as e:
+        print(f"Error during audio export: {e}", file=sys.stderr)
+        traceback.print_exc()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
         print("Audio model export completed successfully!")
     except Exception as e:
         print(f"Error during audio model export: {e}")
