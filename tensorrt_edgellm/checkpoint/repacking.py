@@ -129,16 +129,24 @@ def _pack_intweights(unpacked_qweight: np.ndarray) -> np.ndarray:
     pk = pk.reshape(N, K)
 
     # Step 3: Interleave every 4 rows (N dimension) across K-blocks of 64
-    pk = pk.reshape(N // interleave, interleave, K // kstride, kstride)
-    pk = pk.transpose(0, 2, 1, 3)  # [N//4, K//64, 4, 64]
-    pk = pk.reshape(N // interleave, K // kstride, kstride, interleave)
+    # Pad N to a multiple of interleave if necessary (e.g. router layers with N < 4)
+    if N % interleave != 0:
+        pad_n = interleave - (N % interleave)
+        pk = np.pad(pk, ((0, pad_n), (0, 0)), mode='constant')
+        N_padded = N + pad_n
+    else:
+        N_padded = N
+    pk = pk.reshape(N_padded // interleave, interleave, K // kstride, kstride)
+    pk = pk.transpose(0, 2, 1, 3)  # [N_padded//4, K//64, 4, 64]
+    pk = pk.reshape(N_padded // interleave, K // kstride, kstride, interleave)
 
     # Step 4: Pack 4 nibbles per int16 (little-endian nibble order)
     pk = (pk[..., 0]
           | (pk[..., 1] << 4)
           | (pk[..., 2] << 8)
           | (pk[..., 3] << 12))
-    return pk.reshape(N // interleave, K).astype(np.int16)
+    packed = pk.reshape(N_padded // interleave, K).astype(np.int16)
+    return packed
 
 
 def _gather_rows_by_gidx_order(
@@ -184,11 +192,24 @@ def repack_gptq_to_plugin(
     """
     in_div8, out_features = qweight.shape
     in_features = in_div8 * 8
-    num_groups = qzeros.shape[0]
-    group_size = in_features // num_groups
 
     qw = qweight.cpu().to(torch.int32)
     qz = qzeros.cpu().to(torch.int32)
+
+    # Some symmetric GPTQ checkpoints (e.g. Qwen3.5 int4) omit zero points
+    # entirely, storing ``qzeros`` as an empty ``[num_groups, 0]`` tensor.
+    # Treat these as symmetric quantization with the implicit midpoint zero (8).
+    symmetric = qz.numel() == 0
+    if symmetric:
+        if qz.dim() >= 1 and qz.shape[0] > 0:
+            num_groups = qz.shape[0]
+        elif g_idx is not None and g_idx.numel() > 0:
+            num_groups = int(g_idx.max().item()) + 1
+        else:
+            num_groups = 1
+    else:
+        num_groups = qz.shape[0]
+    group_size = in_features // num_groups
 
     # Extract weight nibbles: nibbles[in, out] = uint4 value in [0, 15]
     # GPTQ row-packs: bit k of column `in` is in row `in//8`, bit position 4*k
@@ -198,9 +219,16 @@ def repack_gptq_to_plugin(
 
     # Extract zero-point nibbles: zeros[group, out] = uint4 in [0, 15]
     # qzeros is [num_groups, out//8] -- same column packing as AWQ qzeros
-    zeros = torch.zeros(num_groups, out_features, dtype=torch.int32)
-    for k in range(8):
-        zeros[:, k::8] = (qz >> (4 * k)) & 0xF
+    if symmetric:
+        # No stored zeros: actual_zero is the 4-bit midpoint 8, so stored_zero =
+        # 8 - zero_point_offset makes the offset adjustment below a no-op.
+        zeros = torch.full((num_groups, out_features),
+                           8 - int(zero_point_offset),
+                           dtype=torch.int32)
+    else:
+        zeros = torch.zeros(num_groups, out_features, dtype=torch.int32)
+        for k in range(8):
+            zeros[:, k::8] = (qz >> (4 * k)) & 0xF
 
     if g_idx is None:
         g_idx_t = torch.arange(in_features, dtype=torch.int32) // group_size
@@ -363,6 +391,8 @@ def _repack_gptq_weights(model: nn.Module) -> None:
             qw = module._buffers.get("qweight")
             qz = module._buffers.get("qzeros")
             if qw is not None and qw.dtype == torch.int32 and qz is not None:
+                logger.info("Repacking GPTQ module: %s, qweight=%s, qzeros=%s",
+                            type(module).__name__, list(qw.shape), list(qz.shape))
                 g_idx_buf = module._buffers.get("g_idx")
                 packed, perm = repack_gptq_to_plugin(
                     qw, qz, g_idx_buf, getattr(module, "zero_point_offset", 1))
@@ -447,8 +477,12 @@ def _extract_gptq_for_marlin(
     """
     unpacked = _unpack_int4_gptq(proj.qweight)  # [K, N]
 
-    if hasattr(proj, "qzeros") and proj.qzeros is not None:
-        zeros = _unpack_qzeros_moe(proj.qzeros)  # [num_groups, N]
+    # Symmetric GPTQ checkpoints may omit zero points (``qzeros`` is ``None`` or
+    # an empty ``[num_groups, 0]`` tensor); the implicit midpoint zero (8)
+    # already matches Marlin's ``(q - 8) * scale``, so no remapping is needed.
+    qzeros = getattr(proj, "qzeros", None)
+    if qzeros is not None and qzeros.numel() > 0:
+        zeros = _unpack_qzeros_moe(qzeros)  # [num_groups, N]
         K, N = unpacked.shape
         group_ids = torch.arange(K, device=unpacked.device) // group_size
         zeros_expanded = zeros[group_ids.clamp(max=zeros.shape[0] - 1)]
