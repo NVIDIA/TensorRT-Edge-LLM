@@ -272,6 +272,85 @@ class GdnConfig:
 
 
 @dataclass
+class Gemma4Config:
+    """Gemma 4 (``gemma4_text``) architecture parameters.
+
+    Gemma 4 interleaves local *sliding-window* attention with global *full*
+    attention, and the two layer types differ in more than the attention mask:
+    they use different head dimensions (``head_dim`` vs ``global_head_dim``) and
+    different RoPE parameters (a plain ``rope_theta`` for local layers, a
+    proportional RoPE with its own ``rope_theta`` and ``partial_rotary_factor``
+    for global layers).  Gemma 4 also adds Per-Layer Embeddings (PLE), key/value
+    sharing across the trailing decoder layers, and final-logit soft-capping.
+
+    None of these fit the flat :class:`ModelConfig` shared by Llama-style dense
+    models, so they are collected here and attached as
+    :attr:`ModelConfig.gemma4_cfg`.  See ``models/gemma4`` for the consuming
+    modeling code.
+    """
+
+    #: Per-layer attention type: ``True`` for global (full) attention, ``False``
+    #: for local (sliding-window) attention.  Length == ``num_hidden_layers``.
+    is_global_layer: List[bool]
+    #: Head dimension for local (sliding) attention layers (``head_dim``).
+    local_head_dim: int
+    #: Head dimension for global (full) attention layers (``global_head_dim``).
+    global_head_dim: int
+    #: Sliding-window size used by the local attention layers.
+    sliding_window: int
+    #: Number of trailing decoder layers that reuse a previous layer's KV
+    #: projections (``num_kv_shared_layers``); 0 means no sharing.
+    num_kv_shared_layers: int
+    #: KV heads for global layers (``num_global_key_value_heads``); falls back to
+    #: ``num_key_value_heads`` when the checkpoint leaves it unset.
+    num_global_key_value_heads: int
+    #: When ``True``, global layers reuse the key projection as the value
+    #: projection (``attention_k_eq_v``).
+    attention_k_eq_v: bool
+    #: RoPE base frequency for local (sliding) layers.
+    sliding_rope_theta: float
+    #: RoPE base frequency for global (full) layers.
+    global_rope_theta: float
+    #: Fraction of ``global_head_dim`` that receives RoPE on global layers
+    #: (Proportional RoPE; the global rope params' ``partial_rotary_factor``).
+    global_partial_rotary_factor: float
+    #: RoPE variant for global layers (e.g. ``"proportional"``).
+    global_rope_type: str
+    #: Per-Layer-Embedding hidden width (``hidden_size_per_layer_input``); 0
+    #: disables PLE.
+    hidden_size_per_layer_input: int
+    #: Vocabulary size of the PLE table (``vocab_size_per_layer_input``).
+    vocab_size_per_layer_input: int
+    #: Final-logit soft-capping value (``final_logit_softcapping``); ``None`` when
+    #: the checkpoint does not soft-cap logits.
+    final_logit_softcapping: Optional[float]
+    #: When ``True``, the KV-shared layers use a double-width MLP intermediate
+    #: size (``use_double_wide_mlp``).
+    use_double_wide_mlp: bool
+    #: Feed-forward activation name (e.g. ``"gelu_pytorch_tanh"``).
+    hidden_activation: str
+
+    def first_kv_shared_layer_idx(self, num_hidden_layers: int) -> int:
+        """Index of the first KV-sharing layer (== ``num_hidden_layers`` if none)."""
+        return num_hidden_layers - self.num_kv_shared_layers
+
+    @property
+    def num_global_layers(self) -> int:
+        """Count of global (full) attention layers."""
+        return sum(1 for is_global in self.is_global_layer if is_global)
+
+    @property
+    def num_local_layers(self) -> int:
+        """Count of local (sliding-window) attention layers."""
+        return sum(1 for is_global in self.is_global_layer if not is_global)
+
+    @property
+    def uses_per_layer_embeddings(self) -> bool:
+        """True when the model carries a Per-Layer Embedding pathway."""
+        return self.hidden_size_per_layer_input > 0
+
+
+@dataclass
 class ModelConfig:
     """Flat model hyper-parameter config consumed by module builders."""
 
@@ -320,6 +399,11 @@ class ModelConfig:
     mamba_cfg: Optional[MambaConfig] = None
     # ------------------------------------------ gdn / hybrid config
     gdn_cfg: Optional[GdnConfig] = None
+    # ------------------------------------------ gemma4 (gemma4_text) config
+    # Populated only for Gemma 4 checkpoints; carries the per-layer-type
+    # attention, Per-Layer-Embedding, KV-sharing, and soft-capping parameters
+    # that do not fit the flat dense-model fields above.
+    gemma4_cfg: Optional[Gemma4Config] = None
     # ------------------------------------------ gated attention (Qwen3.5)
     attn_output_gate: bool = False
     # ------------------------------------------ MTP config
@@ -382,6 +466,10 @@ class ModelConfig:
     @property
     def is_hybrid(self) -> bool:
         return self.mamba_cfg is not None or self.gdn_cfg is not None
+
+    @property
+    def is_gemma4(self) -> bool:
+        return self.gemma4_cfg is not None
 
     @property
     def is_nemotron_h(self) -> bool:
@@ -447,6 +535,7 @@ class ModelConfig:
                                      layer_types,
                                      model_dir=model_dir)
         gdn_cfg = _parse_gdn_cfg(llm_dict, layer_types)
+        gemma4_cfg = _parse_gemma4_cfg(llm_dict)
         has_qk_norm = _detect_has_qk_norm(model_dir)
 
         # MTP config
@@ -474,8 +563,11 @@ class ModelConfig:
         num_experts = int(
             llm_dict.get("num_experts", llm_dict.get("num_local_experts", 0))
             or 0)
-        num_experts_per_tok = int(llm_dict.get("num_experts_per_tok", 0))
-        moe_intermediate_size = int(llm_dict.get("moe_intermediate_size", 0))
+        # ``or 0`` (rather than a get-default) so configs that explicitly set
+        # these optional keys to ``null`` — e.g. dense Gemma 4 checkpoints with
+        # ``"moe_intermediate_size": null`` — parse as 0 instead of crashing.
+        num_experts_per_tok = int(llm_dict.get("num_experts_per_tok") or 0)
+        moe_intermediate_size = int(llm_dict.get("moe_intermediate_size") or 0)
         moe_shared_expert_intermediate_size = int(
             llm_dict.get("moe_shared_expert_intermediate_size",
                          llm_dict.get("shared_expert_intermediate_size", 0))
@@ -523,6 +615,7 @@ class ModelConfig:
             quant=quant,
             mamba_cfg=mamba_cfg,
             gdn_cfg=gdn_cfg,
+            gemma4_cfg=gemma4_cfg,
             attn_output_gate=bool(llm_dict.get("attn_output_gate", False)),
             mtp_num_hidden_layers=mtp_num_hidden_layers,
             mtp_use_dedicated_embeddings=mtp_use_dedicated_embeddings,
@@ -812,6 +905,81 @@ def _parse_gdn_cfg(config: dict,
         key_head_dim=config.get("linear_key_head_dim", 0),
         value_head_dim=config.get("linear_value_head_dim", 0),
         conv_kernel=config.get("linear_conv_kernel_dim", 4),
+    )
+
+
+# Default RoPE base for Gemma 4 global (full) attention layers when the
+# checkpoint's ``rope_parameters`` omits it.
+_GEMMA4_DEFAULT_GLOBAL_ROPE_THETA = 1_000_000.0
+
+
+def _parse_gemma4_cfg(llm_dict: Dict[str, Any]) -> Optional[Gemma4Config]:
+    """Return a :class:`Gemma4Config` for ``gemma4_text`` checkpoints, else None.
+
+    Gemma 4 stores ``rope_parameters`` as a mapping keyed by layer type
+    (``"sliding_attention"`` / ``"full_attention"``) rather than a single flat
+    block, and ``layer_types`` marks each decoder layer as sliding (local) or
+    full (global).  Both are parsed here, along with the per-layer-type head
+    dimensions, KV-sharing, Per-Layer-Embedding, and soft-capping fields.
+
+    Returns ``None`` for non-Gemma-4 checkpoints so the parser is inert for
+    every other model family.
+    """
+    model_type = str(llm_dict.get("model_type", "")).lower()
+    if not model_type.startswith("gemma4"):
+        return None
+
+    raw_layer_types = llm_dict.get("layer_types") or []
+    is_global_layer = [
+        str(layer_type).lower() == "full_attention"
+        for layer_type in raw_layer_types
+    ]
+
+    rope_params = llm_dict.get("rope_parameters")
+    if not isinstance(rope_params, dict):
+        rope_params = {}
+    sliding_rope = rope_params.get("sliding_attention") or {}
+    global_rope = rope_params.get("full_attention") or {}
+
+    num_key_value_heads = int(llm_dict.get("num_key_value_heads", 1))
+    raw_global_kv_heads = llm_dict.get("num_global_key_value_heads")
+    num_global_key_value_heads = num_key_value_heads
+    if raw_global_kv_heads is not None:
+        num_global_key_value_heads = int(raw_global_kv_heads)
+
+    hidden_size = int(llm_dict["hidden_size"])
+    num_attention_heads = int(llm_dict["num_attention_heads"])
+    local_head_dim = int(
+        llm_dict.get("head_dim", hidden_size // num_attention_heads))
+    global_head_dim = int(llm_dict.get("global_head_dim") or local_head_dim)
+
+    softcap = llm_dict.get("final_logit_softcapping")
+    final_logit_softcapping = float(softcap) if softcap is not None else None
+
+    return Gemma4Config(
+        is_global_layer=is_global_layer,
+        local_head_dim=local_head_dim,
+        global_head_dim=global_head_dim,
+        sliding_window=int(llm_dict.get("sliding_window") or 0),
+        num_kv_shared_layers=int(llm_dict.get("num_kv_shared_layers") or 0),
+        num_global_key_value_heads=num_global_key_value_heads,
+        attention_k_eq_v=bool(llm_dict.get("attention_k_eq_v", False)),
+        sliding_rope_theta=float(
+            sliding_rope.get("rope_theta", _DEFAULT_ROPE_THETA)),
+        global_rope_theta=float(
+            global_rope.get("rope_theta", _GEMMA4_DEFAULT_GLOBAL_ROPE_THETA)),
+        global_partial_rotary_factor=float(
+            global_rope.get("partial_rotary_factor", 1.0)),
+        global_rope_type=str(global_rope.get("rope_type", "default")),
+        hidden_size_per_layer_input=int(
+            llm_dict.get("hidden_size_per_layer_input") or 0),
+        vocab_size_per_layer_input=int(
+            llm_dict.get("vocab_size_per_layer_input")
+            or llm_dict.get("vocab_size") or 0),
+        final_logit_softcapping=final_logit_softcapping,
+        use_double_wide_mlp=bool(llm_dict.get("use_double_wide_mlp", False)),
+        hidden_activation=str(
+            llm_dict.get("hidden_activation", "gelu_pytorch_tanh")),
     )
 
 

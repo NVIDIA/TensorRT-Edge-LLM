@@ -37,6 +37,7 @@ from .checkpoint.loader import load_weights
 from .config import ModelConfig, QuantConfig
 from .model import AutoModel, register_model
 # Register model-type-specific implementations
+from .models.gemma4.modeling_gemma4_text import Gemma4CausalLM
 from .models.nemotron_h.modeling_nemotron_h import NemotronHCausalLM
 from .models.qwen3_5.modeling_qwen3_5_text import Qwen3_5CausalLM
 from .models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeCausalLM
@@ -46,6 +47,10 @@ from .models.qwen3_omni.modeling_qwen3_omni_text import Qwen3OmniLanguageModel
 from .onnx.export import export_onnx
 
 register_model("nemotron_h", NemotronHCausalLM)
+# Gemma 4: ``gemma4`` is the multimodal root model_type, ``gemma4_text`` the
+# promoted text sub-config; register both so either is dispatched here.
+register_model("gemma4", Gemma4CausalLM)
+register_model("gemma4_text", Gemma4CausalLM)
 register_model("qwen3_5_text", Qwen3_5CausalLM)
 register_model("qwen3_5_moe_text", Qwen3_5MoeCausalLM)
 register_model("qwen3_5_moe", Qwen3_5MoeCausalLM)

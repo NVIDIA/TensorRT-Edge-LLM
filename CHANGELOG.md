@@ -1,5 +1,8 @@
 # Release Notes
 
+## Unreleased
+- Added Gemma 4 (`gemma4_text`) checkpoint recognition and architecture config parsing in the checkpoint export frontend; ONNX export and runtime support are in progress (see [#72](https://github.com/NVIDIA/TensorRT-Edge-LLM/issues/72))
+
 ## 0.8.0
 - Externalized INT4 FFN, INT4 MoE, and LM-head weights to reduce engine build memory usage
 - Upgraded plugins to TensorRT Plugin V3 for TensorRT 11 readiness
