@@ -2,6 +2,7 @@
 
 ## Unreleased
 - Added Gemma 4 (`gemma4_text`) checkpoint recognition and architecture config parsing in the checkpoint export frontend; ONNX export and runtime support are in progress (see [#72](https://github.com/NVIDIA/TensorRT-Edge-LLM/issues/72))
+- Added the Gemma 4 (`gemma4_text`) ONNX-export modeling: per-layer-type attention (local sliding / global full head dims), dual proportional RoPE, Per-Layer Embeddings, trailing-layer KV sharing, GeGLU (double-wide) MLP, and final-logit soft-capping; the C++ runtime support for the new second RoPE table and per-layer-embedding model inputs is in progress (see [#72](https://github.com/NVIDIA/TensorRT-Edge-LLM/issues/72))
 
 ## 0.8.0
 - Externalized INT4 FFN, INT4 MoE, and LM-head weights to reduce engine build memory usage

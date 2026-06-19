@@ -18,8 +18,9 @@ Covers :func:`tensorrt_edgellm.config._parse_gemma4_cfg`, the
 :class:`tensorrt_edgellm.config.Gemma4Config` it produces, and the
 ``ModelConfig.from_pretrained`` integration — including the regression that a
 dense Gemma 4 checkpoint (which sets optional MoE fields to ``null``) parses
-without crashing.  Also checks that the registered :class:`Gemma4CausalLM`
-fails with an actionable message until export support lands.
+without crashing.  Also checks that a Gemma 4 checkpoint dispatches to
+:class:`Gemma4CausalLM`.  (The modeling itself is covered by
+``test_gemma4_modeling.py``.)
 """
 
 import json
@@ -151,13 +152,12 @@ def test_dense_gemma4_null_moe_fields_do_not_crash(tmp_path):
     assert config.moe_intermediate_size == 0
 
 
-def test_registered_gemma4_class_fails_loudly(tmp_path):
-    """A Gemma 4 checkpoint dispatches to Gemma4CausalLM, which fails loudly."""
+def test_gemma4_dispatches_to_gemma4_causal_lm():
+    """A gemma4 / gemma4_text checkpoint dispatches to Gemma4CausalLM."""
     pytest.importorskip("torch")
-    from tensorrt_edgellm import AutoModel
+    from tensorrt_edgellm.model import _MODEL_REGISTRY
+    from tensorrt_edgellm.models.gemma4.modeling_gemma4_text import \
+        Gemma4CausalLM
 
-    with pytest.raises(NotImplementedError) as excinfo:
-        AutoModel.from_pretrained(_write_checkpoint(tmp_path))
-    message = str(excinfo.value)
-    assert "gemma4_text" in message
-    assert "issues/72" in message
+    assert _MODEL_REGISTRY.get("gemma4_text") is Gemma4CausalLM
+    assert _MODEL_REGISTRY.get("gemma4") is Gemma4CausalLM
