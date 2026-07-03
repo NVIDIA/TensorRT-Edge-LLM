@@ -18,11 +18,11 @@ This page describes the software design. For commands and workflows, see the [Qu
 |---|---|---|
 | Checkpoint config parsing | `tensorrt_edgellm/config.py`, `tensorrt_edgellm/checkpoint/checkpoint_utils.py` | Read root and promoted LLM configs, normalize architecture fields, parse quantization metadata, and infer feature flags. |
 | Model dispatch | `tensorrt_edgellm/model.py`, `tensorrt_edgellm/__init__.py` | Dispatch `model_type` to a registered model class, with a default decoder implementation for compatible dense models. |
-| Model implementations | `tensorrt_edgellm/models/` | Define TensorRT Edge-LLM-native text, visual, audio, TTS, MoE, hybrid, and EAGLE modules. |
+| Model implementations | `tensorrt_edgellm/models/` | Define TensorRT Edge-LLM-native text, visual, audio, TTS, MoE, hybrid, EAGLE, MTP, and DFlash modules. |
 | Checkpoint loading | `tensorrt_edgellm/checkpoint/loader.py`, `tensorrt_edgellm/checkpoint/repacking.py` | Load safetensors, remap keys when needed, and repack quantized tensors into runtime/export formats. |
 | Vocabulary reduction | `tensorrt_edgellm/vocab_reduction/selection.py`, `tensorrt_edgellm/vocab_reduction/onnx_export.py` | Generate `vocab_map.safetensors` separately from applying an existing map to supported LM-head tensors during ONNX export. |
 | ONNX graph export | `tensorrt_edgellm/onnx/export.py`, `tensorrt_edgellm/onnx/export_encoder.py`, `tensorrt_edgellm/onnx/dynamo_translations.py` | Export text and encoder graphs, register custom ONNX schemas, and translate PyTorch custom ops to TensorRT Edge-LLM ONNX nodes. |
-| Component orchestration | `tensorrt_edgellm/scripts/export.py` | Classify model components and coordinate text, visual, audio, TTS, code2wav, EAGLE, and sidecar exports. |
+| Component orchestration | `tensorrt_edgellm/scripts/export.py` | Classify model components and coordinate text, visual, audio, TTS, code2wav, EAGLE, MTP, DFlash, and sidecar exports. |
 | Runtime artifacts | `tensorrt_edgellm/checkpoint/checkpoint_utils.py`, `tensorrt_edgellm/chat_template.py` | Write tokenizer/config/chat-template/embedding sidecars expected by the C++ runtime and Python server. |
 
 ## Data Flow
@@ -48,6 +48,7 @@ The design boundary is deliberate: `tensorrt_edgellm` owns checkpoint parsing, m
 - `hf_quant_config.json` or embedded `quantization_config` provides quantization format, group size, excluded modules, per-layer overrides, and KV cache quantization.
 - Safetensors index files provide tensor names and shapes used for loading, q/k normalization detection, and model-specific fallbacks.
 - EAGLE3 draft checkpoints are detected from `draft_vocab_size`.
+- DFlash draft checkpoints are detected from `dflash_config`.
 
 FP8 KV cache is enabled automatically when checkpoint metadata marks KV cache quantization as `fp8`; the exporter does not require a separate FP8 KV export mode.
 

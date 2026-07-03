@@ -52,7 +52,7 @@ graph LR
 - Configure optimization profiles for dynamic shapes
 - Compile TensorRT engines with platform-specific optimizations
 - Generate runtime configuration files
-- Handle model-specific requirements (EAGLE, VLM, LoRA)
+- Handle model-specific requirements (speculative decoding, VLM, LoRA)
 
 ---
 
@@ -149,7 +149,7 @@ graph LR
 
 
 
-For EAGLE3 speculative decoding, the LLM Builder executes this same 8-stage workflow **twice** with different configurations to create both base and draft models. This approach leverages the same optimization pipeline while producing specialized engines for each role in the speculative decoding process.
+For speculative decoding (EAGLE3, MTP, or DFlash), the LLM Builder executes this same 8-stage workflow **twice** with different configurations to create both base and draft models. This approach leverages the same optimization pipeline while producing specialized engines for each role in the speculative decoding process.
 
 ---
 
@@ -162,7 +162,7 @@ The Engine Builder consists of two main components designed to handle different 
 
 | Component | Description |
 |-----------|-------------|
-| **LLM Builder** | Converts language model ONNX files into optimized TensorRT engines. Supporting: Standard LLMs, EAGLE3 speculative decoding, VLM language components, LoRA adaptations |
+| **LLM Builder** | Converts language model ONNX files into optimized TensorRT engines. Supporting: Standard LLMs, EAGLE3/MTP/DFlash speculative decoding, VLM language components, LoRA adaptations |
 | **Visual Encoder Builder** | Converts visual encoder ONNX files into optimized TensorRT engines for multimodal models. Supporting: Dynamic image token generation, Multiple multimodal architectures, Variable resolution support |
 
 
@@ -175,13 +175,13 @@ Both the LLM Builder and Visual Encoder Builder follow a systematic multi-stage 
 | Step | General Description | LLM Builder | Visual Encoder Builder |
 |------|---------------------|-------------|------------------------|
 | **1. Plugin Loading** | Loads TensorRT Edge-LLM custom plugins required for model-specific operations | Attention mechanisms, quantization operations, autoregressive generation patterns | Vision processing operations, image patch handling, vision transformer components |
-| **2. Configuration Parsing** | Extracts model parameters and build settings from configuration files | Parses `config.json` for EAGLE settings, LoRA configurations, sequence length limits | Parses `vision_config` section for image token ranges, architecture-specific parameters |
+| **2. Configuration Parsing** | Extracts model parameters and build settings from configuration files | Parses `config.json` for speculative decoding settings, LoRA configurations, sequence length limits | Parses `vision_config` section for image token ranges, architecture-specific parameters |
 | **3. Network Creation** | Creates TensorRT network definition with strongly-typed tensors | Autoregressive language generation with attention mechanisms | Vision processing with image patch handling and feature extraction |
-| **4. Model Type Detection** | Identifies the specific model architecture and selects appropriate ONNX files | Standard LLM, EAGLE base/draft, VLM language component, LoRA-enabled. Selects `lora_model.onnx` if `maxLoraRank > 0`, otherwise `model.onnx` | Multimodal vision encoders. Always uses `model.onnx` |
+| **4. Model Type Detection** | Identifies the specific model architecture and selects appropriate ONNX files | Standard LLM, speculative base/draft, VLM language component, LoRA-enabled. Selects `lora_model.onnx` if `maxLoraRank > 0`, otherwise `model.onnx` | Multimodal vision encoders. Always uses `model.onnx` |
 | **5. ONNX Parsing** | Parses the ONNX model file and populates the TensorRT network with the model's computational graph | Attention layers, embedding layers, autoregressive components | Vision transformer layers, patch embedding, image processing components |
 | **6. Optimization Profile Setup** | Configures optimization profiles for dynamic input shapes and batch processing | Dual-phase profiles (context/prefill and generation/decode phases) for various model types | Single profile for image processing with dynamic image token counts and variable resolutions |
 | **7. Engine Compilation** | Invokes the TensorRT Builder API (`nvinfer1::createInferBuilder()` and `builder->buildSerializedNetwork()`) to compile the network into an optimized TensorRT engine | Autoregressive generation, attention patterns, memory efficiency | Vision transformer workloads, image processing, feature extraction |
-| **8. File Management** | Copies and generates necessary runtime files and configurations with automatic directory creation | Runtime config, tokenizer files (`tokenizer.json`, `tokenizer_config.json`), EAGLE mappings (`d2t.safetensors`), model-specific configs. Creates engine directory if needed | Runtime configuration only (`config.json` with builder settings). Creates engine directory if needed. No tokenizer or EAGLE files |
+| **8. File Management** | Copies and generates necessary runtime files and configurations with automatic directory creation | Runtime config, tokenizer files (`tokenizer.json`, `tokenizer_config.json`), EAGLE mappings (`d2t.safetensors`) when present, model-specific configs. Creates engine directory if needed | Runtime configuration only (`config.json` with builder settings). Creates engine directory if needed. No tokenizer or speculative decoding sidecars |
 
 ---
 
@@ -198,10 +198,11 @@ The LLM Builder adapts its optimization profiles and tensor configurations based
 - **Dynamic Shapes**: Variable sequence lengths and batch sizes
 - **KV Cache**: Key-value cache tensors for autoregressive generation
 
-**EAGLE Models** (`setupEagleProfiles`):
-- **Base Models**: Standard LLM inputs plus EAGLE-specific attention patterns and tree verification
-- **Draft Models**: Hidden states from draft, tree attention masks, speculation tokens
-- **Tree Size Limits**: Configurable maximum tree sizes for verification (`maxVerifyTreeSize`) and draft generation (`maxDraftTreeSize`)
+**Speculative Decoding Models** (`setupSpecDecodeProfiles`, `setupDFlashDraftProfiles`):
+- **Base Models**: Standard LLM inputs plus speculative verification attention patterns
+- **Draft Models**: Draft hidden-state inputs, packed attention masks, and proposal tokens
+- **DFlash Draft Models**: DFlash target hidden-state inputs, delta lengths, and cached draft KV bindings
+- **Tree / Block Size Limits**: Configurable maximum sizes for verification (`maxVerifyTreeSize`) and draft generation (`maxDraftTreeSize`)
 - **Vocabulary Mapping**: Draft-to-target token mapping for EAGLE3 (`d2t.safetensors` file)
 
 **Vision-Language Models** (`setupVLMProfiles`):
@@ -321,9 +322,9 @@ Visual processing benefits from specific GPU optimizations tailored for vision t
   --maxKVCacheCapacity=4096
 ```
 
-### EAGLE Speculative Decoding Build
+### Speculative Decoding Build
 
-Base and draft engine directories should be the same.
+Base and draft engine directories should be the same. This example uses EAGLE3; MTP and DFlash use the same `--specBase` and `--specDraft` build roles with their own ONNX directories.
 ```bash
 # Build base model
 ./build/examples/llm/llm_build \

@@ -1,9 +1,6 @@
 Registry Builder
 ================
 
-.. doxygenfunction:: trt_edgellm::rt::buildRegistryForLLM
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::rt::buildRegistryForSpecDecodeDraft
+.. doxygenfile:: runtime/exec/registryBuilder.h
    :project: TensorRT Edge-LLM
 

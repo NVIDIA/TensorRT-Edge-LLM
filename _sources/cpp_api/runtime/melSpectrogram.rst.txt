@@ -1,0 +1,13 @@
+Mel Spectrogram
+===============
+
+.. doxygenclass:: trt_edgellm::rt::audio::MelExtractor
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::audio::MelExtractorConfig
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

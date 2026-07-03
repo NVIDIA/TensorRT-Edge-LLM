@@ -1,0 +1,6 @@
+CUDA Macros
+===========
+
+.. doxygenfile:: common/cudaMacros.h
+   :project: TensorRT Edge-LLM
+

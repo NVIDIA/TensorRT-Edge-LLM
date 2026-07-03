@@ -1,0 +1,1113 @@
+
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Mel Spectrogram &#8212; TensorRT Edge-LLM</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../_static/styles/theme.css?digest=a95f357e85573c9b56d5" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=a95f357e85573c9b56d5" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=03e43079" />
+    <link rel="stylesheet" type="text/css" href="../../_static/styles/nvidia-sphinx-theme.css?v=933278ad" />
+    <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../../_static/autodoc_pydantic.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/togglebutton.css?v=9c3e77be" />
+    <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=e02be394" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../../_static/scripts/fontawesome.js?digest=a95f357e85573c9b56d5"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=a95f357e85573c9b56d5" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=a95f357e85573c9b56d5" />
+
+
+
+    <script src="../../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../../_static/copybutton.js?v=65e89d2a"></script>
+    <script>let toggleHintShow = 'Click to show';</script>
+    <script>let toggleHintHide = 'Click to hide';</script>
+    <script>let toggleOpenOnPrint = 'true';</script>
+    <script src="../../_static/togglebutton.js?v=b8b12719"></script>
+    <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'cpp_api/runtime/melSpectrogram';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.19.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = './_static/switcher.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.9.0';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner =
+            false;
+        </script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+
+    <link rel="icon" href="../../_static/favicon.png"/>
+
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="Mtp Decoder" href="mtpDecoder.html" />
+    <link rel="prev" title="Mamba Cache Manager" href="mambaCacheManager.html" />
+
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.9.0" />
+  
+    
+    <script src="../../_static/searchtools.js"></script>
+    <script src="../../_static/language_data.js"></script>
+    <script src="../../searchindex.js"></script>
+  
+
+
+  </head>
+
+  <body data-default-mode="">
+
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../../_static/nvidia-logo-horiz-rgb-blk-for-screen.svg" class="logo__image only-light" alt="TensorRT Edge-LLM - Home"/>
+    <img src="../../_static/nvidia-logo-horiz-rgb-wht-for-screen.svg" class="logo__image only-dark pst-js-only" alt="TensorRT Edge-LLM - Home"/>
+  
+  
+    <p class="title logo__title">TensorRT Edge-LLM</p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+
+
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-2"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-2"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-2"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-2">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../../_static/nvidia-logo-horiz-rgb-blk-for-screen.svg" class="logo__image only-light" alt="TensorRT Edge-LLM - Home"/>
+    <img src="../../_static/nvidia-logo-horiz-rgb-wht-for-screen.svg" class="logo__image only-dark pst-js-only" alt="TensorRT Edge-LLM - Home"/>
+  
+  
+    <p class="title logo__title">TensorRT Edge-LLM</p>
+  
+</a>
+
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+
+
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-3"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-3"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-3"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-3">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+
+
+
+<nav class="bd-docs-nav bd-links"
+     aria-label="Table of Contents">
+  <p class="bd-links__title" role="heading" aria-level="1">Table of Contents</p>
+  <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../overview.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/supported-models.html">Supported Models</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/quick-start-guide.html">Quick Start Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/limitations.html">Limitations and Known Issues</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Examples</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/index.html">Examples</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/vlm.html">VLM (Vision-Language Model) Inference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/speculative-decoding.html">Speculative Decoding</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/phi4.html">Phi-4-Multimodal</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/asr.html">ASR (Automatic Speech Recognition)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/moe.html">MoE (Mixture of Experts)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/tts.html">TTS (Text-to-Speech)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/vla.html">Alpamayo-R1-10B (Vision-Language-Action)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/experimental-server.html">Experimental High-Level Python API and Server</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Features</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/lora.html">LoRA (Low-Rank Adaptation)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/quantization.html">Quantization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/reduce-vocab.html">Vocabulary Reduction</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/FP8KV.html">FP8 KV Cache</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/fp8-embedding.html">FP8 Embedding</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/streaming.html">Streaming Output</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/system-prompt-cache.html">System Prompt Cache</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Input &amp; Chat Format</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/format/input-format.html">Input JSON Format</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/format/chat-template-format.html">Chat Template Format</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Performance</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/performance/performance-benchmarks.html">Performance Benchmarks</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Software Design</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/checkpoint-export.html">Checkpoint Exporter Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/quantization-design.html">Quantization Package Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/engine-builder.html">Engine Builder</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/cpp-runtime-overview.html">C++ Runtime Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/llm-inference-runtime.html">LLM Inference Runtime</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/llm-streaming.html">LLM Streaming — Design</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Customization</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/customization-guide.html">Customization Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/tensorrt-plugins.html">TensorRT Plugins Guide</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Testing</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/code-coverage.html">Code Coverage with SonarQube</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">APIs</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../python_api.html">Python API Reference</a></li>
+<li class="toctree-l1 current active has-children"><a class="reference internal" href="../../cpp_api.html">C++ API Reference</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
+<li class="toctree-l2 has-children"><a class="reference internal" href="../action/index.html">Action Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../action/actionModelTypes.html">Action Model Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../action/actionUtils.html">Action Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../action/alpamayo1ActionRunner.html">Alpamayo1 Action Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html">Alpamayo1 Runner Utils</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../builder/index.html">Builder Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../builder/actionBuilder.html">Action Builder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../builder/audioBuilder.html">Audio Builder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../builder/builderUtils.html">Builder Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../builder/llmBuilder.html">LLM Builder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../builder/visualBuilder.html">Visual Builder</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../common/index.html">Common Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../common/bindingNames.html">Binding Names</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/checkMacros.html">Check Macros</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/cudaMacros.html">CUDA Macros</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/cudaUtils.html">CUDA Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/fileUtils.html">File Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/hashUtils.html">Hash Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/inputLimits.html">Input Limits</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/logger.html">Logger</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/mathUtils.html">Math Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/mmapReader.html">MMAP Reader</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/ropeUtils.html">Rope Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/safetensorsUtils.html">Safetensors Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/stringUtils.html">String Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/tensor.html">Tensor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/trtUtils.html">TRT Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/utf8.html">Utf8</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/version.html">Version</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../kernels/index.html">Kernels Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/NvFP4MoEUtils.html">Nv Fp4 Mo E Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/applyRopeWriteKV.html">Apply Rope Write KV</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/batchEvictKernels.html">Batch Evict Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/buildLayout.html">Build Layout</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/causalConv1d.html">Causal Conv1d</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/common.html">Common</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/contextFMHARunner.html">Context FMHA Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/conversion.html">Conversion</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslFFPARunner.html">Cute Dsl Ffpa Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslFMHARunner.html">Cute Dsl FMHA Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGDNRunner.html">Cute Dsl Gdn Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGemmRunner.html">Cute Dsl GEMM Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslNvfp4MoeRunner.html">Cute Dsl Nvfp4 Moe Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslNvfp4MoeSm110Runner.html">Cute Dsl Nvfp4 Moe Sm110 Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslSSDRunner.html">Cute Dsl Ssd Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/decoderXQARunner.html">Decoder XQA Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/dequant.html">Dequant</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/dequantize.html">Dequantize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/dflashAcceptKernels.html">Dflash Accept Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/dflashRuntimeKernels.html">Dflash Runtime Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/eagleAcceptKernels.html">EAGLE Accept Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/eagleUtilKernels.html">EAGLE Util Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/embeddingKernels.html">Embedding Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/fmhaParams_v2.html">FMHA Params V2</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/fp4Quantize.html">Fp4 Quantize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/gdnKernelUtils.html">Gdn Kernel Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/gemma4AudioAttention.html">Gemma4 Audio Attention</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/imageUtilKernels.html">Image Util Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/initializeCosSinCache.html">Initialize Cos Sin Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/int4GroupwiseGemm.html">Int4 Groupwise GEMM</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/kernel.html">Kernel</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/kernel_selector.html">Kernel Selector</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/kvCacheUtilsKernels.html">KV Cache Utils Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/marlin.html">Marlin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/marlin_dtypes.html">Marlin Dtypes</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/marlin_mma.html">Marlin Mma</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/marlin_template.html">Marlin Template</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moeActivationKernels.html">Moe Activation Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moeAlignSumKernels.html">Moe Align Sum Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moeMarlin.html">Moe Marlin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moeMarlinIndicesKernels.html">Moe Marlin Indices Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moeSigmoidGroupTopkKernels.html">Moe Sigmoid Group Topk Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moeTopkSoftmaxKernels.html">Moe Topk Softmax Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/mtpStateScatterKernels.html">Mtp State Scatter Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoeTypes.html">Nvfp4 Moe Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4_dequant.html">Nvfp4 Dequant</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4_tensor.html">Nvfp4 Tensor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/selectiveStateUpdate.html">Selective State Update</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/ssdVarlenMetadata.html">Ssd Varlen Metadata</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/talkerMLPKernels.html">Talker Mlp Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/utilKernels.html">Util Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/vectorizedTypes.html">Vectorized Types</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../multimodal/index.html">Multimodal Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/audioRunner.html">Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/audioUtils.html">Audio Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/code2WavRunner.html">Code2 Wav Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4ViTRunner.html">Gemma4 ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/imageUtils.html">Image Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/internViTRunner.html">Intern ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/modelTypes.html">Model Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/multimodalRunner.html">Multimodal Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/nemotronOmniAudioRunner.html">Nemotron Omni Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/nemotronOmniViTRunner.html">Nemotron Omni ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/phi4mmViTRunner.html">Phi4mm ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwenViTRunner.html">Qwen ViT Runner</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../plugins/index.html">Plugins Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/attentionPlugin.html">Attention Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/causalConv1dPlugin.html">Causal Conv1d Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/dflashTargetKVCacheUpdatePlugin.html">Dflash Target KV Cache Update Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/gatedDeltaNetPlugin.html">Gated Delta Net Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/int4GroupwiseGemmPlugin.html">Int4 Groupwise GEMM Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/int4MoePlugin.html">Int4 Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/mambaPlugin.html">Mamba Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4MoePlugin.html">Nvfp4 Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4MoePluginGeforce.html">Nvfp4 Moe Plugin Geforce</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/pluginUtils.html">Plugin Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/vitAttentionPlugin.html">VIT Attention Plugin</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../profiling/index.html">Profiling Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../profiling/layerProfiler.html">Layer Profiler</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../profiling/metrics.html">Metrics</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../profiling/nvtx_wrapper.html">Nvtx Wrapper</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../profiling/timer.html">Timer</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 current active has-children"><a class="reference internal" href="index.html">Runtime Module</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
+<li class="toctree-l3"><a class="reference internal" href="audioLoader.html">Audio Loader</a></li>
+<li class="toctree-l3"><a class="reference internal" href="audioUtils.html">Audio Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="decoderRegistry.html">Decoder Registry</a></li>
+<li class="toctree-l3"><a class="reference internal" href="decodingInferenceContext.html">Decoding Inference Context</a></li>
+<li class="toctree-l3"><a class="reference internal" href="decodingStrategy.html">Decoding Strategy</a></li>
+<li class="toctree-l3"><a class="reference internal" href="deepstackBinding.html">Deepstack Binding</a></li>
+<li class="toctree-l3"><a class="reference internal" href="deploymentConfig.html">Deployment Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dflashDecoder.html">Dflash Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="eagleDecoder.html">EAGLE Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="embeddingPreprocessor.html">Embedding Preprocessor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="engineExecutor.html">Engine Executor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="externalWeightManager.html">External Weight Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="gemma4EmbeddingPreprocessor.html">Gemma4 Embedding Preprocessor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="hybridCacheManager.html">Hybrid Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="imageUtils.html">Image Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="inferenceDims.html">Inference Dims</a></li>
+<li class="toctree-l3"><a class="reference internal" href="inferencePhase.html">Inference Phase</a></li>
+<li class="toctree-l3"><a class="reference internal" href="kvCacheManager.html">KV Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="llmEngineConfig.html">LLM Engine Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="llmInferenceRuntime.html">LLM Inference Runtime</a></li>
+<li class="toctree-l3"><a class="reference internal" href="llmRuntimeUtils.html">LLM Runtime Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="loraManager.html">Lora Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="mambaCacheManager.html">Mamba Cache Manager</a></li>
+<li class="toctree-l3 current active"><a class="current reference internal" href="#">Mel Spectrogram</a></li>
+<li class="toctree-l3"><a class="reference internal" href="mtpDecoder.html">Mtp Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="pipelineIO.html">Pipeline Io</a></li>
+<li class="toctree-l3"><a class="reference internal" href="qwen3OmniTTSRuntime.html">Qwen3 Omni Tts Runtime</a></li>
+<li class="toctree-l3"><a class="reference internal" href="registryBuilder.html">Registry Builder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="ropeCache.html">Rope Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="sharedResources.html">Shared Resources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="specDecodeUtils.html">Spec Decode Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="stepPreparer.html">Step Preparer</a></li>
+<li class="toctree-l3"><a class="reference internal" href="streaming.html">Streaming</a></li>
+<li class="toctree-l3"><a class="reference internal" href="systemPromptKVCache.html">System Prompt KV Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="tensorMap.html">Tensor Map</a></li>
+<li class="toctree-l3"><a class="reference internal" href="tensorRegistry.html">Tensor Registry</a></li>
+<li class="toctree-l3"><a class="reference internal" href="vanillaDecoder.html">Vanilla Decoder</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../sampler/index.html">Sampler Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../sampler/sampling.html">Sampling</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../tokenizer/index.html">Tokenizer Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../tokenizer/preTokenizer.html">Pre Tokenizer</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../tokenizer/tokenEncoder.html">Token Encoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../tokenizer/tokenizer.html">Tokenizer</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../tokenizer/tokenizerUtils.html">Tokenizer Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../tokenizer/unicodeData.html">Unicode Data</a></li>
+</ul>
+</details></li>
+</ul>
+</details></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Quick Links</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference external" href="https://github.com/NVIDIA/TensorRT-Edge-LLM/releases">Releases</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/NVIDIA/TensorRT-Edge-LLM">GitHub</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/NVIDIA/TensorRT-Edge-LLM/issues?q=is%3Aissue%20state%3Aopen%20label%3ARoadmap">Roadmap</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+  </div>
+
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="../../cpp_api.html" class="nav-link">C++ API Reference</a></li>
+    
+    
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Runtime Module</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Mel Spectrogram</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="mel-spectrogram">
+<h1>Mel Spectrogram<a class="headerlink" href="#mel-spectrogram" title="Link to this heading">#</a></h1>
+<dl class="cpp class">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio12MelExtractorE">
+<span id="_CPPv3N11trt_edgellm2rt5audio12MelExtractorE"></span><span id="_CPPv2N11trt_edgellm2rt5audio12MelExtractorE"></span><span id="trt_edgellm::rt::audio::MelExtractor"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1audio_1_1MelExtractor"></span><span class="k"><span class="pre">class</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">MelExtractor</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio12MelExtractorE" title="Link to this definition">#</a><br /></dt>
+<dd><p>CPU mel-spectrogram extractor.</p>
+<p>Takes mono float32 PCM and produces a host-resident <code class="docutils literal notranslate"><a class="reference internal" href="../common/tensor.html#classtrt__edgellm_1_1rt_1_1Tensor"><span class="std std-ref"><span class="pre">Tensor</span></span></a></code> of shape determined by the config’s layout + padding. Pipeline mirrors HF feature extractors numerically (windowing, hand-rolled radix-2 FFT with direct-DFT fallback for odd sizes, power spectrum, mel filter mat-mul, log, optional post-normalize). </p>
+<div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-functions">Public Functions</p>
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio12MelExtractor12MelExtractorEv">
+<span id="_CPPv3N11trt_edgellm2rt5audio12MelExtractor12MelExtractorEv"></span><span id="_CPPv2N11trt_edgellm2rt5audio12MelExtractor12MelExtractorEv"></span><span id="trt_edgellm::rt::audio::MelExtractor::MelExtractor"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1audio_1_1MelExtractor_1a734d9cb65d517ddee355f9fea5c21147"></span><span class="sig-name descname"><span class="n"><span class="pre">MelExtractor</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio12MelExtractor12MelExtractorEv" title="Link to this definition">#</a><br /></dt>
+<dd><p>Default-constructed extractor is empty; runners move-assign one from <code class="docutils literal notranslate"><span class="pre">makeWhisperExtractor</span></code> / <code class="docutils literal notranslate"><span class="pre">makeParakeetExtractor</span></code> in <code class="docutils literal notranslate"><span class="pre">validateAndFillConfig</span></code> before any <code class="docutils literal notranslate"><span class="pre">extract</span></code> call. </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio12MelExtractor12MelExtractorE18MelExtractorConfig">
+<span id="_CPPv3N11trt_edgellm2rt5audio12MelExtractor12MelExtractorE18MelExtractorConfig"></span><span id="_CPPv2N11trt_edgellm2rt5audio12MelExtractor12MelExtractorE18MelExtractorConfig"></span><span id="trt_edgellm::rt::audio::MelExtractor::MelExtractor__MelExtractorConfig"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1audio_1_1MelExtractor_1a4e2911229e4f67ed1f5324479c76cfe5"></span><span class="k"><span class="pre">explicit</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">MelExtractor</span></span></span><span class="sig-paren">(</span><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfigE" title="trt_edgellm::rt::audio::MelExtractorConfig"><span class="n"><span class="pre">MelExtractorConfig</span></span></a><span class="w"> </span><span class="n sig-param"><span class="pre">cfg</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio12MelExtractor12MelExtractorE18MelExtractorConfig" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio12MelExtractorD0Ev">
+<span id="_CPPv3N11trt_edgellm2rt5audio12MelExtractorD0Ev"></span><span id="_CPPv2N11trt_edgellm2rt5audio12MelExtractorD0Ev"></span><span id="trt_edgellm::rt::audio::MelExtractor::~MelExtractor"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1audio_1_1MelExtractor_1a48d7d1f0bcd4d0938f4454180bba3e64"></span><span class="sig-name descname"><span class="n"><span class="pre">~MelExtractor</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio12MelExtractorD0Ev" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio12MelExtractor12MelExtractorERK12MelExtractor">
+<span id="_CPPv3N11trt_edgellm2rt5audio12MelExtractor12MelExtractorERK12MelExtractor"></span><span id="_CPPv2N11trt_edgellm2rt5audio12MelExtractor12MelExtractorERK12MelExtractor"></span><span id="trt_edgellm::rt::audio::MelExtractor::MelExtractor__MelExtractorCR"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1audio_1_1MelExtractor_1a1f19c91e0eb323f6b1b10656c9654441"></span><span class="sig-name descname"><span class="n"><span class="pre">MelExtractor</span></span></span><span class="sig-paren">(</span><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt5audio12MelExtractor12MelExtractorERK12MelExtractor" title="trt_edgellm::rt::audio::MelExtractor::MelExtractor"><span class="n"><span class="pre">MelExtractor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="p"><span class="pre">&amp;</span></span></em><span class="sig-paren">)</span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="k"><span class="pre">delete</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio12MelExtractor12MelExtractorERK12MelExtractor" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio12MelExtractoraSERK12MelExtractor">
+<span id="_CPPv3N11trt_edgellm2rt5audio12MelExtractoraSERK12MelExtractor"></span><span id="_CPPv2N11trt_edgellm2rt5audio12MelExtractoraSERK12MelExtractor"></span><span id="trt_edgellm::rt::audio::MelExtractor::assign-operator__MelExtractorCR"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1audio_1_1MelExtractor_1a15cae72c31526929844d1a0bcc67cec6"></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt5audio12MelExtractorE" title="trt_edgellm::rt::audio::MelExtractor"><span class="n"><span class="pre">MelExtractor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="k"><span class="pre">operator</span></span><span class="o"><span class="pre">=</span></span></span><span class="sig-paren">(</span><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt5audio12MelExtractorE" title="trt_edgellm::rt::audio::MelExtractor"><span class="n"><span class="pre">MelExtractor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="p"><span class="pre">&amp;</span></span></em><span class="sig-paren">)</span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="k"><span class="pre">delete</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio12MelExtractoraSERK12MelExtractor" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio12MelExtractor12MelExtractorERR12MelExtractor">
+<span id="_CPPv3N11trt_edgellm2rt5audio12MelExtractor12MelExtractorERR12MelExtractor"></span><span id="_CPPv2N11trt_edgellm2rt5audio12MelExtractor12MelExtractorERR12MelExtractor"></span><span id="trt_edgellm::rt::audio::MelExtractor::MelExtractor__MelExtractorRR"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1audio_1_1MelExtractor_1a931c4991cad197b4dc3b04e0ed1212b7"></span><span class="sig-name descname"><span class="n"><span class="pre">MelExtractor</span></span></span><span class="sig-paren">(</span><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt5audio12MelExtractor12MelExtractorERR12MelExtractor" title="trt_edgellm::rt::audio::MelExtractor::MelExtractor"><span class="n"><span class="pre">MelExtractor</span></span></a><span class="p"><span class="pre">&amp;</span></span><span class="p"><span class="pre">&amp;</span></span></em><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio12MelExtractor12MelExtractorERR12MelExtractor" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio12MelExtractoraSERR12MelExtractor">
+<span id="_CPPv3N11trt_edgellm2rt5audio12MelExtractoraSERR12MelExtractor"></span><span id="_CPPv2N11trt_edgellm2rt5audio12MelExtractoraSERR12MelExtractor"></span><span id="trt_edgellm::rt::audio::MelExtractor::assign-operator__MelExtractorRR"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1audio_1_1MelExtractor_1ad6feea6c79722f59e940eda449c5b14b"></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt5audio12MelExtractorE" title="trt_edgellm::rt::audio::MelExtractor"><span class="n"><span class="pre">MelExtractor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="k"><span class="pre">operator</span></span><span class="o"><span class="pre">=</span></span></span><span class="sig-paren">(</span><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt5audio12MelExtractorE" title="trt_edgellm::rt::audio::MelExtractor"><span class="n"><span class="pre">MelExtractor</span></span></a><span class="p"><span class="pre">&amp;</span></span><span class="p"><span class="pre">&amp;</span></span></em><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio12MelExtractoraSERR12MelExtractor" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio12MelExtractor7extractERK8AudioPCMR6Tensor">
+<span id="_CPPv3N11trt_edgellm2rt5audio12MelExtractor7extractERK8AudioPCMR6Tensor"></span><span id="_CPPv2N11trt_edgellm2rt5audio12MelExtractor7extractERK8AudioPCMR6Tensor"></span><span id="trt_edgellm::rt::audio::MelExtractor::extract__AudioPCMCR.TensorR"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1audio_1_1MelExtractor_1a0519916b080347611194584459bd5b6e"></span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">extract</span></span></span><span class="sig-paren">(</span><em class="sig-param"><a class="reference internal" href="audioLoader.html#_CPPv4N11trt_edgellm2rt5audio8AudioPCME" title="trt_edgellm::rt::audio::AudioPCM"><span class="n"><span class="pre">AudioPCM</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">pcm</span></span></em>, <em class="sig-param"><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">out</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio12MelExtractor7extractERK8AudioPCMR6Tensor" title="Link to this definition">#</a><br /></dt>
+<dd><p>Extract mel-spectrogram from <code class="docutils literal notranslate"><span class="pre">pcm</span></code> into <code class="docutils literal notranslate"><span class="pre">out</span></code>.</p>
+<p><code class="docutils literal notranslate"><span class="pre">pcm.sampleRate</span></code> must equal <code class="docutils literal notranslate"><span class="pre">config.sampleRate</span></code> (caller responsibility — pass the right <code class="docutils literal notranslate"><span class="pre">targetSampleRate</span></code> to <code class="docutils literal notranslate"><span class="pre">loadAudioBytes</span></code>).</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>pcm</strong> – Mono float32 PCM. </p></li>
+<li><p><strong>out</strong> – Populated with mel data on host memory (caller may copy to device). </p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>true on success, false on bad input / config mismatch. </p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm2rt5audio12MelExtractor6configEv">
+<span id="_CPPv3NK11trt_edgellm2rt5audio12MelExtractor6configEv"></span><span id="_CPPv2NK11trt_edgellm2rt5audio12MelExtractor6configEv"></span><span id="trt_edgellm::rt::audio::MelExtractor::configC"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1audio_1_1MelExtractor_1a483f8ea9cd54a19123e7ea12df709ce0"></span><span class="k"><span class="pre">inline</span></span><span class="w"> </span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfigE" title="trt_edgellm::rt::audio::MelExtractorConfig"><span class="n"><span class="pre">MelExtractorConfig</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="n"><span class="pre">config</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm2rt5audio12MelExtractor6configEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+</div>
+<dl class="cpp struct">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio12MelExtractor4ImplE">
+<span id="_CPPv3N11trt_edgellm2rt5audio12MelExtractor4ImplE"></span><span id="_CPPv2N11trt_edgellm2rt5audio12MelExtractor4ImplE"></span><span id="trt_edgellm::rt::audio::MelExtractor::Impl"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audio_1_1MelExtractor_1_1Impl"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">Impl</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio12MelExtractor4ImplE" title="Link to this definition">#</a><br /></dt>
+<dd><div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-members">Public Members</p>
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio12MelExtractor4Impl8windowFnE">
+<span id="_CPPv3N11trt_edgellm2rt5audio12MelExtractor4Impl8windowFnE"></span><span id="_CPPv2N11trt_edgellm2rt5audio12MelExtractor4Impl8windowFnE"></span><span id="trt_edgellm::rt::audio::MelExtractor::Impl::windowFn__std::vector:float:"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audio_1_1MelExtractor_1_1Impl_1aee214bbb14a13c555f2f1d77751983ac"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><span class="kt"><span class="pre">float</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">windowFn</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio12MelExtractor4Impl8windowFnE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Length winLength. </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio12MelExtractor4Impl16melFilterStorageE">
+<span id="_CPPv3N11trt_edgellm2rt5audio12MelExtractor4Impl16melFilterStorageE"></span><span id="_CPPv2N11trt_edgellm2rt5audio12MelExtractor4Impl16melFilterStorageE"></span><span id="trt_edgellm::rt::audio::MelExtractor::Impl::melFilterStorage__std::vector:float:"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audio_1_1MelExtractor_1_1Impl_1a7724643688c719d0a85bd75bde6523fa"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><span class="kt"><span class="pre">float</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">melFilterStorage</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio12MelExtractor4Impl16melFilterStorageE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Used only when config.melFilter is null. </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio12MelExtractor4Impl12melFilterPtrE">
+<span id="_CPPv3N11trt_edgellm2rt5audio12MelExtractor4Impl12melFilterPtrE"></span><span id="_CPPv2N11trt_edgellm2rt5audio12MelExtractor4Impl12melFilterPtrE"></span><span id="trt_edgellm::rt::audio::MelExtractor::Impl::melFilterPtr__floatCP"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audio_1_1MelExtractor_1_1Impl_1a9e37115299dd78accec3290357937569"></span><span class="kt"><span class="pre">float</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">melFilterPtr</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="k"><span class="pre">nullptr</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio12MelExtractor4Impl12melFilterPtrE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio12MelExtractor4Impl5nBinsE">
+<span id="_CPPv3N11trt_edgellm2rt5audio12MelExtractor4Impl5nBinsE"></span><span id="_CPPv2N11trt_edgellm2rt5audio12MelExtractor4Impl5nBinsE"></span><span id="trt_edgellm::rt::audio::MelExtractor::Impl::nBins__int32_t"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audio_1_1MelExtractor_1_1Impl_1a1e62a725147cc96ec112f4e6cd0804d8"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">nBins</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="m"><span class="pre">0</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio12MelExtractor4Impl5nBinsE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio12MelExtractor4Impl9preempBufE">
+<span id="_CPPv3N11trt_edgellm2rt5audio12MelExtractor4Impl9preempBufE"></span><span id="_CPPv2N11trt_edgellm2rt5audio12MelExtractor4Impl9preempBufE"></span><span id="trt_edgellm::rt::audio::MelExtractor::Impl::preempBuf__std::vector:float:"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audio_1_1MelExtractor_1_1Impl_1a9d3d75e1c410f5b966d84e973b83b333"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><span class="kt"><span class="pre">float</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">preempBuf</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio12MelExtractor4Impl9preempBufE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Scratch for full-waveform preemph. </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio12MelExtractor4Impl6sinCosE">
+<span id="_CPPv3N11trt_edgellm2rt5audio12MelExtractor4Impl6sinCosE"></span><span id="_CPPv2N11trt_edgellm2rt5audio12MelExtractor4Impl6sinCosE"></span><span id="trt_edgellm::rt::audio::MelExtractor::Impl::sinCos__SinCosTable"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audio_1_1MelExtractor_1_1Impl_1a42626add2d9b935a5bff3ce7521fa86d"></span><span class="n"><span class="pre">SinCosTable</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">sinCos</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio12MelExtractor4Impl6sinCosE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Twiddle factors, size = cfg.nFFT (built at init). </p>
+</dd></dl>
+
+</div>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="cpp struct">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfigE">
+<span id="_CPPv3N11trt_edgellm2rt5audio18MelExtractorConfigE"></span><span id="_CPPv2N11trt_edgellm2rt5audio18MelExtractorConfigE"></span><span id="trt_edgellm::rt::audio::MelExtractorConfig"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audio_1_1MelExtractorConfig"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">MelExtractorConfig</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfigE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Configuration for one mel-spectrogram extractor instance. </p>
+<div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-members">Public Members</p>
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig4nameE">
+<span id="_CPPv3N11trt_edgellm2rt5audio18MelExtractorConfig4nameE"></span><span id="_CPPv2N11trt_edgellm2rt5audio18MelExtractorConfig4nameE"></span><span id="trt_edgellm::rt::audio::MelExtractorConfig::name__ss"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audio_1_1MelExtractorConfig_1aa83ef730cb8f731b39dd88891e536b99"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">string</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">name</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig4nameE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Display name used in log messages. </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig10sampleRateE">
+<span id="_CPPv3N11trt_edgellm2rt5audio18MelExtractorConfig10sampleRateE"></span><span id="_CPPv2N11trt_edgellm2rt5audio18MelExtractorConfig10sampleRateE"></span><span id="trt_edgellm::rt::audio::MelExtractorConfig::sampleRate__int32_t"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audio_1_1MelExtractorConfig_1ac765c88391de9b36f18fcb5103c8a2fd"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">sampleRate</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="m"><span class="pre">16000</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig10sampleRateE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig4nFFTE">
+<span id="_CPPv3N11trt_edgellm2rt5audio18MelExtractorConfig4nFFTE"></span><span id="_CPPv2N11trt_edgellm2rt5audio18MelExtractorConfig4nFFTE"></span><span id="trt_edgellm::rt::audio::MelExtractorConfig::nFFT__int32_t"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audio_1_1MelExtractorConfig_1ac3c811d1cd3b7c11b3d73945c7595af0"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">nFFT</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="m"><span class="pre">400</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig4nFFTE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig9hopLengthE">
+<span id="_CPPv3N11trt_edgellm2rt5audio18MelExtractorConfig9hopLengthE"></span><span id="_CPPv2N11trt_edgellm2rt5audio18MelExtractorConfig9hopLengthE"></span><span id="trt_edgellm::rt::audio::MelExtractorConfig::hopLength__int32_t"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audio_1_1MelExtractorConfig_1a4707d1baff48d91984f0caecf0ddd90a"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">hopLength</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="m"><span class="pre">160</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig9hopLengthE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig9winLengthE">
+<span id="_CPPv3N11trt_edgellm2rt5audio18MelExtractorConfig9winLengthE"></span><span id="_CPPv2N11trt_edgellm2rt5audio18MelExtractorConfig9winLengthE"></span><span id="trt_edgellm::rt::audio::MelExtractorConfig::winLength__int32_t"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audio_1_1MelExtractorConfig_1a867a6f647ea63ac60c024f1ab11be2cc"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">winLength</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="m"><span class="pre">400</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig9winLengthE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Window length (typically == nFFT for Whisper, 400 in a 512 FFT for Parakeet). </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig4nMelE">
+<span id="_CPPv3N11trt_edgellm2rt5audio18MelExtractorConfig4nMelE"></span><span id="_CPPv2N11trt_edgellm2rt5audio18MelExtractorConfig4nMelE"></span><span id="trt_edgellm::rt::audio::MelExtractorConfig::nMel__int32_t"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audio_1_1MelExtractorConfig_1a4d9e2fc993e8cc241776a5d32944d0af"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">nMel</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="m"><span class="pre">128</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig4nMelE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig14minFrequencyHzE">
+<span id="_CPPv3N11trt_edgellm2rt5audio18MelExtractorConfig14minFrequencyHzE"></span><span id="_CPPv2N11trt_edgellm2rt5audio18MelExtractorConfig14minFrequencyHzE"></span><span id="trt_edgellm::rt::audio::MelExtractorConfig::minFrequencyHz__float"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audio_1_1MelExtractorConfig_1aef512866cf49dd3942a304ac0bbcb07a"></span><span class="kt"><span class="pre">float</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">minFrequencyHz</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="m"><span class="pre">0.0f</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig14minFrequencyHzE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Min/max frequency for the mel filter bank. Default 0..sr/2 matches HF Whisper. </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig14maxFrequencyHzE">
+<span id="_CPPv3N11trt_edgellm2rt5audio18MelExtractorConfig14maxFrequencyHzE"></span><span id="_CPPv2N11trt_edgellm2rt5audio18MelExtractorConfig14maxFrequencyHzE"></span><span id="trt_edgellm::rt::audio::MelExtractorConfig::maxFrequencyHz__float"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audio_1_1MelExtractorConfig_1aba6b452807d8345741fc45fccc2ce568"></span><span class="kt"><span class="pre">float</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">maxFrequencyHz</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="o"><span class="pre">-</span></span><span class="m"><span class="pre">1.0f</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig14maxFrequencyHzE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Negative -&gt; sample_rate / 2. </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig12preemphCoeffE">
+<span id="_CPPv3N11trt_edgellm2rt5audio18MelExtractorConfig12preemphCoeffE"></span><span id="_CPPv2N11trt_edgellm2rt5audio18MelExtractorConfig12preemphCoeffE"></span><span id="trt_edgellm::rt::audio::MelExtractorConfig::preemphCoeff__float"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audio_1_1MelExtractorConfig_1a0164558aea82c2e74cacb358a73ae676"></span><span class="kt"><span class="pre">float</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">preemphCoeff</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="m"><span class="pre">0.0f</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig12preemphCoeffE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Pre-emphasis filter <code class="docutils literal notranslate"><span class="pre">y[t]</span> <span class="pre">=</span> <span class="pre">x[t]</span> <span class="pre">-</span> <span class="pre">coeff</span> <span class="pre">*</span> <span class="pre">x[t-1]</span></code>. Disabled when <code class="docutils literal notranslate"><span class="pre">preemphCoeff</span> <span class="pre">==</span> <span class="pre">0</span></code>. When <code class="docutils literal notranslate"><span class="pre">preemphPostScale</span> <span class="pre">!=</span> <span class="pre">0</span></code> the filtered frame is also multiplied by it. </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig16preemphPostScaleE">
+<span id="_CPPv3N11trt_edgellm2rt5audio18MelExtractorConfig16preemphPostScaleE"></span><span id="_CPPv2N11trt_edgellm2rt5audio18MelExtractorConfig16preemphPostScaleE"></span><span id="trt_edgellm::rt::audio::MelExtractorConfig::preemphPostScale__float"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audio_1_1MelExtractorConfig_1a7817ea659b683627397c6886f758be24"></span><span class="kt"><span class="pre">float</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">preemphPostScale</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="m"><span class="pre">0.0f</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig16preemphPostScaleE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig10windowTypeE">
+<span id="_CPPv3N11trt_edgellm2rt5audio18MelExtractorConfig10windowTypeE"></span><span id="_CPPv2N11trt_edgellm2rt5audio18MelExtractorConfig10windowTypeE"></span><span id="trt_edgellm::rt::audio::MelExtractorConfig::windowType__WindowType"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audio_1_1MelExtractorConfig_1a03be96d4fc7b2810bc9e6c7f068ea791"></span><span class="n"><span class="pre">WindowType</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">windowType</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="n"><span class="pre">WindowType</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">kHannPeriodic</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig10windowTypeE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig18windowCentredInFftE">
+<span id="_CPPv3N11trt_edgellm2rt5audio18MelExtractorConfig18windowCentredInFftE"></span><span id="_CPPv2N11trt_edgellm2rt5audio18MelExtractorConfig18windowCentredInFftE"></span><span id="trt_edgellm::rt::audio::MelExtractorConfig::windowCentredInFft__b"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audio_1_1MelExtractorConfig_1a4a8328b4cd18a6ef2928b979a67e956c"></span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">windowCentredInFft</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="k"><span class="pre">true</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig18windowCentredInFftE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Where the window sits inside the nFFT-sized FFT input buffer when <code class="docutils literal notranslate"><span class="pre">winLength</span> <span class="pre">&lt;</span> <span class="pre">nFFT</span></code>. HF Whisper / Parakeet (torch.stft-style) centre the window: source <code class="docutils literal notranslate"><span class="pre">[start+pad,</span> <span class="pre">start+pad+winLen)</span></code> -&gt; buffer <code class="docutils literal notranslate"><span class="pre">[pad,</span> <span class="pre">pad+winLen)</span></code>, <code class="docutils literal notranslate"><span class="pre">pad</span> <span class="pre">=</span> <span class="pre">(nFFT-winLen)/2</span></code>. Left-aligned mode (unfold + rfft(n=nFFT)) maps source <code class="docutils literal notranslate"><span class="pre">[start,</span> <span class="pre">start+winLen)</span></code> -&gt; buffer <code class="docutils literal notranslate"><span class="pre">[0,</span> <span class="pre">winLen)</span></code> with trailing zeros. Ignored when winLen == nFFT. </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig8melScaleE">
+<span id="_CPPv3N11trt_edgellm2rt5audio18MelExtractorConfig8melScaleE"></span><span id="_CPPv2N11trt_edgellm2rt5audio18MelExtractorConfig8melScaleE"></span><span id="trt_edgellm::rt::audio::MelExtractorConfig::melScale__MelScale"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audio_1_1MelExtractorConfig_1a6054feb801b421328cd79272caeece04"></span><span class="n"><span class="pre">MelScale</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">melScale</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="n"><span class="pre">MelScale</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">kHtk</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig8melScaleE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig7melNormE">
+<span id="_CPPv3N11trt_edgellm2rt5audio18MelExtractorConfig7melNormE"></span><span id="_CPPv2N11trt_edgellm2rt5audio18MelExtractorConfig7melNormE"></span><span id="trt_edgellm::rt::audio::MelExtractorConfig::melNorm__MelNorm"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audio_1_1MelExtractorConfig_1a0b0bfdab55c4157716fc6e826226fadd"></span><span class="n"><span class="pre">MelNorm</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">melNorm</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="n"><span class="pre">MelNorm</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">kSlaney</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig7melNormE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig23triangulariseInMelSpaceE">
+<span id="_CPPv3N11trt_edgellm2rt5audio18MelExtractorConfig23triangulariseInMelSpaceE"></span><span id="_CPPv2N11trt_edgellm2rt5audio18MelExtractorConfig23triangulariseInMelSpaceE"></span><span id="trt_edgellm::rt::audio::MelExtractorConfig::triangulariseInMelSpace__b"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audio_1_1MelExtractorConfig_1a321005aed4c9594d40656a424ab8a8df"></span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">triangulariseInMelSpace</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="k"><span class="pre">false</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig23triangulariseInMelSpaceE" title="Link to this definition">#</a><br /></dt>
+<dd><p>When true, build triangle filters with their slopes linear in <em>mel</em> space rather than Hz. Used together with <code class="docutils literal notranslate"><span class="pre">MelScale::kKaldi</span></code>. </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig7logTypeE">
+<span id="_CPPv3N11trt_edgellm2rt5audio18MelExtractorConfig7logTypeE"></span><span id="_CPPv2N11trt_edgellm2rt5audio18MelExtractorConfig7logTypeE"></span><span id="trt_edgellm::rt::audio::MelExtractorConfig::logType__LogType"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audio_1_1MelExtractorConfig_1a4ee796794ccd9c49d05c88f1cbbf171b"></span><span class="n"><span class="pre">LogType</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">logType</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="n"><span class="pre">LogType</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">kLog10</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig7logTypeE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig12logFloorModeE">
+<span id="_CPPv3N11trt_edgellm2rt5audio18MelExtractorConfig12logFloorModeE"></span><span id="_CPPv2N11trt_edgellm2rt5audio18MelExtractorConfig12logFloorModeE"></span><span id="trt_edgellm::rt::audio::MelExtractorConfig::logFloorMode__LogFloorMode"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audio_1_1MelExtractorConfig_1adb0bab0740735b47ffec9672aeea19fb"></span><span class="n"><span class="pre">LogFloorMode</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">logFloorMode</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="n"><span class="pre">LogFloorMode</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">kMax</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig12logFloorModeE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig8logFloorE">
+<span id="_CPPv3N11trt_edgellm2rt5audio18MelExtractorConfig8logFloorE"></span><span id="_CPPv2N11trt_edgellm2rt5audio18MelExtractorConfig8logFloorE"></span><span id="trt_edgellm::rt::audio::MelExtractorConfig::logFloor__float"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audio_1_1MelExtractorConfig_1a9a7b406be37a238ca18e319a4bc0d084"></span><span class="kt"><span class="pre">float</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">logFloor</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="m"><span class="pre">1e-10f</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig8logFloorE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Per-FE: Whisper 1e-10, Parakeet 2^-24. </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig6layoutE">
+<span id="_CPPv3N11trt_edgellm2rt5audio18MelExtractorConfig6layoutE"></span><span id="_CPPv2N11trt_edgellm2rt5audio18MelExtractorConfig6layoutE"></span><span id="trt_edgellm::rt::audio::MelExtractorConfig::layout__MelLayout"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audio_1_1MelExtractorConfig_1a6cb0067e5aede562acf5b09b6cdb5b7b"></span><span class="n"><span class="pre">MelLayout</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">layout</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="n"><span class="pre">MelLayout</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">kMelTime</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig6layoutE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig13postNormalizeE">
+<span id="_CPPv3N11trt_edgellm2rt5audio18MelExtractorConfig13postNormalizeE"></span><span id="_CPPv2N11trt_edgellm2rt5audio18MelExtractorConfig13postNormalizeE"></span><span id="trt_edgellm::rt::audio::MelExtractorConfig::postNormalize__PostNormalize"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audio_1_1MelExtractorConfig_1a7b5ff87468c096075ba2ec1f18d47483"></span><span class="n"><span class="pre">PostNormalize</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">postNormalize</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="n"><span class="pre">PostNormalize</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">kWhisperClamp</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig13postNormalizeE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig11timePaddingE">
+<span id="_CPPv3N11trt_edgellm2rt5audio18MelExtractorConfig11timePaddingE"></span><span id="_CPPv2N11trt_edgellm2rt5audio18MelExtractorConfig11timePaddingE"></span><span id="trt_edgellm::rt::audio::MelExtractorConfig::timePadding__TimePadding"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audio_1_1MelExtractorConfig_1a31dbfe03e5b9a4f829127e15a252115a"></span><span class="n"><span class="pre">TimePadding</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">timePadding</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="n"><span class="pre">TimePadding</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">kNone</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig11timePaddingE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig16staticTimeLengthE">
+<span id="_CPPv3N11trt_edgellm2rt5audio18MelExtractorConfig16staticTimeLengthE"></span><span id="_CPPv2N11trt_edgellm2rt5audio18MelExtractorConfig16staticTimeLengthE"></span><span id="trt_edgellm::rt::audio::MelExtractorConfig::staticTimeLength__int32_t"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audio_1_1MelExtractorConfig_1a06eab373a9354eb4f4c487ab7faad2fa"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">staticTimeLength</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="m"><span class="pre">0</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig16staticTimeLengthE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig12framePaddingE">
+<span id="_CPPv3N11trt_edgellm2rt5audio18MelExtractorConfig12framePaddingE"></span><span id="_CPPv2N11trt_edgellm2rt5audio18MelExtractorConfig12framePaddingE"></span><span id="trt_edgellm::rt::audio::MelExtractorConfig::framePadding__FramePadding"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audio_1_1MelExtractorConfig_1a6cb74f0ea962561705a7987369347e43"></span><span class="n"><span class="pre">FramePadding</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">framePadding</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="n"><span class="pre">FramePadding</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">kLeftAlignedZero</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig12framePaddingE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig17dropLastStftFrameE">
+<span id="_CPPv3N11trt_edgellm2rt5audio18MelExtractorConfig17dropLastStftFrameE"></span><span id="_CPPv2N11trt_edgellm2rt5audio18MelExtractorConfig17dropLastStftFrameE"></span><span id="trt_edgellm::rt::audio::MelExtractorConfig::dropLastStftFrame__b"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audio_1_1MelExtractorConfig_1ab1802bb54558b05ebb0e5f335c07d29d"></span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">dropLastStftFrame</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="k"><span class="pre">false</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig17dropLastStftFrameE" title="Link to this definition">#</a><br /></dt>
+<dd><p>When true, drop the last STFT frame before mel filter / log / post-norm, matching HF Whisper / Parakeet’s <code class="docutils literal notranslate"><span class="pre">stft[...,</span> <span class="pre">:-1]</span></code> and the original Whisper reference. Without this the post-normalize statistics (whisper max-clamp, parakeet per-feature mean/std) drift from HF by O(1e-1) at frame boundaries even though the underlying mel-power values are byte-identical. </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig9melFilterE">
+<span id="_CPPv3N11trt_edgellm2rt5audio18MelExtractorConfig9melFilterE"></span><span id="_CPPv2N11trt_edgellm2rt5audio18MelExtractorConfig9melFilterE"></span><span id="trt_edgellm::rt::audio::MelExtractorConfig::melFilter__floatCP"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audio_1_1MelExtractorConfig_1a1ef47fde4755fb8a8adfe9e20d30c539"></span><span class="kt"><span class="pre">float</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">melFilter</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="k"><span class="pre">nullptr</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig9melFilterE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Pointer to a precomputed mel filter bank of shape <code class="docutils literal notranslate"><span class="pre">[nMel</span> <span class="pre">×</span> <span class="pre">(nFFT/2</span> <span class="pre">+</span> <span class="pre">1)]</span></code> in row-major order. Generated offline by <code class="docutils literal notranslate"><span class="pre">scripts/gen_mel_filter_bank.py</span></code> and embedded as a static array. Lifetime must outlive the extractor (typically pointer to a <code class="docutils literal notranslate"><span class="pre">static</span> <span class="pre">constexpr</span></code> table). </p>
+</dd></dl>
+
+</div>
+</dd></dl>
+
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="mambaCacheManager.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Mamba Cache Manager</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="mtpDecoder.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Mtp Decoder</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+
+
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio12MelExtractorE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::rt::audio::MelExtractor</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio12MelExtractor12MelExtractorEv"><code class="docutils literal notranslate"><span class="pre">MelExtractor()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio12MelExtractor12MelExtractorE18MelExtractorConfig"><code class="docutils literal notranslate"><span class="pre">MelExtractor()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio12MelExtractorD0Ev"><code class="docutils literal notranslate"><span class="pre">~MelExtractor()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio12MelExtractor12MelExtractorERK12MelExtractor"><code class="docutils literal notranslate"><span class="pre">MelExtractor()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio12MelExtractoraSERK12MelExtractor"><code class="docutils literal notranslate"><span class="pre">operator=()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio12MelExtractor12MelExtractorERR12MelExtractor"><code class="docutils literal notranslate"><span class="pre">MelExtractor()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio12MelExtractoraSERR12MelExtractor"><code class="docutils literal notranslate"><span class="pre">operator=()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio12MelExtractor7extractERK8AudioPCMR6Tensor"><code class="docutils literal notranslate"><span class="pre">extract()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt5audio12MelExtractor6configEv"><code class="docutils literal notranslate"><span class="pre">config()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio12MelExtractor4ImplE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::rt::audio::MelExtractor::Impl</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio12MelExtractor4Impl8windowFnE"><code class="docutils literal notranslate"><span class="pre">windowFn</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio12MelExtractor4Impl16melFilterStorageE"><code class="docutils literal notranslate"><span class="pre">melFilterStorage</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio12MelExtractor4Impl12melFilterPtrE"><code class="docutils literal notranslate"><span class="pre">melFilterPtr</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio12MelExtractor4Impl5nBinsE"><code class="docutils literal notranslate"><span class="pre">nBins</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio12MelExtractor4Impl9preempBufE"><code class="docutils literal notranslate"><span class="pre">preempBuf</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio12MelExtractor4Impl6sinCosE"><code class="docutils literal notranslate"><span class="pre">sinCos</span></code></a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfigE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::rt::audio::MelExtractorConfig</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig4nameE"><code class="docutils literal notranslate"><span class="pre">name</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig10sampleRateE"><code class="docutils literal notranslate"><span class="pre">sampleRate</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig4nFFTE"><code class="docutils literal notranslate"><span class="pre">nFFT</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig9hopLengthE"><code class="docutils literal notranslate"><span class="pre">hopLength</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig9winLengthE"><code class="docutils literal notranslate"><span class="pre">winLength</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig4nMelE"><code class="docutils literal notranslate"><span class="pre">nMel</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig14minFrequencyHzE"><code class="docutils literal notranslate"><span class="pre">minFrequencyHz</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig14maxFrequencyHzE"><code class="docutils literal notranslate"><span class="pre">maxFrequencyHz</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig12preemphCoeffE"><code class="docutils literal notranslate"><span class="pre">preemphCoeff</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig16preemphPostScaleE"><code class="docutils literal notranslate"><span class="pre">preemphPostScale</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig10windowTypeE"><code class="docutils literal notranslate"><span class="pre">windowType</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig18windowCentredInFftE"><code class="docutils literal notranslate"><span class="pre">windowCentredInFft</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig8melScaleE"><code class="docutils literal notranslate"><span class="pre">melScale</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig7melNormE"><code class="docutils literal notranslate"><span class="pre">melNorm</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig23triangulariseInMelSpaceE"><code class="docutils literal notranslate"><span class="pre">triangulariseInMelSpace</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig7logTypeE"><code class="docutils literal notranslate"><span class="pre">logType</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig12logFloorModeE"><code class="docutils literal notranslate"><span class="pre">logFloorMode</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig8logFloorE"><code class="docutils literal notranslate"><span class="pre">logFloor</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig6layoutE"><code class="docutils literal notranslate"><span class="pre">layout</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig13postNormalizeE"><code class="docutils literal notranslate"><span class="pre">postNormalize</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig11timePaddingE"><code class="docutils literal notranslate"><span class="pre">timePadding</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig16staticTimeLengthE"><code class="docutils literal notranslate"><span class="pre">staticTimeLength</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig12framePaddingE"><code class="docutils literal notranslate"><span class="pre">framePadding</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig17dropLastStftFrameE"><code class="docutils literal notranslate"><span class="pre">dropLastStftFrame</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt5audio18MelExtractorConfig9melFilterE"><code class="docutils literal notranslate"><span class="pre">melFilter</span></code></a></li>
+</ul>
+</li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../../_static/scripts/bootstrap.js?digest=a95f357e85573c9b56d5"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=a95f357e85573c9b56d5"></script>
+
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+<a class="footer-brand logo" href="https://www.nvidia.com">
+  <img src="../../_static/nvidia-logo-horiz-rgb-1c-blk-for-screen.svg" class="logo__image only-light" alt="NVIDIA"/>
+  <img src="../../_static/nvidia-logo-horiz-rgb-1c-wht-for-screen.svg" class="logo__image only-dark" alt="NVIDIA"/>
+</a></div>
+      
+        <div class="footer-item">
+
+<div class="footer-links">
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/about-nvidia/privacy-policy/">Privacy Policy</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/about-nvidia/privacy-center/">Your Privacy Choices</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/about-nvidia/terms-of-service/">Terms of Service</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/about-nvidia/accessibility/">Accessibility</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/about-nvidia/company-policies/">Corporate Policies</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/product-security/">Product Security</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/contact/">Contact</a>
+  
+  
+  
+</div>
+</div>
+      
+        <div class="footer-item">
+
+
+
+
+  <p class="copyright">
+    
+      Copyright © 2025, Nvidia.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+<div class="extra_footer">
+  
+  <p>Last updated on July 02, 2026.</p>
+  
+  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/30941a6">30941a6</a>.</p>
+  
+</div></div>
+      
+    </div>
+  
+  
+  
+</div>
+
+  </footer>
+  </body>
+</html>

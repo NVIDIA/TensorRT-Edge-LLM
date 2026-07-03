@@ -2,6 +2,10 @@
 
 This page documents the known limitations and issues for each release version of TensorRT Edge-LLM.
 
+## 0.9.0
+
+- Some FP8 ViT configurations may produce NaN outputs for specific models. If this occurs, use FP16 ViT for the visual encoder.
+
 ## 0.7.0
 
 - Fixed in 0.7.1: `tensorrt-edgellm-quantize` exposed FP8 visual-tower quantization for supported VLM checkpoints, but other visual-tower precisions were not exposed in 0.7.0.

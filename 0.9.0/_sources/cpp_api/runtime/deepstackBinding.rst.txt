@@ -1,0 +1,8 @@
+Deepstack Binding
+=================
+
+.. doxygenclass:: trt_edgellm::rt::DeepstackBinding
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

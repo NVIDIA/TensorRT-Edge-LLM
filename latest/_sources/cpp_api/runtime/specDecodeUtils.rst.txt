@@ -1,12 +1,6 @@
 Spec Decode Utils
 =================
 
-.. doxygenfunction:: trt_edgellm::rt::spec_decode_utils::isGreedyCompatible
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::rt::spec_decode_utils::loadDraftEngine
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::rt::spec_decode_utils::appendAcceptedTokens
+.. doxygenfile:: runtime/decoding/specDecodeUtils.h
    :project: TensorRT Edge-LLM
 

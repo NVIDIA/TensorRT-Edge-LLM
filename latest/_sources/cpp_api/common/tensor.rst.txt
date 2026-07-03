@@ -26,6 +26,3 @@ Tensor
    :members:
    :undoc-members:
 
-.. doxygenfunction:: trt_edgellm::rt::utils::computeStrides
-   :project: TensorRT Edge-LLM
-

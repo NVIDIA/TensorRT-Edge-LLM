@@ -8,6 +8,7 @@ API documentation for the plugins module.
 
    attentionPlugin
    causalConv1dPlugin
+   dflashTargetKVCacheUpdatePlugin
    gatedDeltaNetPlugin
    int4GroupwiseGemmPlugin
    int4MoePlugin

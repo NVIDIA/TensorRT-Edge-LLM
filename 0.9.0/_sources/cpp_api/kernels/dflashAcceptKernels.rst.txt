@@ -1,0 +1,6 @@
+Dflash Accept Kernels
+=====================
+
+.. doxygenfile:: kernels/speculative/dflashAcceptKernels.h
+   :project: TensorRT Edge-LLM
+

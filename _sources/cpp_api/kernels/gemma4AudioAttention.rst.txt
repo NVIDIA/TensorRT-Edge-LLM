@@ -1,0 +1,8 @@
+Gemma4 Audio Attention
+======================
+
+.. doxygenstruct:: trt_edgellm::kernel::Gemma4AudioAttentionParams
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

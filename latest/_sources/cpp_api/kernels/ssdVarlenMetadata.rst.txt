@@ -1,9 +1,6 @@
 Ssd Varlen Metadata
 ===================
 
-.. doxygenfunction:: trt_edgellm::mamba::fillUniformValidLens
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::mamba::buildSSDVarlenMetadata
+.. doxygenfile:: kernels/mamba/ssdVarlenMetadata.h
    :project: TensorRT Edge-LLM
 

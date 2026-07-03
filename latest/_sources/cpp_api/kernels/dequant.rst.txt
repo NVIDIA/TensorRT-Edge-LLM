@@ -1,6 +1,6 @@
 Dequant
 =======
 
-.. doxygenfunction:: MARLIN_NAMESPACE_NAME::dequant
+.. doxygenfile:: kernels/moe/moe_marlin/marlin/dequant.h
    :project: TensorRT Edge-LLM
 

@@ -1,0 +1,13 @@
+Nvfp4 Moe Plugin Geforce
+========================
+
+.. doxygenclass:: trt_edgellm::plugins::NvFP4MoEPluginGeforce
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::plugins::NvFP4MoEPluginGeforceCreator
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

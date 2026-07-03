@@ -1,0 +1,13 @@
+Attention Plugin
+================
+
+.. doxygenclass:: trt_edgellm::plugins::AttentionPlugin
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::plugins::AttentionPluginCreator
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

@@ -1,0 +1,28 @@
+Decoding Strategy
+=================
+
+.. doxygenclass:: trt_edgellm::rt::DecodingStrategy
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::SamplingBuffers
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::BaseEngineResources
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::PreprocessResources
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::DecodingRuntimeContext
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

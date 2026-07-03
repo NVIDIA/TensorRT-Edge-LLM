@@ -41,33 +41,3 @@ LLM Runtime Utils
    :members:
    :undoc-members:
 
-.. doxygenfunction:: trt_edgellm::rt::formatRopeConfig
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::rt::collectRopeConfig
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::rt::initializeRopeCosSinCache
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::rt::initializeNopeCosSinCache
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::rt::initializeLongRopeCosSinCache
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::rt::compactVector
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::rt::buildBatchMapping
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::rt::loadEmbeddingTable
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::rt::clampMaxGenerateLengthForKVCapacity
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::rt::generateMultimodalIndices
-   :project: TensorRT Edge-LLM
-

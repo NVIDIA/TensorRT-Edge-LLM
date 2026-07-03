@@ -28,8 +28,8 @@
   </noscript>
   
   <!-- Loaded before other Sphinx assets -->
-  <link href="../../_static/styles/theme.css?digest=0790524f97105ba85085" rel="stylesheet" />
-<link href="../../_static/styles/pydata-sphinx-theme.css?digest=0790524f97105ba85085" rel="stylesheet" />
+  <link href="../../_static/styles/theme.css?digest=a95f357e85573c9b56d5" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=a95f357e85573c9b56d5" rel="stylesheet" />
 
     <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=03e43079" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/nvidia-sphinx-theme.css?v=933278ad" />
@@ -39,10 +39,10 @@
     <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=e02be394" />
   
   <!-- So that users can add custom icons -->
-  <script defer src="../../_static/scripts/fontawesome.js?digest=0790524f97105ba85085"></script>
+  <script defer src="../../_static/scripts/fontawesome.js?digest=a95f357e85573c9b56d5"></script>
   <!-- Pre-loaded scripts that we'll load fully later -->
-  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=0790524f97105ba85085" />
-<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=0790524f97105ba85085" />
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=a95f357e85573c9b56d5" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=a95f357e85573c9b56d5" />
 
 
 
@@ -58,9 +58,9 @@
     <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'user_guide/performance/performance-benchmarks';</script>
     <script>
-        DOCUMENTATION_OPTIONS.theme_version = '0.18.0';
+        DOCUMENTATION_OPTIONS.theme_version = '0.19.0';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = './_static/switcher.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.8.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.9.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner =
             false;
         </script>
@@ -76,7 +76,7 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.8.0" />
+  <meta name="docsearch:version" content="0.9.0" />
   
     
     <script src="../../_static/searchtools.js"></script>
@@ -431,6 +431,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/logger.html">Logger</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/mathUtils.html">Math Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/mmapReader.html">MMAP Reader</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/ropeUtils.html">Rope Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/safetensorsUtils.html">Safetensors Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/stringUtils.html">String Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/tensor.html">Tensor</a></li>
@@ -440,10 +441,7 @@
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/kernels/index.html">Kernels Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/NvFP4MoEContiguousGemmRunner.html">Nv Fp4 Mo E Contiguous GEMM Runner</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/NvFP4MoEFC2FinalizeRunner.html">Nv Fp4 Mo Efc2 Finalize Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/NvFP4MoEUtils.html">Nv Fp4 Mo E Utils</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/alphaCompute.html">Alpha Compute</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/applyRopeWriteKV.html">Apply Rope Write KV</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/batchEvictKernels.html">Batch Evict Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/buildLayout.html">Build Layout</a></li>
@@ -451,36 +449,37 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/common.html">Common</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/contextFMHARunner.html">Context FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/conversion.html">Conversion</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslDecodeGemvRunner.html">Cute Dsl Decode Gemv Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslFFPARunner.html">Cute Dsl Ffpa Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslFMHARunner.html">Cute Dsl FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslGDNRunner.html">Cute Dsl Gdn Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslGemmRunner.html">Cute Dsl GEMM Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslNvfp4MoeRunner.html">Cute Dsl Nvfp4 Moe Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslNvfp4MoeSm110Runner.html">Cute Dsl Nvfp4 Moe Sm110 Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslSSDRunner.html">Cute Dsl Ssd Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/decoderXQARunner.html">Decoder XQA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dequant.html">Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dequantize.html">Dequantize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dflashAcceptKernels.html">Dflash Accept Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dflashRuntimeKernels.html">Dflash Runtime Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/eagleAcceptKernels.html">EAGLE Accept Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/eagleUtilKernels.html">EAGLE Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/embeddingKernels.html">Embedding Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/fmhaParams_v2.html">FMHA Params V2</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/fp4Quantize.html">Fp4 Quantize</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/gdnKernelUtils.html">Gdn Kernel Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/gemma4AudioAttention.html">Gemma4 Audio Attention</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/imageUtilKernels.html">Image Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/initializeCosSinCache.html">Initialize Cos Sin Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/int4GroupwiseGemm.html">Int4 Groupwise GEMM</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/kernel.html">Kernel</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/kernel_selector.html">Kernel Selector</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/kernels.html">Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/kvCacheUtilsKernels.html">KV Cache Utils Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/marlin.html">Marlin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/marlin_dtypes.html">Marlin Dtypes</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/marlin_mma.html">Marlin Mma</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/marlin_template.html">Marlin Template</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/marlin_template.html">Marlin Template</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeActivationKernels.html">Moe Activation Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeAlignSumKernels.html">Moe Align Sum Kernels</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeGather.html">Moe Gather</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeMarlin.html">Moe Marlin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeMarlinIndicesKernels.html">Moe Marlin Indices Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeSigmoidGroupTopkKernels.html">Moe Sigmoid Group Topk Kernels</a></li>
@@ -500,6 +499,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/audioRunner.html">Audio Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/audioUtils.html">Audio Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/code2WavRunner.html">Code2 Wav Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/gemma4ViTRunner.html">Gemma4 ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/imageUtils.html">Image Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/internViTRunner.html">Intern ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/modelTypes.html">Model Types</a></li>
@@ -513,6 +513,7 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/plugins/index.html">Plugins Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/attentionPlugin.html">Attention Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/causalConv1dPlugin.html">Causal Conv1d Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/dflashTargetKVCacheUpdatePlugin.html">Dflash Target KV Cache Update Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/gatedDeltaNetPlugin.html">Gated Delta Net Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/int4GroupwiseGemmPlugin.html">Int4 Groupwise GEMM Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/int4MoePlugin.html">Int4 Moe Plugin</a></li>
@@ -531,28 +532,30 @@
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/runtime/index.html">Runtime Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/audioLoader.html">Audio Loader</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/audioUtils.html">Audio Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/decoderRegistry.html">Decoder Registry</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/decodingInferenceContext.html">Decoding Inference Context</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/decodingStrategy.html">Decoding Strategy</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/deepstackBinding.html">Deepstack Binding</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/deploymentConfig.html">Deployment Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/dflashDecoder.html">Dflash Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/eagleDecoder.html">EAGLE Decoder</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/eagleDraftEngineRunner.html">EAGLE Draft Engine Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/embeddingPreprocessor.html">Embedding Preprocessor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/engineExecutor.html">Engine Executor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/externalWeightManager.html">External Weight Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/gemma4EmbeddingPreprocessor.html">Gemma4 Embedding Preprocessor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/hybridCacheManager.html">Hybrid Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/imageUtils.html">Image Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/inferenceDims.html">Inference Dims</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/inferencePhase.html">Inference Phase</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/kvCacheManager.html">KV Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmEngineConfig.html">LLM Engine Config</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmEngineRunner.html">LLM Engine Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmInferenceRuntime.html">LLM Inference Runtime</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmRuntimeUtils.html">LLM Runtime Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/loraManager.html">Lora Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/mambaCacheManager.html">Mamba Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/melSpectrogram.html">Mel Spectrogram</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/mtpDecoder.html">Mtp Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/pipelineIO.html">Pipeline Io</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/qwen3OmniTTSRuntime.html">Qwen3 Omni Tts Runtime</a></li>
@@ -642,7 +645,7 @@
   <section class="tex2jax_ignore mathjax_ignore" id="performance-benchmarks">
 <h1>Performance Benchmarks<a class="headerlink" href="#performance-benchmarks" title="Link to this heading">#</a></h1>
 <blockquote>
-<div><p><strong>Platform:</strong> NVIDIA Jetson AGX Thor Developer Kit (Blackwell, SM110)</p>
+<div><p><strong>Platforms:</strong> NVIDIA Jetson AGX Thor Developer Kit, Jetson AGX Orin 64GB, Jetson Orin NX 16GB, and Jetson Orin Nano 8GB. Older release sections may include a narrower platform set.</p>
 </div></blockquote>
 <section id="definitions">
 <h2>Definitions<a class="headerlink" href="#definitions" title="Link to this heading">#</a></h2>
@@ -666,10 +669,10 @@
 <td><p>Number of concurrent sequences (BS=1 = single-user latency, BS=8 = multi-user throughput)</p></td>
 </tr>
 <tr class="row-even"><td><p><strong>Acceptance rate</strong></p></td>
-<td><p>Average tokens accepted per EAGLE verify step (higher is better)</p></td>
+<td><p>Average tokens accepted per speculative decoding verify step (higher is better)</p></td>
 </tr>
 <tr class="row-odd"><td><p><strong>Speedup</strong></p></td>
-<td><p>EAGLE generation throughput / vanilla generation throughput (same model, precision, batch size)</p></td>
+<td><p>Speculative decoding generation throughput / vanilla generation throughput (same model, precision, batch size)</p></td>
 </tr>
 <tr class="row-even"><td><p><strong>ViT time</strong></p></td>
 <td><p>Total visual encoder processing time per inference run (ms)</p></td>
@@ -682,6 +685,9 @@
 </tr>
 <tr class="row-odd"><td><p><strong>MTP</strong></p></td>
 <td><p>Multi-token prediction speculative decoding</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>DFlash</strong></p></td>
+<td><p>z-lab paired-draft speculative decoding with a dedicated external draft checkpoint</p></td>
 </tr>
 </tbody>
 </table>
@@ -719,6 +725,3944 @@
 </tbody>
 </table>
 </div>
+</section>
+</section>
+<hr class="docutils" />
+<section id="v0-8-0-results">
+<h2>v0.8.0 Results<a class="headerlink" href="#v0-8-0-results" title="Link to this heading">#</a></h2>
+<blockquote>
+<div><p><strong>SDK Version:</strong> TensorRT Edge-LLM 0.8.0  |  <strong>JetPack:</strong> 7.2  |  <strong>Source:</strong> v0.8.0 release benchmark outputs  |  <strong>Devices:</strong> Jetson AGX Thor, Jetson AGX Orin 64GB, Jetson Orin NX 16GB, Jetson Orin Nano 8GB</p>
+</div></blockquote>
+<blockquote>
+<div><p><strong>Limitation:</strong> v0.8.0 has a uniform performance regression across the benchmarked release devices. This regression is fixed in v0.9.0, so use v0.9.0 or later for current performance expectations.</p>
+</div></blockquote>
+<section id="llm-bench-commands">
+<h3><code class="docutils literal notranslate"><span class="pre">llm_bench</span></code> Commands<a class="headerlink" href="#llm-bench-commands" title="Link to this heading">#</a></h3>
+<p>The v0.8.0 release benchmarks use <code class="docutils literal notranslate"><span class="pre">llm_bench</span></code> for synthetic component timing. The release run used <code class="docutils literal notranslate"><span class="pre">--warmup=2</span></code>, <code class="docutils literal notranslate"><span class="pre">--iterations=10</span></code>, and <code class="docutils literal notranslate"><span class="pre">--profile</span></code>; replace paths and lengths with the engine directory and shape listed in the table.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Prefill throughput</span>
+./build/examples/llm/llm_bench<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--engineDir<span class="w"> </span>&lt;llm_engine_dir&gt;<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--mode<span class="w"> </span>prefill<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--batchSize<span class="w"> </span>&lt;batch_size&gt;<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--inputLen<span class="w"> </span>&lt;input_len&gt;<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--warmup<span class="w"> </span><span class="m">2</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--iterations<span class="w"> </span><span class="m">10</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--profile
+
+<span class="c1"># Decode throughput</span>
+./build/examples/llm/llm_bench<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--engineDir<span class="w"> </span>&lt;llm_engine_dir&gt;<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--mode<span class="w"> </span>decode<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--batchSize<span class="w"> </span>&lt;batch_size&gt;<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--pastKVLen<span class="w"> </span>&lt;past_kv_len&gt;<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--warmup<span class="w"> </span><span class="m">2</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--iterations<span class="w"> </span><span class="m">10</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--profile
+
+<span class="c1"># Speculative decoding component timing</span>
+./build/examples/llm/llm_bench<span class="w"> </span>--engineDir<span class="w"> </span>&lt;engine_dir&gt;<span class="w"> </span>--mode<span class="w"> </span>spec_draft_prefill<span class="w"> </span>--batchSize<span class="w"> </span>&lt;batch_size&gt;<span class="w"> </span>--inputLen<span class="w"> </span>&lt;input_len&gt;<span class="w"> </span>--warmup<span class="w"> </span><span class="m">2</span><span class="w"> </span>--iterations<span class="w"> </span><span class="m">10</span><span class="w"> </span>--profile
+./build/examples/llm/llm_bench<span class="w"> </span>--engineDir<span class="w"> </span>&lt;engine_dir&gt;<span class="w"> </span>--mode<span class="w"> </span>spec_draft_proposal<span class="w"> </span>--batchSize<span class="w"> </span>&lt;batch_size&gt;<span class="w"> </span>--draftTreeSize<span class="w"> </span>&lt;draft_tree_size&gt;<span class="w"> </span>--pastKVLen<span class="w"> </span>&lt;past_kv_len&gt;<span class="w"> </span>--warmup<span class="w"> </span><span class="m">2</span><span class="w"> </span>--iterations<span class="w"> </span><span class="m">10</span><span class="w"> </span>--profile
+./build/examples/llm/llm_bench<span class="w"> </span>--engineDir<span class="w"> </span>&lt;engine_dir&gt;<span class="w"> </span>--mode<span class="w"> </span>spec_verify<span class="w"> </span>--batchSize<span class="w"> </span>&lt;batch_size&gt;<span class="w"> </span>--verifyTreeSize<span class="w"> </span>&lt;verify_tree_size&gt;<span class="w"> </span>--pastKVLen<span class="w"> </span>&lt;past_kv_len&gt;<span class="w"> </span>--warmup<span class="w"> </span><span class="m">2</span><span class="w"> </span>--iterations<span class="w"> </span><span class="m">10</span><span class="w"> </span>--profile
+
+<span class="c1"># Visual encoder timing</span>
+./build/examples/llm/llm_bench<span class="w"> </span>--engineDir<span class="w"> </span>&lt;visual_engine_dir&gt;<span class="w"> </span>--mode<span class="w"> </span>visual<span class="w"> </span>--imageSize<span class="w"> </span>&lt;height&gt;x&lt;width&gt;<span class="w"> </span>--warmup<span class="w"> </span><span class="m">2</span><span class="w"> </span>--iterations<span class="w"> </span><span class="m">10</span><span class="w"> </span>--profile
+</pre></div>
+</div>
+</section>
+<section id="llm-bench-prefill-performance-jetson-agx-thor-only">
+<h3><code class="docutils literal notranslate"><span class="pre">llm_bench</span></code> Prefill Performance (Jetson AGX Thor Only)<a class="headerlink" href="#llm-bench-prefill-performance-jetson-agx-thor-only" title="Link to this heading">#</a></h3>
+<p>These are the parsed synthetic <code class="docutils literal notranslate"><span class="pre">llm_bench_prefill_*</span></code> results in the v0.8.0 release benchmark outputs. Only the Jetson AGX Thor data contains parsed <code class="docutils literal notranslate"><span class="pre">llm_bench_prefill_e2e_time_ms</span></code> and <code class="docutils literal notranslate"><span class="pre">llm_bench_prefill_tokens_per_sec</span></code> values. The AGX Orin, Orin NX, and Orin Nano data includes runtime prefill metrics in the dashboard below, but does not include those synthetic <code class="docutils literal notranslate"><span class="pre">llm_bench</span></code> prefill e2e/tok/s fields.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Platform</p></th>
+<th class="head"><p>Model</p></th>
+<th class="head"><p>Kind</p></th>
+<th class="head"><p>Mode</p></th>
+<th class="head"><p>Precision</p></th>
+<th class="head text-center"><p>Batch</p></th>
+<th class="head text-right"><p>Input Len</p></th>
+<th class="head text-right"><p>Prefill E2E (ms)</p></th>
+<th class="head text-right"><p>Prefill (tok/s)</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Jetson AGX Thor</p></td>
+<td><p>NVIDIA-Nemotron-3-Nano-30B-A3B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>228.1</p></td>
+<td class="text-right"><p>8,978.9</p></td>
+</tr>
+<tr class="row-odd"><td><p>Jetson AGX Thor</p></td>
+<td><p>NVIDIA-Nemotron-3-Nano-30B-A3B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>1,385.7</p></td>
+<td class="text-right"><p>1,478.0</p></td>
+</tr>
+<tr class="row-even"><td><p>Jetson AGX Thor</p></td>
+<td><p>NVIDIA-Nemotron-3-Nano-4B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>1,152.7</p></td>
+<td class="text-right"><p>1,776.7</p></td>
+</tr>
+<tr class="row-odd"><td><p>Jetson AGX Thor</p></td>
+<td><p>NVIDIA-Nemotron-3-Nano-4B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>5,347.0</p></td>
+<td class="text-right"><p>383.0</p></td>
+</tr>
+<tr class="row-even"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3-0.6B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>22.4</p></td>
+<td class="text-right"><p>91,469.3</p></td>
+</tr>
+<tr class="row-odd"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3-0.6B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>248.5</p></td>
+<td class="text-right"><p>8,241.0</p></td>
+</tr>
+<tr class="row-even"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3-1.7B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>32.3</p></td>
+<td class="text-right"><p>63,441.6</p></td>
+</tr>
+<tr class="row-odd"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3-1.7B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>356.8</p></td>
+<td class="text-right"><p>5,739.6</p></td>
+</tr>
+<tr class="row-even"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3-4B-Instruct-2507</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>67.1</p></td>
+<td class="text-right"><p>30,539.5</p></td>
+</tr>
+<tr class="row-odd"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3-4B-Instruct-2507</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>823.8</p></td>
+<td class="text-right"><p>2,486.0</p></td>
+</tr>
+<tr class="row-even"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3-8B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>111.0</p></td>
+<td class="text-right"><p>18,444.1</p></td>
+</tr>
+<tr class="row-odd"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3-8B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>1,245.9</p></td>
+<td class="text-right"><p>1,643.8</p></td>
+</tr>
+<tr class="row-even"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3.5-0.8B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>36.6</p></td>
+<td class="text-right"><p>55,904.4</p></td>
+</tr>
+<tr class="row-odd"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3.5-0.8B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>349.0</p></td>
+<td class="text-right"><p>5,868.1</p></td>
+</tr>
+<tr class="row-even"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3.5-27B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>463.3</p></td>
+<td class="text-right"><p>4,420.5</p></td>
+</tr>
+<tr class="row-odd"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3.5-27B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>4,268.6</p></td>
+<td class="text-right"><p>479.8</p></td>
+</tr>
+<tr class="row-even"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3.5-2B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>46.1</p></td>
+<td class="text-right"><p>44,458.0</p></td>
+</tr>
+<tr class="row-odd"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3.5-2B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>435.6</p></td>
+<td class="text-right"><p>4,701.8</p></td>
+</tr>
+<tr class="row-even"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3.5-4B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>101.2</p></td>
+<td class="text-right"><p>20,237.3</p></td>
+</tr>
+<tr class="row-odd"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3.5-4B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>997.1</p></td>
+<td class="text-right"><p>2,053.9</p></td>
+</tr>
+<tr class="row-even"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3.5-9B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>138.4</p></td>
+<td class="text-right"><p>14,795.8</p></td>
+</tr>
+<tr class="row-odd"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3.5-9B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>1,411.1</p></td>
+<td class="text-right"><p>1,451.3</p></td>
+</tr>
+<tr class="row-even"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3.6-35B-A3B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>273.3</p></td>
+<td class="text-right"><p>7,494.3</p></td>
+</tr>
+<tr class="row-odd"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3-VL-2B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4 / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>32.6</p></td>
+<td class="text-right"><p>62,763.4</p></td>
+</tr>
+<tr class="row-even"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3-VL-2B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4 / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>358.0</p></td>
+<td class="text-right"><p>5,721.4</p></td>
+</tr>
+<tr class="row-odd"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3-VL-4B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4 / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>68.5</p></td>
+<td class="text-right"><p>29,908.3</p></td>
+</tr>
+<tr class="row-even"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3-VL-4B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4 / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>833.3</p></td>
+<td class="text-right"><p>2,457.8</p></td>
+</tr>
+<tr class="row-odd"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3-VL-8B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4 / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>112.2</p></td>
+<td class="text-right"><p>18,254.6</p></td>
+</tr>
+<tr class="row-even"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3-VL-8B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4 / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>1,239.3</p></td>
+<td class="text-right"><p>1,652.6</p></td>
+</tr>
+<tr class="row-odd"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3.5-0.8B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4 / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>36.5</p></td>
+<td class="text-right"><p>56,042.9</p></td>
+</tr>
+<tr class="row-even"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3.5-0.8B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4 / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>349.2</p></td>
+<td class="text-right"><p>5,864.1</p></td>
+</tr>
+<tr class="row-odd"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3.5-27B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4 / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>459.2</p></td>
+<td class="text-right"><p>4,460.3</p></td>
+</tr>
+<tr class="row-even"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3.5-27B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4 / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>4,201.7</p></td>
+<td class="text-right"><p>487.4</p></td>
+</tr>
+<tr class="row-odd"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3.5-2B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4 / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>46.0</p></td>
+<td class="text-right"><p>44,568.0</p></td>
+</tr>
+<tr class="row-even"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3.5-2B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4 / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>438.0</p></td>
+<td class="text-right"><p>4,676.0</p></td>
+</tr>
+<tr class="row-odd"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3.5-4B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4 / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>101.2</p></td>
+<td class="text-right"><p>20,235.5</p></td>
+</tr>
+<tr class="row-even"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3.5-4B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4 / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>996.5</p></td>
+<td class="text-right"><p>2,055.2</p></td>
+</tr>
+<tr class="row-odd"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3.5-9B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4 / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>138.7</p></td>
+<td class="text-right"><p>14,766.6</p></td>
+</tr>
+<tr class="row-even"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3.5-9B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4 / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>1,399.9</p></td>
+<td class="text-right"><p>1,462.9</p></td>
+</tr>
+<tr class="row-odd"><td><p>Jetson AGX Thor</p></td>
+<td><p>nemotron-omni-ea</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4 / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>223.6</p></td>
+<td class="text-right"><p>9,157.3</p></td>
+</tr>
+<tr class="row-even"><td><p>Jetson AGX Thor</p></td>
+<td><p>nemotron-omni-ea</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4 / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>1,355.9</p></td>
+<td class="text-right"><p>1,510.4</p></td>
+</tr>
+<tr class="row-odd"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3-1.7B</p></td>
+<td><p>LLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>NVFP4 / NVFP4</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>30.6</p></td>
+<td class="text-right"><p>66,929.4</p></td>
+</tr>
+<tr class="row-even"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3-1.7B</p></td>
+<td><p>LLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>NVFP4 / NVFP4</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>356.9</p></td>
+<td class="text-right"><p>5,738.5</p></td>
+</tr>
+<tr class="row-odd"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3-8B</p></td>
+<td><p>LLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>NVFP4 / NVFP4</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>109.2</p></td>
+<td class="text-right"><p>18,754.4</p></td>
+</tr>
+<tr class="row-even"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3-8B</p></td>
+<td><p>LLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>NVFP4 / NVFP4</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>1,241.7</p></td>
+<td class="text-right"><p>1,649.4</p></td>
+</tr>
+<tr class="row-odd"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen2.5-VL-7B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>NVFP4 / NVFP4 / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>81.8</p></td>
+<td class="text-right"><p>25,038.0</p></td>
+</tr>
+<tr class="row-even"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen2.5-VL-7B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>NVFP4 / NVFP4 / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>984.0</p></td>
+<td class="text-right"><p>2,081.3</p></td>
+</tr>
+<tr class="row-odd"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3-VL-4B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>NVFP4 / NVFP4 / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>64.6</p></td>
+<td class="text-right"><p>31,680.9</p></td>
+</tr>
+<tr class="row-even"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3-VL-4B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>NVFP4 / NVFP4 / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>833.8</p></td>
+<td class="text-right"><p>2,456.2</p></td>
+</tr>
+<tr class="row-odd"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3.5-0.8B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>NVFP4 / NVFP4 / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>34.9</p></td>
+<td class="text-right"><p>58,600.2</p></td>
+</tr>
+<tr class="row-even"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3.5-0.8B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>NVFP4 / NVFP4 / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>348.8</p></td>
+<td class="text-right"><p>5,872.0</p></td>
+</tr>
+<tr class="row-odd"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3.5-27B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>NVFP4 / NVFP4 / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>454.5</p></td>
+<td class="text-right"><p>4,505.6</p></td>
+</tr>
+<tr class="row-even"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3.5-27B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>NVFP4 / NVFP4 / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>4,209.1</p></td>
+<td class="text-right"><p>486.6</p></td>
+</tr>
+<tr class="row-odd"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3.5-2B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>NVFP4 / NVFP4 / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>43.0</p></td>
+<td class="text-right"><p>47,649.3</p></td>
+</tr>
+<tr class="row-even"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3.5-2B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>NVFP4 / NVFP4 / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>433.9</p></td>
+<td class="text-right"><p>4,719.7</p></td>
+</tr>
+<tr class="row-odd"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3.5-4B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>NVFP4 / NVFP4 / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>99.2</p></td>
+<td class="text-right"><p>20,648.3</p></td>
+</tr>
+<tr class="row-even"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3.5-4B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>NVFP4 / NVFP4 / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>994.7</p></td>
+<td class="text-right"><p>2,058.9</p></td>
+</tr>
+<tr class="row-odd"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3.5-9B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>NVFP4 / NVFP4 / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>134.2</p></td>
+<td class="text-right"><p>15,265.9</p></td>
+</tr>
+<tr class="row-even"><td><p>Jetson AGX Thor</p></td>
+<td><p>Qwen3.5-9B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>NVFP4 / NVFP4 / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>2,048</p></td>
+<td class="text-right"><p>1,399.6</p></td>
+<td class="text-right"><p>1,463.3</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="runtime-performance-dashboard">
+<h3>Runtime Performance Dashboard<a class="headerlink" href="#runtime-performance-dashboard" title="Link to this heading">#</a></h3>
+<p>All v0.8.0 runtime entries below were benchmarked under JetPack 7.2 and are split by device.</p>
+<section id="jetson-agx-thor">
+<h4>Jetson AGX Thor<a class="headerlink" href="#jetson-agx-thor" title="Link to this heading">#</a></h4>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Model</p></th>
+<th class="head"><p>Kind</p></th>
+<th class="head"><p>Mode</p></th>
+<th class="head"><p>Precision</p></th>
+<th class="head text-center"><p>Batch</p></th>
+<th class="head text-right"><p>Runtime Prefill (ms)</p></th>
+<th class="head text-right"><p>Runtime Prefill Tok/Run</p></th>
+<th class="head text-right"><p>Runtime Prefill (tok/s)</p></th>
+<th class="head text-right"><p>ViT (ms)</p></th>
+<th class="head text-right"><p>ViT Tok/Run</p></th>
+<th class="head text-right"><p>ViT (tok/s)</p></th>
+<th class="head text-right"><p>Generation (tok/s)</p></th>
+<th class="head text-right"><p>Accept Rate</p></th>
+<th class="head text-right"><p>GPU Mem (MB)</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>NVIDIA-Nemotron-3-Nano-30B-A3B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>104.8</p></td>
+<td class="text-right"><p>383</p></td>
+<td class="text-right"><p>3,653.0</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>72.5</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>19,987</p></td>
+</tr>
+<tr class="row-odd"><td><p>NVIDIA-Nemotron-3-Nano-30B-A3B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>508.9</p></td>
+<td class="text-right"><p>3,062</p></td>
+<td class="text-right"><p>6,016.5</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>180.0</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>19,975</p></td>
+</tr>
+<tr class="row-even"><td><p>NVIDIA-Nemotron-3-Nano-4B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>120.8</p></td>
+<td class="text-right"><p>383</p></td>
+<td class="text-right"><p>3,169.5</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>66.4</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>3,538</p></td>
+</tr>
+<tr class="row-odd"><td><p>NVIDIA-Nemotron-3-Nano-4B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>933.8</p></td>
+<td class="text-right"><p>3,062</p></td>
+<td class="text-right"><p>3,279.1</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>302.9</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>3,548</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-0.6B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>22.7</p></td>
+<td class="text-right"><p>370</p></td>
+<td class="text-right"><p>16,296.0</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>194.0</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>773</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-0.6B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>238.9</p></td>
+<td class="text-right"><p>2,959</p></td>
+<td class="text-right"><p>12,383.9</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>329.6</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>875</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-0.6B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>13.4</p></td>
+<td class="text-right"><p>370</p></td>
+<td class="text-right"><p>27,533.2</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>192.5</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>957</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-0.6B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>100.5</p></td>
+<td class="text-right"><p>2,959</p></td>
+<td class="text-right"><p>29,449.6</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>359.8</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>998</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-1.7B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>49.8</p></td>
+<td class="text-right"><p>370</p></td>
+<td class="text-right"><p>7,423.1</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>119.7</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>1,067</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-1.7B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>589.9</p></td>
+<td class="text-right"><p>2,959</p></td>
+<td class="text-right"><p>5,015.4</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>276.6</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>1,066</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-1.7B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>18.4</p></td>
+<td class="text-right"><p>370</p></td>
+<td class="text-right"><p>20,067.5</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>118.9</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>1,884</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-1.7B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>142.9</p></td>
+<td class="text-right"><p>2,959</p></td>
+<td class="text-right"><p>20,704.1</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>302.4</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>1,782</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-30B-A3B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 GPTQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>140.2</p></td>
+<td class="text-right"><p>370</p></td>
+<td class="text-right"><p>2,638.4</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>75.1</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>14,305</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-30B-A3B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 GPTQ</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>1,461.4</p></td>
+<td class="text-right"><p>2,959</p></td>
+<td class="text-right"><p>2,024.6</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>161.7</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>14,313</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-4B-Instruct-2507</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>111.9</p></td>
+<td class="text-right"><p>364</p></td>
+<td class="text-right"><p>3,251.6</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>66.2</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>1,846</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-4B-Instruct-2507</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>1,413.0</p></td>
+<td class="text-right"><p>2,911</p></td>
+<td class="text-right"><p>2,060.0</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>173.7</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>1,813</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-4B-Instruct-2507</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>31.5</p></td>
+<td class="text-right"><p>364</p></td>
+<td class="text-right"><p>11,568.8</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>67.1</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>3,168</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-4B-Instruct-2507</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>283.9</p></td>
+<td class="text-right"><p>2,911</p></td>
+<td class="text-right"><p>10,251.5</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>216.3</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>3,148</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-8B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>200.3</p></td>
+<td class="text-right"><p>370</p></td>
+<td class="text-right"><p>1,846.7</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>43.7</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>3,195</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-8B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>2,546.9</p></td>
+<td class="text-right"><p>2,959</p></td>
+<td class="text-right"><p>1,161.7</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>126.8</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>3,260</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-8B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>42.8</p></td>
+<td class="text-right"><p>370</p></td>
+<td class="text-right"><p>8,640.5</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>42.3</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>5,356</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-8B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>426.8</p></td>
+<td class="text-right"><p>2,959</p></td>
+<td class="text-right"><p>6,933.1</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>157.4</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>5,376</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-0.8B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>30.7</p></td>
+<td class="text-right"><p>377</p></td>
+<td class="text-right"><p>12,271.7</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>214.5</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>951</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-0.8B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>370.8</p></td>
+<td class="text-right"><p>3,013</p></td>
+<td class="text-right"><p>8,126.8</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>717.8</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>962</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-0.8B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>13.8</p></td>
+<td class="text-right"><p>377</p></td>
+<td class="text-right"><p>27,269.9</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>216.2</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>1,176</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-0.8B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>114.6</p></td>
+<td class="text-right"><p>3,013</p></td>
+<td class="text-right"><p>26,298.4</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>926.5</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>1,172</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-27B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>713.9</p></td>
+<td class="text-right"><p>377</p></td>
+<td class="text-right"><p>527.6</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>15.4</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>8,927</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-27B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>10,102.2</p></td>
+<td class="text-right"><p>3,013</p></td>
+<td class="text-right"><p>298.3</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>54.6</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>8,940</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-27B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>130.5</p></td>
+<td class="text-right"><p>377</p></td>
+<td class="text-right"><p>2,887.1</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>14.3</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>15,990</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-27B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>1,356.3</p></td>
+<td class="text-right"><p>3,013</p></td>
+<td class="text-right"><p>2,221.6</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>72.9</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>16,044</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-2B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>56.6</p></td>
+<td class="text-right"><p>377</p></td>
+<td class="text-right"><p>6,650.8</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>118.8</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>1,443</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-2B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>690.0</p></td>
+<td class="text-right"><p>3,013</p></td>
+<td class="text-right"><p>4,366.8</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>459.4</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>1,446</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-2B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>18.8</p></td>
+<td class="text-right"><p>377</p></td>
+<td class="text-right"><p>19,993.5</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>118.8</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>2,131</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-2B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>148.7</p></td>
+<td class="text-right"><p>3,013</p></td>
+<td class="text-right"><p>20,261.3</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>601.0</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>2,138</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-35B-A3B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 GPTQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>118.7</p></td>
+<td class="text-right"><p>377</p></td>
+<td class="text-right"><p>3,173.7</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>46.5</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>15,847</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-35B-A3B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 GPTQ</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>973.7</p></td>
+<td class="text-right"><p>3,013</p></td>
+<td class="text-right"><p>3,094.7</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>175.0</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>15,840</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-4B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>128.5</p></td>
+<td class="text-right"><p>377</p></td>
+<td class="text-right"><p>2,931.7</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>64.9</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>1,707</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-4B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>1,660.6</p></td>
+<td class="text-right"><p>3,013</p></td>
+<td class="text-right"><p>1,814.5</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>221.4</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>1,702</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-4B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>34.4</p></td>
+<td class="text-right"><p>377</p></td>
+<td class="text-right"><p>10,939.3</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>64.8</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>3,567</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-4B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>305.0</p></td>
+<td class="text-right"><p>3,013</p></td>
+<td class="text-right"><p>9,880.3</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>303.0</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>3,604</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-9B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>219.5</p></td>
+<td class="text-right"><p>377</p></td>
+<td class="text-right"><p>1,715.8</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>41.2</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>2,863</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-9B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>3,031.4</p></td>
+<td class="text-right"><p>3,013</p></td>
+<td class="text-right"><p>994.0</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>144.6</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>2,866</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-9B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>46.4</p></td>
+<td class="text-right"><p>377</p></td>
+<td class="text-right"><p>8,112.3</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>39.4</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>6,110</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-9B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>449.7</p></td>
+<td class="text-right"><p>3,013</p></td>
+<td class="text-right"><p>6,700.4</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>181.2</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>6,108</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.6-35B-A3B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>144.2</p></td>
+<td class="text-right"><p>377</p></td>
+<td class="text-right"><p>2,611.8</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>69.0</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>21,442</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.6-35B-A3B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>568.7</p></td>
+<td class="text-right"><p>3,013</p></td>
+<td class="text-right"><p>5,298.1</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>200.2</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>21,490</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-VL-2B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>38.2</p></td>
+<td class="text-right"><p>283</p></td>
+<td class="text-right"><p>7,399.3</p></td>
+<td class="text-right"><p>12.6</p></td>
+<td class="text-right"><p>263</p></td>
+<td class="text-right"><p>20,790.0</p></td>
+<td class="text-right"><p>119.0</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>1,422</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-VL-2B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>321.0</p></td>
+<td class="text-right"><p>2,196</p></td>
+<td class="text-right"><p>6,840.7</p></td>
+<td class="text-right"><p>85.9</p></td>
+<td class="text-right"><p>2,036</p></td>
+<td class="text-right"><p>23,696.7</p></td>
+<td class="text-right"><p>273.6</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>1,409</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-VL-2B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4 / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>14.8</p></td>
+<td class="text-right"><p>283</p></td>
+<td class="text-right"><p>19,152.2</p></td>
+<td class="text-right"><p>12.6</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>20,790.0</p></td>
+<td class="text-right"><p>117.8</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>1,867</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-VL-2B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4 / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>92.1</p></td>
+<td class="text-right"><p>2,196</p></td>
+<td class="text-right"><p>23,828.6</p></td>
+<td class="text-right"><p>85.6</p></td>
+<td class="text-right"><p>2,039</p></td>
+<td class="text-right"><p>23,809.5</p></td>
+<td class="text-right"><p>309.2</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>1,910</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-VL-4B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>89.2</p></td>
+<td class="text-right"><p>283</p></td>
+<td class="text-right"><p>3,169.7</p></td>
+<td class="text-right"><p>13.0</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>20,161.3</p></td>
+<td class="text-right"><p>67.0</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>1,899</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-VL-4B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>775.3</p></td>
+<td class="text-right"><p>2,196</p></td>
+<td class="text-right"><p>2,832.1</p></td>
+<td class="text-right"><p>85.8</p></td>
+<td class="text-right"><p>2,039</p></td>
+<td class="text-right"><p>23,753.0</p></td>
+<td class="text-right"><p>164.2</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>1,914</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-VL-4B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4 / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>28.4</p></td>
+<td class="text-right"><p>283</p></td>
+<td class="text-right"><p>9,963.3</p></td>
+<td class="text-right"><p>12.7</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>20,746.9</p></td>
+<td class="text-right"><p>66.6</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>3,228</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-VL-4B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4 / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>186.2</p></td>
+<td class="text-right"><p>2,196</p></td>
+<td class="text-right"><p>11,791.3</p></td>
+<td class="text-right"><p>85.5</p></td>
+<td class="text-right"><p>2,036</p></td>
+<td class="text-right"><p>23,809.5</p></td>
+<td class="text-right"><p>181.1</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>3,242</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-VL-8B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>155.8</p></td>
+<td class="text-right"><p>283</p></td>
+<td class="text-right"><p>1,813.9</p></td>
+<td class="text-right"><p>17.3</p></td>
+<td class="text-right"><p>263</p></td>
+<td class="text-right"><p>15,174.5</p></td>
+<td class="text-right"><p>44.1</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>3,283</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-VL-8B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>1,354.5</p></td>
+<td class="text-right"><p>2,196</p></td>
+<td class="text-right"><p>1,621.0</p></td>
+<td class="text-right"><p>119.6</p></td>
+<td class="text-right"><p>2,037</p></td>
+<td class="text-right"><p>17,035.8</p></td>
+<td class="text-right"><p>127.3</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>3,243</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-VL-8B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4 / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>38.4</p></td>
+<td class="text-right"><p>283</p></td>
+<td class="text-right"><p>7,354.1</p></td>
+<td class="text-right"><p>17.3</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>15,151.5</p></td>
+<td class="text-right"><p>41.9</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>5,484</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-VL-8B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4 / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>260.7</p></td>
+<td class="text-right"><p>2,196</p></td>
+<td class="text-right"><p>8,422.7</p></td>
+<td class="text-right"><p>119.5</p></td>
+<td class="text-right"><p>2,037</p></td>
+<td class="text-right"><p>17,035.8</p></td>
+<td class="text-right"><p>150.5</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>5,482</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-0.8B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>21.4</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>13,382.7</p></td>
+<td class="text-right"><p>4.3</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>60,975.6</p></td>
+<td class="text-right"><p>209.8</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>1,045</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-0.8B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>191.0</p></td>
+<td class="text-right"><p>2,227</p></td>
+<td class="text-right"><p>11,660.9</p></td>
+<td class="text-right"><p>30.6</p></td>
+<td class="text-right"><p>2,041</p></td>
+<td class="text-right"><p>66,666.7</p></td>
+<td class="text-right"><p>593.7</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>1,085</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-0.8B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4 / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>10.0</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>28,729.9</p></td>
+<td class="text-right"><p>4.3</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>60,975.6</p></td>
+<td class="text-right"><p>210.9</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>1,260</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-0.8B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4 / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>63.6</p></td>
+<td class="text-right"><p>2,227</p></td>
+<td class="text-right"><p>34,989.3</p></td>
+<td class="text-right"><p>30.6</p></td>
+<td class="text-right"><p>2,042</p></td>
+<td class="text-right"><p>66,666.7</p></td>
+<td class="text-right"><p>758.0</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>1,268</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-27B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>558.3</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>513.4</p></td>
+<td class="text-right"><p>16.2</p></td>
+<td class="text-right"><p>263</p></td>
+<td class="text-right"><p>16,181.2</p></td>
+<td class="text-right"><p>15.5</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>9,128</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-27B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>5,186.5</p></td>
+<td class="text-right"><p>2,227</p></td>
+<td class="text-right"><p>429.4</p></td>
+<td class="text-right"><p>114.6</p></td>
+<td class="text-right"><p>2,039</p></td>
+<td class="text-right"><p>17,793.6</p></td>
+<td class="text-right"><p>54.7</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>9,011</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-27B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4 / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>103.6</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>2,765.5</p></td>
+<td class="text-right"><p>16.1</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>16,286.6</p></td>
+<td class="text-right"><p>14.3</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>16,087</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-27B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4 / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>744.7</p></td>
+<td class="text-right"><p>2,227</p></td>
+<td class="text-right"><p>2,990.2</p></td>
+<td class="text-right"><p>114.4</p></td>
+<td class="text-right"><p>2,040</p></td>
+<td class="text-right"><p>17,825.3</p></td>
+<td class="text-right"><p>74.3</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>16,119</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-2B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>41.8</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>6,853.9</p></td>
+<td class="text-right"><p>11.7</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>22,321.4</p></td>
+<td class="text-right"><p>115.9</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>1,562</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-2B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>354.2</p></td>
+<td class="text-right"><p>2,227</p></td>
+<td class="text-right"><p>6,286.8</p></td>
+<td class="text-right"><p>83.3</p></td>
+<td class="text-right"><p>2,037</p></td>
+<td class="text-right"><p>24,449.9</p></td>
+<td class="text-right"><p>419.2</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>1,639</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-2B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4 / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>14.3</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>20,005.7</p></td>
+<td class="text-right"><p>11.7</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>22,471.9</p></td>
+<td class="text-right"><p>117.7</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>2,213</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-2B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4 / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>79.1</p></td>
+<td class="text-right"><p>2,227</p></td>
+<td class="text-right"><p>28,157.1</p></td>
+<td class="text-right"><p>82.1</p></td>
+<td class="text-right"><p>2,037</p></td>
+<td class="text-right"><p>24,813.9</p></td>
+<td class="text-right"><p>450.7</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>2,228</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-35B-A3B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 GPTQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>109.8</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>2,609.4</p></td>
+<td class="text-right"><p>16.0</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>16,366.6</p></td>
+<td class="text-right"><p>46.2</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>15,942</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-35B-A3B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 GPTQ / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>522.2</p></td>
+<td class="text-right"><p>2,227</p></td>
+<td class="text-right"><p>4,264.3</p></td>
+<td class="text-right"><p>113.4</p></td>
+<td class="text-right"><p>2,040</p></td>
+<td class="text-right"><p>17,985.6</p></td>
+<td class="text-right"><p>181.6</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>15,944</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-4B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>97.2</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>2,948.2</p></td>
+<td class="text-right"><p>12.0</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>21,881.8</p></td>
+<td class="text-right"><p>65.0</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>1,788</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-4B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>856.1</p></td>
+<td class="text-right"><p>2,227</p></td>
+<td class="text-right"><p>2,601.2</p></td>
+<td class="text-right"><p>82.7</p></td>
+<td class="text-right"><p>2,036</p></td>
+<td class="text-right"><p>24,630.5</p></td>
+<td class="text-right"><p>218.1</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>1,787</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-4B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4 / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>26.6</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>10,781.8</p></td>
+<td class="text-right"><p>11.7</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>22,371.4</p></td>
+<td class="text-right"><p>64.4</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>3,678</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-4B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4 / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>166.8</p></td>
+<td class="text-right"><p>2,227</p></td>
+<td class="text-right"><p>13,348.1</p></td>
+<td class="text-right"><p>82.0</p></td>
+<td class="text-right"><p>2,040</p></td>
+<td class="text-right"><p>24,875.6</p></td>
+<td class="text-right"><p>287.2</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>3,669</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-9B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>170.7</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>1,678.6</p></td>
+<td class="text-right"><p>16.1</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>16,286.6</p></td>
+<td class="text-right"><p>41.1</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>2,953</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-9B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>1,560.5</p></td>
+<td class="text-right"><p>2,227</p></td>
+<td class="text-right"><p>1,427.0</p></td>
+<td class="text-right"><p>113.2</p></td>
+<td class="text-right"><p>2,037</p></td>
+<td class="text-right"><p>17,985.6</p></td>
+<td class="text-right"><p>145.7</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>2,953</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-9B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4 / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>38.2</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>7,512.9</p></td>
+<td class="text-right"><p>16.0</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>16,366.6</p></td>
+<td class="text-right"><p>39.4</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>6,178</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-9B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4 / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>243.6</p></td>
+<td class="text-right"><p>2,227</p></td>
+<td class="text-right"><p>9,140.3</p></td>
+<td class="text-right"><p>113.2</p></td>
+<td class="text-right"><p>2,040</p></td>
+<td class="text-right"><p>18,018.0</p></td>
+<td class="text-right"><p>183.2</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>6,207</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.6-35B-A3B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4 / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>144.8</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>1,979.8</p></td>
+<td class="text-right"><p>16.1</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>16,313.2</p></td>
+<td class="text-right"><p>68.5</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>21,607</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.6-35B-A3B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4 / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>350.8</p></td>
+<td class="text-right"><p>2,227</p></td>
+<td class="text-right"><p>6,347.9</p></td>
+<td class="text-right"><p>113.2</p></td>
+<td class="text-right"><p>2,039</p></td>
+<td class="text-right"><p>18,018.0</p></td>
+<td class="text-right"><p>199.3</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>21,569</p></td>
+</tr>
+<tr class="row-even"><td><p>nemotron-omni-ea</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4 / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>209.7</p></td>
+<td class="text-right"><p>1,663</p></td>
+<td class="text-right"><p>7,932.3</p></td>
+<td class="text-right"><p>126.0</p></td>
+<td class="text-right"><p>1,634</p></td>
+<td class="text-right"><p>12,970.2</p></td>
+<td class="text-right"><p>67.5</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>20,259</p></td>
+</tr>
+<tr class="row-odd"><td><p>nemotron-omni-ea</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>NVFP4 / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>1,182.8</p></td>
+<td class="text-right"><p>12,922</p></td>
+<td class="text-right"><p>10,925.0</p></td>
+<td class="text-right"><p>982.5</p></td>
+<td class="text-right"><p>12,694</p></td>
+<td class="text-right"><p>12,919.9</p></td>
+<td class="text-right"><p>106.9</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>20,257</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-1.7B</p></td>
+<td><p>LLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>INT4 AWQ / INT4 AWQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>49.5</p></td>
+<td class="text-right"><p>370</p></td>
+<td class="text-right"><p>7,464.8</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>182.9</p></td>
+<td class="text-right"><p>3.89</p></td>
+<td class="text-right"><p>1,067</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-1.7B</p></td>
+<td><p>LLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>INT4 AWQ / INT4 AWQ</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>590.6</p></td>
+<td class="text-right"><p>2,959</p></td>
+<td class="text-right"><p>5,010.0</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>296.5</p></td>
+<td class="text-right"><p>3.87</p></td>
+<td class="text-right"><p>1,105</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-1.7B</p></td>
+<td><p>LLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>NVFP4 / NVFP4</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>16.0</p></td>
+<td class="text-right"><p>370</p></td>
+<td class="text-right"><p>23,065.1</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>284.9</p></td>
+<td class="text-right"><p>3.84</p></td>
+<td class="text-right"><p>1,345</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-1.7B</p></td>
+<td><p>LLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>NVFP4 / NVFP4</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>141.6</p></td>
+<td class="text-right"><p>2,959</p></td>
+<td class="text-right"><p>20,900.3</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>618.0</p></td>
+<td class="text-right"><p>3.81</p></td>
+<td class="text-right"><p>1,371</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-8B</p></td>
+<td><p>LLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>INT4 AWQ / INT4 AWQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>199.9</p></td>
+<td class="text-right"><p>370</p></td>
+<td class="text-right"><p>1,849.8</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>70.0</p></td>
+<td class="text-right"><p>4.15</p></td>
+<td class="text-right"><p>3,156</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-8B</p></td>
+<td><p>LLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>INT4 AWQ / INT4 AWQ</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>2,550.1</p></td>
+<td class="text-right"><p>2,959</p></td>
+<td class="text-right"><p>1,160.3</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>95.7</p></td>
+<td class="text-right"><p>4.11</p></td>
+<td class="text-right"><p>3,174</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-8B</p></td>
+<td><p>LLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>NVFP4 / NVFP4</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>39.3</p></td>
+<td class="text-right"><p>370</p></td>
+<td class="text-right"><p>9,421.5</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>135.2</p></td>
+<td class="text-right"><p>4.06</p></td>
+<td class="text-right"><p>4,499</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-8B</p></td>
+<td><p>LLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>NVFP4 / NVFP4</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>428.2</p></td>
+<td class="text-right"><p>2,959</p></td>
+<td class="text-right"><p>6,910.2</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>341.0</p></td>
+<td class="text-right"><p>4.05</p></td>
+<td class="text-right"><p>4,550</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen2.5-VL-7B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>180.9</p></td>
+<td class="text-right"><p>376</p></td>
+<td class="text-right"><p>2,076.4</p></td>
+<td class="text-right"><p>52.5</p></td>
+<td class="text-right"><p>344</p></td>
+<td class="text-right"><p>6,561.7</p></td>
+<td class="text-right"><p>84.4</p></td>
+<td class="text-right"><p>5.15</p></td>
+<td class="text-right"><p>3,406</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen2.5-VL-7B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>1,613.3</p></td>
+<td class="text-right"><p>2,919</p></td>
+<td class="text-right"><p>1,809.0</p></td>
+<td class="text-right"><p>429.4</p></td>
+<td class="text-right"><p>2,675</p></td>
+<td class="text-right"><p>6,230.5</p></td>
+<td class="text-right"><p>116.7</p></td>
+<td class="text-right"><p>5.07</p></td>
+<td class="text-right"><p>3,371</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen2.5-VL-7B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>NVFP4 / NVFP4 / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>28.6</p></td>
+<td class="text-right"><p>376</p></td>
+<td class="text-right"><p>13,119.4</p></td>
+<td class="text-right"><p>52.5</p></td>
+<td class="text-right"><p>344</p></td>
+<td class="text-right"><p>6,557.4</p></td>
+<td class="text-right"><p>189.6</p></td>
+<td class="text-right"><p>5.09</p></td>
+<td class="text-right"><p>4,308</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen2.5-VL-7B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>NVFP4 / NVFP4 / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>258.9</p></td>
+<td class="text-right"><p>2,919</p></td>
+<td class="text-right"><p>11,271.9</p></td>
+<td class="text-right"><p>431.0</p></td>
+<td class="text-right"><p>2,675</p></td>
+<td class="text-right"><p>6,207.3</p></td>
+<td class="text-right"><p>383.8</p></td>
+<td class="text-right"><p>4.90</p></td>
+<td class="text-right"><p>4,319</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-VL-4B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>89.0</p></td>
+<td class="text-right"><p>283</p></td>
+<td class="text-right"><p>3,174.8</p></td>
+<td class="text-right"><p>12.9</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>20,242.9</p></td>
+<td class="text-right"><p>126.5</p></td>
+<td class="text-right"><p>5.02</p></td>
+<td class="text-right"><p>1,900</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-VL-4B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>774.9</p></td>
+<td class="text-right"><p>2,196</p></td>
+<td class="text-right"><p>2,833.6</p></td>
+<td class="text-right"><p>85.8</p></td>
+<td class="text-right"><p>2,038</p></td>
+<td class="text-right"><p>23,753.0</p></td>
+<td class="text-right"><p>187.9</p></td>
+<td class="text-right"><p>4.96</p></td>
+<td class="text-right"><p>1,894</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-VL-4B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>NVFP4 / NVFP4 / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>26.2</p></td>
+<td class="text-right"><p>283</p></td>
+<td class="text-right"><p>10,789.2</p></td>
+<td class="text-right"><p>12.6</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>20,833.3</p></td>
+<td class="text-right"><p>199.7</p></td>
+<td class="text-right"><p>4.86</p></td>
+<td class="text-right"><p>2,685</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-VL-4B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>NVFP4 / NVFP4 / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>186.4</p></td>
+<td class="text-right"><p>2,196</p></td>
+<td class="text-right"><p>11,778.3</p></td>
+<td class="text-right"><p>85.4</p></td>
+<td class="text-right"><p>2,039</p></td>
+<td class="text-right"><p>23,866.3</p></td>
+<td class="text-right"><p>418.8</p></td>
+<td class="text-right"><p>4.87</p></td>
+<td class="text-right"><p>2,700</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-VL-8B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>156.2</p></td>
+<td class="text-right"><p>283</p></td>
+<td class="text-right"><p>1,809.5</p></td>
+<td class="text-right"><p>17.3</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>15,151.5</p></td>
+<td class="text-right"><p>48.2</p></td>
+<td class="text-right"><p>2.85</p></td>
+<td class="text-right"><p>3,252</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-VL-8B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>1,354.6</p></td>
+<td class="text-right"><p>2,196</p></td>
+<td class="text-right"><p>1,621.0</p></td>
+<td class="text-right"><p>120.4</p></td>
+<td class="text-right"><p>2,037</p></td>
+<td class="text-right"><p>16,920.5</p></td>
+<td class="text-right"><p>65.7</p></td>
+<td class="text-right"><p>2.82</p></td>
+<td class="text-right"><p>3,251</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-0.8B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>21.2</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>13,492.0</p></td>
+<td class="text-right"><p>4.3</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>60,606.1</p></td>
+<td class="text-right"><p>200.3</p></td>
+<td class="text-right"><p>2.18</p></td>
+<td class="text-right"><p>1,179</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-0.8B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>234.5</p></td>
+<td class="text-right"><p>2,227</p></td>
+<td class="text-right"><p>9,496.0</p></td>
+<td class="text-right"><p>30.7</p></td>
+<td class="text-right"><p>2,032</p></td>
+<td class="text-right"><p>66,225.2</p></td>
+<td class="text-right"><p>517.8</p></td>
+<td class="text-right"><p>2.17</p></td>
+<td class="text-right"><p>1,139</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-0.8B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>NVFP4 / NVFP4 / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>8.4</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>34,076.3</p></td>
+<td class="text-right"><p>4.3</p></td>
+<td class="text-right"><p>261</p></td>
+<td class="text-right"><p>60,241.0</p></td>
+<td class="text-right"><p>365.6</p></td>
+<td class="text-right"><p>2.19</p></td>
+<td class="text-right"><p>1,069</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-0.8B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>NVFP4 / NVFP4 / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>59.2</p></td>
+<td class="text-right"><p>2,227</p></td>
+<td class="text-right"><p>37,589.6</p></td>
+<td class="text-right"><p>30.6</p></td>
+<td class="text-right"><p>2,042</p></td>
+<td class="text-right"><p>66,666.7</p></td>
+<td class="text-right"><p>979.9</p></td>
+<td class="text-right"><p>2.15</p></td>
+<td class="text-right"><p>1,191</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-27B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>558.0</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>513.6</p></td>
+<td class="text-right"><p>16.2</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>16,233.8</p></td>
+<td class="text-right"><p>27.9</p></td>
+<td class="text-right"><p>2.89</p></td>
+<td class="text-right"><p>9,022</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-27B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>5,188.0</p></td>
+<td class="text-right"><p>2,227</p></td>
+<td class="text-right"><p>429.2</p></td>
+<td class="text-right"><p>114.3</p></td>
+<td class="text-right"><p>2,037</p></td>
+<td class="text-right"><p>17,825.3</p></td>
+<td class="text-right"><p>92.6</p></td>
+<td class="text-right"><p>2.89</p></td>
+<td class="text-right"><p>9,062</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-27B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>NVFP4 / NVFP4 / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>96.5</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>2,970.2</p></td>
+<td class="text-right"><p>16.1</p></td>
+<td class="text-right"><p>263</p></td>
+<td class="text-right"><p>16,286.6</p></td>
+<td class="text-right"><p>36.1</p></td>
+<td class="text-right"><p>2.82</p></td>
+<td class="text-right"><p>14,342</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-27B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>NVFP4 / NVFP4 / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>736.8</p></td>
+<td class="text-right"><p>2,227</p></td>
+<td class="text-right"><p>3,022.2</p></td>
+<td class="text-right"><p>114.6</p></td>
+<td class="text-right"><p>2,040</p></td>
+<td class="text-right"><p>17,793.6</p></td>
+<td class="text-right"><p>140.6</p></td>
+<td class="text-right"><p>2.83</p></td>
+<td class="text-right"><p>14,387</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-2B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>41.6</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>6,886.3</p></td>
+<td class="text-right"><p>12.0</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>21,929.8</p></td>
+<td class="text-right"><p>123.6</p></td>
+<td class="text-right"><p>2.39</p></td>
+<td class="text-right"><p>1,623</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-2B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>412.4</p></td>
+<td class="text-right"><p>2,227</p></td>
+<td class="text-right"><p>5,399.3</p></td>
+<td class="text-right"><p>82.0</p></td>
+<td class="text-right"><p>2,036</p></td>
+<td class="text-right"><p>24,813.9</p></td>
+<td class="text-right"><p>384.0</p></td>
+<td class="text-right"><p>2.40</p></td>
+<td class="text-right"><p>1,629</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-2B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>NVFP4 / NVFP4 / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>11.5</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>24,978.3</p></td>
+<td class="text-right"><p>11.8</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>22,222.2</p></td>
+<td class="text-right"><p>246.6</p></td>
+<td class="text-right"><p>2.44</p></td>
+<td class="text-right"><p>1,559</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-2B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>NVFP4 / NVFP4 / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>76.8</p></td>
+<td class="text-right"><p>2,227</p></td>
+<td class="text-right"><p>28,982.7</p></td>
+<td class="text-right"><p>82.6</p></td>
+<td class="text-right"><p>2,040</p></td>
+<td class="text-right"><p>24,691.4</p></td>
+<td class="text-right"><p>718.4</p></td>
+<td class="text-right"><p>2.37</p></td>
+<td class="text-right"><p>1,564</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-4B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>97.3</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>2,945.2</p></td>
+<td class="text-right"><p>12.1</p></td>
+<td class="text-right"><p>263</p></td>
+<td class="text-right"><p>21,786.5</p></td>
+<td class="text-right"><p>79.9</p></td>
+<td class="text-right"><p>2.53</p></td>
+<td class="text-right"><p>1,914</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-4B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>970.9</p></td>
+<td class="text-right"><p>2,227</p></td>
+<td class="text-right"><p>2,293.5</p></td>
+<td class="text-right"><p>82.9</p></td>
+<td class="text-right"><p>2,037</p></td>
+<td class="text-right"><p>24,570.0</p></td>
+<td class="text-right"><p>257.7</p></td>
+<td class="text-right"><p>2.52</p></td>
+<td class="text-right"><p>1,890</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-4B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>NVFP4 / NVFP4 / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>23.4</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>12,229.4</p></td>
+<td class="text-right"><p>11.7</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>22,471.9</p></td>
+<td class="text-right"><p>135.7</p></td>
+<td class="text-right"><p>2.54</p></td>
+<td class="text-right"><p>2,797</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-4B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>NVFP4 / NVFP4 / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>163.0</p></td>
+<td class="text-right"><p>2,227</p></td>
+<td class="text-right"><p>13,665.8</p></td>
+<td class="text-right"><p>82.9</p></td>
+<td class="text-right"><p>2,037</p></td>
+<td class="text-right"><p>24,570.0</p></td>
+<td class="text-right"><p>408.9</p></td>
+<td class="text-right"><p>2.54</p></td>
+<td class="text-right"><p>2,816</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-9B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>171.0</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>1,676.1</p></td>
+<td class="text-right"><p>16.1</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>16,286.6</p></td>
+<td class="text-right"><p>57.5</p></td>
+<td class="text-right"><p>2.78</p></td>
+<td class="text-right"><p>2,945</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-9B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>1,560.3</p></td>
+<td class="text-right"><p>2,227</p></td>
+<td class="text-right"><p>1,427.2</p></td>
+<td class="text-right"><p>113.7</p></td>
+<td class="text-right"><p>2,037</p></td>
+<td class="text-right"><p>17,921.1</p></td>
+<td class="text-right"><p>202.6</p></td>
+<td class="text-right"><p>2.80</p></td>
+<td class="text-right"><p>2,952</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-9B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>NVFP4 / NVFP4 / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>32.7</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>8,760.5</p></td>
+<td class="text-right"><p>16.1</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>16,286.6</p></td>
+<td class="text-right"><p>93.0</p></td>
+<td class="text-right"><p>2.71</p></td>
+<td class="text-right"><p>4,783</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-9B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>NVFP4 / NVFP4 / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>235.4</p></td>
+<td class="text-right"><p>2,227</p></td>
+<td class="text-right"><p>9,458.1</p></td>
+<td class="text-right"><p>113.6</p></td>
+<td class="text-right"><p>2,039</p></td>
+<td class="text-right"><p>17,953.3</p></td>
+<td class="text-right"><p>329.5</p></td>
+<td class="text-right"><p>2.72</p></td>
+<td class="text-right"><p>4,842</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="jetson-agx-orin-64gb">
+<h4>Jetson AGX Orin 64GB<a class="headerlink" href="#jetson-agx-orin-64gb" title="Link to this heading">#</a></h4>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Model</p></th>
+<th class="head"><p>Kind</p></th>
+<th class="head"><p>Mode</p></th>
+<th class="head"><p>Precision</p></th>
+<th class="head text-center"><p>Batch</p></th>
+<th class="head text-right"><p>Runtime Prefill (ms)</p></th>
+<th class="head text-right"><p>Runtime Prefill Tok/Run</p></th>
+<th class="head text-right"><p>Runtime Prefill (tok/s)</p></th>
+<th class="head text-right"><p>ViT (ms)</p></th>
+<th class="head text-right"><p>ViT Tok/Run</p></th>
+<th class="head text-right"><p>ViT (tok/s)</p></th>
+<th class="head text-right"><p>Generation (tok/s)</p></th>
+<th class="head text-right"><p>Accept Rate</p></th>
+<th class="head text-right"><p>GPU Mem (MB)</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Qwen3-0.6B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>27.3</p></td>
+<td class="text-right"><p>370</p></td>
+<td class="text-right"><p>13,557.9</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>177.2</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>1,968</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-0.6B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>275.9</p></td>
+<td class="text-right"><p>2,959</p></td>
+<td class="text-right"><p>10,723.5</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>584.0</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>4,188</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-1.7B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>63.5</p></td>
+<td class="text-right"><p>370</p></td>
+<td class="text-right"><p>5,822.7</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>95.5</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>3,292</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-1.7B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>787.5</p></td>
+<td class="text-right"><p>2,959</p></td>
+<td class="text-right"><p>3,757.3</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>406.7</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>5,715</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-30B-A3B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 GPTQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>206.4</p></td>
+<td class="text-right"><p>370</p></td>
+<td class="text-right"><p>1,792.0</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>55.2</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>30,025</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-30B-A3B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 GPTQ</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>2,094.1</p></td>
+<td class="text-right"><p>2,959</p></td>
+<td class="text-right"><p>1,412.9</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>154.2</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>31,613</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-4B-Instruct-2507</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>150.6</p></td>
+<td class="text-right"><p>364</p></td>
+<td class="text-right"><p>2,416.5</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>52.0</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>4,933</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-4B-Instruct-2507</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>1,952.8</p></td>
+<td class="text-right"><p>2,911</p></td>
+<td class="text-right"><p>1,490.6</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>211.4</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>8,194</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-8B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>273.9</p></td>
+<td class="text-right"><p>370</p></td>
+<td class="text-right"><p>1,350.5</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>32.1</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>8,237</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-8B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>3,561.2</p></td>
+<td class="text-right"><p>2,959</p></td>
+<td class="text-right"><p>830.8</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>139.0</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>11,229</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-0.8B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>124.2</p></td>
+<td class="text-right"><p>377</p></td>
+<td class="text-right"><p>3,033.3</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>145.7</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>2,329</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-0.8B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>939.4</p></td>
+<td class="text-right"><p>3,013</p></td>
+<td class="text-right"><p>3,207.4</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>633.3</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>3,333</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-27B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>1,335.8</p></td>
+<td class="text-right"><p>377</p></td>
+<td class="text-right"><p>282.0</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>10.5</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>24,136</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-27B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>16,963.3</p></td>
+<td class="text-right"><p>3,013</p></td>
+<td class="text-right"><p>177.6</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>44.5</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>26,293</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-2B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>161.9</p></td>
+<td class="text-right"><p>377</p></td>
+<td class="text-right"><p>2,326.5</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>81.6</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>4,197</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-2B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>1,447.5</p></td>
+<td class="text-right"><p>3,013</p></td>
+<td class="text-right"><p>2,081.7</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>393.6</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>5,117</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-35B-A3B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 GPTQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>340.7</p></td>
+<td class="text-right"><p>377</p></td>
+<td class="text-right"><p>1,105.4</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>31.0</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>35,742</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-35B-A3B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 GPTQ</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>2,807.2</p></td>
+<td class="text-right"><p>3,013</p></td>
+<td class="text-right"><p>1,073.4</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>128.5</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>36,654</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-4B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>307.0</p></td>
+<td class="text-right"><p>377</p></td>
+<td class="text-right"><p>1,226.9</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>45.4</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>6,147</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-4B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>3,428.1</p></td>
+<td class="text-right"><p>3,013</p></td>
+<td class="text-right"><p>879.0</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>187.7</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>7,659</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-9B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>437.5</p></td>
+<td class="text-right"><p>377</p></td>
+<td class="text-right"><p>860.9</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>27.9</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>9,983</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-9B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>5,122.9</p></td>
+<td class="text-right"><p>3,013</p></td>
+<td class="text-right"><p>588.2</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>125.8</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>11,278</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-VL-2B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>48.0</p></td>
+<td class="text-right"><p>283</p></td>
+<td class="text-right"><p>5,883.5</p></td>
+<td class="text-right"><p>38.7</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>6,775.1</p></td>
+<td class="text-right"><p>95.7</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>8,235</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-VL-2B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>408.3</p></td>
+<td class="text-right"><p>2,196</p></td>
+<td class="text-right"><p>5,378.2</p></td>
+<td class="text-right"><p>276.1</p></td>
+<td class="text-right"><p>2,039</p></td>
+<td class="text-right"><p>7,385.5</p></td>
+<td class="text-right"><p>388.8</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>10,304</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-VL-4B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>118.6</p></td>
+<td class="text-right"><p>283</p></td>
+<td class="text-right"><p>2,384.0</p></td>
+<td class="text-right"><p>39.0</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>6,724.9</p></td>
+<td class="text-right"><p>52.2</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>9,863</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-VL-4B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>1,024.0</p></td>
+<td class="text-right"><p>2,196</p></td>
+<td class="text-right"><p>2,144.3</p></td>
+<td class="text-right"><p>277.4</p></td>
+<td class="text-right"><p>2,038</p></td>
+<td class="text-right"><p>7,347.5</p></td>
+<td class="text-right"><p>176.4</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>12,511</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-VL-8B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>213.2</p></td>
+<td class="text-right"><p>283</p></td>
+<td class="text-right"><p>1,325.8</p></td>
+<td class="text-right"><p>56.5</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>4,646.8</p></td>
+<td class="text-right"><p>32.2</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>13,133</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-VL-8B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>1,842.2</p></td>
+<td class="text-right"><p>2,196</p></td>
+<td class="text-right"><p>1,191.9</p></td>
+<td class="text-right"><p>398.8</p></td>
+<td class="text-right"><p>2,039</p></td>
+<td class="text-right"><p>5,112.5</p></td>
+<td class="text-right"><p>141.0</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>16,014</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-0.8B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>94.0</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>3,050.3</p></td>
+<td class="text-right"><p>13.0</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>20,161.3</p></td>
+<td class="text-right"><p>141.4</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>4,549</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-0.8B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>501.1</p></td>
+<td class="text-right"><p>2,227</p></td>
+<td class="text-right"><p>4,444.2</p></td>
+<td class="text-right"><p>89.9</p></td>
+<td class="text-right"><p>2,038</p></td>
+<td class="text-right"><p>22,675.7</p></td>
+<td class="text-right"><p>451.8</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>5,058</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-27B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>1,037.4</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>276.3</p></td>
+<td class="text-right"><p>53.5</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>4,906.8</p></td>
+<td class="text-right"><p>10.5</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>24,048</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-27B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>8,777.6</p></td>
+<td class="text-right"><p>2,227</p></td>
+<td class="text-right"><p>253.7</p></td>
+<td class="text-right"><p>382.1</p></td>
+<td class="text-right"><p>2,038</p></td>
+<td class="text-right"><p>5,333.3</p></td>
+<td class="text-right"><p>44.2</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>26,372</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-2B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>120.8</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>2,372.0</p></td>
+<td class="text-right"><p>36.6</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>7,168.5</p></td>
+<td class="text-right"><p>81.0</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>6,886</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-2B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>766.8</p></td>
+<td class="text-right"><p>2,227</p></td>
+<td class="text-right"><p>2,903.9</p></td>
+<td class="text-right"><p>264.7</p></td>
+<td class="text-right"><p>2,038</p></td>
+<td class="text-right"><p>7,698.2</p></td>
+<td class="text-right"><p>303.9</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>7,456</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-35B-A3B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 GPTQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>297.1</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>964.7</p></td>
+<td class="text-right"><p>52.8</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>4,970.2</p></td>
+<td class="text-right"><p>30.8</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>35,810</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-35B-A3B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 GPTQ / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>1,537.3</p></td>
+<td class="text-right"><p>2,227</p></td>
+<td class="text-right"><p>1,448.6</p></td>
+<td class="text-right"><p>379.6</p></td>
+<td class="text-right"><p>2,038</p></td>
+<td class="text-right"><p>5,367.7</p></td>
+<td class="text-right"><p>131.4</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>36,733</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-4B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>234.9</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>1,220.0</p></td>
+<td class="text-right"><p>36.6</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>7,158.2</p></td>
+<td class="text-right"><p>45.3</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>8,638</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-4B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>1,815.4</p></td>
+<td class="text-right"><p>2,227</p></td>
+<td class="text-right"><p>1,226.7</p></td>
+<td class="text-right"><p>265.5</p></td>
+<td class="text-right"><p>2,038</p></td>
+<td class="text-right"><p>7,674.6</p></td>
+<td class="text-right"><p>174.8</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>9,798</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-9B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>341.5</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>839.2</p></td>
+<td class="text-right"><p>53.2</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>4,931.0</p></td>
+<td class="text-right"><p>27.9</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>12,247</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-9B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>2,672.0</p></td>
+<td class="text-right"><p>2,227</p></td>
+<td class="text-right"><p>833.4</p></td>
+<td class="text-right"><p>380.9</p></td>
+<td class="text-right"><p>2,038</p></td>
+<td class="text-right"><p>5,350.5</p></td>
+<td class="text-right"><p>121.7</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>13,410</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-1.7B</p></td>
+<td><p>LLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>INT4 AWQ / INT4 AWQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>63.8</p></td>
+<td class="text-right"><p>370</p></td>
+<td class="text-right"><p>5,797.2</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>152.4</p></td>
+<td class="text-right"><p>3.87</p></td>
+<td class="text-right"><p>3,362</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-1.7B</p></td>
+<td><p>LLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>INT4 AWQ / INT4 AWQ</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>784.4</p></td>
+<td class="text-right"><p>2,959</p></td>
+<td class="text-right"><p>3,772.0</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>250.7</p></td>
+<td class="text-right"><p>3.85</p></td>
+<td class="text-right"><p>6,949</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-8B</p></td>
+<td><p>LLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>INT4 AWQ / INT4 AWQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>274.3</p></td>
+<td class="text-right"><p>370</p></td>
+<td class="text-right"><p>1,348.6</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>57.8</p></td>
+<td class="text-right"><p>4.18</p></td>
+<td class="text-right"><p>8,349</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-8B</p></td>
+<td><p>LLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>INT4 AWQ / INT4 AWQ</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>3,567.7</p></td>
+<td class="text-right"><p>2,959</p></td>
+<td class="text-right"><p>829.3</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>70.4</p></td>
+<td class="text-right"><p>4.16</p></td>
+<td class="text-right"><p>12,969</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen2.5-VL-7B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>255.2</p></td>
+<td class="text-right"><p>376</p></td>
+<td class="text-right"><p>1,472.3</p></td>
+<td class="text-right"><p>86.1</p></td>
+<td class="text-right"><p>344</p></td>
+<td class="text-right"><p>3,998.4</p></td>
+<td class="text-right"><p>67.2</p></td>
+<td class="text-right"><p>5.05</p></td>
+<td class="text-right"><p>12,218</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen2.5-VL-7B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>2,279.8</p></td>
+<td class="text-right"><p>2,919</p></td>
+<td class="text-right"><p>1,280.2</p></td>
+<td class="text-right"><p>671.2</p></td>
+<td class="text-right"><p>2,675</p></td>
+<td class="text-right"><p>3,985.7</p></td>
+<td class="text-right"><p>82.5</p></td>
+<td class="text-right"><p>4.97</p></td>
+<td class="text-right"><p>14,145</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-VL-4B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>118.0</p></td>
+<td class="text-right"><p>283</p></td>
+<td class="text-right"><p>2,396.0</p></td>
+<td class="text-right"><p>39.1</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>6,711.4</p></td>
+<td class="text-right"><p>98.3</p></td>
+<td class="text-right"><p>5.05</p></td>
+<td class="text-right"><p>10,310</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-VL-4B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>1,025.0</p></td>
+<td class="text-right"><p>2,196</p></td>
+<td class="text-right"><p>2,142.2</p></td>
+<td class="text-right"><p>276.8</p></td>
+<td class="text-right"><p>2,038</p></td>
+<td class="text-right"><p>7,363.8</p></td>
+<td class="text-right"><p>147.9</p></td>
+<td class="text-right"><p>5.07</p></td>
+<td class="text-right"><p>13,669</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-VL-8B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>213.6</p></td>
+<td class="text-right"><p>283</p></td>
+<td class="text-right"><p>1,323.0</p></td>
+<td class="text-right"><p>56.6</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>4,633.9</p></td>
+<td class="text-right"><p>39.1</p></td>
+<td class="text-right"><p>2.81</p></td>
+<td class="text-right"><p>13,932</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-VL-8B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>1,843.2</p></td>
+<td class="text-right"><p>2,196</p></td>
+<td class="text-right"><p>1,191.3</p></td>
+<td class="text-right"><p>399.6</p></td>
+<td class="text-right"><p>2,038</p></td>
+<td class="text-right"><p>5,099.4</p></td>
+<td class="text-right"><p>48.1</p></td>
+<td class="text-right"><p>2.83</p></td>
+<td class="text-right"><p>17,413</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-0.8B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>92.7</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>3,092.1</p></td>
+<td class="text-right"><p>13.0</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>20,242.9</p></td>
+<td class="text-right"><p>138.9</p></td>
+<td class="text-right"><p>2.19</p></td>
+<td class="text-right"><p>5,183</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-0.8B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>493.8</p></td>
+<td class="text-right"><p>2,227</p></td>
+<td class="text-right"><p>4,509.3</p></td>
+<td class="text-right"><p>90.1</p></td>
+<td class="text-right"><p>2,038</p></td>
+<td class="text-right"><p>22,624.4</p></td>
+<td class="text-right"><p>413.7</p></td>
+<td class="text-right"><p>2.20</p></td>
+<td class="text-right"><p>6,396</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-27B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>1,038.2</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>276.1</p></td>
+<td class="text-right"><p>53.2</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>4,931.0</p></td>
+<td class="text-right"><p>18.3</p></td>
+<td class="text-right"><p>2.89</p></td>
+<td class="text-right"><p>25,664</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-27B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>8,790.5</p></td>
+<td class="text-right"><p>2,227</p></td>
+<td class="text-right"><p>253.3</p></td>
+<td class="text-right"><p>383.0</p></td>
+<td class="text-right"><p>2,038</p></td>
+<td class="text-right"><p>5,322.0</p></td>
+<td class="text-right"><p>69.5</p></td>
+<td class="text-right"><p>2.87</p></td>
+<td class="text-right"><p>33,332</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-2B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>120.4</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>2,381.6</p></td>
+<td class="text-right"><p>36.6</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>7,173.6</p></td>
+<td class="text-right"><p>86.4</p></td>
+<td class="text-right"><p>2.41</p></td>
+<td class="text-right"><p>8,027</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-2B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>762.3</p></td>
+<td class="text-right"><p>2,227</p></td>
+<td class="text-right"><p>2,921.4</p></td>
+<td class="text-right"><p>265.6</p></td>
+<td class="text-right"><p>2,038</p></td>
+<td class="text-right"><p>7,674.6</p></td>
+<td class="text-right"><p>293.7</p></td>
+<td class="text-right"><p>2.39</p></td>
+<td class="text-right"><p>9,382</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-4B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>234.7</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>1,221.4</p></td>
+<td class="text-right"><p>36.7</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>7,142.9</p></td>
+<td class="text-right"><p>54.6</p></td>
+<td class="text-right"><p>2.53</p></td>
+<td class="text-right"><p>10,181</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-4B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>1,811.5</p></td>
+<td class="text-right"><p>2,227</p></td>
+<td class="text-right"><p>1,229.3</p></td>
+<td class="text-right"><p>265.9</p></td>
+<td class="text-right"><p>2,037</p></td>
+<td class="text-right"><p>7,662.8</p></td>
+<td class="text-right"><p>204.4</p></td>
+<td class="text-right"><p>2.50</p></td>
+<td class="text-right"><p>12,976</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-9B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>341.6</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>839.1</p></td>
+<td class="text-right"><p>53.0</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>4,952.9</p></td>
+<td class="text-right"><p>40.4</p></td>
+<td class="text-right"><p>2.82</p></td>
+<td class="text-right"><p>14,598</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-9B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>8</p></td>
+<td class="text-right"><p>2,670.7</p></td>
+<td class="text-right"><p>2,227</p></td>
+<td class="text-right"><p>833.8</p></td>
+<td class="text-right"><p>379.2</p></td>
+<td class="text-right"><p>2,038</p></td>
+<td class="text-right"><p>5,373.5</p></td>
+<td class="text-right"><p>159.9</p></td>
+<td class="text-right"><p>2.78</p></td>
+<td class="text-right"><p>17,548</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="jetson-orin-nx-16gb">
+<h4>Jetson Orin NX 16GB<a class="headerlink" href="#jetson-orin-nx-16gb" title="Link to this heading">#</a></h4>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Model</p></th>
+<th class="head"><p>Kind</p></th>
+<th class="head"><p>Mode</p></th>
+<th class="head"><p>Precision</p></th>
+<th class="head text-center"><p>Batch</p></th>
+<th class="head text-right"><p>Runtime Prefill (ms)</p></th>
+<th class="head text-right"><p>Runtime Prefill Tok/Run</p></th>
+<th class="head text-right"><p>Runtime Prefill (tok/s)</p></th>
+<th class="head text-right"><p>ViT (ms)</p></th>
+<th class="head text-right"><p>ViT Tok/Run</p></th>
+<th class="head text-right"><p>ViT (tok/s)</p></th>
+<th class="head text-right"><p>Generation (tok/s)</p></th>
+<th class="head text-right"><p>Accept Rate</p></th>
+<th class="head text-right"><p>GPU Mem (MB)</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Qwen3-0.6B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>52.4</p></td>
+<td class="text-right"><p>370</p></td>
+<td class="text-right"><p>7,064.6</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>110.8</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>2,027</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-1.7B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>127.4</p></td>
+<td class="text-right"><p>370</p></td>
+<td class="text-right"><p>2,903.3</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>58.8</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>3,282</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-4B-Instruct-2507</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>306.8</p></td>
+<td class="text-right"><p>364</p></td>
+<td class="text-right"><p>1,186.0</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>30.4</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>4,914</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-8B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>615.1</p></td>
+<td class="text-right"><p>370</p></td>
+<td class="text-right"><p>601.3</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>18.6</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>8,210</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-0.8B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>174.8</p></td>
+<td class="text-right"><p>377</p></td>
+<td class="text-right"><p>2,154.5</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>88.2</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>2,286</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-2B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>249.4</p></td>
+<td class="text-right"><p>377</p></td>
+<td class="text-right"><p>1,510.3</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>48.3</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>4,235</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-4B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>535.8</p></td>
+<td class="text-right"><p>377</p></td>
+<td class="text-right"><p>703.0</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>26.2</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>6,093</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-VL-2B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>98.6</p></td>
+<td class="text-right"><p>283</p></td>
+<td class="text-right"><p>2,866.0</p></td>
+<td class="text-right"><p>81.6</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>3,214.4</p></td>
+<td class="text-right"><p>58.9</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>4,406</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-VL-4B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>238.5</p></td>
+<td class="text-right"><p>283</p></td>
+<td class="text-right"><p>1,184.8</p></td>
+<td class="text-right"><p>83.3</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>3,148.6</p></td>
+<td class="text-right"><p>30.8</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>5,990</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-VL-8B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>455.2</p></td>
+<td class="text-right"><p>283</p></td>
+<td class="text-right"><p>620.9</p></td>
+<td class="text-right"><p>119.6</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>2,193.0</p></td>
+<td class="text-right"><p>18.8</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>9,092</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-0.8B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>136.6</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>2,099.0</p></td>
+<td class="text-right"><p>26.7</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>9,832.8</p></td>
+<td class="text-right"><p>87.6</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>2,704</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-2B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>193.6</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>1,480.4</p></td>
+<td class="text-right"><p>77.5</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>3,386.4</p></td>
+<td class="text-right"><p>48.0</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>4,704</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-4B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>414.6</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>691.3</p></td>
+<td class="text-right"><p>79.0</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>3,321.2</p></td>
+<td class="text-right"><p>25.9</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>6,372</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-1.7B</p></td>
+<td><p>LLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>INT4 AWQ / INT4 AWQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>129.0</p></td>
+<td class="text-right"><p>370</p></td>
+<td class="text-right"><p>2,867.6</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>86.5</p></td>
+<td class="text-right"><p>3.87</p></td>
+<td class="text-right"><p>3,394</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-8B</p></td>
+<td><p>LLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>INT4 AWQ / INT4 AWQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>651.4</p></td>
+<td class="text-right"><p>370</p></td>
+<td class="text-right"><p>567.8</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>29.7</p></td>
+<td class="text-right"><p>4.14</p></td>
+<td class="text-right"><p>8,358</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen2.5-VL-7B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>505.7</p></td>
+<td class="text-right"><p>376</p></td>
+<td class="text-right"><p>742.9</p></td>
+<td class="text-right"><p>200.7</p></td>
+<td class="text-right"><p>344</p></td>
+<td class="text-right"><p>1,715.6</p></td>
+<td class="text-right"><p>34.7</p></td>
+<td class="text-right"><p>5.05</p></td>
+<td class="text-right"><p>9,208</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-VL-4B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>237.8</p></td>
+<td class="text-right"><p>283</p></td>
+<td class="text-right"><p>1,188.7</p></td>
+<td class="text-right"><p>83.1</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>3,156.6</p></td>
+<td class="text-right"><p>56.2</p></td>
+<td class="text-right"><p>5.11</p></td>
+<td class="text-right"><p>6,427</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-VL-8B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>488.9</p></td>
+<td class="text-right"><p>283</p></td>
+<td class="text-right"><p>578.0</p></td>
+<td class="text-right"><p>121.0</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>2,167.8</p></td>
+<td class="text-right"><p>20.4</p></td>
+<td class="text-right"><p>2.84</p></td>
+<td class="text-right"><p>9,565</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-0.8B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>135.8</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>2,111.0</p></td>
+<td class="text-right"><p>26.7</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>9,813.5</p></td>
+<td class="text-right"><p>77.7</p></td>
+<td class="text-right"><p>2.16</p></td>
+<td class="text-right"><p>3,296</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-2B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>193.3</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>1,482.8</p></td>
+<td class="text-right"><p>77.8</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>3,372.7</p></td>
+<td class="text-right"><p>46.8</p></td>
+<td class="text-right"><p>2.38</p></td>
+<td class="text-right"><p>5,758</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-4B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>410.7</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>697.8</p></td>
+<td class="text-right"><p>78.0</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>3,363.6</p></td>
+<td class="text-right"><p>28.9</p></td>
+<td class="text-right"><p>2.52</p></td>
+<td class="text-right"><p>7,838</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="jetson-orin-nano-8gb">
+<h4>Jetson Orin Nano 8GB<a class="headerlink" href="#jetson-orin-nano-8gb" title="Link to this heading">#</a></h4>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Model</p></th>
+<th class="head"><p>Kind</p></th>
+<th class="head"><p>Mode</p></th>
+<th class="head"><p>Precision</p></th>
+<th class="head text-center"><p>Batch</p></th>
+<th class="head text-right"><p>Runtime Prefill (ms)</p></th>
+<th class="head text-right"><p>Runtime Prefill Tok/Run</p></th>
+<th class="head text-right"><p>Runtime Prefill (tok/s)</p></th>
+<th class="head text-right"><p>ViT (ms)</p></th>
+<th class="head text-right"><p>ViT Tok/Run</p></th>
+<th class="head text-right"><p>ViT (tok/s)</p></th>
+<th class="head text-right"><p>Generation (tok/s)</p></th>
+<th class="head text-right"><p>Accept Rate</p></th>
+<th class="head text-right"><p>GPU Mem (MB)</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Qwen3-0.6B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>94.7</p></td>
+<td class="text-right"><p>370</p></td>
+<td class="text-right"><p>3,904.2</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>69.4</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>1,999</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-1.7B</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>231.5</p></td>
+<td class="text-right"><p>370</p></td>
+<td class="text-right"><p>1,597.9</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>36.3</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>3,286</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-0.8B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>316.3</p></td>
+<td class="text-right"><p>377</p></td>
+<td class="text-right"><p>1,190.9</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>55.0</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>2,294</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-2B-LLM</p></td>
+<td><p>LLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>445.0</p></td>
+<td class="text-right"><p>377</p></td>
+<td class="text-right"><p>846.5</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>29.8</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>4,145</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-VL-2B-Instruct</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>181.7</p></td>
+<td class="text-right"><p>283</p></td>
+<td class="text-right"><p>1,555.1</p></td>
+<td class="text-right"><p>150.6</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>1,741.6</p></td>
+<td class="text-right"><p>36.3</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>4,444</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3.5-0.8B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>244.0</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>1,174.8</p></td>
+<td class="text-right"><p>48.8</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>5,376.3</p></td>
+<td class="text-right"><p>54.4</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>2,656</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-2B</p></td>
+<td><p>VLM</p></td>
+<td><p>Vanilla</p></td>
+<td><p>INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>349.8</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>819.3</p></td>
+<td class="text-right"><p>142.4</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>1,842.6</p></td>
+<td class="text-right"><p>29.4</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>4,649</p></td>
+</tr>
+<tr class="row-odd"><td><p>Qwen3-1.7B</p></td>
+<td><p>LLM</p></td>
+<td><p>EAGLE</p></td>
+<td><p>INT4 AWQ / INT4 AWQ</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>232.2</p></td>
+<td class="text-right"><p>370</p></td>
+<td class="text-right"><p>1,593.0</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>-</p></td>
+<td class="text-right"><p>48.7</p></td>
+<td class="text-right"><p>3.87</p></td>
+<td class="text-right"><p>3,398</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3.5-0.8B</p></td>
+<td><p>VLM</p></td>
+<td><p>MTP</p></td>
+<td><p>INT4 AWQ / INT4 AWQ / FP16</p></td>
+<td class="text-center"><p>1</p></td>
+<td class="text-right"><p>244.1</p></td>
+<td class="text-right"><p>287</p></td>
+<td class="text-right"><p>1,174.1</p></td>
+<td class="text-right"><p>48.7</p></td>
+<td class="text-right"><p>262</p></td>
+<td class="text-right"><p>5,387.9</p></td>
+<td class="text-right"><p>46.9</p></td>
+<td class="text-right"><p>2.16</p></td>
+<td class="text-right"><p>3,278</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
 </section>
 </section>
 <hr class="docutils" />
@@ -1728,6 +5672,14 @@
 <hr class="docutils" />
 <section id="key-observations">
 <h2>Key Observations<a class="headerlink" href="#key-observations" title="Link to this heading">#</a></h2>
+<section id="v0-8-0">
+<h3>v0.8.0<a class="headerlink" href="#v0-8-0" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p><strong>All release devices are covered:</strong> v0.8.0 adds Jetson AGX Thor, Jetson AGX Orin 64GB, Jetson Orin NX 16GB, and Jetson Orin Nano 8GB results from the release benchmark outputs, benchmarked under JetPack 7.2.</p></li>
+<li><p><strong>First <code class="docutils literal notranslate"><span class="pre">llm_bench</span></code> prefill publication:</strong> AGX Thor includes parsed <code class="docutils literal notranslate"><span class="pre">llm_bench</span></code> prefill measurements at <code class="docutils literal notranslate"><span class="pre">inputLen=2048</span></code>. Qwen3-0.6B NVFP4 reaches 91,469.3 tok/s at BS=1; Qwen3-1.7B EAGLE NVFP4 reaches 66,929.4 tok/s at BS=1.</p></li>
+<li><p><strong>Speculative decode remains platform-dependent:</strong> EAGLE and MTP report strong acceptance rates, but generation throughput depends heavily on model size, precision, and platform memory bandwidth.</p></li>
+</ul>
+</section>
 <section id="v0-7-1">
 <h3>v0.7.1<a class="headerlink" href="#v0-7-1" title="Link to this heading">#</a></h3>
 <ul class="simple">
@@ -1755,7 +5707,7 @@
 <section id="general">
 <h3>General<a class="headerlink" href="#general" title="Link to this heading">#</a></h3>
 <ul class="simple">
-<li><p>All benchmarks use default TensorRT Edge-LLM inference settings on Jetson AGX Thor. Production performance may vary with system-level tuning (power mode, memory configuration, thermal management).</p></li>
+<li><p>Benchmarks use default TensorRT Edge-LLM inference settings on the listed device. Production performance may vary with system-level tuning (power mode, memory configuration, thermal management).</p></li>
 </ul>
 </section>
 </section>
@@ -1814,6 +5766,18 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#precision-key">Precision Key</a></li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#v0-8-0-results">v0.8.0 Results</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#llm-bench-commands"><code class="docutils literal notranslate"><span class="pre">llm_bench</span></code> Commands</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#llm-bench-prefill-performance-jetson-agx-thor-only"><code class="docutils literal notranslate"><span class="pre">llm_bench</span></code> Prefill Performance (Jetson AGX Thor Only)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#runtime-performance-dashboard">Runtime Performance Dashboard</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#jetson-agx-thor">Jetson AGX Thor</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#jetson-agx-orin-64gb">Jetson AGX Orin 64GB</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#jetson-orin-nx-16gb">Jetson Orin NX 16GB</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#jetson-orin-nano-8gb">Jetson Orin Nano 8GB</a></li>
+</ul>
+</li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#v0-7-1-results">v0.7.1 Results</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#llm-vanilla-decoding">LLM — Vanilla Decoding</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#vision-language-model-vanilla-decoding">Vision Language Model — Vanilla Decoding</a></li>
@@ -1847,6 +5811,7 @@
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#key-observations">Key Observations</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#v0-8-0">v0.8.0</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#v0-7-1">v0.7.1</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#v0-7-0">v0.7.0</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#v0-4-0">v0.4.0</a></li>
@@ -1871,8 +5836,8 @@
   
 
   <!-- Scripts loaded after <body> so the DOM is not blocked -->
-  <script defer src="../../_static/scripts/bootstrap.js?digest=0790524f97105ba85085"></script>
-<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=0790524f97105ba85085"></script>
+  <script defer src="../../_static/scripts/bootstrap.js?digest=a95f357e85573c9b56d5"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=a95f357e85573c9b56d5"></script>
 
 
   <footer class="bd-footer">
@@ -1944,9 +5909,9 @@
         <div class="footer-item">
 <div class="extra_footer">
   
-  <p>Last updated on June 02, 2026.</p>
+  <p>Last updated on July 02, 2026.</p>
   
-  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/1df0e01">1df0e01</a>.</p>
+  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/30941a6">30941a6</a>.</p>
   
 </div></div>
       

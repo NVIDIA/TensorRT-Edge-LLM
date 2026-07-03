@@ -1,6 +1,6 @@
 Kernel
 ======
 
-.. doxygenfunction:: MARLIN_NAMESPACE_NAME::Marlin
+.. doxygenfile:: kernels/moe/moe_marlin/marlin_moe_wna16/kernel.h
    :project: TensorRT Edge-LLM
 

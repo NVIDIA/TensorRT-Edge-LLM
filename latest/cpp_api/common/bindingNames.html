@@ -28,8 +28,8 @@
   </noscript>
   
   <!-- Loaded before other Sphinx assets -->
-  <link href="../../_static/styles/theme.css?digest=0790524f97105ba85085" rel="stylesheet" />
-<link href="../../_static/styles/pydata-sphinx-theme.css?digest=0790524f97105ba85085" rel="stylesheet" />
+  <link href="../../_static/styles/theme.css?digest=a95f357e85573c9b56d5" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=a95f357e85573c9b56d5" rel="stylesheet" />
 
     <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=03e43079" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/nvidia-sphinx-theme.css?v=933278ad" />
@@ -39,10 +39,10 @@
     <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=e02be394" />
   
   <!-- So that users can add custom icons -->
-  <script defer src="../../_static/scripts/fontawesome.js?digest=0790524f97105ba85085"></script>
+  <script defer src="../../_static/scripts/fontawesome.js?digest=a95f357e85573c9b56d5"></script>
   <!-- Pre-loaded scripts that we'll load fully later -->
-  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=0790524f97105ba85085" />
-<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=0790524f97105ba85085" />
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=a95f357e85573c9b56d5" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=a95f357e85573c9b56d5" />
 
 
 
@@ -58,9 +58,9 @@
     <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'cpp_api/common/bindingNames';</script>
     <script>
-        DOCUMENTATION_OPTIONS.theme_version = '0.18.0';
+        DOCUMENTATION_OPTIONS.theme_version = '0.19.0';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = './_static/switcher.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.8.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.9.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner =
             false;
         </script>
@@ -76,7 +76,7 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.8.0" />
+  <meta name="docsearch:version" content="0.9.0" />
   
     
     <script src="../../_static/searchtools.js"></script>
@@ -431,6 +431,7 @@
 <li class="toctree-l3"><a class="reference internal" href="logger.html">Logger</a></li>
 <li class="toctree-l3"><a class="reference internal" href="mathUtils.html">Math Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="mmapReader.html">MMAP Reader</a></li>
+<li class="toctree-l3"><a class="reference internal" href="ropeUtils.html">Rope Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="safetensorsUtils.html">Safetensors Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="stringUtils.html">String Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="tensor.html">Tensor</a></li>
@@ -440,10 +441,7 @@
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../kernels/index.html">Kernels Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l3"><a class="reference internal" href="../kernels/NvFP4MoEContiguousGemmRunner.html">Nv Fp4 Mo E Contiguous GEMM Runner</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../kernels/NvFP4MoEFC2FinalizeRunner.html">Nv Fp4 Mo Efc2 Finalize Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/NvFP4MoEUtils.html">Nv Fp4 Mo E Utils</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../kernels/alphaCompute.html">Alpha Compute</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/applyRopeWriteKV.html">Apply Rope Write KV</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/batchEvictKernels.html">Batch Evict Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/buildLayout.html">Build Layout</a></li>
@@ -451,36 +449,37 @@
 <li class="toctree-l3"><a class="reference internal" href="../kernels/common.html">Common</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/contextFMHARunner.html">Context FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/conversion.html">Conversion</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslDecodeGemvRunner.html">Cute Dsl Decode Gemv Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslFFPARunner.html">Cute Dsl Ffpa Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslFMHARunner.html">Cute Dsl FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGDNRunner.html">Cute Dsl Gdn Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGemmRunner.html">Cute Dsl GEMM Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslNvfp4MoeRunner.html">Cute Dsl Nvfp4 Moe Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslNvfp4MoeSm110Runner.html">Cute Dsl Nvfp4 Moe Sm110 Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslSSDRunner.html">Cute Dsl Ssd Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/decoderXQARunner.html">Decoder XQA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/dequant.html">Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/dequantize.html">Dequantize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/dflashAcceptKernels.html">Dflash Accept Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/dflashRuntimeKernels.html">Dflash Runtime Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/eagleAcceptKernels.html">EAGLE Accept Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/eagleUtilKernels.html">EAGLE Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/embeddingKernels.html">Embedding Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/fmhaParams_v2.html">FMHA Params V2</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/fp4Quantize.html">Fp4 Quantize</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/gdnKernelUtils.html">Gdn Kernel Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/gemma4AudioAttention.html">Gemma4 Audio Attention</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/imageUtilKernels.html">Image Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/initializeCosSinCache.html">Initialize Cos Sin Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/int4GroupwiseGemm.html">Int4 Groupwise GEMM</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/kernel.html">Kernel</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/kernel_selector.html">Kernel Selector</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../kernels/kernels.html">Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/kvCacheUtilsKernels.html">KV Cache Utils Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/marlin.html">Marlin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/marlin_dtypes.html">Marlin Dtypes</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/marlin_mma.html">Marlin Mma</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/marlin_template.html">Marlin Template</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../kernels/marlin_template.html">Marlin Template</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeActivationKernels.html">Moe Activation Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeAlignSumKernels.html">Moe Align Sum Kernels</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../kernels/moeGather.html">Moe Gather</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeMarlin.html">Moe Marlin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeMarlinIndicesKernels.html">Moe Marlin Indices Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeSigmoidGroupTopkKernels.html">Moe Sigmoid Group Topk Kernels</a></li>
@@ -500,6 +499,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/audioRunner.html">Audio Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/audioUtils.html">Audio Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/code2WavRunner.html">Code2 Wav Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4ViTRunner.html">Gemma4 ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/imageUtils.html">Image Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/internViTRunner.html">Intern ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/modelTypes.html">Model Types</a></li>
@@ -513,6 +513,7 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../plugins/index.html">Plugins Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/attentionPlugin.html">Attention Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/causalConv1dPlugin.html">Causal Conv1d Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/dflashTargetKVCacheUpdatePlugin.html">Dflash Target KV Cache Update Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/gatedDeltaNetPlugin.html">Gated Delta Net Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/int4GroupwiseGemmPlugin.html">Int4 Groupwise GEMM Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/int4MoePlugin.html">Int4 Moe Plugin</a></li>
@@ -531,28 +532,30 @@
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../runtime/index.html">Runtime Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/audioLoader.html">Audio Loader</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/audioUtils.html">Audio Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/decoderRegistry.html">Decoder Registry</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/decodingInferenceContext.html">Decoding Inference Context</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/decodingStrategy.html">Decoding Strategy</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/deepstackBinding.html">Deepstack Binding</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/deploymentConfig.html">Deployment Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/dflashDecoder.html">Dflash Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/eagleDecoder.html">EAGLE Decoder</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../runtime/eagleDraftEngineRunner.html">EAGLE Draft Engine Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/embeddingPreprocessor.html">Embedding Preprocessor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/engineExecutor.html">Engine Executor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/externalWeightManager.html">External Weight Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/gemma4EmbeddingPreprocessor.html">Gemma4 Embedding Preprocessor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/hybridCacheManager.html">Hybrid Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/imageUtils.html">Image Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/inferenceDims.html">Inference Dims</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/inferencePhase.html">Inference Phase</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/kvCacheManager.html">KV Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/llmEngineConfig.html">LLM Engine Config</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../runtime/llmEngineRunner.html">LLM Engine Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/llmInferenceRuntime.html">LLM Inference Runtime</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/llmRuntimeUtils.html">LLM Runtime Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/loraManager.html">Lora Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/mambaCacheManager.html">Mamba Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/melSpectrogram.html">Mel Spectrogram</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/mtpDecoder.html">Mtp Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/pipelineIO.html">Pipeline Io</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/qwen3OmniTTSRuntime.html">Qwen3 Omni Tts Runtime</a></li>
@@ -663,6 +666,13 @@
 </dd></dl>
 
 <dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm13binding_names23kPleTokenEmbedsTemplateE">
+<span id="_CPPv3N11trt_edgellm13binding_names23kPleTokenEmbedsTemplateE"></span><span id="_CPPv2N11trt_edgellm13binding_names23kPleTokenEmbedsTemplateE"></span><span id="trt_edgellm::binding_names::kPleTokenEmbedsTemplate__cCP"></span><span class="target" id="bindingNames_8h_1ae415149fceaf800bf0f5904e7e775657"></span><span class="k"><span class="pre">constexpr</span></span><span class="w"> </span><span class="kt"><span class="pre">char</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">kPleTokenEmbedsTemplate</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="s"><span class="pre">&quot;ple_token_embeds&quot;</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm13binding_names23kPleTokenEmbedsTemplateE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Gemma4 per-layer token-identity embedding input template. </p>
+<p>Template: “ple_token_embeds_{layer_idx}” Shape: <a class="reference external" href="FLOAT16/BFLOAT16">batch_size, sequence_length, ple_hidden_size</a></p>
+</dd></dl>
+
+<dl class="cpp var">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm13binding_names15kContextLengthsE">
 <span id="_CPPv3N11trt_edgellm13binding_names15kContextLengthsE"></span><span id="_CPPv2N11trt_edgellm13binding_names15kContextLengthsE"></span><span id="trt_edgellm::binding_names::kContextLengths__cCP"></span><span class="target" id="bindingNames_8h_1a6c43430db9f13576f58fe2f29b239280"></span><span class="k"><span class="pre">constexpr</span></span><span class="w"> </span><span class="kt"><span class="pre">char</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">kContextLengths</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="s"><span class="pre">&quot;context_lengths&quot;</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm13binding_names15kContextLengthsE" title="Link to this definition">#</a><br /></dt>
 <dd><p>Context lengths tensor - specifies the actual length of each sequence in the batch. </p>
@@ -690,6 +700,27 @@
 <p>Shape: [batch_size, sequence_length, hidden_dim] (FLOAT16) </p>
 </dd></dl>
 
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm13binding_names25kDFlashTargetHiddenConcatE">
+<span id="_CPPv3N11trt_edgellm13binding_names25kDFlashTargetHiddenConcatE"></span><span id="_CPPv2N11trt_edgellm13binding_names25kDFlashTargetHiddenConcatE"></span><span id="trt_edgellm::binding_names::kDFlashTargetHiddenConcat__cCP"></span><span class="target" id="bindingNames_8h_1aec59656da1cfeafd962abd2500c65fcc"></span><span class="k"><span class="pre">constexpr</span></span><span class="w"> </span><span class="kt"><span class="pre">char</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">kDFlashTargetHiddenConcat</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="s"><span class="pre">&quot;dflash_target_hidden_concat&quot;</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm13binding_names25kDFlashTargetHiddenConcatE" title="Link to this definition">#</a><br /></dt>
+<dd><p>DFlash draft model input: concatenated target hidden states. </p>
+<p>Shape: [batch_size, context_length, base_output_hidden_dim] (FLOAT16) </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm13binding_names19kDFlashDeltaLengthsE">
+<span id="_CPPv3N11trt_edgellm13binding_names19kDFlashDeltaLengthsE"></span><span id="_CPPv2N11trt_edgellm13binding_names19kDFlashDeltaLengthsE"></span><span id="trt_edgellm::binding_names::kDFlashDeltaLengths__cCP"></span><span class="target" id="bindingNames_8h_1a313c53fc6c6d8fb2140a7adf7e7efa8f"></span><span class="k"><span class="pre">constexpr</span></span><span class="w"> </span><span class="kt"><span class="pre">char</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">kDFlashDeltaLengths</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="s"><span class="pre">&quot;dflash_delta_lengths&quot;</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm13binding_names19kDFlashDeltaLengthsE" title="Link to this definition">#</a><br /></dt>
+<dd><p>DFlash draft model input: per-batch delta lengths for multi-batch. </p>
+<p>Shape: [batch_size] (INT32) </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm13binding_names21kPleEmbeddingFileNameE">
+<span id="_CPPv3N11trt_edgellm13binding_names21kPleEmbeddingFileNameE"></span><span id="_CPPv2N11trt_edgellm13binding_names21kPleEmbeddingFileNameE"></span><span id="trt_edgellm::binding_names::kPleEmbeddingFileName__cCP"></span><span class="target" id="bindingNames_8h_1acb8a99ee26d228cd012e4fa965699c89"></span><span class="k"><span class="pre">constexpr</span></span><span class="w"> </span><span class="kt"><span class="pre">char</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">kPleEmbeddingFileName</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="s"><span class="pre">&quot;ple_embedding.safetensors&quot;</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm13binding_names21kPleEmbeddingFileNameE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Gemma4 PLE token-identity embedding table sidecar. </p>
+<p>Contains tensor “weight” with shape [vocab_size_per_layer_input, num_ple_inputs * ple_hidden_size]. </p>
+</dd></dl>
+
 </div>
 <div class="breathe-sectiondef docutils container">
 <p class="breathe-sectiondef-title rubric" id="breathe-section-title-positional-encoding-bindings">Positional Encoding Bindings</p>
@@ -698,6 +729,20 @@
 <span id="_CPPv3N11trt_edgellm13binding_names11kRopeCosSinE"></span><span id="_CPPv2N11trt_edgellm13binding_names11kRopeCosSinE"></span><span id="trt_edgellm::binding_names::kRopeCosSin__cCP"></span><span class="target" id="bindingNames_8h_1a9df351f120a0a0cf53c253d001c1d0d4"></span><span class="k"><span class="pre">constexpr</span></span><span class="w"> </span><span class="kt"><span class="pre">char</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">kRopeCosSin</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="s"><span class="pre">&quot;rope_rotary_cos_sin&quot;</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm13binding_names11kRopeCosSinE" title="Link to this definition">#</a><br /></dt>
 <dd><p>Rotary positional encoding cos/sin cache tensor. </p>
 <p>Shape: [batch_size, max_seq_len, rotary_dim] (FLOAT32) </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm13binding_names18kRopeCosSinSlidingE">
+<span id="_CPPv3N11trt_edgellm13binding_names18kRopeCosSinSlidingE"></span><span id="_CPPv2N11trt_edgellm13binding_names18kRopeCosSinSlidingE"></span><span id="trt_edgellm::binding_names::kRopeCosSinSliding__cCP"></span><span class="target" id="bindingNames_8h_1a445ecff267b90c2cc0de0b253f0f4e9c"></span><span class="k"><span class="pre">constexpr</span></span><span class="w"> </span><span class="kt"><span class="pre">char</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">kRopeCosSinSliding</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="s"><span class="pre">&quot;rope_rotary_cos_sin_sliding&quot;</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm13binding_names18kRopeCosSinSlidingE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Rotary positional encoding cos/sin cache tensor for sliding attention layers. </p>
+<p>Shape: [batch_size, max_seq_len, sliding_rotary_dim] (FLOAT32) </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm13binding_names15kRopeCosSinFullE">
+<span id="_CPPv3N11trt_edgellm13binding_names15kRopeCosSinFullE"></span><span id="_CPPv2N11trt_edgellm13binding_names15kRopeCosSinFullE"></span><span id="trt_edgellm::binding_names::kRopeCosSinFull__cCP"></span><span class="target" id="bindingNames_8h_1aac248efddb9cbfcfc3b2e0102a709abc"></span><span class="k"><span class="pre">constexpr</span></span><span class="w"> </span><span class="kt"><span class="pre">char</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">kRopeCosSinFull</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="s"><span class="pre">&quot;rope_rotary_cos_sin_full&quot;</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm13binding_names15kRopeCosSinFullE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Rotary positional encoding cos/sin cache tensor for full attention layers. </p>
+<p>Shape: [batch_size, max_seq_len, full_rotary_dim] (FLOAT32) </p>
 </dd></dl>
 
 </div>
@@ -879,8 +924,15 @@
 <dl class="cpp var">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm13binding_names13kRotaryPosEmbE">
 <span id="_CPPv3N11trt_edgellm13binding_names13kRotaryPosEmbE"></span><span id="_CPPv2N11trt_edgellm13binding_names13kRotaryPosEmbE"></span><span id="trt_edgellm::binding_names::kRotaryPosEmb__cCP"></span><span class="target" id="bindingNames_8h_1a6e33a158434d341868bcc2271e80832d"></span><span class="k"><span class="pre">constexpr</span></span><span class="w"> </span><span class="kt"><span class="pre">char</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">kRotaryPosEmb</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="s"><span class="pre">&quot;rotary_pos_emb&quot;</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm13binding_names13kRotaryPosEmbE" title="Link to this definition">#</a><br /></dt>
-<dd><p>Rotary positional embeddings for visual inputs (Qwen-VL specific) </p>
+<dd><p>Rotary positional embeddings for visual inputs. </p>
 <p>Shape: [sequence_length, embed_dim] (FLOAT32) </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm13binding_names17kPixelPositionIdsE">
+<span id="_CPPv3N11trt_edgellm13binding_names17kPixelPositionIdsE"></span><span id="_CPPv2N11trt_edgellm13binding_names17kPixelPositionIdsE"></span><span id="trt_edgellm::binding_names::kPixelPositionIds__cCP"></span><span class="target" id="bindingNames_8h_1af2d84c2b4cca0867821a284752fa8f85"></span><span class="k"><span class="pre">constexpr</span></span><span class="w"> </span><span class="kt"><span class="pre">char</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">kPixelPositionIds</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="s"><span class="pre">&quot;pixel_position_ids&quot;</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm13binding_names17kPixelPositionIdsE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Gemma4 pixel position ids for visual patch embeddings and 2-D RoPE. </p>
+<p>Shape: [sequence_length, 2] (INT64) </p>
 </dd></dl>
 
 <dl class="cpp var">
@@ -891,10 +943,25 @@
 </dd></dl>
 
 <dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm13binding_names10kKvLengthsE">
+<span id="_CPPv3N11trt_edgellm13binding_names10kKvLengthsE"></span><span id="_CPPv2N11trt_edgellm13binding_names10kKvLengthsE"></span><span id="trt_edgellm::binding_names::kKvLengths__cCP"></span><span class="target" id="bindingNames_8h_1a01214dce4b050864246dfcb5dc975573"></span><span class="k"><span class="pre">constexpr</span></span><span class="w"> </span><span class="kt"><span class="pre">char</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">kKvLengths</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="s"><span class="pre">&quot;kv_lengths&quot;</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm13binding_names10kKvLengthsE" title="Link to this definition">#</a><br /></dt>
+<dd><p>KV sequence lengths for TRT-native attention (TRT &gt;= 11). </p>
+<p>Same data as cu_seqlens but must be a separate tensor — TRT IAttentionV2 requires distinct tensors for query_lengths and kv_lengths inputs.</p>
+<p>Shape: [num_images + 1] (INT32) </p>
+</dd></dl>
+
+<dl class="cpp var">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm13binding_names17kMaxSeqLenCarrierE">
 <span id="_CPPv3N11trt_edgellm13binding_names17kMaxSeqLenCarrierE"></span><span id="_CPPv2N11trt_edgellm13binding_names17kMaxSeqLenCarrierE"></span><span id="trt_edgellm::binding_names::kMaxSeqLenCarrier__cCP"></span><span class="target" id="bindingNames_8h_1a8f07fe02fd7b4896a7e1d27a0bace02a"></span><span class="k"><span class="pre">constexpr</span></span><span class="w"> </span><span class="kt"><span class="pre">char</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">kMaxSeqLenCarrier</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="s"><span class="pre">&quot;max_seqlen_carrier&quot;</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm13binding_names17kMaxSeqLenCarrierE" title="Link to this definition">#</a><br /></dt>
 <dd><p>Shape-only input used to convey runtime max sequence-length for FMHA launch. </p>
 <p>Shape: [max_seqlen] (INT32) </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm13binding_names15kPoolingWeightsE">
+<span id="_CPPv3N11trt_edgellm13binding_names15kPoolingWeightsE"></span><span id="_CPPv2N11trt_edgellm13binding_names15kPoolingWeightsE"></span><span id="trt_edgellm::binding_names::kPoolingWeights__cCP"></span><span class="target" id="bindingNames_8h_1a9903bbcba77ac260f985dc0fbb6bd214"></span><span class="k"><span class="pre">constexpr</span></span><span class="w"> </span><span class="kt"><span class="pre">char</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">kPoolingWeights</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="s"><span class="pre">&quot;pooling_weights&quot;</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm13binding_names15kPoolingWeightsE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Gemma4 position-aware pooling weights. </p>
+<p>Shape: [num_image_tokens, sequence_length] (FLOAT16) </p>
 </dd></dl>
 
 <dl class="cpp var">
@@ -1292,6 +1359,20 @@
 </dl>
 </dd></dl>
 
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm13binding_names24formatPleTokenEmbedsNameE7int32_t">
+<span id="_CPPv3N11trt_edgellm13binding_names24formatPleTokenEmbedsNameE7int32_t"></span><span id="_CPPv2N11trt_edgellm13binding_names24formatPleTokenEmbedsNameE7int32_t"></span><span id="trt_edgellm::binding_names::formatPleTokenEmbedsName__int32_t"></span><span class="target" id="bindingNames_8h_1a34b5df5449da41aea76230d8e7e29b0d"></span><span class="k"><span class="pre">inline</span></span><span class="w"> </span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">string</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">formatPleTokenEmbedsName</span></span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">layerIdx</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm13binding_names24formatPleTokenEmbedsNameE7int32_t" title="Link to this definition">#</a><br /></dt>
+<dd><p>Format Gemma4 PLE token embedding input binding name. </p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>layerIdx</strong> – The decoder layer index </p>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>Formatted binding name like “ple_token_embeds_0” </p>
+</dd>
+</dl>
+</dd></dl>
+
 </div>
 </dd></dl>
 
@@ -1358,11 +1439,17 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv411trt_edgellm"><code class="docutils literal notranslate"><span class="pre">trt_edgellm</span></code></a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13binding_namesE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::binding_names</span></code></a><ul class="nav section-nav flex-column">
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13binding_names13kInputsEmbedsE"><code class="docutils literal notranslate"><span class="pre">kInputsEmbeds</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13binding_names23kPleTokenEmbedsTemplateE"><code class="docutils literal notranslate"><span class="pre">kPleTokenEmbedsTemplate</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13binding_names15kContextLengthsE"><code class="docutils literal notranslate"><span class="pre">kContextLengths</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13binding_names13kLastTokenIdsE"><code class="docutils literal notranslate"><span class="pre">kLastTokenIds</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13binding_names7kLogitsE"><code class="docutils literal notranslate"><span class="pre">kLogits</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13binding_names19kOutputHiddenStatesE"><code class="docutils literal notranslate"><span class="pre">kOutputHiddenStates</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13binding_names25kDFlashTargetHiddenConcatE"><code class="docutils literal notranslate"><span class="pre">kDFlashTargetHiddenConcat</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13binding_names19kDFlashDeltaLengthsE"><code class="docutils literal notranslate"><span class="pre">kDFlashDeltaLengths</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13binding_names21kPleEmbeddingFileNameE"><code class="docutils literal notranslate"><span class="pre">kPleEmbeddingFileName</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13binding_names11kRopeCosSinE"><code class="docutils literal notranslate"><span class="pre">kRopeCosSin</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13binding_names18kRopeCosSinSlidingE"><code class="docutils literal notranslate"><span class="pre">kRopeCosSinSliding</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13binding_names15kRopeCosSinFullE"><code class="docutils literal notranslate"><span class="pre">kRopeCosSinFull</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13binding_names18kKVCacheStartIndexE"><code class="docutils literal notranslate"><span class="pre">kKVCacheStartIndex</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13binding_names22kPastKeyValuesTemplateE"><code class="docutils literal notranslate"><span class="pre">kPastKeyValuesTemplate</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13binding_names25kPresentKeyValuesTemplateE"><code class="docutils literal notranslate"><span class="pre">kPresentKeyValuesTemplate</span></code></a></li>
@@ -1387,8 +1474,11 @@
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13binding_names12kVisualInputE"><code class="docutils literal notranslate"><span class="pre">kVisualInput</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13binding_names13kVisualOutputE"><code class="docutils literal notranslate"><span class="pre">kVisualOutput</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13binding_names13kRotaryPosEmbE"><code class="docutils literal notranslate"><span class="pre">kRotaryPosEmb</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13binding_names17kPixelPositionIdsE"><code class="docutils literal notranslate"><span class="pre">kPixelPositionIds</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13binding_names10kCuSeqlensE"><code class="docutils literal notranslate"><span class="pre">kCuSeqlens</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13binding_names10kKvLengthsE"><code class="docutils literal notranslate"><span class="pre">kKvLengths</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13binding_names17kMaxSeqLenCarrierE"><code class="docutils literal notranslate"><span class="pre">kMaxSeqLenCarrier</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13binding_names15kPoolingWeightsE"><code class="docutils literal notranslate"><span class="pre">kPoolingWeights</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13binding_names16kCuWindowSeqlensE"><code class="docutils literal notranslate"><span class="pre">kCuWindowSeqlens</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13binding_names12kWindowIndexE"><code class="docutils literal notranslate"><span class="pre">kWindowIndex</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13binding_names19kReverseWindowIndexE"><code class="docutils literal notranslate"><span class="pre">kReverseWindowIndex</span></code></a></li>
@@ -1421,6 +1511,7 @@
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13binding_names16isKVCacheBindingERKNSt6stringE"><code class="docutils literal notranslate"><span class="pre">isKVCacheBinding()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13binding_names27formatDeepstackFeaturesNameE7int32_t"><code class="docutils literal notranslate"><span class="pre">formatDeepstackFeaturesName()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13binding_names25formatDeepstackEmbedsNameE7int32_t"><code class="docutils literal notranslate"><span class="pre">formatDeepstackEmbedsName()</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13binding_names24formatPleTokenEmbedsNameE7int32_t"><code class="docutils literal notranslate"><span class="pre">formatPleTokenEmbedsName()</span></code></a></li>
 </ul>
 </li>
 </ul>
@@ -1444,8 +1535,8 @@
   
 
   <!-- Scripts loaded after <body> so the DOM is not blocked -->
-  <script defer src="../../_static/scripts/bootstrap.js?digest=0790524f97105ba85085"></script>
-<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=0790524f97105ba85085"></script>
+  <script defer src="../../_static/scripts/bootstrap.js?digest=a95f357e85573c9b56d5"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=a95f357e85573c9b56d5"></script>
 
 
   <footer class="bd-footer">
@@ -1517,9 +1608,9 @@
         <div class="footer-item">
 <div class="extra_footer">
   
-  <p>Last updated on June 02, 2026.</p>
+  <p>Last updated on July 02, 2026.</p>
   
-  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/1df0e01">1df0e01</a>.</p>
+  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/30941a6">30941a6</a>.</p>
   
 </div></div>
       

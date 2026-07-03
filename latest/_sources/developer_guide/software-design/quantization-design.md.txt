@@ -20,6 +20,8 @@ For command-line usage, see [Quantization](../../user_guide/features/quantizatio
 | `tensorrt_edgellm/quantization/quantization_configs.py` | Shared ModelOpt quantization configurations |
 | `tensorrt_edgellm/config.py` | Reads quantization metadata during ONNX export |
 | `tensorrt_edgellm/checkpoint/loader.py` | Loads and repacks quantized checkpoint tensors |
+| `tensorrt_edgellm/quantization/models/eagle3_draft.py` | Standalone Eagle3 draft calibration model |
+| `tensorrt_edgellm/quantization/models/dflash_draft.py` | Standalone DFlash draft calibration model |
 
 ## Flow
 
@@ -56,6 +58,13 @@ The output directory must contain:
 Backbone and LM-head methods can be combined for mixed-precision checkpoints.
 Visual FP8 requires multimodal calibration data so visual quantizers observe
 image activations.
+
+DFlash draft quantization follows the same checkpoint-only contract. The
+standalone calibration model replays the draft's dense PyTorch modules using
+base-model hidden states, then saves quantized draft weights plus
+`hf_quant_config.json`. The DFlash `fc` target-hidden projector is excluded
+from quantization because the ONNX exporter keeps that projection on the
+full-FP32 accumulation path for accuracy.
 
 ## Limitations
 

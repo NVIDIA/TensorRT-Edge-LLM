@@ -1,0 +1,13 @@
+Decoding Inference Context
+==========================
+
+.. doxygenstruct:: trt_edgellm::rt::BatchResult
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::DecodingInferenceContext
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

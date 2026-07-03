@@ -6,28 +6,30 @@ API documentation for the runtime module.
 .. toctree::
    :maxdepth: 1
 
+   audioLoader
    audioUtils
    decoderRegistry
    decodingInferenceContext
    decodingStrategy
    deepstackBinding
    deploymentConfig
+   dflashDecoder
    eagleDecoder
-   eagleDraftEngineRunner
    embeddingPreprocessor
    engineExecutor
    externalWeightManager
+   gemma4EmbeddingPreprocessor
    hybridCacheManager
    imageUtils
    inferenceDims
    inferencePhase
    kvCacheManager
    llmEngineConfig
-   llmEngineRunner
    llmInferenceRuntime
    llmRuntimeUtils
    loraManager
    mambaCacheManager
+   melSpectrogram
    mtpDecoder
    pipelineIO
    qwen3OmniTTSRuntime

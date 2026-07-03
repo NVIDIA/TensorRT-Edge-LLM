@@ -28,8 +28,8 @@
   </noscript>
   
   <!-- Loaded before other Sphinx assets -->
-  <link href="../../_static/styles/theme.css?digest=0790524f97105ba85085" rel="stylesheet" />
-<link href="../../_static/styles/pydata-sphinx-theme.css?digest=0790524f97105ba85085" rel="stylesheet" />
+  <link href="../../_static/styles/theme.css?digest=a95f357e85573c9b56d5" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=a95f357e85573c9b56d5" rel="stylesheet" />
 
     <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=03e43079" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/nvidia-sphinx-theme.css?v=933278ad" />
@@ -39,10 +39,10 @@
     <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=e02be394" />
   
   <!-- So that users can add custom icons -->
-  <script defer src="../../_static/scripts/fontawesome.js?digest=0790524f97105ba85085"></script>
+  <script defer src="../../_static/scripts/fontawesome.js?digest=a95f357e85573c9b56d5"></script>
   <!-- Pre-loaded scripts that we'll load fully later -->
-  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=0790524f97105ba85085" />
-<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=0790524f97105ba85085" />
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=a95f357e85573c9b56d5" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=a95f357e85573c9b56d5" />
 
 
 
@@ -58,9 +58,9 @@
     <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'user_guide/getting_started/supported-models';</script>
     <script>
-        DOCUMENTATION_OPTIONS.theme_version = '0.18.0';
+        DOCUMENTATION_OPTIONS.theme_version = '0.19.0';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = './_static/switcher.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.8.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.9.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner =
             false;
         </script>
@@ -76,7 +76,7 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.8.0" />
+  <meta name="docsearch:version" content="0.9.0" />
   
     
     <script src="../../_static/searchtools.js"></script>
@@ -431,6 +431,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/logger.html">Logger</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/mathUtils.html">Math Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/mmapReader.html">MMAP Reader</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/ropeUtils.html">Rope Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/safetensorsUtils.html">Safetensors Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/stringUtils.html">String Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/tensor.html">Tensor</a></li>
@@ -440,10 +441,7 @@
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/kernels/index.html">Kernels Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/NvFP4MoEContiguousGemmRunner.html">Nv Fp4 Mo E Contiguous GEMM Runner</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/NvFP4MoEFC2FinalizeRunner.html">Nv Fp4 Mo Efc2 Finalize Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/NvFP4MoEUtils.html">Nv Fp4 Mo E Utils</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/alphaCompute.html">Alpha Compute</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/applyRopeWriteKV.html">Apply Rope Write KV</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/batchEvictKernels.html">Batch Evict Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/buildLayout.html">Build Layout</a></li>
@@ -451,36 +449,37 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/common.html">Common</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/contextFMHARunner.html">Context FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/conversion.html">Conversion</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslDecodeGemvRunner.html">Cute Dsl Decode Gemv Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslFFPARunner.html">Cute Dsl Ffpa Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslFMHARunner.html">Cute Dsl FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslGDNRunner.html">Cute Dsl Gdn Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslGemmRunner.html">Cute Dsl GEMM Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslNvfp4MoeRunner.html">Cute Dsl Nvfp4 Moe Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslNvfp4MoeSm110Runner.html">Cute Dsl Nvfp4 Moe Sm110 Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslSSDRunner.html">Cute Dsl Ssd Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/decoderXQARunner.html">Decoder XQA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dequant.html">Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dequantize.html">Dequantize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dflashAcceptKernels.html">Dflash Accept Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dflashRuntimeKernels.html">Dflash Runtime Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/eagleAcceptKernels.html">EAGLE Accept Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/eagleUtilKernels.html">EAGLE Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/embeddingKernels.html">Embedding Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/fmhaParams_v2.html">FMHA Params V2</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/fp4Quantize.html">Fp4 Quantize</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/gdnKernelUtils.html">Gdn Kernel Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/gemma4AudioAttention.html">Gemma4 Audio Attention</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/imageUtilKernels.html">Image Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/initializeCosSinCache.html">Initialize Cos Sin Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/int4GroupwiseGemm.html">Int4 Groupwise GEMM</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/kernel.html">Kernel</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/kernel_selector.html">Kernel Selector</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/kernels.html">Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/kvCacheUtilsKernels.html">KV Cache Utils Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/marlin.html">Marlin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/marlin_dtypes.html">Marlin Dtypes</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/marlin_mma.html">Marlin Mma</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/marlin_template.html">Marlin Template</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/marlin_template.html">Marlin Template</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeActivationKernels.html">Moe Activation Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeAlignSumKernels.html">Moe Align Sum Kernels</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeGather.html">Moe Gather</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeMarlin.html">Moe Marlin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeMarlinIndicesKernels.html">Moe Marlin Indices Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeSigmoidGroupTopkKernels.html">Moe Sigmoid Group Topk Kernels</a></li>
@@ -500,6 +499,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/audioRunner.html">Audio Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/audioUtils.html">Audio Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/code2WavRunner.html">Code2 Wav Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/gemma4ViTRunner.html">Gemma4 ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/imageUtils.html">Image Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/internViTRunner.html">Intern ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/modelTypes.html">Model Types</a></li>
@@ -513,6 +513,7 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/plugins/index.html">Plugins Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/attentionPlugin.html">Attention Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/causalConv1dPlugin.html">Causal Conv1d Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/dflashTargetKVCacheUpdatePlugin.html">Dflash Target KV Cache Update Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/gatedDeltaNetPlugin.html">Gated Delta Net Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/int4GroupwiseGemmPlugin.html">Int4 Groupwise GEMM Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/int4MoePlugin.html">Int4 Moe Plugin</a></li>
@@ -531,28 +532,30 @@
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/runtime/index.html">Runtime Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/audioLoader.html">Audio Loader</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/audioUtils.html">Audio Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/decoderRegistry.html">Decoder Registry</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/decodingInferenceContext.html">Decoding Inference Context</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/decodingStrategy.html">Decoding Strategy</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/deepstackBinding.html">Deepstack Binding</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/deploymentConfig.html">Deployment Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/dflashDecoder.html">Dflash Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/eagleDecoder.html">EAGLE Decoder</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/eagleDraftEngineRunner.html">EAGLE Draft Engine Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/embeddingPreprocessor.html">Embedding Preprocessor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/engineExecutor.html">Engine Executor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/externalWeightManager.html">External Weight Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/gemma4EmbeddingPreprocessor.html">Gemma4 Embedding Preprocessor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/hybridCacheManager.html">Hybrid Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/imageUtils.html">Image Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/inferenceDims.html">Inference Dims</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/inferencePhase.html">Inference Phase</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/kvCacheManager.html">KV Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmEngineConfig.html">LLM Engine Config</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmEngineRunner.html">LLM Engine Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmInferenceRuntime.html">LLM Inference Runtime</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmRuntimeUtils.html">LLM Runtime Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/loraManager.html">Lora Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/mambaCacheManager.html">Mamba Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/melSpectrogram.html">Mel Spectrogram</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/mtpDecoder.html">Mtp Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/pipelineIO.html">Pipeline Io</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/qwen3OmniTTSRuntime.html">Qwen3 Omni Tts Runtime</a></li>
@@ -647,7 +650,7 @@
 </div></blockquote>
 <section id="support-policy">
 <h2>Support Policy<a class="headerlink" href="#support-policy" title="Link to this heading">#</a></h2>
-<p>TensorRT Edge-LLM supports the checkpoint IDs listed below. Dense LLM families include official dense checkpoints below 30B parameters. Larger dense checkpoints and non-dense variants require case-by-case validation. MoE, multimodal, audio, TTS, omni, and EAGLE support is limited to the listed rows.</p>
+<p>TensorRT Edge-LLM supports the checkpoint IDs listed below. Dense LLM families include official dense checkpoints below 30B parameters. Larger dense checkpoints and non-dense variants require case-by-case validation. MoE, multimodal, audio, TTS, omni, EAGLE3, and DFlash support is limited to the listed rows.</p>
 <p>The model coverage list is not comprehensive, and not every listed checkpoint has been fully verified on every supported platform and precision. If a listed model does not export, build, or run correctly, please report an issue with the checkpoint ID, precision, platform, and command line used.</p>
 <p>The model class names were checked against the installed <code class="docutils literal notranslate"><span class="pre">transformers==5.9.0</span></code> package and the upstream <a class="reference external" href="https://github.com/huggingface/transformers/tree/main/src/transformers/models">Transformers model source tree</a>. Checkpoint IDs are linked to their Hugging Face pages and grouped into original checkpoints and quantized checkpoints.</p>
 </section>
@@ -659,7 +662,7 @@
 <li><p>For INT4 engine builds on Jetson Orin devices with less system memory, such as Jetson Orin Nano, pass <code class="docutils literal notranslate"><span class="pre">--externalize-weights</span> <span class="pre">int4_ffn</span></code> for dense checkpoints or <code class="docutils literal notranslate"><span class="pre">--externalize-weights</span> <span class="pre">int4_ffn</span> <span class="pre">int4_moe</span></code> for MoE checkpoints to reduce engine build memory.</p></li>
 <li><p>For FP16/BF16 source checkpoints, use the <a class="reference internal" href="../features/quantization.html"><span class="std std-doc">Quantization</span></a> script to create a unified quantized checkpoint for <code class="docutils literal notranslate"><span class="pre">tensorrt_edgellm</span></code>, then export the generated checkpoint.</p></li>
 <li><p>FP8 KV cache is detected automatically from checkpoint metadata by <code class="docutils literal notranslate"><span class="pre">tensorrt_edgellm</span></code>.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">tensorrt-edgellm-export</span></code> exports visual encoders. Use <code class="docutils literal notranslate"><span class="pre">tensorrt-edgellm-quantize</span> <span class="pre">--visual_quantization</span> <span class="pre">fp8</span></code> before export when FP8 visual weights are required.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">tensorrt-edgellm-export</span></code> exports visual encoders. Use <code class="docutils literal notranslate"><span class="pre">tensorrt-edgellm-quantize</span> <span class="pre">llm</span> <span class="pre">--visual_quantization</span> <span class="pre">fp8</span></code> before export when FP8 visual weights are required.</p></li>
 <li><p>MXFP8 and FP4/NVFP4 require Blackwell-class hardware for runtime execution.</p></li>
 </ul>
 </section>
@@ -696,7 +699,12 @@
 <td><p><code class="docutils literal notranslate"><span class="pre">qwen3_5_text</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">Qwen3_5CausalLM</span></code></p></td>
 <td><p>Dense precision set</p></td>
 </tr>
-<tr class="row-even"><td><p>Nemotron Nano dense</p></td>
+<tr class="row-even"><td><p>Gemma4 E2B/E4B text</p></td>
+<td><p><a class="reference external" href="https://github.com/huggingface/transformers/blob/main/src/transformers/models/gemma4/modeling_gemma4.py"><code class="docutils literal notranslate"><span class="pre">Gemma4ForCausalLM</span></code></a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">gemma4</span></code> / <code class="docutils literal notranslate"><span class="pre">gemma4_text</span></code> -&gt; text decoder with PLE and dual-RoPE support</p></td>
+<td><p>BF16/FP16 source checkpoints; no image/audio/video/MTP</p></td>
+</tr>
+<tr class="row-odd"><td><p>Nemotron Nano dense</p></td>
 <td><p><a class="reference external" href="https://github.com/huggingface/transformers/blob/main/src/transformers/models/nemotron_h/modeling_nemotron_h.py"><code class="docutils literal notranslate"><span class="pre">NemotronHForCausalLM</span></code></a></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">nemotron_h</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">NemotronHCausalLM</span></code></p></td>
 <td><p>BF16, FP8, NVFP4</p></td>
@@ -881,20 +889,16 @@
 <td><p><code class="docutils literal notranslate"><span class="pre">nemotron_h</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">NemotronHCausalLM</span></code></p></td>
 <td><p>NVFP4 only</p></td>
 </tr>
+<tr class="row-odd"><td><p>Nemotron3 Super 120B-A12B</p></td>
+<td><p><a class="reference external" href="https://github.com/huggingface/transformers/blob/main/src/transformers/models/nemotron_h/modeling_nemotron_h.py"><code class="docutils literal notranslate"><span class="pre">NemotronHForCausalLM</span></code></a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">nemotron_h</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">NemotronHCausalLM</span></code> with latent MoE routed path</p></td>
+<td><p>NVFP4 only</p></td>
+</tr>
 </tbody>
 </table>
 </div>
-<p>For NVFP4 MoE exports, the <code class="docutils literal notranslate"><span class="pre">--nvfp4-moe-backend</span></code> flag selects the plugin backend:</p>
-<ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">thor</span></code> — uses <code class="docutils literal notranslate"><span class="pre">Nvfp4MoePlugin</span></code> (SM100/101/110, CuTe DSL kernels). Default when checkpoint config does not specify.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">geforce</span></code> — uses <code class="docutils literal notranslate"><span class="pre">NvFP4MoEPluginGeforce</span></code> (SM120/121).</p></li>
-</ul>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>tensorrt-edgellm-export<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>/path/to/Qwen3-MoE-NVFP4<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>/tmp/qwen3_moe_onnx<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--nvfp4-moe-backend<span class="w"> </span>thor
-</pre></div>
-</div>
+<p>NVFP4 MoE export picks the plugin and FC1 weight layout from
+<code class="docutils literal notranslate"><span class="pre">EDGELLM_NVFP4_MOE_TARGET</span></code>; see <a class="reference internal" href="../examples/moe.html"><span class="std std-doc">MoE Example</span></a>.</p>
 <details>
 <summary><b>Qwen3-MoE</b> checkpoints</summary>
 <ul class="simple">
@@ -906,13 +910,18 @@
 <summary><b>Qwen3.5/3.6-MoE</b> checkpoints</summary>
 <ul class="simple">
 <li><p><a class="reference external" href="https://huggingface.co/Qwen/Qwen3.5-35B-A3B-GPTQ-Int4">Qwen/Qwen3.5-35B-A3B-GPTQ-Int4</a></p></li>
+<li><p><a class="reference external" href="https://huggingface.co/nvidia/Qwen3.6-35B-A3B-NVFP4">nvidia/Qwen3.6-35B-A3B-NVFP4</a></p></li>
 </ul>
 </details>
 <details>
 <summary><b>Nemotron3-MoE</b> checkpoints</summary>
 <ul class="simple">
 <li><p><a class="reference external" href="https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4">nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4</a></p></li>
+<li><p><a class="reference external" href="https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4">nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4</a></p></li>
 </ul>
+<p>Nemotron3 Super uses latent MoE: routing is computed from the model hidden
+states, while the routed expert payload is projected to <code class="docutils literal notranslate"><span class="pre">moe_latent_size</span></code> before
+the NVFP4 MoE plugin path. The shared expert path remains separate.</p>
 </details>
 </section>
 <hr class="docutils" />
@@ -1068,7 +1077,7 @@
 <tr class="row-even"><td><p>Qwen3-ASR</p></td>
 <td><p>Checkpoint architecture <code class="docutils literal notranslate"><span class="pre">Qwen3ASRForConditionalGeneration</span></code>; text backbone compatible with <a class="reference external" href="https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen3/modeling_qwen3.py"><code class="docutils literal notranslate"><span class="pre">Qwen3ForCausalLM</span></code></a></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">Qwen3ASRLanguageModel</span></code> + <code class="docutils literal notranslate"><span class="pre">QwenAudioEncoder</span></code></p></td>
-<td><p>FP16</p></td>
+<td><p>FP16; FP8 LLM (optional FP8 audio); NVFP4 LLM (optional FP8 audio; see <a class="reference internal" href="../examples/asr.html"><span class="std std-doc">ASR example</span></a>)</p></td>
 </tr>
 </tbody>
 </table>
@@ -1121,7 +1130,12 @@
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p><a class="reference external" href="https://huggingface.co/nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4/blob/main/modeling.py">Nemotron-Omni</a></p></td>
+<tr class="row-even"><td><p>Qwen3-Omni</p></td>
+<td><p><a class="reference external" href="https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen3_omni_moe/modeling_qwen3_omni_moe.py"><code class="docutils literal notranslate"><span class="pre">Qwen3OmniMoeForConditionalGeneration</span></code></a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Qwen3OmniMoeThinkerCausalLM</span></code> + <code class="docutils literal notranslate"><span class="pre">Qwen3OmniMoeTalkerCausalLM</span></code> + visual/audio/Code2Wav</p></td>
+<td><p>NVFP4 only</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference external" href="https://huggingface.co/nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4/blob/main/modeling.py">Nemotron-Omni</a></p></td>
 <td><p>Checkpoint architecture <code class="docutils literal notranslate"><span class="pre">NemotronH_Nano_Omni_Reasoning_V3</span></code>; LLM is Nemotron-H compatible with <a class="reference external" href="https://github.com/huggingface/transformers/blob/main/src/transformers/models/nemotron_h/modeling_nemotron_h.py"><code class="docutils literal notranslate"><span class="pre">NemotronHForCausalLM</span></code></a></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">NemotronHCausalLM</span></code> + <code class="docutils literal notranslate"><span class="pre">NemotronOmniVisualModel</span></code> + <code class="docutils literal notranslate"><span class="pre">NemotronOmniAudioModel</span></code></p></td>
 <td><p>NVFP4 only</p></td>
@@ -1136,7 +1150,7 @@
 </ul>
 </details>
 <hr class="docutils" />
-<p>Qwen3-ASR and Qwen3-TTS use checkpoint architecture names that are not present in the installed <code class="docutils literal notranslate"><span class="pre">transformers==5.3.0</span></code> package, so TensorRT Edge-LLM handles their speech/audio/talker/Code2Wav components with local model implementations. Qwen3-TTS support is limited to the CustomVoice checkpoints listed above.</p>
+<p>Qwen3-ASR and Qwen3-TTS use checkpoint architecture names that are not present in the installed <code class="docutils literal notranslate"><span class="pre">transformers==5.9.0</span></code> package, so TensorRT Edge-LLM handles their speech/audio/talker/Code2Wav components with local model implementations. Qwen3-TTS support is limited to the CustomVoice checkpoints listed above.</p>
 </section>
 </section>
 <section id="eagle3-draft-models">
@@ -1173,6 +1187,50 @@
 <tr class="row-odd"><td><p><a class="reference external" href="https://huggingface.co/Rayzl/qwen2.5-vl-7b-eagle3-sgl">Rayzl/qwen2.5-vl-7b-eagle3-sgl</a></p></td>
 <td><p><a class="reference external" href="https://huggingface.co/Qwen/Qwen2.5-VL-7B-Instruct">Qwen/Qwen2.5-VL-7B-Instruct</a></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">LlamaForCausalLMEagle3</span></code>-style draft</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="dflash-draft-models">
+<h2>DFlash Draft Models<a class="headerlink" href="#dflash-draft-models" title="Link to this heading">#</a></h2>
+<p>DFlash draft checkpoints are detected by <code class="docutils literal notranslate"><span class="pre">dflash_config</span></code> in <code class="docutils literal notranslate"><span class="pre">config.json</span></code> and exported with <code class="docutils literal notranslate"><span class="pre">DFlashDraftModel</span></code>. DFlash base export uses <code class="docutils literal notranslate"><span class="pre">--dflash-base</span> <span class="pre">--dflash-draft-dir</span> <span class="pre">&lt;draft_checkpoint&gt;</span></code>, and draft export uses <code class="docutils literal notranslate"><span class="pre">--dflash-draft</span> <span class="pre">--dflash-draft-dir</span> <span class="pre">&lt;draft_checkpoint&gt;</span></code>. DFlash draft checkpoints can be quantized with <code class="docutils literal notranslate"><span class="pre">tensorrt-edgellm-quantize</span> <span class="pre">draft</span></code>; NVFP4 backbone quantization and optional NVFP4 LM-head quantization are validated.</p>
+<p>So far DFlash support in TensorRT Edge-LLM is validated for Qwen3 and Qwen3.5 only. Other DFlash draft models in the z-lab collection are not tested for TensorRT Edge-LLM accuracy, acceptance rate, or runtime compatibility. For the listed pairs, match the paired HuggingFace generation behavior when evaluating performance: enable thinking for Qwen3.5 DFlash models and disable thinking for Qwen3 DFlash models.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Draft checkpoint</p></th>
+<th class="head"><p>Base model</p></th>
+<th class="head"><p>Draft config class</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><a class="reference external" href="https://huggingface.co/z-lab/Qwen3-4B-DFlash-b16">z-lab/Qwen3-4B-DFlash-b16</a></p></td>
+<td><p><a class="reference external" href="https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507">Qwen/Qwen3-4B-Instruct-2507</a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">DFlashDraftModel</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference external" href="https://huggingface.co/z-lab/Qwen3-8B-DFlash-b16">z-lab/Qwen3-8B-DFlash-b16</a></p></td>
+<td><p><a class="reference external" href="https://huggingface.co/Qwen/Qwen3-8B">Qwen/Qwen3-8B</a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">DFlashDraftModel</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference external" href="https://huggingface.co/z-lab/Qwen3.5-4B-DFlash">z-lab/Qwen3.5-4B-DFlash</a></p></td>
+<td><p><a class="reference external" href="https://huggingface.co/Qwen/Qwen3.5-4B">Qwen/Qwen3.5-4B</a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">DFlashDraftModel</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference external" href="https://huggingface.co/z-lab/Qwen3.5-4B-DFlash">z-lab/Qwen3.5-4B-DFlash</a> (quantized checkpoint: <code class="docutils literal notranslate"><span class="pre">Qwen3.5-4B-DFlash-NVFP4</span></code>)</p></td>
+<td><p>Qwen3.5-4B-NVFP4</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">DFlashDraftModel</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference external" href="https://huggingface.co/z-lab/Qwen3.5-9B-DFlash">z-lab/Qwen3.5-9B-DFlash</a></p></td>
+<td><p><a class="reference external" href="https://huggingface.co/Qwen/Qwen3.5-9B">Qwen/Qwen3.5-9B</a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">DFlashDraftModel</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference external" href="https://huggingface.co/z-lab/Qwen3.5-27B-DFlash">z-lab/Qwen3.5-27B-DFlash</a></p></td>
+<td><p><a class="reference external" href="https://huggingface.co/Qwen/Qwen3.5-27B">Qwen/Qwen3.5-27B</a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">DFlashDraftModel</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference external" href="https://huggingface.co/z-lab/Qwen3.5-35B-A3B-DFlash">z-lab/Qwen3.5-35B-A3B-DFlash</a></p></td>
+<td><p><a class="reference external" href="https://huggingface.co/Qwen/Qwen3.5-35B-A3B-GPTQ-Int4">Qwen/Qwen3.5-35B-A3B-GPTQ-Int4</a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">DFlashDraftModel</span></code></p></td>
 </tr>
 </tbody>
 </table>
@@ -1242,6 +1300,7 @@
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#eagle3-draft-models">EAGLE3 Draft Models</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#dflash-draft-models">DFlash Draft Models</a></li>
 </ul>
   </nav></div>
 
@@ -1260,8 +1319,8 @@
   
 
   <!-- Scripts loaded after <body> so the DOM is not blocked -->
-  <script defer src="../../_static/scripts/bootstrap.js?digest=0790524f97105ba85085"></script>
-<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=0790524f97105ba85085"></script>
+  <script defer src="../../_static/scripts/bootstrap.js?digest=a95f357e85573c9b56d5"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=a95f357e85573c9b56d5"></script>
 
 
   <footer class="bd-footer">
@@ -1333,9 +1392,9 @@
         <div class="footer-item">
 <div class="extra_footer">
   
-  <p>Last updated on June 02, 2026.</p>
+  <p>Last updated on July 02, 2026.</p>
   
-  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/1df0e01">1df0e01</a>.</p>
+  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/30941a6">30941a6</a>.</p>
   
 </div></div>
       

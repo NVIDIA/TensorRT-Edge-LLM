@@ -1,12 +1,15 @@
 # MoE (Mixture of Experts)
 
-Complete workflow for Mixture of Experts (MoE) models using a pre-quantized GPTQ-Int4 model.
+Complete workflow for Mixture of Experts (MoE) models using pre-quantized INT4 or NVFP4 checkpoints.
 
-**Currently supported models:**
-- [Qwen3-30B-A3B-GPTQ-Int4](https://huggingface.co/Qwen/Qwen3-30B-A3B-GPTQ-Int4)
-- [nvidia/Qwen3-30B-A3B-NVFP4](https://huggingface.co/nvidia/Qwen3-30B-A3B-NVFP4)
+> **Note:** For very large NVFP4 MoE checkpoints such as Nemotron Super 120B,
+> externalize NVFP4 MoE plugin weights during export and keep the generated
+> safetensors file with the ONNX directory.
 
-> **Note:** MoE export always runs on **CPU**. No GPU or device flag is required for the export step.
+> **Note:** NVFP4 MoE uses separate plugins with different FC1 weight layouts:
+> `Nvfp4MoePlugin` on SM100/101/110 (default) and `NvFP4MoEPluginGeforce` on
+> SM120/121. Set `EDGELLM_NVFP4_MOE_TARGET=sm12x` before export for SM120/SM121
+> deployments; re-export if you change deployment GPU.
 
 > **Prerequisites:** Complete the [Installation Guide](../getting_started/installation.md) before proceeding.
 
@@ -25,6 +28,27 @@ cd $WORKSPACE_DIR
 tensorrt-edgellm-export \
   Qwen/Qwen3-30B-A3B-GPTQ-Int4 \
   $MODEL_NAME/exported
+
+mkdir -p $MODEL_NAME/onnx
+cp -a $MODEL_NAME/exported/llm/. $MODEL_NAME/onnx/
+```
+
+For Nemotron Super 120B NVFP4, externalize the MoE plugin weights to reduce engine build memory pressure:
+
+```bash
+export WORKSPACE_DIR=$HOME/tensorrt-edgellm-workspace
+export MODEL_NAME=NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4
+mkdir -p $WORKSPACE_DIR
+cd $WORKSPACE_DIR
+
+# For NVFP4 MoE engines on SM120/SM121, set the target before exporting:
+export EDGELLM_NVFP4_MOE_TARGET=sm12x
+
+tensorrt-edgellm-export \
+  nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4 \
+  $MODEL_NAME/exported \
+  --externalize-weights nvfp4_moe \
+  --max-kv-cache-capacity 4096
 
 mkdir -p $MODEL_NAME/onnx
 cp -a $MODEL_NAME/exported/llm/. $MODEL_NAME/onnx/

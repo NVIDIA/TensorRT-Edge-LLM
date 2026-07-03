@@ -9,6 +9,7 @@ API documentation for the multimodal module.
    audioRunner
    audioUtils
    code2WavRunner
+   gemma4ViTRunner
    imageUtils
    internViTRunner
    modelTypes

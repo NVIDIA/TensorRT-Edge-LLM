@@ -6,10 +6,7 @@ API documentation for the kernels module.
 .. toctree::
    :maxdepth: 1
 
-   NvFP4MoEContiguousGemmRunner
-   NvFP4MoEFC2FinalizeRunner
    NvFP4MoEUtils
-   alphaCompute
    applyRopeWriteKV
    batchEvictKernels
    buildLayout
@@ -17,36 +14,37 @@ API documentation for the kernels module.
    common
    contextFMHARunner
    conversion
-   cuteDslDecodeGemvRunner
+   cuteDslFFPARunner
    cuteDslFMHARunner
    cuteDslGDNRunner
    cuteDslGemmRunner
    cuteDslNvfp4MoeRunner
+   cuteDslNvfp4MoeSm110Runner
    cuteDslSSDRunner
    decoderXQARunner
    dequant
    dequantize
+   dflashAcceptKernels
+   dflashRuntimeKernels
    eagleAcceptKernels
    eagleUtilKernels
    embeddingKernels
    fmhaParams_v2
    fp4Quantize
    gdnKernelUtils
+   gemma4AudioAttention
    imageUtilKernels
    initializeCosSinCache
    int4GroupwiseGemm
    kernel
    kernel_selector
-   kernels
    kvCacheUtilsKernels
    marlin
    marlin_dtypes
    marlin_mma
    marlin_template
-   marlin_template
    moeActivationKernels
    moeAlignSumKernels
-   moeGather
    moeMarlin
    moeMarlinIndicesKernels
    moeSigmoidGroupTopkKernels

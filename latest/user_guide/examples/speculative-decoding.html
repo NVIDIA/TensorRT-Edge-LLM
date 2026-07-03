@@ -28,8 +28,8 @@
   </noscript>
   
   <!-- Loaded before other Sphinx assets -->
-  <link href="../../_static/styles/theme.css?digest=0790524f97105ba85085" rel="stylesheet" />
-<link href="../../_static/styles/pydata-sphinx-theme.css?digest=0790524f97105ba85085" rel="stylesheet" />
+  <link href="../../_static/styles/theme.css?digest=a95f357e85573c9b56d5" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=a95f357e85573c9b56d5" rel="stylesheet" />
 
     <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=03e43079" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/nvidia-sphinx-theme.css?v=933278ad" />
@@ -39,10 +39,10 @@
     <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=e02be394" />
   
   <!-- So that users can add custom icons -->
-  <script defer src="../../_static/scripts/fontawesome.js?digest=0790524f97105ba85085"></script>
+  <script defer src="../../_static/scripts/fontawesome.js?digest=a95f357e85573c9b56d5"></script>
   <!-- Pre-loaded scripts that we'll load fully later -->
-  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=0790524f97105ba85085" />
-<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=0790524f97105ba85085" />
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=a95f357e85573c9b56d5" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=a95f357e85573c9b56d5" />
 
 
 
@@ -58,9 +58,9 @@
     <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'user_guide/examples/speculative-decoding';</script>
     <script>
-        DOCUMENTATION_OPTIONS.theme_version = '0.18.0';
+        DOCUMENTATION_OPTIONS.theme_version = '0.19.0';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = './_static/switcher.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.8.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.9.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner =
             false;
         </script>
@@ -76,7 +76,7 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.8.0" />
+  <meta name="docsearch:version" content="0.9.0" />
   
     
     <script src="../../_static/searchtools.js"></script>
@@ -431,6 +431,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/logger.html">Logger</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/mathUtils.html">Math Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/mmapReader.html">MMAP Reader</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/ropeUtils.html">Rope Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/safetensorsUtils.html">Safetensors Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/stringUtils.html">String Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/tensor.html">Tensor</a></li>
@@ -440,10 +441,7 @@
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/kernels/index.html">Kernels Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/NvFP4MoEContiguousGemmRunner.html">Nv Fp4 Mo E Contiguous GEMM Runner</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/NvFP4MoEFC2FinalizeRunner.html">Nv Fp4 Mo Efc2 Finalize Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/NvFP4MoEUtils.html">Nv Fp4 Mo E Utils</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/alphaCompute.html">Alpha Compute</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/applyRopeWriteKV.html">Apply Rope Write KV</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/batchEvictKernels.html">Batch Evict Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/buildLayout.html">Build Layout</a></li>
@@ -451,36 +449,37 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/common.html">Common</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/contextFMHARunner.html">Context FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/conversion.html">Conversion</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslDecodeGemvRunner.html">Cute Dsl Decode Gemv Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslFFPARunner.html">Cute Dsl Ffpa Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslFMHARunner.html">Cute Dsl FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslGDNRunner.html">Cute Dsl Gdn Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslGemmRunner.html">Cute Dsl GEMM Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslNvfp4MoeRunner.html">Cute Dsl Nvfp4 Moe Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslNvfp4MoeSm110Runner.html">Cute Dsl Nvfp4 Moe Sm110 Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslSSDRunner.html">Cute Dsl Ssd Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/decoderXQARunner.html">Decoder XQA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dequant.html">Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dequantize.html">Dequantize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dflashAcceptKernels.html">Dflash Accept Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dflashRuntimeKernels.html">Dflash Runtime Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/eagleAcceptKernels.html">EAGLE Accept Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/eagleUtilKernels.html">EAGLE Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/embeddingKernels.html">Embedding Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/fmhaParams_v2.html">FMHA Params V2</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/fp4Quantize.html">Fp4 Quantize</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/gdnKernelUtils.html">Gdn Kernel Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/gemma4AudioAttention.html">Gemma4 Audio Attention</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/imageUtilKernels.html">Image Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/initializeCosSinCache.html">Initialize Cos Sin Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/int4GroupwiseGemm.html">Int4 Groupwise GEMM</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/kernel.html">Kernel</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/kernel_selector.html">Kernel Selector</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/kernels.html">Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/kvCacheUtilsKernels.html">KV Cache Utils Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/marlin.html">Marlin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/marlin_dtypes.html">Marlin Dtypes</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/marlin_mma.html">Marlin Mma</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/marlin_template.html">Marlin Template</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/marlin_template.html">Marlin Template</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeActivationKernels.html">Moe Activation Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeAlignSumKernels.html">Moe Align Sum Kernels</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeGather.html">Moe Gather</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeMarlin.html">Moe Marlin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeMarlinIndicesKernels.html">Moe Marlin Indices Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeSigmoidGroupTopkKernels.html">Moe Sigmoid Group Topk Kernels</a></li>
@@ -500,6 +499,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/audioRunner.html">Audio Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/audioUtils.html">Audio Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/code2WavRunner.html">Code2 Wav Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/gemma4ViTRunner.html">Gemma4 ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/imageUtils.html">Image Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/internViTRunner.html">Intern ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/modelTypes.html">Model Types</a></li>
@@ -513,6 +513,7 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/plugins/index.html">Plugins Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/attentionPlugin.html">Attention Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/causalConv1dPlugin.html">Causal Conv1d Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/dflashTargetKVCacheUpdatePlugin.html">Dflash Target KV Cache Update Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/gatedDeltaNetPlugin.html">Gated Delta Net Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/int4GroupwiseGemmPlugin.html">Int4 Groupwise GEMM Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/int4MoePlugin.html">Int4 Moe Plugin</a></li>
@@ -531,28 +532,30 @@
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/runtime/index.html">Runtime Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/audioLoader.html">Audio Loader</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/audioUtils.html">Audio Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/decoderRegistry.html">Decoder Registry</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/decodingInferenceContext.html">Decoding Inference Context</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/decodingStrategy.html">Decoding Strategy</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/deepstackBinding.html">Deepstack Binding</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/deploymentConfig.html">Deployment Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/dflashDecoder.html">Dflash Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/eagleDecoder.html">EAGLE Decoder</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/eagleDraftEngineRunner.html">EAGLE Draft Engine Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/embeddingPreprocessor.html">Embedding Preprocessor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/engineExecutor.html">Engine Executor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/externalWeightManager.html">External Weight Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/gemma4EmbeddingPreprocessor.html">Gemma4 Embedding Preprocessor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/hybridCacheManager.html">Hybrid Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/imageUtils.html">Image Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/inferenceDims.html">Inference Dims</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/inferencePhase.html">Inference Phase</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/kvCacheManager.html">KV Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmEngineConfig.html">LLM Engine Config</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmEngineRunner.html">LLM Engine Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmInferenceRuntime.html">LLM Inference Runtime</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmRuntimeUtils.html">LLM Runtime Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/loraManager.html">Lora Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/mambaCacheManager.html">Mamba Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/melSpectrogram.html">Mel Spectrogram</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/mtpDecoder.html">Mtp Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/pipelineIO.html">Pipeline Io</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/qwen3OmniTTSRuntime.html">Qwen3 Omni Tts Runtime</a></li>
@@ -968,14 +971,138 @@ scp<span class="w"> </span>-r<span class="w"> </span><span class="nv">$WORKSPACE
 <span class="w">  </span>--specDecode<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--specDraftTopK<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--specDraftStep<span class="w"> </span><span class="m">3</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--specVerifyTreeSize<span class="w"> </span><span class="m">4</span>
+<span class="w">  </span>--specVerifySize<span class="w"> </span><span class="m">4</span>
 </pre></div>
 </div>
 <p><strong>Key differences from EAGLE:</strong></p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">--specDraftTopK</span> <span class="pre">1</span></code>: MTP uses a linear chain (no branching), so topK=1</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">--specDraftStep</span> <span class="pre">3</span></code>: Number of MTP draft tokens (typically 3-7, matching the model’s MTP head count)</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">--specVerifyTreeSize</span> <span class="pre">4</span></code>: Equals <code class="docutils literal notranslate"><span class="pre">draftStep</span> <span class="pre">+</span> <span class="pre">1</span></code> for the linear chain</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--specVerifySize</span> <span class="pre">4</span></code>: Equals <code class="docutils literal notranslate"><span class="pre">draftStep</span> <span class="pre">+</span> <span class="pre">1</span></code> for the linear chain</p></li>
+</ul>
+</section>
+</section>
+</section>
+<hr class="docutils" />
+<section id="dflash">
+<h2>DFlash<a class="headerlink" href="#dflash" title="Link to this heading">#</a></h2>
+<p>DFlash is a speculative decoding method that uses a dedicated external draft model. The draft model is separately trained, is not built into the base model checkpoint, and must be paired with the specific base model it was trained for. DFlash draft models are published by z-lab in the <a class="reference external" href="https://huggingface.co/collections/z-lab/dflash">DFlash HuggingFace collection</a>. Unlike EAGLE3, DFlash draft architecture is model-family-specific: the draft consumes concatenated target hidden states from selected base-model layers, updates target K/V in its draft KV cache, and proposes a linear block of draft tokens.</p>
+<p>So far DFlash support in TensorRT Edge-LLM is validated for Qwen3 and Qwen3.5 only. See <a class="reference internal" href="../getting_started/supported-models.html#dflash-draft-models"><span class="std std-ref">DFlash Draft Models</span></a> for the supported base/draft pairs. Other DFlash draft models in the z-lab collection are not tested for TensorRT Edge-LLM accuracy, acceptance rate, or runtime compatibility.</p>
+<p>For best acceptance rate and throughput, use the thinking-mode setting that matches the paired z-lab draft model and HuggingFace generation behavior: enable thinking for Qwen3.5 DFlash models and disable thinking for Qwen3 DFlash models.</p>
+<p>DFlash supports FP16 and quantized base models. Quantize a base checkpoint with <code class="docutils literal notranslate"><span class="pre">tensorrt-edgellm-quantize</span> <span class="pre">llm</span></code> before export, or start from a supported pre-quantized checkpoint. DFlash draft quantization is supported through <code class="docutils literal notranslate"><span class="pre">tensorrt-edgellm-quantize</span> <span class="pre">draft</span></code>; the command auto-detects DFlash from the draft checkpoint’s <code class="docutils literal notranslate"><span class="pre">dflash_config</span></code>. NVFP4 draft quantization is validated, including optional NVFP4 LM-head quantization.</p>
+<p>The following example quantizes the paired <a class="reference external" href="https://huggingface.co/z-lab/Qwen3.5-4B-DFlash">z-lab/Qwen3.5-4B-DFlash</a> draft for <a class="reference external" href="https://huggingface.co/Qwen/Qwen3.5-4B">Qwen3.5-4B</a>. Download the draft checkpoint first and pass its local directory as <code class="docutils literal notranslate"><span class="pre">--draft_model_dir</span></code>:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>https://huggingface.co/z-lab/Qwen3.5-4B-DFlash
+<span class="nb">cd</span><span class="w"> </span>Qwen3.5-4B-DFlash<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>lfs<span class="w"> </span>pull<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
+
+tensorrt-edgellm-quantize<span class="w"> </span>draft<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--base_model_dir<span class="w"> </span>Qwen/Qwen3.5-4B<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--draft_model_dir<span class="w"> </span>Qwen3.5-4B-DFlash<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--quantization<span class="w"> </span>nvfp4<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--lm_head_quantization<span class="w"> </span>nvfp4<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output_dir<span class="w"> </span><span class="nv">$MODEL_NAME</span>/quantized-draft
+</pre></div>
+</div>
+<hr class="docutils" />
+<section id="id6">
+<h3>Example<a class="headerlink" href="#id6" title="Link to this heading">#</a></h3>
+<p><strong>Example model:</strong> <a class="reference external" href="https://huggingface.co/Qwen/Qwen3.5-4B">Qwen3.5-4B</a> with <a class="reference external" href="https://huggingface.co/z-lab/Qwen3.5-4B-DFlash">z-lab/Qwen3.5-4B-DFlash</a></p>
+<section id="id7">
+<h4>Step 1: Export (x86 Host)<a class="headerlink" href="#id7" title="Link to this heading">#</a></h4>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">WORKSPACE_DIR</span><span class="o">=</span><span class="nv">$HOME</span>/tensorrt-edgellm-workspace
+<span class="nb">export</span><span class="w"> </span><span class="nv">MODEL_NAME</span><span class="o">=</span>Qwen3.5-4B
+mkdir<span class="w"> </span>-p<span class="w"> </span><span class="nv">$WORKSPACE_DIR</span>
+<span class="nb">cd</span><span class="w"> </span><span class="nv">$WORKSPACE_DIR</span>
+
+<span class="c1"># Download DFlash draft model to workspace</span>
+git<span class="w"> </span>clone<span class="w"> </span>https://huggingface.co/z-lab/Qwen3.5-4B-DFlash
+<span class="nb">cd</span><span class="w"> </span>Qwen3.5-4B-DFlash<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>lfs<span class="w"> </span>pull<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
+
+<span class="c1"># Export DFlash base model</span>
+tensorrt-edgellm-export<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>Qwen/Qwen3.5-4B<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="nv">$MODEL_NAME</span>/onnx/base_export<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--dflash-base<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--dflash-draft-dir<span class="w"> </span>Qwen3.5-4B-DFlash
+
+<span class="c1"># Export DFlash draft model</span>
+tensorrt-edgellm-export<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>Qwen/Qwen3.5-4B<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="nv">$MODEL_NAME</span>/onnx/draft_export<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--dflash-draft<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--dflash-draft-dir<span class="w"> </span>Qwen3.5-4B-DFlash
+
+<span class="c1"># Put outputs in the layout used by the build steps below</span>
+mkdir<span class="w"> </span>-p<span class="w"> </span><span class="nv">$MODEL_NAME</span>/onnx/base<span class="w"> </span><span class="nv">$MODEL_NAME</span>/onnx/draft
+cp<span class="w"> </span>-a<span class="w"> </span><span class="nv">$MODEL_NAME</span>/onnx/base_export/llm/.<span class="w"> </span><span class="nv">$MODEL_NAME</span>/onnx/base/
+cp<span class="w"> </span>-a<span class="w"> </span><span class="nv">$MODEL_NAME</span>/onnx/draft_export/dflash_draft/.<span class="w"> </span><span class="nv">$MODEL_NAME</span>/onnx/draft/
+</pre></div>
+</div>
+<p>This produces:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">$WORKSPACE_DIR/$MODEL_NAME/onnx/base/</span></code> - DFlash base model with target hidden-state outputs</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">$WORKSPACE_DIR/$MODEL_NAME/onnx/draft/</span></code> - DFlash draft model</p></li>
+</ul>
+</section>
+<section id="id8">
+<h4>Step 2: Transfer to Device<a class="headerlink" href="#id8" title="Link to this heading">#</a></h4>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Transfer ONNX to device</span>
+scp<span class="w"> </span>-r<span class="w"> </span><span class="nv">$WORKSPACE_DIR</span>/<span class="nv">$MODEL_NAME</span>/onnx<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>&lt;device_user&gt;@&lt;device_ip&gt;:~/tensorrt-edgellm-workspace/<span class="nv">$MODEL_NAME</span>/
+</pre></div>
+</div>
+</section>
+<section id="id9">
+<h4>Step 3: Build Engines (Thor Device)<a class="headerlink" href="#id9" title="Link to this heading">#</a></h4>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">WORKSPACE_DIR</span><span class="o">=</span><span class="nv">$HOME</span>/tensorrt-edgellm-workspace
+<span class="nb">export</span><span class="w"> </span><span class="nv">MODEL_NAME</span><span class="o">=</span>Qwen3.5-4B
+<span class="nb">cd</span><span class="w"> </span>/path/to/TensorRT-Edge-LLM
+
+<span class="c1"># Build DFlash base engine</span>
+./build/examples/llm/llm_build<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--onnxDir<span class="w"> </span><span class="nv">$WORKSPACE_DIR</span>/<span class="nv">$MODEL_NAME</span>/onnx/base<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--engineDir<span class="w"> </span><span class="nv">$WORKSPACE_DIR</span>/<span class="nv">$MODEL_NAME</span>/engines<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--maxBatchSize<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--maxInputLen<span class="w"> </span><span class="m">2048</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--maxKVCacheCapacity<span class="w"> </span><span class="m">4096</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--maxVerifyTreeSize<span class="w"> </span><span class="m">16</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--specBase
+
+<span class="c1"># Build DFlash draft engine</span>
+./build/examples/llm/llm_build<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--onnxDir<span class="w"> </span><span class="nv">$WORKSPACE_DIR</span>/<span class="nv">$MODEL_NAME</span>/onnx/draft<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--engineDir<span class="w"> </span><span class="nv">$WORKSPACE_DIR</span>/<span class="nv">$MODEL_NAME</span>/engines<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--maxBatchSize<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--maxInputLen<span class="w"> </span><span class="m">2048</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--maxKVCacheCapacity<span class="w"> </span><span class="m">4096</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--maxDraftTreeSize<span class="w"> </span><span class="m">16</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--specDraft
+</pre></div>
+</div>
+</section>
+<section id="id10">
+<h4>Step 4: Run Inference (Thor Device)<a class="headerlink" href="#id10" title="Link to this heading">#</a></h4>
+<p>For this Qwen3.5 example, set <code class="docutils literal notranslate"><span class="pre">enable_thinking</span></code> to <code class="docutils literal notranslate"><span class="pre">true</span></code> in the input JSON. For Qwen3 DFlash models, set <code class="docutils literal notranslate"><span class="pre">enable_thinking</span></code> to <code class="docutils literal notranslate"><span class="pre">false</span></code>. These settings match the paired HuggingFace generation behavior used to validate DFlash acceptance rate and throughput.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>/path/to/TensorRT-Edge-LLM
+
+./build/examples/llm/llm_inference<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--engineDir<span class="w"> </span><span class="nv">$WORKSPACE_DIR</span>/<span class="nv">$MODEL_NAME</span>/engines<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--inputFile<span class="w"> </span><span class="nv">$WORKSPACE_DIR</span>/input.json<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--outputFile<span class="w"> </span><span class="nv">$WORKSPACE_DIR</span>/output.json<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--specDecode<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--specDraftTopK<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--specDraftStep<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--specVerifySize<span class="w"> </span><span class="m">16</span>
+</pre></div>
+</div>
+<p><strong>Key differences from EAGLE3:</strong></p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">--dflash-base</span></code> exports the base model with DFlash target hidden-state outputs; pass <code class="docutils literal notranslate"><span class="pre">--dflash-draft-dir</span></code> so export can read the draft’s target-layer and block-size configuration</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--dflash-draft</span></code> exports the dedicated draft model into <code class="docutils literal notranslate"><span class="pre">dflash_draft/</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--specDraftTopK</span> <span class="pre">1</span></code>: DFlash proposes a linear block, so topK=1</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--specDraftStep</span> <span class="pre">1</span></code>: One DFlash draft forward proposes the whole block</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--specVerifySize</span> <span class="pre">16</span></code>: Base verification checks the DFlash proposal block</p></li>
+<li><p>Thinking-mode settings are model-family-specific and should match the paired HuggingFace behavior: Qwen3.5 DFlash uses thinking mode enabled, while Qwen3 DFlash uses thinking mode disabled</p></li>
+<li><p>DFlash does not use EAGLE3 draft-to-target vocabulary mapping files; the draft checkpoint is a paired z-lab model for the base checkpoint</p></li>
 </ul>
 </section>
 </section>
@@ -1059,6 +1186,16 @@ scp<span class="w"> </span>-r<span class="w"> </span><span class="nv">$WORKSPACE
 </li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#dflash">DFlash</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id6">Example</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#id7">Step 1: Export (x86 Host)</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#id8">Step 2: Transfer to Device</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#id9">Step 3: Build Engines (Thor Device)</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#id10">Step 4: Run Inference (Thor Device)</a></li>
+</ul>
+</li>
+</ul>
+</li>
 </ul>
   </nav></div>
 
@@ -1077,8 +1214,8 @@ scp<span class="w"> </span>-r<span class="w"> </span><span class="nv">$WORKSPACE
   
 
   <!-- Scripts loaded after <body> so the DOM is not blocked -->
-  <script defer src="../../_static/scripts/bootstrap.js?digest=0790524f97105ba85085"></script>
-<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=0790524f97105ba85085"></script>
+  <script defer src="../../_static/scripts/bootstrap.js?digest=a95f357e85573c9b56d5"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=a95f357e85573c9b56d5"></script>
 
 
   <footer class="bd-footer">
@@ -1150,9 +1287,9 @@ scp<span class="w"> </span>-r<span class="w"> </span><span class="nv">$WORKSPACE
         <div class="footer-item">
 <div class="extra_footer">
   
-  <p>Last updated on June 02, 2026.</p>
+  <p>Last updated on July 02, 2026.</p>
   
-  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/1df0e01">1df0e01</a>.</p>
+  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/30941a6">30941a6</a>.</p>
   
 </div></div>
       

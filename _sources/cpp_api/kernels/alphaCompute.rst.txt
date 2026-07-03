@@ -1,9 +1,0 @@
-Alpha Compute
-=============
-
-.. doxygenfunction:: trt_edgellm::kernel::computeFC1Alpha
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::kernel::computeFC2Alpha
-   :project: TensorRT Edge-LLM
-

@@ -1,6 +1,6 @@
 Marlin Template
 ===============
 
-.. doxygenfile:: kernels/moe/nvf4_w4an/marlin_template.cuh
+.. doxygenfile:: kernels/moe/moe_marlin/marlin_moe_wna16/marlin_template.h
    :project: TensorRT Edge-LLM
 

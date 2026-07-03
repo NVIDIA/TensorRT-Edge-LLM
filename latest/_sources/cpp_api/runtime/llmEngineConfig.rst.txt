@@ -6,15 +6,3 @@ LLM Engine Config
    :members:
    :undoc-members:
 
-.. doxygenfunction:: trt_edgellm::rt::parseEngineConfig
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::rt::parseDraftEngineConfig
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::rt::formatEngineConfig
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::rt::validateAgainstEngine
-   :project: TensorRT Edge-LLM
-

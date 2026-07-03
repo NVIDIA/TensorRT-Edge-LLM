@@ -1,8 +1,0 @@
-Nv Fp4 Mo Efc2 Finalize Runner
-==============================
-
-.. doxygenclass:: trt_edgellm::kernel::nvfp4_moe::NvFP4MoEFC2FinalizeRunner
-   :project: TensorRT Edge-LLM
-   :members:
-   :undoc-members:
-

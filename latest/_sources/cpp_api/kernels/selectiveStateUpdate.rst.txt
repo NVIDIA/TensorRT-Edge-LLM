@@ -1,9 +1,6 @@
 Selective State Update
 ======================
 
-.. doxygenfunction:: mamba_ssm::invokeSelectiveStateUpdate
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: mamba_ssm::invokeSelectiveStateUpdatePrefill
+.. doxygenfile:: kernels/mamba/selectiveStateUpdate.h
    :project: TensorRT Edge-LLM
 

@@ -28,8 +28,8 @@
   </noscript>
   
   <!-- Loaded before other Sphinx assets -->
-  <link href="../../_static/styles/theme.css?digest=0790524f97105ba85085" rel="stylesheet" />
-<link href="../../_static/styles/pydata-sphinx-theme.css?digest=0790524f97105ba85085" rel="stylesheet" />
+  <link href="../../_static/styles/theme.css?digest=a95f357e85573c9b56d5" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=a95f357e85573c9b56d5" rel="stylesheet" />
 
     <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=03e43079" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/nvidia-sphinx-theme.css?v=933278ad" />
@@ -39,10 +39,10 @@
     <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=e02be394" />
   
   <!-- So that users can add custom icons -->
-  <script defer src="../../_static/scripts/fontawesome.js?digest=0790524f97105ba85085"></script>
+  <script defer src="../../_static/scripts/fontawesome.js?digest=a95f357e85573c9b56d5"></script>
   <!-- Pre-loaded scripts that we'll load fully later -->
-  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=0790524f97105ba85085" />
-<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=0790524f97105ba85085" />
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=a95f357e85573c9b56d5" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=a95f357e85573c9b56d5" />
 
 
 
@@ -58,9 +58,9 @@
     <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'cpp_api/runtime/pipelineIO';</script>
     <script>
-        DOCUMENTATION_OPTIONS.theme_version = '0.18.0';
+        DOCUMENTATION_OPTIONS.theme_version = '0.19.0';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = './_static/switcher.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.8.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.9.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner =
             false;
         </script>
@@ -76,7 +76,7 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.8.0" />
+  <meta name="docsearch:version" content="0.9.0" />
   
     
     <script src="../../_static/searchtools.js"></script>
@@ -431,6 +431,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../common/logger.html">Logger</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/mathUtils.html">Math Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/mmapReader.html">MMAP Reader</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/ropeUtils.html">Rope Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/safetensorsUtils.html">Safetensors Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/stringUtils.html">String Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/tensor.html">Tensor</a></li>
@@ -440,10 +441,7 @@
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../kernels/index.html">Kernels Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l3"><a class="reference internal" href="../kernels/NvFP4MoEContiguousGemmRunner.html">Nv Fp4 Mo E Contiguous GEMM Runner</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../kernels/NvFP4MoEFC2FinalizeRunner.html">Nv Fp4 Mo Efc2 Finalize Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/NvFP4MoEUtils.html">Nv Fp4 Mo E Utils</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../kernels/alphaCompute.html">Alpha Compute</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/applyRopeWriteKV.html">Apply Rope Write KV</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/batchEvictKernels.html">Batch Evict Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/buildLayout.html">Build Layout</a></li>
@@ -451,36 +449,37 @@
 <li class="toctree-l3"><a class="reference internal" href="../kernels/common.html">Common</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/contextFMHARunner.html">Context FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/conversion.html">Conversion</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslDecodeGemvRunner.html">Cute Dsl Decode Gemv Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslFFPARunner.html">Cute Dsl Ffpa Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslFMHARunner.html">Cute Dsl FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGDNRunner.html">Cute Dsl Gdn Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGemmRunner.html">Cute Dsl GEMM Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslNvfp4MoeRunner.html">Cute Dsl Nvfp4 Moe Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslNvfp4MoeSm110Runner.html">Cute Dsl Nvfp4 Moe Sm110 Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslSSDRunner.html">Cute Dsl Ssd Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/decoderXQARunner.html">Decoder XQA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/dequant.html">Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/dequantize.html">Dequantize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/dflashAcceptKernels.html">Dflash Accept Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/dflashRuntimeKernels.html">Dflash Runtime Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/eagleAcceptKernels.html">EAGLE Accept Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/eagleUtilKernels.html">EAGLE Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/embeddingKernels.html">Embedding Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/fmhaParams_v2.html">FMHA Params V2</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/fp4Quantize.html">Fp4 Quantize</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/gdnKernelUtils.html">Gdn Kernel Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/gemma4AudioAttention.html">Gemma4 Audio Attention</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/imageUtilKernels.html">Image Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/initializeCosSinCache.html">Initialize Cos Sin Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/int4GroupwiseGemm.html">Int4 Groupwise GEMM</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/kernel.html">Kernel</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/kernel_selector.html">Kernel Selector</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../kernels/kernels.html">Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/kvCacheUtilsKernels.html">KV Cache Utils Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/marlin.html">Marlin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/marlin_dtypes.html">Marlin Dtypes</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/marlin_mma.html">Marlin Mma</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/marlin_template.html">Marlin Template</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../kernels/marlin_template.html">Marlin Template</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeActivationKernels.html">Moe Activation Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeAlignSumKernels.html">Moe Align Sum Kernels</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../kernels/moeGather.html">Moe Gather</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeMarlin.html">Moe Marlin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeMarlinIndicesKernels.html">Moe Marlin Indices Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeSigmoidGroupTopkKernels.html">Moe Sigmoid Group Topk Kernels</a></li>
@@ -500,6 +499,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/audioRunner.html">Audio Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/audioUtils.html">Audio Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/code2WavRunner.html">Code2 Wav Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4ViTRunner.html">Gemma4 ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/imageUtils.html">Image Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/internViTRunner.html">Intern ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/modelTypes.html">Model Types</a></li>
@@ -513,6 +513,7 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../plugins/index.html">Plugins Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/attentionPlugin.html">Attention Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/causalConv1dPlugin.html">Causal Conv1d Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/dflashTargetKVCacheUpdatePlugin.html">Dflash Target KV Cache Update Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/gatedDeltaNetPlugin.html">Gated Delta Net Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/int4GroupwiseGemmPlugin.html">Int4 Groupwise GEMM Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/int4MoePlugin.html">Int4 Moe Plugin</a></li>
@@ -531,28 +532,30 @@
 </ul>
 </details></li>
 <li class="toctree-l2 current active has-children"><a class="reference internal" href="index.html">Runtime Module</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
+<li class="toctree-l3"><a class="reference internal" href="audioLoader.html">Audio Loader</a></li>
 <li class="toctree-l3"><a class="reference internal" href="audioUtils.html">Audio Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="decoderRegistry.html">Decoder Registry</a></li>
 <li class="toctree-l3"><a class="reference internal" href="decodingInferenceContext.html">Decoding Inference Context</a></li>
 <li class="toctree-l3"><a class="reference internal" href="decodingStrategy.html">Decoding Strategy</a></li>
 <li class="toctree-l3"><a class="reference internal" href="deepstackBinding.html">Deepstack Binding</a></li>
 <li class="toctree-l3"><a class="reference internal" href="deploymentConfig.html">Deployment Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dflashDecoder.html">Dflash Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="eagleDecoder.html">EAGLE Decoder</a></li>
-<li class="toctree-l3"><a class="reference internal" href="eagleDraftEngineRunner.html">EAGLE Draft Engine Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="embeddingPreprocessor.html">Embedding Preprocessor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="engineExecutor.html">Engine Executor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="externalWeightManager.html">External Weight Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="gemma4EmbeddingPreprocessor.html">Gemma4 Embedding Preprocessor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="hybridCacheManager.html">Hybrid Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="imageUtils.html">Image Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="inferenceDims.html">Inference Dims</a></li>
 <li class="toctree-l3"><a class="reference internal" href="inferencePhase.html">Inference Phase</a></li>
 <li class="toctree-l3"><a class="reference internal" href="kvCacheManager.html">KV Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="llmEngineConfig.html">LLM Engine Config</a></li>
-<li class="toctree-l3"><a class="reference internal" href="llmEngineRunner.html">LLM Engine Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="llmInferenceRuntime.html">LLM Inference Runtime</a></li>
 <li class="toctree-l3"><a class="reference internal" href="llmRuntimeUtils.html">LLM Runtime Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="loraManager.html">Lora Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="mambaCacheManager.html">Mamba Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="melSpectrogram.html">Mel Spectrogram</a></li>
 <li class="toctree-l3"><a class="reference internal" href="mtpDecoder.html">Mtp Decoder</a></li>
 <li class="toctree-l3 current active"><a class="current reference internal" href="#">Pipeline Io</a></li>
 <li class="toctree-l3"><a class="reference internal" href="qwen3OmniTTSRuntime.html">Qwen3 Omni Tts Runtime</a></li>
@@ -648,6 +651,50 @@
   <section id="pipeline-io">
 <h1>Pipeline Io<a class="headerlink" href="#pipeline-io" title="Link to this heading">#</a></h1>
 <dl class="cpp struct">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt23StreamingPrefillBuffersE">
+<span id="_CPPv3N11trt_edgellm2rt23StreamingPrefillBuffersE"></span><span id="_CPPv2N11trt_edgellm2rt23StreamingPrefillBuffersE"></span><span id="trt_edgellm::rt::StreamingPrefillBuffers"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1StreamingPrefillBuffers"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">StreamingPrefillBuffers</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt23StreamingPrefillBuffersE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Persistent copies of the prefill-time input embeddings and engine hidden_states output, used by streaming consumers that run concurrently with the base model’s decode loop.</p>
+<p>The base model’s <code class="docutils literal notranslate"><span class="pre">inputsEmbeds</span></code> and <code class="docutils literal notranslate"><span class="pre">outputHiddenStates</span></code> tensors are reshaped to <code class="docutils literal notranslate"><span class="pre">{B,</span> <span class="pre">1,</span> <span class="pre">H}</span></code> and overwritten by every decode step. This struct retains the <code class="docutils literal notranslate"><span class="pre">{B,</span> <span class="pre">prefillLen,</span> <span class="pre">H}</span></code> view as it stood at the end of prefill, so consumers reading these buffers do not race with decode writes. </p>
+<div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-functions">Public Functions</p>
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt23StreamingPrefillBuffers19populateFromPrefillERK6TensorRK6Tensor7int32_t7int32_t7int32_t7int32_t7int32_t12cudaStream_t">
+<span id="_CPPv3N11trt_edgellm2rt23StreamingPrefillBuffers19populateFromPrefillERK6TensorRK6Tensor7int32_t7int32_t7int32_t7int32_t7int32_t12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm2rt23StreamingPrefillBuffers19populateFromPrefillERK6TensorRK6Tensor7int32_t7int32_t7int32_t7int32_t7int32_t12cudaStream_t"></span><span id="trt_edgellm::rt::StreamingPrefillBuffers::populateFromPrefill__TensorCR.TensorCR.int32_t.int32_t.int32_t.int32_t.int32_t.cudaStream_t"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1StreamingPrefillBuffers_1a9c98c61292550f3dabe9ae5d0c9647cf"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">populateFromPrefill</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">liveInputEmbeds</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">liveEngineHiddenStates</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">batch</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">prefillLen</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">hiddenSize</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">maxBatch</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">maxSeq</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt23StreamingPrefillBuffers19populateFromPrefillERK6TensorRK6Tensor7int32_t7int32_t7int32_t7int32_t7int32_t12cudaStream_t" title="Link to this definition">#</a><br /></dt>
+<dd><p>Allocate on first call (sized to the worst case <code class="docutils literal notranslate"><span class="pre">{maxBatch,</span> <span class="pre">maxSeq,</span> <span class="pre">hiddenSize}</span></code>), reshape to the current request’s <code class="docutils literal notranslate"><span class="pre">{batch,</span> <span class="pre">prefillLen,</span> <span class="pre">hiddenSize}</span></code>, and copy from the live <a class="reference internal" href="#structtrt__edgellm_1_1rt_1_1PipelineIO"><span class="std std-ref">PipelineIO</span></a> buffers on <code class="docutils literal notranslate"><span class="pre">stream</span></code>. Subsequent calls reuse the same allocation. Must be invoked after prefill and before the first decode step on the same stream so the copies precede any overwrite of <code class="docutils literal notranslate"><span class="pre">outputHiddenStates</span></code>. </p>
+</dd></dl>
+
+</div>
+<div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-members">Public Members</p>
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt23StreamingPrefillBuffers11inputEmbedsE">
+<span id="_CPPv3N11trt_edgellm2rt23StreamingPrefillBuffers11inputEmbedsE"></span><span id="_CPPv2N11trt_edgellm2rt23StreamingPrefillBuffers11inputEmbedsE"></span><span id="trt_edgellm::rt::StreamingPrefillBuffers::inputEmbeds__Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1StreamingPrefillBuffers_1aeb999663f589ffd579e4ebac4338fb82"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">inputEmbeds</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt23StreamingPrefillBuffers11inputEmbedsE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Prefill-time layer-0 input embeddings. </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt23StreamingPrefillBuffers18engineHiddenStatesE">
+<span id="_CPPv3N11trt_edgellm2rt23StreamingPrefillBuffers18engineHiddenStatesE"></span><span id="_CPPv2N11trt_edgellm2rt23StreamingPrefillBuffers18engineHiddenStatesE"></span><span id="trt_edgellm::rt::StreamingPrefillBuffers::engineHiddenStates__Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1StreamingPrefillBuffers_1a35b3eb223c1e9906067b2dadcff78e75"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">engineHiddenStates</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt23StreamingPrefillBuffers18engineHiddenStatesE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Prefill-time engine hidden_states output. </p>
+</dd></dl>
+
+</div>
+</dd></dl>
+
+<dl class="cpp struct">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIOE">
 <span id="_CPPv3N11trt_edgellm2rt10PipelineIOE"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIOE"></span><span id="trt_edgellm::rt::PipelineIO"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">PipelineIO</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIOE" title="Link to this definition">#</a><br /></dt>
 <dd><p>All tensors flowing through the inference pipeline. POINTER STABILITY INVARIANT: After buildTensorMap() is called, this struct must not be moved, and deepstackEmbeds must not be resized. <a class="reference internal" href="tensorMap.html#classtrt__edgellm_1_1rt_1_1TensorMap"><span class="std std-ref">TensorMap</span></a> holds Tensor* pointers into these members — any reallocation invalidates them. </p>
@@ -714,12 +761,14 @@
 <dl class="cpp var">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO18outputHiddenStatesE">
 <span id="_CPPv3N11trt_edgellm2rt10PipelineIO18outputHiddenStatesE"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO18outputHiddenStatesE"></span><span id="trt_edgellm::rt::PipelineIO::outputHiddenStates__Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1a24af8c1a0a5996057406114d7d10fc43"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">outputHiddenStates</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO18outputHiddenStatesE" title="Link to this definition">#</a><br /></dt>
-<dd></dd></dl>
+<dd><p>Engine hidden_states output. Used by the vanilla LLM path; SpecDecode routes its hidden states through <code class="docutils literal notranslate"><span class="pre">baseHiddenStates</span></code> instead. </p>
+</dd></dl>
 
 <dl class="cpp var">
-<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO19prefillEmbedsBackupE">
-<span id="_CPPv3N11trt_edgellm2rt10PipelineIO19prefillEmbedsBackupE"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO19prefillEmbedsBackupE"></span><span id="trt_edgellm::rt::PipelineIO::prefillEmbedsBackup__Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1a15c38c9bd69f450c1a458944b1c12f9e"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">prefillEmbedsBackup</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO19prefillEmbedsBackupE" title="Link to this definition">#</a><br /></dt>
-<dd></dd></dl>
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO16streamingPrefillE">
+<span id="_CPPv3N11trt_edgellm2rt10PipelineIO16streamingPrefillE"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO16streamingPrefillE"></span><span id="trt_edgellm::rt::PipelineIO::streamingPrefill__StreamingPrefillBuffers"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1af977ceead6b2529f9cff313b0ada95e0"></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt23StreamingPrefillBuffersE" title="trt_edgellm::rt::StreamingPrefillBuffers"><span class="n"><span class="pre">StreamingPrefillBuffers</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">streamingPrefill</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO16streamingPrefillE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Per-request copies of <code class="docutils literal notranslate"><span class="pre">inputsEmbeds</span></code> / <code class="docutils literal notranslate"><span class="pre">outputHiddenStates</span></code> that streaming consumers (e.g. the Qwen3-Omni Talker) read while the base model’s decode loop overwrites the live buffers. Populated by <code class="docutils literal notranslate"><a class="reference internal" href="llmInferenceRuntime.html#classtrt__edgellm_1_1rt_1_1LLMInferenceRuntime"><span class="std std-ref"><span class="pre">LLMInferenceRuntime</span></span></a></code> only when streaming output is enabled for the request; otherwise the buffers stay empty (no allocation cost). </p>
+</dd></dl>
 
 <dl class="cpp var">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO19packedAttentionMaskE">
@@ -764,122 +813,6 @@
 </dd></dl>
 
 </div>
-</dd></dl>
-
-<dl class="cpp function">
-<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt15allocateBasicIOER10PipelineIO7int32_t7int32_t7int32_t7int32_tN8nvinfer18DataTypeE">
-<span id="_CPPv3N11trt_edgellm2rt15allocateBasicIOER10PipelineIO7int32_t7int32_t7int32_t7int32_tN8nvinfer18DataTypeE"></span><span id="_CPPv2N11trt_edgellm2rt15allocateBasicIOER10PipelineIO7int32_t7int32_t7int32_t7int32_tN8nvinfer18DataTypeE"></span><span id="trt_edgellm::rt::allocateBasicIO__PipelineIOR.int32_t.int32_t.int32_t.int32_t.nvinfer1::DataType"></span><span class="target" id="pipelineIO_8cpp_1ac33b11618d1bdc3b75043342d802450e"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">allocateBasicIO</span></span></span><span class="sig-paren">(</span>
-
-<dl>
-<dd><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt10PipelineIOE" title="trt_edgellm::rt::PipelineIO"><span class="n"><span class="pre">PipelineIO</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">io</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">maxBatch</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">maxSeq</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">hiddenSize</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">vocabSize</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">DataType</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">dtype</span></span></em></dd>
-</dl>
-
-<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt15allocateBasicIOER10PipelineIO7int32_t7int32_t7int32_t7int32_tN8nvinfer18DataTypeE" title="Link to this definition">#</a><br /></dt>
-<dd></dd></dl>
-
-<dl class="cpp function">
-<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt23allocateDeepstackEmbedsER10PipelineIO7int32_t7int32_t7int32_t7int32_tN8nvinfer18DataTypeE">
-<span id="_CPPv3N11trt_edgellm2rt23allocateDeepstackEmbedsER10PipelineIO7int32_t7int32_t7int32_t7int32_tN8nvinfer18DataTypeE"></span><span id="_CPPv2N11trt_edgellm2rt23allocateDeepstackEmbedsER10PipelineIO7int32_t7int32_t7int32_t7int32_tN8nvinfer18DataTypeE"></span><span id="trt_edgellm::rt::allocateDeepstackEmbeds__PipelineIOR.int32_t.int32_t.int32_t.int32_t.nvinfer1::DataType"></span><span class="target" id="pipelineIO_8cpp_1a1a95b19c1cfb11fdcd4508b4997547f2"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">allocateDeepstackEmbeds</span></span></span><span class="sig-paren">(</span>
-
-<dl>
-<dd><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt10PipelineIOE" title="trt_edgellm::rt::PipelineIO"><span class="n"><span class="pre">PipelineIO</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">io</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">numFeatures</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">maxBatch</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">maxSeq</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">hiddenSize</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">DataType</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">dtype</span></span></em></dd>
-</dl>
-
-<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt23allocateDeepstackEmbedsER10PipelineIO7int32_t7int32_t7int32_t7int32_tN8nvinfer18DataTypeE" title="Link to this definition">#</a><br /></dt>
-<dd></dd></dl>
-
-<dl class="cpp function">
-<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt30allocateSpecDecodeHiddenStatesER10PipelineIO7int32_t7int32_t7int32_t7int32_tN8nvinfer18DataTypeE">
-<span id="_CPPv3N11trt_edgellm2rt30allocateSpecDecodeHiddenStatesER10PipelineIO7int32_t7int32_t7int32_t7int32_tN8nvinfer18DataTypeE"></span><span id="_CPPv2N11trt_edgellm2rt30allocateSpecDecodeHiddenStatesER10PipelineIO7int32_t7int32_t7int32_t7int32_tN8nvinfer18DataTypeE"></span><span id="trt_edgellm::rt::allocateSpecDecodeHiddenStates__PipelineIOR.int32_t.int32_t.int32_t.int32_t.nvinfer1::DataType"></span><span class="target" id="pipelineIO_8cpp_1a33c517e3e80b66b251866a4a06704646"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">allocateSpecDecodeHiddenStates</span></span></span><span class="sig-paren">(</span>
-
-<dl>
-<dd><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt10PipelineIOE" title="trt_edgellm::rt::PipelineIO"><span class="n"><span class="pre">PipelineIO</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">io</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">maxBatch</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">maxSeq</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">baseHiddenDim</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">draftHiddenDim</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">DataType</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">dtype</span></span></em></dd>
-</dl>
-
-<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt30allocateSpecDecodeHiddenStatesER10PipelineIO7int32_t7int32_t7int32_t7int32_tN8nvinfer18DataTypeE" title="Link to this definition">#</a><br /></dt>
-<dd></dd></dl>
-
-<dl class="cpp function">
-<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt13allocateMRopeER10PipelineIO7int32_t7int32_t7int32_t">
-<span id="_CPPv3N11trt_edgellm2rt13allocateMRopeER10PipelineIO7int32_t7int32_t7int32_t"></span><span id="_CPPv2N11trt_edgellm2rt13allocateMRopeER10PipelineIO7int32_t7int32_t7int32_t"></span><span id="trt_edgellm::rt::allocateMRope__PipelineIOR.int32_t.int32_t.int32_t"></span><span class="target" id="pipelineIO_8cpp_1a0a906f878844fbe4c8d81fce03b8975c"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">allocateMRope</span></span></span><span class="sig-paren">(</span>
-
-<dl>
-<dd><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt10PipelineIOE" title="trt_edgellm::rt::PipelineIO"><span class="n"><span class="pre">PipelineIO</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">io</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">maxBatch</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">maxKVCacheCapacity</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">rotaryDim</span></span></em></dd>
-</dl>
-
-<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt13allocateMRopeER10PipelineIO7int32_t7int32_t7int32_t" title="Link to this definition">#</a><br /></dt>
-<dd></dd></dl>
-
-<dl class="cpp function">
-<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt14buildTensorMapER9TensorMapR10PipelineIOR15SharedResourcesRK15LLMEngineConfig7int32_t">
-<span id="_CPPv3N11trt_edgellm2rt14buildTensorMapER9TensorMapR10PipelineIOR15SharedResourcesRK15LLMEngineConfig7int32_t"></span><span id="_CPPv2N11trt_edgellm2rt14buildTensorMapER9TensorMapR10PipelineIOR15SharedResourcesRK15LLMEngineConfig7int32_t"></span><span id="trt_edgellm::rt::buildTensorMap__TensorMapR.PipelineIOR.SharedResourcesR.LLMEngineConfigCR.int32_t"></span><span class="target" id="pipelineIO_8cpp_1a84dc3b71f764f539e1cc8070afc80274"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">buildTensorMap</span></span></span><span class="sig-paren">(</span>
-
-<dl>
-<dd><em class="sig-param"><a class="reference internal" href="tensorMap.html#_CPPv4N11trt_edgellm2rt9TensorMapE" title="trt_edgellm::rt::TensorMap"><span class="n"><span class="pre">TensorMap</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">map</span></span></em>,</dd>
-<dd><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt10PipelineIOE" title="trt_edgellm::rt::PipelineIO"><span class="n"><span class="pre">PipelineIO</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">io</span></span></em>,</dd>
-<dd><em class="sig-param"><a class="reference internal" href="sharedResources.html#_CPPv4N11trt_edgellm2rt15SharedResourcesE" title="trt_edgellm::rt::SharedResources"><span class="n"><span class="pre">SharedResources</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">res</span></span></em>,</dd>
-<dd><em class="sig-param"><a class="reference internal" href="llmEngineConfig.html#_CPPv4N11trt_edgellm2rt15LLMEngineConfigE" title="trt_edgellm::rt::LLMEngineConfig"><span class="n"><span class="pre">LLMEngineConfig</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">cfg</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">kvCacheIndex</span></span></em></dd>
-</dl>
-
-<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt14buildTensorMapER9TensorMapR10PipelineIOR15SharedResourcesRK15LLMEngineConfig7int32_t" title="Link to this definition">#</a><br /></dt>
-<dd><p>Populate a <a class="reference internal" href="tensorMap.html#classtrt__edgellm_1_1rt_1_1TensorMap"><span class="std std-ref">TensorMap</span></a> from <a class="reference internal" href="#structtrt__edgellm_1_1rt_1_1PipelineIO"><span class="std std-ref">PipelineIO</span></a> + <a class="reference internal" href="sharedResources.html#structtrt__edgellm_1_1rt_1_1SharedResources"><span class="std std-ref">SharedResources</span></a> for engine binding.</p>
-<p>This is the critical glue function that wires all allocated tensors into the name-to-pointer map consumed by <a class="reference internal" href="tensorRegistry.html#classtrt__edgellm_1_1rt_1_1TensorRegistry_1a9fe821705d496cb7c99afcea019de431"><span class="std std-ref">TensorRegistry::bindAll()</span></a>.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>map</strong> – Output map to populate. </p></li>
-<li><p><strong>io</strong> – Pipeline I/O tensors. </p></li>
-<li><p><strong>res</strong> – Shared resources (KV caches, RoPE pool, LoRA, zero buffer). </p></li>
-<li><p><strong>cfg</strong> – Engine configuration. </p></li>
-<li><p><strong>kvCacheIndex</strong> – Index into res.cacheManagers for the target engine. </p></li>
-</ul>
-</dd>
-</dl>
-</dd></dl>
-
-<dl class="cpp function">
-<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt32buildTensorMapForSpecDecodeDraftER9TensorMapR10PipelineIOR15SharedResourcesRK15LLMEngineConfig">
-<span id="_CPPv3N11trt_edgellm2rt32buildTensorMapForSpecDecodeDraftER9TensorMapR10PipelineIOR15SharedResourcesRK15LLMEngineConfig"></span><span id="_CPPv2N11trt_edgellm2rt32buildTensorMapForSpecDecodeDraftER9TensorMapR10PipelineIOR15SharedResourcesRK15LLMEngineConfig"></span><span id="trt_edgellm::rt::buildTensorMapForSpecDecodeDraft__TensorMapR.PipelineIOR.SharedResourcesR.LLMEngineConfigCR"></span><span class="target" id="pipelineIO_8cpp_1adb005f057aeaafddb7d77c6a0f2f7c17"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">buildTensorMapForSpecDecodeDraft</span></span></span><span class="sig-paren">(</span>
-
-<dl>
-<dd><em class="sig-param"><a class="reference internal" href="tensorMap.html#_CPPv4N11trt_edgellm2rt9TensorMapE" title="trt_edgellm::rt::TensorMap"><span class="n"><span class="pre">TensorMap</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">map</span></span></em>,</dd>
-<dd><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt10PipelineIOE" title="trt_edgellm::rt::PipelineIO"><span class="n"><span class="pre">PipelineIO</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">io</span></span></em>,</dd>
-<dd><em class="sig-param"><a class="reference internal" href="sharedResources.html#_CPPv4N11trt_edgellm2rt15SharedResourcesE" title="trt_edgellm::rt::SharedResources"><span class="n"><span class="pre">SharedResources</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">res</span></span></em>,</dd>
-<dd><em class="sig-param"><a class="reference internal" href="llmEngineConfig.html#_CPPv4N11trt_edgellm2rt15LLMEngineConfigE" title="trt_edgellm::rt::LLMEngineConfig"><span class="n"><span class="pre">LLMEngineConfig</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">cfg</span></span></em></dd>
-</dl>
-
-<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt32buildTensorMapForSpecDecodeDraftER9TensorMapR10PipelineIOR15SharedResourcesRK15LLMEngineConfig" title="Link to this definition">#</a><br /></dt>
-<dd><p>Populate a <a class="reference internal" href="tensorMap.html#classtrt__edgellm_1_1rt_1_1TensorMap"><span class="std std-ref">TensorMap</span></a> for a SpecDecode draft engine. Delegates to <code class="docutils literal notranslate"><span class="pre">buildTensorMap</span></code> with <code class="docutils literal notranslate"><span class="pre">kvCacheIndex=1</span></code> for the common bindings, then patches in draft-engine- specific bindings (base/draft hidden states in+out, packed proposal attention mask, proposal position IDs).</p>
-<p>Preconditions: <code class="docutils literal notranslate"><span class="pre">io</span></code> must have been constructed via <code class="docutils literal notranslate"><a class="reference internal" href="#structtrt__edgellm_1_1rt_1_1PipelineIO_1a7001973924019ac400997f60c97d75ad"><span class="std std-ref"><span class="pre">PipelineIO::createForSpecDecode</span></span></a></code> (baseHiddenStates / draftHiddenStatesIn/Out / packedAttentionMask / specDecodePositionIds populated).</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>map</strong> – Output map for the draft engine’s bindings. </p></li>
-<li><p><strong>io</strong> – Pipeline I/O (must be the SpecDecode-flavoured one). </p></li>
-<li><p><strong>res</strong> – Shared resources. </p></li>
-<li><p><strong>cfg</strong> – Draft engine configuration. </p></li>
-</ul>
-</dd>
-</dl>
 </dd></dl>
 
 </section>
@@ -933,6 +866,12 @@
   </div>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt23StreamingPrefillBuffersE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::rt::StreamingPrefillBuffers</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt23StreamingPrefillBuffers19populateFromPrefillERK6TensorRK6Tensor7int32_t7int32_t7int32_t7int32_t7int32_t12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">populateFromPrefill()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt23StreamingPrefillBuffers11inputEmbedsE"><code class="docutils literal notranslate"><span class="pre">inputEmbeds</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt23StreamingPrefillBuffers18engineHiddenStatesE"><code class="docutils literal notranslate"><span class="pre">engineHiddenStates</span></code></a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIOE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::rt::PipelineIO</span></code></a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO12inputsEmbedsE"><code class="docutils literal notranslate"><span class="pre">inputsEmbeds</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO12outputLogitsE"><code class="docutils literal notranslate"><span class="pre">outputLogits</span></code></a></li>
@@ -946,19 +885,13 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO19draftHiddenStatesInE"><code class="docutils literal notranslate"><span class="pre">draftHiddenStatesIn</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO20draftHiddenStatesOutE"><code class="docutils literal notranslate"><span class="pre">draftHiddenStatesOut</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO18outputHiddenStatesE"><code class="docutils literal notranslate"><span class="pre">outputHiddenStates</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO19prefillEmbedsBackupE"><code class="docutils literal notranslate"><span class="pre">prefillEmbedsBackup</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO16streamingPrefillE"><code class="docutils literal notranslate"><span class="pre">streamingPrefill</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO19packedAttentionMaskE"><code class="docutils literal notranslate"><span class="pre">packedAttentionMask</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO21specDecodePositionIdsE"><code class="docutils literal notranslate"><span class="pre">specDecodePositionIds</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO12createForLLMERK15LLMEngineConfig12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">createForLLM()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO19createForSpecDecodeERK16DeploymentConfig7int32_t12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">createForSpecDecode()</span></code></a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt15allocateBasicIOER10PipelineIO7int32_t7int32_t7int32_t7int32_tN8nvinfer18DataTypeE"><code class="docutils literal notranslate"><span class="pre">allocateBasicIO()</span></code></a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt23allocateDeepstackEmbedsER10PipelineIO7int32_t7int32_t7int32_t7int32_tN8nvinfer18DataTypeE"><code class="docutils literal notranslate"><span class="pre">allocateDeepstackEmbeds()</span></code></a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt30allocateSpecDecodeHiddenStatesER10PipelineIO7int32_t7int32_t7int32_t7int32_tN8nvinfer18DataTypeE"><code class="docutils literal notranslate"><span class="pre">allocateSpecDecodeHiddenStates()</span></code></a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt13allocateMRopeER10PipelineIO7int32_t7int32_t7int32_t"><code class="docutils literal notranslate"><span class="pre">allocateMRope()</span></code></a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt14buildTensorMapER9TensorMapR10PipelineIOR15SharedResourcesRK15LLMEngineConfig7int32_t"><code class="docutils literal notranslate"><span class="pre">buildTensorMap()</span></code></a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt32buildTensorMapForSpecDecodeDraftER9TensorMapR10PipelineIOR15SharedResourcesRK15LLMEngineConfig"><code class="docutils literal notranslate"><span class="pre">buildTensorMapForSpecDecodeDraft()</span></code></a></li>
 </ul>
   </nav></div>
 
@@ -977,8 +910,8 @@
   
 
   <!-- Scripts loaded after <body> so the DOM is not blocked -->
-  <script defer src="../../_static/scripts/bootstrap.js?digest=0790524f97105ba85085"></script>
-<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=0790524f97105ba85085"></script>
+  <script defer src="../../_static/scripts/bootstrap.js?digest=a95f357e85573c9b56d5"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=a95f357e85573c9b56d5"></script>
 
 
   <footer class="bd-footer">
@@ -1050,9 +983,9 @@
         <div class="footer-item">
 <div class="extra_footer">
   
-  <p>Last updated on June 02, 2026.</p>
+  <p>Last updated on July 02, 2026.</p>
   
-  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/1df0e01">1df0e01</a>.</p>
+  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/30941a6">30941a6</a>.</p>
   
 </div></div>
       

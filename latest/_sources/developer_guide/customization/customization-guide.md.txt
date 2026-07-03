@@ -17,7 +17,7 @@ and [Checkpoint Exporter Design](../software-design/checkpoint-export.md).
 | Checkpoint parsing | `tensorrt_edgellm/config.py`, `tensorrt_edgellm/checkpoint/` | Add model-specific config fields, tensor remapping, fused-weight splitting, or quantization metadata handling. |
 | Weight loading | `tensorrt_edgellm/checkpoint/loader.py`, `tensorrt_edgellm/checkpoint/repacking.py` | Load safetensors, remap checkpoint keys, and repack quantized tensors into the layout consumed by the exported graph. |
 | Encoder export | `tensorrt_edgellm/onnx/export_encoder.py` | Register visual, audio, or action encoder builders and config extraction rules. |
-| Component orchestration | `tensorrt_edgellm/scripts/export.py` | Add model-type classification for LLM-only, VLM, audio, TTS, Omni, VLA, EAGLE, or MTP checkpoints. |
+| Component orchestration | `tensorrt_edgellm/scripts/export.py` | Add model-type classification for LLM-only, VLM, audio, TTS, Omni, VLA, EAGLE, MTP, or DFlash checkpoints. |
 | Custom ops | `tensorrt_edgellm/models/ops.py`, `tensorrt_edgellm/onnx/dynamo_translations.py`, `tensorrt_edgellm/onnx/onnx_custom_schemas.py` | Add torch stubs, ONNX translations, and schemas for TensorRT Edge-LLM custom ops. |
 | Runtime/plugins | `cpp/plugins/`, `cpp/runtime/`, `cpp/multimodal/`, `cpp/action/` | Add runtime support only when the exported graph or model I/O needs new behavior. |
 
@@ -34,7 +34,8 @@ checkpoints. It does not export ONNX or build TensorRT engines.
 | Quantization recipes | `tensorrt_edgellm/quantization/quantization_configs.py` | Add ModelOpt recipe presets, exclusions, or component-specific overrides. |
 | Model loading and calibration | `tensorrt_edgellm/quantization/quantize.py` | Add model loading fallbacks, calibration data handling, or pre-save checkpoint fixups. |
 | EAGLE draft quantization | `tensorrt_edgellm/quantization/models/eagle3_draft.py` | Update draft-model calibration and checkpoint writing. |
-| CLI surface | `tensorrt_edgellm/quantization/cli.py` | Expose a new supported option after the implementation and tests exist. |
+| DFlash draft quantization | `tensorrt_edgellm/quantization/models/dflash_draft.py` | Update DFlash draft calibration, target-hidden projector exclusions, and checkpoint writing. |
+| CLI surface | `tensorrt_edgellm/scripts/quantize.py` | Expose a new supported option after the implementation and tests exist. |
 
 Supported methods are documented in
 [Quantization](../../user_guide/features/quantization.md). GPTQ checkpoints are
@@ -66,6 +67,7 @@ that the C++ builder can consume.
 | Omni Code2Wav | `code2wav/` or model-specific audio layout | `examples/multimodal/audio_build` |
 | Alpamayo action expert | `action/` | `examples/multimodal/action_build` |
 | MTP draft | `mtp_draft/` | `examples/llm/llm_build --specDraft` |
+| DFlash draft | `dflash_draft/` | `examples/llm/llm_build --specDraft` |
 
 Keep preprocessing and runtime sidecars explicit. For example, Alpamayo adds
 trajectory tokens during runtime artifact writing and requires the action
@@ -85,7 +87,7 @@ exist before documenting a new custom op as supported.
 ## Runtime Customization
 
 The C++ runtime still owns engine build, tokenization, sampling, multimodal
-preprocessing, LoRA adapter loading, EAGLE/MTP execution, and action inference.
+preprocessing, LoRA adapter loading, EAGLE/MTP/DFlash execution, and action inference.
 Common extension points include:
 
 | Area | Files |

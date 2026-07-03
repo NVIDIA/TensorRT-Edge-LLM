@@ -1,0 +1,13 @@
+Visual Builder
+==============
+
+.. doxygenclass:: trt_edgellm::builder::VisualBuilder
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::builder::VisualBuilderConfig
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

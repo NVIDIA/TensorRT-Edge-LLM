@@ -1,9 +1,6 @@
 Moe Marlin
 ==========
 
-.. doxygenfunction:: trt_edgellm::kernel::moeAwqW4A16MarlinGemm
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::kernel::getMoeMarlinWorkspaceSize
+.. doxygenfile:: kernels/moe/moe_marlin/moeMarlin.h
    :project: TensorRT Edge-LLM
 

@@ -62,6 +62,7 @@ This guide describes the input JSON format for the LLM inference tool. The forma
 **Content Array Format:**
 - Text: `{"type": "text", "text": "..."}`
 - Image: `{"type": "image", "image": "/path/to/image.jpg"}`
+- Audio: `{"type": "audio", "audio": "/path/to/clip.wav"}` (raw `.wav` / `.mp3` / `.flac` decoded in C++ via vendored miniaudio + in-tree mel extractor. Feature-extractor family — `whisper` / `parakeet` — is auto-derived from the engine's `audio/config.json`, mirroring HF / vLLM where FE is pinned by the model. The HTTP server in `experimental.server` accepts the same audio formats via `input_audio` / `audio_url` and routes through the same C++ mel path.)
 - Video: `{"type": "video", "video": "/path/to/video.mp4"}` *(Note: Video support is a placeholder for future releases and is not available for now)*
 
 ## Examples

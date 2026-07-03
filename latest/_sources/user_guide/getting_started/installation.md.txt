@@ -4,7 +4,7 @@
 TensorRT Edge-LLM has two separate components that need to be installed on different systems:
 
 1. **Quantization and `tensorrt_edgellm`** (runs on x86 host with GPU)
-2. **C++ Runtime** (Jetson Thor, NVIDIA DRIVE / DriveOS, or optional x86 developer build)
+2. **C++ Runtime** (Jetson Thor, NVIDIA DRIVE / DriveOS, NVIDIA DGX Spark, or optional x86 developer build)
 
 ---
 
@@ -96,8 +96,8 @@ out of the base environment so export-only and server images do not pull
 quantization, audio, and LoRA-merge packages unnecessarily.
 
 ```bash
-# Required for checkpoint export
-pip3 install -r requirements.txt
+# Required for checkpoint export (dependencies plus tensorrt-edgellm-* entry points)
+pip3 install .
 
 # Required for quantization, LoRA merge, vocabulary reduction, audio preprocessing,
 # and tokenizer helpers
@@ -176,7 +176,8 @@ from the platform row that matches the device or SDK image.
 |:---------|:-----------------|:-------------------|:---------------|:------------------|
 | Jetson Thor | JetPack 7.0/7.1 | `13.0` | Jetson device | See [Supported Models](supported-models.md) |
 | Jetson Thor | JetPack 7.2 | `13.2` | Jetson device | See [Supported Models](supported-models.md) |
-| DRIVE Thor | DriveOS 7.2 | `13.2` | DriveOS SDK Docker image, then copy `build/` to the DRIVE system | See [Supported Models](supported-models.md) |
+| DRIVE Thor | DriveOS 7.2 | `13.3` | DriveOS SDK Docker image, then copy `build/` to the DRIVE system | See [Supported Models](supported-models.md) |
+| DGX Spark (GB10) | DGX Spark software stack | `13.0` | DGX Spark system | See [Supported Models](supported-models.md) |
 | Jetson Orin | JetPack 7.2 | `13.2` | Jetson device | FP16, INT8, and INT4 |
 | Jetson Orin | JetPack 6.2+ | `12.6` | Jetson device | FP16, INT8, and INT4 |
 
@@ -185,7 +186,7 @@ this release. Use FP16, INT8, or INT4 checkpoints for Orin.
 
 ### System Requirements
 
-- CUDA and TensorRT from the target JetPack or DriveOS SDK release
+- CUDA and TensorRT from the target JetPack, DriveOS SDK, or DGX Spark software release
 - Disk space: ~20-50GB for ONNX files and TensorRT engines
 
 ### Build Instructions
@@ -202,8 +203,8 @@ sudo apt install -y \
 
 **2. Verify CUDA and TensorRT Installation**
 
-After JetPack is installed, or inside the DriveOS SDK Docker image, TensorRT
-should be installed in `/usr`.
+After JetPack is installed, inside the DriveOS SDK Docker image, or on DGX
+Spark, TensorRT should be installed in `/usr`.
 
 ```bash
 # Check CUDA version
@@ -272,7 +273,25 @@ cmake .. \
     -DTRT_PACKAGE_DIR=/usr \
     -DCMAKE_TOOLCHAIN_FILE=cmake/aarch64_linux_toolchain.cmake \
     -DEMBEDDED_TARGET=auto-thor \
-    -DCUDA_CTK_VERSION=13.2 \
+    -DCUDA_CTK_VERSION=13.0 \
+    -DENABLE_CUTE_DSL=ALL
+```
+
+**DGX Spark (GB10)**
+
+Run this directly on the DGX Spark system. Use `gb10` as the embedded target
+and CUDA Toolkit 13.0.
+
+```bash
+mkdir -p build
+cd build
+
+cmake .. \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DTRT_PACKAGE_DIR=/usr \
+    -DCMAKE_TOOLCHAIN_FILE=cmake/aarch64_linux_toolchain.cmake \
+    -DEMBEDDED_TARGET=gb10 \
+    -DCUDA_CTK_VERSION=13.0 \
     -DENABLE_CUTE_DSL=ALL
 ```
 
@@ -329,8 +348,8 @@ cmake .. \
 |:-------|:------------|:--------|
 | `TRT_PACKAGE_DIR` | Path to TensorRT installation. Auto-detected; manual hint to disambiguate multiple versions. | N/A |
 | `CMAKE_TOOLCHAIN_FILE` | **Required for Edge devices**: Use `cmake/aarch64_linux_toolchain.cmake` for Edge device builds. **Not needed for GPU builds** | N/A |
-| `EMBEDDED_TARGET` | **Required for Edge devices**: `jetson-thor` (Jetson Thor), `auto-thor` (DRIVE Thor / DriveOS), or `jetson-orin` (Jetson Orin). **Not needed for GPU builds** | N/A |
-| `CUDA_CTK_VERSION` | CUDA Toolkit version. Use the platform command above to select `13.2`, `13.0`, or `12.6`. | target default |
+| `EMBEDDED_TARGET` | **Required for Edge devices**: `jetson-thor` (Jetson Thor), `auto-thor` (DRIVE Thor / DriveOS), `gb10` (DGX Spark), or `jetson-orin` (Jetson Orin). **Not needed for GPU builds** | N/A |
+| `CUDA_CTK_VERSION` | CUDA Toolkit version. Use the platform command above to select `13.2`, `13.0`, or `12.6`. Do not pass `-DCUDA_VERSION`; CMake reserves that name for CUDA headers and rejects it. | target default |
 | `BUILD_UNIT_TESTS` | Build unit tests | OFF |
 | `ENABLE_COVERAGE` | Enable gcov code coverage instrumentation (see [Code Coverage](../../developer_guide/testing/code-coverage.md)) | OFF |
 | `ENABLE_CUTE_DSL` | Enable prebuilt CuTe DSL kernels: `OFF`, `ALL`, or a group list such as `gdn`, `fmha`, `gemm`, or `ssd`. Set this to `ALL` for customer builds. | OFF |
@@ -391,8 +410,8 @@ tensorrt-edgellm-export --help
 
 **Issue: `nvcc: command not found`**
 
-Solution: Ensure the target JetPack release or DriveOS SDK Docker image is
-installed with CUDA support:
+Solution: Ensure the target JetPack release, DriveOS SDK Docker image, or DGX
+Spark software stack is installed with CUDA support:
 ```bash
 # Verify CUDA installation
 nvcc --version
@@ -406,7 +425,7 @@ Solution: Specify TensorRT package directory. This directory should contain `lib
 cmake .. \
     -DTRT_PACKAGE_DIR=/usr/local/TensorRT-10.x.x \
     -DCMAKE_TOOLCHAIN_FILE=cmake/aarch64_linux_toolchain.cmake \
-    -DEMBEDDED_TARGET=<jetson-thor|auto-thor|jetson-orin> \
+    -DEMBEDDED_TARGET=<jetson-thor|auto-thor|gb10|jetson-orin> \
     -DCUDA_CTK_VERSION=<target CUDA version> \
     -DENABLE_CUTE_DSL=ALL
 ```

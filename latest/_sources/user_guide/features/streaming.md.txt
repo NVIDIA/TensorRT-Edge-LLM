@@ -1,6 +1,6 @@
 # Streaming Output
 
-Stream generated tokens to your application one chunk at a time instead of waiting for the full response. Works for text and VLM (image) prompts, on both vanilla and Eagle speculative decoding.
+Stream generated tokens to your application one chunk at a time instead of waiting for the full response. Works for text and VLM (image) prompts, on both vanilla and supported speculative decoding flows.
 
 ## Quick start
 

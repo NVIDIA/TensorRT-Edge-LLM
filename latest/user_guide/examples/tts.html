@@ -28,8 +28,8 @@
   </noscript>
   
   <!-- Loaded before other Sphinx assets -->
-  <link href="../../_static/styles/theme.css?digest=0790524f97105ba85085" rel="stylesheet" />
-<link href="../../_static/styles/pydata-sphinx-theme.css?digest=0790524f97105ba85085" rel="stylesheet" />
+  <link href="../../_static/styles/theme.css?digest=a95f357e85573c9b56d5" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=a95f357e85573c9b56d5" rel="stylesheet" />
 
     <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=03e43079" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/nvidia-sphinx-theme.css?v=933278ad" />
@@ -39,10 +39,10 @@
     <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=e02be394" />
   
   <!-- So that users can add custom icons -->
-  <script defer src="../../_static/scripts/fontawesome.js?digest=0790524f97105ba85085"></script>
+  <script defer src="../../_static/scripts/fontawesome.js?digest=a95f357e85573c9b56d5"></script>
   <!-- Pre-loaded scripts that we'll load fully later -->
-  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=0790524f97105ba85085" />
-<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=0790524f97105ba85085" />
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=a95f357e85573c9b56d5" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=a95f357e85573c9b56d5" />
 
 
 
@@ -58,9 +58,9 @@
     <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'user_guide/examples/tts';</script>
     <script>
-        DOCUMENTATION_OPTIONS.theme_version = '0.18.0';
+        DOCUMENTATION_OPTIONS.theme_version = '0.19.0';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = './_static/switcher.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.8.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.9.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner =
             false;
         </script>
@@ -76,7 +76,7 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.8.0" />
+  <meta name="docsearch:version" content="0.9.0" />
   
     
     <script src="../../_static/searchtools.js"></script>
@@ -431,6 +431,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/logger.html">Logger</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/mathUtils.html">Math Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/mmapReader.html">MMAP Reader</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/ropeUtils.html">Rope Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/safetensorsUtils.html">Safetensors Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/stringUtils.html">String Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/tensor.html">Tensor</a></li>
@@ -440,10 +441,7 @@
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/kernels/index.html">Kernels Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/NvFP4MoEContiguousGemmRunner.html">Nv Fp4 Mo E Contiguous GEMM Runner</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/NvFP4MoEFC2FinalizeRunner.html">Nv Fp4 Mo Efc2 Finalize Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/NvFP4MoEUtils.html">Nv Fp4 Mo E Utils</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/alphaCompute.html">Alpha Compute</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/applyRopeWriteKV.html">Apply Rope Write KV</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/batchEvictKernels.html">Batch Evict Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/buildLayout.html">Build Layout</a></li>
@@ -451,36 +449,37 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/common.html">Common</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/contextFMHARunner.html">Context FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/conversion.html">Conversion</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslDecodeGemvRunner.html">Cute Dsl Decode Gemv Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslFFPARunner.html">Cute Dsl Ffpa Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslFMHARunner.html">Cute Dsl FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslGDNRunner.html">Cute Dsl Gdn Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslGemmRunner.html">Cute Dsl GEMM Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslNvfp4MoeRunner.html">Cute Dsl Nvfp4 Moe Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslNvfp4MoeSm110Runner.html">Cute Dsl Nvfp4 Moe Sm110 Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslSSDRunner.html">Cute Dsl Ssd Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/decoderXQARunner.html">Decoder XQA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dequant.html">Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dequantize.html">Dequantize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dflashAcceptKernels.html">Dflash Accept Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dflashRuntimeKernels.html">Dflash Runtime Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/eagleAcceptKernels.html">EAGLE Accept Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/eagleUtilKernels.html">EAGLE Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/embeddingKernels.html">Embedding Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/fmhaParams_v2.html">FMHA Params V2</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/fp4Quantize.html">Fp4 Quantize</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/gdnKernelUtils.html">Gdn Kernel Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/gemma4AudioAttention.html">Gemma4 Audio Attention</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/imageUtilKernels.html">Image Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/initializeCosSinCache.html">Initialize Cos Sin Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/int4GroupwiseGemm.html">Int4 Groupwise GEMM</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/kernel.html">Kernel</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/kernel_selector.html">Kernel Selector</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/kernels.html">Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/kvCacheUtilsKernels.html">KV Cache Utils Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/marlin.html">Marlin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/marlin_dtypes.html">Marlin Dtypes</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/marlin_mma.html">Marlin Mma</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/marlin_template.html">Marlin Template</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/marlin_template.html">Marlin Template</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeActivationKernels.html">Moe Activation Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeAlignSumKernels.html">Moe Align Sum Kernels</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeGather.html">Moe Gather</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeMarlin.html">Moe Marlin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeMarlinIndicesKernels.html">Moe Marlin Indices Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeSigmoidGroupTopkKernels.html">Moe Sigmoid Group Topk Kernels</a></li>
@@ -500,6 +499,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/audioRunner.html">Audio Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/audioUtils.html">Audio Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/code2WavRunner.html">Code2 Wav Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/gemma4ViTRunner.html">Gemma4 ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/imageUtils.html">Image Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/internViTRunner.html">Intern ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/modelTypes.html">Model Types</a></li>
@@ -513,6 +513,7 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/plugins/index.html">Plugins Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/attentionPlugin.html">Attention Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/causalConv1dPlugin.html">Causal Conv1d Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/dflashTargetKVCacheUpdatePlugin.html">Dflash Target KV Cache Update Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/gatedDeltaNetPlugin.html">Gated Delta Net Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/int4GroupwiseGemmPlugin.html">Int4 Groupwise GEMM Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/int4MoePlugin.html">Int4 Moe Plugin</a></li>
@@ -531,28 +532,30 @@
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/runtime/index.html">Runtime Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/audioLoader.html">Audio Loader</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/audioUtils.html">Audio Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/decoderRegistry.html">Decoder Registry</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/decodingInferenceContext.html">Decoding Inference Context</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/decodingStrategy.html">Decoding Strategy</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/deepstackBinding.html">Deepstack Binding</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/deploymentConfig.html">Deployment Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/dflashDecoder.html">Dflash Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/eagleDecoder.html">EAGLE Decoder</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/eagleDraftEngineRunner.html">EAGLE Draft Engine Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/embeddingPreprocessor.html">Embedding Preprocessor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/engineExecutor.html">Engine Executor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/externalWeightManager.html">External Weight Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/gemma4EmbeddingPreprocessor.html">Gemma4 Embedding Preprocessor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/hybridCacheManager.html">Hybrid Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/imageUtils.html">Image Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/inferenceDims.html">Inference Dims</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/inferencePhase.html">Inference Phase</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/kvCacheManager.html">KV Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmEngineConfig.html">LLM Engine Config</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmEngineRunner.html">LLM Engine Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmInferenceRuntime.html">LLM Inference Runtime</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmRuntimeUtils.html">LLM Runtime Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/loraManager.html">Lora Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/mambaCacheManager.html">Mamba Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/melSpectrogram.html">Mel Spectrogram</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/mtpDecoder.html">Mtp Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/pipelineIO.html">Pipeline Io</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/qwen3OmniTTSRuntime.html">Qwen3 Omni Tts Runtime</a></li>
@@ -828,6 +831,63 @@ tensorrt-edgellm-export<span class="w"> </span><span class="se">\</span>
 </pre></div>
 </div>
 </section>
+<section id="streaming-mode">
+<h3>Streaming Mode<a class="headerlink" href="#streaming-mode" title="Link to this heading">#</a></h3>
+<p>Pass <code class="docutils literal notranslate"><span class="pre">--streaming</span> <span class="pre">--chunkFrames=&lt;N&gt;</span></code> to vocode RVQ codes inline as Talker generates
+them, rather than waiting for the full sequence. Each request receives its own
+<code class="docutils literal notranslate"><span class="pre">onChunkReady</span></code> callback inside the runtime; the CLI synchronously vocodes the chunk
+via Code2Wav and appends the PCM to a per-request WAV buffer. The final WAV file is
+written when the request finishes, identical to the non-streaming path.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>./build/examples/omni/qwen3_tts_inference<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--talkerEngineDir<span class="w">   </span><span class="nv">$ENG</span>/talker<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--code2wavEngineDir<span class="w"> </span><span class="nv">$ENG</span>/code2wav<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--tokenizerDir<span class="w">      </span><span class="nv">$ENG</span>/talker<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--inputFile<span class="w">         </span>input.json<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--outputAudioDir<span class="w">    </span>./audio_output<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--streaming<span class="w"> </span>--chunkFrames<span class="o">=</span><span class="m">10</span>
+</pre></div>
+</div>
+<p><strong>RVQ codes are bit-exact</strong> vs the non-streaming path for the same input and seed —
+streaming is purely an emission-layer change. Chunk-boundary PCM samples lose a small
+amount of Code2Wav context (chunks are vocoded independently with no left-context
+overlap), so the WAV is <strong>not</strong> byte-identical across chunk sizes; perceptual quality
+and WER are unaffected for typical chunk sizes (≥ 10 frames).</p>
+<p><strong>Choosing <code class="docutils literal notranslate"><span class="pre">chunkFrames</span></code>:</strong> trades off TTFPA (time-to-first-playable-audio) vs vocoder
+overhead. Smaller chunks ship audio sooner but call Code2Wav more often.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p><code class="docutils literal notranslate"><span class="pre">chunkFrames</span></code></p></th>
+<th class="head"><p>TTFPA (TTS 1.7B, single prompt)</p></th>
+<th class="head"><p>Vocoder calls per 200 frames</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>1</p></td>
+<td><p>~80 ms</p></td>
+<td><p>200</p></td>
+</tr>
+<tr class="row-odd"><td><p>10</p></td>
+<td><p>~190 ms</p></td>
+<td><p>20</p></td>
+</tr>
+<tr class="row-even"><td><p>50</p></td>
+<td><p>~695 ms</p></td>
+<td><p>4</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">--streaming</span></code> enables per-batch independent callbacks when the input JSON bundles
+multiple requests into a Talker group (<code class="docutils literal notranslate"><span class="pre">batch_size</span> <span class="pre">&gt;</span> <span class="pre">1</span></code>); each request finishes and
+emits its final WAV independently.</p>
+<p><strong>Latency reporting:</strong> with <code class="docutils literal notranslate"><span class="pre">--streaming</span></code>, the CLI logs <code class="docutils literal notranslate"><span class="pre">TTFC</span></code> (time-to-first-codec
+token) and <code class="docutils literal notranslate"><span class="pre">TTFPA</span></code> per request using CUDA events:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="p">[</span><span class="n">stream</span> <span class="n">req</span> <span class="mi">0</span><span class="p">]</span> <span class="n">chunks</span><span class="o">=</span><span class="mi">22</span> <span class="n">frames</span><span class="o">=</span><span class="mi">215</span> <span class="n">samples</span><span class="o">=</span><span class="mi">412800</span> <span class="n">TTFC</span><span class="o">=</span><span class="mf">19.3</span><span class="n">ms</span> <span class="n">TTFPA</span><span class="o">=</span><span class="mf">189.9</span><span class="n">ms</span>
+</pre></div>
+</div>
+<p>For <code class="docutils literal notranslate"><span class="pre">batch_size</span> <span class="pre">==</span> <span class="pre">1</span></code> runs, <code class="docutils literal notranslate"><span class="pre">timeToFirstAudioCodeMs</span></code> and <code class="docutils literal notranslate"><span class="pre">timeToFirstPlayableAudioMs</span></code>
+are also populated in the profile JSON when <code class="docutils literal notranslate"><span class="pre">--profileOutputFile</span></code> is set.</p>
+</section>
 </section>
 <hr class="docutils" />
 <section id="notes">
@@ -835,6 +895,7 @@ tensorrt-edgellm-export<span class="w"> </span><span class="se">\</span>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">--code2wavEngineDir</span></code> is optional: auto-detected as <code class="docutils literal notranslate"><span class="pre">parent(talkerEngineDir)/code2wav</span></code> if not set.</p></li>
 <li><p>RVQ code files (<code class="docutils literal notranslate"><span class="pre">.safetensors</span></code>) are saved alongside audio when <code class="docutils literal notranslate"><span class="pre">--outputAudioDir</span></code> is set and can be used to re-synthesize audio without re-running the TTS model.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--streaming</span></code> requires an explicit <code class="docutils literal notranslate"><span class="pre">--chunkFrames=N</span></code> (no default — pick based on your latency/throughput target).</p></li>
 </ul>
 </section>
 </section>
@@ -898,6 +959,7 @@ tensorrt-edgellm-export<span class="w"> </span><span class="se">\</span>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#input-file-format">Input File Format</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#run">Run</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#output-json-example">Output JSON Example</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#streaming-mode">Streaming Mode</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#notes">Notes</a></li>
@@ -919,8 +981,8 @@ tensorrt-edgellm-export<span class="w"> </span><span class="se">\</span>
   
 
   <!-- Scripts loaded after <body> so the DOM is not blocked -->
-  <script defer src="../../_static/scripts/bootstrap.js?digest=0790524f97105ba85085"></script>
-<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=0790524f97105ba85085"></script>
+  <script defer src="../../_static/scripts/bootstrap.js?digest=a95f357e85573c9b56d5"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=a95f357e85573c9b56d5"></script>
 
 
   <footer class="bd-footer">
@@ -992,9 +1054,9 @@ tensorrt-edgellm-export<span class="w"> </span><span class="se">\</span>
         <div class="footer-item">
 <div class="extra_footer">
   
-  <p>Last updated on June 02, 2026.</p>
+  <p>Last updated on July 02, 2026.</p>
   
-  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/1df0e01">1df0e01</a>.</p>
+  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/30941a6">30941a6</a>.</p>
   
 </div></div>
       

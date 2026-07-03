@@ -54,28 +54,16 @@ cd /path/to/TensorRT-Edge-LLM
   --maxTimeSteps 3000
 ```
 
-## Step 4: Preprocess Audio Input (x86 Host or Thor Device)
+## Step 4: Run Inference (Thor Device)
 
-Audio files must be converted to mel-spectrogram safetensors format before inference.
+Audio decode + mel-spectrogram extraction run in the C++ runtime via
+vendored `miniaudio` + an in-tree mel extractor; no offline Python
+preprocessing step is required. Supported containers: `.wav`, `.mp3`,
+`.flac`. The mel pipeline (whisper / parakeet) is auto-derived from the
+engine's `audio/config.json`, pinned by the model — mirroring HF / vLLM
+where the FE choice ships with the model checkpoint.
 
-> **Note:** This step uses the `tensorrt-edgellm-preprocess-audio` utility from the installed package.
-
-```bash
-cd /path/to/TensorRT-Edge-LLM
-pip3 install ".[tools]"
-
-export WORKSPACE_DIR=$HOME/tensorrt-edgellm-workspace
-
-tensorrt-edgellm-preprocess-audio \
-  --input /path/to/audio.wav \
-  --output $WORKSPACE_DIR/audio_input.safetensors
-```
-
-**Note:** Supported audio formats include `.wav`, `.mp3`, `.flac`, `.ogg`, and `.m4a`. If preprocessing is done on the x86 host, transfer the output safetensors file to the device before running inference.
-
-## Step 5: Run Inference (Thor Device)
-
-Create an input file `$WORKSPACE_DIR/input_asr.json` (replace `/path/to/audio_input.safetensors` with the actual preprocessed audio file path):
+Create an input file `$WORKSPACE_DIR/input_asr.json` (replace `/path/to/audio.wav` with the actual audio file path):
 
 ```json
 {
@@ -93,7 +81,7 @@ Create an input file `$WORKSPACE_DIR/input_asr.json` (replace `/path/to/audio_in
                 },
                 {
                     "role": "user",
-                    "content": [{"type": "audio", "audio": "/path/to/audio_input.safetensors"}]
+                    "content": [{"type": "audio", "audio": "/path/to/audio.wav"}]
                 }
             ]
         }
@@ -134,7 +122,7 @@ Qwen3-ASR-0.6B; 1.7B is noted where it diverges.
 | NVFP4 | FP16 | ✅ | ✅ |
 | NVFP4 | FP8 | ❌ Empty output (combined quant noise exceeds the first-token EOS-vs-correct logit margin on 0.6B) | ✅ (1.7B tolerates the combined noise) |
 
-> **Mixed-precision rules** (`tensorrt_edgellm/quantization/cli.py`):
+> **Mixed-precision rules** (`tensorrt_edgellm/scripts/quantize.py`):
 > - `--quantization` quantizes the LLM backbone only.
 > - `--audio_quantization fp8` opts the audio tower in. **Omit it to
 >   keep the audio tower at FP16** regardless of `--quantization` --

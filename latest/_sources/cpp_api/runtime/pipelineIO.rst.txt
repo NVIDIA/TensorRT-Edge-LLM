@@ -1,26 +1,13 @@
 Pipeline Io
 ===========
 
-.. doxygenstruct:: trt_edgellm::rt::PipelineIO
+.. doxygenstruct:: trt_edgellm::rt::StreamingPrefillBuffers
    :project: TensorRT Edge-LLM
    :members:
    :undoc-members:
 
-.. doxygenfunction:: trt_edgellm::rt::allocateBasicIO
+.. doxygenstruct:: trt_edgellm::rt::PipelineIO
    :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::rt::allocateDeepstackEmbeds
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::rt::allocateSpecDecodeHiddenStates
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::rt::allocateMRope
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::rt::buildTensorMap
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::rt::buildTensorMapForSpecDecodeDraft
-   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
 

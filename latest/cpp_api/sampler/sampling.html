@@ -28,8 +28,8 @@
   </noscript>
   
   <!-- Loaded before other Sphinx assets -->
-  <link href="../../_static/styles/theme.css?digest=0790524f97105ba85085" rel="stylesheet" />
-<link href="../../_static/styles/pydata-sphinx-theme.css?digest=0790524f97105ba85085" rel="stylesheet" />
+  <link href="../../_static/styles/theme.css?digest=a95f357e85573c9b56d5" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=a95f357e85573c9b56d5" rel="stylesheet" />
 
     <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=03e43079" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/nvidia-sphinx-theme.css?v=933278ad" />
@@ -39,10 +39,10 @@
     <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=e02be394" />
   
   <!-- So that users can add custom icons -->
-  <script defer src="../../_static/scripts/fontawesome.js?digest=0790524f97105ba85085"></script>
+  <script defer src="../../_static/scripts/fontawesome.js?digest=a95f357e85573c9b56d5"></script>
   <!-- Pre-loaded scripts that we'll load fully later -->
-  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=0790524f97105ba85085" />
-<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=0790524f97105ba85085" />
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=a95f357e85573c9b56d5" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=a95f357e85573c9b56d5" />
 
 
 
@@ -58,9 +58,9 @@
     <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'cpp_api/sampler/sampling';</script>
     <script>
-        DOCUMENTATION_OPTIONS.theme_version = '0.18.0';
+        DOCUMENTATION_OPTIONS.theme_version = '0.19.0';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = './_static/switcher.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.8.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.9.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner =
             false;
         </script>
@@ -76,7 +76,7 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.8.0" />
+  <meta name="docsearch:version" content="0.9.0" />
   
     
     <script src="../../_static/searchtools.js"></script>
@@ -431,6 +431,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../common/logger.html">Logger</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/mathUtils.html">Math Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/mmapReader.html">MMAP Reader</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/ropeUtils.html">Rope Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/safetensorsUtils.html">Safetensors Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/stringUtils.html">String Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/tensor.html">Tensor</a></li>
@@ -440,10 +441,7 @@
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../kernels/index.html">Kernels Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l3"><a class="reference internal" href="../kernels/NvFP4MoEContiguousGemmRunner.html">Nv Fp4 Mo E Contiguous GEMM Runner</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../kernels/NvFP4MoEFC2FinalizeRunner.html">Nv Fp4 Mo Efc2 Finalize Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/NvFP4MoEUtils.html">Nv Fp4 Mo E Utils</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../kernels/alphaCompute.html">Alpha Compute</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/applyRopeWriteKV.html">Apply Rope Write KV</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/batchEvictKernels.html">Batch Evict Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/buildLayout.html">Build Layout</a></li>
@@ -451,36 +449,37 @@
 <li class="toctree-l3"><a class="reference internal" href="../kernels/common.html">Common</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/contextFMHARunner.html">Context FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/conversion.html">Conversion</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslDecodeGemvRunner.html">Cute Dsl Decode Gemv Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslFFPARunner.html">Cute Dsl Ffpa Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslFMHARunner.html">Cute Dsl FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGDNRunner.html">Cute Dsl Gdn Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGemmRunner.html">Cute Dsl GEMM Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslNvfp4MoeRunner.html">Cute Dsl Nvfp4 Moe Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslNvfp4MoeSm110Runner.html">Cute Dsl Nvfp4 Moe Sm110 Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslSSDRunner.html">Cute Dsl Ssd Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/decoderXQARunner.html">Decoder XQA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/dequant.html">Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/dequantize.html">Dequantize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/dflashAcceptKernels.html">Dflash Accept Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/dflashRuntimeKernels.html">Dflash Runtime Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/eagleAcceptKernels.html">EAGLE Accept Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/eagleUtilKernels.html">EAGLE Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/embeddingKernels.html">Embedding Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/fmhaParams_v2.html">FMHA Params V2</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/fp4Quantize.html">Fp4 Quantize</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/gdnKernelUtils.html">Gdn Kernel Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/gemma4AudioAttention.html">Gemma4 Audio Attention</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/imageUtilKernels.html">Image Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/initializeCosSinCache.html">Initialize Cos Sin Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/int4GroupwiseGemm.html">Int4 Groupwise GEMM</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/kernel.html">Kernel</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/kernel_selector.html">Kernel Selector</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../kernels/kernels.html">Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/kvCacheUtilsKernels.html">KV Cache Utils Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/marlin.html">Marlin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/marlin_dtypes.html">Marlin Dtypes</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/marlin_mma.html">Marlin Mma</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/marlin_template.html">Marlin Template</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../kernels/marlin_template.html">Marlin Template</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeActivationKernels.html">Moe Activation Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeAlignSumKernels.html">Moe Align Sum Kernels</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../kernels/moeGather.html">Moe Gather</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeMarlin.html">Moe Marlin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeMarlinIndicesKernels.html">Moe Marlin Indices Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeSigmoidGroupTopkKernels.html">Moe Sigmoid Group Topk Kernels</a></li>
@@ -500,6 +499,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/audioRunner.html">Audio Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/audioUtils.html">Audio Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/code2WavRunner.html">Code2 Wav Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4ViTRunner.html">Gemma4 ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/imageUtils.html">Image Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/internViTRunner.html">Intern ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/modelTypes.html">Model Types</a></li>
@@ -513,6 +513,7 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../plugins/index.html">Plugins Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/attentionPlugin.html">Attention Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/causalConv1dPlugin.html">Causal Conv1d Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/dflashTargetKVCacheUpdatePlugin.html">Dflash Target KV Cache Update Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/gatedDeltaNetPlugin.html">Gated Delta Net Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/int4GroupwiseGemmPlugin.html">Int4 Groupwise GEMM Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/int4MoePlugin.html">Int4 Moe Plugin</a></li>
@@ -531,28 +532,30 @@
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../runtime/index.html">Runtime Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/audioLoader.html">Audio Loader</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/audioUtils.html">Audio Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/decoderRegistry.html">Decoder Registry</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/decodingInferenceContext.html">Decoding Inference Context</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/decodingStrategy.html">Decoding Strategy</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/deepstackBinding.html">Deepstack Binding</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/deploymentConfig.html">Deployment Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/dflashDecoder.html">Dflash Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/eagleDecoder.html">EAGLE Decoder</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../runtime/eagleDraftEngineRunner.html">EAGLE Draft Engine Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/embeddingPreprocessor.html">Embedding Preprocessor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/engineExecutor.html">Engine Executor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/externalWeightManager.html">External Weight Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/gemma4EmbeddingPreprocessor.html">Gemma4 Embedding Preprocessor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/hybridCacheManager.html">Hybrid Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/imageUtils.html">Image Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/inferenceDims.html">Inference Dims</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/inferencePhase.html">Inference Phase</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/kvCacheManager.html">KV Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/llmEngineConfig.html">LLM Engine Config</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../runtime/llmEngineRunner.html">LLM Engine Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/llmInferenceRuntime.html">LLM Inference Runtime</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/llmRuntimeUtils.html">LLM Runtime Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/loraManager.html">Lora Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/mambaCacheManager.html">Mamba Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/melSpectrogram.html">Mel Spectrogram</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/mtpDecoder.html">Mtp Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/pipelineIO.html">Pipeline Io</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/qwen3OmniTTSRuntime.html">Qwen3 Omni Tts Runtime</a></li>
@@ -731,186 +734,6 @@
 </div>
 </dd></dl>
 
-<dl class="cpp function">
-<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm32getTopKtopPSamplingWorkspaceSizeE7int32_t7int32_tRK14SamplingParams">
-<span id="_CPPv3N11trt_edgellm32getTopKtopPSamplingWorkspaceSizeE7int32_t7int32_tRK14SamplingParams"></span><span id="_CPPv2N11trt_edgellm32getTopKtopPSamplingWorkspaceSizeE7int32_t7int32_tRK14SamplingParams"></span><span id="trt_edgellm::getTopKtopPSamplingWorkspaceSize__int32_t.int32_t.SamplingParamsCR"></span><span class="target" id="sampling_8cu_1ab02630b7a60b803fc53e78d90a7a153e"></span><span class="n"><span class="pre">size_t</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">getTopKtopPSamplingWorkspaceSize</span></span></span><span class="sig-paren">(</span>
-
-<dl>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">batchSize</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">vocabSize</span></span></em>,</dd>
-<dd><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm14SamplingParamsE" title="trt_edgellm::SamplingParams"><span class="n"><span class="pre">SamplingParams</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">params</span></span></em></dd>
-</dl>
-
-<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm32getTopKtopPSamplingWorkspaceSizeE7int32_t7int32_tRK14SamplingParams" title="Link to this definition">#</a><br /></dt>
-<dd><p>Get workspace size required for top-K/top-P sampling (FP32 only). </p>
-<p>Calculates the amount of GPU memory needed for intermediate computations during the sampling operation. The workspace must be allocated before calling topKtopPSamplingFromLogits().</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>batchSize</strong> – <strong>[in]</strong> Batch size for sampling </p></li>
-<li><p><strong>vocabSize</strong> – <strong>[in]</strong> Vocabulary size </p></li>
-<li><p><strong>params</strong> – <strong>[in]</strong> Sampling parameters </p></li>
-</ul>
-</dd>
-<dt class="field-even">Throws<span class="colon">:</span></dt>
-<dd class="field-even"><p><span><span class="cpp-expr sig sig-inline cpp"><span class="n">std</span><span class="p">::</span><span class="n">runtime_error</span></span></span> – if topK and topP are both not set </p>
-</dd>
-<dt class="field-odd">Returns<span class="colon">:</span></dt>
-<dd class="field-odd"><p>Required workspace size in bytes </p>
-</dd>
-</dl>
-</dd></dl>
-
-<dl class="cpp function">
-<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm29getSelectAllTopKWorkspaceSizeE7int32_t7int32_t7int32_t">
-<span id="_CPPv3N11trt_edgellm29getSelectAllTopKWorkspaceSizeE7int32_t7int32_t7int32_t"></span><span id="_CPPv2N11trt_edgellm29getSelectAllTopKWorkspaceSizeE7int32_t7int32_t7int32_t"></span><span id="trt_edgellm::getSelectAllTopKWorkspaceSize__int32_t.int32_t.int32_t"></span><span class="target" id="sampling_8cu_1a9120292c306eab5f4abbcf66d6eaf9c8"></span><span class="n"><span class="pre">size_t</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">getSelectAllTopKWorkspaceSize</span></span></span><span class="sig-paren">(</span>
-
-<dl>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">batchSize</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">vocabSize</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">topK</span></span></em></dd>
-</dl>
-
-<span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm29getSelectAllTopKWorkspaceSizeE7int32_t7int32_t7int32_t" title="Link to this definition">#</a><br /></dt>
-<dd><p>Get workspace size required for selectAllTopK operation (FP32 only). </p>
-<p>Calculates the amount of GPU memory needed for intermediate computations during the top-K selection operation. The workspace must be allocated before calling selectAllTopK().</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>batchSize</strong> – <strong>[in]</strong> Batch size for selection </p></li>
-<li><p><strong>vocabSize</strong> – <strong>[in]</strong> Vocabulary size </p></li>
-<li><p><strong>topK</strong> – <strong>[in]</strong> Number of top elements to select </p></li>
-</ul>
-</dd>
-<dt class="field-even">Returns<span class="colon">:</span></dt>
-<dd class="field-even"><p>Required workspace size in bytes </p>
-</dd>
-</dl>
-</dd></dl>
-
-<dl class="cpp function">
-<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm26topKtopPSamplingFromLogitsERKN2rt6TensorERN2rt6TensorERK14SamplingParamsRN2rt6TensorE12cudaStream_t8uint64_t8uint64_t">
-<span id="_CPPv3N11trt_edgellm26topKtopPSamplingFromLogitsERKN2rt6TensorERN2rt6TensorERK14SamplingParamsRN2rt6TensorE12cudaStream_t8uint64_t8uint64_t"></span><span id="_CPPv2N11trt_edgellm26topKtopPSamplingFromLogitsERKN2rt6TensorERN2rt6TensorERK14SamplingParamsRN2rt6TensorE12cudaStream_t8uint64_t8uint64_t"></span><span id="trt_edgellm::topKtopPSamplingFromLogits__rt::TensorCR.rt::TensorR.SamplingParamsCR.rt::TensorR.cudaStream_t.uint64_t.uint64_t"></span><span class="target" id="sampling_8cu_1a1a58dbc584e52b1b77ee8c0c2697d3df"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">topKtopPSamplingFromLogits</span></span></span><span class="sig-paren">(</span>
-
-<dl>
-<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">logits</span></span></em>,</dd>
-<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">selectedIndices</span></span></em>,</dd>
-<dd><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm14SamplingParamsE" title="trt_edgellm::SamplingParams"><span class="n"><span class="pre">SamplingParams</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">params</span></span></em>,</dd>
-<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">workspace</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">uint64_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">philoxSeed</span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="m"><span class="pre">42</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">uint64_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">philoxOffset</span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="m"><span class="pre">0</span></span></em></dd>
-</dl>
-
-<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm26topKtopPSamplingFromLogitsERKN2rt6TensorERN2rt6TensorERK14SamplingParamsRN2rt6TensorE12cudaStream_t8uint64_t8uint64_t" title="Link to this definition">#</a><br /></dt>
-<dd><p>Main sampling function for top-K and top-P sampling from logits. </p>
-<p>Performs token sampling using top-K and/or top-P (nucleus) sampling strategies on the input logits. The function applies temperature scaling and returns the selected token indices for each batch element.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>logits</strong> – <strong>[in]</strong> Input logits tensor [GPU, Float] with shape [batch-size, vocab-size] </p></li>
-<li><p><strong>selectedIndices</strong> – <strong>[out]</strong> Selected token indices [GPU, Int32] with shape [batch-size, 1] </p></li>
-<li><p><strong>params</strong> – <strong>[in]</strong> Sampling parameters including batch size, vocab size, temperature, top-K, and top-P values </p></li>
-<li><p><strong>workspace</strong> – <strong>[inout]</strong> Workspace buffer [GPU, Int8] for intermediate computations </p></li>
-<li><p><strong>stream</strong> – <strong>[in]</strong> CUDA stream to execute the kernel </p></li>
-<li><p><strong>philoxSeed</strong> – <strong>[in]</strong> Random seed for sampling (default: 42) </p></li>
-<li><p><strong>philoxOffset</strong> – <strong>[in]</strong> Random offset for sampling (default: 0) </p></li>
-</ul>
-</dd>
-<dt class="field-even">Throws<span class="colon">:</span></dt>
-<dd class="field-even"><p><span><span class="cpp-expr sig sig-inline cpp"><span class="n">std</span><span class="p">::</span><span class="n">runtime_error</span></span></span> – If CUDA operations fail </p>
-</dd>
-</dl>
-</dd></dl>
-
-<dl class="cpp function">
-<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm13selectAllTopKERKN2rt6TensorEN2rt20OptionalOutputTensorERN2rt6TensorE7int32_tRN2rt6TensorE12cudaStream_t">
-<span id="_CPPv3N11trt_edgellm13selectAllTopKERKN2rt6TensorEN2rt20OptionalOutputTensorERN2rt6TensorE7int32_tRN2rt6TensorE12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm13selectAllTopKERKN2rt6TensorEN2rt20OptionalOutputTensorERN2rt6TensorE7int32_tRN2rt6TensorE12cudaStream_t"></span><span id="trt_edgellm::selectAllTopK__rt::TensorCR.rt::OptionalOutputTensor.rt::TensorR.int32_t.rt::TensorR.cudaStream_t"></span><span class="target" id="sampling_8cu_1add1be0c5c1ca42b95100ed4ac9edbff7"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">selectAllTopK</span></span></span><span class="sig-paren">(</span>
-
-<dl>
-<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">input</span></span></em>,</dd>
-<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">OptionalOutputTensor</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">topKValues</span></span></em>,</dd>
-<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">topKIndices</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">topK</span></span></em>,</dd>
-<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">workspace</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em></dd>
-</dl>
-
-<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm13selectAllTopKERKN2rt6TensorEN2rt20OptionalOutputTensorERN2rt6TensorE7int32_tRN2rt6TensorE12cudaStream_t" title="Link to this definition">#</a><br /></dt>
-<dd><p>Select all top-K elements from input tensor. </p>
-<p>Returns topK indices and raw values from input with no transformations applied. This function identifies the K largest elements in each batch and returns their indices and optionally their values.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>input</strong> – <strong>[in]</strong> Input tensor [GPU, Float] with shape [batch-size, vocab-size] </p></li>
-<li><p><strong>topKValues</strong> – <strong>[out]</strong> Optional top-K values [GPU, Float] with shape [batch-size, top-K]. Can be std::nullopt if values not needed </p></li>
-<li><p><strong>topKIndices</strong> – <strong>[out]</strong> Top-K indices [GPU, Int32] with shape [batch-size, top-K] </p></li>
-<li><p><strong>topK</strong> – <strong>[in]</strong> Number of top elements to select </p></li>
-<li><p><strong>workspace</strong> – <strong>[inout]</strong> Workspace buffer [GPU, Int8] for intermediate computations </p></li>
-<li><p><strong>stream</strong> – <strong>[in]</strong> CUDA stream to execute the kernel </p></li>
-</ul>
-</dd>
-<dt class="field-even">Throws<span class="colon">:</span></dt>
-<dd class="field-even"><p><span><span class="cpp-expr sig sig-inline cpp"><span class="n">std</span><span class="p">::</span><span class="n">runtime_error</span></span></span> – If CUDA operations fail </p>
-</dd>
-</dl>
-</dd></dl>
-
-<dl class="cpp function">
-<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm26mapReducedVocabToFullVocabERN2rt6TensorERKN2rt6TensorE12cudaStream_t">
-<span id="_CPPv3N11trt_edgellm26mapReducedVocabToFullVocabERN2rt6TensorERKN2rt6TensorE12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm26mapReducedVocabToFullVocabERN2rt6TensorERKN2rt6TensorE12cudaStream_t"></span><span id="trt_edgellm::mapReducedVocabToFullVocab__rt::TensorR.rt::TensorCR.cudaStream_t"></span><span class="target" id="sampling_8cu_1a329791cce3d1c0ed8a4f6005d48bbb84"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">mapReducedVocabToFullVocab</span></span></span><span class="sig-paren">(</span>
-
-<dl>
-<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">vocabIds</span></span></em>,</dd>
-<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">vocabMappingTable</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em></dd>
-</dl>
-
-<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm26mapReducedVocabToFullVocabERN2rt6TensorERKN2rt6TensorE12cudaStream_t" title="Link to this definition">#</a><br /></dt>
-<dd><p>Map reduced vocabulary IDs to full vocabulary IDs using a lookup table (in-place). </p>
-<p>Performs in-place mapping from reduced vocabulary space to full vocabulary space using the provided mapping table: vocabIds[i] = vocabMappingTable[vocabIds[i]]</p>
-<p>The operation is performed in-place, modifying the input tensor directly.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>vocabIds</strong> – <strong>[inout]</strong> Tensor [GPU, Int32] containing reduced vocabulary IDs as input, will be overwritten with full vocabulary IDs as output </p></li>
-<li><p><strong>vocabMappingTable</strong> – <strong>[in]</strong> Lookup table [GPU, Int32] with shape [reduced_vocab_size] mapping reduced IDs to full IDs </p></li>
-<li><p><strong>stream</strong> – <strong>[in]</strong> CUDA stream to execute the kernel </p></li>
-</ul>
-</dd>
-<dt class="field-even">Throws<span class="colon">:</span></dt>
-<dd class="field-even"><p><span><span class="cpp-expr sig sig-inline cpp"><span class="n">std</span><span class="p">::</span><span class="n">runtime_error</span></span></span> – If CUDA operations fail </p>
-</dd>
-</dl>
-</dd></dl>
-
-<dl class="cpp function">
-<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm26shouldUseNonGreedySamplingEf7int64_tf">
-<span id="_CPPv3N11trt_edgellm26shouldUseNonGreedySamplingEf7int64_tf"></span><span id="_CPPv2N11trt_edgellm26shouldUseNonGreedySamplingEf7int64_tf"></span><span id="trt_edgellm::shouldUseNonGreedySampling__float.int64_t.float"></span><span class="target" id="sampling_8h_1a59d585fecc502f2dbe96fcfa7ba59fe2"></span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">shouldUseNonGreedySampling</span></span></span><span class="sig-paren">(</span>
-
-<dl>
-<dd><em class="sig-param"><span class="kt"><span class="pre">float</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">temperature</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">int64_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">topK</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="kt"><span class="pre">float</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">topP</span></span></em></dd>
-</dl>
-
-<span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm26shouldUseNonGreedySamplingEf7int64_tf" title="Link to this definition">#</a><br /></dt>
-<dd><p>Decide whether sampling parameters require non-greedy decoding. </p>
-<p>Greedy decoding is used for the default tuple <code class="docutils literal notranslate"><span class="pre">(temperature=1.0,</span> <span class="pre">topK&lt;=1,</span> <span class="pre">topP=1.0)</span></code> as well as near-zero temperatures, which are treated as greedy to avoid unstable softmax.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>temperature</strong> – Sampling temperature </p></li>
-<li><p><strong>topK</strong> – Top-k sampling parameter </p></li>
-<li><p><strong>topP</strong> – Top-p sampling parameter </p></li>
-</ul>
-</dd>
-<dt class="field-even">Returns<span class="colon">:</span></dt>
-<dd class="field-even"><p>True when top-k / top-p sampling should be used, false for greedy top-1 </p>
-</dd>
-</dl>
-</dd></dl>
-
 </section>
 
 
@@ -973,12 +796,6 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm14SamplingParams7useTopPE"><code class="docutils literal notranslate"><span class="pre">useTopP</span></code></a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm32getTopKtopPSamplingWorkspaceSizeE7int32_t7int32_tRK14SamplingParams"><code class="docutils literal notranslate"><span class="pre">getTopKtopPSamplingWorkspaceSize()</span></code></a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm29getSelectAllTopKWorkspaceSizeE7int32_t7int32_t7int32_t"><code class="docutils literal notranslate"><span class="pre">getSelectAllTopKWorkspaceSize()</span></code></a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm26topKtopPSamplingFromLogitsERKN2rt6TensorERN2rt6TensorERK14SamplingParamsRN2rt6TensorE12cudaStream_t8uint64_t8uint64_t"><code class="docutils literal notranslate"><span class="pre">topKtopPSamplingFromLogits()</span></code></a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13selectAllTopKERKN2rt6TensorEN2rt20OptionalOutputTensorERN2rt6TensorE7int32_tRN2rt6TensorE12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">selectAllTopK()</span></code></a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm26mapReducedVocabToFullVocabERN2rt6TensorERKN2rt6TensorE12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">mapReducedVocabToFullVocab()</span></code></a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm26shouldUseNonGreedySamplingEf7int64_tf"><code class="docutils literal notranslate"><span class="pre">shouldUseNonGreedySampling()</span></code></a></li>
 </ul>
   </nav></div>
 
@@ -997,8 +814,8 @@
   
 
   <!-- Scripts loaded after <body> so the DOM is not blocked -->
-  <script defer src="../../_static/scripts/bootstrap.js?digest=0790524f97105ba85085"></script>
-<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=0790524f97105ba85085"></script>
+  <script defer src="../../_static/scripts/bootstrap.js?digest=a95f357e85573c9b56d5"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=a95f357e85573c9b56d5"></script>
 
 
   <footer class="bd-footer">
@@ -1070,9 +887,9 @@
         <div class="footer-item">
 <div class="extra_footer">
   
-  <p>Last updated on June 02, 2026.</p>
+  <p>Last updated on July 02, 2026.</p>
   
-  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/1df0e01">1df0e01</a>.</p>
+  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/30941a6">30941a6</a>.</p>
   
 </div></div>
       

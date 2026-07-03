@@ -10,7 +10,7 @@ This quick start guide will get you up and running with TensorRT Edge-LLM in ~15
 
 ## Recommended: High-Level API or Server
 
-For Jetson Thor and x86 development, use the high-level Python API or the OpenAI-compatible server. Build the project once with Python bindings enabled, then let the high-level Python API export, build, load, and run the model from a HuggingFace checkpoint.
+For Jetson Thor, DGX Spark, and x86 development, use the high-level Python API or the OpenAI-compatible server. Build the project once with Python bindings enabled, then let the high-level Python API export, build, load, and run the model from a HuggingFace checkpoint.
 
 Install the server dependencies before configuring CMake with Python bindings:
 
@@ -49,6 +49,24 @@ cmake .. \
   -DCUDA_CTK_VERSION=13.2 \
   -DCMAKE_TOOLCHAIN_FILE=cmake/aarch64_linux_toolchain.cmake \
   -DEMBEDDED_TARGET=jetson-thor \
+  -DENABLE_CUTE_DSL=ALL \
+  -DBUILD_PYTHON_BINDINGS=ON
+make -j$(nproc)
+cd ..
+```
+
+For DGX Spark, use `gb10` as the embedded target and CUDA Toolkit 13.0:
+
+```bash
+cd /path/to/TensorRT-Edge-LLM
+
+mkdir -p build
+cd build
+cmake .. \
+  -DTRT_PACKAGE_DIR=/usr \
+  -DCUDA_CTK_VERSION=13.0 \
+  -DCMAKE_TOOLCHAIN_FILE=cmake/aarch64_linux_toolchain.cmake \
+  -DEMBEDDED_TARGET=gb10 \
   -DENABLE_CUTE_DSL=ALL \
   -DBUILD_PYTHON_BINDINGS=ON
 make -j$(nproc)
@@ -246,8 +264,23 @@ You should see a JSON response with the model's answer, similar to:
 {
   "responses": [
     {
-      "text": "The capital of the United States is Washington, D.C.",
-      "finish_reason": "stop"
+      "output_text": "The capital of the United States is Washington, D.C.",
+      "request_idx": 0,
+      "batch_idx": 0,
+      "finish_reason": "stop",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "What is the capital of the United States?"
+            }
+          ]
+        }
+      ],
+      "formatted_system_prompt": "",
+      "formatted_complete_request": "..."
     }
   ]
 }
@@ -280,7 +313,7 @@ To collect layer-level profiling in addition to the benchmark summary, add `--pr
 
 **For more advanced workflows, see the example guides:**
 - **[VLM Inference](../examples/vlm.md)** - Vision-language models with image understanding
-- **[Speculative Decoding](../examples/speculative-decoding.md)** - Speculative decoding for LLM and VLM
+- **[Speculative Decoding](../examples/speculative-decoding.md)** - EAGLE3, MTP, and DFlash speculative decoding workflows
 - **[Phi-4-Multimodal](../examples/phi4.md)** - Phi-4 Multimodal
 - **[ASR](../examples/asr.md)** - Automatic speech recognition
 - **[MoE](../examples/moe.md)** - Mixture of Experts models (CPU-only export, Qwen3-30B-A3B-GPTQ-Int4/NVFP4)

@@ -1,6 +1,0 @@
-Kernels
-=======
-
-.. doxygenfile:: kernels/moe/nvf4_w4an/kernels.h
-   :project: TensorRT Edge-LLM
-

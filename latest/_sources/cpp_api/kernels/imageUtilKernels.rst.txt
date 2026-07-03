@@ -11,21 +11,3 @@ Image Util Kernels
    :members:
    :undoc-members:
 
-.. doxygenfunction:: trt_edgellm::kernel::normalizeImage
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::kernel::transposeToPatchQwenViT
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::kernel::transposeToPatchInternVLPhi4MM
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::kernel::phi4mmPostprocessVisionTokens
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::kernel::initRotaryPosEmbQwenViT
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::kernel::initFastPosEmbedQwenViT
-   :project: TensorRT Edge-LLM
-

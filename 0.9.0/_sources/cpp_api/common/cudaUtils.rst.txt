@@ -1,0 +1,6 @@
+CUDA Utils
+==========
+
+.. doxygenfile:: common/cudaUtils.h
+   :project: TensorRT Edge-LLM
+

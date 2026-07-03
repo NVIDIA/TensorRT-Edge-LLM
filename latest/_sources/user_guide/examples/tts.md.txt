@@ -171,9 +171,57 @@ Generated `.wav` files are named `audio_req{N}.wav` (one per request). The outpu
 }
 ```
 
+### Streaming Mode
+
+Pass `--streaming --chunkFrames=<N>` to vocode RVQ codes inline as Talker generates
+them, rather than waiting for the full sequence. Each request receives its own
+`onChunkReady` callback inside the runtime; the CLI synchronously vocodes the chunk
+via Code2Wav and appends the PCM to a per-request WAV buffer. The final WAV file is
+written when the request finishes, identical to the non-streaming path.
+
+```bash
+./build/examples/omni/qwen3_tts_inference \
+    --talkerEngineDir   $ENG/talker \
+    --code2wavEngineDir $ENG/code2wav \
+    --tokenizerDir      $ENG/talker \
+    --inputFile         input.json \
+    --outputAudioDir    ./audio_output \
+    --streaming --chunkFrames=10
+```
+
+**RVQ codes are bit-exact** vs the non-streaming path for the same input and seed —
+streaming is purely an emission-layer change. Chunk-boundary PCM samples lose a small
+amount of Code2Wav context (chunks are vocoded independently with no left-context
+overlap), so the WAV is **not** byte-identical across chunk sizes; perceptual quality
+and WER are unaffected for typical chunk sizes (≥ 10 frames).
+
+**Choosing `chunkFrames`:** trades off TTFPA (time-to-first-playable-audio) vs vocoder
+overhead. Smaller chunks ship audio sooner but call Code2Wav more often.
+
+| `chunkFrames` | TTFPA (TTS 1.7B, single prompt) | Vocoder calls per 200 frames |
+|---------------|--------------------------------|------------------------------|
+| 1             | ~80 ms                         | 200 |
+| 10            | ~190 ms                        | 20  |
+| 50            | ~695 ms                        | 4   |
+
+`--streaming` enables per-batch independent callbacks when the input JSON bundles
+multiple requests into a Talker group (`batch_size > 1`); each request finishes and
+emits its final WAV independently.
+
+**Latency reporting:** with `--streaming`, the CLI logs `TTFC` (time-to-first-codec
+token) and `TTFPA` per request using CUDA events:
+
+```
+[stream req 0] chunks=22 frames=215 samples=412800 TTFC=19.3ms TTFPA=189.9ms
+```
+
+For `batch_size == 1` runs, `timeToFirstAudioCodeMs` and `timeToFirstPlayableAudioMs`
+are also populated in the profile JSON when `--profileOutputFile` is set.
+
 ---
 
 ## Notes
 
 - `--code2wavEngineDir` is optional: auto-detected as `parent(talkerEngineDir)/code2wav` if not set.
 - RVQ code files (`.safetensors`) are saved alongside audio when `--outputAudioDir` is set and can be used to re-synthesize audio without re-running the TTS model.
+- `--streaming` requires an explicit `--chunkFrames=N` (no default — pick based on your latency/throughput target).

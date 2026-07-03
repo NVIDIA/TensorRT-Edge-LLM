@@ -1,24 +1,6 @@
 Talker Mlp Kernels
 ==================
 
-.. doxygenfunction:: trt_edgellm::kernel::invokeTalkerMLP
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::kernel::invokeLinearLayer
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::kernel::invokeGather
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::kernel::invokeScatter
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::kernel::invokeAssistantPreamble
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::kernel::invokeResidualConnection
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::kernel::invokeTalkerLogitAdjust
+.. doxygenfile:: kernels/talkerMLPKernels/talkerMLPKernels.h
    :project: TensorRT Edge-LLM
 

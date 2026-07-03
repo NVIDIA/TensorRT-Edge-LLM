@@ -1,6 +1,0 @@
-Moe Gather
-==========
-
-.. doxygenfunction:: trt_edgellm::kernel::launchMoeGather
-   :project: TensorRT Edge-LLM
-

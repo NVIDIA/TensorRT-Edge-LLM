@@ -25,7 +25,7 @@ TensorRT plugins are user-defined layers that implement the `IPluginV2DynamicExt
 - Implements FP16 precision and covers all supported SMs of TensorRT Edge-LLM.
 - Supports FP8 KV cache for improved memory efficiency with CUDA >= 11.8.
 - Supports prefill (normal and chunked) stage causal attention.
-- Supports vanilla decoding attention and tree decoding attention that is used by EAGLE speculative decoding.
+- Supports vanilla decoding attention and tree decoding attention that is used by EAGLE and DFlash speculative decoding.
 - Supports linear KVCache with equal capacity within one batch.
 - Pads to maximum input sequence length within the batch for prefill execution.
 

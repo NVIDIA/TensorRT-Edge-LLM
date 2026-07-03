@@ -6,24 +6,3 @@ TRT Utils
    :members:
    :undoc-members:
 
-.. doxygenfunction:: trt_edgellm::captureTRTCudaGraph
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::dimsToString
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::hasDynamicDims
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::dimsEqual
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::isEngineInput
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::printEngineInfo
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::engineHasOutputTensor
-   :project: TensorRT Edge-LLM
-

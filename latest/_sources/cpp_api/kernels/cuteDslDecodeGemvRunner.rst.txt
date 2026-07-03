@@ -1,6 +1,0 @@
-Cute Dsl Decode Gemv Runner
-===========================
-
-.. doxygenfile:: kernels/moe/nvfp4_cutedsl/cuteDslDecodeGemvRunner.h
-   :project: TensorRT Edge-LLM
-

@@ -1,9 +1,6 @@
 Util Kernels
 ============
 
-.. doxygenfunction:: trt_edgellm::kernel::calCuQCuKVSeqLensAndKVEndIdxs
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::kernel::cvtKVLayoutBHSDToSplitKV
+.. doxygenfile:: kernels/contextAttentionKernels/utilKernels.h
    :project: TensorRT Edge-LLM
 

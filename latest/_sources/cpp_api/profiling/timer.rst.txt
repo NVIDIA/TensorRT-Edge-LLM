@@ -21,9 +21,3 @@ Timer
    :members:
    :undoc-members:
 
-.. doxygenfunction:: trt_edgellm::getProfilingEnabled
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::setProfilingEnabled
-   :project: TensorRT Edge-LLM
-

@@ -145,7 +145,38 @@ Tool response follow-up:
 | `onnx_dir` | Existing ONNX directory; build then load |
 | `engine_dir` | Existing engine directory; load only |
 
-For VLMs, also pass `visual_onnx_dir` or `visual_engine_dir`.
+For VLMs and models that support audio (Qwen3-Omni, Qwen3-ASR, Nemotron-Omni), also pass `visual_onnx_dir` or `visual_engine_dir`.
+
+## Audio Input
+
+The server accepts three OpenAI-compatible content forms inside user
+messages for models that support audio (Qwen3-Omni, Qwen3-ASR, Nemotron-Omni):
+
+```json
+{"type": "input_audio", "input_audio": {"data": "<base64>", "format": "wav"}}
+{"type": "audio_url", "audio_url": {"url": "file:///abs/path | data:audio/...;base64,..."}}
+{"type": "audio", "audio": "<local path>"}
+```
+
+`http(s)://` URLs are rejected by design — host the audio locally and use
+`file://`, or inline the bytes as base64 via `input_audio`. Supported
+containers: `.wav`, `.mp3`, `.flac`. The server decodes the container
+in-process via vendored miniaudio and the audio runner extracts the
+mel-spectrogram in C++ (no HF `transformers` feature extractor or Python
+preprocessing step is required). The model-appropriate feature extractor
+is selected automatically from the engine's `audio/config.json::model_type`:
+`whisper` for Qwen3-Omni / Qwen3-ASR, `parakeet` for Nemotron-Omni.
+
+Example (base64-inline):
+
+```bash
+B64=$(base64 -w0 sample.wav)
+curl -X POST http://127.0.0.1:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d "{\"model\":\"local\",\"messages\":[{\"role\":\"user\",\"content\":[ \
+       {\"type\":\"input_audio\",\"input_audio\":{\"data\":\"$B64\",\"format\":\"wav\"}}, \
+       {\"type\":\"text\",\"text\":\"Transcribe.\"}]}],\"max_tokens\":128}"
+```
 
 ## Sampling Parameters
 
@@ -178,6 +209,7 @@ responses include `delta.tool_calls` chunks.
 from experimental.server import LLM, SamplingParams
 
 llm = LLM(
+    engine_dir="/path/to/base/engine",
     eagle_engine_dir="/path/to/eagle/engines",
     draft_top_k=10,
     draft_step=6,

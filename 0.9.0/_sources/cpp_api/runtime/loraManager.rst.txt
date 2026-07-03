@@ -1,0 +1,8 @@
+Lora Manager
+============
+
+.. doxygenclass:: trt_edgellm::rt::LoRAManager
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

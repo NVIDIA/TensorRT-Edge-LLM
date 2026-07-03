@@ -26,9 +26,3 @@ Tokenizer
    :members:
    :undoc-members:
 
-.. doxygenfunction:: trt_edgellm::tokenizer::emitDelta
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::tokenizer::emitDeltaFlush
-   :project: TensorRT Edge-LLM
-

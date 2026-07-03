@@ -28,8 +28,8 @@
   </noscript>
   
   <!-- Loaded before other Sphinx assets -->
-  <link href="../../_static/styles/theme.css?digest=0790524f97105ba85085" rel="stylesheet" />
-<link href="../../_static/styles/pydata-sphinx-theme.css?digest=0790524f97105ba85085" rel="stylesheet" />
+  <link href="../../_static/styles/theme.css?digest=a95f357e85573c9b56d5" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=a95f357e85573c9b56d5" rel="stylesheet" />
 
     <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=03e43079" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/nvidia-sphinx-theme.css?v=933278ad" />
@@ -39,10 +39,10 @@
     <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=e02be394" />
   
   <!-- So that users can add custom icons -->
-  <script defer src="../../_static/scripts/fontawesome.js?digest=0790524f97105ba85085"></script>
+  <script defer src="../../_static/scripts/fontawesome.js?digest=a95f357e85573c9b56d5"></script>
   <!-- Pre-loaded scripts that we'll load fully later -->
-  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=0790524f97105ba85085" />
-<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=0790524f97105ba85085" />
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=a95f357e85573c9b56d5" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=a95f357e85573c9b56d5" />
 
 
 
@@ -494,9 +494,9 @@ window.addEventListener("load", load);
 window.runMermaid = runMermaid;</script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'developer_guide/software-design/engine-builder';</script>
     <script>
-        DOCUMENTATION_OPTIONS.theme_version = '0.18.0';
+        DOCUMENTATION_OPTIONS.theme_version = '0.19.0';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = './_static/switcher.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.8.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.9.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner =
             false;
         </script>
@@ -512,7 +512,7 @@ window.runMermaid = runMermaid;</script>
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.8.0" />
+  <meta name="docsearch:version" content="0.9.0" />
   
     
     <script src="../../_static/searchtools.js"></script>
@@ -867,6 +867,7 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/logger.html">Logger</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/mathUtils.html">Math Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/mmapReader.html">MMAP Reader</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/ropeUtils.html">Rope Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/safetensorsUtils.html">Safetensors Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/stringUtils.html">String Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/tensor.html">Tensor</a></li>
@@ -876,10 +877,7 @@ window.runMermaid = runMermaid;</script>
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/kernels/index.html">Kernels Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/NvFP4MoEContiguousGemmRunner.html">Nv Fp4 Mo E Contiguous GEMM Runner</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/NvFP4MoEFC2FinalizeRunner.html">Nv Fp4 Mo Efc2 Finalize Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/NvFP4MoEUtils.html">Nv Fp4 Mo E Utils</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/alphaCompute.html">Alpha Compute</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/applyRopeWriteKV.html">Apply Rope Write KV</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/batchEvictKernels.html">Batch Evict Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/buildLayout.html">Build Layout</a></li>
@@ -887,36 +885,37 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/common.html">Common</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/contextFMHARunner.html">Context FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/conversion.html">Conversion</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslDecodeGemvRunner.html">Cute Dsl Decode Gemv Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslFFPARunner.html">Cute Dsl Ffpa Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslFMHARunner.html">Cute Dsl FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslGDNRunner.html">Cute Dsl Gdn Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslGemmRunner.html">Cute Dsl GEMM Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslNvfp4MoeRunner.html">Cute Dsl Nvfp4 Moe Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslNvfp4MoeSm110Runner.html">Cute Dsl Nvfp4 Moe Sm110 Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslSSDRunner.html">Cute Dsl Ssd Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/decoderXQARunner.html">Decoder XQA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dequant.html">Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dequantize.html">Dequantize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dflashAcceptKernels.html">Dflash Accept Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dflashRuntimeKernels.html">Dflash Runtime Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/eagleAcceptKernels.html">EAGLE Accept Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/eagleUtilKernels.html">EAGLE Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/embeddingKernels.html">Embedding Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/fmhaParams_v2.html">FMHA Params V2</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/fp4Quantize.html">Fp4 Quantize</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/gdnKernelUtils.html">Gdn Kernel Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/gemma4AudioAttention.html">Gemma4 Audio Attention</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/imageUtilKernels.html">Image Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/initializeCosSinCache.html">Initialize Cos Sin Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/int4GroupwiseGemm.html">Int4 Groupwise GEMM</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/kernel.html">Kernel</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/kernel_selector.html">Kernel Selector</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/kernels.html">Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/kvCacheUtilsKernels.html">KV Cache Utils Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/marlin.html">Marlin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/marlin_dtypes.html">Marlin Dtypes</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/marlin_mma.html">Marlin Mma</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/marlin_template.html">Marlin Template</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/marlin_template.html">Marlin Template</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeActivationKernels.html">Moe Activation Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeAlignSumKernels.html">Moe Align Sum Kernels</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeGather.html">Moe Gather</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeMarlin.html">Moe Marlin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeMarlinIndicesKernels.html">Moe Marlin Indices Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeSigmoidGroupTopkKernels.html">Moe Sigmoid Group Topk Kernels</a></li>
@@ -936,6 +935,7 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/audioRunner.html">Audio Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/audioUtils.html">Audio Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/code2WavRunner.html">Code2 Wav Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/gemma4ViTRunner.html">Gemma4 ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/imageUtils.html">Image Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/internViTRunner.html">Intern ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/modelTypes.html">Model Types</a></li>
@@ -949,6 +949,7 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/plugins/index.html">Plugins Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/attentionPlugin.html">Attention Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/causalConv1dPlugin.html">Causal Conv1d Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/dflashTargetKVCacheUpdatePlugin.html">Dflash Target KV Cache Update Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/gatedDeltaNetPlugin.html">Gated Delta Net Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/int4GroupwiseGemmPlugin.html">Int4 Groupwise GEMM Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/int4MoePlugin.html">Int4 Moe Plugin</a></li>
@@ -967,28 +968,30 @@ window.runMermaid = runMermaid;</script>
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/runtime/index.html">Runtime Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/audioLoader.html">Audio Loader</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/audioUtils.html">Audio Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/decoderRegistry.html">Decoder Registry</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/decodingInferenceContext.html">Decoding Inference Context</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/decodingStrategy.html">Decoding Strategy</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/deepstackBinding.html">Deepstack Binding</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/deploymentConfig.html">Deployment Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/dflashDecoder.html">Dflash Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/eagleDecoder.html">EAGLE Decoder</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/eagleDraftEngineRunner.html">EAGLE Draft Engine Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/embeddingPreprocessor.html">Embedding Preprocessor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/engineExecutor.html">Engine Executor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/externalWeightManager.html">External Weight Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/gemma4EmbeddingPreprocessor.html">Gemma4 Embedding Preprocessor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/hybridCacheManager.html">Hybrid Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/imageUtils.html">Image Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/inferenceDims.html">Inference Dims</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/inferencePhase.html">Inference Phase</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/kvCacheManager.html">KV Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmEngineConfig.html">LLM Engine Config</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmEngineRunner.html">LLM Engine Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmInferenceRuntime.html">LLM Inference Runtime</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmRuntimeUtils.html">LLM Runtime Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/loraManager.html">Lora Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/mambaCacheManager.html">Mamba Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/melSpectrogram.html">Mel Spectrogram</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/mtpDecoder.html">Mtp Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/pipelineIO.html">Pipeline Io</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/qwen3OmniTTSRuntime.html">Qwen3 Omni Tts Runtime</a></li>
@@ -1123,7 +1126,7 @@ graph LR
 <li><p>Configure optimization profiles for dynamic shapes</p></li>
 <li><p>Compile TensorRT engines with platform-specific optimizations</p></li>
 <li><p>Generate runtime configuration files</p></li>
-<li><p>Handle model-specific requirements (EAGLE, VLM, LoRA)</p></li>
+<li><p>Handle model-specific requirements (speculative decoding, VLM, LoRA)</p></li>
 </ul>
 </section>
 </section>
@@ -1215,7 +1218,7 @@ graph LR
     class INPUT_SPACER_LEFT,BUILDER_SPACER_1,BUILDER_SPACER_2,BUILDER_SPACER_BOTTOM invisible
     class INPUT_STAGE,RESULTS contextBox
     class ENGINE_BUILDER greenSubGraph
-    </pre><p>For EAGLE3 speculative decoding, the LLM Builder executes this same 8-stage workflow <strong>twice</strong> with different configurations to create both base and draft models. This approach leverages the same optimization pipeline while producing specialized engines for each role in the speculative decoding process.</p>
+    </pre><p>For speculative decoding (EAGLE3, MTP, or DFlash), the LLM Builder executes this same 8-stage workflow <strong>twice</strong> with different configurations to create both base and draft models. This approach leverages the same optimization pipeline while producing specialized engines for each role in the speculative decoding process.</p>
 </section>
 <hr class="docutils" />
 <section id="component-overview">
@@ -1229,7 +1232,7 @@ graph LR
 </thead>
 <tbody>
 <tr class="row-even"><td><p><strong>LLM Builder</strong></p></td>
-<td><p>Converts language model ONNX files into optimized TensorRT engines. Supporting: Standard LLMs, EAGLE3 speculative decoding, VLM language components, LoRA adaptations</p></td>
+<td><p>Converts language model ONNX files into optimized TensorRT engines. Supporting: Standard LLMs, EAGLE3/MTP/DFlash speculative decoding, VLM language components, LoRA adaptations</p></td>
 </tr>
 <tr class="row-odd"><td><p><strong>Visual Encoder Builder</strong></p></td>
 <td><p>Converts visual encoder ONNX files into optimized TensorRT engines for multimodal models. Supporting: Dynamic image token generation, Multiple multimodal architectures, Variable resolution support</p></td>
@@ -1258,7 +1261,7 @@ graph LR
 </tr>
 <tr class="row-odd"><td><p><strong>2. Configuration Parsing</strong></p></td>
 <td><p>Extracts model parameters and build settings from configuration files</p></td>
-<td><p>Parses <code class="docutils literal notranslate"><span class="pre">config.json</span></code> for EAGLE settings, LoRA configurations, sequence length limits</p></td>
+<td><p>Parses <code class="docutils literal notranslate"><span class="pre">config.json</span></code> for speculative decoding settings, LoRA configurations, sequence length limits</p></td>
 <td><p>Parses <code class="docutils literal notranslate"><span class="pre">vision_config</span></code> section for image token ranges, architecture-specific parameters</p></td>
 </tr>
 <tr class="row-even"><td><p><strong>3. Network Creation</strong></p></td>
@@ -1268,7 +1271,7 @@ graph LR
 </tr>
 <tr class="row-odd"><td><p><strong>4. Model Type Detection</strong></p></td>
 <td><p>Identifies the specific model architecture and selects appropriate ONNX files</p></td>
-<td><p>Standard LLM, EAGLE base/draft, VLM language component, LoRA-enabled. Selects <code class="docutils literal notranslate"><span class="pre">lora_model.onnx</span></code> if <code class="docutils literal notranslate"><span class="pre">maxLoraRank</span> <span class="pre">&gt;</span> <span class="pre">0</span></code>, otherwise <code class="docutils literal notranslate"><span class="pre">model.onnx</span></code></p></td>
+<td><p>Standard LLM, speculative base/draft, VLM language component, LoRA-enabled. Selects <code class="docutils literal notranslate"><span class="pre">lora_model.onnx</span></code> if <code class="docutils literal notranslate"><span class="pre">maxLoraRank</span> <span class="pre">&gt;</span> <span class="pre">0</span></code>, otherwise <code class="docutils literal notranslate"><span class="pre">model.onnx</span></code></p></td>
 <td><p>Multimodal vision encoders. Always uses <code class="docutils literal notranslate"><span class="pre">model.onnx</span></code></p></td>
 </tr>
 <tr class="row-even"><td><p><strong>5. ONNX Parsing</strong></p></td>
@@ -1288,8 +1291,8 @@ graph LR
 </tr>
 <tr class="row-odd"><td><p><strong>8. File Management</strong></p></td>
 <td><p>Copies and generates necessary runtime files and configurations with automatic directory creation</p></td>
-<td><p>Runtime config, tokenizer files (<code class="docutils literal notranslate"><span class="pre">tokenizer.json</span></code>, <code class="docutils literal notranslate"><span class="pre">tokenizer_config.json</span></code>), EAGLE mappings (<code class="docutils literal notranslate"><span class="pre">d2t.safetensors</span></code>), model-specific configs. Creates engine directory if needed</p></td>
-<td><p>Runtime configuration only (<code class="docutils literal notranslate"><span class="pre">config.json</span></code> with builder settings). Creates engine directory if needed. No tokenizer or EAGLE files</p></td>
+<td><p>Runtime config, tokenizer files (<code class="docutils literal notranslate"><span class="pre">tokenizer.json</span></code>, <code class="docutils literal notranslate"><span class="pre">tokenizer_config.json</span></code>), EAGLE mappings (<code class="docutils literal notranslate"><span class="pre">d2t.safetensors</span></code>) when present, model-specific configs. Creates engine directory if needed</p></td>
+<td><p>Runtime configuration only (<code class="docutils literal notranslate"><span class="pre">config.json</span></code> with builder settings). Creates engine directory if needed. No tokenizer or speculative decoding sidecars</p></td>
 </tr>
 </tbody>
 </table>
@@ -1308,11 +1311,12 @@ graph LR
 <li><p><strong>Dynamic Shapes</strong>: Variable sequence lengths and batch sizes</p></li>
 <li><p><strong>KV Cache</strong>: Key-value cache tensors for autoregressive generation</p></li>
 </ul>
-<p><strong>EAGLE Models</strong> (<code class="docutils literal notranslate"><span class="pre">setupEagleProfiles</span></code>):</p>
+<p><strong>Speculative Decoding Models</strong> (<code class="docutils literal notranslate"><span class="pre">setupSpecDecodeProfiles</span></code>, <code class="docutils literal notranslate"><span class="pre">setupDFlashDraftProfiles</span></code>):</p>
 <ul class="simple">
-<li><p><strong>Base Models</strong>: Standard LLM inputs plus EAGLE-specific attention patterns and tree verification</p></li>
-<li><p><strong>Draft Models</strong>: Hidden states from draft, tree attention masks, speculation tokens</p></li>
-<li><p><strong>Tree Size Limits</strong>: Configurable maximum tree sizes for verification (<code class="docutils literal notranslate"><span class="pre">maxVerifyTreeSize</span></code>) and draft generation (<code class="docutils literal notranslate"><span class="pre">maxDraftTreeSize</span></code>)</p></li>
+<li><p><strong>Base Models</strong>: Standard LLM inputs plus speculative verification attention patterns</p></li>
+<li><p><strong>Draft Models</strong>: Draft hidden-state inputs, packed attention masks, and proposal tokens</p></li>
+<li><p><strong>DFlash Draft Models</strong>: DFlash target hidden-state inputs, delta lengths, and cached draft KV bindings</p></li>
+<li><p><strong>Tree / Block Size Limits</strong>: Configurable maximum sizes for verification (<code class="docutils literal notranslate"><span class="pre">maxVerifyTreeSize</span></code>) and draft generation (<code class="docutils literal notranslate"><span class="pre">maxDraftTreeSize</span></code>)</p></li>
 <li><p><strong>Vocabulary Mapping</strong>: Draft-to-target token mapping for EAGLE3 (<code class="docutils literal notranslate"><span class="pre">d2t.safetensors</span></code> file)</p></li>
 </ul>
 <p><strong>Vision-Language Models</strong> (<code class="docutils literal notranslate"><span class="pre">setupVLMProfiles</span></code>):</p>
@@ -1450,9 +1454,9 @@ graph LR
 </pre></div>
 </div>
 </section>
-<section id="eagle-speculative-decoding-build">
-<h3>EAGLE Speculative Decoding Build<a class="headerlink" href="#eagle-speculative-decoding-build" title="Link to this heading">#</a></h3>
-<p>Base and draft engine directories should be the same.</p>
+<section id="speculative-decoding-build">
+<h3>Speculative Decoding Build<a class="headerlink" href="#speculative-decoding-build" title="Link to this heading">#</a></h3>
+<p>Base and draft engine directories should be the same. This example uses EAGLE3; MTP and DFlash use the same <code class="docutils literal notranslate"><span class="pre">--specBase</span></code> and <code class="docutils literal notranslate"><span class="pre">--specDraft</span></code> build roles with their own ONNX directories.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Build base model</span>
 ./build/examples/llm/llm_build<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--onnxDir<span class="o">=</span>onnx_models/qwen2.5-vl-7b_eagle3_base<span class="w"> </span><span class="se">\</span>
@@ -1639,7 +1643,7 @@ graph LR
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#usage-examples">Usage Examples</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#standard-llm-build">Standard LLM Build</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#eagle-speculative-decoding-build">EAGLE Speculative Decoding Build</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#speculative-decoding-build">Speculative Decoding Build</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#multimodal-vlm-build">Multimodal VLM Build</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#lora-enabled-build">LoRA-Enabled Build</a></li>
 </ul>
@@ -1667,8 +1671,8 @@ graph LR
   
 
   <!-- Scripts loaded after <body> so the DOM is not blocked -->
-  <script defer src="../../_static/scripts/bootstrap.js?digest=0790524f97105ba85085"></script>
-<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=0790524f97105ba85085"></script>
+  <script defer src="../../_static/scripts/bootstrap.js?digest=a95f357e85573c9b56d5"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=a95f357e85573c9b56d5"></script>
 
 
   <footer class="bd-footer">
@@ -1740,9 +1744,9 @@ graph LR
         <div class="footer-item">
 <div class="extra_footer">
   
-  <p>Last updated on June 02, 2026.</p>
+  <p>Last updated on July 02, 2026.</p>
   
-  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/1df0e01">1df0e01</a>.</p>
+  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/30941a6">30941a6</a>.</p>
   
 </div></div>
       

@@ -325,10 +325,140 @@ cd /path/to/TensorRT-Edge-LLM
   --specDecode \
   --specDraftTopK 1 \
   --specDraftStep 3 \
-  --specVerifyTreeSize 4
+  --specVerifySize 4
 ```
 
 **Key differences from EAGLE:**
 - `--specDraftTopK 1`: MTP uses a linear chain (no branching), so topK=1
 - `--specDraftStep 3`: Number of MTP draft tokens (typically 3-7, matching the model's MTP head count)
-- `--specVerifyTreeSize 4`: Equals `draftStep + 1` for the linear chain
+- `--specVerifySize 4`: Equals `draftStep + 1` for the linear chain
+
+---
+
+## DFlash
+
+DFlash is a speculative decoding method that uses a dedicated external draft model. The draft model is separately trained, is not built into the base model checkpoint, and must be paired with the specific base model it was trained for. DFlash draft models are published by z-lab in the [DFlash HuggingFace collection](https://huggingface.co/collections/z-lab/dflash). Unlike EAGLE3, DFlash draft architecture is model-family-specific: the draft consumes concatenated target hidden states from selected base-model layers, updates target K/V in its draft KV cache, and proposes a linear block of draft tokens.
+
+So far DFlash support in TensorRT Edge-LLM is validated for Qwen3 and Qwen3.5 only. See [DFlash Draft Models](../getting_started/supported-models.md#dflash-draft-models) for the supported base/draft pairs. Other DFlash draft models in the z-lab collection are not tested for TensorRT Edge-LLM accuracy, acceptance rate, or runtime compatibility.
+
+For best acceptance rate and throughput, use the thinking-mode setting that matches the paired z-lab draft model and HuggingFace generation behavior: enable thinking for Qwen3.5 DFlash models and disable thinking for Qwen3 DFlash models.
+
+DFlash supports FP16 and quantized base models. Quantize a base checkpoint with `tensorrt-edgellm-quantize llm` before export, or start from a supported pre-quantized checkpoint. DFlash draft quantization is supported through `tensorrt-edgellm-quantize draft`; the command auto-detects DFlash from the draft checkpoint's `dflash_config`. NVFP4 draft quantization is validated, including optional NVFP4 LM-head quantization.
+
+The following example quantizes the paired [z-lab/Qwen3.5-4B-DFlash](https://huggingface.co/z-lab/Qwen3.5-4B-DFlash) draft for [Qwen3.5-4B](https://huggingface.co/Qwen/Qwen3.5-4B). Download the draft checkpoint first and pass its local directory as `--draft_model_dir`:
+
+```bash
+git clone https://huggingface.co/z-lab/Qwen3.5-4B-DFlash
+cd Qwen3.5-4B-DFlash && git lfs pull && cd ..
+
+tensorrt-edgellm-quantize draft \
+  --base_model_dir Qwen/Qwen3.5-4B \
+  --draft_model_dir Qwen3.5-4B-DFlash \
+  --quantization nvfp4 \
+  --lm_head_quantization nvfp4 \
+  --output_dir $MODEL_NAME/quantized-draft
+```
+
+---
+
+### Example
+
+**Example model:** [Qwen3.5-4B](https://huggingface.co/Qwen/Qwen3.5-4B) with [z-lab/Qwen3.5-4B-DFlash](https://huggingface.co/z-lab/Qwen3.5-4B-DFlash)
+
+#### Step 1: Export (x86 Host)
+
+```bash
+export WORKSPACE_DIR=$HOME/tensorrt-edgellm-workspace
+export MODEL_NAME=Qwen3.5-4B
+mkdir -p $WORKSPACE_DIR
+cd $WORKSPACE_DIR
+
+# Download DFlash draft model to workspace
+git clone https://huggingface.co/z-lab/Qwen3.5-4B-DFlash
+cd Qwen3.5-4B-DFlash && git lfs pull && cd ..
+
+# Export DFlash base model
+tensorrt-edgellm-export \
+  Qwen/Qwen3.5-4B \
+  $MODEL_NAME/onnx/base_export \
+  --dflash-base \
+  --dflash-draft-dir Qwen3.5-4B-DFlash
+
+# Export DFlash draft model
+tensorrt-edgellm-export \
+  Qwen/Qwen3.5-4B \
+  $MODEL_NAME/onnx/draft_export \
+  --dflash-draft \
+  --dflash-draft-dir Qwen3.5-4B-DFlash
+
+# Put outputs in the layout used by the build steps below
+mkdir -p $MODEL_NAME/onnx/base $MODEL_NAME/onnx/draft
+cp -a $MODEL_NAME/onnx/base_export/llm/. $MODEL_NAME/onnx/base/
+cp -a $MODEL_NAME/onnx/draft_export/dflash_draft/. $MODEL_NAME/onnx/draft/
+```
+
+This produces:
+- `$WORKSPACE_DIR/$MODEL_NAME/onnx/base/` - DFlash base model with target hidden-state outputs
+- `$WORKSPACE_DIR/$MODEL_NAME/onnx/draft/` - DFlash draft model
+
+#### Step 2: Transfer to Device
+
+```bash
+# Transfer ONNX to device
+scp -r $WORKSPACE_DIR/$MODEL_NAME/onnx \
+  <device_user>@<device_ip>:~/tensorrt-edgellm-workspace/$MODEL_NAME/
+```
+
+#### Step 3: Build Engines (Thor Device)
+
+```bash
+export WORKSPACE_DIR=$HOME/tensorrt-edgellm-workspace
+export MODEL_NAME=Qwen3.5-4B
+cd /path/to/TensorRT-Edge-LLM
+
+# Build DFlash base engine
+./build/examples/llm/llm_build \
+  --onnxDir $WORKSPACE_DIR/$MODEL_NAME/onnx/base \
+  --engineDir $WORKSPACE_DIR/$MODEL_NAME/engines \
+  --maxBatchSize 1 \
+  --maxInputLen 2048 \
+  --maxKVCacheCapacity 4096 \
+  --maxVerifyTreeSize 16 \
+  --specBase
+
+# Build DFlash draft engine
+./build/examples/llm/llm_build \
+  --onnxDir $WORKSPACE_DIR/$MODEL_NAME/onnx/draft \
+  --engineDir $WORKSPACE_DIR/$MODEL_NAME/engines \
+  --maxBatchSize 1 \
+  --maxInputLen 2048 \
+  --maxKVCacheCapacity 4096 \
+  --maxDraftTreeSize 16 \
+  --specDraft
+```
+
+#### Step 4: Run Inference (Thor Device)
+
+For this Qwen3.5 example, set `enable_thinking` to `true` in the input JSON. For Qwen3 DFlash models, set `enable_thinking` to `false`. These settings match the paired HuggingFace generation behavior used to validate DFlash acceptance rate and throughput.
+
+```bash
+cd /path/to/TensorRT-Edge-LLM
+
+./build/examples/llm/llm_inference \
+  --engineDir $WORKSPACE_DIR/$MODEL_NAME/engines \
+  --inputFile $WORKSPACE_DIR/input.json \
+  --outputFile $WORKSPACE_DIR/output.json \
+  --specDecode \
+  --specDraftTopK 1 \
+  --specDraftStep 1 \
+  --specVerifySize 16
+```
+
+**Key differences from EAGLE3:**
+- `--dflash-base` exports the base model with DFlash target hidden-state outputs; pass `--dflash-draft-dir` so export can read the draft's target-layer and block-size configuration
+- `--dflash-draft` exports the dedicated draft model into `dflash_draft/`
+- `--specDraftTopK 1`: DFlash proposes a linear block, so topK=1
+- `--specDraftStep 1`: One DFlash draft forward proposes the whole block
+- `--specVerifySize 16`: Base verification checks the DFlash proposal block
+- Thinking-mode settings are model-family-specific and should match the paired HuggingFace behavior: Qwen3.5 DFlash uses thinking mode enabled, while Qwen3 DFlash uses thinking mode disabled
+- DFlash does not use EAGLE3 draft-to-target vocabulary mapping files; the draft checkpoint is a paired z-lab model for the base checkpoint

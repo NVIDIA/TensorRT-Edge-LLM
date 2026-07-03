@@ -1,6 +1,6 @@
 Fp4 Quantize
 ============
 
-.. doxygenfunction:: trt_edgellm::kernel::fp4Quantize
+.. doxygenfile:: kernels/moe/fp4SupportKernels/fp4Quantize.h
    :project: TensorRT Edge-LLM
 

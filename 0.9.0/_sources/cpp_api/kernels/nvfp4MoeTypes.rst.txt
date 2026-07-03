@@ -1,0 +1,13 @@
+Nvfp4 Moe Types
+===============
+
+.. doxygenstruct:: trt_edgellm::kernel::MoELayout
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::kernel::MoELayoutBuffers
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

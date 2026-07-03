@@ -16,6 +16,7 @@ API documentation for the common module.
    logger
    mathUtils
    mmapReader
+   ropeUtils
    safetensorsUtils
    stringUtils
    tensor

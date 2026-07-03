@@ -1,6 +1,6 @@
 Version
 =======
 
-.. doxygenfunction:: trt_edgellm::version::checkVersion
+.. doxygenfile:: common/version.h
    :project: TensorRT Edge-LLM
 
