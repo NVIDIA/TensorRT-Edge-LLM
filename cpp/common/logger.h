@@ -69,7 +69,24 @@ struct SourceLocation
 class EdgeLLMLogger : public nvinfer1::ILogger
 {
 public:
-    EdgeLLMLogger() noexcept = default;
+    EdgeLLMLogger() noexcept
+    {
+        char const* envLvl = std::getenv("EDGELLM_LOG_LEVEL");
+        if (envLvl)
+        {
+            std::string lvlStr(envLvl);
+            if (lvlStr == "VERBOSE" || lvlStr == "verbose")
+                mMinLevel = nvinfer1::ILogger::Severity::kVERBOSE;
+            else if (lvlStr == "INFO" || lvlStr == "info")
+                mMinLevel = nvinfer1::ILogger::Severity::kINFO;
+            else if (lvlStr == "WARNING" || lvlStr == "warning")
+                mMinLevel = nvinfer1::ILogger::Severity::kWARNING;
+            else if (lvlStr == "ERROR" || lvlStr == "error")
+                mMinLevel = nvinfer1::ILogger::Severity::kERROR;
+            else if (lvlStr == "INTERNAL_ERROR" || lvlStr == "internal_error")
+                mMinLevel = nvinfer1::ILogger::Severity::kINTERNAL_ERROR;
+        }
+    }
     ~EdgeLLMLogger() noexcept = default;
 
     /*!
@@ -196,7 +213,7 @@ public:
     }
 
 private:
-    nvinfer1::ILogger::Severity mMinLevel = nvinfer1::ILogger::Severity::kINFO;
+    nvinfer1::ILogger::Severity mMinLevel = nvinfer1::ILogger::Severity::kWARNING;
     bool mShowTimestamp = true;
     bool mShowLocation = true;
     bool mShowFunction = true;

@@ -260,6 +260,9 @@ std::unique_ptr<nvinfer1::IBuilderConfig> createBuilderConfig(nvinfer1::IBuilder
     config->setPreviewFeature(nvinfer1::PreviewFeature::kALIASED_PLUGIN_IO_10_03, true);
 #endif
 
+    config->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE, 16ULL << 30);
+    config->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kTACTIC_DRAM, 8ULL << 30);
+
     return config;
 }
 
