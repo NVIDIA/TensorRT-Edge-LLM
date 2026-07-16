@@ -25,6 +25,7 @@
 #include "multimodal/nemotronOmniViTRunner.h"
 #include "multimodal/phi4mmViTRunner.h"
 #include "multimodal/qwenViTRunner.h"
+#include "multimodal/vitRunner.h"
 #include "profiling/layerProfiler.h"
 #include "profiling/metrics.h"
 #include "profiling/timer.h"
@@ -154,6 +155,10 @@ std::unique_ptr<MultimodalRunner> MultimodalRunner::create(std::string const& mu
     else if (modelType == multimodal::ModelType::NEMOTRON_OMNI_AUDIO_ENCODER)
     {
         multimodalRunner = std::make_unique<NemotronOmniAudioRunner>(multimodalEngineDir, stream);
+    }
+    else if (modelType == multimodal::ModelType::VIT)
+    {
+        multimodalRunner = std::make_unique<VitRunner>(multimodalEngineDir, stream);
     }
     else
     {

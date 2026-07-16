@@ -1013,6 +1013,8 @@ bool Tokenizer::loadChatTemplate(std::filesystem::path const& chatTemplateFile)
         mChatTemplate.generationPromptThinking = jsonData.value("generation_prompt_thinking", "");
         mChatTemplate.defaultSystemPrompt = jsonData.value("default_system_prompt", mChatTemplate.defaultSystemPrompt);
         mChatTemplate.trimContent = jsonData.value("trim_content", false);
+        mChatTemplate.prefixStrategy = jsonData.value("prefix_strategy", "");
+        mChatTemplate.maxSeqLen = jsonData.value("max_seq_len", 0);
     }
     catch (std::exception const& e)
     {

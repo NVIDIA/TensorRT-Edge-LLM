@@ -380,5 +380,115 @@ void instantiateKVCacheBatched(KVLayerInfo const* dstLayerInfos, KVLayerInfo con
     CUDA_CHECK(cudaGetLastError());
 }
 
+void instantiateKVCacheFromTensor(
+    rt::Tensor& dstKVCacheBuffer, rt::Tensor const& srcKVCacheTensor, int32_t batchIdx, cudaStream_t stream)
+{
+    // srcKVCacheTensor shape: [numDecoderLayers, 2, numKVHeads, sequenceLength, headDim]
+    int32_t const numDecoderLayers = srcKVCacheTensor.getShape()[0];
+    int32_t const numKVHeads = srcKVCacheTensor.getShape()[2];
+    int32_t const sequenceLength = srcKVCacheTensor.getShape()[3];
+    int32_t const headDim = srcKVCacheTensor.getShape()[4];
+
+    // dstKVCacheBuffer shape: [numDecoderLayers, maxBatchSize, 2, numKVHeads, maxSequenceLength, headDim]
+    int32_t const kvCacheMaxBatch = dstKVCacheBuffer.getShape()[1];
+    int32_t const kvCacheMaxSequenceLength = dstKVCacheBuffer.getShape()[4];
+
+    if (batchIdx >= kvCacheMaxBatch)
+    {
+        throw std::runtime_error(
+            "instantiateKVCacheFromTensor(): batchIdx is out of range for the KVCache buffer. MaxSupportedBatch = "
+            + std::to_string(kvCacheMaxBatch) + ", batchIdx = " + std::to_string(batchIdx));
+    }
+    if (sequenceLength > kvCacheMaxSequenceLength)
+    {
+        throw std::runtime_error(
+            "instantiateKVCacheFromTensor(): sequenceLength is out of range for the KVCache buffer. "
+            "MaxSupportedSequenceLength = "
+            + std::to_string(kvCacheMaxSequenceLength) + ", sequenceLength = " + std::to_string(sequenceLength));
+    }
+    if (dstKVCacheBuffer.getDataType() != srcKVCacheTensor.getDataType()
+        && dstKVCacheBuffer.getDataType() != nvinfer1::DataType::kHALF)
+    {
+        throw std::runtime_error(
+            "instantiateKVCacheFromTensor(): KVCacheBuffer and preComputedKVCache shall both be half type now.");
+    }
+
+    dim3 gridDim(numDecoderLayers * 2 * numKVHeads);
+    dim3 blockDim(32, 4);
+    half* srcKVCacheTensorPtr = const_cast<half*>(srcKVCacheTensor.dataPointer<half>());
+    switch (headDim)
+    {
+    case 64:
+        instantiateKVCacheKernel<half, 64, true><<<gridDim, blockDim, 0, stream>>>(dstKVCacheBuffer.dataPointer<half>(),
+            srcKVCacheTensorPtr, kvCacheMaxBatch, kvCacheMaxSequenceLength, batchIdx, numDecoderLayers, numKVHeads,
+            sequenceLength, headDim);
+        break;
+    case 128:
+        instantiateKVCacheKernel<half, 128, true><<<gridDim, blockDim, 0, stream>>>(
+            dstKVCacheBuffer.dataPointer<half>(), srcKVCacheTensorPtr, kvCacheMaxBatch, kvCacheMaxSequenceLength,
+            batchIdx, numDecoderLayers, numKVHeads, sequenceLength, headDim);
+        break;
+    default:
+        throw std::runtime_error(
+            "instantiateKVCacheFromTensor(): Only headDim = 64 or 128 are supported by the kernel, current headDim = "
+            + std::to_string(headDim));
+    }
+    CUDA_CHECK(cudaGetLastError());
+}
+
+void saveKVCacheIntoTensor(
+    rt::Tensor& dstKVCacheTensor, rt::Tensor const& srcKVCacheBuffer, int32_t batchIdx, cudaStream_t stream)
+{
+    int32_t const numDecoderLayers = dstKVCacheTensor.getShape()[0];
+    int32_t const numKVHeads = dstKVCacheTensor.getShape()[2];
+    int32_t const sequenceLength = dstKVCacheTensor.getShape()[3];
+    int32_t const headDim = dstKVCacheTensor.getShape()[4];
+
+    int32_t const kvCacheMaxBatch = srcKVCacheBuffer.getShape()[1];
+    int32_t const kvCacheMaxSequenceLength = srcKVCacheBuffer.getShape()[4];
+
+    if (batchIdx >= kvCacheMaxBatch)
+    {
+        throw std::runtime_error(
+            "saveKVCacheIntoTensor(): batchIdx is out of range for the KVCache buffer. MaxSupportedBatch = "
+            + std::to_string(kvCacheMaxBatch) + ", batchIdx = " + std::to_string(batchIdx));
+    }
+    if (sequenceLength > kvCacheMaxSequenceLength)
+    {
+        throw std::runtime_error(
+            "saveKVCacheIntoTensor(): sequenceLength is out of range for the KVCache buffer. "
+            "MaxSupportedSequenceLength = "
+            + std::to_string(kvCacheMaxSequenceLength) + ", sequenceLength = " + std::to_string(sequenceLength));
+    }
+    if (dstKVCacheTensor.getDataType() != srcKVCacheBuffer.getDataType()
+        && dstKVCacheTensor.getDataType() != nvinfer1::DataType::kHALF)
+    {
+        throw std::runtime_error(
+            "saveKVCacheIntoTensor(): KVCacheBuffer and preComputedKVCache shall both be half type now.");
+    }
+
+    dim3 gridDim(numDecoderLayers * 2 * numKVHeads);
+    dim3 blockDim(32, 4);
+    half* srcKVCacheBufferPtr = const_cast<half*>(srcKVCacheBuffer.dataPointer<half>());
+    switch (headDim)
+    {
+    case 64:
+        instantiateKVCacheKernel<half, 64, false><<<gridDim, blockDim, 0, stream>>>(srcKVCacheBufferPtr,
+            dstKVCacheTensor.dataPointer<half>(), kvCacheMaxBatch, kvCacheMaxSequenceLength, batchIdx, numDecoderLayers,
+            numKVHeads, sequenceLength, headDim);
+        break;
+    case 128:
+        instantiateKVCacheKernel<half, 128, false><<<gridDim, blockDim, 0, stream>>>(srcKVCacheBufferPtr,
+            dstKVCacheTensor.dataPointer<half>(), kvCacheMaxBatch, kvCacheMaxSequenceLength, batchIdx, numDecoderLayers,
+            numKVHeads, sequenceLength, headDim);
+        break;
+    default:
+        throw std::runtime_error(
+            "saveKVCacheIntoTensor(): Only headDim = 64 or 128 are supported by the kernel, current headDim = "
+            + std::to_string(headDim));
+    }
+    CUDA_CHECK(cudaGetLastError());
+}
+
 } // namespace kernel
 } // namespace trt_edgellm

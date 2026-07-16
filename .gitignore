@@ -1,4 +1,6 @@
 build/
+build-plugin-trt10/
+build-plugin-trt11/
 dist/
 *.egg-info
 *_engine/

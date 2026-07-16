@@ -1,0 +1,11 @@
+{
+    "num_inference_steps": 2,
+    "seed": 42,
+    "requests": [
+        {
+            "prompt": "A robot arm picks up a red cube.",
+            "generate_sound": false,
+            "output_video_file": "/tmp/wfm_output_video.fp16"
+        }
+    ]
+}

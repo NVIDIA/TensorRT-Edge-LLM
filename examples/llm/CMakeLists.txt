@@ -24,6 +24,14 @@ target_include_directories(
                         ${CMAKE_SOURCE_DIR}/examples/utils)
 add_cross_build_link_options(llm_inference)
 
+add_executable(vla_inference vla_inference.cpp)
+target_link_libraries(vla_inference PRIVATE edgellmCore exampleUtils
+                                            commonLibraryExt)
+target_include_directories(
+  vla_inference PRIVATE ${COMMON_INCLUDE_DIRS}
+                        ${CMAKE_SOURCE_DIR}/examples/utils)
+add_cross_build_link_options(vla_inference)
+
 add_executable(llm_stream llm_stream.cpp)
 target_link_libraries(llm_stream PRIVATE edgellmCore exampleUtils
                                          commonLibraryExt)

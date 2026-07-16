@@ -101,6 +101,10 @@ struct LLMGenerationRequest
         std::optional<std::vector<PastTrajectoryPoint>>
             pastTrajectory; //!< Optional past trajectory for Alpamayo (e.g. ego x,y,z history)
 
+        //!< Optional packed robot state for GR00T diffusion (row-major, length = state_horizon * state_dim)
+        std::vector<float> robotState;
+        std::optional<int64_t> embodimentId; //!< Optional embodiment index for GR00T action head
+
         //! Stop strings; generation halts on the earliest match and trims it from output.
         std::vector<std::string> stopStrings;
 
@@ -145,6 +149,11 @@ struct LLMGenerationRequest
     //! Called after cudaStreamSynchronize inside the decode loop.
     //! When nullopt (default), zero overhead — no callback is invoked.
     std::optional<TokenCallback> onTokenGenerated;
+
+    // Number of trajectories the action stage should produce.
+    int32_t actionBatchSize{0};
+    //!< Optional default embodiment index for GR00T action head (overrides export default when set).
+    std::optional<int64_t> embodimentId;
 };
 
 /*! \brief LLM Generation Response structure
@@ -157,6 +166,9 @@ struct LLMGenerationResponse
     std::vector<std::vector<FutureTrajectoryPoint>> outputTrajectories;
 
     std::vector<rt::audioUtils::AudioData> outputAudios; //!< Generated audio data (Qwen3-Omni only)
+
+    //!< Denoised robot actions per batch item (row-major [action_horizon * action_dim]); populated by the VLA runtime
+    std::vector<std::vector<float>> outputActions;
 
     //! Why each request halted (EOS, length, stop string, cancel, error); see `runtime/streaming.h`.
     std::vector<FinishReason> finishReasons;

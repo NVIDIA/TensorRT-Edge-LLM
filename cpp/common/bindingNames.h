@@ -80,6 +80,34 @@ inline constexpr char const* kLogits = "logits";
 inline constexpr char const* kOutputHiddenStates = "hidden_states";
 
 /*!
+ * @brief GR00T context embeddings for VLA action head
+ *
+ * Shape: [batch_size, sequence_length, context_hidden_size] (FLOAT16)
+ */
+inline constexpr char const* kOutputContextEmbeds = "context_embs";
+
+/*!
+ * @brief Language-model hidden states for split GR00T action-context engine
+ *
+ * Shape: [batch_size, sequence_length, hidden_size] (FLOAT16)
+ */
+inline constexpr char const* kOutputLmHiddenStates = "lm_hidden_states";
+
+/*!
+ * @brief PI0.5 prefix key cache stacked across decoder layers
+ *
+ * Shape: [num_layers, batch_size, num_kv_heads, 1, prefix_seq_len, head_dim] (FLOAT16)
+ */
+inline constexpr char const* kOutputPrefixK = "prefix_k";
+
+/*!
+ * @brief PI0.5 prefix value cache stacked across decoder layers
+ *
+ * Shape: [num_layers, batch_size, num_kv_heads, 1, prefix_seq_len, head_dim] (FLOAT16)
+ */
+inline constexpr char const* kOutputPrefixV = "prefix_v";
+
+/*!
  * @brief DFlash draft model input: concatenated target hidden states.
  *
  * Shape: [batch_size, context_length, base_output_hidden_dim] (FLOAT16)
@@ -330,6 +358,22 @@ inline constexpr char const* kVisualInput = "input";
  * Shape: [num_image_tokens, hidden_size] (FLOAT16)
  */
 inline constexpr char const* kVisualOutput = "output";
+
+/*!
+ * @brief Visual input tensor for the model-agnostic fixed-shape VitRunner.
+ *
+ * VitRunner engines are exported with dedicated binding names distinct from the
+ * shared Qwen-VL / InternVL `kVisualInput`/`kVisualOutput`.
+ * Shape: [batch, height, width, channels] HWC (FLOAT16)
+ */
+inline constexpr char const* kVitInput = "pixel_values";
+
+/*!
+ * @brief Visual output tensor for the model-agnostic fixed-shape VitRunner.
+ *
+ * Shape: [num_image_tokens, hidden_size] (FLOAT16)
+ */
+inline constexpr char const* kVitOutput = "visual_embeds";
 
 /*!
  * @brief Rotary positional embeddings for visual inputs

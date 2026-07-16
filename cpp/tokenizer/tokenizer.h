@@ -68,6 +68,8 @@ struct ChatTemplateConfig
     std::string generationPromptThinking; //!< Generation prompt with thinking enabled (optional, model-specific)
     std::string defaultSystemPrompt;      //!< Default system prompt
     bool trimContent{false};              //!< Whether to trim whitespace from message content (matches Jinja | trim)
+    std::string prefixStrategy;           //!< Optional VLA prefix padding strategy (e.g. pi05_compact_prefix)
+    int32_t maxSeqLen{0};                 //!< Optional padded prefix capacity from processed_chat_template.json
 };
 
 /*!
@@ -317,6 +319,18 @@ public:
     std::string getDefaultSystemPrompt() const noexcept
     {
         return mChatTemplate.defaultSystemPrompt;
+    }
+
+    //! Prefix padding strategy from processed_chat_template.json (e.g. pi05_compact_prefix).
+    std::string const& getPrefixStrategy() const noexcept
+    {
+        return mChatTemplate.prefixStrategy;
+    }
+
+    //! Padded prefix capacity from processed_chat_template.json (0 = use engine max only).
+    int32_t getMaxSeqLen() const noexcept
+    {
+        return mChatTemplate.maxSeqLen;
     }
 
 protected:
