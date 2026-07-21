@@ -21,6 +21,8 @@ namespace rt
 namespace
 {
 
+//! Builds a Coords from a JSON array of dimension sizes (e.g. [1, 3, 224, 224]).
+//! Expects \p shape to be an array of integers; malformed JSON will throw.
 rt::Coords coordsFromJson(nlohmann::json const& shape)
 {
     std::vector<int64_t> dims;

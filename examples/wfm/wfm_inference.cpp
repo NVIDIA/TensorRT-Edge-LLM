@@ -41,6 +41,23 @@
 using namespace trt_edgellm;
 using Json = nlohmann::json;
 
+/*
+ * This executable is the command-line "front end" for WFM inference.
+ *
+ * It does not implement the neural network algorithms itself. Instead, it:
+ *   1. Reads command-line options and a JSON file describing one or more requests.
+ *   2. Loads input pixels/audio into GPU tensors (or creates random input pixels).
+ *   3. Calls WFMInferenceRuntime::handleRequest(), where encode/denoise/decode occur.
+ *   4. Copies requested outputs back from the GPU and writes result metadata as JSON.
+ *
+ * Most failures in this file concern invalid input, missing files, CUDA transfers,
+ * or output writing. Model-specific execution is implemented under cpp/runtime/.
+ */
+
+//! Numeric identifiers returned by getopt_long() for the supported CLI options.
+//!
+//! Values begin at 900 so that they do not collide with ordinary one-character
+//! options such as 'h'. This program uses long options only (for example, --help).
 enum WfmInferenceOptionId : int
 {
     HELP = 900,
@@ -56,6 +73,10 @@ enum WfmInferenceOptionId : int
     SEED = 911
 };
 
+//! Values collected from the command line.
+//!
+//! The brace initializers are defaults. For example, if --warmup is omitted,
+//! warmup remains 0; if --seed is omitted, seed remains 42.
 struct WfmInferenceArgs
 {
     bool help{false};
@@ -71,12 +92,20 @@ struct WfmInferenceArgs
     int32_t seed{42};
 };
 
+//! Default values read from the top level of the input JSON file.
+//!
+//! An individual request can override these values. Zero means "not specified"
+//! for both fields in the resolution helpers below.
 struct WfmInputGlobals
 {
     int32_t numInferenceSteps{0};
     int32_t seed{0};
 };
 
+//! Lightweight CPU-side description of one item in the JSON "requests" array.
+//!
+//! This struct contains strings and scalar settings only. buildWfmRequest() later
+//! converts it into a WFMGenerationRequest containing actual GPU tensors.
 struct WfmRequestSpec
 {
     std::string prompt;
@@ -89,6 +118,10 @@ struct WfmRequestSpec
     std::string outputWaveformFile;
 };
 
+//! Print command-line syntax and a description of every accepted option.
+//!
+//! @param programName The executable name, normally argv[0].
+//! @note Help is written to stderr so it is visible alongside validation errors.
 void printUsage(char const* programName)
 {
     std::cerr << "Usage: " << programName
@@ -111,8 +144,20 @@ void printUsage(char const* programName)
     std::cerr << "  --seed                    Default random seed when not set in input JSON (default: 42)" << std::endl;
 }
 
+//! Parse and validate command-line options.
+//!
+//! getopt_long() examines argv and returns one WfmInferenceOptionId at a time.
+//! Options containing numbers arrive as text, so std::stoi() converts them.
+//!
+//! @param[out] args Receives all parsed values.
+//! @param argc Number of command-line arguments.
+//! @param argv Array of argument strings.
+//! @return true if parsing succeeds (including --help), otherwise false.
+//! @note This also selects INFO or VERBOSE logging after validation.
 bool parseWfmInferenceArgs(WfmInferenceArgs& args, int argc, char* argv[]) // NOLINT(readability-function-cognitive-complexity)
 {
+    // Each entry maps a long option such as "--engineDir" to an enum value.
+    // required_argument means the option must be followed by a value.
     static struct option inferenceOptions[] = {{"help", no_argument, 0, WfmInferenceOptionId::HELP},
         {"inputFile", required_argument, 0, WfmInferenceOptionId::INPUT_FILE},
         {"engineDir", required_argument, 0, WfmInferenceOptionId::ENGINE_DIR},
@@ -126,6 +171,7 @@ bool parseWfmInferenceArgs(WfmInferenceArgs& args, int argc, char* argv[]) // NO
         {"seed", required_argument, 0, WfmInferenceOptionId::SEED}, {0, 0, 0, 0}};
 
     int opt = 0;
+    // getopt_long() returns -1 after it has consumed all command-line options.
     while ((opt = getopt_long(argc, argv, "", inferenceOptions, nullptr)) != -1)
     {
         switch (opt)
@@ -185,6 +231,7 @@ bool parseWfmInferenceArgs(WfmInferenceArgs& args, int argc, char* argv[]) // NO
         }
     }
 
+    // These three paths are necessary for every non-help invocation.
     if (args.inputFile.empty())
     {
         LOG_ERROR("ERROR: --inputFile is required");
@@ -216,8 +263,20 @@ bool parseWfmInferenceArgs(WfmInferenceArgs& args, int argc, char* argv[]) // NO
 namespace
 {
 
+//! Read an entire raw FP16 binary file into CPU memory.
+//!
+//! A `half` occupies two bytes. The file has no header or shape metadata, so the
+//! caller must know the intended tensor shape and optionally supply its element
+//! count. This is not a PNG, MP4, WAV, or other container format.
+//!
+//! @param path File to read.
+//! @param expectedElements Required number of FP16 values, or 0 to accept any size.
+//! @return A CPU vector containing the file's FP16 values.
+//! @throws std::runtime_error (through check::check) if validation or reading fails.
 std::vector<half> loadFp16BinaryFile(std::filesystem::path const& path, std::size_t expectedElements)
 {
+    // ios::ate initially positions the read cursor at the end, allowing tellg()
+    // to report the file's byte size without reading the file twice.
     std::ifstream file(path, std::ios::binary | std::ios::ate);
     check::check(file.is_open(), "Failed to open binary file: " + path.string());
     auto const fileSize = static_cast<std::size_t>(file.tellg());
@@ -234,6 +293,12 @@ std::vector<half> loadFp16BinaryFile(std::filesystem::path const& path, std::siz
     return values;
 }
 
+//! Write CPU FP16 values as a raw binary file.
+//!
+//! @param path Destination path.
+//! @param data Pointer to the first FP16 value.
+//! @param numElements Number of values to write.
+//! @throws std::runtime_error (through check::check) if opening or writing fails.
 void saveFp16BinaryFile(std::filesystem::path const& path, half const* data, std::size_t numElements)
 {
     std::ofstream file(path, std::ios::binary);
@@ -242,9 +307,21 @@ void saveFp16BinaryFile(std::filesystem::path const& path, half const* data, std
     check::check(file.good(), "Failed to write output binary file: " + path.string());
 }
 
+//! Create reproducible random input pixels and copy them to a GPU tensor.
+//!
+//! The tensor uses NCTHW order:
+//!   N = batch (1), C = color channels (3), T = frames, H = height, W = width.
+//! Values are sampled uniformly from [-1, 1], which is the model's normalized
+//! pixel range. Supplying the same seed and configuration produces the same data.
+//!
+//! @param config Engine dimensions used to determine the tensor shape.
+//! @param seed Seed for the CPU pseudo-random number generator.
+//! @param stream CUDA stream used for the host-to-device copy.
+//! @return Shared ownership of an FP16 tensor allocated on the GPU.
 std::shared_ptr<rt::Tensor> makeRandomPixels(
     rt::CosmosEngineConfig const& config, int32_t seed, cudaStream_t stream)
 {
+    // Tensor allocates device memory because DeviceType::kGPU is requested.
     auto pixels = std::make_shared<rt::Tensor>(
         rt::Coords({1, 3, config.numFrames, config.height, config.width}), rt::DeviceType::kGPU,
         nvinfer1::DataType::kHALF, "wfm_inference::input_pixels");
@@ -257,12 +334,22 @@ std::shared_ptr<rt::Tensor> makeRandomPixels(
         value = __float2half(dist(rng));
     }
 
+    // cudaMemcpyAsync schedules the copy. Synchronization keeps the temporary
+    // CPU vector alive until the GPU has finished reading from it.
     CUDA_CHECK(cudaMemcpyAsync(pixels->rawPointer(), host.data(), host.size() * sizeof(half), cudaMemcpyHostToDevice,
         stream));
     CUDA_CHECK(cudaStreamSynchronize(stream));
     return pixels;
 }
 
+//! Load a raw FP16 pixel tensor from disk and copy it to the GPU.
+//!
+//! @param path Raw FP16 input file.
+//! @param config Supplies the required frame count, height, and width.
+//! @param stream CUDA stream used for the host-to-device copy.
+//! @return GPU tensor with shape [1, 3, frames, height, width].
+//! @note The binary file has no shape metadata; its element order must already
+//! match the model's expected NCTHW layout.
 std::shared_ptr<rt::Tensor> loadPixelsFromFile(
     std::filesystem::path const& path, rt::CosmosEngineConfig const& config, cudaStream_t stream)
 {
@@ -278,6 +365,16 @@ std::shared_ptr<rt::Tensor> loadPixelsFromFile(
     return pixels;
 }
 
+//! Load a mono FP16 waveform from disk and copy it to the GPU.
+//!
+//! Unlike the pixel loader, the waveform loader accepts any non-empty length.
+//! The number of samples is inferred directly from the file size.
+//!
+//! @param path Raw FP16 waveform file (not a WAV container).
+//! @param config Engine configuration; currently unused by this helper.
+//! @param stream CUDA stream used for the host-to-device copy.
+//! @param[out] numSamples Receives the inferred waveform length.
+//! @return GPU tensor with shape [batch=1, channel=1, samples].
 std::shared_ptr<rt::Tensor> loadWaveformFromFile(
     std::filesystem::path const& path, rt::CosmosEngineConfig const& config, cudaStream_t stream, int64_t& numSamples)
 {
@@ -293,6 +390,11 @@ std::shared_ptr<rt::Tensor> loadWaveformFromFile(
     return waveform;
 }
 
+//! Copy an FP16 tensor from GPU memory and save it as raw binary.
+//!
+//! @param path Destination file.
+//! @param tensor Source GPU tensor. Other data types are rejected.
+//! @param stream CUDA stream used for the device-to-host copy.
 void saveTensorToFp16File(std::filesystem::path const& path, rt::Tensor const& tensor, cudaStream_t stream)
 {
     check::check(tensor.getDataType() == nvinfer1::DataType::kHALF, "saveTensorToFp16File only supports fp16 tensors");
@@ -304,6 +406,10 @@ void saveTensorToFp16File(std::filesystem::path const& path, rt::Tensor const& t
     saveFp16BinaryFile(path, host.data(), numElements);
 }
 
+//! Select the effective random seed using the configured precedence.
+//!
+//! Priority is per-request JSON, then top-level JSON, then command line.
+//! A JSON seed of zero is treated as "unset", not as a literal seed.
 int32_t resolveSeed(int32_t requestSeed, int32_t globalSeed, int32_t cliSeed)
 {
     if (requestSeed != 0)
@@ -317,6 +423,10 @@ int32_t resolveSeed(int32_t requestSeed, int32_t globalSeed, int32_t cliSeed)
     return cliSeed;
 }
 
+//! Select the effective denoising-step count using configured precedence.
+//!
+//! Priority is per-request JSON, then top-level JSON, then command line.
+//! Returning zero tells WFMInferenceRuntime to use its engine configuration.
 int32_t resolveNumInferenceSteps(int32_t requestSteps, int32_t globalSteps, int32_t cliSteps)
 {
     if (requestSteps > 0)
@@ -334,6 +444,18 @@ int32_t resolveNumInferenceSteps(int32_t requestSteps, int32_t globalSteps, int3
     return 0;
 }
 
+//! Convert one parsed JSON request into the runtime's GPU-backed request type.
+//!
+//! This is the bridge between configuration/I/O and model execution. It resolves
+//! defaults, prepares a pixel tensor, fills dimensions expected by validation,
+//! and optionally adds an input waveform.
+//!
+//! @param spec Per-request values parsed from JSON.
+//! @param globals Top-level defaults parsed from JSON.
+//! @param args Command-line defaults.
+//! @param config Dimensions and sample rate expected by the exported engines.
+//! @param stream CUDA stream used while preparing tensors.
+//! @return A complete request suitable for WFMInferenceRuntime::handleRequest().
 rt::WFMGenerationRequest buildWfmRequest(WfmRequestSpec const& spec, WfmInputGlobals const& globals,
     WfmInferenceArgs const& args, rt::CosmosEngineConfig const& config, cudaStream_t stream)
 {
@@ -344,6 +466,8 @@ rt::WFMGenerationRequest buildWfmRequest(WfmRequestSpec const& spec, WfmInputGlo
         = resolveNumInferenceSteps(spec.numInferenceSteps, globals.numInferenceSteps, args.numInferenceSteps);
     request.seed = resolveSeed(spec.seed, globals.seed, args.seed);
 
+    // A supplied pixels_file conditions the request on that tensor. Otherwise,
+    // random normalized pixels provide a deterministic starting input.
     if (!spec.pixelsFile.empty())
     {
         request.pixels.buffer = loadPixelsFromFile(spec.pixelsFile, config, stream);
@@ -358,6 +482,8 @@ rt::WFMGenerationRequest buildWfmRequest(WfmRequestSpec const& spec, WfmInputGlo
     request.pixels.height = config.height;
     request.pixels.width = config.width;
 
+    // Audio is optional. Leaving inputWaveform.buffer empty tells the runtime
+    // that this request has no waveform conditioning.
     if (!spec.waveformFile.empty())
     {
         int64_t numSamples{0};
@@ -370,6 +496,27 @@ rt::WFMGenerationRequest buildWfmRequest(WfmRequestSpec const& spec, WfmInputGlo
     return request;
 }
 
+//! Parse the input JSON into global defaults and individual request specs.
+//!
+//! Expected structure:
+//! {
+//!   "num_inference_steps": 2,       // optional global default
+//!   "seed": 42,                     // optional global default
+//!   "requests": [
+//!     {
+//!       "prompt": "...",            // required
+//!       "generate_sound": false,    // optional
+//!       "pixels_file": "...",       // optional raw FP16 input
+//!       "waveform_file": "...",     // optional raw FP16 input
+//!       "output_video_file": "...", // optional raw FP16 output
+//!       "output_waveform_file": "..." // optional raw FP16 output
+//!     }
+//!   ]
+//! }
+//!
+//! @param inputFilePath JSON file to parse.
+//! @return Pair containing top-level defaults and all request descriptions.
+//! @throws std::runtime_error for malformed JSON or invalid required fields.
 std::pair<WfmInputGlobals, std::vector<WfmRequestSpec>> parseInputFile(std::filesystem::path const& inputFilePath)
 {
     WfmInputGlobals globals;
@@ -402,6 +549,7 @@ std::pair<WfmInputGlobals, std::vector<WfmRequestSpec>> parseInputFile(std::file
         check::check(requestItem.is_object(), "Each request must be a JSON object");
 
         WfmRequestSpec spec;
+        // prompt is the only mandatory per-request field.
         check::check(requestItem.contains("prompt") && requestItem["prompt"].is_string(),
             format::fmtstr("Request %zu must contain a string 'prompt' field", requestIdx));
         spec.prompt = requestItem["prompt"].get<std::string>();
@@ -432,10 +580,17 @@ std::pair<WfmInputGlobals, std::vector<WfmRequestSpec>> parseInputFile(std::file
 
 } // namespace
 
+//! Program entry point: initialize resources, run all requests, and write results.
+//!
+//! The requests are processed sequentially on one CUDA stream. This makes tensor
+//! lifetime and runtime-owned output buffers straightforward: each response is
+//! consumed before the next request begins.
 int main(int argc, char* argv[])
 {
+    // Add a top-level NVTX range so GPU profiling tools can identify this program.
     NVTX_SCOPED_RANGE(nvtx_main, "wfm_inference");
 
+    // Phase 1: Parse and validate command-line configuration.
     WfmInferenceArgs args;
     if (!parseWfmInferenceArgs(args, argc, argv))
     {
@@ -448,6 +603,7 @@ int main(int argc, char* argv[])
         return EXIT_SUCCESS;
     }
 
+    // Profiling is enabled if either console or JSON profiling output was requested.
     bool const profilerEnabled = args.dumpProfile || !args.profileOutputFile.empty();
     MemoryMonitor memoryMonitor;
     if (profilerEnabled)
@@ -455,8 +611,11 @@ int main(int argc, char* argv[])
         memoryMonitor.start();
     }
 
+    // TensorRT engines may depend on custom Edge-LLM layers. Loading the plugin
+    // library before deserializing engines registers those layers with TensorRT.
     auto pluginHandles = loadEdgellmPluginLib();
 
+    // Phase 2: Read lightweight request descriptions from JSON.
     WfmInputGlobals globals;
     std::vector<WfmRequestSpec> requestSpecs;
     try
@@ -470,12 +629,16 @@ int main(int argc, char* argv[])
         return EXIT_FAILURE;
     }
 
+    // Phase 3: Create one CUDA stream. Operations submitted to the same stream
+    // execute in order, which simplifies synchronization between pipeline stages.
     cudaStream_t stream{};
     CUDA_CHECK(cudaStreamCreate(&stream));
 
     std::unique_ptr<rt::WFMInferenceRuntime> wfmRuntime;
     try
     {
+        // Construction loads config.json, packing data, tokenizer data, and the
+        // TensorRT engines located beneath engineDir.
         wfmRuntime = std::make_unique<rt::WFMInferenceRuntime>(args.engineDir, stream);
     }
     catch (std::exception const& e)
@@ -487,7 +650,8 @@ int main(int argc, char* argv[])
 
     auto const& config = wfmRuntime->getEngineConfig();
 
-    // Perform warmup runs if requested
+    // Phase 4 (optional): Warm up GPU kernels and engine state. Warmup uses the
+    // first request repeatedly and is deliberately excluded from profiling.
     if (args.warmup > 0)
     {
         setProfilingEnabled(false);
@@ -515,6 +679,7 @@ int main(int argc, char* argv[])
         gTimer.reset();
     }
 
+    // Phase 5: Prepare the JSON document that will summarize every response.
     Json outputData;
     outputData["input_file"] = args.inputFile;
     outputData["engine_dir"] = args.engineDir;
@@ -537,8 +702,11 @@ int main(int argc, char* argv[])
                 100.0 * (requestIdx + 1) / requestSpecs.size());
         }
 
+        // Build input GPU tensors only when this request is about to run.
         rt::WFMGenerationRequest request = buildWfmRequest(spec, globals, args, config, stream);
 
+        // handleRequest() is the core handoff. Internally the runtime validates
+        // inputs, prepares text, encodes, denoises, and decodes video/audio.
         bool requestStatus = false;
         if (profilerEnabled)
         {
@@ -551,6 +719,8 @@ int main(int argc, char* argv[])
         }
         CUDA_CHECK(cudaStreamSynchronize(stream));
 
+        // Record settings and success independently of whether tensor files were
+        // requested. This makes the output JSON useful as a batch manifest.
         Json responseJson;
         responseJson["request_idx"] = requestIdx;
         responseJson["prompt"] = sanitizeUtf8ForJson(spec.prompt);
@@ -561,6 +731,7 @@ int main(int argc, char* argv[])
 
         if (requestStatus)
         {
+            // --dumpOutput prints tensor shapes only; it does not print tensor data.
             if (args.dumpOutput)
             {
                 if (response.outputVideo.buffer)
@@ -575,6 +746,8 @@ int main(int argc, char* argv[])
                 }
             }
 
+            // If an output path was provided, copy and save the video tensor.
+            // Otherwise, preserve only its shape in the response JSON.
             if (!spec.outputVideoFile.empty() && response.outputVideo.buffer)
             {
                 try
@@ -595,6 +768,8 @@ int main(int argc, char* argv[])
                 responseJson["output_video_shape"] = response.outputVideo.buffer->getShape().formatString();
             }
 
+            // Audio output follows the same policy as video output. It exists only
+            // when the selected bundle and request actually run the sound pipeline.
             if (!spec.outputWaveformFile.empty() && response.outputWaveform.buffer)
             {
                 try
@@ -626,6 +801,7 @@ int main(int argc, char* argv[])
         outputData["responses"].push_back(std::move(responseJson));
     }
 
+    // Phase 6: Stop measurement and report aggregate request status.
     LOG_INFO("Processing complete: %zu/%zu requests successful", requestSpecs.size() - failedCount,
         requestSpecs.size());
     if (failedCount > 0)
@@ -650,6 +826,8 @@ int main(int argc, char* argv[])
         LOG_INFO("%s", profileOutput.str().c_str());
     }
 
+    // Profiling JSON is separate from the normal response JSON because it contains
+    // timing stages and memory measurements rather than model outputs.
     if (!args.profileOutputFile.empty())
     {
         try
@@ -680,6 +858,8 @@ int main(int argc, char* argv[])
         }
     }
 
+    // Phase 7: Always attempt to write the batch response manifest, including
+    // entries for requests that failed.
     try
     {
         std::ofstream outputFile(args.outputFile);
@@ -703,6 +883,9 @@ int main(int argc, char* argv[])
         return EXIT_FAILURE;
     }
 
+    // Release the CUDA stream after all asynchronous work and output copies finish.
     CUDA_CHECK(cudaStreamDestroy(stream));
+    // A partial batch failure produces a failing process exit code even though
+    // successful request entries are still present in the output JSON.
     return hasFailedRequest ? EXIT_FAILURE : EXIT_SUCCESS;
 }
