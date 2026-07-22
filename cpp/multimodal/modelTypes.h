@@ -39,6 +39,7 @@ enum class ModelType
     GEMMA4_VISION,                //!< Gemma4 vision encoder
     NEMOTRON_OMNI_VISION_ENCODER, //!< Nemotron-Omni vision encoder
     NEMOTRON_OMNI_AUDIO_ENCODER,  //!< Nemotron-Omni audio encoder
+    VIT,                          //!< Model-agnostic fixed-shape ViT (VisualFixedInput export)
     UNKNOWN                       //!< Unknown or unsupported model type
 };
 
@@ -72,6 +73,8 @@ inline ModelType stringToModelType(std::string const& modelTypeStr)
         return ModelType::NEMOTRON_OMNI_VISION_ENCODER;
     if (modelTypeStr == "parakeet")
         return ModelType::NEMOTRON_OMNI_AUDIO_ENCODER;
+    if (modelTypeStr == "vit")
+        return ModelType::VIT;
     return ModelType::UNKNOWN;
 }
 

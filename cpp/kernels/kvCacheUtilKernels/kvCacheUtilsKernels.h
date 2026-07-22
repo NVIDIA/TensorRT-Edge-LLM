@@ -65,6 +65,25 @@ void instantiateKVCacheLayerFromTensor(
 void saveKVCacheLayerIntoTensor(
     rt::Tensor& dstKVCacheTensor, rt::Tensor const& srcKVCacheLayer, int32_t batchIdx, cudaStream_t stream);
 
+//! \brief Monolithic variant: instantiate the whole KV cache buffer from a saved tensor.
+//!
+//! Used by the VLA runtime (LLMEngineRunner) whose KV cache is a single contiguous buffer.
+//! \param[in,out] dstKVCacheBuffer [numDecoderLayers, maxBatchSize, 2, numKVHeads, maxSequenceLength, headDim]
+//! \param[in] srcKVCacheTensor     [numDecoderLayers, 2, numKVHeads, sequenceLength, headDim]
+//! \param[in] batchIdx Target batch index in the destination buffer
+//! \param[in] stream CUDA stream
+void instantiateKVCacheFromTensor(
+    rt::Tensor& dstKVCacheBuffer, rt::Tensor const& srcKVCacheTensor, int32_t batchIdx, cudaStream_t stream);
+
+//! \brief Monolithic variant: save the whole KV cache buffer into a tensor.
+//!
+//! \param[out] dstKVCacheTensor    [numDecoderLayers, 2, numKVHeads, sequenceLength, headDim]
+//! \param[in] srcKVCacheBuffer     [numDecoderLayers, maxBatchSize, 2, numKVHeads, maxSequenceLength, headDim]
+//! \param[in] batchIdx Source batch index in the buffer
+//! \param[in] stream CUDA stream
+void saveKVCacheIntoTensor(
+    rt::Tensor& dstKVCacheTensor, rt::Tensor const& srcKVCacheBuffer, int32_t batchIdx, cudaStream_t stream);
+
 /// @brief Batched save: copy multiple layers' KV cache into per-layer tensors in a single launch.
 /// All layers must share the same headDim. dstLayerInfos[i].data points to a [2, numKVHeads_i, seqLen, headDim] tensor.
 /// @param srcLayerInfos  [numLayers] GPU array — source cache buffers

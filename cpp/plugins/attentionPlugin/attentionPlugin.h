@@ -21,24 +21,18 @@
 #include <cstddef>
 #include <cstdlib>
 #include <string>
-#include <utility>
 #include <vector>
-
-#include "common/tensor.h"
 
 namespace trt_edgellm
 {
 namespace plugins
 {
 
-//! \brief TensorRT plugin for attention operations (V3 — IPluginV3).
+//! \brief TensorRT plugin for attention operations (context and decode)
 //!
 //! This plugin implements efficient attention mechanisms including context attention (prefill)
 //! and decode attention with KV cache support.
-class AttentionPlugin : public nvinfer1::IPluginV3,
-                        public nvinfer1::IPluginV3OneCore,
-                        public nvinfer1::IPluginV3OneBuildV2,
-                        public nvinfer1::IPluginV3OneRuntime
+class AttentionPlugin : public nvinfer1::IPluginV2DynamicExt
 {
 public:
     //! \brief Constructor for attention plugin with configuration parameters
@@ -50,67 +44,125 @@ public:
     //! \param[in] enableFp8KVCache Whether to enable FP8 KV cache
     //! \param[in] slidingWindowSize Sliding window size (-1 = no sliding window)
     //! \param[in] qkvScales Optional [q, k, v] FP8 dequant scales (required when enableFp8KVCache)
+    //! \param[in] contextAttentionMaskType Context prefill mask type (ContextAttentionMaskType enum value:
+    //!            0 = PADDING, 1 = CAUSAL, 2 = SLIDING_OR_CHUNKED_CAUSAL, 3 = CUSTOM_MASK). Defaults to CAUSAL.
     AttentionPlugin(std::string const& name, int32_t numQHeads, int32_t numKVHeads, int32_t headSize,
         int32_t supportsSpecDecode, int32_t enableFp8KVCache, int32_t slidingWindowSize = -1,
-        std::vector<float> const& qkvScales = {});
-    AttentionPlugin(std::string const& name, nvinfer1::PluginFieldCollection const* fc);
+        std::vector<float> const& qkvScales = {}, int32_t contextAttentionMaskType = 1);
 
+    //! \brief Constructor for deserialization
+    //! \param[in] name Plugin instance name
+    //! \param[in] data Serialized plugin data
+    //! \param[in] length Length of serialized data
+    AttentionPlugin(std::string const& name, std::byte const* data, size_t length);
+
+    //! Force to distinguish different instances of the plugin
     AttentionPlugin() = delete;
+
     AttentionPlugin(AttentionPlugin const&) = delete;
+
     ~AttentionPlugin() override;
 
-    // IPluginV3
-    nvinfer1::IPluginCapability* getCapabilityInterface(nvinfer1::PluginCapabilityType type) noexcept override;
-    nvinfer1::IPluginV3* clone() noexcept override;
+    //! \name IPluginV2DynamicExt Methods
+    //! @{
 
-    // IPluginV3OneCore
-    char const* getPluginName() const noexcept override;
-    char const* getPluginVersion() const noexcept override;
-    char const* getPluginNamespace() const noexcept override;
+    //! \brief Clone the plugin instance
+    //! \return Pointer to cloned plugin
+    nvinfer1::IPluginV2DynamicExt* clone() const noexcept override;
 
-    // IPluginV3OneBuild
+    //! \brief Get number of outputs
+    //! \return Number of output tensors
     int32_t getNbOutputs() const noexcept override;
-    int32_t getOutputDataTypes(nvinfer1::DataType* outputTypes, int32_t nbOutputs, nvinfer1::DataType const* inputTypes,
-        int32_t nbInputs) const noexcept override;
-    int32_t getOutputShapes(nvinfer1::DimsExprs const* inputs, int32_t nbInputs, nvinfer1::DimsExprs const* shapeInputs,
-        int32_t nbShapeInputs, nvinfer1::DimsExprs* outputs, int32_t nbOutputs,
-        nvinfer1::IExprBuilder& exprBuilder) noexcept override;
-    bool supportsFormatCombination(int32_t pos, nvinfer1::DynamicPluginTensorDesc const* inOut, int32_t nbInputs,
-        int32_t nbOutputs) noexcept override;
-    int32_t configurePlugin(nvinfer1::DynamicPluginTensorDesc const* in, int32_t nbInputs,
-        nvinfer1::DynamicPluginTensorDesc const* out, int32_t nbOutputs) noexcept override;
-    size_t getWorkspaceSize(nvinfer1::DynamicPluginTensorDesc const* inputs, int32_t nbInputs,
-        nvinfer1::DynamicPluginTensorDesc const* outputs, int32_t nbOutputs) const noexcept override;
-    int32_t getAliasedInput(int32_t outputIndex) noexcept override;
 
-    // IPluginV3OneRuntime
+    //! \brief Get output data type
+    //! \param[in] index Output index
+    //! \param[in] inputTypes Array of input data types
+    //! \param[in] nbInputs Number of inputs
+    //! \return Output data type
+    nvinfer1::DataType getOutputDataType(
+        int32_t index, nvinfer1::DataType const* inputTypes, int32_t nbInputs) const noexcept override;
+
+    //! \brief Get output dimensions
+    //! \param[in] outputIndex Output tensor index
+    //! \param[in] inputs Input tensor dimensions
+    //! \param[in] nbInputs Number of inputs
+    //! \param[in] exprBuilder Expression builder for dimension calculations
+    //! \return Output tensor dimensions
+    nvinfer1::DimsExprs getOutputDimensions(int32_t outputIndex, nvinfer1::DimsExprs const* inputs, int32_t nbInputs,
+        nvinfer1::IExprBuilder& exprBuilder) noexcept override;
+
+    //! \brief Check if format combination is supported
+    //! \param[in] pos Position in the input/output tensor list
+    //! \param[in] inOut Array of input and output tensor descriptors
+    //! \param[in] nbInputs Number of inputs
+    //! \param[in] nbOutputs Number of outputs
+    //! \return True if format combination is supported
+    bool supportsFormatCombination(
+        int32_t pos, nvinfer1::PluginTensorDesc const* inOut, int32_t nbInputs, int32_t nbOutputs) noexcept override;
+
+    //! \brief Configure the plugin with input and output tensors
+    //! \param[in] in Input tensor descriptors
+    //! \param[in] nbInputs Number of inputs
+    //! \param[in] out Output tensor descriptors
+    //! \param[in] nbOutputs Number of outputs
+    void configurePlugin(nvinfer1::DynamicPluginTensorDesc const* in, int32_t nbInputs,
+        nvinfer1::DynamicPluginTensorDesc const* out, int32_t nbOutputs) noexcept override;
+
+    //! \brief Get workspace size required by the plugin
+    //! \param[in] inputs Input tensor descriptors
+    //! \param[in] nbInputs Number of inputs
+    //! \param[in] outputs Output tensor descriptors
+    //! \param[in] nbOutputs Number of outputs
+    //! \return Workspace size in bytes
+    size_t getWorkspaceSize(nvinfer1::PluginTensorDesc const* inputs, int32_t nbInputs,
+        nvinfer1::PluginTensorDesc const* outputs, int32_t nbOutputs) const noexcept override;
+
+    //! \brief Execute the plugin
+    //! \param[in] inputDesc Input tensor descriptors
+    //! \param[in] outputDesc Output tensor descriptors
+    //! \param[in] inputs Input tensor data pointers
+    //! \param[out] outputs Output tensor data pointers
+    //! \param[in] workspace Workspace memory pointer
+    //! \param[in] stream CUDA stream for execution
+    //! \return 0 on success, non-zero on failure
     int32_t enqueue(nvinfer1::PluginTensorDesc const* inputDesc, nvinfer1::PluginTensorDesc const* outputDesc,
         void const* const* inputs, void* const* outputs, void* workspace, cudaStream_t stream) noexcept override;
-    int32_t onShapeChange(nvinfer1::PluginTensorDesc const* in, int32_t nbInputs, nvinfer1::PluginTensorDesc const* out,
-        int32_t nbOutputs) noexcept override;
-    nvinfer1::IPluginV3* attachToContext(nvinfer1::IPluginResourceContext* context) noexcept override;
-    nvinfer1::PluginFieldCollection const* getFieldsToSerialize() noexcept override;
 
+    //! \brief Get serialization size
+    //! \return Size in bytes required for serialization
+    size_t getSerializationSize() const noexcept override;
+
+    //! \brief Serialize the plugin
+    //! \param[out] buffer Buffer to write serialized data
+    void serialize(void* buffer) const noexcept override;
+
+    //! \brief Get plugin type
+    //! \return Plugin type string
+    char const* getPluginType() const noexcept override;
+
+    //! \brief Get plugin namespace
+    //! \return Plugin namespace string
+    char const* getPluginNamespace() const noexcept override;
+
+    //! \brief Set plugin namespace
+    //! \param[in] pluginNamespace Namespace to set
     void setPluginNamespace(char const* pluginNamespace) noexcept;
 
-private:
-    //! Split a BHSD-layout KV cache [B, 2, Hkv, cap, D] into separate K and V tensors.
-    //! When seqLen == 0 (default), copies the full capacity → output is [B, cap, Hkv, D].
-    //! When seqLen > 0, copies only the first seqLen tokens → output is [B, seqLen, Hkv, D].
-    //! The compact form allows downstream kernels to derive batch stride from the output's S dimension.
-    static std::pair<rt::Tensor, rt::Tensor> deinterleaveKVCache(rt::Tensor const& kvCacheTensor,
-        std::byte*& workspacePtr, int32_t batchSize, int32_t numKVHeads, int32_t kvCacheCapacity, int32_t headSize,
-        int32_t seqLen, cudaStream_t stream);
+    //! \brief Get plugin version
+    //! \return Plugin version string
+    char const* getPluginVersion() const noexcept override;
 
-    //! Launch the CuTe DSL FFPA d512 causal attention kernel.
-    static void dispatchFFPAKernel(half const* q, half const* k, half const* v, half* o, int32_t batchSize,
-        int32_t seqlenQ, int32_t seqlenK, int32_t numQHeads, int32_t numKVHeads, int32_t headDim, cudaStream_t stream);
+    //! \brief Initialize the plugin
+    //! \return 0 on success, non-zero on failure
+    int32_t initialize() noexcept override;
 
-    //! Zero the attention output buffer before FFPA prefill.
-    //! FFPA is a dense causal kernel with no cu_seqlens support, so it processes padding positions as real data.
-    //! Zeroing the output ensures padding positions don't carry NaN/garbage into downstream layers.
-    static void zeroPrefillOutputForPaddingForFFPA(rt::Tensor& attentionOutput, int32_t batchSize, int32_t seqLen,
-        int32_t numQHeads, int32_t headSize, cudaStream_t stream);
+    //! \brief Terminate the plugin and release resources
+    void terminate() noexcept override;
+
+    //! \brief Destroy the plugin instance
+    void destroy() noexcept override;
+
+    //! @}
 
 protected:
     std::string mLayerName; //!< Plugin layer name
@@ -140,45 +192,63 @@ protected:
     //! Sliding window size for attention (-1 = no sliding window, >0 = window size)
     int32_t mSlidingWindowSize = -1;
 
+    //! Context attention mask type for prefill, stored as a ContextAttentionMaskType enum value.
+    //! 0 = PADDING (bidirectional full-prefix), 1 = CAUSAL (default), 2 = SLIDING_OR_CHUNKED_CAUSAL, 3 = CUSTOM_MASK.
+    int32_t mContextAttentionMaskType{1};
+
 #ifdef CUTE_DSL_FMHA_ENABLED
     bool mUseCuteDslFMHA{true};
 #else
     bool mUseCuteDslFMHA{false};
 #endif
-
-    //! Whether FMHA context kernels are available for this configuration.
-    //! When false (e.g. headSize=512), the prefill path uses XQA instead.
-    bool mCanImplementFMHA{true};
-
-    //! Whether FFPA d512 kernel is available for headSize=512 prefill+decode.
-    bool mCanImplementFFPA{false};
-
-    //! Whether XQA decode kernels are available.
-    bool mCanImplementXQA{false};
-
-    std::vector<nvinfer1::PluginField> mDataToSerialize;
-    nvinfer1::PluginFieldCollection mFCToSerialize{};
 };
 
 //! \brief Factory class for creating AttentionPlugin instances
-class AttentionPluginCreator : public nvinfer1::IPluginCreatorV3One
+class AttentionPluginCreator : public nvinfer1::IPluginCreator
 {
 public:
     AttentionPluginCreator();
+
     ~AttentionPluginCreator() override = default;
 
+    //! \brief Get plugin name
+    //! \return Plugin name string
     char const* getPluginName() const noexcept override;
-    char const* getPluginVersion() const noexcept override;
+
+    //! \brief Get plugin field collection
+    //! \return Pointer to plugin field collection containing all plugin fields
     nvinfer1::PluginFieldCollection const* getFieldNames() noexcept override;
-    char const* getPluginNamespace() const noexcept override;
+
+    //! \brief Set plugin namespace
+    //! \param[in] pluginNamespace Namespace to set
     void setPluginNamespace(char const* pluginNamespace) noexcept;
-    nvinfer1::IPluginV3* createPlugin(
-        char const* name, nvinfer1::PluginFieldCollection const* fc, nvinfer1::TensorRTPhase phase) noexcept override;
+
+    //! \brief Get plugin namespace
+    //! \return Plugin namespace string
+    char const* getPluginNamespace() const noexcept override;
+
+    //! \brief Get plugin version
+    //! \return Plugin version string
+    char const* getPluginVersion() const noexcept override;
+
+    //! \brief Create a new plugin instance
+    //! \param[in] name Plugin instance name
+    //! \param[in] fc Plugin field collection containing configuration parameters
+    //! \return Pointer to created plugin instance
+    nvinfer1::IPluginV2* createPlugin(char const* name, nvinfer1::PluginFieldCollection const* fc) noexcept override;
+
+    //! \brief Deserialize a plugin instance from data
+    //! \param[in] name Plugin instance name
+    //! \param[in] serialData Serialized plugin data
+    //! \param[in] serialLength Length of serialized data in bytes
+    //! \return Pointer to deserialized plugin instance
+    nvinfer1::IPluginV2* deserializePlugin(
+        char const* name, void const* serialData, size_t serialLength) noexcept override;
 
 private:
-    static nvinfer1::PluginFieldCollection mFieldCollection;
-    static std::vector<nvinfer1::PluginField> mPluginAttributes;
-    std::string mNamespace;
+    static nvinfer1::PluginFieldCollection mFieldCollection;     //!< Plugin field collection for registration
+    static std::vector<nvinfer1::PluginField> mPluginAttributes; //!< Plugin attributes/fields
+    std::string mNamespace;                                      //!< Plugin namespace
 };
 
 } // namespace plugins

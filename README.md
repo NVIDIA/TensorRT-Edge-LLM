@@ -15,13 +15,73 @@
 
 ## Overview
 
-TensorRT Edge-LLM is NVIDIA's high-performance C++ inference runtime for Large Language Models (LLMs) and Vision-Language Models (VLMs) on embedded platforms. It enables efficient deployment of state-of-the-art language models on resource-constrained devices such as NVIDIA Jetson, NVIDIA DRIVE, and NVIDIA DGX Spark platforms. TensorRT Edge-LLM provides convenient Python scripts to convert HuggingFace checkpoints to [ONNX](https://onnx.ai). Engine build and end-to-end inference runs entirely on Edge platforms.
+TensorRT Edge-LLM is NVIDIA's high-performance C++ inference runtime for Large Language Models (LLMs), Vision-Language Models (VLMs), Vision-Language-Action (VLA) models, and World Foundation Models (WFMs) on embedded platforms. It enables efficient deployment of state-of-the-art language models on resource-constrained devices such as NVIDIA Jetson, NVIDIA DRIVE, and NVIDIA DGX Spark platforms. TensorRT Edge-LLM provides convenient Python scripts to convert HuggingFace checkpoints to [ONNX](https://onnx.ai). Engine build and end-to-end inference runs entirely on Edge platforms.
 
 ---
 
 ## Getting Started
 
 For the supported platforms, models and precisions, see the [**Overview**](https://nvidia.github.io/TensorRT-Edge-LLM/latest/overview.html). Get started with TensorRT Edge-LLM in <15 minutes. For complete installation and usage instructions, see the [**Quick Start Guide**](https://nvidia.github.io/TensorRT-Edge-LLM/latest/user_guide/getting_started/quick-start-guide.html).
+
+---
+
+## World Foundation Models (Cosmos3-Edge)
+
+TensorRT Edge-LLM includes `WFMInferenceRuntime` and the `wfm_inference` example for text-to-video generation with [nvidia/Cosmos3-Edge](https://huggingface.co/nvidia/Cosmos3-Edge). The runtime chains five TRT engines (VAE encode/decode, vision embed, MoT backbone, denoise head) behind a single C++ API.
+
+### Build `wfm_inference`
+
+After building the C++ runtime and Edge-LLM TensorRT plugins (see [Installation](https://nvidia.github.io/TensorRT-Edge-LLM/latest/user_guide/getting_started/installation.html)):
+
+```bash
+cd /path/to/TensorRT-Edge-LLM/build
+cmake --build . --target wfm_inference -j$(nproc)
+```
+
+### Export engines
+
+Cosmos3-Edge engines are exported with the companion script `Test/wfm/export_wfm_cosmos_edge.py` (Torch-TensorRT; requires a CUDA GPU with enough memory for the ~3.9B MoT backbone). From the `Test` export workspace:
+
+```bash
+cd /path/to/Test
+export EDGE_LLM_PLUGIN_SO=/path/to/TensorRT-Edge-LLM/build-plugin-trt11/libNvInfer_edgellm_plugin.so
+
+python wfm/export_wfm_cosmos_edge.py \
+  --engine-dir /tmp/cosmos_edge_engines \
+  --dtype fp16 \
+  --num-inference-steps 2 \
+  --prompt "A robot arm picks up a red cube."
+```
+
+This writes an engine bundle:
+
+```
+<engine_dir>/
+  config.json
+  packing_static.json
+  embedding.safetensors
+  tokenizer/
+  visual_encode/visual_encode.engine
+  embed/embed.engine
+  mot_backbone/mot_backbone.engine
+  denoise_head/denoise_head.engine
+  visual_decode/visual_decode.engine
+```
+
+Use the same `--prompt` at export and inference time so `packing_static.json` matches the runtime text packing (`und_len` / sequence length).
+
+### Run inference
+
+```bash
+export EDGELLM_PLUGIN_PATH=/path/to/TensorRT-Edge-LLM/build-plugin-trt11/libNvInfer_edgellm_plugin.so
+
+./build/examples/wfm/wfm_inference \
+  --engineDir=/tmp/cosmos_edge_engines \
+  --inputFile=examples/wfm/wfm_input_example.json \
+  --outputFile=/tmp/wfm_output.json
+```
+
+See `examples/wfm/wfm_input_example.json` for the request JSON format. Each request specifies a text `prompt`, optional `output_video_file` (raw fp16 tensor dump), `num_inference_steps`, and `seed`. Set `generate_sound: true` only for Cosmos3-Omni bundles that include audio engines.
 
 ---
 
@@ -79,6 +139,7 @@ See the [**Performance Benchmarks**](https://nvidia.github.io/TensorRT-Edge-LLM/
 - Task planning and reasoning
 - Visual question answering
 - Human-robot collaboration
+- World-model video generation (Cosmos3-Edge WFM)
 
 **🏭 Industrial IoT**
 - Equipment monitoring with NLP
