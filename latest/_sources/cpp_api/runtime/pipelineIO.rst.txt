@@ -11,3 +11,24 @@ Pipeline Io
    :members:
    :undoc-members:
 
+.. doxygenfunction:: trt_edgellm::rt::allocateBasicIO
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::allocateDeepstackEmbeds
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::allocateSpecDecodeHiddenStates
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::allocateMRope
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::buildTensorMap
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::buildTensorMapForSpecDecodeDraft
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::buildTensorMapForGemma4MTPDraft
+   :project: TensorRT Edge-LLM
+

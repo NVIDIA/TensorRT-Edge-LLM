@@ -6,3 +6,6 @@ Tokenizer Utils
    :members:
    :undoc-members:
 
+.. doxygenfunction:: trt_edgellm::tokenizer::validateFileSize
+   :project: TensorRT Edge-LLM
+

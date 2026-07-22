@@ -317,9 +317,9 @@ The generation phase uses iterative tree-based speculation with conditional draf
 #include "runtime/llmInferenceRuntime.h"
 #include <unordered_map>
 
-// Initialize CUDA stream
+// Initialize a non-blocking CUDA stream (avoids implicit sync with TensorRT's aux streams)
 cudaStream_t stream;
-CUDA_CHECK(cudaStreamCreate(&stream));
+CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
 
 // Initialize runtime — vanilla mode (no draft model)
 std::unordered_map<std::string, std::string> loraWeightsMap{}; // Empty for no LoRA
@@ -355,9 +355,9 @@ CUDA_CHECK(cudaStreamDestroy(stream));
 #include "runtime/llmInferenceRuntime.h"
 #include "runtime/llmRuntimeUtils.h"
 
-// Initialize CUDA stream
+// Initialize a non-blocking CUDA stream (avoids implicit sync with TensorRT's aux streams)
 cudaStream_t stream;
-CUDA_CHECK(cudaStreamCreate(&stream));
+CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
 
 // Configure EAGLE drafting parameters
 SpecDecodeDraftingConfig draftingConfig;
@@ -400,9 +400,9 @@ CUDA_CHECK(cudaStreamDestroy(stream));
 #include "runtime/imageUtils.h"
 #include <unordered_map>
 
-// Initialize CUDA stream
+// Initialize a non-blocking CUDA stream (avoids implicit sync with TensorRT's aux streams)
 cudaStream_t stream;
-CUDA_CHECK(cudaStreamCreate(&stream));
+CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
 
 // Initialize multimodal runtime
 std::unordered_map<std::string, std::string> loraWeightsMap{};
@@ -442,9 +442,9 @@ CUDA_CHECK(cudaStreamDestroy(stream));
 #include "runtime/llmInferenceRuntime.h"
 #include <unordered_map>
 
-// Initialize CUDA stream
+// Initialize a non-blocking CUDA stream (avoids implicit sync with TensorRT's aux streams)
 cudaStream_t stream;
-CUDA_CHECK(cudaStreamCreate(&stream));
+CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
 
 // Initialize runtime with LoRA weights map
 std::unordered_map<std::string, std::string> loraWeightsMap{

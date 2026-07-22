@@ -1,6 +1,15 @@
 Initialize Cos Sin Cache
 ========================
 
-.. doxygenfile:: kernels/posEncoding/initializeCosSinCache.h
+.. doxygenfunction:: trt_edgellm::kernel::initializeNormalRopeCosSin
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::initializeLongRopeCosSin
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::initializeMRopeCosSin
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::initializeTextOnlyMRopeCosSin
    :project: TensorRT Edge-LLM
 

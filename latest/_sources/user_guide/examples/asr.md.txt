@@ -135,9 +135,10 @@ Qwen3-ASR-0.6B; 1.7B is noted where it diverges.
 
 Insert a quantization step before [Step 1: Export](#step-1-export-x86-host),
 then point the export at the quantized output instead of the Hugging
-Face checkpoint. Joint multimodal calibration streams LibriSpeech
-(audio, transcript) pairs through the model -- no `--dataset` flag is
-required.
+Face checkpoint. Joint multimodal calibration streams audio-transcript pairs
+through the model using the default `librispeech` audio dataset. Pick another
+registered audio dataset with `--audio_dataset <name>`; to add your own, see
+[Calibration Dataset Customization](../../developer_guide/customization/calibration-datasets.md).
 
 **Recipe A: 0.6B NVFP4 LLM + FP16 audio**
 

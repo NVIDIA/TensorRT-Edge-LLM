@@ -1,6 +1,18 @@
 Apply Rope Write KV
 ===================
 
-.. doxygenfile:: kernels/posEncoding/applyRopeWriteKV.h
+.. doxygenfunction:: trt_edgellm::kernel::launchApplyRopeWriteKV
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchApplyRopeWriteKVTreeDecoding
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchApplyRopeWriteKVSplitQKV
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchApplyRopeQOnly
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchApplyRopeQOnlyTreeDecoding
    :project: TensorRT Edge-LLM
 

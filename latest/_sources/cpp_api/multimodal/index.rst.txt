@@ -9,6 +9,9 @@ API documentation for the multimodal module.
    audioRunner
    audioUtils
    code2WavRunner
+   gemma4AudioRunner
+   gemma4UnifiedAudioRunner
+   gemma4UnifiedVisionRunner
    gemma4ViTRunner
    imageUtils
    internViTRunner
@@ -17,4 +20,7 @@ API documentation for the multimodal module.
    nemotronOmniAudioRunner
    nemotronOmniViTRunner
    phi4mmViTRunner
+   qwen25vlViTRunner
+   qwen3omniViTRunner
+   qwen3vlViTRunner
    qwenViTRunner

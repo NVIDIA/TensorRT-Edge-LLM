@@ -11,3 +11,18 @@ Plugin Utils
    :members:
    :undoc-members:
 
+.. doxygenfunction:: trt_edgellm::plugins::applyThorSMRenumberWAR
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::plugins::alignTensorSize
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::plugins::toFieldType
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::plugins::accumulateWorkspaceSize
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::plugins::assignTensorFromWorkspace
+   :project: TensorRT Edge-LLM
+

@@ -1,6 +1,0 @@
-Spec Decode Utils
-=================
-
-.. doxygenfile:: runtime/decoding/specDecodeUtils.h
-   :project: TensorRT Edge-LLM
-

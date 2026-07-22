@@ -47,8 +47,8 @@
 
 
     <script src="../../_static/documentation_options.js?v=5929fcd5"></script>
-    <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
-    <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
     <script src="../../_static/copybutton.js?v=65e89d2a"></script>
     <script>let toggleHintShow = 'Click to show';</script>
@@ -56,11 +56,12 @@
     <script>let toggleOpenOnPrint = 'true';</script>
     <script src="../../_static/togglebutton.js?v=b8b12719"></script>
     <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
+    <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'cpp_api/plugins/vitAttentionPlugin';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.19.0';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = './_static/switcher.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.9.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.9.1';
         DOCUMENTATION_OPTIONS.show_version_warning_banner =
             false;
         </script>
@@ -76,7 +77,7 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.9.0" />
+  <meta name="docsearch:version" content="0.9.1" />
   
     
     <script src="../../_static/searchtools.js"></script>
@@ -395,11 +396,13 @@
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Customization</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/customization-guide.html">Customization Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/calibration-datasets.html">Calibration Dataset Customization</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/tensorrt-plugins.html">TensorRT Plugins Guide</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Testing</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/code-coverage.html">Code Coverage with SonarQube</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/few-layer-validation.html">Few-Layer Numeric Validation</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">APIs</span></p>
 <ul class="current nav bd-sidenav">
@@ -443,31 +446,36 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../kernels/index.html">Kernels Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/NvFP4MoEUtils.html">Nv Fp4 Mo E Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/applyRopeWriteKV.html">Apply Rope Write KV</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/audioFbankKernels.html">Audio Fbank Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/batchEvictKernels.html">Batch Evict Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/buildLayout.html">Build Layout</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/causalConv1d.html">Causal Conv1d</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/common.html">Common</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/contextFMHARunner.html">Context FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/conversion.html">Conversion</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslF16MoeRunner.html">Cute Dsl F16 Moe Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslFFPARunner.html">Cute Dsl Ffpa Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslFMHARunner.html">Cute Dsl FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGDNRunner.html">Cute Dsl Gdn Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGemmNvFp4Runner.html">Cute Dsl GEMM Nv Fp4 Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGemmRunner.html">Cute Dsl GEMM Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslNvfp4MoeRunner.html">Cute Dsl Nvfp4 Moe Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslNvfp4MoeSm110Runner.html">Cute Dsl Nvfp4 Moe Sm110 Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslSSDRunner.html">Cute Dsl Ssd Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/ddtreeKernels.html">Ddtree Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/decoderXQARunner.html">Decoder XQA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/dequant.html">Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/dequantize.html">Dequantize</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../kernels/dflashAcceptKernels.html">Dflash Accept Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/dflashRuntimeKernels.html">Dflash Runtime Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/eagleAcceptKernels.html">EAGLE Accept Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/eagleUtilKernels.html">EAGLE Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/embeddingKernels.html">Embedding Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/f16MoeSupportKernels.html">F16 Moe Support Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/fmhaParams_v2.html">FMHA Params V2</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/fp4Quantize.html">Fp4 Quantize</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/gdnKernelUtils.html">Gdn Kernel Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/gemma4AudioAttention.html">Gemma4 Audio Attention</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/gemma4MTPRuntimeKernels.html">Gemma4 Mtp Runtime Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/imageUtilKernels.html">Image Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/initializeCosSinCache.html">Initialize Cos Sin Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/int4GroupwiseGemm.html">Int4 Groupwise GEMM</a></li>
@@ -482,13 +490,16 @@
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeAlignSumKernels.html">Moe Align Sum Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeMarlin.html">Moe Marlin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeMarlinIndicesKernels.html">Moe Marlin Indices Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moePerExpertScaleKernels.html">Moe Per Expert Scale Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeSigmoidGroupTopkKernels.html">Moe Sigmoid Group Topk Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeTopkSoftmaxKernels.html">Moe Topk Softmax Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/mtpStateScatterKernels.html">Mtp State Scatter Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoeTypes.html">Nvfp4 Moe Types</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4_dequant.html">Nvfp4 Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4_tensor.html">Nvfp4 Tensor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/scaleConvert.html">Scale Convert</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/selectiveStateUpdate.html">Selective State Update</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/speculativeKernelsUtils.html">Speculative Kernels Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/ssdVarlenMetadata.html">Ssd Varlen Metadata</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/talkerMLPKernels.html">Talker Mlp Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/utilKernels.html">Util Kernels</a></li>
@@ -499,6 +510,9 @@
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/audioRunner.html">Audio Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/audioUtils.html">Audio Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/code2WavRunner.html">Code2 Wav Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4AudioRunner.html">Gemma4 Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4UnifiedAudioRunner.html">Gemma4 Unified Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4UnifiedVisionRunner.html">Gemma4 Unified Vision Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4ViTRunner.html">Gemma4 ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/imageUtils.html">Image Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/internViTRunner.html">Intern ViT Runner</a></li>
@@ -507,14 +521,21 @@
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/nemotronOmniAudioRunner.html">Nemotron Omni Audio Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/nemotronOmniViTRunner.html">Nemotron Omni ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/phi4mmViTRunner.html">Phi4mm ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwen25vlViTRunner.html">Qwen25vl ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwen3omniViTRunner.html">Qwen3omni ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwen3vlViTRunner.html">Qwen3vl ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/qwenViTRunner.html">Qwen ViT Runner</a></li>
 </ul>
 </details></li>
 <li class="toctree-l2 current active has-children"><a class="reference internal" href="index.html">Plugins Module</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
+<li class="toctree-l3"><a class="reference internal" href="allReducePlugin.html">All Reduce Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="attentionPlugin.html">Attention Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="causalConv1dPlugin.html">Causal Conv1d Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="dflashTargetKVCacheUpdatePlugin.html">Dflash Target KV Cache Update Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fp16MoePlugin.html">Fp16 Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fusedNvfp4GemmAllReducePlugin.html">Fused Nvfp4 GEMM All Reduce Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="gatedDeltaNetPlugin.html">Gated Delta Net Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="gemma4AudioAttentionPlugin.html">Gemma4 Audio Attention Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="int4GroupwiseGemmPlugin.html">Int4 Groupwise GEMM Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="int4MoePlugin.html">Int4 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="mambaPlugin.html">Mamba Plugin</a></li>
@@ -535,24 +556,29 @@
 <li class="toctree-l3"><a class="reference internal" href="../runtime/audioLoader.html">Audio Loader</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/audioUtils.html">Audio Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/decoderRegistry.html">Decoder Registry</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/decoderUtils.html">Decoder Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/decodingInferenceContext.html">Decoding Inference Context</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/decodingStrategy.html">Decoding Strategy</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/deepstackBinding.html">Deepstack Binding</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/deploymentConfig.html">Deployment Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/dflashDecodeUtils.html">Dflash Decode Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/dflashDecoder.html">Dflash Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/eagleDecoder.html">EAGLE Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/embeddingPreprocessor.html">Embedding Preprocessor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/engineExecutor.html">Engine Executor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/externalWeightManager.html">External Weight Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/gemma4EmbeddingPreprocessor.html">Gemma4 Embedding Preprocessor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/gemma4MTPDecoder.html">Gemma4 Mtp Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/hybridCacheManager.html">Hybrid Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/imageUtils.html">Image Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/inferenceDims.html">Inference Dims</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/inferencePhase.html">Inference Phase</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/kvCacheManager.html">KV Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/layerDebugger.html">Layer Debugger</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/llmEngineConfig.html">LLM Engine Config</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/llmInferenceRuntime.html">LLM Inference Runtime</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/llmRuntimeUtils.html">LLM Runtime Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/logitBias.html">Logit Bias</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/loraManager.html">Lora Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/mambaCacheManager.html">Mamba Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/melSpectrogram.html">Mel Spectrogram</a></li>
@@ -562,7 +588,6 @@
 <li class="toctree-l3"><a class="reference internal" href="../runtime/registryBuilder.html">Registry Builder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/ropeCache.html">Rope Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/sharedResources.html">Shared Resources</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../runtime/specDecodeUtils.html">Spec Decode Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/stepPreparer.html">Step Preparer</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/streaming.html">Streaming</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/systemPromptKVCache.html">System Prompt KV Cache</a></li>
@@ -658,16 +683,17 @@
 <div class="breathe-sectiondef docutils container">
 <p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-functions">Public Functions</p>
 <dl class="cpp function">
-<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7plugins18ViTAttentionPlugin18ViTAttentionPluginERKNSt6stringE7int32_t7int32_t">
-<span id="_CPPv3N11trt_edgellm7plugins18ViTAttentionPlugin18ViTAttentionPluginERKNSt6stringE7int32_t7int32_t"></span><span id="_CPPv2N11trt_edgellm7plugins18ViTAttentionPlugin18ViTAttentionPluginERKNSt6stringE7int32_t7int32_t"></span><span id="trt_edgellm::plugins::ViTAttentionPlugin::ViTAttentionPlugin__ssCR.int32_t.int32_t"></span><span class="target" id="classtrt__edgellm_1_1plugins_1_1ViTAttentionPlugin_1ac74cf6ae07f13342df829c74c5159b8f"></span><span class="sig-name descname"><span class="n"><span class="pre">ViTAttentionPlugin</span></span></span><span class="sig-paren">(</span>
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7plugins18ViTAttentionPlugin18ViTAttentionPluginERKNSt6stringE7int32_t7int32_tNSt8optionalIfEE">
+<span id="_CPPv3N11trt_edgellm7plugins18ViTAttentionPlugin18ViTAttentionPluginERKNSt6stringE7int32_t7int32_tNSt8optionalIfEE"></span><span id="_CPPv2N11trt_edgellm7plugins18ViTAttentionPlugin18ViTAttentionPluginERKNSt6stringE7int32_t7int32_tNSt8optionalIfEE"></span><span id="trt_edgellm::plugins::ViTAttentionPlugin::ViTAttentionPlugin__ssCR.int32_t.int32_t.std::optional:float:"></span><span class="target" id="classtrt__edgellm_1_1plugins_1_1ViTAttentionPlugin_1af85e63301c26e46b02ace35a0e5ac3bb"></span><span class="sig-name descname"><span class="n"><span class="pre">ViTAttentionPlugin</span></span></span><span class="sig-paren">(</span>
 
 <dl>
 <dd><em class="sig-param"><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">string</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">name</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">numHeads</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">headSize</span></span></em></dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">headSize</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">optional</span></span><span class="p"><span class="pre">&lt;</span></span><span class="kt"><span class="pre">float</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">attentionScale</span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">nullopt</span></span></em>,</dd>
 </dl>
 
-<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm7plugins18ViTAttentionPlugin18ViTAttentionPluginERKNSt6stringE7int32_t7int32_t" title="Link to this definition">#</a><br /></dt>
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm7plugins18ViTAttentionPlugin18ViTAttentionPluginERKNSt6stringE7int32_t7int32_tNSt8optionalIfEE" title="Link to this definition">#</a><br /></dt>
 <dd><p>Constructor for attention plugin with configuration parameters. </p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
@@ -675,6 +701,7 @@
 <li><p><strong>name</strong> – <strong>[in]</strong> Plugin instance name </p></li>
 <li><p><strong>numHeads</strong> – <strong>[in]</strong> Number of attention heads </p></li>
 <li><p><strong>headSize</strong> – <strong>[in]</strong> Head dimension size </p></li>
+<li><p><strong>attentionScale</strong> – <strong>[in]</strong> Optional absolute QK^T multiplier; defaults to 1/sqrt(headSize) </p></li>
 </ul>
 </dd>
 </dl>
@@ -686,7 +713,7 @@
 
 <dl>
 <dd><em class="sig-param"><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">string</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">name</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">PluginFieldCollection</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">fc</span></span></em></dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">PluginFieldCollection</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">fc</span></span></em>,</dd>
 </dl>
 
 <span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm7plugins18ViTAttentionPlugin18ViTAttentionPluginERKNSt6stringEPKN8nvinfer121PluginFieldCollectionE" title="Link to this definition">#</a><br /></dt>
@@ -712,7 +739,7 @@
 <span id="_CPPv3N11trt_edgellm7plugins18ViTAttentionPlugin22getCapabilityInterfaceEN8nvinfer120PluginCapabilityTypeE"></span><span id="_CPPv2N11trt_edgellm7plugins18ViTAttentionPlugin22getCapabilityInterfaceEN8nvinfer120PluginCapabilityTypeE"></span><span id="trt_edgellm::plugins::ViTAttentionPlugin::getCapabilityInterface__nvinfer1::PluginCapabilityType"></span><span class="target" id="classtrt__edgellm_1_1plugins_1_1ViTAttentionPlugin_1a5f676180be655f022f743477a49e4b86"></span><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">IPluginCapability</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">getCapabilityInterface</span></span></span><span class="sig-paren">(</span>
 
 <dl>
-<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">PluginCapabilityType</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">type</span></span></em></dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">PluginCapabilityType</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">type</span></span></em>,</dd>
 </dl>
 
 <span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><span class="w"> </span><span class="k"><span class="pre">override</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm7plugins18ViTAttentionPlugin22getCapabilityInterfaceEN8nvinfer120PluginCapabilityTypeE" title="Link to this definition">#</a><br /></dt>
@@ -751,7 +778,7 @@
 <dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">DataType</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">outputTypes</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">nbOutputs</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">DataType</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">inputTypes</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">nbInputs</span></span></em></dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">nbInputs</span></span></em>,</dd>
 </dl>
 
 <span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><span class="w"> </span><span class="k"><span class="pre">override</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm7plugins18ViTAttentionPlugin18getOutputDataTypesEPN8nvinfer18DataTypeE7int32_tPKN8nvinfer18DataTypeE7int32_t" title="Link to this definition">#</a><br /></dt>
@@ -768,7 +795,7 @@
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">nbShapeInputs</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">DimsExprs</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">outputs</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">nbOutputs</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">IExprBuilder</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">exprBuilder</span></span></em></dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">IExprBuilder</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">exprBuilder</span></span></em>,</dd>
 </dl>
 
 <span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><span class="w"> </span><span class="k"><span class="pre">override</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm7plugins18ViTAttentionPlugin15getOutputShapesEPKN8nvinfer19DimsExprsE7int32_tPKN8nvinfer19DimsExprsE7int32_tPN8nvinfer19DimsExprsE7int32_tRN8nvinfer112IExprBuilderE" title="Link to this definition">#</a><br /></dt>
@@ -782,7 +809,7 @@
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">pos</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">DynamicPluginTensorDesc</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">inOut</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">nbInputs</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">nbOutputs</span></span></em></dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">nbOutputs</span></span></em>,</dd>
 </dl>
 
 <span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><span class="w"> </span><span class="k"><span class="pre">override</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm7plugins18ViTAttentionPlugin25supportsFormatCombinationE7int32_tPKN8nvinfer123DynamicPluginTensorDescE7int32_t7int32_t" title="Link to this definition">#</a><br /></dt>
@@ -796,7 +823,7 @@
 <dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">DynamicPluginTensorDesc</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">in</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">nbInputs</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">DynamicPluginTensorDesc</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">out</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">nbOutputs</span></span></em></dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">nbOutputs</span></span></em>,</dd>
 </dl>
 
 <span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><span class="w"> </span><span class="k"><span class="pre">override</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm7plugins18ViTAttentionPlugin15configurePluginEPKN8nvinfer123DynamicPluginTensorDescE7int32_tPKN8nvinfer123DynamicPluginTensorDescE7int32_t" title="Link to this definition">#</a><br /></dt>
@@ -810,7 +837,7 @@
 <dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">DynamicPluginTensorDesc</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">inputs</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">nbInputs</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">DynamicPluginTensorDesc</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">outputs</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">nbOutputs</span></span></em></dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">nbOutputs</span></span></em>,</dd>
 </dl>
 
 <span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><span class="w"> </span><span class="k"><span class="pre">override</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm7plugins18ViTAttentionPlugin16getWorkspaceSizeEPKN8nvinfer123DynamicPluginTensorDescE7int32_tPKN8nvinfer123DynamicPluginTensorDescE7int32_t" title="Link to this definition">#</a><br /></dt>
@@ -826,7 +853,7 @@
 <dd><em class="sig-param"><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">inputs</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">outputs</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">workspace</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em></dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em>,</dd>
 </dl>
 
 <span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><span class="w"> </span><span class="k"><span class="pre">override</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm7plugins18ViTAttentionPlugin7enqueueEPKN8nvinfer116PluginTensorDescEPKN8nvinfer116PluginTensorDescEPPCKvPPCvPv12cudaStream_t" title="Link to this definition">#</a><br /></dt>
@@ -840,7 +867,7 @@
 <dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">PluginTensorDesc</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">in</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">nbInputs</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">PluginTensorDesc</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">out</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">nbOutputs</span></span></em></dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">nbOutputs</span></span></em>,</dd>
 </dl>
 
 <span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><span class="w"> </span><span class="k"><span class="pre">override</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm7plugins18ViTAttentionPlugin13onShapeChangeEPKN8nvinfer116PluginTensorDescE7int32_tPKN8nvinfer116PluginTensorDescE7int32_t" title="Link to this definition">#</a><br /></dt>
@@ -851,7 +878,7 @@
 <span id="_CPPv3N11trt_edgellm7plugins18ViTAttentionPlugin15attachToContextEPN8nvinfer122IPluginResourceContextE"></span><span id="_CPPv2N11trt_edgellm7plugins18ViTAttentionPlugin15attachToContextEPN8nvinfer122IPluginResourceContextE"></span><span id="trt_edgellm::plugins::ViTAttentionPlugin::attachToContext__nvinfer1::IPluginResourceContextP"></span><span class="target" id="classtrt__edgellm_1_1plugins_1_1ViTAttentionPlugin_1af9a76a996797bd1e40f0f90752937cae"></span><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">IPluginV3</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">attachToContext</span></span></span><span class="sig-paren">(</span>
 
 <dl>
-<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">IPluginResourceContext</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">context</span></span></em></dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">IPluginResourceContext</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">context</span></span></em>,</dd>
 </dl>
 
 <span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><span class="w"> </span><span class="k"><span class="pre">override</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm7plugins18ViTAttentionPlugin15attachToContextEPN8nvinfer122IPluginResourceContextE" title="Link to this definition">#</a><br /></dt>
@@ -928,7 +955,7 @@
 <dl>
 <dd><em class="sig-param"><span class="kt"><span class="pre">char</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">name</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">PluginFieldCollection</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">fc</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">TensorRTPhase</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">phase</span></span></em></dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">TensorRTPhase</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">phase</span></span></em>,</dd>
 </dl>
 
 <span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><span class="w"> </span><span class="k"><span class="pre">override</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm7plugins25ViTAttentionPluginCreator12createPluginEPKcPKN8nvinfer121PluginFieldCollectionEN8nvinfer113TensorRTPhaseE" title="Link to this definition">#</a><br /></dt>
@@ -989,7 +1016,7 @@
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7plugins18ViTAttentionPluginE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::plugins::ViTAttentionPlugin</span></code></a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7plugins18ViTAttentionPlugin18ViTAttentionPluginERKNSt6stringE7int32_t7int32_t"><code class="docutils literal notranslate"><span class="pre">ViTAttentionPlugin()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7plugins18ViTAttentionPlugin18ViTAttentionPluginERKNSt6stringE7int32_t7int32_tNSt8optionalIfEE"><code class="docutils literal notranslate"><span class="pre">ViTAttentionPlugin()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7plugins18ViTAttentionPlugin18ViTAttentionPluginERKNSt6stringEPKN8nvinfer121PluginFieldCollectionE"><code class="docutils literal notranslate"><span class="pre">ViTAttentionPlugin()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7plugins18ViTAttentionPlugin18ViTAttentionPluginEv"><code class="docutils literal notranslate"><span class="pre">ViTAttentionPlugin()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7plugins18ViTAttentionPlugin18ViTAttentionPluginERK18ViTAttentionPlugin"><code class="docutils literal notranslate"><span class="pre">ViTAttentionPlugin()</span></code></a></li>
@@ -1114,9 +1141,9 @@
         <div class="footer-item">
 <div class="extra_footer">
   
-  <p>Last updated on July 02, 2026.</p>
+  <p>Last updated on July 22, 2026.</p>
   
-  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/30941a6">30941a6</a>.</p>
+  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/f98267f">f98267f</a>.</p>
   
 </div></div>
       

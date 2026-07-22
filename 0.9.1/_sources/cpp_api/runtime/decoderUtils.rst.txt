@@ -1,0 +1,18 @@
+Decoder Utils
+=============
+
+.. doxygenfunction:: trt_edgellm::rt::decoder_utils::loadDraftEngine
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::decoder_utils::appendAcceptedTokens
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::decoder_utils::enqueueLogprobsD2H
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::decoder_utils::collectLogprobsFromHost
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::decoder_utils::collectSpecLogprobsFromHost
+   :project: TensorRT Edge-LLM
+

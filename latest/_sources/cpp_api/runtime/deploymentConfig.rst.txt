@@ -16,3 +16,6 @@ Deployment Config
    :members:
    :undoc-members:
 
+.. doxygenfunction:: trt_edgellm::rt::createDeploymentConfig
+   :project: TensorRT Edge-LLM
+

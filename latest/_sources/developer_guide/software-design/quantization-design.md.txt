@@ -54,10 +54,16 @@ The output directory must contain:
 | LM head | `fp8`, `int4_awq`, `nvfp4`, `mxfp8` |
 | KV cache | `fp8` |
 | Visual tower | `fp8` |
+| Audio tower | `fp8` |
 
 Backbone and LM-head methods can be combined for mixed-precision checkpoints.
-Visual FP8 requires multimodal calibration data so visual quantizers observe
-image activations.
+Calibration data is selected **by name**, per modality. Each name resolves to a
+registered generator function under `tensorrt_edgellm/quantization/datasets/`
+that yields raw samples for its modality: text strings, `(image, question)`
+pairs for visual FP8, or `(audio_bytes, transcript)` pairs for Qwen3-ASR/audio
+FP8. The CLI passes only the dataset name; an unknown name fails out with a
+pointer to the customization guide. See
+[Calibration Dataset Customization](../customization/calibration-datasets.md).
 
 DFlash draft quantization follows the same checkpoint-only contract. The
 standalone calibration model replays the draft's dense PyTorch modules using
@@ -68,6 +74,5 @@ full-FP32 accumulation path for accuracy.
 
 ## Limitations
 
-- Audio calibration is not implemented.
 - Model-specific export workarounds that belong to ONNX export are intentionally not included.
 - This package produces checkpoints only. It does not build ONNX or TensorRT engines.

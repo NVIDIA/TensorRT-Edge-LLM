@@ -1,0 +1,13 @@
+Fused Nvfp4 GEMM All Reduce Plugin
+==================================
+
+.. doxygenclass:: trt_edgellm::plugins::FusedNvfp4GemmAllReducePlugin
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::plugins::FusedNvfp4GemmAllReducePluginCreator
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

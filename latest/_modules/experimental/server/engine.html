@@ -46,8 +46,8 @@
 
 
     <script src="../../../_static/documentation_options.js?v=5929fcd5"></script>
-    <script src="../../../_static/doctools.js?v=fd6eb6e6"></script>
-    <script src="../../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../../../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../../_static/clipboard.min.js?v=a7894cd8"></script>
     <script src="../../../_static/copybutton.js?v=65e89d2a"></script>
     <script>let toggleHintShow = 'Click to show';</script>
@@ -55,182 +55,18 @@
     <script>let toggleOpenOnPrint = 'true';</script>
     <script src="../../../_static/togglebutton.js?v=b8b12719"></script>
     <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
-    <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+    <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
     <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.12.1/dist/mermaid.esm.min.mjs";
-
-
 
 
 
 const initStyles = () => {
     const defaultStyle = document.createElement('style');
-    defaultStyle.textContent = `pre.mermaid {
-    /* Same as .mermaid-container > pre */
-    display: block;
-    width: 100%;
-}
-
-pre.mermaid > svg {
-    /* Same as .mermaid-container > pre > svg */
-    height: 500px;
-    width: 100%;
-    max-width: 100% !important;
-}`;
+    defaultStyle.textContent = "pre.mermaid {\n    /* Same as .mermaid-container > pre */\n    display: block;\n    width: 100%;\n}\n\npre.mermaid > svg {\n    /* Same as .mermaid-container > pre > svg */\n    height: 500px;\n    width: 100%;\n    max-width: 100% !important;\n}";
     document.head.appendChild(defaultStyle);
 
     const fullscreenStyle = document.createElement('style');
-    fullscreenStyle.textContent = `.mermaid-container {
-    display: flex;
-    flex-direction: row;
-    width: 100%;
-}
-
-.mermaid-container > pre {
-    display: block;
-    width: 100%;
-}
-
-.mermaid-container > pre > svg {
-    height: 500px;
-    width: 100%;
-    max-width: 100% !important;
-}
-
-.mermaid-fullscreen-btn {
-    width: 28px;
-    height: 28px;
-    background: rgba(255, 255, 255, 0.95);
-    border: 1px solid rgba(0, 0, 0, 0.3);
-    border-radius: 4px;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: all 0.2s;
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
-    font-size: 14px;
-    line-height: 1;
-    padding: 0;
-    color: #333;
-}
-
-.mermaid-fullscreen-btn:hover {
-    opacity: 100% !important;
-    background: rgba(255, 255, 255, 1);
-    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.3);
-    transform: scale(1.1);
-}
-
-.mermaid-fullscreen-btn.dark-theme {
-    background: rgba(50, 50, 50, 0.95);
-    border: 1px solid rgba(255, 255, 255, 0.3);
-    color: #e0e0e0;
-}
-
-.mermaid-fullscreen-btn.dark-theme:hover {
-    background: rgba(60, 60, 60, 1);
-    box-shadow: 0 3px 10px rgba(255, 255, 255, 0.2);
-}
-
-.mermaid-fullscreen-modal {
-    display: none;
-    position: fixed !important;
-    top: 0 !important;
-    left: 0 !important;
-    width: 95vw;
-    height: 100vh;
-    background: rgba(255, 255, 255, 0.98);
-    z-index: 9999;
-    padding: 20px;
-    overflow: auto;
-}
-
-.mermaid-fullscreen-modal.dark-theme {
-    background: rgba(0, 0, 0, 0.98);
-}
-
-.mermaid-fullscreen-modal.active {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-
-.mermaid-container-fullscreen {
-    position: relative;
-    width: 95vw;
-    height: 90vh;
-    max-width: 95vw;
-    max-height: 90vh;
-    background: white;
-    border-radius: 8px;
-    padding: 20px;
-    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
-    overflow: auto;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-
-.mermaid-container-fullscreen.dark-theme {
-    background: #1a1a1a;
-    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.8);
-}
-
-.mermaid-container-fullscreen pre.mermaid {
-    width: 100%;
-    height: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-
-.mermaid-container-fullscreen .mermaid svg {
-    height: 100% !important;
-    width: 100% !important;
-    cursor: grab;
-}
-
-.mermaid-fullscreen-close {
-    position: fixed !important;
-    top: 20px !important;
-    right: 20px !important;
-    width: 40px;
-    height: 40px;
-    background: rgba(255, 255, 255, 0.95);
-    border: 1px solid rgba(0, 0, 0, 0.2);
-    border-radius: 50%;
-    cursor: pointer;
-    z-index: 10000;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-    transition: all 0.2s;
-    font-size: 24px;
-    line-height: 1;
-    color: #333;
-}
-
-.mermaid-fullscreen-close:hover {
-    background: white;
-    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
-    transform: scale(1.1);
-}
-
-.mermaid-fullscreen-close.dark-theme {
-    background: rgba(50, 50, 50, 0.95);
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    color: #e0e0e0;
-}
-
-.mermaid-fullscreen-close.dark-theme:hover {
-    background: rgba(60, 60, 60, 1);
-    box-shadow: 0 6px 16px rgba(255, 255, 255, 0.2);
-}
-
-.mermaid-fullscreen-modal .mermaid-fullscreen-btn {
-    display: none !important;
-}`;
+    fullscreenStyle.textContent = ".mermaid-container {\n    position: relative;\n    display: flex;\n    flex-direction: row;\n    width: 100%;\n}\n\n.mermaid-container > pre {\n    display: block;\n    width: 100%;\n}\n\n.mermaid-container > pre > svg {\n    height: 500px;\n    width: 100%;\n    max-width: 100% !important;\n}\n\n.mermaid-fullscreen-btn {\n    position: absolute;\n    width: 28px;\n    height: 28px;\n    background: rgba(255, 255, 255, 0.95);\n    border: 1px solid rgba(0, 0, 0, 0.3);\n    border-radius: 4px;\n    cursor: pointer;\n    display: flex;\n    align-items: center;\n    justify-content: center;\n    transition: all 0.2s;\n    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);\n    font-size: 14px;\n    line-height: 1;\n    padding: 0;\n    color: #333;\n}\n\n.mermaid-fullscreen-btn:hover {\n    opacity: 100% !important;\n    background: rgba(255, 255, 255, 1);\n    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.3);\n    transform: scale(1.1);\n}\n\n.mermaid-fullscreen-btn.dark-theme {\n    background: rgba(50, 50, 50, 0.95);\n    border: 1px solid rgba(255, 255, 255, 0.3);\n    color: #e0e0e0;\n}\n\n.mermaid-fullscreen-btn.dark-theme:hover {\n    background: rgba(60, 60, 60, 1);\n    box-shadow: 0 3px 10px rgba(255, 255, 255, 0.2);\n}\n\n.mermaid-fullscreen-modal {\n    display: none;\n    position: fixed !important;\n    top: 0 !important;\n    left: 0 !important;\n    width: 95vw;\n    height: 100vh;\n    background: rgba(255, 255, 255, 0.98);\n    z-index: 9999;\n    padding: 20px;\n    overflow: auto;\n}\n\n.mermaid-fullscreen-modal.dark-theme {\n    background: rgba(0, 0, 0, 0.98);\n}\n\n.mermaid-fullscreen-modal.active {\n    display: flex;\n    align-items: center;\n    justify-content: center;\n}\n\n.mermaid-container-fullscreen {\n    position: relative;\n    width: 95vw;\n    height: 90vh;\n    max-width: 95vw;\n    max-height: 90vh;\n    background: white;\n    border-radius: 8px;\n    padding: 20px;\n    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);\n    overflow: auto;\n    display: flex;\n    align-items: center;\n    justify-content: center;\n}\n\n.mermaid-container-fullscreen.dark-theme {\n    background: #1a1a1a;\n    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.8);\n}\n\n.mermaid-container-fullscreen pre.mermaid {\n    width: 100%;\n    height: 100%;\n    display: flex;\n    align-items: center;\n    justify-content: center;\n}\n\n.mermaid-container-fullscreen .mermaid svg {\n    height: 100% !important;\n    width: 100% !important;\n    cursor: grab;\n}\n\n.mermaid-fullscreen-close {\n    position: fixed !important;\n    top: 20px !important;\n    right: 20px !important;\n    width: 40px;\n    height: 40px;\n    background: rgba(255, 255, 255, 0.95);\n    border: 1px solid rgba(0, 0, 0, 0.2);\n    border-radius: 50%;\n    cursor: pointer;\n    z-index: 10000;\n    display: flex;\n    align-items: center;\n    justify-content: center;\n    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);\n    transition: all 0.2s;\n    font-size: 24px;\n    line-height: 1;\n    color: #333;\n}\n\n.mermaid-fullscreen-close:hover {\n    background: white;\n    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);\n    transform: scale(1.1);\n}\n\n.mermaid-fullscreen-close.dark-theme {\n    background: rgba(50, 50, 50, 0.95);\n    border: 1px solid rgba(255, 255, 255, 0.2);\n    color: #e0e0e0;\n}\n\n.mermaid-fullscreen-close.dark-theme:hover {\n    background: rgba(60, 60, 60, 1);\n    box-shadow: 0 6px 16px rgba(255, 255, 255, 0.2);\n}\n\n.mermaid-fullscreen-modal .mermaid-fullscreen-btn {\n    display: none !important;\n}";
     document.head.appendChild(fullscreenStyle);
 }
 
@@ -275,6 +111,32 @@ let darkTheme = isDarkTheme();
 let modal = null;
 let modalContent = null;
 let previousScrollOffset = [window.scrollX, window.scrollY];
+let _lazyObserver = null;
+let _renderQueue = Promise.resolve();
+let closeModal = () => {};
+
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && modal?.classList.contains('active')) {
+        closeModal();
+    }
+});
+
+// Apply d3 zoom to each SVG. Idempotent: an SVG already wrapped is skipped,
+// so this is safe to call both for the initial batch and for diagrams that
+// render lazily once they become visible.
+const addZoomToSvgs = (svgs) => {
+    svgs.each(function() {
+        if (this.getAttribute('data-zoom-applied') === 'true') return;
+        var svg = d3.select(this);
+        svg.html("<g class='wrapper'>" + svg.html() + "</g>");
+        var inner = svg.select("g");
+        var zoom = d3.zoom().on("zoom", function(event) {
+            inner.attr("transform", event.transform);
+        });
+        svg.call(zoom);
+        this.setAttribute('data-zoom-applied', 'true');
+    });
+};
 
 const runMermaid = async (rerun) => {
     console.log("Running mermaid diagrams, rerun =", rerun);
@@ -282,7 +144,15 @@ const runMermaid = async (rerun) => {
     let all_mermaids = document.querySelectorAll(".mermaid");
 
     if (rerun) {
+        // Disconnect any previous lazy rendering observer
+        if (_lazyObserver) {
+            _lazyObserver.disconnect();
+            _lazyObserver = null;
+        }
+
         all_mermaids.forEach((el) => {
+            el.removeAttribute('data-mermaid-deferred');
+            el.removeAttribute('data-mermaid-render-failed');
             if(!el.hasAttribute("data-original-code")) {
                 // store original code
                 // console.log(`Storing original code for first run: `, el.innerHTML);
@@ -299,42 +169,100 @@ const runMermaid = async (rerun) => {
                 el.setAttribute('data-original-code', el.innerHTML);
             }
         });
-        await mermaid.run();
+
+        // Separate visible and hidden elements. Mermaid's layout engine measures
+        // text dimensions via the DOM, which fails for elements hidden by a parent
+        // (e.g., Reveal.js non-active slides, sphinx-design unopened tabs),
+        // producing broken SVGs. Render visible elements now, defer hidden ones.
+        const visible = [];
+        const hidden = [];
+        all_mermaids.forEach((el) => {
+            // offsetParent is null for display:none ancestors.
+            // getClientRects().length > 0 catches position:fixed elements
+            // (which also have null offsetParent but are still visible).
+            if (el.offsetParent !== null || el.getClientRects().length > 0) {
+                visible.push(el);
+            } else {
+                hidden.push(el);
+                el.setAttribute('data-mermaid-deferred', 'true');
+            }
+        });
+
+        if (visible.length > 0) {
+            try {
+                await mermaid.run({ nodes: visible });
+            } catch (e) {
+                console.error("Mermaid rendering failed:", e);
+            }
+        }
+
+        // Lazily render hidden elements when they become visible.
+        // Uses a promise chain (_renderQueue) to serialize rendering,
+        // since IntersectionObserver may report multiple entries at once
+        // and mermaid.run() is not safe to call concurrently.
+        if (hidden.length > 0) {
+            if (typeof IntersectionObserver === 'undefined') {
+                console.warn("IntersectionObserver not available; hidden mermaid diagrams will not render.");
+            } else {
+                _renderQueue = Promise.resolve();
+                _lazyObserver = new IntersectionObserver((entries) => {
+                    for (const entry of entries) {
+                        if (entry.isIntersecting && entry.target.getAttribute("data-processed") !== "true") {
+                            _lazyObserver.unobserve(entry.target);
+                            const el = entry.target;
+                            _renderQueue = _renderQueue.then(async () => {
+                                try {
+                                    await mermaid.run({ nodes: [el] });
+                                    el.removeAttribute('data-mermaid-deferred');
+                                    // Apply zoom to the now-rendered diagram, matching
+                                    // the decoration visible diagrams receive.
+                                    if (false) {
+                                        addZoomToSvgs(d3.selectAll("").select(function() {
+                                            return this.querySelector("svg");
+                                        }));
+                                    }
+                                } catch (e) {
+                                    console.error("Mermaid deferred rendering failed:", e);
+                                    el.removeAttribute('data-mermaid-deferred');
+                                    el.setAttribute('data-mermaid-render-failed', 'true');
+                                }
+                            });
+                        }
+                    }
+                });
+                hidden.forEach((el) => _lazyObserver.observe(el));
+            }
+        }
     }
 
     all_mermaids = document.querySelectorAll(".mermaid");
-    const mermaids_processed = document.querySelectorAll(".mermaid[data-processed='true']");
+    // Exclude deferred (hidden) and render-failed elements from completion checks
+    const mermaids_active = document.querySelectorAll(".mermaid:not([data-mermaid-deferred]):not([data-mermaid-render-failed])");
+    const mermaids_processed = document.querySelectorAll(".mermaid:not([data-mermaid-deferred]):not([data-mermaid-render-failed])[data-processed='true']");
 
-    if ("False" === "True") {
-        const mermaids_to_add_zoom = -1 === -1 ? all_mermaids.length : -1;
+    if (false) {
+        const mermaids_to_add_zoom = 0 === -1 ? mermaids_active.length : 0;
         if(mermaids_to_add_zoom > 0) {
-            var svgs = d3.selectAll("");
-            if(all_mermaids.length !== mermaids_processed.length) {
+            var svgs = d3.selectAll("").select(function() {
+                return this.querySelector("svg");
+            });
+            // Wait until every active (visible) diagram has rendered. Deferred
+            // diagrams are excluded, so a fixed d3_node_count that counts a
+            // hidden diagram no longer loops forever waiting for its SVG.
+            if(mermaids_active.length !== mermaids_processed.length) {
                 setTimeout(() => runMermaid(false), 200);
                 return;
-            } else if(svgs.size() !== mermaids_to_add_zoom) {
-                setTimeout(() => runMermaid(false), 200);
-                return;
-            } else {
-                svgs.each(function() {
-                    var svg = d3.select(this);
-                    svg.html("<g class='wrapper'>" + svg.html() + "</g>");
-                    var inner = svg.select("g");
-                    var zoom = d3.zoom().on("zoom", function(event) {
-                        inner.attr("transform", event.transform);
-                    });
-                    svg.call(zoom);
-                });
             }
+            addZoomToSvgs(svgs);
         }
-    } else if(all_mermaids.length !== mermaids_processed.length) {
+    } else if(mermaids_active.length !== mermaids_processed.length) {
         // Wait for mermaid to process all diagrams
         setTimeout(() => runMermaid(false), 200);
         return;
     }
 
     // Stop here if not adding fullscreen capability
-    if ("True" !== "True") return;
+    if (!true) return;
 
     if (modal !== null ) {
         // Destroy existing modal
@@ -357,7 +285,7 @@ const runMermaid = async (rerun) => {
     modalContent = modal.querySelector('.mermaid-container-fullscreen');
     const closeBtn = modal.querySelector('.mermaid-fullscreen-close');
 
-    const closeModal = () => {
+    closeModal = () => {
         modal.classList.remove('active');
         modalContent.innerHTML = '';
         document.body.style.overflow = ''
@@ -368,12 +296,6 @@ const runMermaid = async (rerun) => {
     modal.addEventListener('click', (e) => {
         if (e.target === modal) closeModal();
     });
-    document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape' && modal.classList.contains('active')) {
-            closeModal();
-        }
-    });
-
     document.querySelectorAll('.mermaid').forEach((mermaidDiv) => {
         if (mermaidDiv.parentNode.classList.contains('mermaid-container') ||
             mermaidDiv.closest('.mermaid-fullscreen-modal')) {
@@ -393,8 +315,8 @@ const runMermaid = async (rerun) => {
         const fullscreenBtn = document.createElement('button');
         fullscreenBtn.className = 'mermaid-fullscreen-btn' + (darkTheme ? ' dark-theme' : '');
         fullscreenBtn.setAttribute('aria-label', 'View diagram in fullscreen');
-        fullscreenBtn.textContent = '⛶';
-        fullscreenBtn.style.opacity = '50%';
+        fullscreenBtn.textContent = "\u26f6";
+        fullscreenBtn.style.opacity = "50%";
 
         // Calculate dynamic position based on diagram's margin and padding
         const diagramStyle = window.getComputedStyle(mermaidDiv);
@@ -406,7 +328,7 @@ const runMermaid = async (rerun) => {
         fullscreenBtn.style.right = `${marginRight + paddingRight + 4}px`;
 
         fullscreenBtn.addEventListener('click', () => {
-            previousScrollOffset = [window.scroll, window.scrollY];
+            previousScrollOffset = [window.scrollX, window.scrollY];
             const clone = mermaidDiv.cloneNode(true);
             modalContent.innerHTML = '';
             modalContent.appendChild(clone);
@@ -418,9 +340,9 @@ const runMermaid = async (rerun) => {
                 svg.style.width = '100%';
                 svg.style.height = 'auto';
                 svg.style.maxWidth = '100%';
-                svg.style.sdisplay = 'block';
+                svg.style.display = 'block';
 
-                if ("False" === "True") {
+                if (false) {
                     setTimeout(() => {
                         const g = svg.querySelector('g');
                         if (g) {
@@ -443,8 +365,11 @@ const runMermaid = async (rerun) => {
     });
 };
 
+
+
 const load = async () => {
     initStyles();
+
 
     await runMermaid(true);
 
@@ -454,10 +379,8 @@ const load = async () => {
             darkTheme = newDarkTheme;
             console.log("Theme change detected, re-running mermaid with", darkTheme ? "dark" : "default", "theme");
             await mermaid.initialize(
-                {...JSON.parse(
-                    `{"startOnLoad": false}`
-                ),
-                ...{ darkMode: darkTheme, theme: darkTheme ? 'dark' : 'default' },
+                {...{"startOnLoad": false},
+                ...{ darkMode: darkTheme, theme: darkTheme ? "dark" : "default" },
                 }
             );
             await runMermaid(true);
@@ -482,10 +405,8 @@ const load = async () => {
 
 console.log("Initializing mermaid with", darkTheme ? "dark" : "default", "theme");
 mermaid.initialize(
-    {...JSON.parse(
-        `{"startOnLoad": false}`
-    ),
-    ...{ darkMode: darkTheme, theme: darkTheme ? 'dark' : 'default' },
+    {...{"startOnLoad": false},
+    ...{ darkMode: darkTheme, theme: darkTheme ? "dark" : "default" },
     }
 );
 
@@ -495,7 +416,7 @@ window.runMermaid = runMermaid;</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.19.0';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = './_static/switcher.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.9.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.9.1';
         DOCUMENTATION_OPTIONS.show_version_warning_banner =
             false;
         </script>
@@ -509,7 +430,7 @@ window.runMermaid = runMermaid;</script>
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.9.0" />
+  <meta name="docsearch:version" content="0.9.1" />
   
     
     <script src="../../../_static/searchtools.js"></script>
@@ -824,11 +745,13 @@ window.runMermaid = runMermaid;</script>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Customization</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../../developer_guide/customization/customization-guide.html">Customization Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../developer_guide/customization/calibration-datasets.html">Calibration Dataset Customization</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../developer_guide/customization/tensorrt-plugins.html">TensorRT Plugins Guide</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Testing</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../../developer_guide/testing/code-coverage.html">Code Coverage with SonarQube</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../developer_guide/testing/few-layer-validation.html">Few-Layer Numeric Validation</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">APIs</span></p>
 <ul class="nav bd-sidenav">
@@ -872,31 +795,36 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../../cpp_api/kernels/index.html">Kernels Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/NvFP4MoEUtils.html">Nv Fp4 Mo E Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/applyRopeWriteKV.html">Apply Rope Write KV</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/audioFbankKernels.html">Audio Fbank Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/batchEvictKernels.html">Batch Evict Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/buildLayout.html">Build Layout</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/causalConv1d.html">Causal Conv1d</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/common.html">Common</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/contextFMHARunner.html">Context FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/conversion.html">Conversion</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/cuteDslF16MoeRunner.html">Cute Dsl F16 Moe Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/cuteDslFFPARunner.html">Cute Dsl Ffpa Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/cuteDslFMHARunner.html">Cute Dsl FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/cuteDslGDNRunner.html">Cute Dsl Gdn Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/cuteDslGemmNvFp4Runner.html">Cute Dsl GEMM Nv Fp4 Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/cuteDslGemmRunner.html">Cute Dsl GEMM Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/cuteDslNvfp4MoeRunner.html">Cute Dsl Nvfp4 Moe Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/cuteDslNvfp4MoeSm110Runner.html">Cute Dsl Nvfp4 Moe Sm110 Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/cuteDslSSDRunner.html">Cute Dsl Ssd Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/ddtreeKernels.html">Ddtree Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/decoderXQARunner.html">Decoder XQA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/dequant.html">Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/dequantize.html">Dequantize</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/dflashAcceptKernels.html">Dflash Accept Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/dflashRuntimeKernels.html">Dflash Runtime Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/eagleAcceptKernels.html">EAGLE Accept Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/eagleUtilKernels.html">EAGLE Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/embeddingKernels.html">Embedding Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/f16MoeSupportKernels.html">F16 Moe Support Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/fmhaParams_v2.html">FMHA Params V2</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/fp4Quantize.html">Fp4 Quantize</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/gdnKernelUtils.html">Gdn Kernel Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/gemma4AudioAttention.html">Gemma4 Audio Attention</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/gemma4MTPRuntimeKernels.html">Gemma4 Mtp Runtime Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/imageUtilKernels.html">Image Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/initializeCosSinCache.html">Initialize Cos Sin Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/int4GroupwiseGemm.html">Int4 Groupwise GEMM</a></li>
@@ -911,13 +839,16 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/moeAlignSumKernels.html">Moe Align Sum Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/moeMarlin.html">Moe Marlin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/moeMarlinIndicesKernels.html">Moe Marlin Indices Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/moePerExpertScaleKernels.html">Moe Per Expert Scale Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/moeSigmoidGroupTopkKernels.html">Moe Sigmoid Group Topk Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/moeTopkSoftmaxKernels.html">Moe Topk Softmax Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/mtpStateScatterKernels.html">Mtp State Scatter Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/nvfp4MoeTypes.html">Nvfp4 Moe Types</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/nvfp4_dequant.html">Nvfp4 Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/nvfp4_tensor.html">Nvfp4 Tensor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/scaleConvert.html">Scale Convert</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/selectiveStateUpdate.html">Selective State Update</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/speculativeKernelsUtils.html">Speculative Kernels Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/ssdVarlenMetadata.html">Ssd Varlen Metadata</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/talkerMLPKernels.html">Talker Mlp Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/utilKernels.html">Util Kernels</a></li>
@@ -928,6 +859,9 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/multimodal/audioRunner.html">Audio Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/multimodal/audioUtils.html">Audio Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/multimodal/code2WavRunner.html">Code2 Wav Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/multimodal/gemma4AudioRunner.html">Gemma4 Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/multimodal/gemma4UnifiedAudioRunner.html">Gemma4 Unified Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/multimodal/gemma4UnifiedVisionRunner.html">Gemma4 Unified Vision Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/multimodal/gemma4ViTRunner.html">Gemma4 ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/multimodal/imageUtils.html">Image Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/multimodal/internViTRunner.html">Intern ViT Runner</a></li>
@@ -936,14 +870,21 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/multimodal/nemotronOmniAudioRunner.html">Nemotron Omni Audio Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/multimodal/nemotronOmniViTRunner.html">Nemotron Omni ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/multimodal/phi4mmViTRunner.html">Phi4mm ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/multimodal/qwen25vlViTRunner.html">Qwen25vl ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/multimodal/qwen3omniViTRunner.html">Qwen3omni ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/multimodal/qwen3vlViTRunner.html">Qwen3vl ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/multimodal/qwenViTRunner.html">Qwen ViT Runner</a></li>
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../../cpp_api/plugins/index.html">Plugins Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/plugins/allReducePlugin.html">All Reduce Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/plugins/attentionPlugin.html">Attention Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/plugins/causalConv1dPlugin.html">Causal Conv1d Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/plugins/dflashTargetKVCacheUpdatePlugin.html">Dflash Target KV Cache Update Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/plugins/fp16MoePlugin.html">Fp16 Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/plugins/fusedNvfp4GemmAllReducePlugin.html">Fused Nvfp4 GEMM All Reduce Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/plugins/gatedDeltaNetPlugin.html">Gated Delta Net Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/plugins/gemma4AudioAttentionPlugin.html">Gemma4 Audio Attention Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/plugins/int4GroupwiseGemmPlugin.html">Int4 Groupwise GEMM Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/plugins/int4MoePlugin.html">Int4 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/plugins/mambaPlugin.html">Mamba Plugin</a></li>
@@ -964,24 +905,29 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/audioLoader.html">Audio Loader</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/audioUtils.html">Audio Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/decoderRegistry.html">Decoder Registry</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/decoderUtils.html">Decoder Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/decodingInferenceContext.html">Decoding Inference Context</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/decodingStrategy.html">Decoding Strategy</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/deepstackBinding.html">Deepstack Binding</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/deploymentConfig.html">Deployment Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/dflashDecodeUtils.html">Dflash Decode Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/dflashDecoder.html">Dflash Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/eagleDecoder.html">EAGLE Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/embeddingPreprocessor.html">Embedding Preprocessor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/engineExecutor.html">Engine Executor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/externalWeightManager.html">External Weight Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/gemma4EmbeddingPreprocessor.html">Gemma4 Embedding Preprocessor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/gemma4MTPDecoder.html">Gemma4 Mtp Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/hybridCacheManager.html">Hybrid Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/imageUtils.html">Image Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/inferenceDims.html">Inference Dims</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/inferencePhase.html">Inference Phase</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/kvCacheManager.html">KV Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/layerDebugger.html">Layer Debugger</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/llmEngineConfig.html">LLM Engine Config</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/llmInferenceRuntime.html">LLM Inference Runtime</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/llmRuntimeUtils.html">LLM Runtime Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/logitBias.html">Logit Bias</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/loraManager.html">Lora Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/mambaCacheManager.html">Mamba Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/melSpectrogram.html">Mel Spectrogram</a></li>
@@ -991,7 +937,6 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/registryBuilder.html">Registry Builder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/ropeCache.html">Rope Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/sharedResources.html">Shared Resources</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/specDecodeUtils.html">Spec Decode Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/stepPreparer.html">Step Preparer</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/streaming.html">Streaming</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/systemPromptKVCache.html">System Prompt KV Cache</a></li>
@@ -1115,6 +1060,7 @@ window.runMermaid = runMermaid;</script>
 <span class="kn">import</span><span class="w"> </span><span class="nn">importlib.util</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">json</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">math</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">sys</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">threading</span>
@@ -1130,6 +1076,14 @@ window.runMermaid = runMermaid;</script>
 <span class="n">logger</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="s2">&quot;edgellm.server&quot;</span><span class="p">)</span>
 
 <span class="n">_PLUGIN_LIB_NAME</span> <span class="o">=</span> <span class="s2">&quot;libNvInfer_edgellm_plugin.so&quot;</span>
+<span class="n">_MAX_LOGIT_BIAS_TOKENS</span> <span class="o">=</span> <span class="mi">1024</span>
+<span class="n">_MAX_LOGIT_BIAS_TOKEN_ID</span> <span class="o">=</span> <span class="p">(</span><span class="mi">1</span> <span class="o">&lt;&lt;</span> <span class="mi">31</span><span class="p">)</span> <span class="o">-</span> <span class="mi">1</span>
+<span class="n">_MIN_LOGIT_BIAS</span> <span class="o">=</span> <span class="o">-</span><span class="mf">100.0</span>
+<span class="n">_MAX_LOGIT_BIAS</span> <span class="o">=</span> <span class="mf">100.0</span>
+
+<span class="n">_LOGIT_BIAS_SPEC_DECODE_ERROR</span> <span class="o">=</span> <span class="p">(</span>
+    <span class="s2">&quot;logit_bias is not supported while speculative decoding is enabled; &quot;</span>
+    <span class="s2">&quot;set disable_spec_decode=true or use a vanilla engine&quot;</span><span class="p">)</span>
 
 <span class="n">_VLM_MODEL_TYPES</span> <span class="o">=</span> <span class="nb">frozenset</span><span class="p">([</span>
     <span class="s2">&quot;qwen3_vl&quot;</span><span class="p">,</span>
@@ -1159,8 +1113,36 @@ window.runMermaid = runMermaid;</script>
     <span class="n">max_tokens</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">2048</span>
     <span class="n">enable_thinking</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
     <span class="n">disable_spec_decode</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
-    <span class="n">stop</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="n">field</span><span class="p">(</span><span class="n">default_factory</span><span class="o">=</span><span class="nb">list</span><span class="p">)</span></div>
+    <span class="n">num_logprobs</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span>
+    <span class="n">stop</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="n">field</span><span class="p">(</span><span class="n">default_factory</span><span class="o">=</span><span class="nb">list</span><span class="p">)</span>
+    <span class="n">logit_bias</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="n">field</span><span class="p">(</span><span class="n">default_factory</span><span class="o">=</span><span class="nb">dict</span><span class="p">)</span></div>
 
+
+
+<span class="nd">@dataclass</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">LogprobEntry</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;One top-K log-probability entry for a single generated token.</span>
+
+<span class="sd">    ``token`` is the piece decoded as UTF-8 with ``errors=&quot;replace&quot;`` (a</span>
+<span class="sd">    byte-level BPE token may be only part of a multi-byte character, so it can</span>
+<span class="sd">    contain U+FFFD); ``bytes`` carries the raw token bytes losslessly.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">token_id</span><span class="p">:</span> <span class="nb">int</span>
+    <span class="n">logprob</span><span class="p">:</span> <span class="nb">float</span>
+    <span class="n">token</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="nb">bytes</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_convert_logprobs</span><span class="p">(</span><span class="n">raw</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">List</span><span class="p">[</span><span class="n">List</span><span class="p">[</span><span class="n">LogprobEntry</span><span class="p">]]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Convert the C++/pybind logprobs (list of list of native LogprobEntry with</span>
+<span class="sd">    a raw-bytes ``piece``) into engine LogprobEntry dataclasses.&quot;&quot;&quot;</span>
+    <span class="k">return</span> <span class="p">[[</span>
+        <span class="n">LogprobEntry</span><span class="p">(</span><span class="n">token_id</span><span class="o">=</span><span class="n">e</span><span class="o">.</span><span class="n">token_id</span><span class="p">,</span>
+                     <span class="n">logprob</span><span class="o">=</span><span class="n">e</span><span class="o">.</span><span class="n">logprob</span><span class="p">,</span>
+                     <span class="n">token</span><span class="o">=</span><span class="n">e</span><span class="o">.</span><span class="n">piece</span><span class="o">.</span><span class="n">decode</span><span class="p">(</span><span class="s2">&quot;utf-8&quot;</span><span class="p">,</span> <span class="s2">&quot;replace&quot;</span><span class="p">),</span>
+                     <span class="nb">bytes</span><span class="o">=</span><span class="nb">list</span><span class="p">(</span><span class="n">e</span><span class="o">.</span><span class="n">piece</span><span class="p">))</span> <span class="k">for</span> <span class="n">e</span> <span class="ow">in</span> <span class="n">step</span>
+    <span class="p">]</span> <span class="k">for</span> <span class="n">step</span> <span class="ow">in</span> <span class="n">raw</span><span class="p">]</span>
 
 
 <div class="viewcode-block" id="CompletionOutput">
@@ -1172,6 +1154,7 @@ window.runMermaid = runMermaid;</script>
     <span class="n">text</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span>
     <span class="n">token_ids</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="n">field</span><span class="p">(</span><span class="n">default_factory</span><span class="o">=</span><span class="nb">list</span><span class="p">)</span>
     <span class="n">finish_reason</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">logprobs</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">List</span><span class="p">[</span><span class="n">LogprobEntry</span><span class="p">]]</span> <span class="o">=</span> <span class="n">field</span><span class="p">(</span><span class="n">default_factory</span><span class="o">=</span><span class="nb">list</span><span class="p">)</span>
     <span class="n">tool_calls</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]]</span> <span class="o">=</span> <span class="n">field</span><span class="p">(</span><span class="n">default_factory</span><span class="o">=</span><span class="nb">list</span><span class="p">)</span>
     <span class="n">reasoning</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span></div>
 
@@ -1186,7 +1169,8 @@ window.runMermaid = runMermaid;</script>
     <span class="n">text</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span>
     <span class="n">token_ids</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="n">field</span><span class="p">(</span><span class="n">default_factory</span><span class="o">=</span><span class="nb">list</span><span class="p">)</span>
     <span class="n">finished</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
-    <span class="n">finish_reason</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span></div>
+    <span class="n">finish_reason</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">logprobs</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">List</span><span class="p">[</span><span class="n">LogprobEntry</span><span class="p">]]</span> <span class="o">=</span> <span class="n">field</span><span class="p">(</span><span class="n">default_factory</span><span class="o">=</span><span class="nb">list</span><span class="p">)</span></div>
 
 
 
@@ -1297,10 +1281,13 @@ window.runMermaid = runMermaid;</script>
     <span class="k">except</span> <span class="ne">ImportError</span><span class="p">:</span>
         <span class="k">pass</span>
     <span class="n">project_root</span> <span class="o">=</span> <span class="n">Path</span><span class="p">(</span><span class="vm">__file__</span><span class="p">)</span><span class="o">.</span><span class="n">resolve</span><span class="p">()</span><span class="o">.</span><span class="n">parent</span><span class="o">.</span><span class="n">parent</span><span class="o">.</span><span class="n">parent</span>
-    <span class="n">search_dirs</span> <span class="o">=</span> <span class="p">[</span>
+    <span class="n">search_dirs</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="k">if</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;BUILD_DIR&quot;</span><span class="p">):</span>
+        <span class="n">search_dirs</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">Path</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s2">&quot;BUILD_DIR&quot;</span><span class="p">])</span> <span class="o">/</span> <span class="s2">&quot;pybind&quot;</span><span class="p">)</span>
+    <span class="n">search_dirs</span><span class="o">.</span><span class="n">extend</span><span class="p">([</span>
         <span class="n">project_root</span> <span class="o">/</span> <span class="s2">&quot;experimental&quot;</span> <span class="o">/</span> <span class="s2">&quot;pybind&quot;</span> <span class="o">/</span> <span class="s2">&quot;build&quot;</span><span class="p">,</span>
         <span class="n">project_root</span> <span class="o">/</span> <span class="s2">&quot;build&quot;</span> <span class="o">/</span> <span class="s2">&quot;pybind&quot;</span><span class="p">,</span>
-    <span class="p">]</span>
+    <span class="p">])</span>
     <span class="n">search_dirs</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span><span class="n">project_root</span><span class="o">.</span><span class="n">glob</span><span class="p">(</span><span class="s2">&quot;build/lib.*&quot;</span><span class="p">))</span>
     <span class="k">for</span> <span class="n">cand_dir</span> <span class="ow">in</span> <span class="n">search_dirs</span><span class="p">:</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="n">cand_dir</span><span class="o">.</span><span class="n">is_dir</span><span class="p">():</span>
@@ -1328,6 +1315,65 @@ window.runMermaid = runMermaid;</script>
         <span class="n">project_root</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">Path</span><span class="p">(</span><span class="vm">__file__</span><span class="p">)</span><span class="o">.</span><span class="n">resolve</span><span class="p">()</span><span class="o">.</span><span class="n">parent</span><span class="o">.</span><span class="n">parent</span><span class="o">.</span><span class="n">parent</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">project_root</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">sys</span><span class="o">.</span><span class="n">path</span><span class="p">:</span>
             <span class="n">sys</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">insert</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">project_root</span><span class="p">)</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_normalize_logit_bias</span><span class="p">(</span>
+        <span class="n">logit_bias</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Dict</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="n">Any</span><span class="p">]])</span> <span class="o">-&gt;</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">float</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Validate and normalize an OpenAI-compatible logit_bias map.&quot;&quot;&quot;</span>
+    <span class="k">if</span> <span class="n">logit_bias</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">return</span> <span class="p">{}</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">logit_bias</span><span class="p">,</span> <span class="nb">dict</span><span class="p">):</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="s2">&quot;&#39;logit_bias&#39; must be an object mapping token IDs to bias values&quot;</span><span class="p">)</span>
+    <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">logit_bias</span><span class="p">)</span> <span class="o">&gt;</span> <span class="n">_MAX_LOGIT_BIAS_TOKENS</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;&#39;logit_bias&#39; has </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">logit_bias</span><span class="p">)</span><span class="si">}</span><span class="s2"> entries; max is &quot;</span>
+                         <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">_MAX_LOGIT_BIAS_TOKENS</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
+    <span class="n">normalized</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
+    <span class="k">for</span> <span class="n">token</span><span class="p">,</span> <span class="n">bias</span> <span class="ow">in</span> <span class="n">logit_bias</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">token</span><span class="p">,</span> <span class="nb">bool</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">&quot;&#39;logit_bias&#39; token ID </span><span class="si">{</span><span class="n">token</span><span class="si">!r}</span><span class="s2"> is not an integer&quot;</span><span class="p">)</span>
+        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">token</span><span class="p">,</span> <span class="nb">int</span><span class="p">):</span>
+            <span class="n">token_id</span> <span class="o">=</span> <span class="n">token</span>
+        <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">token</span><span class="p">,</span> <span class="nb">str</span><span class="p">):</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">token_id</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">token</span><span class="p">)</span>
+            <span class="k">except</span> <span class="ne">ValueError</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+                    <span class="sa">f</span><span class="s2">&quot;&#39;logit_bias&#39; token ID </span><span class="si">{</span><span class="n">token</span><span class="si">!r}</span><span class="s2"> is not an integer&quot;</span>
+                <span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">exc</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">&quot;&#39;logit_bias&#39; token ID </span><span class="si">{</span><span class="n">token</span><span class="si">!r}</span><span class="s2"> is not an integer&quot;</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">token_id</span> <span class="o">&lt;</span> <span class="mi">0</span> <span class="ow">or</span> <span class="n">token_id</span> <span class="o">&gt;</span> <span class="n">_MAX_LOGIT_BIAS_TOKEN_ID</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">&quot;&#39;logit_bias&#39; token ID must be in &quot;</span>
+                <span class="sa">f</span><span class="s2">&quot;[0, </span><span class="si">{</span><span class="n">_MAX_LOGIT_BIAS_TOKEN_ID</span><span class="si">}</span><span class="s2">], got </span><span class="si">{</span><span class="n">token_id</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">bias</span><span class="p">,</span> <span class="nb">bool</span><span class="p">)</span> <span class="ow">or</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">bias</span><span class="p">,</span> <span class="p">(</span><span class="nb">int</span><span class="p">,</span> <span class="nb">float</span><span class="p">)):</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">&quot;&#39;logit_bias&#39; value for token ID </span><span class="si">{</span><span class="n">token_id</span><span class="si">}</span><span class="s2"> must be a number&quot;</span><span class="p">)</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">bias_value</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">bias</span><span class="p">)</span>
+        <span class="k">except</span> <span class="ne">OverflowError</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">&quot;&#39;logit_bias&#39; value for token ID </span><span class="si">{</span><span class="n">token_id</span><span class="si">}</span><span class="s2"> must be in &quot;</span>
+                <span class="sa">f</span><span class="s2">&quot;[</span><span class="si">{</span><span class="n">_MIN_LOGIT_BIAS</span><span class="si">}</span><span class="s2">, </span><span class="si">{</span><span class="n">_MAX_LOGIT_BIAS</span><span class="si">}</span><span class="s2">], got </span><span class="si">{</span><span class="n">bias</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">exc</span>
+        <span class="k">if</span> <span class="p">(</span><span class="ow">not</span> <span class="n">math</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">bias_value</span><span class="p">)</span> <span class="ow">or</span> <span class="n">bias_value</span> <span class="o">&lt;</span> <span class="n">_MIN_LOGIT_BIAS</span>
+                <span class="ow">or</span> <span class="n">bias_value</span> <span class="o">&gt;</span> <span class="n">_MAX_LOGIT_BIAS</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">&quot;&#39;logit_bias&#39; value for token ID </span><span class="si">{</span><span class="n">token_id</span><span class="si">}</span><span class="s2"> must be in &quot;</span>
+                <span class="sa">f</span><span class="s2">&quot;[</span><span class="si">{</span><span class="n">_MIN_LOGIT_BIAS</span><span class="si">}</span><span class="s2">, </span><span class="si">{</span><span class="n">_MAX_LOGIT_BIAS</span><span class="si">}</span><span class="s2">], got </span><span class="si">{</span><span class="n">bias_value</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+        <span class="n">normalized</span><span class="p">[</span><span class="n">token_id</span><span class="p">]</span> <span class="o">=</span> <span class="n">bias_value</span>
+    <span class="k">return</span> <span class="n">normalized</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_validate_logit_bias_spec_decode</span><span class="p">(</span><span class="n">logit_bias</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">float</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span>
+                                     <span class="n">disable_spec_decode</span><span class="p">:</span> <span class="nb">bool</span><span class="p">,</span>
+                                     <span class="n">has_draft_model</span><span class="p">:</span> <span class="nb">bool</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Reject logit bias unless speculative decoding is absent or explicitly disabled.&quot;&quot;&quot;</span>
+    <span class="k">if</span> <span class="n">logit_bias</span> <span class="ow">and</span> <span class="n">has_draft_model</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">disable_spec_decode</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="n">_LOGIT_BIAS_SPEC_DECODE_ERROR</span><span class="p">)</span>
 
 
 <span class="c1"># ---------------------------------------------------------------------------</span>
@@ -1421,10 +1467,32 @@ window.runMermaid = runMermaid;</script>
     <span class="k">def</span><span class="w"> </span><span class="nf">_init_from_engine</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">engine_dir</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
                           <span class="n">visual_engine_dir</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;Load from pre-built engine directories (no export, no build).&quot;&quot;&quot;</span>
-        <span class="kn">from</span><span class="w"> </span><span class="nn">.engine_layout</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span><span class="n">find_visual_engine_dir</span><span class="p">,</span>
+        <span class="kn">from</span><span class="w"> </span><span class="nn">.engine_layout</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span><span class="n">EngineType</span><span class="p">,</span> <span class="n">detect_engine_type</span><span class="p">,</span>
+                                    <span class="n">find_visual_engine_dir</span><span class="p">,</span>
                                     <span class="n">validate_llm_engine_dir</span><span class="p">,</span>
+                                    <span class="n">validate_spec_decode_engine_dir</span><span class="p">,</span>
                                     <span class="n">validate_visual_engine_dir</span><span class="p">)</span>
 
+        <span class="n">engine_type</span> <span class="o">=</span> <span class="n">detect_engine_type</span><span class="p">(</span><span class="n">engine_dir</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">engine_type</span> <span class="o">==</span> <span class="n">EngineType</span><span class="o">.</span><span class="n">SPEC_DECODE</span><span class="p">:</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">validate_spec_decode_engine_dir</span><span class="p">(</span><span class="n">engine_dir</span><span class="p">):</span>
+                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+                    <span class="sa">f</span><span class="s2">&quot;spec_base.engine/spec_draft.engine not found in: </span><span class="si">{</span><span class="n">engine_dir</span><span class="si">}</span><span class="s2">&quot;</span>
+                <span class="p">)</span>
+            <span class="k">if</span> <span class="n">visual_engine_dir</span><span class="p">:</span>
+                <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
+                    <span class="s2">&quot;visual_engine_dir=</span><span class="si">%r</span><span class="s2"> is ignored for spec-decode engines&quot;</span><span class="p">,</span>
+                    <span class="n">visual_engine_dir</span><span class="p">)</span>
+            <span class="c1"># Spec-decode dir (spec_base.engine + spec_draft.engine): route through</span>
+            <span class="c1"># the spec-decode path by promoting engine_dir to eagle_engine_dir.</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_engine_dir</span> <span class="o">=</span> <span class="n">engine_dir</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_model_dir</span> <span class="o">=</span> <span class="n">engine_dir</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_eagle_engine_dir</span> <span class="o">=</span> <span class="n">engine_dir</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_visual_engine_dir</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_is_vlm</span> <span class="o">=</span> <span class="kc">False</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Using pre-built spec-decode engine: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">_engine_dir</span><span class="p">)</span>
+            <span class="k">return</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="n">validate_llm_engine_dir</span><span class="p">(</span><span class="n">engine_dir</span><span class="p">):</span>
             <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;llm.engine not found in: </span><span class="si">{</span><span class="n">engine_dir</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_engine_dir</span> <span class="o">=</span> <span class="n">engine_dir</span>
@@ -1769,6 +1837,13 @@ window.runMermaid = runMermaid;</script>
         <span class="n">tool_config</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">ToolConfig</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
         <span class="n">stream_channel</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Any</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="p">):</span>
+        <span class="n">normalized_logit_bias</span> <span class="o">=</span> <span class="n">_normalize_logit_bias</span><span class="p">(</span><span class="n">params</span><span class="o">.</span><span class="n">logit_bias</span><span class="p">)</span>
+        <span class="n">_validate_logit_bias_spec_decode</span><span class="p">(</span>
+            <span class="n">normalized_logit_bias</span><span class="p">,</span>
+            <span class="n">disable_spec_decode</span><span class="o">=</span><span class="n">params</span><span class="o">.</span><span class="n">disable_spec_decode</span><span class="p">,</span>
+            <span class="n">has_draft_model</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">has_draft_model</span><span class="p">,</span>
+        <span class="p">)</span>
+
         <span class="n">tool_config</span> <span class="o">=</span> <span class="n">tool_config</span> <span class="ow">or</span> <span class="n">validate_tool_request</span><span class="p">(</span>
             <span class="n">messages</span><span class="p">,</span> <span class="n">tools</span><span class="p">,</span> <span class="n">tool_choice</span><span class="p">)</span>
         <span class="n">cpp_messages</span><span class="p">,</span> <span class="n">image_buffers</span><span class="p">,</span> <span class="n">apply_template</span><span class="p">,</span> <span class="n">add_prompt</span> <span class="o">=</span> <span class="p">(</span>
@@ -1787,6 +1862,7 @@ window.runMermaid = runMermaid;</script>
         <span class="n">req</span><span class="o">.</span><span class="n">image_buffers</span> <span class="o">=</span> <span class="n">image_buffers</span>
         <span class="n">req</span><span class="o">.</span><span class="n">audio_buffers</span> <span class="o">=</span> <span class="n">audio_buffers</span>
         <span class="n">req</span><span class="o">.</span><span class="n">stop_strings</span> <span class="o">=</span> <span class="n">params</span><span class="o">.</span><span class="n">stop</span>
+        <span class="n">req</span><span class="o">.</span><span class="n">logit_bias</span> <span class="o">=</span> <span class="n">normalized_logit_bias</span>
         <span class="n">request</span><span class="o">.</span><span class="n">requests</span> <span class="o">=</span> <span class="p">[</span><span class="n">req</span><span class="p">]</span>
         <span class="k">if</span> <span class="n">stream_channel</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
             <span class="n">request</span><span class="o">.</span><span class="n">stream_channels</span> <span class="o">=</span> <span class="p">[</span><span class="n">stream_channel</span><span class="p">]</span>
@@ -1798,6 +1874,7 @@ window.runMermaid = runMermaid;</script>
         <span class="n">request</span><span class="o">.</span><span class="n">add_generation_prompt</span> <span class="o">=</span> <span class="n">add_prompt</span>
         <span class="n">request</span><span class="o">.</span><span class="n">enable_thinking</span> <span class="o">=</span> <span class="n">params</span><span class="o">.</span><span class="n">enable_thinking</span>
         <span class="n">request</span><span class="o">.</span><span class="n">disable_spec_decode</span> <span class="o">=</span> <span class="n">params</span><span class="o">.</span><span class="n">disable_spec_decode</span>
+        <span class="n">request</span><span class="o">.</span><span class="n">num_logprobs</span> <span class="o">=</span> <span class="n">params</span><span class="o">.</span><span class="n">num_logprobs</span>
         <span class="k">return</span> <span class="n">request</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_parse_generation_output</span><span class="p">(</span>
@@ -1878,8 +1955,11 @@ window.runMermaid = runMermaid;</script>
             <span class="n">ids</span> <span class="o">=</span> <span class="n">response</span><span class="o">.</span><span class="n">output_ids</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="k">if</span> <span class="n">response</span><span class="o">.</span><span class="n">output_ids</span> <span class="k">else</span> <span class="p">[]</span>
             <span class="n">reason</span> <span class="o">=</span> <span class="n">finish_reason_name</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_rt</span><span class="p">,</span> <span class="n">response</span><span class="o">.</span><span class="n">finish_reasons</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span> \
                 <span class="k">if</span> <span class="n">response</span><span class="o">.</span><span class="n">finish_reasons</span> <span class="k">else</span> <span class="s2">&quot;stop&quot;</span>
-            <span class="n">outputs</span><span class="o">.</span><span class="n">append</span><span class="p">(</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">_parse_generation_output</span><span class="p">(</span><span class="n">text</span><span class="p">,</span> <span class="n">ids</span><span class="p">,</span> <span class="n">reason</span><span class="p">,</span> <span class="n">tool_config</span><span class="p">))</span>
+            <span class="n">lps</span> <span class="o">=</span> <span class="n">_convert_logprobs</span><span class="p">(</span><span class="n">response</span><span class="o">.</span><span class="n">logprobs</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span> <span class="k">if</span> <span class="p">(</span>
+                <span class="n">params</span><span class="o">.</span><span class="n">num_logprobs</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="ow">and</span> <span class="n">response</span><span class="o">.</span><span class="n">logprobs</span><span class="p">)</span> <span class="k">else</span> <span class="p">[]</span>
+            <span class="n">out</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_parse_generation_output</span><span class="p">(</span><span class="n">text</span><span class="p">,</span> <span class="n">ids</span><span class="p">,</span> <span class="n">reason</span><span class="p">,</span> <span class="n">tool_config</span><span class="p">)</span>
+            <span class="n">out</span><span class="o">.</span><span class="n">logprobs</span> <span class="o">=</span> <span class="n">lps</span>
+            <span class="n">outputs</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">out</span><span class="p">)</span>
 
         <span class="k">return</span> <span class="n">outputs</span></div>
 
@@ -1966,6 +2046,7 @@ window.runMermaid = runMermaid;</script>
                     <span class="n">token_ids</span><span class="o">=</span><span class="nb">list</span><span class="p">(</span><span class="n">chunk</span><span class="o">.</span><span class="n">token_ids</span><span class="p">),</span>
                     <span class="n">finished</span><span class="o">=</span><span class="n">chunk</span><span class="o">.</span><span class="n">finished</span><span class="p">,</span>
                     <span class="n">finish_reason</span><span class="o">=</span><span class="n">reason</span><span class="p">,</span>
+                    <span class="n">logprobs</span><span class="o">=</span><span class="n">_convert_logprobs</span><span class="p">(</span><span class="n">chunk</span><span class="o">.</span><span class="n">logprobs</span><span class="p">),</span>
                 <span class="p">)</span>
                 <span class="k">if</span> <span class="n">chunk</span><span class="o">.</span><span class="n">finished</span><span class="p">:</span>
                     <span class="k">break</span>
@@ -2218,9 +2299,9 @@ window.runMermaid = runMermaid;</script>
         <div class="footer-item">
 <div class="extra_footer">
   
-  <p>Last updated on July 02, 2026.</p>
+  <p>Last updated on July 22, 2026.</p>
   
-  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/30941a6">30941a6</a>.</p>
+  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/f98267f">f98267f</a>.</p>
   
 </div></div>
       

@@ -1,0 +1,8 @@
+Cute Dsl GEMM Nv Fp4 Runner
+===========================
+
+.. doxygenclass:: trt_edgellm::kernels::CuteDslGemmNvFp4Runner
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

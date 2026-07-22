@@ -48,6 +48,7 @@ The design boundary is deliberate: `tensorrt_edgellm` owns checkpoint parsing, m
 - `hf_quant_config.json` or embedded `quantization_config` provides quantization format, group size, excluded modules, per-layer overrides, and KV cache quantization.
 - Safetensors index files provide tensor names and shapes used for loading, q/k normalization detection, and model-specific fallbacks.
 - EAGLE3 draft checkpoints are detected from `draft_vocab_size`.
+- Qwen-style MTP checkpoints are detected from base-model metadata such as `num_draft_layers`; paired Gemma4 MTP export requires `--mtp-draft-dir` so the exporter can load the matched assistant checkpoint for the `mtp_draft/` graph.
 - DFlash draft checkpoints are detected from `dflash_config`.
 
 FP8 KV cache is enabled automatically when checkpoint metadata marks KV cache quantization as `fp8`; the exporter does not require a separate FP8 KV export mode.

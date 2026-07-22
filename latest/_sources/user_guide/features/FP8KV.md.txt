@@ -170,7 +170,7 @@ Benchmarks were collected on a Blackwell (Thor / SM100) GPU: causal masking, per
 
 ## Notes
 
-- **Calibration Required**: FP8 KV cache quantization requires calibration data. Use `--dataset` to select a calibration dataset (default: `cnn_dailymail`).
+- **Calibration Required**: FP8 KV cache quantization requires text calibration data. Use `--text_dataset <name>` to select a registered text dataset (default: `cnn_dailymail`).
 - **Independent of Weight Quantization**: FP8 KV cache can be enabled independently of weight quantization. You can use NVFP4 weights (or FP8 weights) with FP8 KV cache.
 - **Automatic Detection**: Engine build automatically detects FP8 KV cache from ONNX model configuration — no special build flags needed.
 - **Compatibility**: Works with the supported LLM and EAGLE flows, but accuracy should be validated per checkpoint.

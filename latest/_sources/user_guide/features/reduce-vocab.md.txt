@@ -89,6 +89,44 @@ This ensures all draft-to-target token mappings remain valid after vocabulary re
 
 ---
 
+## DFlash Speculative Decoding Support
+
+Vocabulary reduction can be applied independently to the DFlash **draft** model. Unlike EAGLE, the DFlash draft does not consume a `d2t` mapping; the draft's reduced LM-head IDs are remapped to the full base vocabulary inside `DFlashDecoder` via `mapReducedVocabToFullVocab`, so no draft↔base coordination is required.
+
+Reducing the draft LM-head shrinks the per-step argmax over the draft vocabulary, the dominant cost of drafter forward passes for large vocabularies (e.g. Qwen3 family at 151936). The reduced vocabulary size is **an arbitrary value you choose** via `--reduced_vocab_size` on the `tensorrt-edgellm-reduce-vocab` CLI; the table below reports the three sizes we happened to sweep on Qwen3-8B DFlash (Thor), not a hardcoded set of supported sizes.
+
+| Draft vocab | Tok/sec | Accepted/iter | Speedup vs full |
+|---|---|---|---|
+| full (151936) | 18.5 | 1.45 | 1.00× |
+| 128K | 18.7 | 1.45 | 1.01× |
+| **64K** | **19.3** | **1.44** | **1.04×** |
+| 32K | 18.1 | 1.35 | 0.97× |
+
+Of the sizes we tried, **64K** was the sweet spot on this configuration: acceptance essentially unchanged (1.44 vs 1.45) while throughput improved ~4%. At 32K, acceptance dropped enough (1.35) that the drafter-latency win was undone. These numbers are for one model + one dataset — sweep your own sizes on your own workload before committing to a setting.
+
+```bash
+# Step 1: Generate vocabulary mapping for the DFlash draft
+tensorrt-edgellm-reduce-vocab \
+  --model_dir Qwen/Qwen3.5-4B \
+  --output_dir draft_reduced_vocab \
+  --reduced_vocab_size 65536 \
+  --method input_aware
+
+# Step 2: Export DFlash draft with reduced vocabulary
+tensorrt-edgellm-export \
+  Qwen/Qwen3.5-4B \
+  qwen3_5_4b/onnx/draft_export \
+  --dflash-draft \
+  --dflash-draft-dir Qwen3.5-4B-DFlash \
+  --draft-reduced-vocab-dir draft_reduced_vocab/
+
+# The base model export (--dflash-base) is unchanged; reduction is draft-only.
+```
+
+The export writes `draft_vocab_map.safetensors` next to the draft engine. At runtime, `DFlashDecoder` gates on the draft engine config's `reduced_vocab_size > 0`: a missing map file when the config declares reduction is a hard error, and a stray map file when the config does not declare reduction is ignored. Base-model vocab reduction and draft-model vocab reduction are orthogonal and can be combined.
+
+---
+
 ## Script Reference
 
 | Argument | Required | Default | Description |

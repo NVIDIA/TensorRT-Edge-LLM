@@ -9,24 +9,29 @@ API documentation for the runtime module.
    audioLoader
    audioUtils
    decoderRegistry
+   decoderUtils
    decodingInferenceContext
    decodingStrategy
    deepstackBinding
    deploymentConfig
+   dflashDecodeUtils
    dflashDecoder
    eagleDecoder
    embeddingPreprocessor
    engineExecutor
    externalWeightManager
    gemma4EmbeddingPreprocessor
+   gemma4MTPDecoder
    hybridCacheManager
    imageUtils
    inferenceDims
    inferencePhase
    kvCacheManager
+   layerDebugger
    llmEngineConfig
    llmInferenceRuntime
    llmRuntimeUtils
+   logitBias
    loraManager
    mambaCacheManager
    melSpectrogram
@@ -36,7 +41,6 @@ API documentation for the runtime module.
    registryBuilder
    ropeCache
    sharedResources
-   specDecodeUtils
    stepPreparer
    streaming
    systemPromptKVCache

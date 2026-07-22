@@ -47,8 +47,8 @@
 
 
     <script src="../../_static/documentation_options.js?v=5929fcd5"></script>
-    <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
-    <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
     <script src="../../_static/copybutton.js?v=65e89d2a"></script>
     <script>let toggleHintShow = 'Click to show';</script>
@@ -56,11 +56,12 @@
     <script>let toggleOpenOnPrint = 'true';</script>
     <script src="../../_static/togglebutton.js?v=b8b12719"></script>
     <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
+    <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'cpp_api/common/trtUtils';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.19.0';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = './_static/switcher.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.9.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.9.1';
         DOCUMENTATION_OPTIONS.show_version_warning_banner =
             false;
         </script>
@@ -76,7 +77,7 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.9.0" />
+  <meta name="docsearch:version" content="0.9.1" />
   
     
     <script src="../../_static/searchtools.js"></script>
@@ -395,11 +396,13 @@
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Customization</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/customization-guide.html">Customization Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/calibration-datasets.html">Calibration Dataset Customization</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/tensorrt-plugins.html">TensorRT Plugins Guide</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Testing</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/code-coverage.html">Code Coverage with SonarQube</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/few-layer-validation.html">Few-Layer Numeric Validation</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">APIs</span></p>
 <ul class="current nav bd-sidenav">
@@ -443,31 +446,36 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../kernels/index.html">Kernels Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/NvFP4MoEUtils.html">Nv Fp4 Mo E Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/applyRopeWriteKV.html">Apply Rope Write KV</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/audioFbankKernels.html">Audio Fbank Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/batchEvictKernels.html">Batch Evict Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/buildLayout.html">Build Layout</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/causalConv1d.html">Causal Conv1d</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/common.html">Common</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/contextFMHARunner.html">Context FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/conversion.html">Conversion</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslF16MoeRunner.html">Cute Dsl F16 Moe Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslFFPARunner.html">Cute Dsl Ffpa Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslFMHARunner.html">Cute Dsl FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGDNRunner.html">Cute Dsl Gdn Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGemmNvFp4Runner.html">Cute Dsl GEMM Nv Fp4 Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGemmRunner.html">Cute Dsl GEMM Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslNvfp4MoeRunner.html">Cute Dsl Nvfp4 Moe Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslNvfp4MoeSm110Runner.html">Cute Dsl Nvfp4 Moe Sm110 Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslSSDRunner.html">Cute Dsl Ssd Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/ddtreeKernels.html">Ddtree Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/decoderXQARunner.html">Decoder XQA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/dequant.html">Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/dequantize.html">Dequantize</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../kernels/dflashAcceptKernels.html">Dflash Accept Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/dflashRuntimeKernels.html">Dflash Runtime Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/eagleAcceptKernels.html">EAGLE Accept Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/eagleUtilKernels.html">EAGLE Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/embeddingKernels.html">Embedding Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/f16MoeSupportKernels.html">F16 Moe Support Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/fmhaParams_v2.html">FMHA Params V2</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/fp4Quantize.html">Fp4 Quantize</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/gdnKernelUtils.html">Gdn Kernel Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/gemma4AudioAttention.html">Gemma4 Audio Attention</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/gemma4MTPRuntimeKernels.html">Gemma4 Mtp Runtime Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/imageUtilKernels.html">Image Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/initializeCosSinCache.html">Initialize Cos Sin Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/int4GroupwiseGemm.html">Int4 Groupwise GEMM</a></li>
@@ -482,13 +490,16 @@
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeAlignSumKernels.html">Moe Align Sum Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeMarlin.html">Moe Marlin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeMarlinIndicesKernels.html">Moe Marlin Indices Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moePerExpertScaleKernels.html">Moe Per Expert Scale Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeSigmoidGroupTopkKernels.html">Moe Sigmoid Group Topk Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeTopkSoftmaxKernels.html">Moe Topk Softmax Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/mtpStateScatterKernels.html">Mtp State Scatter Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoeTypes.html">Nvfp4 Moe Types</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4_dequant.html">Nvfp4 Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4_tensor.html">Nvfp4 Tensor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/scaleConvert.html">Scale Convert</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/selectiveStateUpdate.html">Selective State Update</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/speculativeKernelsUtils.html">Speculative Kernels Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/ssdVarlenMetadata.html">Ssd Varlen Metadata</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/talkerMLPKernels.html">Talker Mlp Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/utilKernels.html">Util Kernels</a></li>
@@ -499,6 +510,9 @@
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/audioRunner.html">Audio Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/audioUtils.html">Audio Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/code2WavRunner.html">Code2 Wav Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4AudioRunner.html">Gemma4 Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4UnifiedAudioRunner.html">Gemma4 Unified Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4UnifiedVisionRunner.html">Gemma4 Unified Vision Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4ViTRunner.html">Gemma4 ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/imageUtils.html">Image Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/internViTRunner.html">Intern ViT Runner</a></li>
@@ -507,14 +521,21 @@
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/nemotronOmniAudioRunner.html">Nemotron Omni Audio Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/nemotronOmniViTRunner.html">Nemotron Omni ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/phi4mmViTRunner.html">Phi4mm ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwen25vlViTRunner.html">Qwen25vl ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwen3omniViTRunner.html">Qwen3omni ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwen3vlViTRunner.html">Qwen3vl ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/qwenViTRunner.html">Qwen ViT Runner</a></li>
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../plugins/index.html">Plugins Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/allReducePlugin.html">All Reduce Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/attentionPlugin.html">Attention Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/causalConv1dPlugin.html">Causal Conv1d Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/dflashTargetKVCacheUpdatePlugin.html">Dflash Target KV Cache Update Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/fp16MoePlugin.html">Fp16 Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/fusedNvfp4GemmAllReducePlugin.html">Fused Nvfp4 GEMM All Reduce Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/gatedDeltaNetPlugin.html">Gated Delta Net Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/gemma4AudioAttentionPlugin.html">Gemma4 Audio Attention Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/int4GroupwiseGemmPlugin.html">Int4 Groupwise GEMM Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/int4MoePlugin.html">Int4 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/mambaPlugin.html">Mamba Plugin</a></li>
@@ -535,24 +556,29 @@
 <li class="toctree-l3"><a class="reference internal" href="../runtime/audioLoader.html">Audio Loader</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/audioUtils.html">Audio Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/decoderRegistry.html">Decoder Registry</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/decoderUtils.html">Decoder Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/decodingInferenceContext.html">Decoding Inference Context</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/decodingStrategy.html">Decoding Strategy</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/deepstackBinding.html">Deepstack Binding</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/deploymentConfig.html">Deployment Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/dflashDecodeUtils.html">Dflash Decode Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/dflashDecoder.html">Dflash Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/eagleDecoder.html">EAGLE Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/embeddingPreprocessor.html">Embedding Preprocessor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/engineExecutor.html">Engine Executor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/externalWeightManager.html">External Weight Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/gemma4EmbeddingPreprocessor.html">Gemma4 Embedding Preprocessor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/gemma4MTPDecoder.html">Gemma4 Mtp Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/hybridCacheManager.html">Hybrid Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/imageUtils.html">Image Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/inferenceDims.html">Inference Dims</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/inferencePhase.html">Inference Phase</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/kvCacheManager.html">KV Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/layerDebugger.html">Layer Debugger</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/llmEngineConfig.html">LLM Engine Config</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/llmInferenceRuntime.html">LLM Inference Runtime</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/llmRuntimeUtils.html">LLM Runtime Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/logitBias.html">Logit Bias</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/loraManager.html">Lora Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/mambaCacheManager.html">Mamba Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/melSpectrogram.html">Mel Spectrogram</a></li>
@@ -562,7 +588,6 @@
 <li class="toctree-l3"><a class="reference internal" href="../runtime/registryBuilder.html">Registry Builder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/ropeCache.html">Rope Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/sharedResources.html">Shared Resources</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../runtime/specDecodeUtils.html">Spec Decode Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/stepPreparer.html">Step Preparer</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/streaming.html">Streaming</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/systemPromptKVCache.html">System Prompt KV Cache</a></li>
@@ -650,6 +675,62 @@
                   
   <section id="trt-utils">
 <h1>TRT Utils<a class="headerlink" href="#trt-utils" title="Link to this heading">#</a></h1>
+<dl class="cpp class">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm12AuxStreamSetE">
+<span id="_CPPv3N11trt_edgellm12AuxStreamSetE"></span><span id="_CPPv2N11trt_edgellm12AuxStreamSetE"></span><span id="trt_edgellm::AuxStreamSet"></span><span class="target" id="classtrt__edgellm_1_1AuxStreamSet"></span><span class="k"><span class="pre">class</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">AuxStreamSet</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm12AuxStreamSetE" title="Link to this definition">#</a><br /></dt>
+<dd><p>RAII owner for the non-blocking auxiliary streams passed to IExecutionContext::setAuxStreams(). Declare it before the context member so the context is destroyed first (the streams must outlive it). </p>
+<div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-functions">Public Functions</p>
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm12AuxStreamSet12AuxStreamSetEv">
+<span id="_CPPv3N11trt_edgellm12AuxStreamSet12AuxStreamSetEv"></span><span id="_CPPv2N11trt_edgellm12AuxStreamSet12AuxStreamSetEv"></span><span id="trt_edgellm::AuxStreamSet::AuxStreamSet"></span><span class="target" id="classtrt__edgellm_1_1AuxStreamSet_1ad4ad793c079b057988517be162f1ca63"></span><span class="sig-name descname"><span class="n"><span class="pre">AuxStreamSet</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="k"><span class="pre">default</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm12AuxStreamSet12AuxStreamSetEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm12AuxStreamSetD0Ev">
+<span id="_CPPv3N11trt_edgellm12AuxStreamSetD0Ev"></span><span id="_CPPv2N11trt_edgellm12AuxStreamSetD0Ev"></span><span id="trt_edgellm::AuxStreamSet::~AuxStreamSet"></span><span class="target" id="classtrt__edgellm_1_1AuxStreamSet_1a25bd3583aae04a2541ba8fc15ab085c7"></span><span class="k"><span class="pre">inline</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">~AuxStreamSet</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm12AuxStreamSetD0Ev" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm12AuxStreamSet12AuxStreamSetERK12AuxStreamSet">
+<span id="_CPPv3N11trt_edgellm12AuxStreamSet12AuxStreamSetERK12AuxStreamSet"></span><span id="_CPPv2N11trt_edgellm12AuxStreamSet12AuxStreamSetERK12AuxStreamSet"></span><span id="trt_edgellm::AuxStreamSet::AuxStreamSet__AuxStreamSetCR"></span><span class="target" id="classtrt__edgellm_1_1AuxStreamSet_1a0cac75c3dc076a0e802c00c163320495"></span><span class="sig-name descname"><span class="n"><span class="pre">AuxStreamSet</span></span></span><span class="sig-paren">(</span><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm12AuxStreamSet12AuxStreamSetERK12AuxStreamSet" title="trt_edgellm::AuxStreamSet::AuxStreamSet"><span class="n"><span class="pre">AuxStreamSet</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="p"><span class="pre">&amp;</span></span></em><span class="sig-paren">)</span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="k"><span class="pre">delete</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm12AuxStreamSet12AuxStreamSetERK12AuxStreamSet" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm12AuxStreamSetaSERK12AuxStreamSet">
+<span id="_CPPv3N11trt_edgellm12AuxStreamSetaSERK12AuxStreamSet"></span><span id="_CPPv2N11trt_edgellm12AuxStreamSetaSERK12AuxStreamSet"></span><span id="trt_edgellm::AuxStreamSet::assign-operator__AuxStreamSetCR"></span><span class="target" id="classtrt__edgellm_1_1AuxStreamSet_1a75eb8a3893e8299cbbcc801a842eca91"></span><a class="reference internal" href="#_CPPv4N11trt_edgellm12AuxStreamSetE" title="trt_edgellm::AuxStreamSet"><span class="n"><span class="pre">AuxStreamSet</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="k"><span class="pre">operator</span></span><span class="o"><span class="pre">=</span></span></span><span class="sig-paren">(</span><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm12AuxStreamSetE" title="trt_edgellm::AuxStreamSet"><span class="n"><span class="pre">AuxStreamSet</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="p"><span class="pre">&amp;</span></span></em><span class="sig-paren">)</span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="k"><span class="pre">delete</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm12AuxStreamSetaSERK12AuxStreamSet" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm12AuxStreamSet12AuxStreamSetERR12AuxStreamSet">
+<span id="_CPPv3N11trt_edgellm12AuxStreamSet12AuxStreamSetERR12AuxStreamSet"></span><span id="_CPPv2N11trt_edgellm12AuxStreamSet12AuxStreamSetERR12AuxStreamSet"></span><span id="trt_edgellm::AuxStreamSet::AuxStreamSet__AuxStreamSetRR"></span><span class="target" id="classtrt__edgellm_1_1AuxStreamSet_1a9e43435da4a09dfa334fe8f597fed577"></span><span class="k"><span class="pre">inline</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">AuxStreamSet</span></span></span><span class="sig-paren">(</span><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm12AuxStreamSet12AuxStreamSetERR12AuxStreamSet" title="trt_edgellm::AuxStreamSet::AuxStreamSet"><span class="n"><span class="pre">AuxStreamSet</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">other</span></span></em><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm12AuxStreamSet12AuxStreamSetERR12AuxStreamSet" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm12AuxStreamSetaSERR12AuxStreamSet">
+<span id="_CPPv3N11trt_edgellm12AuxStreamSetaSERR12AuxStreamSet"></span><span id="_CPPv2N11trt_edgellm12AuxStreamSetaSERR12AuxStreamSet"></span><span id="trt_edgellm::AuxStreamSet::assign-operator__AuxStreamSetRR"></span><span class="target" id="classtrt__edgellm_1_1AuxStreamSet_1a9b344da6bc23181520f92b5175efc4d2"></span><span class="k"><span class="pre">inline</span></span><span class="w"> </span><a class="reference internal" href="#_CPPv4N11trt_edgellm12AuxStreamSetE" title="trt_edgellm::AuxStreamSet"><span class="n"><span class="pre">AuxStreamSet</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="k"><span class="pre">operator</span></span><span class="o"><span class="pre">=</span></span></span><span class="sig-paren">(</span><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm12AuxStreamSetE" title="trt_edgellm::AuxStreamSet"><span class="n"><span class="pre">AuxStreamSet</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">other</span></span></em><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm12AuxStreamSetaSERR12AuxStreamSet" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm12AuxStreamSet3addE12cudaStream_t">
+<span id="_CPPv3N11trt_edgellm12AuxStreamSet3addE12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm12AuxStreamSet3addE12cudaStream_t"></span><span id="trt_edgellm::AuxStreamSet::add__cudaStream_t"></span><span class="target" id="classtrt__edgellm_1_1AuxStreamSet_1a5a83ed4a59b5035ff99fd62178ac6f12"></span><span class="k"><span class="pre">inline</span></span><span class="w"> </span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">add</span></span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm12AuxStreamSet3addE12cudaStream_t" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm12AuxStreamSet4sizeEv">
+<span id="_CPPv3NK11trt_edgellm12AuxStreamSet4sizeEv"></span><span id="_CPPv2NK11trt_edgellm12AuxStreamSet4sizeEv"></span><span id="trt_edgellm::AuxStreamSet::sizeC"></span><span class="target" id="classtrt__edgellm_1_1AuxStreamSet_1a3a0cfc89e13e37231cb7bb8926153482"></span><span class="k"><span class="pre">inline</span></span><span class="w"> </span><span class="n"><span class="pre">size_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">size</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm12AuxStreamSet4sizeEv" title="Link to this definition">#</a><br /></dt>
+<dd><p>Number of streams currently held. </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm12AuxStreamSet4dataEv">
+<span id="_CPPv3N11trt_edgellm12AuxStreamSet4dataEv"></span><span id="_CPPv2N11trt_edgellm12AuxStreamSet4dataEv"></span><span id="trt_edgellm::AuxStreamSet::data"></span><span class="target" id="classtrt__edgellm_1_1AuxStreamSet_1a3bee19ce6d3c3141faf87306aec83d7d"></span><span class="k"><span class="pre">inline</span></span><span class="w"> </span><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">data</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm12AuxStreamSet4dataEv" title="Link to this definition">#</a><br /></dt>
+<dd><p>Pointer to the contiguous stream storage, for passing to setAuxStreams(). Only valid until the next add(); read it after all add() calls. </p>
+</dd></dl>
+
+</div>
+</dd></dl>
+
 <dl class="cpp struct">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm9DlDeleterE">
 <span id="_CPPv3N11trt_edgellm9DlDeleterE"></span><span id="_CPPv2N11trt_edgellm9DlDeleterE"></span><span id="trt_edgellm::DlDeleter"></span><span class="target" id="structtrt__edgellm_1_1DlDeleter"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">DlDeleter</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm9DlDeleterE" title="Link to this definition">#</a><br /></dt>
@@ -669,6 +750,132 @@
 </dd></dl>
 
 </div>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm19captureTRTCudaGraphEPN8nvinfer117IExecutionContextE12cudaStream_t">
+<span id="_CPPv3N11trt_edgellm19captureTRTCudaGraphEPN8nvinfer117IExecutionContextE12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm19captureTRTCudaGraphEPN8nvinfer117IExecutionContextE12cudaStream_t"></span><span id="trt_edgellm::captureTRTCudaGraph__nvinfer1::IExecutionContextP.cudaStream_t"></span><span class="target" id="trtUtils_8cpp_1a9c08dba9607314bb876efa2e234c3b33"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">optional</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">pair</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">cudaGraph_t</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="n"><span class="pre">cudaGraphExec_t</span></span><span class="p"><span class="pre">&gt;</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">captureTRTCudaGraph</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">IExecutionContext</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">context</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm19captureTRTCudaGraphEPN8nvinfer117IExecutionContextE12cudaStream_t" title="Link to this definition">#</a><br /></dt>
+<dd><p>Capture a TensorRT CUDA graph from an execution context and stream. </p>
+<dl class="field-list simple">
+<dt class="field-odd">Returns<span class="colon">:</span></dt>
+<dd class="field-odd"><p>Pair of graph and graph exec on success, std::nullopt on failure </p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm24setNonBlockingAuxStreamsEPN8nvinfer117IExecutionContextEPKN8nvinfer111ICudaEngineER12AuxStreamSet">
+<span id="_CPPv3N11trt_edgellm24setNonBlockingAuxStreamsEPN8nvinfer117IExecutionContextEPKN8nvinfer111ICudaEngineER12AuxStreamSet"></span><span id="_CPPv2N11trt_edgellm24setNonBlockingAuxStreamsEPN8nvinfer117IExecutionContextEPKN8nvinfer111ICudaEngineER12AuxStreamSet"></span><span id="trt_edgellm::setNonBlockingAuxStreams__nvinfer1::IExecutionContextP.nvinfer1::ICudaEngineCP.AuxStreamSetR"></span><span class="target" id="trtUtils_8cpp_1a2f6f9a428c5783ce7be7adfbfe66b62e"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">setNonBlockingAuxStreams</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">IExecutionContext</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">context</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">ICudaEngine</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">engine</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm12AuxStreamSetE" title="trt_edgellm::AuxStreamSet"><span class="n"><span class="pre">AuxStreamSet</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">out</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm24setNonBlockingAuxStreamsEPN8nvinfer117IExecutionContextEPKN8nvinfer111ICudaEngineER12AuxStreamSet" title="Link to this definition">#</a><br /></dt>
+<dd><p>Create non-blocking auxiliary streams for the context, register them via IExecutionContext::setAuxStreams(), and append them to <code class="docutils literal notranslate"><span class="pre">out</span></code> (which owns them). No-op when the engine reports zero aux streams. </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm12dimsToStringERKN8nvinfer14DimsE">
+<span id="_CPPv3N11trt_edgellm12dimsToStringERKN8nvinfer14DimsE"></span><span id="_CPPv2N11trt_edgellm12dimsToStringERKN8nvinfer14DimsE"></span><span id="trt_edgellm::dimsToString__nvinfer1::DimsCR"></span><span class="target" id="trtUtils_8cpp_1ad1f87bea5c7d91659a4d2a54ce939fc0"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">string</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">dimsToString</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">Dims</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">dims</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm12dimsToStringERKN8nvinfer14DimsE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Convert TensorRT dimensions to a string representation. </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm14hasDynamicDimsERKN8nvinfer14DimsE">
+<span id="_CPPv3N11trt_edgellm14hasDynamicDimsERKN8nvinfer14DimsE"></span><span id="_CPPv2N11trt_edgellm14hasDynamicDimsERKN8nvinfer14DimsE"></span><span id="trt_edgellm::hasDynamicDims__nvinfer1::DimsCR"></span><span class="target" id="trtUtils_8cpp_1a8e57d685bbe7fc91bc047b648a5047a3"></span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">hasDynamicDims</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">Dims</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">dims</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm14hasDynamicDimsERKN8nvinfer14DimsE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Return true when a TensorRT dimensions object contains runtime dimensions. </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm9dimsEqualERKN8nvinfer14DimsERKN8nvinfer14DimsE">
+<span id="_CPPv3N11trt_edgellm9dimsEqualERKN8nvinfer14DimsERKN8nvinfer14DimsE"></span><span id="_CPPv2N11trt_edgellm9dimsEqualERKN8nvinfer14DimsERKN8nvinfer14DimsE"></span><span id="trt_edgellm::dimsEqual__nvinfer1::DimsCR.nvinfer1::DimsCR"></span><span class="target" id="trtUtils_8cpp_1a29da78f481b36779c214706e1f635d2a"></span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">dimsEqual</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">Dims</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">lhs</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">Dims</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">rhs</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm9dimsEqualERKN8nvinfer14DimsERKN8nvinfer14DimsE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Return true when two TensorRT dimensions objects have the same rank and extent. </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm13isEngineInputERKN8nvinfer111ICudaEngineERKNSt6stringE">
+<span id="_CPPv3N11trt_edgellm13isEngineInputERKN8nvinfer111ICudaEngineERKNSt6stringE"></span><span id="_CPPv2N11trt_edgellm13isEngineInputERKN8nvinfer111ICudaEngineERKNSt6stringE"></span><span id="trt_edgellm::isEngineInput__nvinfer1::ICudaEngineCR.ssCR"></span><span class="target" id="trtUtils_8cpp_1add59a842b6156872dbf883b247f35413"></span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">isEngineInput</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">ICudaEngine</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">engine</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">string</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">tensorName</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm13isEngineInputERKN8nvinfer111ICudaEngineERKNSt6stringE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Return true when <code class="docutils literal notranslate"><span class="pre">tensorName</span></code> exists in the engine I/O list and is an input. </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm15printEngineInfoEPKN8nvinfer111ICudaEngineE7int32_t">
+<span id="_CPPv3N11trt_edgellm15printEngineInfoEPKN8nvinfer111ICudaEngineE7int32_t"></span><span id="_CPPv2N11trt_edgellm15printEngineInfoEPKN8nvinfer111ICudaEngineE7int32_t"></span><span id="trt_edgellm::printEngineInfo__nvinfer1::ICudaEngineCP.int32_t"></span><span class="target" id="trtUtils_8cpp_1a45f1615e9b46177c200442fcc95abc58"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">string</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">printEngineInfo</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">ICudaEngine</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">engine</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">profileIndex</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm15printEngineInfoEPKN8nvinfer111ICudaEngineE7int32_t" title="Link to this definition">#</a><br /></dt>
+<dd><p>Print the engine information for a specific profile index. </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm21engineHasOutputTensorEPKN8nvinfer111ICudaEngineEPKc">
+<span id="_CPPv3N11trt_edgellm21engineHasOutputTensorEPKN8nvinfer111ICudaEngineEPKc"></span><span id="_CPPv2N11trt_edgellm21engineHasOutputTensorEPKN8nvinfer111ICudaEngineEPKc"></span><span id="trt_edgellm::engineHasOutputTensor__nvinfer1::ICudaEngineCP.cCP"></span><span class="target" id="trtUtils_8cpp_1aa943c4e52297f119f2fbd71bed79f604"></span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">engineHasOutputTensor</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">ICudaEngine</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">engine</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="kt"><span class="pre">char</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">tensorName</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm21engineHasOutputTensorEPKN8nvinfer111ICudaEngineEPKc" title="Link to this definition">#</a><br /></dt>
+<dd><p>Whether the engine exposes an output binding with the given name. Use this instead of getTensorIOMode(name) when probing for an optional binding — getTensorIOMode logs a spurious TensorRT ERROR for unknown names. </p>
+<dl class="field-list simple">
+<dt class="field-odd">Pre<span class="colon">:</span></dt>
+<dd class="field-odd"><p>engine and tensorName are non-null. </p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm29deserializeCudaEngineFromFileERN8nvinfer18IRuntimeERKNSt10filesystem4pathE">
+<span id="_CPPv3N11trt_edgellm29deserializeCudaEngineFromFileERN8nvinfer18IRuntimeERKNSt10filesystem4pathE"></span><span id="_CPPv2N11trt_edgellm29deserializeCudaEngineFromFileERN8nvinfer18IRuntimeERKNSt10filesystem4pathE"></span><span id="trt_edgellm::deserializeCudaEngineFromFile__nvinfer1::IRuntimeR.std::filesystem::pathCR"></span><span class="target" id="trtUtils_8cpp_1a393aa49f7f6f6e1e8c805c611c2fe67b"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">unique_ptr</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">ICudaEngine</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">deserializeCudaEngineFromFile</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">IRuntime</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">runtime</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">filesystem</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">path</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">enginePath</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm29deserializeCudaEngineFromFileERN8nvinfer18IRuntimeERKNSt10filesystem4pathE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Deserialize a TensorRT engine plan from disk without mapping the full plan into process memory. </p>
 </dd></dl>
 
 </section>
@@ -722,10 +929,31 @@
   </div>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm12AuxStreamSetE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::AuxStreamSet</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm12AuxStreamSet12AuxStreamSetEv"><code class="docutils literal notranslate"><span class="pre">AuxStreamSet()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm12AuxStreamSetD0Ev"><code class="docutils literal notranslate"><span class="pre">~AuxStreamSet()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm12AuxStreamSet12AuxStreamSetERK12AuxStreamSet"><code class="docutils literal notranslate"><span class="pre">AuxStreamSet()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm12AuxStreamSetaSERK12AuxStreamSet"><code class="docutils literal notranslate"><span class="pre">operator=()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm12AuxStreamSet12AuxStreamSetERR12AuxStreamSet"><code class="docutils literal notranslate"><span class="pre">AuxStreamSet()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm12AuxStreamSetaSERR12AuxStreamSet"><code class="docutils literal notranslate"><span class="pre">operator=()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm12AuxStreamSet3addE12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">add()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm12AuxStreamSet4sizeEv"><code class="docutils literal notranslate"><span class="pre">size()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm12AuxStreamSet4dataEv"><code class="docutils literal notranslate"><span class="pre">data()</span></code></a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm9DlDeleterE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::DlDeleter</span></code></a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm9DlDeleterclEPv"><code class="docutils literal notranslate"><span class="pre">operator()()</span></code></a></li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm19captureTRTCudaGraphEPN8nvinfer117IExecutionContextE12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">captureTRTCudaGraph()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm24setNonBlockingAuxStreamsEPN8nvinfer117IExecutionContextEPKN8nvinfer111ICudaEngineER12AuxStreamSet"><code class="docutils literal notranslate"><span class="pre">setNonBlockingAuxStreams()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm12dimsToStringERKN8nvinfer14DimsE"><code class="docutils literal notranslate"><span class="pre">dimsToString()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm14hasDynamicDimsERKN8nvinfer14DimsE"><code class="docutils literal notranslate"><span class="pre">hasDynamicDims()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm9dimsEqualERKN8nvinfer14DimsERKN8nvinfer14DimsE"><code class="docutils literal notranslate"><span class="pre">dimsEqual()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13isEngineInputERKN8nvinfer111ICudaEngineERKNSt6stringE"><code class="docutils literal notranslate"><span class="pre">isEngineInput()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm15printEngineInfoEPKN8nvinfer111ICudaEngineE7int32_t"><code class="docutils literal notranslate"><span class="pre">printEngineInfo()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm21engineHasOutputTensorEPKN8nvinfer111ICudaEngineEPKc"><code class="docutils literal notranslate"><span class="pre">engineHasOutputTensor()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm29deserializeCudaEngineFromFileERN8nvinfer18IRuntimeERKNSt10filesystem4pathE"><code class="docutils literal notranslate"><span class="pre">deserializeCudaEngineFromFile()</span></code></a></li>
 </ul>
   </nav></div>
 
@@ -817,9 +1045,9 @@
         <div class="footer-item">
 <div class="extra_footer">
   
-  <p>Last updated on July 02, 2026.</p>
+  <p>Last updated on July 22, 2026.</p>
   
-  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/30941a6">30941a6</a>.</p>
+  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/f98267f">f98267f</a>.</p>
   
 </div></div>
       

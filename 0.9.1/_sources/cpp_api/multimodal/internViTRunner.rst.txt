@@ -1,0 +1,13 @@
+Intern ViT Runner
+=================
+
+.. doxygenclass:: trt_edgellm::rt::InternViTRunner
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::InternViTConfig
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

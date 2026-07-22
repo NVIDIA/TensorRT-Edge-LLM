@@ -47,8 +47,8 @@
 
 
     <script src="../../_static/documentation_options.js?v=5929fcd5"></script>
-    <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
-    <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
     <script src="../../_static/copybutton.js?v=65e89d2a"></script>
     <script>let toggleHintShow = 'Click to show';</script>
@@ -56,11 +56,12 @@
     <script>let toggleOpenOnPrint = 'true';</script>
     <script src="../../_static/togglebutton.js?v=b8b12719"></script>
     <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
+    <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'user_guide/format/input-format';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.19.0';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = './_static/switcher.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.9.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.9.1';
         DOCUMENTATION_OPTIONS.show_version_warning_banner =
             false;
         </script>
@@ -76,7 +77,7 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.9.0" />
+  <meta name="docsearch:version" content="0.9.1" />
   
     
     <script src="../../_static/searchtools.js"></script>
@@ -395,11 +396,13 @@
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Customization</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/customization-guide.html">Customization Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/calibration-datasets.html">Calibration Dataset Customization</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/tensorrt-plugins.html">TensorRT Plugins Guide</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Testing</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/code-coverage.html">Code Coverage with SonarQube</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/few-layer-validation.html">Few-Layer Numeric Validation</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">APIs</span></p>
 <ul class="nav bd-sidenav">
@@ -443,31 +446,36 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/kernels/index.html">Kernels Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/NvFP4MoEUtils.html">Nv Fp4 Mo E Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/applyRopeWriteKV.html">Apply Rope Write KV</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/audioFbankKernels.html">Audio Fbank Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/batchEvictKernels.html">Batch Evict Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/buildLayout.html">Build Layout</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/causalConv1d.html">Causal Conv1d</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/common.html">Common</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/contextFMHARunner.html">Context FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/conversion.html">Conversion</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslF16MoeRunner.html">Cute Dsl F16 Moe Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslFFPARunner.html">Cute Dsl Ffpa Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslFMHARunner.html">Cute Dsl FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslGDNRunner.html">Cute Dsl Gdn Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslGemmNvFp4Runner.html">Cute Dsl GEMM Nv Fp4 Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslGemmRunner.html">Cute Dsl GEMM Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslNvfp4MoeRunner.html">Cute Dsl Nvfp4 Moe Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslNvfp4MoeSm110Runner.html">Cute Dsl Nvfp4 Moe Sm110 Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslSSDRunner.html">Cute Dsl Ssd Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/ddtreeKernels.html">Ddtree Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/decoderXQARunner.html">Decoder XQA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dequant.html">Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dequantize.html">Dequantize</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dflashAcceptKernels.html">Dflash Accept Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dflashRuntimeKernels.html">Dflash Runtime Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/eagleAcceptKernels.html">EAGLE Accept Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/eagleUtilKernels.html">EAGLE Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/embeddingKernels.html">Embedding Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/f16MoeSupportKernels.html">F16 Moe Support Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/fmhaParams_v2.html">FMHA Params V2</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/fp4Quantize.html">Fp4 Quantize</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/gdnKernelUtils.html">Gdn Kernel Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/gemma4AudioAttention.html">Gemma4 Audio Attention</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/gemma4MTPRuntimeKernels.html">Gemma4 Mtp Runtime Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/imageUtilKernels.html">Image Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/initializeCosSinCache.html">Initialize Cos Sin Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/int4GroupwiseGemm.html">Int4 Groupwise GEMM</a></li>
@@ -482,13 +490,16 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeAlignSumKernels.html">Moe Align Sum Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeMarlin.html">Moe Marlin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeMarlinIndicesKernels.html">Moe Marlin Indices Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moePerExpertScaleKernels.html">Moe Per Expert Scale Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeSigmoidGroupTopkKernels.html">Moe Sigmoid Group Topk Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeTopkSoftmaxKernels.html">Moe Topk Softmax Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/mtpStateScatterKernels.html">Mtp State Scatter Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4MoeTypes.html">Nvfp4 Moe Types</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4_dequant.html">Nvfp4 Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4_tensor.html">Nvfp4 Tensor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/scaleConvert.html">Scale Convert</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/selectiveStateUpdate.html">Selective State Update</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/speculativeKernelsUtils.html">Speculative Kernels Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/ssdVarlenMetadata.html">Ssd Varlen Metadata</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/talkerMLPKernels.html">Talker Mlp Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/utilKernels.html">Util Kernels</a></li>
@@ -499,6 +510,9 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/audioRunner.html">Audio Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/audioUtils.html">Audio Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/code2WavRunner.html">Code2 Wav Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/gemma4AudioRunner.html">Gemma4 Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/gemma4UnifiedAudioRunner.html">Gemma4 Unified Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/gemma4UnifiedVisionRunner.html">Gemma4 Unified Vision Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/gemma4ViTRunner.html">Gemma4 ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/imageUtils.html">Image Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/internViTRunner.html">Intern ViT Runner</a></li>
@@ -507,14 +521,21 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/nemotronOmniAudioRunner.html">Nemotron Omni Audio Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/nemotronOmniViTRunner.html">Nemotron Omni ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/phi4mmViTRunner.html">Phi4mm ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/qwen25vlViTRunner.html">Qwen25vl ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/qwen3omniViTRunner.html">Qwen3omni ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/qwen3vlViTRunner.html">Qwen3vl ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/qwenViTRunner.html">Qwen ViT Runner</a></li>
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/plugins/index.html">Plugins Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/allReducePlugin.html">All Reduce Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/attentionPlugin.html">Attention Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/causalConv1dPlugin.html">Causal Conv1d Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/dflashTargetKVCacheUpdatePlugin.html">Dflash Target KV Cache Update Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/fp16MoePlugin.html">Fp16 Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/fusedNvfp4GemmAllReducePlugin.html">Fused Nvfp4 GEMM All Reduce Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/gatedDeltaNetPlugin.html">Gated Delta Net Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/gemma4AudioAttentionPlugin.html">Gemma4 Audio Attention Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/int4GroupwiseGemmPlugin.html">Int4 Groupwise GEMM Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/int4MoePlugin.html">Int4 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/mambaPlugin.html">Mamba Plugin</a></li>
@@ -535,24 +556,29 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/audioLoader.html">Audio Loader</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/audioUtils.html">Audio Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/decoderRegistry.html">Decoder Registry</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/decoderUtils.html">Decoder Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/decodingInferenceContext.html">Decoding Inference Context</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/decodingStrategy.html">Decoding Strategy</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/deepstackBinding.html">Deepstack Binding</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/deploymentConfig.html">Deployment Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/dflashDecodeUtils.html">Dflash Decode Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/dflashDecoder.html">Dflash Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/eagleDecoder.html">EAGLE Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/embeddingPreprocessor.html">Embedding Preprocessor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/engineExecutor.html">Engine Executor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/externalWeightManager.html">External Weight Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/gemma4EmbeddingPreprocessor.html">Gemma4 Embedding Preprocessor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/gemma4MTPDecoder.html">Gemma4 Mtp Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/hybridCacheManager.html">Hybrid Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/imageUtils.html">Image Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/inferenceDims.html">Inference Dims</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/inferencePhase.html">Inference Phase</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/kvCacheManager.html">KV Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/layerDebugger.html">Layer Debugger</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmEngineConfig.html">LLM Engine Config</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmInferenceRuntime.html">LLM Inference Runtime</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmRuntimeUtils.html">LLM Runtime Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/logitBias.html">Logit Bias</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/loraManager.html">Lora Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/mambaCacheManager.html">Mamba Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/melSpectrogram.html">Mel Spectrogram</a></li>
@@ -562,7 +588,6 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/registryBuilder.html">Registry Builder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/ropeCache.html">Rope Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/sharedResources.html">Shared Resources</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/specDecodeUtils.html">Spec Decode Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/stepPreparer.html">Step Preparer</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/streaming.html">Streaming</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/systemPromptKVCache.html">System Prompt KV Cache</a></li>
@@ -652,7 +677,9 @@
 <span class="w">    </span><span class="nt">&quot;temperature&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">1.0</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;top_p&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.8</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;top_k&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">50</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;logit_bias&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;123&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">-100.0</span><span class="p">},</span>
 <span class="w">    </span><span class="nt">&quot;max_generate_length&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">256</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;num_logprobs&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;apply_chat_template&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;enable_thinking&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;available_lora_weights&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{},</span>
@@ -667,6 +694,8 @@
 <span class="w">            </span><span class="nt">&quot;lora_name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;optional_lora_name&quot;</span><span class="p">,</span>
 <span class="w">            </span><span class="nt">&quot;save_system_prompt_kv_cache&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
 <span class="w">            </span><span class="nt">&quot;disable_spec_decode&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
+<span class="w">            </span><span class="nt">&quot;logit_bias&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;456&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">5.0</span><span class="p">},</span>
+<span class="w">            </span><span class="nt">&quot;num_logprobs&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
 <span class="w">            </span><span class="nt">&quot;stop&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;optional_stop_string&quot;</span><span class="p">]</span>
 <span class="w">        </span><span class="p">}</span>
 <span class="w">    </span><span class="p">]</span>
@@ -689,10 +718,12 @@
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">temperature</span></code></strong> (default: 1.0): Sampling temperature (0.0 = deterministic)</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">top_p</span></code></strong> (default: 0.8): Nucleus sampling threshold</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">top_k</span></code></strong> (default: 50): Top-k sampling parameter</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">logit_bias</span></code></strong> (optional): Sparse map from token ID to bias value. The top-level map is the default for all requests.</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">max_generate_length</span></code></strong> (default: 256): Maximum tokens to generate</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">apply_chat_template</span></code></strong> (default: true): Apply chat template formatting</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">add_generation_prompt</span></code></strong> (default: true): Add generation prompt token sequence</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">enable_thinking</span></code></strong> (default: false): Enable thinking mode (Qwen3+)</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">num_logprobs</span></code></strong> (default: 0): Number of top log-probabilities to return per generated token. <code class="docutils literal notranslate"><span class="pre">0</span></code> disables logprobs. Maximum value is 50; values outside <code class="docutils literal notranslate"><span class="pre">[0,</span> <span class="pre">50]</span></code> are rejected at input parsing. The cap applies to the per-token K of each individual request — it is <strong>not</strong> a cumulative budget across requests or batches: a batch simply computes at the maximum K its requests asked for, and every request in that batch receives that K. Each candidate carries <code class="docutils literal notranslate"><span class="pre">token_id</span></code>, <code class="docutils literal notranslate"><span class="pre">token</span></code> (decoded string), <code class="docutils literal notranslate"><span class="pre">bytes</span></code> (raw token bytes) and <code class="docutils literal notranslate"><span class="pre">logprob</span></code>, following OpenAI API semantics (<code class="docutils literal notranslate"><span class="pre">log(softmax(logits))</span></code>). The top-level value is the default for all requests; a request may raise it. Supported for both vanilla and EAGLE speculative decoding.</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">available_lora_weights</span></code></strong> (default: {}): Map of LoRA adapter names to file paths</p></li>
 </ul>
 </section>
@@ -703,6 +734,8 @@
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">lora_name</span></code></strong> (optional): LoRA adapter name from <code class="docutils literal notranslate"><span class="pre">available_lora_weights</span></code></p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">save_system_prompt_kv_cache</span></code></strong> (optional): Cache system prompt KV for reuse</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">disable_spec_decode</span></code></strong> (optional, default: false): Disable EAGLE speculative decoding for this request even if draft engine is loaded</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">logit_bias</span></code></strong> (optional): Request-specific sparse logit-bias map. When set, it overrides the top-level <code class="docutils literal notranslate"><span class="pre">logit_bias</span></code> default for this request.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">num_logprobs</span></code></strong> (optional): Overrides the top-level <code class="docutils literal notranslate"><span class="pre">num_logprobs</span></code> default for this request. Applied batch-uniformly (like <code class="docutils literal notranslate"><span class="pre">disable_spec_decode</span></code>): the batch computes at the maximum value requested by any request in it.</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">stop</span></code></strong> (optional): String or array of strings that halt generation when produced in the output. The stop string itself is excluded from the returned text. Each request in a batch may declare its own list independently. Defaults to no stop strings.</p></li>
 </ul>
 </section>
@@ -848,6 +881,68 @@
 </ul>
 <p><strong>Note:</strong> If any request in a batch has <code class="docutils literal notranslate"><span class="pre">disable_spec_decode:</span> <span class="pre">true</span></code>, speculative decoding will be disabled for the entire batch. Requests within one batch cannot use different decoding strategies simultaneously for now.</p>
 </section>
+<section id="logit-bias">
+<h3>Logit Bias<a class="headerlink" href="#logit-bias" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">logit_bias</span></code> accepts a sparse map of tokenizer token IDs to additive logit bias values. Positive values make a token more likely, and negative values make it less likely. Bias values must be finite and in <code class="docutils literal notranslate"><span class="pre">[-100.0,</span> <span class="pre">100.0]</span></code>; each map may contain up to 1024 token IDs.</p>
+<p>Top-level <code class="docutils literal notranslate"><span class="pre">logit_bias</span></code> applies to every request by default. A request-level <code class="docutils literal notranslate"><span class="pre">logit_bias</span></code> overrides the top-level default for that request.</p>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;logit_bias&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;123&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">-100.0</span><span class="p">},</span>
+<span class="w">    </span><span class="nt">&quot;requests&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">        </span><span class="p">{</span>
+<span class="w">            </span><span class="nt">&quot;messages&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">                </span><span class="p">{</span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;user&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;content&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Avoid token 123 by default.&quot;</span><span class="p">}</span>
+<span class="w">            </span><span class="p">]</span>
+<span class="w">        </span><span class="p">},</span>
+<span class="w">        </span><span class="p">{</span>
+<span class="w">            </span><span class="nt">&quot;messages&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">                </span><span class="p">{</span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;user&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;content&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Prefer token 456 for this request.&quot;</span><span class="p">}</span>
+<span class="w">            </span><span class="p">],</span>
+<span class="w">            </span><span class="nt">&quot;logit_bias&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;456&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">5.0</span><span class="p">}</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">]</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p><strong>Speculative decoding limitation:</strong> Requests with a non-empty <code class="docutils literal notranslate"><span class="pre">logit_bias</span></code> map are rejected while speculative decoding is active. Set <code class="docutils literal notranslate"><span class="pre">disable_spec_decode:</span> <span class="pre">true</span></code> to explicitly use vanilla decoding for that batch before sending logit bias.</p>
+</section>
+<section id="top-n-log-probabilities">
+<h3>Top-N Log-Probabilities<a class="headerlink" href="#top-n-log-probabilities" title="Link to this heading">#</a></h3>
+<p>Return the top-5 most likely tokens (with log-probabilities) at each generation step:</p>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;num_logprobs&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;max_generate_length&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">64</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;requests&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">        </span><span class="p">{</span>
+<span class="w">            </span><span class="nt">&quot;messages&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">                </span><span class="p">{</span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;user&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;content&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;The capital of France is&quot;</span><span class="p">}</span>
+<span class="w">            </span><span class="p">]</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">]</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">num_logprobs</span></code> may also be set per request to override the top-level default (see Request Fields).</p>
+<p>The output JSON will contain a <code class="docutils literal notranslate"><span class="pre">logprobs</span></code> field alongside <code class="docutils literal notranslate"><span class="pre">output_text</span></code>:</p>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="nt">&quot;logprobs&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="p">[</span>
+<span class="w">        </span><span class="p">{</span><span class="nt">&quot;token_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3681</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;token&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot; Paris&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;bytes&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="mi">32</span><span class="p">,</span><span class="w"> </span><span class="mi">80</span><span class="p">,</span><span class="w"> </span><span class="mi">97</span><span class="p">,</span><span class="w"> </span><span class="mi">114</span><span class="p">,</span><span class="w"> </span><span class="mi">105</span><span class="p">,</span><span class="w"> </span><span class="mi">115</span><span class="p">],</span><span class="w"> </span><span class="nt">&quot;logprob&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">-0.041</span><span class="p">},</span>
+<span class="w">        </span><span class="p">{</span><span class="nt">&quot;token_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">8098</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;token&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot; paris&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;bytes&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="mi">32</span><span class="p">,</span><span class="w"> </span><span class="mi">112</span><span class="p">,</span><span class="w"> </span><span class="mi">97</span><span class="p">,</span><span class="w"> </span><span class="mi">114</span><span class="p">,</span><span class="w"> </span><span class="mi">105</span><span class="p">,</span><span class="w"> </span><span class="mi">115</span><span class="p">],</span><span class="w"> </span><span class="nt">&quot;logprob&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">-3.812</span><span class="p">},</span>
+<span class="w">        </span><span class="p">{</span><span class="nt">&quot;token_id&quot;</span><span class="p">:</span><span class="w">  </span><span class="mi">627</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;token&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;.&quot;</span><span class="p">,</span><span class="w">       </span><span class="nt">&quot;bytes&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="mi">46</span><span class="p">],</span><span class="w">                        </span><span class="nt">&quot;logprob&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">-4.201</span><span class="p">},</span>
+<span class="w">        </span><span class="p">{</span><span class="nt">&quot;token_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4892</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;token&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot; PARIS&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;bytes&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="mi">32</span><span class="p">,</span><span class="w"> </span><span class="mi">80</span><span class="p">,</span><span class="w"> </span><span class="mi">65</span><span class="p">,</span><span class="w"> </span><span class="mi">82</span><span class="p">,</span><span class="w"> </span><span class="mi">73</span><span class="p">,</span><span class="w"> </span><span class="mi">83</span><span class="p">],</span><span class="w">     </span><span class="nt">&quot;logprob&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">-5.103</span><span class="p">},</span>
+<span class="w">        </span><span class="p">{</span><span class="nt">&quot;token_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3085</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;token&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot; France&quot;</span><span class="p">,</span><span class="nt">&quot;bytes&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="mi">32</span><span class="p">,</span><span class="w"> </span><span class="mi">70</span><span class="p">,</span><span class="w"> </span><span class="mi">114</span><span class="p">,</span><span class="w"> </span><span class="mi">97</span><span class="p">,</span><span class="w"> </span><span class="mi">110</span><span class="p">,</span><span class="w"> </span><span class="mi">99</span><span class="p">,</span><span class="w"> </span><span class="mi">101</span><span class="p">],</span><span class="w"> </span><span class="nt">&quot;logprob&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">-5.447</span><span class="p">}</span>
+<span class="w">    </span><span class="p">],</span>
+<span class="w">    </span><span class="err">...</span>
+<span class="p">]</span>
+</pre></div>
+</div>
+<p>Each element of the outer array corresponds to one generated token (step); the inner array lists up to <code class="docutils literal notranslate"><span class="pre">num_logprobs</span></code> candidates sorted by descending probability. Each candidate carries <code class="docutils literal notranslate"><span class="pre">token_id</span></code>, <code class="docutils literal notranslate"><span class="pre">token</span></code>, <code class="docutils literal notranslate"><span class="pre">bytes</span></code> and <code class="docutils literal notranslate"><span class="pre">logprob</span></code>.</p>
+<p><code class="docutils literal notranslate"><span class="pre">token</span></code> is the token decoded as UTF-8 with invalid/partial bytes replaced by U+FFFD; <code class="docutils literal notranslate"><span class="pre">bytes</span></code> is the raw token bytes. For byte-level BPE tokenizers a single token may be only part of a multi-byte character (e.g. half a CJK character), so <code class="docutils literal notranslate"><span class="pre">token</span></code> can be lossy — concatenate <code class="docutils literal notranslate"><span class="pre">bytes</span></code> across tokens to reconstruct the exact text losslessly.</p>
+<p><strong>Notes:</strong></p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">num_logprobs</span></code> can be set top-level (default for all requests) and/or per request (override); it is batch-uniform — the batch computes at the maximum value requested, and all requests in the batch share the same K.</p></li>
+<li><p>Logprobs are computed at temperature=1.0 regardless of the <code class="docutils literal notranslate"><span class="pre">temperature</span></code> sampling setting.</p></li>
+</ul>
+</section>
 <section id="stop-strings">
 <h3>Stop Strings<a class="headerlink" href="#stop-strings" title="Link to this heading">#</a></h3>
 <p>Generation halts as soon as any of the specified substrings appears in the decoded output; the stop string itself is excluded from the returned text. Accepts a single string or an array. Each request carries its own independent list — requests in the same batch may stop on different strings or none at all.</p>
@@ -871,6 +966,7 @@
 <ul class="simple">
 <li><p>System prompt: Uses provided system message, or model default from chat template</p></li>
 <li><p>LoRA: All requests in same batch must use same adapter</p></li>
+<li><p>Logit bias: Supported through vanilla decoding; active speculative decoding must be explicitly disabled first.</p></li>
 <li><p>Paths: Use absolute or relative paths for images/videos</p></li>
 <li><p>Format: Follows OpenAI chat completion API structure</p></li>
 </ul>
@@ -942,6 +1038,8 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#system-prompt-kv-cache">System Prompt KV Cache</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#raw-format-no-chat-template">Raw Format (No Chat Template)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#disable-speculative-decoding">Disable Speculative Decoding</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#logit-bias">Logit Bias</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#top-n-log-probabilities">Top-N Log-Probabilities</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#stop-strings">Stop Strings</a></li>
 </ul>
 </li>
@@ -1037,9 +1135,9 @@
         <div class="footer-item">
 <div class="extra_footer">
   
-  <p>Last updated on July 02, 2026.</p>
+  <p>Last updated on July 22, 2026.</p>
   
-  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/30941a6">30941a6</a>.</p>
+  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/f98267f">f98267f</a>.</p>
   
 </div></div>
       

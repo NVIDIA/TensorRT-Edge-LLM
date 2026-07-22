@@ -1,6 +1,18 @@
 Embedding Kernels
 =================
 
-.. doxygenfile:: kernels/embeddingKernels/embeddingKernels.h
+.. doxygenfunction:: trt_edgellm::kernel::embeddingLookup
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::embeddingLookupWithImageInsertion
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::assembleDeepstackEmbedding
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::embeddingLookupMultimodal
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::gemma4PleGather
    :project: TensorRT Edge-LLM
 

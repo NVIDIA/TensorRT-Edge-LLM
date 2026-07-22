@@ -28,6 +28,423 @@
 | INT4 GPTQ | 4-bit integer (GPTQ quantization) | All platforms |
 | NVFP4 | NVIDIA 4-bit float | SM100+ (Blackwell and newer) |
 
+## Reproducing Benchmark Runs
+
+Use the public TensorRT Edge-LLM user guides for model export, engine build, and
+basic inference:
+
+- [Quick Start Guide](../getting_started/quick-start-guide.md) for text-only
+  LLM export, `llm_build`, `llm_inference`, and `llm_bench`.
+- [VLM Inference](../examples/vlm.md) for visual encoder export/build and
+  `--multimodalEngineDir`.
+- [Speculative Decoding](../examples/speculative-decoding.md) for EAGLE3, MTP,
+  and DFlash export/build layouts.
+- [Input Format Guide](../format/input-format.md) for the Edge-LLM JSON request
+  format and chat-template behavior.
+
+This section records the benchmark-specific dataset choices, build-time limits,
+runtime flags, and `llm_bench` shapes used to reproduce the tables.
+
+### 1. Prepare Datasets
+
+Generate datasets with the scripts under `examples/accuracy/scripts`. MTBench
+and MMLU are text-only LLM datasets. COCO and MMMU are VLM datasets.
+
+```bash
+python3 -m pip install -r examples/accuracy/requirements.txt
+
+DATASET_DIR=/path/to/datasets
+mkdir -p "${DATASET_DIR}"
+
+# LLM generation benchmark dataset.
+python3 examples/accuracy/scripts/prepare_dataset.py \
+  --dataset MTBench \
+  --output_dir "${DATASET_DIR}/mtbench" \
+  --batch_size 1
+
+# LLM multiple-choice accuracy-side dataset.
+python3 examples/accuracy/scripts/prepare_dataset.py \
+  --dataset MMLU \
+  --output_dir "${DATASET_DIR}/mmlu" \
+  --batch_size 1
+
+# VLM generation benchmark dataset.
+python3 examples/accuracy/scripts/prepare_dataset.py \
+  --dataset COCO \
+  --output_dir "${DATASET_DIR}/coco" \
+  --batch_size 1
+
+# VLM multiple-choice accuracy-side dataset.
+python3 examples/accuracy/scripts/prepare_dataset.py \
+  --dataset MMMU \
+  --output_dir "${DATASET_DIR}/mmmu" \
+  --batch_size 1
+```
+
+### 2. Export and Build Specs
+
+Follow the linked export/build docs for the selected model family, precision,
+and decoding mode. Use these benchmark-specific build parameters:
+
+| Engine | `llm_build` / `visual_build` parameters |
+|--------|-----------------------------------------|
+| Vanilla LLM | `--maxBatchSize <batch>` `--maxInputLen 2048` `--maxKVCacheCapacity 2200` |
+| Vanilla VLM LLM engine | `--maxBatchSize <batch>` `--maxInputLen 2048` `--maxKVCacheCapacity 2200` |
+| VLM visual engine | `--minImageTokens 8` `--maxImageTokens 16384` `--maxImageTokensPerImage 2048` |
+| Orin NX / Orin Nano VLM visual engine | `--minImageTokens 8` `--maxImageTokens 2048` `--maxImageTokensPerImage 2048` |
+| EAGLE3 base engine | Vanilla LLM parameters plus `--specBase --maxVerifyTreeSize 60` |
+| EAGLE3 draft engine | Vanilla LLM parameters plus `--specDraft --maxDraftTreeSize 60` |
+| MTP base engine | Vanilla LLM parameters plus `--specBase --maxVerifyTreeSize 4` |
+| MTP draft engine | Vanilla LLM parameters plus `--specDraft --maxDraftTreeSize 4` |
+| DFlash base engine | Vanilla LLM parameters plus `--specBase --maxVerifyTreeSize 16` |
+| DFlash draft engine | Vanilla LLM parameters plus `--specDraft --maxDraftTreeSize 16` |
+
+Use the batch size shown in the benchmark row. Thor and Jetson AGX Orin rows may
+use batch `1` or `8`; Jetson Orin NX and Orin Nano rows are generally batch `1`.
+For INT4 runs on Orin, follow the export docs but use externalized INT4 weights:
+`--externalize-weights int4_ffn` for dense checkpoints and
+`--externalize-weights int4_ffn int4_moe` for MoE checkpoints.
+
+For speculative decoding, follow the exact export layouts in
+[Speculative Decoding](../examples/speculative-decoding.md): EAGLE3 uses a base
+and draft export, MTP uses the MTP base and `mtp_draft` export, and DFlash uses
+the paired DFlash base and draft export. For DFlash, use the linear DFlash base
+export for `--specDraftTopK 1`; use the tree-base export only for DDTree runs.
+
+### 3. Runtime Benchmark Specs
+
+Use `llm_inference` with the generated datasets and `--dumpProfile` to collect
+runtime prefill, generation, visual, memory, and speculative-decoding metrics in
+the profile JSON. Use these common runtime settings:
+
+| Workload | `llm_inference` settings |
+|----------|--------------------------|
+| LLM runtime benchmark | `--inputFile ${DATASET_DIR}/mtbench/mtbench_dataset.json` |
+| VLM runtime benchmark | `--inputFile ${DATASET_DIR}/coco/dataset.json --multimodalEngineDir <visual_engine_dir>` |
+| All runtime benchmarks | `--batchSize <batch>` `--warmup 10` `--dumpProfile --profileOutputFile <profile.json>` |
+| EAGLE3 runtime | Common settings plus `--specDecode --specVerifySize 60` |
+| MTP runtime | Common settings plus `--specDecode --specDraftTopK 1 --specDraftStep 3 --specVerifySize 4` |
+| DFlash linear runtime | Common settings plus `--specDecode --specDraftTopK 1 --specDraftStep 1 --specVerifySize 16` |
+| DFlash DDTree runtime | Follow the DFlash guide; use `--specDraftTopK > 1` with the tree-base export |
+
+For Qwen3.5 DFlash inputs, set `"enable_thinking": true`; for Qwen3 DFlash
+inputs, set `"enable_thinking": false`. These settings match the paired
+HuggingFace generation behavior used for DFlash validation.
+
+For synthetic component timing, run `llm_bench` on the same engines:
+
+| Component | `llm_bench` settings |
+|-----------|----------------------|
+| LLM prefill | `--mode prefill --batchSize <batch> --inputLen 2048 --warmup 3 --iterations 10 --profile` |
+| LLM decode | `--mode decode --batchSize <batch> --pastKVLen 2048 --warmup 3 --iterations 10 --profile` |
+| Visual encoder | `--mode visual --imageSize 1024x2048 --warmup 3 --iterations 10 --profile` |
+| Spec draft prefill | `--mode spec_draft_prefill --batchSize <batch> --inputLen 2048 --warmup 3 --iterations 10 --profile` |
+| Spec draft proposal | `--mode spec_draft_proposal --batchSize <batch> --draftTreeSize <draft_tree_size> --pastKVLen 2048 --warmup 3 --iterations 10 --profile` |
+| Spec verify | `--mode spec_verify --batchSize <batch> --verifyTreeSize <verify_tree_size> --pastKVLen 2048 --warmup 3 --iterations 10 --profile` |
+
+Use `draftTreeSize` / `verifyTreeSize` values of `60` for EAGLE3, `4` for MTP,
+and `16` for linear DFlash.
+
+## v0.9.0 Results
+
+> **SDK Version:** TensorRT Edge-LLM 0.9.0 &nbsp;|&nbsp; **JetPack:** 7.2 &nbsp;|&nbsp; **Devices:** Jetson AGX Thor, Jetson AGX Orin 64GB, Jetson Orin NX 16GB, Jetson Orin Nano 8GB
+
+> **Decode throughput:** Runtime `Decode (tok/s)` reports generated tokens per second for vanilla decoding and overall accepted-token throughput for speculative decoding. `llm_bench` BS=8 decode throughput is reported as aggregate batch throughput.
+
+### `llm_bench` Component Performance
+
+These rows report synthetic `llm_bench` prefill and decode measurements at the batch sizes shown.
+
+| Platform | Model | Kind | Mode | Precision | Batch | Prefill Seq Len | Prefill E2E (ms) | Prefill (tok/s) | Decode Past KV Len | Decode (tok/s) |
+|----------|-------|------|------|-----------|:-----:|----------------:|-----------------:|----------------:|-------------------:|---------------:|
+| Jetson AGX Thor | NVIDIA-Nemotron-3-Nano-30B-A3B | LLM | Vanilla | NVFP4 | 1 | 2,048 | 167.3 | 12,238.7 | 2,048 | 76.0 |
+| Jetson AGX Thor | NVIDIA-Nemotron-3-Nano-30B-A3B | LLM | Vanilla | NVFP4 | 8 | 2,048 | 1,037 | 1,974.9 | 2,048 | 272.0 |
+| Jetson AGX Thor | NVIDIA-Nemotron-3-Nano-4B | LLM | Vanilla | NVFP4 | 1 | 2,048 | 1,150.8 | 1,779.6 | 2,048 | 67.3 |
+| Jetson AGX Thor | NVIDIA-Nemotron-3-Nano-4B | LLM | Vanilla | NVFP4 | 8 | 2,048 | 5,352.8 | 382.6 | 2,048 | 433.6 |
+| Jetson AGX Thor | nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4 | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 163.6 | 12,516.2 | 2,048 | 71.2 |
+| Jetson AGX Thor | nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4 | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 992.9 | 2,062.6 | 2,048 | 266.4 |
+| Jetson AGX Thor | Qwen3-0.6B | LLM | Vanilla | NVFP4 | 1 | 2,048 | 20.3 | 101,070.8 | 2,048 | 245.4 |
+| Jetson AGX Thor | Qwen3-0.6B | LLM | Vanilla | NVFP4 | 8 | 2,048 | 234.6 | 8,730.5 | 2,048 | 715.2 |
+| Jetson AGX Thor | Qwen3-1.7B | LLM | Vanilla | NVFP4 | 1 | 2,048 | 29.9 | 68,527.5 | 2,048 | 135.5 |
+| Jetson AGX Thor | Qwen3-1.7B | LLM | Vanilla | NVFP4 | 8 | 2,048 | 341.7 | 5,993.2 | 2,048 | 519.2 |
+| Jetson AGX Thor | Qwen3-30B-A3B | LLM | Vanilla | NVFP4 | 1 | 2,048 | 137.0 | 14,952.3 | 2,048 | 84.8 |
+| Jetson AGX Thor | Qwen3-30B-A3B | LLM | Vanilla | NVFP4 | 8 | 2,048 | 970.8 | 2,109.6 | 2,048 | 249.6 |
+| Jetson AGX Thor | Qwen3-4B-Instruct-2507 | LLM | Vanilla | NVFP4 | 1 | 2,048 | 64.7 | 31,645.4 | 2,048 | 73.7 |
+| Jetson AGX Thor | Qwen3-4B-Instruct-2507 | LLM | Vanilla | NVFP4 | 8 | 2,048 | 810.0 | 2,528.5 | 2,048 | 349.6 |
+| Jetson AGX Thor | Qwen3-8B | LLM | Vanilla | NVFP4 | 1 | 2,048 | 108.4 | 18,896.8 | 2,048 | 44.4 |
+| Jetson AGX Thor | Qwen3-8B | LLM | Vanilla | NVFP4 | 8 | 2,048 | 1,214.5 | 1,686.2 | 2,048 | 252.0 |
+| Jetson AGX Thor | Qwen3-VL-2B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 30.5 | 67,255.9 | 2,048 | 135.7 |
+| Jetson AGX Thor | Qwen3-VL-2B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 343.1 | 5,969.3 | 2,048 | 561.6 |
+| Jetson AGX Thor | Qwen3-VL-4B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 64.3 | 31,859.4 | 2,048 | 73.4 |
+| Jetson AGX Thor | Qwen3-VL-4B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 813.9 | 2,516.2 | 2,048 | 350.4 |
+| Jetson AGX Thor | Qwen3-VL-8B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 108.4 | 18,896.6 | 2,048 | 44.8 |
+| Jetson AGX Thor | Qwen3-VL-8B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 1,219.6 | 1,679.2 | 2,048 | 250.4 |
+| Jetson AGX Thor | Qwen3.5-0.8B | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 36.0 | 56,959.2 | 2,048 | 229.1 |
+| Jetson AGX Thor | Qwen3.5-0.8B | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 348.3 | 5,880.3 | 2,048 | 1,205.6 |
+| Jetson AGX Thor | Qwen3.5-0.8B-LLM | LLM | Vanilla | NVFP4 | 1 | 2,048 | 36.2 | 56,525.9 | 2,048 | 228.3 |
+| Jetson AGX Thor | Qwen3.5-0.8B-LLM | LLM | Vanilla | NVFP4 | 8 | 2,048 | 347.9 | 5,887.2 | 2,048 | 1,206.4 |
+| Jetson AGX Thor | Qwen3.5-27B | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 463.3 | 4,420.5 | 2,048 | 14.6 |
+| Jetson AGX Thor | Qwen3.5-27B | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 4,249.2 | 482.0 | 2,048 | 94.4 |
+| Jetson AGX Thor | Qwen3.5-27B-LLM | LLM | Vanilla | NVFP4 | 1 | 2,048 | 461.9 | 4,433.4 | 2,048 | 14.5 |
+| Jetson AGX Thor | Qwen3.5-27B-LLM | LLM | Vanilla | NVFP4 | 8 | 2,048 | 4,268.3 | 479.8 | 2,048 | 95.2 |
+| Jetson AGX Thor | Qwen3.5-2B | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 45.3 | 45,230 | 2,048 | 122.4 |
+| Jetson AGX Thor | Qwen3.5-2B | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 434.8 | 4,710.4 | 2,048 | 756.0 |
+| Jetson AGX Thor | Qwen3.5-2B-LLM | LLM | Vanilla | NVFP4 | 1 | 2,048 | 45.7 | 44,801 | 2,048 | 122.6 |
+| Jetson AGX Thor | Qwen3.5-2B-LLM | LLM | Vanilla | NVFP4 | 8 | 2,048 | 436.3 | 4,694.2 | 2,048 | 757.6 |
+| Jetson AGX Thor | Qwen3.5-4B | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 101.1 | 20,248.4 | 2,048 | 68.0 |
+| Jetson AGX Thor | Qwen3.5-4B | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 996.5 | 2,055.2 | 2,048 | 395.2 |
+| Jetson AGX Thor | Qwen3.5-4B-LLM | LLM | Vanilla | NVFP4 | 1 | 2,048 | 101.9 | 20,106.1 | 2,048 | 67.7 |
+| Jetson AGX Thor | Qwen3.5-4B-LLM | LLM | Vanilla | NVFP4 | 8 | 2,048 | 992.0 | 2,064.5 | 2,048 | 394.4 |
+| Jetson AGX Thor | Qwen3.5-9B | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 139.0 | 14,738.3 | 2,048 | 40.1 |
+| Jetson AGX Thor | Qwen3.5-9B | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 1,406 | 1,456.6 | 2,048 | 261.6 |
+| Jetson AGX Thor | Qwen3.5-9B-LLM | LLM | Vanilla | NVFP4 | 1 | 2,048 | 138.4 | 14,800 | 2,048 | 39.7 |
+| Jetson AGX Thor | Qwen3.5-9B-LLM | LLM | Vanilla | NVFP4 | 8 | 2,048 | 1,414.5 | 1,447.8 | 2,048 | 260.0 |
+| Jetson AGX Thor | Qwen3.6-35B-A3B | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 195.0 | 10,501.2 | 2,048 | 84.1 |
+| Jetson AGX Thor | Qwen3.6-35B-A3B | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 1,212.8 | 1,688.7 | 2,048 | 257.6 |
+
+### Runtime Performance Dashboard
+
+Runtime rows are split by device and include batch size, prefill sequence length/time, visual encoder timing for VLMs, decode throughput, speculative acceptance rate, and peak GPU memory.
+
+#### Jetson AGX Thor
+
+| Model | Kind | Mode | Precision | Dataset | Batch | Prefill Seq Len | Prefill Time (ms) | Prefill (tok/s) | ViT Time (ms) | ViT Tok/Run | ViT (tok/s) | Decode (tok/s) | Accept Rate | GPU Mem (MB) |
+|-------|------|------|-----------|------------|:-----:|----------------:|------------------:|----------------:|--------------:|------------:|------------:|---------------:|------------:|-------------:|
+| NVIDIA-Nemotron-3-Nano-30B-A3B | LLM | Vanilla | NVFP4 | - | 1 | 66 | 73.9 | 891.0 | - | - | - | 77.3 | - | 18,754 |
+| NVIDIA-Nemotron-3-Nano-30B-A3B | LLM | Vanilla | NVFP4 | - | 8 | 470 | 157.1 | 2,992.8 | - | - | - | 225.9 | - | 18,721 |
+| NVIDIA-Nemotron-3-Nano-4B | LLM | Vanilla | NVFP4 | - | 1 | 66 | 35.4 | 1,858.9 | - | - | - | 67.9 | - | 3,546 |
+| NVIDIA-Nemotron-3-Nano-4B | LLM | Vanilla | NVFP4 | - | 8 | 470 | 147.3 | 3,192.7 | - | - | - | 359.5 | - | 3,556 |
+| nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4 | VLM | Vanilla | NVFP4 / FP16 | COCO | 1 | 1,699 | 159.4 | 10,658 | 127.3 | 1,664 | 13,070.9 | 72.6 | - | 18,928 |
+| nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4 | VLM | Vanilla | NVFP4 / FP16 | COCO | 8 | 12,136 | 806.8 | 15,042.2 | 932.8 | 11,886 | 12,742.1 | 183.5 | - | 18,979 |
+| Qwen2.5-VL-7B-Instruct | VLM | EAGLE3 | INT4 AWQ / INT4 AWQ / FP16 | COCO | 1 | 376 | 177.4 | 2,121.1 | 32.8 | 349 | 10,661.3 | 84.6 | 4.91 | 3,320 |
+| Qwen2.5-VL-7B-Instruct | VLM | EAGLE3 | INT4 AWQ / INT4 AWQ / FP16 | COCO | 8 | 2,688 | 1,333.9 | 2,014.8 | 260.5 | 2,495 | 9,575.1 | 126.7 | 4.84 | 3,332 |
+| Qwen2.5-VL-7B-Instruct | VLM | EAGLE3 | NVFP4 / NVFP4 / FP16 | COCO | 1 | 376 | 23.2 | 16,193.8 | 32.7 | 349 | 10,685 | 188.4 | 4.77 | 4,260 |
+| Qwen2.5-VL-7B-Instruct | VLM | EAGLE3 | NVFP4 / NVFP4 / FP16 | COCO | 8 | 2,688 | 180.0 | 14,931.8 | 259.5 | 2,495 | 9,613.4 | 531.1 | 4.73 | 4,288 |
+| Qwen3-0.6B | LLM | Vanilla | NVFP4 | - | 1 | 61 | 8.0 | 7,672.9 | - | - | - | 303.1 | - | 966 |
+| Qwen3-0.6B | LLM | Vanilla | NVFP4 | - | 8 | 437 | 19.6 | 22,337.1 | - | - | - | 1,569.5 | - | 961 |
+| Qwen3-1.7B | LLM | Vanilla | NVFP4 | - | 1 | 61 | 12.0 | 5,110 | - | - | - | 154.2 | - | 1,771 |
+| Qwen3-1.7B | LLM | Vanilla | NVFP4 | - | 8 | 437 | 29.6 | 14,790.2 | - | - | - | 828.7 | - | 1,806 |
+| Qwen3-1.7B | LLM | EAGLE3 | NVFP4 / NVFP4 | - | 1 | 61 | 10.0 | 6,143.8 | - | - | - | 351.6 | 3.04 | 1,355 |
+| Qwen3-1.7B | LLM | EAGLE3 | NVFP4 / NVFP4 | - | 8 | 437 | 27.7 | 15,768.7 | - | - | - | 950.4 | 3.06 | 1,365 |
+| Qwen3-30B-A3B | LLM | Vanilla | INT4 GPTQ | - | 1 | 61 | 64.1 | 955.4 | - | - | - | 85.8 | - | 14,305 |
+| Qwen3-30B-A3B | LLM | Vanilla | INT4 GPTQ | - | 8 | 437 | 263.7 | 1,657.9 | - | - | - | 232.1 | - | 14,314 |
+| Qwen3-30B-A3B | LLM | Vanilla | NVFP4 | - | 1 | 61 | 57.1 | 1,071.8 | - | - | - | 90.4 | - | 17,112 |
+| Qwen3-30B-A3B | LLM | Vanilla | NVFP4 | - | 8 | 437 | 107.1 | 4,081.1 | - | - | - | 252.8 | - | 17,092 |
+| Qwen3-4B-Instruct-2507 | LLM | Vanilla | INT4 AWQ | - | 1 | 57 | 33.5 | 1,710.1 | - | - | - | 79.6 | - | 1,819 |
+| Qwen3-4B-Instruct-2507 | LLM | Vanilla | INT4 AWQ | - | 8 | 409 | 229.8 | 1,778 | - | - | - | 328.6 | - | 1,808 |
+| Qwen3-4B-Instruct-2507 | LLM | Vanilla | NVFP4 | - | 1 | 57 | 20.5 | 2,790 | - | - | - | 80.5 | - | 3,138 |
+| Qwen3-4B-Instruct-2507 | LLM | Vanilla | NVFP4 | - | 8 | 409 | 53.9 | 7,586.7 | - | - | - | 494.9 | - | 3,151 |
+| Qwen3-4B-Instruct-2507 | LLM | DFlash | NVFP4 / NVFP4 | - | 1 | 57 | 20.6 | 2,772.8 | - | - | - | 102.3 | 2.26 | 3,141 |
+| Qwen3-4B-Instruct-2507 | LLM | DFlash | NVFP4 / NVFP4 | - | 8 | 409 | 53.8 | 7,597 | - | - | - | 462.1 | 2.24 | 3,148 |
+| Qwen3-8B | LLM | Vanilla | INT4 AWQ | - | 1 | 61 | 56.0 | 1,093.1 | - | - | - | 49.3 | - | 3,157 |
+| Qwen3-8B | LLM | Vanilla | INT4 AWQ | - | 8 | 437 | 426.5 | 1,025.1 | - | - | - | 191.8 | - | 3,166 |
+| Qwen3-8B | LLM | Vanilla | NVFP4 | - | 1 | 61 | 30.4 | 2,011.8 | - | - | - | 46.8 | - | 5,361 |
+| Qwen3-8B | LLM | Vanilla | NVFP4 | - | 8 | 437 | 74.1 | 5,901.8 | - | - | - | 283.1 | - | 5,374 |
+| Qwen3-8B | LLM | EAGLE3 | INT4 AWQ / INT4 AWQ | - | 1 | 61 | 55.8 | 1,097.7 | - | - | - | 77.1 | 4.22 | 3,146 |
+| Qwen3-8B | LLM | EAGLE3 | INT4 AWQ / INT4 AWQ | - | 8 | 437 | 426.2 | 1,025.7 | - | - | - | 107.7 | 4.20 | 3,153 |
+| Qwen3-8B | LLM | EAGLE3 | NVFP4 / NVFP4 | - | 1 | 61 | 26.7 | 2,291.6 | - | - | - | 160.5 | 4.24 | 4,513 |
+| Qwen3-8B | LLM | EAGLE3 | NVFP4 / NVFP4 | - | 8 | 437 | 71.1 | 6,149.4 | - | - | - | 488.5 | 4.12 | 4,523 |
+| Qwen3-8B | LLM | DFlash | NVFP4 / NVFP4 | - | 1 | 61 | 29.5 | 2,073.7 | - | - | - | 87.1 | 3.24 | 5,363 |
+| Qwen3-8B | LLM | DFlash | NVFP4 / NVFP4 | - | 8 | 437 | 74.8 | 5,848.2 | - | - | - | 378.5 | 3.13 | 5,379 |
+| Qwen3-VL-2B-Instruct | VLM | Vanilla | NVFP4 / FP16 | COCO | 1 | 292 | 10.7 | 27,311.9 | 11.7 | 266 | 22,678.4 | 151.9 | - | 1,845 |
+| Qwen3-VL-2B-Instruct | VLM | Vanilla | NVFP4 / FP16 | COCO | 8 | 2,089 | 53.2 | 39,302.3 | 75.6 | 1,896 | 25,068 | 698.8 | - | 1,853 |
+| Qwen3-VL-4B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | COCO | 1 | 292 | 85.2 | 3,433.5 | 11.7 | 266 | 22,731.2 | 79.0 | - | 1,847 |
+| Qwen3-VL-4B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | COCO | 8 | 2,089 | 613.0 | 3,408 | 76.0 | 1,896 | 24,964.3 | 273.1 | - | 1,850 |
+| Qwen3-VL-4B-Instruct | VLM | Vanilla | NVFP4 / FP16 | COCO | 1 | 292 | 20.4 | 14,327 | 12.2 | 265 | 21,831.3 | 79.4 | - | 3,182 |
+| Qwen3-VL-4B-Instruct | VLM | Vanilla | NVFP4 / FP16 | COCO | 8 | 2,089 | 107.0 | 19,531 | 76.0 | 1,896 | 24,951.1 | 377.9 | - | 3,193 |
+| Qwen3-VL-4B-Instruct | VLM | EAGLE3 | INT4 AWQ / INT4 AWQ / FP16 | COCO | 1 | 292 | 85.2 | 3,431.1 | 11.7 | 266 | 22,640.1 | 143.0 | 4.95 | 1,847 |
+| Qwen3-VL-4B-Instruct | VLM | EAGLE3 | INT4 AWQ / INT4 AWQ / FP16 | COCO | 8 | 2,089 | 613.3 | 3,406.2 | 76.2 | 1,896 | 24,895.9 | 212.9 | 4.91 | 1,846 |
+| Qwen3-VL-4B-Instruct | VLM | EAGLE3 | NVFP4 / NVFP4 / FP16 | COCO | 1 | 292 | 18.3 | 15,978.8 | 11.7 | 265 | 22,742.1 | 258.3 | 4.48 | 2,660 |
+| Qwen3-VL-4B-Instruct | VLM | EAGLE3 | NVFP4 / NVFP4 / FP16 | COCO | 8 | 2,089 | 105.0 | 19,894.8 | 75.5 | 1,896 | 25,132.1 | 676.7 | 4.57 | 2,680 |
+| Qwen3-VL-8B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | COCO | 1 | 292 | 156.5 | 1,869.1 | 15.8 | 265 | 16,778.3 | 48.9 | - | 3,204 |
+| Qwen3-VL-8B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | COCO | 8 | 2,089 | 1,113.2 | 1,876.6 | 108.1 | 1,896 | 17,546.9 | 184.5 | - | 3,191 |
+| Qwen3-VL-8B-Instruct | VLM | Vanilla | NVFP4 / FP16 | COCO | 1 | 292 | 30.2 | 9,681.1 | 15.8 | 265 | 16,854.4 | 47.1 | - | 5,403 |
+| Qwen3-VL-8B-Instruct | VLM | Vanilla | NVFP4 / FP16 | COCO | 8 | 2,089 | 175.5 | 11,904.6 | 108.5 | 1,896 | 17,474.1 | 246.9 | - | 5,424 |
+| Qwen3-VL-8B-Instruct | VLM | EAGLE3 | INT4 AWQ / INT4 AWQ / FP16 | COCO | 1 | 292 | 156.5 | 1,868.5 | 15.7 | 265 | 16,899 | 70.8 | 3.93 | 3,199 |
+| Qwen3-VL-8B-Instruct | VLM | EAGLE3 | INT4 AWQ / INT4 AWQ / FP16 | COCO | 8 | 2,089 | 1,114.1 | 1,875.1 | 108.1 | 1,896 | 17,549.2 | 99.5 | 3.93 | 3,193 |
+| Qwen3.5-0.8B | VLM | Vanilla | NVFP4 / FP16 | COCO | 1 | 296 | 9.4 | 31,415 | 3.9 | 265 | 68,378.8 | 234.6 | - | 1,239 |
+| Qwen3.5-0.8B | VLM | Vanilla | NVFP4 / FP16 | COCO | 8 | 2,118 | 51.6 | 41,042.8 | 26.9 | 1,896 | 70,417.5 | 976.7 | - | 1,223 |
+| Qwen3.5-0.8B | VLM | MTP | NVFP4 / NVFP4 / FP16 | COCO | 1 | 296 | 8.1 | 36,604.8 | 3.9 | 266 | 68,283.8 | 377.4 | 2.09 | 1,016 |
+| Qwen3.5-0.8B | VLM | MTP | NVFP4 / NVFP4 / FP16 | COCO | 8 | 2,118 | 49.9 | 42,408 | 26.9 | 1,896 | 70,395.1 | 1,118.1 | 2.09 | 1,135 |
+| Qwen3.5-0.8B-LLM | LLM | Vanilla | NVFP4 | - | 1 | 62 | 9.2 | 6,695.1 | - | - | - | 235.1 | - | 1,184 |
+| Qwen3.5-0.8B-LLM | LLM | Vanilla | NVFP4 | - | 8 | 441 | 26.2 | 16,871.5 | - | - | - | 1,230.9 | - | 1,153 |
+| Qwen3.5-27B | VLM | Vanilla | INT4 AWQ / FP16 | COCO | 1 | 296 | 567.0 | 522.8 | 14.6 | 266 | 18,137.7 | 15.8 | - | 8,975 |
+| Qwen3.5-27B | VLM | Vanilla | INT4 AWQ / FP16 | COCO | 8 | 2,118 | 4,498 | 470.8 | 102.5 | 1,896 | 18,502 | 56.9 | - | 8,982 |
+| Qwen3.5-27B | VLM | Vanilla | NVFP4 / FP16 | COCO | 1 | 296 | 104.0 | 2,851.2 | 14.5 | 265 | 18,265.8 | 14.8 | - | 16,040 |
+| Qwen3.5-27B | VLM | Vanilla | NVFP4 / FP16 | COCO | 8 | 2,118 | 654.1 | 3,237.4 | 102.6 | 1,896 | 18,486.3 | 76.0 | - | 16,081 |
+| Qwen3.5-27B | VLM | MTP | INT4 AWQ / INT4 AWQ / FP16 | COCO | 1 | 296 | 567.0 | 522.9 | 14.6 | 265 | 18,134 | 27.9 | 2.85 | 8,972 |
+| Qwen3.5-27B | VLM | MTP | INT4 AWQ / INT4 AWQ / FP16 | COCO | 8 | 2,118 | 4,498.2 | 470.8 | 102.3 | 1,896 | 18,538.5 | 92.3 | 2.84 | 9,006 |
+| Qwen3.5-27B | VLM | MTP | NVFP4 / NVFP4 / FP16 | COCO | 1 | 296 | 94.8 | 3,126.6 | 14.7 | 265 | 18,122.6 | 37.6 | 2.84 | 14,309 |
+| Qwen3.5-27B | VLM | MTP | NVFP4 / NVFP4 / FP16 | COCO | 8 | 2,118 | 645.5 | 3,280.4 | 102.8 | 1,896 | 18,448.6 | 152.9 | 2.85 | 14,353 |
+| Qwen3.5-27B | VLM | DFlash | NVFP4 / NVFP4 / FP16 | COCO | 1 | 296 | 103.6 | 2,862.1 | 14.6 | 265 | 18,239.9 | 21.7 | 2.59 | 16,063 |
+| Qwen3.5-27B | VLM | DFlash | NVFP4 / NVFP4 / FP16 | COCO | 8 | 2,118 | 656.0 | 3,227.8 | 103.0 | 1,896 | 18,416.8 | 55.6 | 2.51 | 16,077 |
+| Qwen3.5-27B-LLM | LLM | Vanilla | INT4 AWQ | - | 1 | 62 | 172.1 | 358.9 | - | - | - | 15.8 | - | 8,932 |
+| Qwen3.5-27B-LLM | LLM | Vanilla | INT4 AWQ | - | 8 | 441 | 1,717 | 256.9 | - | - | - | 60.2 | - | 8,938 |
+| Qwen3.5-27B-LLM | LLM | Vanilla | NVFP4 | - | 1 | 62 | 90.5 | 682.2 | - | - | - | 14.7 | - | 15,983 |
+| Qwen3.5-27B-LLM | LLM | Vanilla | NVFP4 | - | 8 | 441 | 276.6 | 1,594.7 | - | - | - | 88.5 | - | 16,018 |
+| Qwen3.5-2B | VLM | Vanilla | NVFP4 / FP16 | COCO | 1 | 296 | 13.8 | 21,423.1 | 11.2 | 265 | 23,721.7 | 125.3 | - | 2,186 |
+| Qwen3.5-2B | VLM | Vanilla | NVFP4 / FP16 | COCO | 8 | 2,118 | 69.4 | 30,536.6 | 72.8 | 1,896 | 26,044.4 | 475.1 | - | 2,188 |
+| Qwen3.5-2B | VLM | MTP | INT4 AWQ / INT4 AWQ / FP16 | COCO | 1 | 296 | 42.0 | 7,067.5 | 11.1 | 265 | 23,820.9 | 131.0 | 2.43 | 1,579 |
+| Qwen3.5-2B | VLM | MTP | INT4 AWQ / INT4 AWQ / FP16 | COCO | 8 | 2,118 | 347.2 | 6,099.6 | 73.3 | 1,896 | 25,874.3 | 483.5 | 2.41 | 1,581 |
+| Qwen3.5-2B | VLM | MTP | NVFP4 / NVFP4 / FP16 | COCO | 1 | 296 | 11.4 | 26,036.1 | 11.2 | 265 | 23,798.3 | 254.5 | 2.40 | 1,475 |
+| Qwen3.5-2B | VLM | MTP | NVFP4 / NVFP4 / FP16 | COCO | 8 | 2,118 | 65.4 | 32,395.7 | 72.5 | 1,896 | 26,172.8 | 730.4 | 2.33 | 1,502 |
+| Qwen3.5-2B-LLM | LLM | Vanilla | NVFP4 | - | 1 | 62 | 13.9 | 4,453.7 | - | - | - | 123.5 | - | 2,134 |
+| Qwen3.5-2B-LLM | LLM | Vanilla | NVFP4 | - | 8 | 441 | 34.5 | 12,782.4 | - | - | - | 729.5 | - | 2,161 |
+| Qwen3.5-35B-A3B | VLM | Vanilla | INT4 GPTQ / FP16 | COCO | 1 | 296 | 109.8 | 2,700.1 | 14.5 | 265 | 18,333.6 | 47.9 | - | 15,868 |
+| Qwen3.5-35B-A3B | VLM | Vanilla | INT4 GPTQ / FP16 | COCO | 8 | 2,118 | 458.2 | 4,621.5 | 101.6 | 1,896 | 18,655.7 | 196.3 | - | 15,872 |
+| Qwen3.5-35B-A3B-LLM | LLM | Vanilla | INT4 GPTQ | - | 1 | 62 | 66.6 | 928.0 | - | - | - | 48.2 | - | 15,829 |
+| Qwen3.5-35B-A3B-LLM | LLM | Vanilla | INT4 GPTQ | - | 8 | 441 | 212.2 | 2,079.4 | - | - | - | 203.1 | - | 15,823 |
+| Qwen3.5-4B | VLM | Vanilla | INT4 AWQ / FP16 | COCO | 1 | 296 | 98.6 | 3,007 | 11.0 | 265 | 24,210.2 | 67.5 | - | 1,731 |
+| Qwen3.5-4B | VLM | Vanilla | INT4 AWQ / FP16 | COCO | 8 | 2,118 | 740.8 | 2,858.4 | 72.7 | 1,896 | 26,080.2 | 243.1 | - | 1,748 |
+| Qwen3.5-4B | VLM | Vanilla | NVFP4 / FP16 | COCO | 1 | 296 | 26.1 | 11,347 | 10.9 | 265 | 24,398 | 69.4 | - | 3,635 |
+| Qwen3.5-4B | VLM | Vanilla | NVFP4 / FP16 | COCO | 8 | 2,118 | 142.1 | 14,906.9 | 72.9 | 1,896 | 26,020.4 | 271.3 | - | 3,636 |
+| Qwen3.5-4B | VLM | MTP | INT4 AWQ / INT4 AWQ / FP16 | COCO | 1 | 296 | 98.6 | 3,005.8 | 10.9 | 265 | 24,308.6 | 83.1 | 2.55 | 1,838 |
+| Qwen3.5-4B | VLM | MTP | INT4 AWQ / INT4 AWQ / FP16 | COCO | 8 | 2,118 | 840.9 | 2,518.2 | 73.1 | 1,896 | 25,935.5 | 278.7 | 2.55 | 1,835 |
+| Qwen3.5-4B | VLM | MTP | NVFP4 / NVFP4 / FP16 | COCO | 1 | 296 | 22.6 | 13,107.3 | 11.0 | 266 | 24,251.3 | 144.1 | 2.55 | 2,749 |
+| Qwen3.5-4B | VLM | MTP | NVFP4 / NVFP4 / FP16 | COCO | 8 | 2,118 | 139.6 | 15,171.4 | 73.2 | 1,896 | 25,895.5 | 439.8 | 2.50 | 2,774 |
+| Qwen3.5-4B | VLM | DFlash | NVFP4 / NVFP4 / FP16 | COCO | 1 | 296 | 26.3 | 11,277.7 | 11.2 | 265 | 23,704.3 | 73.8 | 2.27 | 3,631 |
+| Qwen3.5-4B | VLM | DFlash | NVFP4 / NVFP4 / FP16 | COCO | 8 | 2,118 | 143.6 | 14,750.3 | 73.4 | 1,896 | 25,828.5 | 169.0 | 2.29 | 3,627 |
+| Qwen3.5-4B-LLM | LLM | Vanilla | INT4 AWQ | - | 1 | 62 | 37.4 | 1,651.5 | - | - | - | 68.3 | - | 1,691 |
+| Qwen3.5-4B-LLM | LLM | Vanilla | INT4 AWQ | - | 8 | 441 | 287.5 | 1,534.3 | - | - | - | 274.0 | - | 1,674 |
+| Qwen3.5-4B-LLM | LLM | Vanilla | NVFP4 | - | 1 | 62 | 24.2 | 2,548.5 | - | - | - | 69.1 | - | 3,571 |
+| Qwen3.5-4B-LLM | LLM | Vanilla | NVFP4 | - | 8 | 441 | 69.1 | 6,382.2 | - | - | - | 386.2 | - | 3,561 |
+| Qwen3.5-9B | VLM | Vanilla | INT4 AWQ / FP16 | COCO | 1 | 296 | 173.8 | 1,705.9 | 14.6 | 265 | 18,164.8 | 42.5 | - | 2,896 |
+| Qwen3.5-9B | VLM | Vanilla | INT4 AWQ / FP16 | COCO | 8 | 2,118 | 1,354.8 | 1,563 | 101.6 | 1,896 | 18,664.1 | 161.7 | - | 2,922 |
+| Qwen3.5-9B | VLM | Vanilla | NVFP4 / FP16 | COCO | 1 | 296 | 37.6 | 7,895.3 | 14.5 | 265 | 18,291.2 | 40.8 | - | 6,137 |
+| Qwen3.5-9B | VLM | Vanilla | NVFP4 / FP16 | COCO | 8 | 2,118 | 211.4 | 10,016 | 101.1 | 1,896 | 18,757.2 | 187.2 | - | 6,150 |
+| Qwen3.5-9B | VLM | MTP | INT4 AWQ / INT4 AWQ / FP16 | COCO | 1 | 296 | 173.8 | 1,705.4 | 14.6 | 265 | 18,240.9 | 59.2 | 2.77 | 2,901 |
+| Qwen3.5-9B | VLM | MTP | INT4 AWQ / INT4 AWQ / FP16 | COCO | 8 | 2,118 | 1,355.5 | 1,562.2 | 100.9 | 1,896 | 18,798.2 | 225.0 | 2.78 | 2,920 |
+| Qwen3.5-9B | VLM | MTP | NVFP4 / NVFP4 / FP16 | COCO | 1 | 296 | 31.9 | 9,294 | 14.7 | 265 | 18,097.9 | 96.7 | 2.70 | 4,754 |
+| Qwen3.5-9B | VLM | MTP | NVFP4 / NVFP4 / FP16 | COCO | 8 | 2,118 | 204.8 | 10,338.5 | 101.9 | 1,896 | 18,616.8 | 396.5 | 2.73 | 4,768 |
+| Qwen3.5-9B | VLM | DFlash | NVFP4 / NVFP4 / FP16 | COCO | 1 | 296 | 37.6 | 7,885.8 | 14.5 | 265 | 18,263.8 | 47.1 | 2.42 | 6,145 |
+| Qwen3.5-9B | VLM | DFlash | NVFP4 / NVFP4 / FP16 | COCO | 8 | 2,118 | 212.6 | 9,961.9 | 101.7 | 1,896 | 18,653.1 | 132.4 | 2.34 | 6,161 |
+| Qwen3.5-9B-LLM | LLM | Vanilla | INT4 AWQ | - | 1 | 62 | 60.7 | 1,017.2 | - | - | - | 42.3 | - | 2,833 |
+| Qwen3.5-9B-LLM | LLM | Vanilla | INT4 AWQ | - | 8 | 441 | 521.4 | 846.1 | - | - | - | 167.2 | - | 2,865 |
+| Qwen3.5-9B-LLM | LLM | Vanilla | NVFP4 | - | 1 | 62 | 34.2 | 1,803.9 | - | - | - | 40.8 | - | 6,074 |
+| Qwen3.5-9B-LLM | LLM | Vanilla | NVFP4 | - | 8 | 441 | 92.4 | 4,774.8 | - | - | - | 242.0 | - | 6,104 |
+| Qwen3.6-27B | VLM | MTP | INT4 AWQ / INT4 AWQ / FP16 | COCO | 1 | 296 | 567.0 | 522.9 | 14.7 | 265 | 18,107.5 | 27.3 | 2.78 | 8,969 |
+| Qwen3.6-27B | VLM | MTP | INT4 AWQ / INT4 AWQ / FP16 | COCO | 8 | 2,118 | 4,498.4 | 470.7 | 102.1 | 1,896 | 18,573.5 | 90.8 | 2.81 | 8,976 |
+| Qwen3.6-27B | VLM | MTP | NVFP4 / NVFP4 / FP16 | COCO | 1 | 296 | 96.8 | 3,062.1 | 14.7 | 265 | 18,093.5 | 37.1 | 2.82 | 14,328 |
+| Qwen3.6-27B | VLM | MTP | NVFP4 / NVFP4 / FP16 | COCO | 8 | 2,118 | 645.8 | 3,279 | 102.2 | 1,896 | 18,559.2 | 143.3 | 2.81 | 14,335 |
+| Qwen3.6-35B-A3B | VLM | Vanilla | NVFP4 / FP16 | COCO | 1 | 296 | 88.8 | 3,339.5 | 14.5 | 265 | 18,334.9 | 87.6 | - | 19,472 |
+| Qwen3.6-35B-A3B | VLM | Vanilla | NVFP4 / FP16 | COCO | 8 | 2,118 | 229.3 | 9,236.3 | 101.4 | 1,896 | 18,696.7 | 251.1 | - | 19,468 |
+| Qwen3.6-35B-A3B | VLM | DFlash | NVFP4 / NVFP4 / FP16 | COCO | 1 | 296 | 89.7 | 3,304.7 | 14.5 | 265 | 18,318.7 | 42.2 | 1.62 | 19,389 |
+| Qwen3.6-35B-A3B | VLM | DFlash | NVFP4 / NVFP4 / FP16 | COCO | 8 | 2,118 | 228.8 | 9,253.9 | 100.5 | 1,896 | 18,862 | 86.9 | 1.59 | 19,474 |
+
+#### Jetson AGX Orin (64GB)
+
+| Model | Kind | Mode | Precision | Dataset | Batch | Prefill Seq Len | Prefill Time (ms) | Prefill (tok/s) | ViT Time (ms) | ViT Tok/Run | ViT (tok/s) | Decode (tok/s) | Accept Rate | GPU Mem (MB) |
+|-------|------|------|-----------|------------|:-----:|----------------:|------------------:|----------------:|--------------:|------------:|------------:|---------------:|------------:|-------------:|
+| Qwen2.5-VL-7B-Instruct | VLM | EAGLE3 | INT4 AWQ / INT4 AWQ / FP16 | COCO | 1 | 376 | 260.9 | 1,442.1 | 89.2 | 349 | 3,915.4 | 64.4 | 4.81 | 12,141 |
+| Qwen2.5-VL-7B-Instruct | VLM | EAGLE3 | INT4 AWQ / INT4 AWQ / FP16 | COCO | 8 | 2,688 | 1,936 | 1,388.2 | 635.0 | 2,495 | 3,928.8 | 85.4 | 4.78 | 14,078 |
+| Qwen3-0.6B | LLM | Vanilla | INT4 AWQ | - | 1 | 61 | 14.8 | 4,124.1 | - | - | - | 186.4 | - | 1,931 |
+| Qwen3-0.6B | LLM | Vanilla | INT4 AWQ | - | 8 | 437 | 50.9 | 8,588.1 | - | - | - | 738.2 | - | 4,043 |
+| Qwen3-1.7B | LLM | Vanilla | INT4 AWQ | - | 1 | 61 | 20.4 | 2,995.1 | - | - | - | 98.6 | - | 3,302 |
+| Qwen3-1.7B | LLM | Vanilla | INT4 AWQ | - | 8 | 437 | 134.2 | 3,257.9 | - | - | - | 465.5 | - | 5,602 |
+| Qwen3-1.7B | LLM | EAGLE3 | INT4 AWQ / INT4 AWQ | - | 1 | 61 | 20.5 | 2,992.9 | - | - | - | 128.2 | 3.18 | 3,395 |
+| Qwen3-1.7B | LLM | EAGLE3 | INT4 AWQ / INT4 AWQ | - | 8 | 437 | 134.8 | 3,243.1 | - | - | - | 215.3 | 3.18 | 6,714 |
+| Qwen3-30B-A3B | LLM | Vanilla | INT4 GPTQ | - | 1 | 61 | 91.0 | 672.4 | - | - | - | 56.7 | - | 26,077 |
+| Qwen3-30B-A3B | LLM | Vanilla | INT4 GPTQ | - | 8 | 437 | 389.2 | 1,123.2 | - | - | - | 163.3 | - | 25,304 |
+| Qwen3-4B-Instruct-2507 | LLM | Vanilla | INT4 AWQ | - | 1 | 57 | 42.6 | 1,342.4 | - | - | - | 53.1 | - | 4,911 |
+| Qwen3-4B-Instruct-2507 | LLM | Vanilla | INT4 AWQ | - | 8 | 409 | 323.6 | 1,262.8 | - | - | - | 225.8 | - | 8,119 |
+| Qwen3-8B | LLM | Vanilla | INT4 AWQ | - | 1 | 61 | 65.7 | 931.2 | - | - | - | 32.5 | - | 8,221 |
+| Qwen3-8B | LLM | Vanilla | INT4 AWQ | - | 8 | 437 | 592.8 | 737.4 | - | - | - | 151.5 | - | 11,134 |
+| Qwen3-8B | LLM | EAGLE3 | INT4 AWQ / INT4 AWQ | - | 1 | 61 | 65.6 | 933.3 | - | - | - | 59.3 | 4.22 | 8,344 |
+| Qwen3-8B | LLM | EAGLE3 | INT4 AWQ / INT4 AWQ | - | 8 | 437 | 593.4 | 736.7 | - | - | - | 72.6 | 4.21 | 12,914 |
+| Qwen3-VL-2B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | COCO | 1 | 292 | 50.0 | 5,853 | 39.0 | 265 | 6,815.9 | 98.4 | - | 8,140 |
+| Qwen3-VL-2B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | COCO | 8 | 2,089 | 355.8 | 5,870.7 | 256.8 | 1,896 | 7,383.3 | 372.3 | - | 10,246 |
+| Qwen3-VL-4B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | COCO | 1 | 292 | 123.7 | 2,364 | 39.3 | 265 | 6,749.4 | 52.4 | - | 9,516 |
+| Qwen3-VL-4B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | COCO | 8 | 2,089 | 886.2 | 2,357.2 | 257.6 | 1,896 | 7,360.4 | 188.7 | - | 12,436 |
+| Qwen3-VL-4B-Instruct | VLM | EAGLE3 | INT4 AWQ / INT4 AWQ / FP16 | COCO | 1 | 292 | 123.9 | 2,360.7 | 39.2 | 265 | 6,765.4 | 96.2 | 4.95 | 10,231 |
+| Qwen3-VL-4B-Instruct | VLM | EAGLE3 | INT4 AWQ / INT4 AWQ / FP16 | COCO | 8 | 2,089 | 889.5 | 2,348.6 | 258.2 | 1,896 | 7,342.6 | 141.4 | 4.88 | 13,573 |
+| Qwen3-VL-8B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | COCO | 1 | 292 | 225.1 | 1,299.1 | 57.2 | 265 | 4,644.4 | 32.3 | - | 13,030 |
+| Qwen3-VL-8B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | COCO | 8 | 2,089 | 1,598.1 | 1,307.2 | 373.2 | 1,896 | 5,080.7 | 144.5 | - | 15,904 |
+| Qwen3-VL-8B-Instruct | VLM | EAGLE3 | INT4 AWQ / INT4 AWQ / FP16 | COCO | 1 | 292 | 225.8 | 1,295.3 | 56.9 | 265 | 4,668.9 | 54.8 | 3.94 | 13,585 |
+| Qwen3-VL-8B-Instruct | VLM | EAGLE3 | INT4 AWQ / INT4 AWQ / FP16 | COCO | 8 | 2,089 | 1,603.8 | 1,302.6 | 372.5 | 1,896 | 5,090.6 | 67.0 | 3.92 | 17,381 |
+| Qwen3.5-0.8B | VLM | Vanilla | INT4 AWQ / FP16 | COCO | 1 | 296 | 96.8 | 3,062.6 | 13.2 | 266 | 20,176.9 | 146.0 | - | 4,488 |
+| Qwen3.5-0.8B | VLM | Vanilla | INT4 AWQ / FP16 | COCO | 8 | 2,118 | 440.5 | 4,806.9 | 84.2 | 1,896 | 22,521 | 574.3 | - | 4,992 |
+| Qwen3.5-0.8B | VLM | MTP | INT4 AWQ / INT4 AWQ / FP16 | COCO | 1 | 296 | 97.3 | 3,047.3 | 13.2 | 265 | 20,168.1 | 130.7 | 2.06 | 5,108 |
+| Qwen3.5-0.8B | VLM | MTP | INT4 AWQ / INT4 AWQ / FP16 | COCO | 8 | 2,118 | 440.5 | 4,807.6 | 83.9 | 1,896 | 22,592 | 467.1 | 2.06 | 6,323 |
+| Qwen3.5-0.8B-LLM | LLM | Vanilla | INT4 AWQ | - | 1 | 62 | 24.8 | 2,491.8 | - | - | - | 146.3 | - | 2,293 |
+| Qwen3.5-0.8B-LLM | LLM | Vanilla | INT4 AWQ | - | 8 | 441 | 154.4 | 2,856.9 | - | - | - | 663.7 | - | 3,212 |
+| Qwen3.5-27B | VLM | Vanilla | INT4 AWQ / FP16 | COCO | 1 | 296 | 1,072.4 | 276.4 | 53.8 | 265 | 4,938.9 | 10.5 | - | 24,017 |
+| Qwen3.5-27B | VLM | Vanilla | INT4 AWQ / FP16 | COCO | 8 | 2,118 | 7,796.9 | 271.6 | 358.3 | 1,896 | 5,292.3 | 42.1 | - | 26,327 |
+| Qwen3.5-27B | VLM | MTP | INT4 AWQ / INT4 AWQ / FP16 | COCO | 1 | 296 | 1,073 | 276.3 | 54.0 | 265 | 4,919 | 18.0 | 2.84 | 25,610 |
+| Qwen3.5-27B | VLM | MTP | INT4 AWQ / INT4 AWQ / FP16 | COCO | 8 | 2,118 | 7,808.6 | 271.2 | 358.4 | 1,896 | 5,291 | 63.6 | 2.85 | 33,173 |
+| Qwen3.5-27B-LLM | LLM | Vanilla | INT4 AWQ | - | 1 | 62 | 267.5 | 230.9 | - | - | - | 10.5 | - | 24,005 |
+| Qwen3.5-27B-LLM | LLM | Vanilla | INT4 AWQ | - | 8 | 441 | 2,785.1 | 158.4 | - | - | - | 45.0 | - | 26,257 |
+| Qwen3.5-2B | VLM | Vanilla | INT4 AWQ / FP16 | COCO | 1 | 296 | 126.3 | 2,347.5 | 37.0 | 265 | 7,184.5 | 82.0 | - | 6,818 |
+| Qwen3.5-2B | VLM | Vanilla | INT4 AWQ / FP16 | COCO | 8 | 2,118 | 672.3 | 3,149.7 | 246.9 | 1,896 | 7,679.3 | 353.7 | - | 7,376 |
+| Qwen3.5-2B | VLM | MTP | INT4 AWQ / INT4 AWQ / FP16 | COCO | 1 | 296 | 124.9 | 2,373.7 | 36.9 | 265 | 7,189.4 | 86.9 | 2.42 | 7,946 |
+| Qwen3.5-2B | VLM | MTP | INT4 AWQ / INT4 AWQ / FP16 | COCO | 8 | 2,118 | 672.5 | 3,148.6 | 248.1 | 1,896 | 7,644.3 | 358.1 | 2.42 | 9,311 |
+| Qwen3.5-2B-LLM | LLM | Vanilla | INT4 AWQ | - | 1 | 62 | 34.0 | 1,814.8 | - | - | - | 82.0 | - | 4,178 |
+| Qwen3.5-2B-LLM | LLM | Vanilla | INT4 AWQ | - | 8 | 441 | 245.1 | 1,800.2 | - | - | - | 406.7 | - | 4,934 |
+| Qwen3.5-35B-A3B | VLM | Vanilla | INT4 GPTQ / FP16 | COCO | 1 | 296 | 299.9 | 988.6 | 53.4 | 265 | 4,968.9 | 30.1 | - | 28,865 |
+| Qwen3.5-35B-A3B | VLM | Vanilla | INT4 GPTQ / FP16 | COCO | 8 | 2,118 | 1,401.6 | 1,510.8 | 358.8 | 1,896 | 5,284.3 | 128.9 | - | 26,705 |
+| Qwen3.5-35B-A3B-LLM | LLM | Vanilla | INT4 GPTQ | - | 1 | 62 | 116.8 | 528.8 | - | - | - | 31.1 | - | 35,722 |
+| Qwen3.5-35B-A3B-LLM | LLM | Vanilla | INT4 GPTQ | - | 8 | 441 | 523.8 | 842.2 | - | - | - | 134.1 | - | 36,655 |
+| Qwen3.5-4B | VLM | Vanilla | INT4 AWQ / FP16 | COCO | 1 | 296 | 243.5 | 1,217.6 | 37.0 | 265 | 7,170.8 | 45.7 | - | 8,450 |
+| Qwen3.5-4B | VLM | Vanilla | INT4 AWQ / FP16 | COCO | 8 | 2,118 | 1,605 | 1,319.4 | 248.7 | 1,896 | 7,624.3 | 170.8 | - | 9,683 |
+| Qwen3.5-4B | VLM | MTP | INT4 AWQ / INT4 AWQ / FP16 | COCO | 1 | 296 | 243.4 | 1,218.2 | 37.0 | 265 | 7,178.7 | 54.8 | 2.53 | 10,083 |
+| Qwen3.5-4B | VLM | MTP | INT4 AWQ / INT4 AWQ / FP16 | COCO | 8 | 2,118 | 1,606.5 | 1,318.2 | 248.5 | 1,896 | 7,630.2 | 194.6 | 2.56 | 12,896 |
+| Qwen3.5-4B-LLM | LLM | Vanilla | INT4 AWQ | - | 1 | 62 | 64.6 | 956.5 | - | - | - | 45.7 | - | 6,106 |
+| Qwen3.5-4B-LLM | LLM | Vanilla | INT4 AWQ | - | 8 | 441 | 570.6 | 773.2 | - | - | - | 192.0 | - | 7,555 |
+| Qwen3.5-9B | VLM | Vanilla | INT4 AWQ / FP16 | COCO | 1 | 296 | 353.5 | 838.6 | 53.8 | 265 | 4,938.9 | 28.0 | - | 12,106 |
+| Qwen3.5-9B | VLM | Vanilla | INT4 AWQ / FP16 | COCO | 8 | 2,118 | 2,355.5 | 899.0 | 358.3 | 1,896 | 5,291.6 | 124.4 | - | 13,409 |
+| Qwen3.5-9B | VLM | MTP | INT4 AWQ / INT4 AWQ / FP16 | COCO | 1 | 296 | 352.2 | 841.8 | 53.6 | 265 | 4,949.3 | 39.8 | 2.79 | 14,526 |
+| Qwen3.5-9B | VLM | MTP | INT4 AWQ / INT4 AWQ / FP16 | COCO | 8 | 2,118 | 2,365.1 | 895.4 | 355.0 | 1,896 | 5,341.5 | 165.9 | 2.79 | 17,457 |
+| Qwen3.5-9B-LLM | LLM | Vanilla | INT4 AWQ | - | 1 | 62 | 90.1 | 685.7 | - | - | - | 28.0 | - | 9,959 |
+| Qwen3.5-9B-LLM | LLM | Vanilla | INT4 AWQ | - | 8 | 441 | 852.5 | 517.5 | - | - | - | 130.4 | - | 11,237 |
+| Qwen3.6-27B | VLM | MTP | INT4 AWQ / INT4 AWQ / FP16 | COCO | 1 | 296 | 1,072.9 | 276.3 | 53.7 | 265 | 4,944.9 | 17.7 | 2.79 | 25,554 |
+| Qwen3.6-27B | VLM | MTP | INT4 AWQ / INT4 AWQ / FP16 | COCO | 8 | 2,118 | 7,793.2 | 271.7 | 358.2 | 1,896 | 5,293.5 | 65.2 | 2.79 | 33,225 |
+
+#### Jetson Orin NX (16GB)
+
+| Model | Kind | Mode | Precision | Dataset | Batch | Prefill Seq Len | Prefill Time (ms) | Prefill (tok/s) | ViT Time (ms) | ViT Tok/Run | ViT (tok/s) | Decode (tok/s) | Accept Rate | GPU Mem (MB) |
+|-------|------|------|-----------|------------|:-----:|----------------:|------------------:|----------------:|--------------:|------------:|------------:|---------------:|------------:|-------------:|
+| Qwen2.5-VL-7B-Instruct | VLM | EAGLE3 | INT4 AWQ / INT4 AWQ / FP16 | COCO | 1 | 376 | 535.5 | 702.6 | 208.5 | 349 | 1,675.2 | 33.0 | 4.76 | 9,161 |
+| Qwen3-0.6B | LLM | Vanilla | INT4 AWQ | - | 1 | 61 | 18.9 | 3,237.4 | - | - | - | 117.4 | - | 1,937 |
+| Qwen3-1.7B | LLM | Vanilla | INT4 AWQ | - | 1 | 61 | 35.4 | 1,729.3 | - | - | - | 60.4 | - | 3,250 |
+| Qwen3-1.7B | LLM | EAGLE3 | INT4 AWQ / INT4 AWQ | - | 1 | 61 | 35.4 | 1,728.4 | - | - | - | 73.5 | 3.19 | 3,315 |
+| Qwen3-4B-Instruct-2507 | LLM | Vanilla | INT4 AWQ | - | 1 | 57 | 74.9 | 763.8 | - | - | - | 31.6 | - | 4,921 |
+| Qwen3-8B | LLM | Vanilla | INT4 AWQ | - | 1 | 61 | 127.2 | 481.2 | - | - | - | 19.0 | - | 7,880 |
+| Qwen3-8B | LLM | EAGLE3 | INT4 AWQ / INT4 AWQ | - | 1 | 61 | 129.1 | 474.2 | - | - | - | 30.7 | 4.18 | 7,999 |
+| Qwen3-VL-2B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | COCO | 1 | 292 | 103.1 | 2,836.1 | 82.1 | 265 | 3,234.1 | 60.1 | - | 4,344 |
+| Qwen3-VL-4B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | COCO | 1 | 292 | 244.6 | 1,195.9 | 83.7 | 265 | 3,172.1 | 31.2 | - | 5,903 |
+| Qwen3-VL-4B-Instruct | VLM | EAGLE3 | INT4 AWQ / INT4 AWQ / FP16 | COCO | 1 | 292 | 243.0 | 1,203.3 | 83.1 | 265 | 3,195.6 | 54.2 | 4.92 | 6,362 |
+| Qwen3-VL-8B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | COCO | 1 | 292 | 462.1 | 632.9 | 120.0 | 265 | 2,211.6 | 18.9 | - | 9,065 |
+| Qwen3-VL-8B-Instruct | VLM | EAGLE3 | INT4 AWQ / INT4 AWQ / FP16 | COCO | 1 | 292 | 498.2 | 587.0 | 121.3 | 265 | 2,188 | 28.5 | 3.94 | 9,518 |
+| Qwen3.5-0.8B | VLM | Vanilla | INT4 AWQ / FP16 | COCO | 1 | 296 | 140.5 | 2,110.8 | 26.8 | 265 | 9,891.9 | 88.7 | - | 2,576 |
+| Qwen3.5-0.8B | VLM | MTP | INT4 AWQ / INT4 AWQ / FP16 | COCO | 1 | 296 | 140.2 | 2,114.4 | 26.9 | 265 | 9,861.5 | 74.5 | 2.07 | 3,208 |
+| Qwen3.5-0.8B-LLM | LLM | Vanilla | INT4 AWQ | - | 1 | 62 | 37.3 | 1,655.6 | - | - | - | 88.9 | - | 2,257 |
+| Qwen3.5-2B | VLM | Vanilla | INT4 AWQ / FP16 | COCO | 1 | 296 | 199.6 | 1,484.9 | 78.8 | 265 | 3,367.7 | 48.9 | - | 4,609 |
+| Qwen3.5-2B | VLM | MTP | INT4 AWQ / INT4 AWQ / FP16 | COCO | 1 | 296 | 199.3 | 1,487.2 | 77.6 | 265 | 3,420.9 | 47.7 | 2.41 | 5,698 |
+| Qwen3.5-2B-LLM | LLM | Vanilla | INT4 AWQ | - | 1 | 62 | 55.8 | 1,107.6 | - | - | - | 48.5 | - | 4,145 |
+| Qwen3.5-4B | VLM | Vanilla | INT4 AWQ / FP16 | COCO | 1 | 296 | 424.5 | 698.3 | 79.1 | 265 | 3,355.9 | 26.4 | - | 6,303 |
+| Qwen3.5-4B | VLM | MTP | INT4 AWQ / INT4 AWQ / FP16 | COCO | 1 | 296 | 422.6 | 701.5 | 78.8 | 265 | 3,370 | 29.5 | 2.55 | 7,782 |
+| Qwen3.5-4B-LLM | LLM | Vanilla | INT4 AWQ | - | 1 | 62 | 112.5 | 549.2 | - | - | - | 26.5 | - | 6,113 |
+
+#### Jetson Orin Nano (8GB)
+
+| Model | Kind | Mode | Precision | Dataset | Batch | Prefill Seq Len | Prefill Time (ms) | Prefill (tok/s) | ViT Time (ms) | ViT Tok/Run | ViT (tok/s) | Decode (tok/s) | Accept Rate | GPU Mem (MB) |
+|-------|------|------|-----------|------------|:-----:|----------------:|------------------:|----------------:|--------------:|------------:|------------:|---------------:|------------:|-------------:|
+| Qwen3-0.6B | LLM | Vanilla | INT4 AWQ | - | 1 | 61 | 28.7 | 2,133 | - | - | - | 72.8 | - | 1,889 |
+| Qwen3-1.7B | LLM | Vanilla | INT4 AWQ | - | 1 | 61 | 63.1 | 970.5 | - | - | - | 37.4 | - | 3,234 |
+| Qwen3-1.7B | LLM | EAGLE3 | INT4 AWQ / INT4 AWQ | - | 1 | 61 | 63.2 | 967.8 | - | - | - | 41.2 | 3.19 | 3,328 |
+| Qwen3-VL-2B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | COCO | 1 | 292 | 190.9 | 1,532.2 | 151.1 | 265 | 1,756.4 | 36.9 | - | 4,380 |
+| Qwen3.5-0.8B | VLM | Vanilla | INT4 AWQ / FP16 | COCO | 1 | 296 | 251.9 | 1,176.8 | 49.2 | 265 | 5,400.2 | 55.3 | - | 2,603 |
+| Qwen3.5-0.8B | VLM | MTP | INT4 AWQ / INT4 AWQ / FP16 | COCO | 1 | 296 | 251.8 | 1,177.4 | 49.1 | 265 | 5,404.1 | 45.0 | 2.07 | 3,202 |
+| Qwen3.5-0.8B-LLM | LLM | Vanilla | INT4 AWQ | - | 1 | 62 | 65.6 | 941.7 | - | - | - | 55.4 | - | 2,316 |
+| Qwen3.5-2B | VLM | Vanilla | INT4 AWQ / FP16 | COCO | 1 | 296 | 360.4 | 822.6 | 143.2 | 265 | 1,853.8 | 29.9 | - | 4,621 |
+| Qwen3.5-2B-LLM | LLM | Vanilla | INT4 AWQ | - | 1 | 62 | 99.5 | 621.0 | - | - | - | 30.0 | - | 4,176 |
+
+### v0.9.0 Collection Method
+
+- Engines were built from exported v0.9.0 ONNX artifacts using the build limits in [Export and Build Specs](#2-export-and-build-specs).
+- Runtime throughput was collected with `llm_inference --warmup 10 --dumpProfile --profileOutputFile <profile.json>` using benchmark JSON inputs for each model family.
+- Synthetic component timing was collected with `llm_bench --warmup 3 --iterations 10`; prefill uses `--inputLen 2048` and decode uses `--pastKVLen 2048`.
+- Jetson AGX Thor runs include NVFP4 and INT4 entries. Jetson AGX Orin, Orin NX, and Orin Nano run the externalized INT4 entries supported by each memory target.
+
 ---
 
 ## v0.8.0 Results
@@ -98,7 +515,6 @@ These are the parsed synthetic `llm_bench_prefill_*` results in the v0.8.0 relea
 | Jetson AGX Thor | Qwen3.5-4B-LLM | LLM | Vanilla | NVFP4 | 8 | 2,048 | 997.1 | 2,053.9 |
 | Jetson AGX Thor | Qwen3.5-9B-LLM | LLM | Vanilla | NVFP4 | 1 | 2,048 | 138.4 | 14,795.8 |
 | Jetson AGX Thor | Qwen3.5-9B-LLM | LLM | Vanilla | NVFP4 | 8 | 2,048 | 1,411.1 | 1,451.3 |
-| Jetson AGX Thor | Qwen3.6-35B-A3B-LLM | LLM | Vanilla | NVFP4 | 1 | 2,048 | 273.3 | 7,494.3 |
 | Jetson AGX Thor | Qwen3-VL-2B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 32.6 | 62,763.4 |
 | Jetson AGX Thor | Qwen3-VL-2B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 358.0 | 5,721.4 |
 | Jetson AGX Thor | Qwen3-VL-4B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 68.5 | 29,908.3 |
@@ -115,16 +531,16 @@ These are the parsed synthetic `llm_bench_prefill_*` results in the v0.8.0 relea
 | Jetson AGX Thor | Qwen3.5-4B | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 996.5 | 2,055.2 |
 | Jetson AGX Thor | Qwen3.5-9B | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 138.7 | 14,766.6 |
 | Jetson AGX Thor | Qwen3.5-9B | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 1,399.9 | 1,462.9 |
-| Jetson AGX Thor | nemotron-omni-ea | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 223.6 | 9,157.3 |
-| Jetson AGX Thor | nemotron-omni-ea | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 1,355.9 | 1,510.4 |
-| Jetson AGX Thor | Qwen3-1.7B | LLM | EAGLE | NVFP4 / NVFP4 | 1 | 2,048 | 30.6 | 66,929.4 |
-| Jetson AGX Thor | Qwen3-1.7B | LLM | EAGLE | NVFP4 / NVFP4 | 8 | 2,048 | 356.9 | 5,738.5 |
-| Jetson AGX Thor | Qwen3-8B | LLM | EAGLE | NVFP4 / NVFP4 | 1 | 2,048 | 109.2 | 18,754.4 |
-| Jetson AGX Thor | Qwen3-8B | LLM | EAGLE | NVFP4 / NVFP4 | 8 | 2,048 | 1,241.7 | 1,649.4 |
-| Jetson AGX Thor | Qwen2.5-VL-7B-Instruct | VLM | EAGLE | NVFP4 / NVFP4 / FP16 | 1 | 2,048 | 81.8 | 25,038.0 |
-| Jetson AGX Thor | Qwen2.5-VL-7B-Instruct | VLM | EAGLE | NVFP4 / NVFP4 / FP16 | 8 | 2,048 | 984.0 | 2,081.3 |
-| Jetson AGX Thor | Qwen3-VL-4B-Instruct | VLM | EAGLE | NVFP4 / NVFP4 / FP16 | 1 | 2,048 | 64.6 | 31,680.9 |
-| Jetson AGX Thor | Qwen3-VL-4B-Instruct | VLM | EAGLE | NVFP4 / NVFP4 / FP16 | 8 | 2,048 | 833.8 | 2,456.2 |
+| Jetson AGX Thor | nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4 | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 223.6 | 9,157.3 |
+| Jetson AGX Thor | nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4 | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 1,355.9 | 1,510.4 |
+| Jetson AGX Thor | Qwen3-1.7B | LLM | EAGLE3 | NVFP4 / NVFP4 | 1 | 2,048 | 30.6 | 66,929.4 |
+| Jetson AGX Thor | Qwen3-1.7B | LLM | EAGLE3 | NVFP4 / NVFP4 | 8 | 2,048 | 356.9 | 5,738.5 |
+| Jetson AGX Thor | Qwen3-8B | LLM | EAGLE3 | NVFP4 / NVFP4 | 1 | 2,048 | 109.2 | 18,754.4 |
+| Jetson AGX Thor | Qwen3-8B | LLM | EAGLE3 | NVFP4 / NVFP4 | 8 | 2,048 | 1,241.7 | 1,649.4 |
+| Jetson AGX Thor | Qwen2.5-VL-7B-Instruct | VLM | EAGLE3 | NVFP4 / NVFP4 / FP16 | 1 | 2,048 | 81.8 | 25,038.0 |
+| Jetson AGX Thor | Qwen2.5-VL-7B-Instruct | VLM | EAGLE3 | NVFP4 / NVFP4 / FP16 | 8 | 2,048 | 984.0 | 2,081.3 |
+| Jetson AGX Thor | Qwen3-VL-4B-Instruct | VLM | EAGLE3 | NVFP4 / NVFP4 / FP16 | 1 | 2,048 | 64.6 | 31,680.9 |
+| Jetson AGX Thor | Qwen3-VL-4B-Instruct | VLM | EAGLE3 | NVFP4 / NVFP4 / FP16 | 8 | 2,048 | 833.8 | 2,456.2 |
 | Jetson AGX Thor | Qwen3.5-0.8B | VLM | MTP | NVFP4 / NVFP4 / FP16 | 1 | 2,048 | 34.9 | 58,600.2 |
 | Jetson AGX Thor | Qwen3.5-0.8B | VLM | MTP | NVFP4 / NVFP4 / FP16 | 8 | 2,048 | 348.8 | 5,872.0 |
 | Jetson AGX Thor | Qwen3.5-27B | VLM | MTP | NVFP4 / NVFP4 / FP16 | 1 | 2,048 | 454.5 | 4,505.6 |
@@ -188,8 +604,6 @@ All v0.8.0 runtime entries below were benchmarked under JetPack 7.2 and are spli
 | Qwen3.5-9B-LLM | LLM | Vanilla | INT4 AWQ | 8 | 3,031.4 | 3,013 | 994.0 | - | - | - | 144.6 | - | 2,866 |
 | Qwen3.5-9B-LLM | LLM | Vanilla | NVFP4 | 1 | 46.4 | 377 | 8,112.3 | - | - | - | 39.4 | - | 6,110 |
 | Qwen3.5-9B-LLM | LLM | Vanilla | NVFP4 | 8 | 449.7 | 3,013 | 6,700.4 | - | - | - | 181.2 | - | 6,108 |
-| Qwen3.6-35B-A3B-LLM | LLM | Vanilla | NVFP4 | 1 | 144.2 | 377 | 2,611.8 | - | - | - | 69.0 | - | 21,442 |
-| Qwen3.6-35B-A3B-LLM | LLM | Vanilla | NVFP4 | 8 | 568.7 | 3,013 | 5,298.1 | - | - | - | 200.2 | - | 21,490 |
 | Qwen3-VL-2B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 38.2 | 283 | 7,399.3 | 12.6 | 263 | 20,790.0 | 119.0 | - | 1,422 |
 | Qwen3-VL-2B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 321.0 | 2,196 | 6,840.7 | 85.9 | 2,036 | 23,696.7 | 273.6 | - | 1,409 |
 | Qwen3-VL-2B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 1 | 14.8 | 283 | 19,152.2 | 12.6 | 262 | 20,790.0 | 117.8 | - | 1,867 |
@@ -226,26 +640,26 @@ All v0.8.0 runtime entries below were benchmarked under JetPack 7.2 and are spli
 | Qwen3.5-9B | VLM | Vanilla | NVFP4 / FP16 | 8 | 243.6 | 2,227 | 9,140.3 | 113.2 | 2,040 | 18,018.0 | 183.2 | - | 6,207 |
 | Qwen3.6-35B-A3B | VLM | Vanilla | NVFP4 / FP16 | 1 | 144.8 | 287 | 1,979.8 | 16.1 | 262 | 16,313.2 | 68.5 | - | 21,607 |
 | Qwen3.6-35B-A3B | VLM | Vanilla | NVFP4 / FP16 | 8 | 350.8 | 2,227 | 6,347.9 | 113.2 | 2,039 | 18,018.0 | 199.3 | - | 21,569 |
-| nemotron-omni-ea | VLM | Vanilla | NVFP4 / FP16 | 1 | 209.7 | 1,663 | 7,932.3 | 126.0 | 1,634 | 12,970.2 | 67.5 | - | 20,259 |
-| nemotron-omni-ea | VLM | Vanilla | NVFP4 / FP16 | 8 | 1,182.8 | 12,922 | 10,925.0 | 982.5 | 12,694 | 12,919.9 | 106.9 | - | 20,257 |
-| Qwen3-1.7B | LLM | EAGLE | INT4 AWQ / INT4 AWQ | 1 | 49.5 | 370 | 7,464.8 | - | - | - | 182.9 | 3.89 | 1,067 |
-| Qwen3-1.7B | LLM | EAGLE | INT4 AWQ / INT4 AWQ | 8 | 590.6 | 2,959 | 5,010.0 | - | - | - | 296.5 | 3.87 | 1,105 |
-| Qwen3-1.7B | LLM | EAGLE | NVFP4 / NVFP4 | 1 | 16.0 | 370 | 23,065.1 | - | - | - | 284.9 | 3.84 | 1,345 |
-| Qwen3-1.7B | LLM | EAGLE | NVFP4 / NVFP4 | 8 | 141.6 | 2,959 | 20,900.3 | - | - | - | 618.0 | 3.81 | 1,371 |
-| Qwen3-8B | LLM | EAGLE | INT4 AWQ / INT4 AWQ | 1 | 199.9 | 370 | 1,849.8 | - | - | - | 70.0 | 4.15 | 3,156 |
-| Qwen3-8B | LLM | EAGLE | INT4 AWQ / INT4 AWQ | 8 | 2,550.1 | 2,959 | 1,160.3 | - | - | - | 95.7 | 4.11 | 3,174 |
-| Qwen3-8B | LLM | EAGLE | NVFP4 / NVFP4 | 1 | 39.3 | 370 | 9,421.5 | - | - | - | 135.2 | 4.06 | 4,499 |
-| Qwen3-8B | LLM | EAGLE | NVFP4 / NVFP4 | 8 | 428.2 | 2,959 | 6,910.2 | - | - | - | 341.0 | 4.05 | 4,550 |
-| Qwen2.5-VL-7B-Instruct | VLM | EAGLE | INT4 AWQ / INT4 AWQ / FP16 | 1 | 180.9 | 376 | 2,076.4 | 52.5 | 344 | 6,561.7 | 84.4 | 5.15 | 3,406 |
-| Qwen2.5-VL-7B-Instruct | VLM | EAGLE | INT4 AWQ / INT4 AWQ / FP16 | 8 | 1,613.3 | 2,919 | 1,809.0 | 429.4 | 2,675 | 6,230.5 | 116.7 | 5.07 | 3,371 |
-| Qwen2.5-VL-7B-Instruct | VLM | EAGLE | NVFP4 / NVFP4 / FP16 | 1 | 28.6 | 376 | 13,119.4 | 52.5 | 344 | 6,557.4 | 189.6 | 5.09 | 4,308 |
-| Qwen2.5-VL-7B-Instruct | VLM | EAGLE | NVFP4 / NVFP4 / FP16 | 8 | 258.9 | 2,919 | 11,271.9 | 431.0 | 2,675 | 6,207.3 | 383.8 | 4.90 | 4,319 |
-| Qwen3-VL-4B-Instruct | VLM | EAGLE | INT4 AWQ / INT4 AWQ / FP16 | 1 | 89.0 | 283 | 3,174.8 | 12.9 | 262 | 20,242.9 | 126.5 | 5.02 | 1,900 |
-| Qwen3-VL-4B-Instruct | VLM | EAGLE | INT4 AWQ / INT4 AWQ / FP16 | 8 | 774.9 | 2,196 | 2,833.6 | 85.8 | 2,038 | 23,753.0 | 187.9 | 4.96 | 1,894 |
-| Qwen3-VL-4B-Instruct | VLM | EAGLE | NVFP4 / NVFP4 / FP16 | 1 | 26.2 | 283 | 10,789.2 | 12.6 | 262 | 20,833.3 | 199.7 | 4.86 | 2,685 |
-| Qwen3-VL-4B-Instruct | VLM | EAGLE | NVFP4 / NVFP4 / FP16 | 8 | 186.4 | 2,196 | 11,778.3 | 85.4 | 2,039 | 23,866.3 | 418.8 | 4.87 | 2,700 |
-| Qwen3-VL-8B-Instruct | VLM | EAGLE | INT4 AWQ / INT4 AWQ / FP16 | 1 | 156.2 | 283 | 1,809.5 | 17.3 | 262 | 15,151.5 | 48.2 | 2.85 | 3,252 |
-| Qwen3-VL-8B-Instruct | VLM | EAGLE | INT4 AWQ / INT4 AWQ / FP16 | 8 | 1,354.6 | 2,196 | 1,621.0 | 120.4 | 2,037 | 16,920.5 | 65.7 | 2.82 | 3,251 |
+| nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4 | VLM | Vanilla | NVFP4 / FP16 | 1 | 209.7 | 1,663 | 7,932.3 | 126.0 | 1,634 | 12,970.2 | 67.5 | - | 20,259 |
+| nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4 | VLM | Vanilla | NVFP4 / FP16 | 8 | 1,182.8 | 12,922 | 10,925.0 | 982.5 | 12,694 | 12,919.9 | 106.9 | - | 20,257 |
+| Qwen3-1.7B | LLM | EAGLE3 | INT4 AWQ / INT4 AWQ | 1 | 49.5 | 370 | 7,464.8 | - | - | - | 182.9 | 3.89 | 1,067 |
+| Qwen3-1.7B | LLM | EAGLE3 | INT4 AWQ / INT4 AWQ | 8 | 590.6 | 2,959 | 5,010.0 | - | - | - | 296.5 | 3.87 | 1,105 |
+| Qwen3-1.7B | LLM | EAGLE3 | NVFP4 / NVFP4 | 1 | 16.0 | 370 | 23,065.1 | - | - | - | 284.9 | 3.84 | 1,345 |
+| Qwen3-1.7B | LLM | EAGLE3 | NVFP4 / NVFP4 | 8 | 141.6 | 2,959 | 20,900.3 | - | - | - | 618.0 | 3.81 | 1,371 |
+| Qwen3-8B | LLM | EAGLE3 | INT4 AWQ / INT4 AWQ | 1 | 199.9 | 370 | 1,849.8 | - | - | - | 70.0 | 4.15 | 3,156 |
+| Qwen3-8B | LLM | EAGLE3 | INT4 AWQ / INT4 AWQ | 8 | 2,550.1 | 2,959 | 1,160.3 | - | - | - | 95.7 | 4.11 | 3,174 |
+| Qwen3-8B | LLM | EAGLE3 | NVFP4 / NVFP4 | 1 | 39.3 | 370 | 9,421.5 | - | - | - | 135.2 | 4.06 | 4,499 |
+| Qwen3-8B | LLM | EAGLE3 | NVFP4 / NVFP4 | 8 | 428.2 | 2,959 | 6,910.2 | - | - | - | 341.0 | 4.05 | 4,550 |
+| Qwen2.5-VL-7B-Instruct | VLM | EAGLE3 | INT4 AWQ / INT4 AWQ / FP16 | 1 | 180.9 | 376 | 2,076.4 | 52.5 | 344 | 6,561.7 | 84.4 | 5.15 | 3,406 |
+| Qwen2.5-VL-7B-Instruct | VLM | EAGLE3 | INT4 AWQ / INT4 AWQ / FP16 | 8 | 1,613.3 | 2,919 | 1,809.0 | 429.4 | 2,675 | 6,230.5 | 116.7 | 5.07 | 3,371 |
+| Qwen2.5-VL-7B-Instruct | VLM | EAGLE3 | NVFP4 / NVFP4 / FP16 | 1 | 28.6 | 376 | 13,119.4 | 52.5 | 344 | 6,557.4 | 189.6 | 5.09 | 4,308 |
+| Qwen2.5-VL-7B-Instruct | VLM | EAGLE3 | NVFP4 / NVFP4 / FP16 | 8 | 258.9 | 2,919 | 11,271.9 | 431.0 | 2,675 | 6,207.3 | 383.8 | 4.90 | 4,319 |
+| Qwen3-VL-4B-Instruct | VLM | EAGLE3 | INT4 AWQ / INT4 AWQ / FP16 | 1 | 89.0 | 283 | 3,174.8 | 12.9 | 262 | 20,242.9 | 126.5 | 5.02 | 1,900 |
+| Qwen3-VL-4B-Instruct | VLM | EAGLE3 | INT4 AWQ / INT4 AWQ / FP16 | 8 | 774.9 | 2,196 | 2,833.6 | 85.8 | 2,038 | 23,753.0 | 187.9 | 4.96 | 1,894 |
+| Qwen3-VL-4B-Instruct | VLM | EAGLE3 | NVFP4 / NVFP4 / FP16 | 1 | 26.2 | 283 | 10,789.2 | 12.6 | 262 | 20,833.3 | 199.7 | 4.86 | 2,685 |
+| Qwen3-VL-4B-Instruct | VLM | EAGLE3 | NVFP4 / NVFP4 / FP16 | 8 | 186.4 | 2,196 | 11,778.3 | 85.4 | 2,039 | 23,866.3 | 418.8 | 4.87 | 2,700 |
+| Qwen3-VL-8B-Instruct | VLM | EAGLE3 | INT4 AWQ / INT4 AWQ / FP16 | 1 | 156.2 | 283 | 1,809.5 | 17.3 | 262 | 15,151.5 | 48.2 | 2.85 | 3,252 |
+| Qwen3-VL-8B-Instruct | VLM | EAGLE3 | INT4 AWQ / INT4 AWQ / FP16 | 8 | 1,354.6 | 2,196 | 1,621.0 | 120.4 | 2,037 | 16,920.5 | 65.7 | 2.82 | 3,251 |
 | Qwen3.5-0.8B | VLM | MTP | INT4 AWQ / INT4 AWQ / FP16 | 1 | 21.2 | 287 | 13,492.0 | 4.3 | 262 | 60,606.1 | 200.3 | 2.18 | 1,179 |
 | Qwen3.5-0.8B | VLM | MTP | INT4 AWQ / INT4 AWQ / FP16 | 8 | 234.5 | 2,227 | 9,496.0 | 30.7 | 2,032 | 66,225.2 | 517.8 | 2.17 | 1,139 |
 | Qwen3.5-0.8B | VLM | MTP | NVFP4 / NVFP4 / FP16 | 1 | 8.4 | 287 | 34,076.3 | 4.3 | 261 | 60,241.0 | 365.6 | 2.19 | 1,069 |
@@ -311,16 +725,16 @@ All v0.8.0 runtime entries below were benchmarked under JetPack 7.2 and are spli
 | Qwen3.5-4B | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 1,815.4 | 2,227 | 1,226.7 | 265.5 | 2,038 | 7,674.6 | 174.8 | - | 9,798 |
 | Qwen3.5-9B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 341.5 | 287 | 839.2 | 53.2 | 262 | 4,931.0 | 27.9 | - | 12,247 |
 | Qwen3.5-9B | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,672.0 | 2,227 | 833.4 | 380.9 | 2,038 | 5,350.5 | 121.7 | - | 13,410 |
-| Qwen3-1.7B | LLM | EAGLE | INT4 AWQ / INT4 AWQ | 1 | 63.8 | 370 | 5,797.2 | - | - | - | 152.4 | 3.87 | 3,362 |
-| Qwen3-1.7B | LLM | EAGLE | INT4 AWQ / INT4 AWQ | 8 | 784.4 | 2,959 | 3,772.0 | - | - | - | 250.7 | 3.85 | 6,949 |
-| Qwen3-8B | LLM | EAGLE | INT4 AWQ / INT4 AWQ | 1 | 274.3 | 370 | 1,348.6 | - | - | - | 57.8 | 4.18 | 8,349 |
-| Qwen3-8B | LLM | EAGLE | INT4 AWQ / INT4 AWQ | 8 | 3,567.7 | 2,959 | 829.3 | - | - | - | 70.4 | 4.16 | 12,969 |
-| Qwen2.5-VL-7B-Instruct | VLM | EAGLE | INT4 AWQ / INT4 AWQ / FP16 | 1 | 255.2 | 376 | 1,472.3 | 86.1 | 344 | 3,998.4 | 67.2 | 5.05 | 12,218 |
-| Qwen2.5-VL-7B-Instruct | VLM | EAGLE | INT4 AWQ / INT4 AWQ / FP16 | 8 | 2,279.8 | 2,919 | 1,280.2 | 671.2 | 2,675 | 3,985.7 | 82.5 | 4.97 | 14,145 |
-| Qwen3-VL-4B-Instruct | VLM | EAGLE | INT4 AWQ / INT4 AWQ / FP16 | 1 | 118.0 | 283 | 2,396.0 | 39.1 | 262 | 6,711.4 | 98.3 | 5.05 | 10,310 |
-| Qwen3-VL-4B-Instruct | VLM | EAGLE | INT4 AWQ / INT4 AWQ / FP16 | 8 | 1,025.0 | 2,196 | 2,142.2 | 276.8 | 2,038 | 7,363.8 | 147.9 | 5.07 | 13,669 |
-| Qwen3-VL-8B-Instruct | VLM | EAGLE | INT4 AWQ / INT4 AWQ / FP16 | 1 | 213.6 | 283 | 1,323.0 | 56.6 | 262 | 4,633.9 | 39.1 | 2.81 | 13,932 |
-| Qwen3-VL-8B-Instruct | VLM | EAGLE | INT4 AWQ / INT4 AWQ / FP16 | 8 | 1,843.2 | 2,196 | 1,191.3 | 399.6 | 2,038 | 5,099.4 | 48.1 | 2.83 | 17,413 |
+| Qwen3-1.7B | LLM | EAGLE3 | INT4 AWQ / INT4 AWQ | 1 | 63.8 | 370 | 5,797.2 | - | - | - | 152.4 | 3.87 | 3,362 |
+| Qwen3-1.7B | LLM | EAGLE3 | INT4 AWQ / INT4 AWQ | 8 | 784.4 | 2,959 | 3,772.0 | - | - | - | 250.7 | 3.85 | 6,949 |
+| Qwen3-8B | LLM | EAGLE3 | INT4 AWQ / INT4 AWQ | 1 | 274.3 | 370 | 1,348.6 | - | - | - | 57.8 | 4.18 | 8,349 |
+| Qwen3-8B | LLM | EAGLE3 | INT4 AWQ / INT4 AWQ | 8 | 3,567.7 | 2,959 | 829.3 | - | - | - | 70.4 | 4.16 | 12,969 |
+| Qwen2.5-VL-7B-Instruct | VLM | EAGLE3 | INT4 AWQ / INT4 AWQ / FP16 | 1 | 255.2 | 376 | 1,472.3 | 86.1 | 344 | 3,998.4 | 67.2 | 5.05 | 12,218 |
+| Qwen2.5-VL-7B-Instruct | VLM | EAGLE3 | INT4 AWQ / INT4 AWQ / FP16 | 8 | 2,279.8 | 2,919 | 1,280.2 | 671.2 | 2,675 | 3,985.7 | 82.5 | 4.97 | 14,145 |
+| Qwen3-VL-4B-Instruct | VLM | EAGLE3 | INT4 AWQ / INT4 AWQ / FP16 | 1 | 118.0 | 283 | 2,396.0 | 39.1 | 262 | 6,711.4 | 98.3 | 5.05 | 10,310 |
+| Qwen3-VL-4B-Instruct | VLM | EAGLE3 | INT4 AWQ / INT4 AWQ / FP16 | 8 | 1,025.0 | 2,196 | 2,142.2 | 276.8 | 2,038 | 7,363.8 | 147.9 | 5.07 | 13,669 |
+| Qwen3-VL-8B-Instruct | VLM | EAGLE3 | INT4 AWQ / INT4 AWQ / FP16 | 1 | 213.6 | 283 | 1,323.0 | 56.6 | 262 | 4,633.9 | 39.1 | 2.81 | 13,932 |
+| Qwen3-VL-8B-Instruct | VLM | EAGLE3 | INT4 AWQ / INT4 AWQ / FP16 | 8 | 1,843.2 | 2,196 | 1,191.3 | 399.6 | 2,038 | 5,099.4 | 48.1 | 2.83 | 17,413 |
 | Qwen3.5-0.8B | VLM | MTP | INT4 AWQ / INT4 AWQ / FP16 | 1 | 92.7 | 287 | 3,092.1 | 13.0 | 262 | 20,242.9 | 138.9 | 2.19 | 5,183 |
 | Qwen3.5-0.8B | VLM | MTP | INT4 AWQ / INT4 AWQ / FP16 | 8 | 493.8 | 2,227 | 4,509.3 | 90.1 | 2,038 | 22,624.4 | 413.7 | 2.20 | 6,396 |
 | Qwen3.5-27B | VLM | MTP | INT4 AWQ / INT4 AWQ / FP16 | 1 | 1,038.2 | 287 | 276.1 | 53.2 | 262 | 4,931.0 | 18.3 | 2.89 | 25,664 |
@@ -349,11 +763,11 @@ All v0.8.0 runtime entries below were benchmarked under JetPack 7.2 and are spli
 | Qwen3.5-0.8B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 136.6 | 287 | 2,099.0 | 26.7 | 262 | 9,832.8 | 87.6 | - | 2,704 |
 | Qwen3.5-2B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 193.6 | 287 | 1,480.4 | 77.5 | 262 | 3,386.4 | 48.0 | - | 4,704 |
 | Qwen3.5-4B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 414.6 | 287 | 691.3 | 79.0 | 262 | 3,321.2 | 25.9 | - | 6,372 |
-| Qwen3-1.7B | LLM | EAGLE | INT4 AWQ / INT4 AWQ | 1 | 129.0 | 370 | 2,867.6 | - | - | - | 86.5 | 3.87 | 3,394 |
-| Qwen3-8B | LLM | EAGLE | INT4 AWQ / INT4 AWQ | 1 | 651.4 | 370 | 567.8 | - | - | - | 29.7 | 4.14 | 8,358 |
-| Qwen2.5-VL-7B-Instruct | VLM | EAGLE | INT4 AWQ / INT4 AWQ / FP16 | 1 | 505.7 | 376 | 742.9 | 200.7 | 344 | 1,715.6 | 34.7 | 5.05 | 9,208 |
-| Qwen3-VL-4B-Instruct | VLM | EAGLE | INT4 AWQ / INT4 AWQ / FP16 | 1 | 237.8 | 283 | 1,188.7 | 83.1 | 262 | 3,156.6 | 56.2 | 5.11 | 6,427 |
-| Qwen3-VL-8B-Instruct | VLM | EAGLE | INT4 AWQ / INT4 AWQ / FP16 | 1 | 488.9 | 283 | 578.0 | 121.0 | 262 | 2,167.8 | 20.4 | 2.84 | 9,565 |
+| Qwen3-1.7B | LLM | EAGLE3 | INT4 AWQ / INT4 AWQ | 1 | 129.0 | 370 | 2,867.6 | - | - | - | 86.5 | 3.87 | 3,394 |
+| Qwen3-8B | LLM | EAGLE3 | INT4 AWQ / INT4 AWQ | 1 | 651.4 | 370 | 567.8 | - | - | - | 29.7 | 4.14 | 8,358 |
+| Qwen2.5-VL-7B-Instruct | VLM | EAGLE3 | INT4 AWQ / INT4 AWQ / FP16 | 1 | 505.7 | 376 | 742.9 | 200.7 | 344 | 1,715.6 | 34.7 | 5.05 | 9,208 |
+| Qwen3-VL-4B-Instruct | VLM | EAGLE3 | INT4 AWQ / INT4 AWQ / FP16 | 1 | 237.8 | 283 | 1,188.7 | 83.1 | 262 | 3,156.6 | 56.2 | 5.11 | 6,427 |
+| Qwen3-VL-8B-Instruct | VLM | EAGLE3 | INT4 AWQ / INT4 AWQ / FP16 | 1 | 488.9 | 283 | 578.0 | 121.0 | 262 | 2,167.8 | 20.4 | 2.84 | 9,565 |
 | Qwen3.5-0.8B | VLM | MTP | INT4 AWQ / INT4 AWQ / FP16 | 1 | 135.8 | 287 | 2,111.0 | 26.7 | 262 | 9,813.5 | 77.7 | 2.16 | 3,296 |
 | Qwen3.5-2B | VLM | MTP | INT4 AWQ / INT4 AWQ / FP16 | 1 | 193.3 | 287 | 1,482.8 | 77.8 | 262 | 3,372.7 | 46.8 | 2.38 | 5,758 |
 | Qwen3.5-4B | VLM | MTP | INT4 AWQ / INT4 AWQ / FP16 | 1 | 410.7 | 287 | 697.8 | 78.0 | 262 | 3,363.6 | 28.9 | 2.52 | 7,838 |
@@ -369,7 +783,7 @@ All v0.8.0 runtime entries below were benchmarked under JetPack 7.2 and are spli
 | Qwen3-VL-2B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 181.7 | 283 | 1,555.1 | 150.6 | 262 | 1,741.6 | 36.3 | - | 4,444 |
 | Qwen3.5-0.8B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 244.0 | 287 | 1,174.8 | 48.8 | 262 | 5,376.3 | 54.4 | - | 2,656 |
 | Qwen3.5-2B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 349.8 | 287 | 819.3 | 142.4 | 262 | 1,842.6 | 29.4 | - | 4,649 |
-| Qwen3-1.7B | LLM | EAGLE | INT4 AWQ / INT4 AWQ | 1 | 232.2 | 370 | 1,593.0 | - | - | - | 48.7 | 3.87 | 3,398 |
+| Qwen3-1.7B | LLM | EAGLE3 | INT4 AWQ / INT4 AWQ | 1 | 232.2 | 370 | 1,593.0 | - | - | - | 48.7 | 3.87 | 3,398 |
 | Qwen3.5-0.8B | VLM | MTP | INT4 AWQ / INT4 AWQ / FP16 | 1 | 244.1 | 287 | 1,174.1 | 48.7 | 262 | 5,387.9 | 46.9 | 2.16 | 3,278 |
 
 ---
@@ -399,7 +813,7 @@ All v0.8.0 runtime entries below were benchmarked under JetPack 7.2 and are spli
 | Qwen3.5-27B | NVFP4 | FP16 | 1 | 103.3 | 287 | 2,775 | 15.0 | 262 | 17,483 | 16.1 | 14,725 |
 | Nemotron-3-Nano-Omni-30B-A3B | NVFP4 | FP16 | 1 | 226.0 | 1,663 | 7,358 | 121.3 | 1,635 | 13,477 | 31.3 | 20,327 |
 
-### LLM — EAGLE Speculative Decoding
+### LLM — EAGLE3 Speculative Decoding
 
 #### Draft Models
 
@@ -454,7 +868,7 @@ All v0.8.0 runtime entries below were benchmarked under JetPack 7.2 and are spli
 | Qwen3.5-27B | NVFP4 | FP16 | 122.6 | 753 | 6,143 | 10.5 | 14,985 |
 | Nemotron-3-Nano-Omni-30B-A3B | NVFP4 | FP16 | 846.7 | 1,663 | 1,964 | 24.5 | 20,267 |
 
-### LLM — EAGLE Speculative Decoding
+### LLM — EAGLE3 Speculative Decoding
 
 #### Draft Models
 
@@ -511,7 +925,7 @@ All v0.8.0 runtime entries below were benchmarked under JetPack 7.2 and are spli
 
 > **Note:** ViT time = per-token ViT latency x image tokens per run. FP8 ViT reduces visual encoder time by ~17% compared to FP16 with negligible impact on generation throughput.
 
-### LLM — EAGLE Speculative Decoding
+### LLM — EAGLE3 Speculative Decoding
 
 #### Draft Models
 
@@ -533,9 +947,9 @@ All v0.8.0 runtime entries below were benchmarked under JetPack 7.2 and are spli
 | Qwen3-8B | NVFP4 | NVFP4 | 1 | 33.1 | 366 | 151.7 | 4.26 | 2.82x |
 | Qwen3-8B | NVFP4 | NVFP4 | 8 | 429.1 | 2927 | 457.7 | 4.25 | 1.23x |
 
-> **Note:** EAGLE speculative decoding provides the greatest speedup at BS=1 (latency-bound). At BS=8, base model compute is already well-utilized, limiting speculative acceleration. See [Speculative Decoding](../examples/speculative-decoding.md) for setup instructions.
+> **Note:** EAGLE3 speculative decoding provides the greatest speedup at BS=1 (latency-bound). At BS=8, base model compute is already well-utilized, limiting speculative acceleration. See [Speculative Decoding](../examples/speculative-decoding.md) for setup instructions.
 
-### Vision Language Model — EAGLE Speculative Decoding
+### Vision Language Model — EAGLE3 Speculative Decoding
 
 #### Draft Models
 
@@ -555,11 +969,16 @@ All v0.8.0 runtime entries below were benchmarked under JetPack 7.2 and are spli
 
 ## Key Observations
 
+### v0.9.0
+
+- **Current release baseline:** v0.9.0 is the current performance baseline and supersedes the v0.8.0 regression note. Runtime tables include batch size, dataset, prefill sequence length/time, decode throughput, speculative acceptance rate, and peak GPU memory.
+- **Speculative decoding coverage:** EAGLE3, MTP, and DFlash rows are included for supported v0.9.0 engines. Orin platforms use the externalized INT4 subset supported by each memory target.
+
 ### v0.8.0
 
 - **All release devices are covered:** v0.8.0 adds Jetson AGX Thor, Jetson AGX Orin 64GB, Jetson Orin NX 16GB, and Jetson Orin Nano 8GB results from the release benchmark outputs, benchmarked under JetPack 7.2.
-- **First `llm_bench` prefill publication:** AGX Thor includes parsed `llm_bench` prefill measurements at `inputLen=2048`. Qwen3-0.6B NVFP4 reaches 91,469.3 tok/s at BS=1; Qwen3-1.7B EAGLE NVFP4 reaches 66,929.4 tok/s at BS=1.
-- **Speculative decode remains platform-dependent:** EAGLE and MTP report strong acceptance rates, but generation throughput depends heavily on model size, precision, and platform memory bandwidth.
+- **First `llm_bench` prefill metrics:** AGX Thor includes parsed `llm_bench` prefill measurements at `inputLen=2048`. Qwen3-0.6B NVFP4 reaches 91,469.3 tok/s at BS=1; Qwen3-1.7B EAGLE3 NVFP4 reaches 66,929.4 tok/s at BS=1.
+- **Speculative decode remains platform-dependent:** EAGLE3 and MTP report strong acceptance rates, but generation throughput depends heavily on model size, precision, and platform memory bandwidth.
 
 ### v0.7.1
 
@@ -575,8 +994,8 @@ All v0.8.0 runtime entries below were benchmarked under JetPack 7.2 and are spli
 ### v0.4.0
 
 - **NVFP4 delivers highest throughput**: NVFP4 achieves 1.1–2.3x higher generation throughput than INT4 AWQ, with substantially faster prefill (e.g., 31 ms vs 216 ms for Llama-3.1-8B at BS=1).
-- **EAGLE at BS=1 provides meaningful speedup**: 1.4–3.5x for LLMs, best for Llama-3.1-8B NVFP4 (3.45x). The draft model acceptance rate is high for Llama (~5.2 tokens/step) and moderate for Qwen3-8B (~4.3 tokens/step).
-- **EAGLE at BS=8 has limited benefit**: At high batch sizes, base model compute is already well-utilized. Speedup drops to <1x for INT4 AWQ and 1.2–1.6x for NVFP4.
+- **EAGLE3 at BS=1 provides meaningful speedup**: 1.4–3.5x for LLMs, best for Llama-3.1-8B NVFP4 (3.45x). The draft model acceptance rate is high for Llama (~5.2 tokens/step) and moderate for Qwen3-8B (~4.3 tokens/step).
+- **EAGLE3 at BS=8 has limited benefit**: At high batch sizes, base model compute is already well-utilized. Speedup drops to <1x for INT4 AWQ and 1.2–1.6x for NVFP4.
 - **Qwen3-0.6B achieves the highest throughput**: 1562 tok/s at BS=8 with NVFP4 — a lightweight model well-suited for latency-sensitive edge applications.
 
 ### General

@@ -1,0 +1,1077 @@
+
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Audio Fbank Kernels &#8212; TensorRT Edge-LLM</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../_static/styles/theme.css?digest=a95f357e85573c9b56d5" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=a95f357e85573c9b56d5" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=03e43079" />
+    <link rel="stylesheet" type="text/css" href="../../_static/styles/nvidia-sphinx-theme.css?v=933278ad" />
+    <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../../_static/autodoc_pydantic.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/togglebutton.css?v=9c3e77be" />
+    <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=e02be394" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../../_static/scripts/fontawesome.js?digest=a95f357e85573c9b56d5"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=a95f357e85573c9b56d5" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=a95f357e85573c9b56d5" />
+
+
+
+    <script src="../../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../../_static/copybutton.js?v=65e89d2a"></script>
+    <script>let toggleHintShow = 'Click to show';</script>
+    <script>let toggleHintHide = 'Click to hide';</script>
+    <script>let toggleOpenOnPrint = 'true';</script>
+    <script src="../../_static/togglebutton.js?v=b8b12719"></script>
+    <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
+    <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'cpp_api/kernels/audioFbankKernels';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.19.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = './_static/switcher.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.9.1';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner =
+            false;
+        </script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+
+    <link rel="icon" href="../../_static/favicon.png"/>
+
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="Batch Evict Kernels" href="batchEvictKernels.html" />
+    <link rel="prev" title="Apply Rope Write KV" href="applyRopeWriteKV.html" />
+
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.9.1" />
+  
+    
+    <script src="../../_static/searchtools.js"></script>
+    <script src="../../_static/language_data.js"></script>
+    <script src="../../searchindex.js"></script>
+  
+
+
+  </head>
+
+  <body data-default-mode="">
+
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../../_static/nvidia-logo-horiz-rgb-blk-for-screen.svg" class="logo__image only-light" alt="TensorRT Edge-LLM - Home"/>
+    <img src="../../_static/nvidia-logo-horiz-rgb-wht-for-screen.svg" class="logo__image only-dark pst-js-only" alt="TensorRT Edge-LLM - Home"/>
+  
+  
+    <p class="title logo__title">TensorRT Edge-LLM</p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+
+
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-2"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-2"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-2"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-2">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../../_static/nvidia-logo-horiz-rgb-blk-for-screen.svg" class="logo__image only-light" alt="TensorRT Edge-LLM - Home"/>
+    <img src="../../_static/nvidia-logo-horiz-rgb-wht-for-screen.svg" class="logo__image only-dark pst-js-only" alt="TensorRT Edge-LLM - Home"/>
+  
+  
+    <p class="title logo__title">TensorRT Edge-LLM</p>
+  
+</a>
+
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+
+
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-3"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-3"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-3"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-3">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+
+
+
+<nav class="bd-docs-nav bd-links"
+     aria-label="Table of Contents">
+  <p class="bd-links__title" role="heading" aria-level="1">Table of Contents</p>
+  <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../overview.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/supported-models.html">Supported Models</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/quick-start-guide.html">Quick Start Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/limitations.html">Limitations and Known Issues</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Examples</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/index.html">Examples</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/vlm.html">VLM (Vision-Language Model) Inference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/speculative-decoding.html">Speculative Decoding</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/phi4.html">Phi-4-Multimodal</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/asr.html">ASR (Automatic Speech Recognition)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/moe.html">MoE (Mixture of Experts)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/tts.html">TTS (Text-to-Speech)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/vla.html">Alpamayo-R1-10B (Vision-Language-Action)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/experimental-server.html">Experimental High-Level Python API and Server</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Features</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/lora.html">LoRA (Low-Rank Adaptation)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/quantization.html">Quantization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/reduce-vocab.html">Vocabulary Reduction</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/FP8KV.html">FP8 KV Cache</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/fp8-embedding.html">FP8 Embedding</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/streaming.html">Streaming Output</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/system-prompt-cache.html">System Prompt Cache</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Input &amp; Chat Format</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/format/input-format.html">Input JSON Format</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/format/chat-template-format.html">Chat Template Format</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Performance</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/performance/performance-benchmarks.html">Performance Benchmarks</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Software Design</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/checkpoint-export.html">Checkpoint Exporter Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/quantization-design.html">Quantization Package Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/engine-builder.html">Engine Builder</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/cpp-runtime-overview.html">C++ Runtime Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/llm-inference-runtime.html">LLM Inference Runtime</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/llm-streaming.html">LLM Streaming — Design</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Customization</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/customization-guide.html">Customization Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/calibration-datasets.html">Calibration Dataset Customization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/tensorrt-plugins.html">TensorRT Plugins Guide</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Testing</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/code-coverage.html">Code Coverage with SonarQube</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/few-layer-validation.html">Few-Layer Numeric Validation</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">APIs</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../python_api.html">Python API Reference</a></li>
+<li class="toctree-l1 current active has-children"><a class="reference internal" href="../../cpp_api.html">C++ API Reference</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
+<li class="toctree-l2 has-children"><a class="reference internal" href="../action/index.html">Action Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../action/actionModelTypes.html">Action Model Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../action/actionUtils.html">Action Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../action/alpamayo1ActionRunner.html">Alpamayo1 Action Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html">Alpamayo1 Runner Utils</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../builder/index.html">Builder Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../builder/actionBuilder.html">Action Builder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../builder/audioBuilder.html">Audio Builder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../builder/builderUtils.html">Builder Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../builder/llmBuilder.html">LLM Builder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../builder/visualBuilder.html">Visual Builder</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../common/index.html">Common Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../common/bindingNames.html">Binding Names</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/checkMacros.html">Check Macros</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/cudaMacros.html">CUDA Macros</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/cudaUtils.html">CUDA Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/fileUtils.html">File Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/hashUtils.html">Hash Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/inputLimits.html">Input Limits</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/logger.html">Logger</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/mathUtils.html">Math Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/mmapReader.html">MMAP Reader</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/ropeUtils.html">Rope Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/safetensorsUtils.html">Safetensors Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/stringUtils.html">String Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/tensor.html">Tensor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/trtUtils.html">TRT Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/utf8.html">Utf8</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/version.html">Version</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 current active has-children"><a class="reference internal" href="index.html">Kernels Module</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
+<li class="toctree-l3"><a class="reference internal" href="NvFP4MoEUtils.html">Nv Fp4 Mo E Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="applyRopeWriteKV.html">Apply Rope Write KV</a></li>
+<li class="toctree-l3 current active"><a class="current reference internal" href="#">Audio Fbank Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="batchEvictKernels.html">Batch Evict Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="buildLayout.html">Build Layout</a></li>
+<li class="toctree-l3"><a class="reference internal" href="causalConv1d.html">Causal Conv1d</a></li>
+<li class="toctree-l3"><a class="reference internal" href="common.html">Common</a></li>
+<li class="toctree-l3"><a class="reference internal" href="contextFMHARunner.html">Context FMHA Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="conversion.html">Conversion</a></li>
+<li class="toctree-l3"><a class="reference internal" href="cuteDslF16MoeRunner.html">Cute Dsl F16 Moe Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="cuteDslFFPARunner.html">Cute Dsl Ffpa Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="cuteDslFMHARunner.html">Cute Dsl FMHA Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="cuteDslGDNRunner.html">Cute Dsl Gdn Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="cuteDslGemmNvFp4Runner.html">Cute Dsl GEMM Nv Fp4 Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="cuteDslGemmRunner.html">Cute Dsl GEMM Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="cuteDslNvfp4MoeRunner.html">Cute Dsl Nvfp4 Moe Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="cuteDslNvfp4MoeSm110Runner.html">Cute Dsl Nvfp4 Moe Sm110 Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="cuteDslSSDRunner.html">Cute Dsl Ssd Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="ddtreeKernels.html">Ddtree Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="decoderXQARunner.html">Decoder XQA Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dequant.html">Dequant</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dequantize.html">Dequantize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dflashRuntimeKernels.html">Dflash Runtime Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="eagleAcceptKernels.html">EAGLE Accept Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="eagleUtilKernels.html">EAGLE Util Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="embeddingKernels.html">Embedding Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="f16MoeSupportKernels.html">F16 Moe Support Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fmhaParams_v2.html">FMHA Params V2</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fp4Quantize.html">Fp4 Quantize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="gdnKernelUtils.html">Gdn Kernel Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="gemma4AudioAttention.html">Gemma4 Audio Attention</a></li>
+<li class="toctree-l3"><a class="reference internal" href="gemma4MTPRuntimeKernels.html">Gemma4 Mtp Runtime Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="imageUtilKernels.html">Image Util Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="initializeCosSinCache.html">Initialize Cos Sin Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="int4GroupwiseGemm.html">Int4 Groupwise GEMM</a></li>
+<li class="toctree-l3"><a class="reference internal" href="kernel.html">Kernel</a></li>
+<li class="toctree-l3"><a class="reference internal" href="kernel_selector.html">Kernel Selector</a></li>
+<li class="toctree-l3"><a class="reference internal" href="kvCacheUtilsKernels.html">KV Cache Utils Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="marlin.html">Marlin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="marlin_dtypes.html">Marlin Dtypes</a></li>
+<li class="toctree-l3"><a class="reference internal" href="marlin_mma.html">Marlin Mma</a></li>
+<li class="toctree-l3"><a class="reference internal" href="marlin_template.html">Marlin Template</a></li>
+<li class="toctree-l3"><a class="reference internal" href="moeActivationKernels.html">Moe Activation Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="moeAlignSumKernels.html">Moe Align Sum Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="moeMarlin.html">Moe Marlin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="moeMarlinIndicesKernels.html">Moe Marlin Indices Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="moePerExpertScaleKernels.html">Moe Per Expert Scale Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="moeSigmoidGroupTopkKernels.html">Moe Sigmoid Group Topk Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="moeTopkSoftmaxKernels.html">Moe Topk Softmax Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="mtpStateScatterKernels.html">Mtp State Scatter Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="nvfp4MoeTypes.html">Nvfp4 Moe Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="nvfp4_dequant.html">Nvfp4 Dequant</a></li>
+<li class="toctree-l3"><a class="reference internal" href="nvfp4_tensor.html">Nvfp4 Tensor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scaleConvert.html">Scale Convert</a></li>
+<li class="toctree-l3"><a class="reference internal" href="selectiveStateUpdate.html">Selective State Update</a></li>
+<li class="toctree-l3"><a class="reference internal" href="speculativeKernelsUtils.html">Speculative Kernels Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="ssdVarlenMetadata.html">Ssd Varlen Metadata</a></li>
+<li class="toctree-l3"><a class="reference internal" href="talkerMLPKernels.html">Talker Mlp Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="utilKernels.html">Util Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="vectorizedTypes.html">Vectorized Types</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../multimodal/index.html">Multimodal Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/audioRunner.html">Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/audioUtils.html">Audio Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/code2WavRunner.html">Code2 Wav Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4AudioRunner.html">Gemma4 Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4UnifiedAudioRunner.html">Gemma4 Unified Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4UnifiedVisionRunner.html">Gemma4 Unified Vision Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4ViTRunner.html">Gemma4 ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/imageUtils.html">Image Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/internViTRunner.html">Intern ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/modelTypes.html">Model Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/multimodalRunner.html">Multimodal Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/nemotronOmniAudioRunner.html">Nemotron Omni Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/nemotronOmniViTRunner.html">Nemotron Omni ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/phi4mmViTRunner.html">Phi4mm ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwen25vlViTRunner.html">Qwen25vl ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwen3omniViTRunner.html">Qwen3omni ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwen3vlViTRunner.html">Qwen3vl ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwenViTRunner.html">Qwen ViT Runner</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../plugins/index.html">Plugins Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/allReducePlugin.html">All Reduce Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/attentionPlugin.html">Attention Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/causalConv1dPlugin.html">Causal Conv1d Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/dflashTargetKVCacheUpdatePlugin.html">Dflash Target KV Cache Update Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/fp16MoePlugin.html">Fp16 Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/fusedNvfp4GemmAllReducePlugin.html">Fused Nvfp4 GEMM All Reduce Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/gatedDeltaNetPlugin.html">Gated Delta Net Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/gemma4AudioAttentionPlugin.html">Gemma4 Audio Attention Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/int4GroupwiseGemmPlugin.html">Int4 Groupwise GEMM Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/int4MoePlugin.html">Int4 Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/mambaPlugin.html">Mamba Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4MoePlugin.html">Nvfp4 Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4MoePluginGeforce.html">Nvfp4 Moe Plugin Geforce</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/pluginUtils.html">Plugin Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/vitAttentionPlugin.html">VIT Attention Plugin</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../profiling/index.html">Profiling Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../profiling/layerProfiler.html">Layer Profiler</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../profiling/metrics.html">Metrics</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../profiling/nvtx_wrapper.html">Nvtx Wrapper</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../profiling/timer.html">Timer</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../runtime/index.html">Runtime Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/audioLoader.html">Audio Loader</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/audioUtils.html">Audio Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/decoderRegistry.html">Decoder Registry</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/decoderUtils.html">Decoder Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/decodingInferenceContext.html">Decoding Inference Context</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/decodingStrategy.html">Decoding Strategy</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/deepstackBinding.html">Deepstack Binding</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/deploymentConfig.html">Deployment Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/dflashDecodeUtils.html">Dflash Decode Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/dflashDecoder.html">Dflash Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/eagleDecoder.html">EAGLE Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/embeddingPreprocessor.html">Embedding Preprocessor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/engineExecutor.html">Engine Executor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/externalWeightManager.html">External Weight Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/gemma4EmbeddingPreprocessor.html">Gemma4 Embedding Preprocessor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/gemma4MTPDecoder.html">Gemma4 Mtp Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/hybridCacheManager.html">Hybrid Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/imageUtils.html">Image Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/inferenceDims.html">Inference Dims</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/inferencePhase.html">Inference Phase</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/kvCacheManager.html">KV Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/layerDebugger.html">Layer Debugger</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/llmEngineConfig.html">LLM Engine Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/llmInferenceRuntime.html">LLM Inference Runtime</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/llmRuntimeUtils.html">LLM Runtime Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/logitBias.html">Logit Bias</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/loraManager.html">Lora Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/mambaCacheManager.html">Mamba Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/melSpectrogram.html">Mel Spectrogram</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/mtpDecoder.html">Mtp Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/pipelineIO.html">Pipeline Io</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/qwen3OmniTTSRuntime.html">Qwen3 Omni Tts Runtime</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/registryBuilder.html">Registry Builder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/ropeCache.html">Rope Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/sharedResources.html">Shared Resources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/stepPreparer.html">Step Preparer</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/streaming.html">Streaming</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/systemPromptKVCache.html">System Prompt KV Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/tensorMap.html">Tensor Map</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/tensorRegistry.html">Tensor Registry</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/vanillaDecoder.html">Vanilla Decoder</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../sampler/index.html">Sampler Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../sampler/sampling.html">Sampling</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../tokenizer/index.html">Tokenizer Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../tokenizer/preTokenizer.html">Pre Tokenizer</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../tokenizer/tokenEncoder.html">Token Encoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../tokenizer/tokenizer.html">Tokenizer</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../tokenizer/tokenizerUtils.html">Tokenizer Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../tokenizer/unicodeData.html">Unicode Data</a></li>
+</ul>
+</details></li>
+</ul>
+</details></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Quick Links</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference external" href="https://github.com/NVIDIA/TensorRT-Edge-LLM/releases">Releases</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/NVIDIA/TensorRT-Edge-LLM">GitHub</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/NVIDIA/TensorRT-Edge-LLM/issues?q=is%3Aissue%20state%3Aopen%20label%3ARoadmap">Roadmap</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+  </div>
+
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="../../cpp_api.html" class="nav-link">C++ API Reference</a></li>
+    
+    
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Kernels Module</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Audio Fbank Kernels</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="audio-fbank-kernels">
+<h1>Audio Fbank Kernels<a class="headerlink" href="#audio-fbank-kernels" title="Link to this heading">#</a></h1>
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm6kernel20pcmToFramesAndWindowERKN2rt6TensorERKN2rt6TensorERN2rt6TensorEK7int32_tK7int32_tK7int32_t12cudaStream_t">
+<span id="_CPPv3N11trt_edgellm6kernel20pcmToFramesAndWindowERKN2rt6TensorERKN2rt6TensorERN2rt6TensorEK7int32_tK7int32_tK7int32_t12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm6kernel20pcmToFramesAndWindowERKN2rt6TensorERKN2rt6TensorERN2rt6TensorEK7int32_tK7int32_tK7int32_t12cudaStream_t"></span><span id="trt_edgellm::kernel::pcmToFramesAndWindow__rt::TensorCR.rt::TensorCR.rt::TensorR.int32_tC.int32_tC.int32_tC.cudaStream_t"></span><span class="target" id="audioFbankKernels_8cu_1aa2cf6683d8311ff353280035c011f608"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="speculativeKernelsUtils.html#_CPPv4N11trt_edgellm6kernelE" title="trt_edgellm::kernel"><span class="n"><span class="pre">kernel</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">pcmToFramesAndWindow</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">pcmF32</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">hannWindow</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">framedF32</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">nFft</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">hopLength</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">padLength</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm6kernel20pcmToFramesAndWindowERKN2rt6TensorERKN2rt6TensorERN2rt6TensorEK7int32_tK7int32_tK7int32_t12cudaStream_t" title="Link to this definition">#</a><br /></dt>
+<dd><p>Whisper-style fbank GPU kernel suite. </p>
+<p>Pipeline (caller invokes in order; see audioUtils::fbankWhisper): memset(mag, 0) → FP32 PCM → frame+Hann → R2C FFT+|·|^2+FP16 cast → mel CuTe DSL GEMM (FP16 in/out, FP32 accum) → log10 max → log-mel normalize + reshape.</p>
+<p>Six GPU compute launches (memset doesn’t count): three single-purpose custom CUDA kernels (frame+Hann, FFT+magsq, log-mel normalize) + one AOT-compiled CuTe DSL FP16+TC GEMM + a 2-phase custom global-max reducer (init + 2D-grid reduce, two kernels). Numerically matches HuggingFace transformers WhisperFeatureExtractor with cos_sim &gt;= 0.9998 (abs_max ~0.02-0.08 mel units on the delivery clips); the residual is dominated by the FP16 Tensor-Core mel GEMM accumulation and sits well above the F16 output-quantisation floor (which would be ~1 LSB). No libcufft / libcublas / libcutlass / libcub / libthrust runtime dependency — the CuTe DSL gemm artifact is an AOT static archive built by kernelSrcs/build_cutedsl.py.</p>
+<p>Mel pipeline shape contract — set by the AOT GEMM tile alignment: N_pad = round_up(T_out, 128) — GEMM N-axis (no residue handling) K_pad = round_up(nFreq, 16) = 208 — GEMM K-axis (cluster-tile aligned) mag [N_pad, K_pad] Half — GEMM B-matrix; first T_out rows × nFreq cols written, padding stays zero melFilter [nMel, K_pad] Half — GEMM A-matrix; pre-transposed + K-padded by caller at ctor time melPower [nMel, N_pad] Half — GEMM C-matrix; only [nMel, T_out) window is downstream-visible</p>
+<p>Fused FP32 PCM → reflect-pad (virtual) → frame → Hann window. Each output element framed[t, n] = pcm[reflectIdx(t*hop + n - pad)] * hann[n]. The input is already mono FP32 in [-1, 1] (decoded host-side by the C++ audioLoader; see AudioPCM::samples), so no S16→F32 normaliser is applied — the kernel does a single FP mul per element. The reflect padding is virtual — no intermediate F32 waveform or padded buffer is materialized in DRAM. Inputs: pcmF32 [GPU, Float]: [N] — raw mono FP32 PCM in [-1, 1], N samples (uploaded from AudioPCM::samples by the runner). hannWindow [GPU, Float]: [nFft] — periodic Hann window (torch.hann_window(periodic=True); see audioRunner::initFbankResources). nFft / hopLength / padLength — STFT parameters (Whisper-v3: 400 / 160 / 200) Outputs: framedF32 [GPU, Float]: [T_full, nFft] row-major, where T_full = (N + 2*padLength - nFft) / hopLength + 1. </p>
+<dl class="field-list simple">
+<dt class="field-odd">Throws<span class="colon">:</span></dt>
+<dd class="field-odd"><p><span><span class="cpp-expr sig sig-inline cpp"><span class="n">std</span><span class="p">::</span><span class="n">runtime_error</span></span></span> – on invalid tensor shape / dtype / location. </p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm6kernel20stftR2C400FusedMagsqERKN2rt6TensorERKN2rt6TensorERN2rt6TensorEK7int32_tK7int32_t12cudaStream_t">
+<span id="_CPPv3N11trt_edgellm6kernel20stftR2C400FusedMagsqERKN2rt6TensorERKN2rt6TensorERN2rt6TensorEK7int32_tK7int32_t12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm6kernel20stftR2C400FusedMagsqERKN2rt6TensorERKN2rt6TensorERN2rt6TensorEK7int32_tK7int32_t12cudaStream_t"></span><span id="trt_edgellm::kernel::stftR2C400FusedMagsq__rt::TensorCR.rt::TensorCR.rt::TensorR.int32_tC.int32_tC.cudaStream_t"></span><span class="target" id="audioFbankKernels_8cu_1abd32dcba0de657e698b1d4cc44bf20b0"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="speculativeKernelsUtils.html#_CPPv4N11trt_edgellm6kernelE" title="trt_edgellm::kernel"><span class="n"><span class="pre">kernel</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">stftR2C400FusedMagsq</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">framedF32</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">fftTwiddle</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">magFp16</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">T_out</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">K_pad</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm6kernel20stftR2C400FusedMagsqERKN2rt6TensorERKN2rt6TensorERN2rt6TensorEK7int32_tK7int32_t12cudaStream_t" title="Link to this definition">#</a><br /></dt>
+<dd><p>Self-written R2C FFT, N=400 = 16×25 mixed-radix Cooley-Tukey, fp32, with |·|^2 + FP16 cast fused into Stage 4. Writes directly into the T-major [N_pad, K_pad] FP16 GEMM B-buffer instead of materialising a separate fp32 complex spectrum + a follow-up magsq kernel.</p>
+<p>One warp (32 threads) per frame; stage 1 uses 25 threads (column DFT_16), stage 3 uses 16 threads (row DFT_25). Each active thread computes an entire small DFT in registers via radix butterflies. 3200 B shared memory per block. Bit-equivalent to cuFFT R2C N=400 within F16 LSB.</p>
+<p>Launch grid carries T_out (NOT T_full): the last STFT frame is the HuggingFace WhisperFeatureExtractor <code class="docutils literal notranslate"><span class="pre">stft[...,</span> <span class="pre">:-1]</span></code> trim and is not consumed downstream. Caller MUST pre-zero the magFp16 buffer (e.g. cudaMemsetAsync) so the padding rows in [T_out, N_pad) and padding cols in [nFreq, K_pad) stay zero — the AOT GEMM has no residue handling.</p>
+<p>Inputs: framedF32 [GPU, Float]: [T_full, 400] fftTwiddle [GPU, Float]: [400, 2] — outer-stage W_N^k table (k=0..399) stored as float2 interleaved (real, imag). Precomputed once by caller in fp64 then cast to fp32. T_out / K_pad — first T_out frames × first nFreq=201 bins are written; K_pad is the row stride. Outputs: magFp16 [GPU, Half]: [N_pad, K_pad] — caller-pre-zeroed. </p>
+<dl class="field-list simple">
+<dt class="field-odd">Throws<span class="colon">:</span></dt>
+<dd class="field-odd"><p><span><span class="cpp-expr sig sig-inline cpp"><span class="n">std</span><span class="p">::</span><span class="n">runtime_error</span></span></span> – on invalid tensor shape / dtype / location. </p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm6kernel19melLinearGemmFp16TCERKN2rt6TensorERKN2rt6TensorERN2rt6TensorE12cudaStream_t">
+<span id="_CPPv3N11trt_edgellm6kernel19melLinearGemmFp16TCERKN2rt6TensorERKN2rt6TensorERN2rt6TensorE12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm6kernel19melLinearGemmFp16TCERKN2rt6TensorERKN2rt6TensorERN2rt6TensorE12cudaStream_t"></span><span id="trt_edgellm::kernel::melLinearGemmFp16TC__rt::TensorCR.rt::TensorCR.rt::TensorR.cudaStream_t"></span><span class="target" id="audioFbankKernels_8cu_1afbcc36e42e75058b28c0215b09b548c2"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="speculativeKernelsUtils.html#_CPPv4N11trt_edgellm6kernelE" title="trt_edgellm::kernel"><span class="n"><span class="pre">kernel</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">melLinearGemmFp16TC</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">melFilterFp16Kmajor</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">magFp16</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">melPowerFp16</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm6kernel19melLinearGemmFp16TCERKN2rt6TensorERKN2rt6TensorERN2rt6TensorE12cudaStream_t" title="Link to this definition">#</a><br /></dt>
+<dd><p>Mel-filter projection via AOT-compiled CuTe DSL FP16+TC GEMM. Logical: melPower = melFilter &#64; mag^T, with the GEMM ABI C[M=nMel, N=N_pad] = A[M=nMel, K=K_pad] &#64; B[N=N_pad, K=K_pad]^T All FP16 in/out, FP32 accumulate. Runtime-dispatched to the right Blackwell tile variant by <a class="reference internal" href="cuteDslGemmRunner.html#classtrt__edgellm_1_1CuteDslGemmRunner_1a7bcc3d481e7e62d04cf972f4bf22929e"><span class="std std-ref">trt_edgellm::CuteDslGemmRunner::run</span></a> based on SM count + M: small (64×128 cluster (1,2)) on high-SM datacentres, default (128×128) on Thor, 2-CTA (256×256) on extremely M-heavy paths (not us). Caller must have already loaded the kernel module (idempotent + thread-safe; audioRunner::initFbankResources does this). Inputs: melFilterFp16Kmajor [GPU, Half]: [nMel, K_pad] row-major, K contiguous magFp16 [GPU, Half]: [N_pad, K_pad] row-major, K contiguous Outputs: melPowerFp16 [GPU, Half]: [nMel, N_pad] row-major </p>
+<dl class="field-list simple">
+<dt class="field-odd">Throws<span class="colon">:</span></dt>
+<dd class="field-odd"><p><span><span class="cpp-expr sig sig-inline cpp"><span class="n">std</span><span class="p">::</span><span class="n">runtime_error</span></span></span> – on invalid tensor shape / dtype / location, or if <a class="reference internal" href="cuteDslGemmRunner.html#classtrt__edgellm_1_1CuteDslGemmRunner_1a7bcc3d481e7e62d04cf972f4bf22929e"><span class="std std-ref">CuteDslGemmRunner::run</span></a> reports dispatch failure. </p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm6kernel14log10MaxReduceERKN2rt6TensorEK7int32_tRN2rt6TensorEKf12cudaStream_t">
+<span id="_CPPv3N11trt_edgellm6kernel14log10MaxReduceERKN2rt6TensorEK7int32_tRN2rt6TensorEKf12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm6kernel14log10MaxReduceERKN2rt6TensorEK7int32_tRN2rt6TensorEKf12cudaStream_t"></span><span id="trt_edgellm::kernel::log10MaxReduce__rt::TensorCR.int32_tC.rt::TensorR.floatC.cudaStream_t"></span><span class="target" id="audioFbankKernels_8cu_1a2c1f0c66cb5fe8b2a42e74bdf3012e79"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="speculativeKernelsUtils.html#_CPPv4N11trt_edgellm6kernelE" title="trt_edgellm::kernel"><span class="n"><span class="pre">kernel</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">log10MaxReduce</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">melPowerFp16</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">T_out</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">maxLogScalar</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="kt"><span class="pre">float</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">melFloor</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm6kernel14log10MaxReduceERKN2rt6TensorEK7int32_tRN2rt6TensorEKf12cudaStream_t" title="Link to this definition">#</a><br /></dt>
+<dd><p>2-phase global-max reducer over log10(max(x, melFloor)). Reads FP16 melPower in the padded [nMel, N_pad] layout via N_pad stride, only the active (m, t) window [0, nMel) × [0, T_out) contributes.</p>
+<p>Stage 1 (1-thread init): set the scalar sentinel to -INFINITY. Stage 2 (2D-grid reduce): each block covers a (T_out tile, mel row) pair; ELEMS_PER_THREAD=8 work-coarsening amortises L1TEX latency via ILP; intra- warp shuffle + smem-staged block reduce + atomicMaxFp32 to the scalar. Inputs: melPowerFp16 [GPU, Half]: [nMel, N_pad] — nMel must be in (0, 65535]. T_out — active T-window width (N_pad - T_out trailing cols are zero from upstream memset, would pollute the max otherwise after log10). melFloor — log10 input floor (Whisper default 1e-10f). Outputs: maxLogScalar [GPU, Float]: [1] </p>
+<dl class="field-list simple">
+<dt class="field-odd">Throws<span class="colon">:</span></dt>
+<dd class="field-odd"><p><span><span class="cpp-expr sig sig-inline cpp"><span class="n">std</span><span class="p">::</span><span class="n">runtime_error</span></span></span> – on invalid tensor shape / dtype / location. </p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm6kernel25logMelNormalizeAndCastF16ERKN2rt6TensorEK7int32_tRKN2rt6TensorERN2rt6TensorEKf12cudaStream_t">
+<span id="_CPPv3N11trt_edgellm6kernel25logMelNormalizeAndCastF16ERKN2rt6TensorEK7int32_tRKN2rt6TensorERN2rt6TensorEKf12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm6kernel25logMelNormalizeAndCastF16ERKN2rt6TensorEK7int32_tRKN2rt6TensorERN2rt6TensorEKf12cudaStream_t"></span><span id="trt_edgellm::kernel::logMelNormalizeAndCastF16__rt::TensorCR.int32_tC.rt::TensorCR.rt::TensorR.floatC.cudaStream_t"></span><span class="target" id="audioFbankKernels_8cu_1ac86306442fe2706b26a85cf607a9137a"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="speculativeKernelsUtils.html#_CPPv4N11trt_edgellm6kernelE" title="trt_edgellm::kernel"><span class="n"><span class="pre">kernel</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">logMelNormalizeAndCastF16</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">melPowerFp16</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">T_out</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">maxLogScalar</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">melOutF16</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="kt"><span class="pre">float</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">melFloor</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm6kernel25logMelNormalizeAndCastF16ERKN2rt6TensorEK7int32_tRKN2rt6TensorERN2rt6TensorEKf12cudaStream_t" title="Link to this definition">#</a><br /></dt>
+<dd><p>Final log-mel scale + reshape to [1, nMel, T_out]. Reads FP16 melPower in the padded [nMel, N_pad] layout via N_pad stride and writes only the compact [nMel, T_out] active window. Per element: y = max(log10(max(x, melFloor)), maxLog - 8.0); out = half(y * invScale + shiftScaled). Output shape/dtype matches the existing loadMelSpectrogramFromFile contract, so downstream preprocessAudioForEncoder() requires no change. Inputs: melPowerFp16 [GPU, Half]: [nMel, N_pad] T_out — active T-window width maxLogScalar [GPU, Float]: [1] — output of log10MaxReduce melFloor — log10 input floor Outputs: melOutF16 [GPU, Half]: [1, nMel, T_out] </p>
+<dl class="field-list simple">
+<dt class="field-odd">Throws<span class="colon">:</span></dt>
+<dd class="field-odd"><p><span><span class="cpp-expr sig sig-inline cpp"><span class="n">std</span><span class="p">::</span><span class="n">runtime_error</span></span></span> – on invalid tensor shape / dtype / location. </p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm6kernel25pcmPreemphFramesAndWindowERKN2rt6TensorERKN2rt6TensorERN2rt6TensorEK7int32_tK7int32_tK7int32_tKfK7int32_t12cudaStream_t">
+<span id="_CPPv3N11trt_edgellm6kernel25pcmPreemphFramesAndWindowERKN2rt6TensorERKN2rt6TensorERN2rt6TensorEK7int32_tK7int32_tK7int32_tKfK7int32_t12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm6kernel25pcmPreemphFramesAndWindowERKN2rt6TensorERKN2rt6TensorERN2rt6TensorEK7int32_tK7int32_tK7int32_tKfK7int32_t12cudaStream_t"></span><span id="trt_edgellm::kernel::pcmPreemphFramesAndWindow__rt::TensorCR.rt::TensorCR.rt::TensorR.int32_tC.int32_tC.int32_tC.floatC.int32_tC.cudaStream_t"></span><span class="target" id="audioFbankKernels_8cu_1a2814182d0a7fa576c1b56d263c3f8800"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="speculativeKernelsUtils.html#_CPPv4N11trt_edgellm6kernelE" title="trt_edgellm::kernel"><span class="n"><span class="pre">kernel</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">pcmPreemphFramesAndWindow</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">pcmF32</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">windowF32</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">framedF32</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">nFft</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">hopLength</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">centerPad</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="kt"><span class="pre">float</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">preemph</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">T_out</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm6kernel25pcmPreemphFramesAndWindowERKN2rt6TensorERKN2rt6TensorERN2rt6TensorEK7int32_tK7int32_tK7int32_tKfK7int32_t12cudaStream_t" title="Link to this definition">#</a><br /></dt>
+<dd><p>Parakeet (Nemotron-Omni) fbank GPU kernel suite. </p>
+<p>Same <a class="reference internal" href="../common/tensor.html#classtrt__edgellm_1_1rt_1_1Tensor"><span class="std std-ref">rt::Tensor</span></a> free-function ABI as the Whisper suite above; composed by audioUtils::fbankParakeet. The algorithm differs from Whisper: preemphasis 0.97; n_fft 512 (radix-2, not 400 mixed-radix); zero center pad (not reflect); symmetric Hann (win 400) zero-padded to 512; natural log (not log10); per-feature z-score normalize (not global-max); and a time-first [1, T_out, nMel] output.</p>
+<p>Mel pipeline shape contract (parakeet K_pad = round_up(nFreq=257, 16) = 272): N_pad = round_up(T_out, 128) — GEMM N-axis (no residue handling) K_pad = 272 — GEMM K-axis (cluster-tile aligned) mag [N_pad, K_pad] Half — GEMM B-matrix; first T_out rows × nFreq cols written, padding stays zero melFilter [nMel, K_pad] Half — GEMM A-matrix; K-padded by caller melPower [nMel, N_pad] Float — GEMM C-matrix; FP32 (not FP16) so the ~17-orders-of-magnitude mel power does not flush to zero before the natural-log stats (the ln + per-feature z-score amplifies that underflow).</p>
+<p>Fused PCM → preemphasis → virtual center zero-pad → frame → symmetric Hann. For framed[t, n] (n in [0, nFft)): idx = t*hop + n - centerPad (index into the FP32 signal) y = 0 if idx &lt; 0 or idx &gt;= N = pcm[0] if idx == 0 = pcm[idx] - preemph * pcm[idx-1] otherwise framed[t, n] = y * windowF32[n] The input is mono FP32 PCM in [-1, 1] (decoded host-side; AudioPCM::samples), so the preemphasis recurrence runs directly on the FP32 samples and windowF32 carries no 1/32768 S16→F32 scale factor. Because preemphasis is linear and FP32 == S16/32768, this is numerically equivalent to running on S16 input with the scale folded into the window. The center zero-pad is virtual: out-of-range idx contribute 0, no padded buffer is materialized. Inputs: pcmF32 [GPU, Float]: [N] — mono FP32 PCM in [-1, 1]. windowF32 [GPU, Float]: [nFft] — symmetric Hann (win_length) zero-padded and centered at offset (nFft-win)/2. nFft / hopLength / centerPad / preemph — STFT parameters (512/160/256/0.97). T_out — output frames = floor(N / hopLength). Outputs: framedF32 [GPU, Float]: [T_out, nFft] row-major. </p>
+<dl class="field-list simple">
+<dt class="field-odd">Throws<span class="colon">:</span></dt>
+<dd class="field-odd"><p><span><span class="cpp-expr sig sig-inline cpp"><span class="n">std</span><span class="p">::</span><span class="n">runtime_error</span></span></span> – on invalid tensor shape / dtype / location. </p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm6kernel20stftR2C512FusedMagsqERKN2rt6TensorERKN2rt6TensorERN2rt6TensorEK7int32_tK7int32_t12cudaStream_t">
+<span id="_CPPv3N11trt_edgellm6kernel20stftR2C512FusedMagsqERKN2rt6TensorERKN2rt6TensorERN2rt6TensorEK7int32_tK7int32_t12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm6kernel20stftR2C512FusedMagsqERKN2rt6TensorERKN2rt6TensorERN2rt6TensorEK7int32_tK7int32_t12cudaStream_t"></span><span id="trt_edgellm::kernel::stftR2C512FusedMagsq__rt::TensorCR.rt::TensorCR.rt::TensorR.int32_tC.int32_tC.cudaStream_t"></span><span class="target" id="audioFbankKernels_8cu_1adc0cb9fe54cdc3d196229f70302cf6bf"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="speculativeKernelsUtils.html#_CPPv4N11trt_edgellm6kernelE" title="trt_edgellm::kernel"><span class="n"><span class="pre">kernel</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">stftR2C512FusedMagsq</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">framedF32</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">fftTwiddle</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">magFp16</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">T_out</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">K_pad</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm6kernel20stftR2C512FusedMagsqERKN2rt6TensorERKN2rt6TensorERN2rt6TensorEK7int32_tK7int32_t12cudaStream_t" title="Link to this definition">#</a><br /></dt>
+<dd><p>Self-written R2C N=512 FFT (radix-2), fp32, with power |·|² + FP16 cast fused into the store. Real-input packing: z[m] = x[2m] + i·x[2m+1] (m in [0,256)), one half-length 256-pt complex FFT (two register dft16 stages, 256 = 16×16), then recombine to the 257 non-redundant bins of the 512-pt real spectrum. One frame per warp; kPkStftWarps frames per block; __syncwarp ordering.</p>
+<p>Writes directly into the T-major [N_pad, K_pad] FP16 GEMM B-buffer (no separate magsq/pack kernel). Caller MUST pre-zero magFp16 so padding rows [T_out, N_pad) and cols [nFreq, K_pad) stay zero — the AOT GEMM has no residue handling. Inputs: framedF32 [GPU, Float]: [T_out, 512] fftTwiddle [GPU, Float]: [512, 2] — outer-stage W_512^k table, float2 interleaved (real, imag); precomputed in fp64 then cast to fp32. T_out / K_pad — first T_out frames × nFreq=257 bins written; K_pad (=272) is the row stride. Outputs: magFp16 [GPU, Half]: [N_pad, K_pad] — caller-pre-zeroed. </p>
+<dl class="field-list simple">
+<dt class="field-odd">Throws<span class="colon">:</span></dt>
+<dd class="field-odd"><p><span><span class="cpp-expr sig sig-inline cpp"><span class="n">std</span><span class="p">::</span><span class="n">runtime_error</span></span></span> – on invalid tensor shape / dtype / location. </p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm6kernel26melLinearGemmFp16inFp32outERKN2rt6TensorERKN2rt6TensorERN2rt6TensorE12cudaStream_t">
+<span id="_CPPv3N11trt_edgellm6kernel26melLinearGemmFp16inFp32outERKN2rt6TensorERKN2rt6TensorERN2rt6TensorE12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm6kernel26melLinearGemmFp16inFp32outERKN2rt6TensorERKN2rt6TensorERN2rt6TensorE12cudaStream_t"></span><span id="trt_edgellm::kernel::melLinearGemmFp16inFp32out__rt::TensorCR.rt::TensorCR.rt::TensorR.cudaStream_t"></span><span class="target" id="audioFbankKernels_8cu_1a073f7c83472101b5b4f9a8dae2cb2355"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="speculativeKernelsUtils.html#_CPPv4N11trt_edgellm6kernelE" title="trt_edgellm::kernel"><span class="n"><span class="pre">kernel</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">melLinearGemmFp16inFp32out</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">melFilterFp16Kmajor</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">magFp16</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">melPowerF32</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm6kernel26melLinearGemmFp16inFp32outERKN2rt6TensorERKN2rt6TensorERN2rt6TensorE12cudaStream_t" title="Link to this definition">#</a><br /></dt>
+<dd><p>Mel-filter projection via the AOT CuTe DSL Blackwell GEMM, FP16 in / FP32 out. Logical: melPower = melFilter &#64; mag^T, GEMM ABI C[M=nMel, N=N_pad] = A[M=nMel, K=K_pad] &#64; B[N=N_pad, K=K_pad]^T A/B are FP16 (tensor-core operands), accumulation is FP32, and the C output is written in FP32 — the parakeet-specific deviation from the Whisper FP16-out path (melLinearGemmFp16TC). Dispatched to the FP16-in/FP32-out Blackwell variant; the caller must have loaded the kernel module (initFbankResources). Inputs: melFilterFp16Kmajor [GPU, Half]: [nMel, K_pad] row-major, K contiguous magFp16 [GPU, Half]: [N_pad, K_pad] row-major, K contiguous Outputs: melPowerF32 [GPU, Float]: [nMel, N_pad] row-major </p>
+<dl class="field-list simple">
+<dt class="field-odd">Throws<span class="colon">:</span></dt>
+<dd class="field-odd"><p><span><span class="cpp-expr sig sig-inline cpp"><span class="n">std</span><span class="p">::</span><span class="n">runtime_error</span></span></span> – on invalid tensor shape / dtype / location, or if the GEMM runner reports dispatch failure / the FP32-out variant is absent. </p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm6kernel20melStatsLnPerFeatureERKN2rt6TensorEK7int32_tKfKfRN2rt6TensorERN2rt6TensorE12cudaStream_t">
+<span id="_CPPv3N11trt_edgellm6kernel20melStatsLnPerFeatureERKN2rt6TensorEK7int32_tKfKfRN2rt6TensorERN2rt6TensorE12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm6kernel20melStatsLnPerFeatureERKN2rt6TensorEK7int32_tKfKfRN2rt6TensorERN2rt6TensorE12cudaStream_t"></span><span id="trt_edgellm::kernel::melStatsLnPerFeature__rt::TensorCR.int32_tC.floatC.floatC.rt::TensorR.rt::TensorR.cudaStream_t"></span><span class="target" id="audioFbankKernels_8cu_1a96b77a217fe26a359d68c53c7ea89139"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="speculativeKernelsUtils.html#_CPPv4N11trt_edgellm6kernelE" title="trt_edgellm::kernel"><span class="n"><span class="pre">kernel</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">melStatsLnPerFeature</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">melPowerF32</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">T_out</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="kt"><span class="pre">float</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">logGuard</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="kt"><span class="pre">float</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">normEps</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">mean</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">invDenom</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm6kernel20melStatsLnPerFeatureERKN2rt6TensorEK7int32_tKfKfRN2rt6TensorERN2rt6TensorE12cudaStream_t" title="Link to this definition">#</a><br /></dt>
+<dd><p>Per-feature (per mel bin) statistics for z-score normalization. One block per mel bin. Single pass over x = ln(power + logGuard): two independent FMA chains accumulate Σx and Σx² (full ILP, no serial recurrence), reduced via warp shuffles. Writes mean[nMel] and invDenom[nMel] where mean = Σx / T_out ; var = (Σx² - Σx·mean) / (T_out - 1) ; (unbiased N-1) invDenom = 1 / (sqrt(var) + normEps) Reads melPower in the padded [nMel, N_pad] layout via N_pad stride; only the active [0, nMel) × [0, T_out) window contributes. Inputs: melPowerF32 [GPU, Float]: [nMel, N_pad] T_out — active T-window width logGuard / normEps — ln floor (2^-24) and std epsilon (1e-5) Outputs: mean [GPU, Float]: [nMel] invDenom [GPU, Float]: [nMel] </p>
+<dl class="field-list simple">
+<dt class="field-odd">Throws<span class="colon">:</span></dt>
+<dd class="field-odd"><p><span><span class="cpp-expr sig sig-inline cpp"><span class="n">std</span><span class="p">::</span><span class="n">runtime_error</span></span></span> – on invalid tensor shape / dtype / location. </p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm6kernel27melNormalizeZScoreTimeFirstERKN2rt6TensorEK7int32_tKfRKN2rt6TensorERKN2rt6TensorERN2rt6TensorE12cudaStream_t">
+<span id="_CPPv3N11trt_edgellm6kernel27melNormalizeZScoreTimeFirstERKN2rt6TensorEK7int32_tKfRKN2rt6TensorERKN2rt6TensorERN2rt6TensorE12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm6kernel27melNormalizeZScoreTimeFirstERKN2rt6TensorEK7int32_tKfRKN2rt6TensorERKN2rt6TensorERN2rt6TensorE12cudaStream_t"></span><span id="trt_edgellm::kernel::melNormalizeZScoreTimeFirst__rt::TensorCR.int32_tC.floatC.rt::TensorCR.rt::TensorCR.rt::TensorR.cudaStream_t"></span><span class="target" id="audioFbankKernels_8cu_1aa5ad94cf6b898fbd47e3d55267a5a92a"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="speculativeKernelsUtils.html#_CPPv4N11trt_edgellm6kernelE" title="trt_edgellm::kernel"><span class="n"><span class="pre">kernel</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">melNormalizeZScoreTimeFirst</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">melPowerF32</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">T_out</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="kt"><span class="pre">float</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">logGuard</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">mean</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">invDenom</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">melOutF16</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm6kernel27melNormalizeZScoreTimeFirstERKN2rt6TensorEK7int32_tKfRKN2rt6TensorERKN2rt6TensorERN2rt6TensorE12cudaStream_t" title="Link to this definition">#</a><br /></dt>
+<dd><p>Per-feature z-score normalize + cast to F16, written time-first to out[1, T_out, nMel]: out[t, m] = (ln(power[m, t] + logGuard) - mean[m]) * invDenom[m] melPower is m-major [nMel, N_pad] but the output is time-first, so the kernel folds the transpose into the thread→(m,t) mapping: threadIdx.x indexes a mel PAIR and emits one __half2 store, giving a coalesced 128-byte warp write. Output shape/dtype matches the CPU MelExtractor → uploadHostMelFp32ToFp16Gpu contract for parakeet ([1, T_out, nMel] Half, time-first), so downstream requires no change. Requires nMel even. Inputs: melPowerF32 [GPU, Float]: [nMel, N_pad] T_out — active T-window width logGuard — ln floor (2^-24) mean / invDenom [GPU, Float]: [nMel] — output of melStatsLnPerFeature Outputs: melOutF16 [GPU, Half]: [1, T_out, nMel] </p>
+<dl class="field-list simple">
+<dt class="field-odd">Throws<span class="colon">:</span></dt>
+<dd class="field-odd"><p><span><span class="cpp-expr sig sig-inline cpp"><span class="n">std</span><span class="p">::</span><span class="n">runtime_error</span></span></span> – on invalid tensor shape / dtype / location. </p>
+</dd>
+</dl>
+</dd></dl>
+
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="applyRopeWriteKV.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Apply Rope Write KV</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="batchEvictKernels.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Batch Evict Kernels</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+
+
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm6kernel20pcmToFramesAndWindowERKN2rt6TensorERKN2rt6TensorERN2rt6TensorEK7int32_tK7int32_tK7int32_t12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">pcmToFramesAndWindow()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm6kernel20stftR2C400FusedMagsqERKN2rt6TensorERKN2rt6TensorERN2rt6TensorEK7int32_tK7int32_t12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">stftR2C400FusedMagsq()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm6kernel19melLinearGemmFp16TCERKN2rt6TensorERKN2rt6TensorERN2rt6TensorE12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">melLinearGemmFp16TC()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm6kernel14log10MaxReduceERKN2rt6TensorEK7int32_tRN2rt6TensorEKf12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">log10MaxReduce()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm6kernel25logMelNormalizeAndCastF16ERKN2rt6TensorEK7int32_tRKN2rt6TensorERN2rt6TensorEKf12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">logMelNormalizeAndCastF16()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm6kernel25pcmPreemphFramesAndWindowERKN2rt6TensorERKN2rt6TensorERN2rt6TensorEK7int32_tK7int32_tK7int32_tKfK7int32_t12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">pcmPreemphFramesAndWindow()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm6kernel20stftR2C512FusedMagsqERKN2rt6TensorERKN2rt6TensorERN2rt6TensorEK7int32_tK7int32_t12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">stftR2C512FusedMagsq()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm6kernel26melLinearGemmFp16inFp32outERKN2rt6TensorERKN2rt6TensorERN2rt6TensorE12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">melLinearGemmFp16inFp32out()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm6kernel20melStatsLnPerFeatureERKN2rt6TensorEK7int32_tKfKfRN2rt6TensorERN2rt6TensorE12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">melStatsLnPerFeature()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm6kernel27melNormalizeZScoreTimeFirstERKN2rt6TensorEK7int32_tKfRKN2rt6TensorERKN2rt6TensorERN2rt6TensorE12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">melNormalizeZScoreTimeFirst()</span></code></a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../../_static/scripts/bootstrap.js?digest=a95f357e85573c9b56d5"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=a95f357e85573c9b56d5"></script>
+
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+<a class="footer-brand logo" href="https://www.nvidia.com">
+  <img src="../../_static/nvidia-logo-horiz-rgb-1c-blk-for-screen.svg" class="logo__image only-light" alt="NVIDIA"/>
+  <img src="../../_static/nvidia-logo-horiz-rgb-1c-wht-for-screen.svg" class="logo__image only-dark" alt="NVIDIA"/>
+</a></div>
+      
+        <div class="footer-item">
+
+<div class="footer-links">
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/about-nvidia/privacy-policy/">Privacy Policy</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/about-nvidia/privacy-center/">Your Privacy Choices</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/about-nvidia/terms-of-service/">Terms of Service</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/about-nvidia/accessibility/">Accessibility</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/about-nvidia/company-policies/">Corporate Policies</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/product-security/">Product Security</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/contact/">Contact</a>
+  
+  
+  
+</div>
+</div>
+      
+        <div class="footer-item">
+
+
+
+
+  <p class="copyright">
+    
+      Copyright © 2025, Nvidia.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+<div class="extra_footer">
+  
+  <p>Last updated on July 22, 2026.</p>
+  
+  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/f98267f">f98267f</a>.</p>
+  
+</div></div>
+      
+    </div>
+  
+  
+  
+</div>
+
+  </footer>
+  </body>
+</html>

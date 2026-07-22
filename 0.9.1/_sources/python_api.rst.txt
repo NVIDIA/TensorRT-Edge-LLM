@@ -1,0 +1,33 @@
+Python API Reference
+====================
+
+This section provides documentation for the TensorRT Edge-LLM Python package.
+
+Python workflows use ``tensorrt_edgellm.quantization`` for checkpoint
+quantization, ``tensorrt_edgellm`` for ONNX export, and ``experimental.server`` for
+the experimental high-level API and OpenAI-compatible server.
+
+Experimental Server
+-------------------
+
+.. automodule:: experimental.server
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Quantization
+------------
+
+.. automodule:: tensorrt_edgellm.quantization
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Checkpoint Exporter
+-------------------
+
+.. automodule:: tensorrt_edgellm
+   :members:
+   :undoc-members:
+   :show-inheritance:
+

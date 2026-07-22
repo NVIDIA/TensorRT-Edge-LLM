@@ -1,6 +1,45 @@
 EAGLE Util Kernels
 ==================
 
-.. doxygenfile:: kernels/speculative/eagleUtilKernels.h
+.. doxygenfunction:: trt_edgellm::kernel::prepareEaglePrefillInputs
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::prepareEagleDraftProposalInputs
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::prepareEagleAcceptDecodeTokenInputs
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::prepareEagleBaseTreeDecodingInputs
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::eagleBaseCommitKVCache
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::eagleBaseAssembleHiddenState
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::initializeDraftTreeTables
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::assembleInitialDraftTreeInput
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::assembleDraftTreeInput
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::assembleInitialIntermediateData
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::assembleIntermediateData
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::computeCuScoresAndTranslateToken
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::updateDraftTreeFullTables
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::constructVerificationDraftTree
    :project: TensorRT Edge-LLM
 

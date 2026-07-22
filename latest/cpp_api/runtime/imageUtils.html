@@ -47,8 +47,8 @@
 
 
     <script src="../../_static/documentation_options.js?v=5929fcd5"></script>
-    <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
-    <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
     <script src="../../_static/copybutton.js?v=65e89d2a"></script>
     <script>let toggleHintShow = 'Click to show';</script>
@@ -56,11 +56,12 @@
     <script>let toggleOpenOnPrint = 'true';</script>
     <script src="../../_static/togglebutton.js?v=b8b12719"></script>
     <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
+    <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'cpp_api/runtime/imageUtils';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.19.0';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = './_static/switcher.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.9.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.9.1';
         DOCUMENTATION_OPTIONS.show_version_warning_banner =
             false;
         </script>
@@ -76,7 +77,7 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.9.0" />
+  <meta name="docsearch:version" content="0.9.1" />
   
     
     <script src="../../_static/searchtools.js"></script>
@@ -395,11 +396,13 @@
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Customization</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/customization-guide.html">Customization Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/calibration-datasets.html">Calibration Dataset Customization</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/tensorrt-plugins.html">TensorRT Plugins Guide</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Testing</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/code-coverage.html">Code Coverage with SonarQube</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/few-layer-validation.html">Few-Layer Numeric Validation</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">APIs</span></p>
 <ul class="current nav bd-sidenav">
@@ -443,31 +446,36 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../kernels/index.html">Kernels Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/NvFP4MoEUtils.html">Nv Fp4 Mo E Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/applyRopeWriteKV.html">Apply Rope Write KV</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/audioFbankKernels.html">Audio Fbank Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/batchEvictKernels.html">Batch Evict Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/buildLayout.html">Build Layout</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/causalConv1d.html">Causal Conv1d</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/common.html">Common</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/contextFMHARunner.html">Context FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/conversion.html">Conversion</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslF16MoeRunner.html">Cute Dsl F16 Moe Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslFFPARunner.html">Cute Dsl Ffpa Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslFMHARunner.html">Cute Dsl FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGDNRunner.html">Cute Dsl Gdn Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGemmNvFp4Runner.html">Cute Dsl GEMM Nv Fp4 Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGemmRunner.html">Cute Dsl GEMM Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslNvfp4MoeRunner.html">Cute Dsl Nvfp4 Moe Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslNvfp4MoeSm110Runner.html">Cute Dsl Nvfp4 Moe Sm110 Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslSSDRunner.html">Cute Dsl Ssd Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/ddtreeKernels.html">Ddtree Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/decoderXQARunner.html">Decoder XQA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/dequant.html">Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/dequantize.html">Dequantize</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../kernels/dflashAcceptKernels.html">Dflash Accept Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/dflashRuntimeKernels.html">Dflash Runtime Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/eagleAcceptKernels.html">EAGLE Accept Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/eagleUtilKernels.html">EAGLE Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/embeddingKernels.html">Embedding Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/f16MoeSupportKernels.html">F16 Moe Support Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/fmhaParams_v2.html">FMHA Params V2</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/fp4Quantize.html">Fp4 Quantize</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/gdnKernelUtils.html">Gdn Kernel Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/gemma4AudioAttention.html">Gemma4 Audio Attention</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/gemma4MTPRuntimeKernels.html">Gemma4 Mtp Runtime Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/imageUtilKernels.html">Image Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/initializeCosSinCache.html">Initialize Cos Sin Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/int4GroupwiseGemm.html">Int4 Groupwise GEMM</a></li>
@@ -482,13 +490,16 @@
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeAlignSumKernels.html">Moe Align Sum Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeMarlin.html">Moe Marlin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeMarlinIndicesKernels.html">Moe Marlin Indices Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moePerExpertScaleKernels.html">Moe Per Expert Scale Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeSigmoidGroupTopkKernels.html">Moe Sigmoid Group Topk Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeTopkSoftmaxKernels.html">Moe Topk Softmax Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/mtpStateScatterKernels.html">Mtp State Scatter Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoeTypes.html">Nvfp4 Moe Types</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4_dequant.html">Nvfp4 Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4_tensor.html">Nvfp4 Tensor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/scaleConvert.html">Scale Convert</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/selectiveStateUpdate.html">Selective State Update</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/speculativeKernelsUtils.html">Speculative Kernels Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/ssdVarlenMetadata.html">Ssd Varlen Metadata</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/talkerMLPKernels.html">Talker Mlp Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/utilKernels.html">Util Kernels</a></li>
@@ -499,6 +510,9 @@
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/audioRunner.html">Audio Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/audioUtils.html">Audio Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/code2WavRunner.html">Code2 Wav Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4AudioRunner.html">Gemma4 Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4UnifiedAudioRunner.html">Gemma4 Unified Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4UnifiedVisionRunner.html">Gemma4 Unified Vision Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4ViTRunner.html">Gemma4 ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/imageUtils.html">Image Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/internViTRunner.html">Intern ViT Runner</a></li>
@@ -507,14 +521,21 @@
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/nemotronOmniAudioRunner.html">Nemotron Omni Audio Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/nemotronOmniViTRunner.html">Nemotron Omni ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/phi4mmViTRunner.html">Phi4mm ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwen25vlViTRunner.html">Qwen25vl ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwen3omniViTRunner.html">Qwen3omni ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwen3vlViTRunner.html">Qwen3vl ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/qwenViTRunner.html">Qwen ViT Runner</a></li>
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../plugins/index.html">Plugins Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/allReducePlugin.html">All Reduce Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/attentionPlugin.html">Attention Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/causalConv1dPlugin.html">Causal Conv1d Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/dflashTargetKVCacheUpdatePlugin.html">Dflash Target KV Cache Update Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/fp16MoePlugin.html">Fp16 Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/fusedNvfp4GemmAllReducePlugin.html">Fused Nvfp4 GEMM All Reduce Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/gatedDeltaNetPlugin.html">Gated Delta Net Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/gemma4AudioAttentionPlugin.html">Gemma4 Audio Attention Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/int4GroupwiseGemmPlugin.html">Int4 Groupwise GEMM Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/int4MoePlugin.html">Int4 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/mambaPlugin.html">Mamba Plugin</a></li>
@@ -535,24 +556,29 @@
 <li class="toctree-l3"><a class="reference internal" href="audioLoader.html">Audio Loader</a></li>
 <li class="toctree-l3"><a class="reference internal" href="audioUtils.html">Audio Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="decoderRegistry.html">Decoder Registry</a></li>
+<li class="toctree-l3"><a class="reference internal" href="decoderUtils.html">Decoder Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="decodingInferenceContext.html">Decoding Inference Context</a></li>
 <li class="toctree-l3"><a class="reference internal" href="decodingStrategy.html">Decoding Strategy</a></li>
 <li class="toctree-l3"><a class="reference internal" href="deepstackBinding.html">Deepstack Binding</a></li>
 <li class="toctree-l3"><a class="reference internal" href="deploymentConfig.html">Deployment Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dflashDecodeUtils.html">Dflash Decode Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="dflashDecoder.html">Dflash Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="eagleDecoder.html">EAGLE Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="embeddingPreprocessor.html">Embedding Preprocessor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="engineExecutor.html">Engine Executor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="externalWeightManager.html">External Weight Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="gemma4EmbeddingPreprocessor.html">Gemma4 Embedding Preprocessor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="gemma4MTPDecoder.html">Gemma4 Mtp Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="hybridCacheManager.html">Hybrid Cache Manager</a></li>
 <li class="toctree-l3 current active"><a class="current reference internal" href="#">Image Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="inferenceDims.html">Inference Dims</a></li>
 <li class="toctree-l3"><a class="reference internal" href="inferencePhase.html">Inference Phase</a></li>
 <li class="toctree-l3"><a class="reference internal" href="kvCacheManager.html">KV Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="layerDebugger.html">Layer Debugger</a></li>
 <li class="toctree-l3"><a class="reference internal" href="llmEngineConfig.html">LLM Engine Config</a></li>
 <li class="toctree-l3"><a class="reference internal" href="llmInferenceRuntime.html">LLM Inference Runtime</a></li>
 <li class="toctree-l3"><a class="reference internal" href="llmRuntimeUtils.html">LLM Runtime Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="logitBias.html">Logit Bias</a></li>
 <li class="toctree-l3"><a class="reference internal" href="loraManager.html">Lora Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="mambaCacheManager.html">Mamba Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="melSpectrogram.html">Mel Spectrogram</a></li>
@@ -562,7 +588,6 @@
 <li class="toctree-l3"><a class="reference internal" href="registryBuilder.html">Registry Builder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="ropeCache.html">Rope Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="sharedResources.html">Shared Resources</a></li>
-<li class="toctree-l3"><a class="reference internal" href="specDecodeUtils.html">Spec Decode Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="stepPreparer.html">Step Preparer</a></li>
 <li class="toctree-l3"><a class="reference internal" href="streaming.html">Streaming</a></li>
 <li class="toctree-l3"><a class="reference internal" href="systemPromptKVCache.html">System Prompt KV Cache</a></li>
@@ -686,8 +711,8 @@
 <span id="_CPPv3N11trt_edgellm2rt10imageUtils9ImageDataE"></span><span id="_CPPv2N11trt_edgellm2rt10imageUtils9ImageDataE"></span><span id="trt_edgellm::rt::imageUtils::ImageData"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1imageUtils_1_1ImageData"></span><span class="k"><span class="pre">class</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ImageData</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10imageUtils9ImageDataE" title="Link to this definition">#</a><br /></dt>
 <dd><div class="docutils container">
 <em>#include &lt;imageUtils.h&gt;</em></div>
-<p>Image data container. </p>
-<p>Wraps image tensor loaded with stbi. Expected shape: [height, width, channels]. Channels is typically 3 for RGB images. </p>
+<p>Image data container (image or video frame stack) </p>
+<p>Wraps a uint8 RGB tensor with the unified 4D layout <code class="docutils literal notranslate"><span class="pre">[frames,</span> <span class="pre">height,</span> <span class="pre">width,</span> <span class="pre">channels]</span></code>. Single still images are represented as <code class="docutils literal notranslate"><span class="pre">frames</span> <span class="pre">==</span> <span class="pre">1</span></code>; video frame stacks have <code class="docutils literal notranslate"><span class="pre">frames</span> <span class="pre">&gt;</span> <span class="pre">1</span></code>. Channels must be 3. </p>
 <div class="breathe-sectiondef docutils container">
 <p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-functions">Public Functions</p>
 <dl class="cpp function">
@@ -698,14 +723,14 @@
 
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10imageUtils9ImageData9ImageDataERRN2rt6TensorE">
-<span id="_CPPv3N11trt_edgellm2rt10imageUtils9ImageData9ImageDataERRN2rt6TensorE"></span><span id="_CPPv2N11trt_edgellm2rt10imageUtils9ImageData9ImageDataERRN2rt6TensorE"></span><span id="trt_edgellm::rt::imageUtils::ImageData::ImageData__rt::TensorRR"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1imageUtils_1_1ImageData_1a3cbad2ed3e5377e96d64a31c05e58f48"></span><span class="sig-name descname"><span class="n"><span class="pre">ImageData</span></span></span><span class="sig-paren">(</span><em class="sig-param"><a class="reference internal" href="../action/actionUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">data</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10imageUtils9ImageData9ImageDataERRN2rt6TensorE" title="Link to this definition">#</a><br /></dt>
+<span id="_CPPv3N11trt_edgellm2rt10imageUtils9ImageData9ImageDataERRN2rt6TensorE"></span><span id="_CPPv2N11trt_edgellm2rt10imageUtils9ImageData9ImageDataERRN2rt6TensorE"></span><span id="trt_edgellm::rt::imageUtils::ImageData::ImageData__rt::TensorRR"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1imageUtils_1_1ImageData_1a3cbad2ed3e5377e96d64a31c05e58f48"></span><span class="sig-name descname"><span class="n"><span class="pre">ImageData</span></span></span><span class="sig-paren">(</span><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">data</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10imageUtils9ImageData9ImageDataERRN2rt6TensorE" title="Link to this definition">#</a><br /></dt>
 <dd><p>Construct image data. </p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>data</strong> – Image tensor </p>
+<dd class="field-odd"><p><strong>data</strong> – Image tensor with shape [T, H, W, C]. Single-frame still images use T=1. </p>
 </dd>
 <dt class="field-even">Throws<span class="colon">:</span></dt>
-<dd class="field-even"><p><span><span class="cpp-expr sig sig-inline cpp"><span class="n">std</span><span class="p">::</span><span class="n">runtime_error</span></span></span> – if tensor content not UINT8, or tensor shape not 3D, or number of channels not 3 </p>
+<dd class="field-even"><p><span><span class="cpp-expr sig sig-inline cpp"><span class="n">std</span><span class="p">::</span><span class="n">runtime_error</span></span></span> – if tensor content not UINT8, tensor shape not 4D, or number of channels not 3 </p>
 </dd>
 </dl>
 </dd></dl>
@@ -721,31 +746,54 @@
 </dl>
 </dd></dl>
 
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm2rt10imageUtils9ImageData13bytesPerFrameEv">
+<span id="_CPPv3NK11trt_edgellm2rt10imageUtils9ImageData13bytesPerFrameEv"></span><span id="_CPPv2NK11trt_edgellm2rt10imageUtils9ImageData13bytesPerFrameEv"></span><span id="trt_edgellm::rt::imageUtils::ImageData::bytesPerFrameC"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1imageUtils_1_1ImageData_1ac841acfde68baf53767a88dd00e59632"></span><span class="k"><span class="pre">inline</span></span><span class="w"> </span><span class="n"><span class="pre">int64_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">bytesPerFrame</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm2rt10imageUtils9ImageData13bytesPerFrameEv" title="Link to this definition">#</a><br /></dt>
+<dd><p>Bytes occupied by a single frame (height * width * channels), assuming UINT8 storage. </p>
+<dl class="field-list simple">
+<dt class="field-odd">Returns<span class="colon">:</span></dt>
+<dd class="field-odd"><p>Byte count per frame. </p>
+</dd>
+</dl>
+</dd></dl>
+
 </div>
 <div class="breathe-sectiondef docutils container">
 <p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-members">Public Members</p>
 <dl class="cpp var">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10imageUtils9ImageData6bufferE">
-<span id="_CPPv3N11trt_edgellm2rt10imageUtils9ImageData6bufferE"></span><span id="_CPPv2N11trt_edgellm2rt10imageUtils9ImageData6bufferE"></span><span id="trt_edgellm::rt::imageUtils::ImageData::buffer__std::shared_ptr:rt::Tensor:"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1imageUtils_1_1ImageData_1ad25043758f341dad8818f10092d942f3"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">shared_ptr</span></span><span class="p"><span class="pre">&lt;</span></span><a class="reference internal" href="../action/actionUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">buffer</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10imageUtils9ImageData6bufferE" title="Link to this definition">#</a><br /></dt>
-<dd><p>Image data buffer. </p>
+<span id="_CPPv3N11trt_edgellm2rt10imageUtils9ImageData6bufferE"></span><span id="_CPPv2N11trt_edgellm2rt10imageUtils9ImageData6bufferE"></span><span id="trt_edgellm::rt::imageUtils::ImageData::buffer__std::shared_ptr:rt::Tensor:"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1imageUtils_1_1ImageData_1ad25043758f341dad8818f10092d942f3"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">shared_ptr</span></span><span class="p"><span class="pre">&lt;</span></span><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">buffer</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10imageUtils9ImageData6bufferE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Image data buffer (4D [T, H, W, C], UINT8, channels == 3) </p>
 </dd></dl>
 
 <dl class="cpp var">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10imageUtils9ImageData5widthE">
-<span id="_CPPv3N11trt_edgellm2rt10imageUtils9ImageData5widthE"></span><span id="_CPPv2N11trt_edgellm2rt10imageUtils9ImageData5widthE"></span><span id="trt_edgellm::rt::imageUtils::ImageData::width__int64_t"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1imageUtils_1_1ImageData_1a85ff1a4f0b328635988d166837233b27"></span><span class="n"><span class="pre">int64_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">width</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10imageUtils9ImageData5widthE" title="Link to this definition">#</a><br /></dt>
+<span id="_CPPv3N11trt_edgellm2rt10imageUtils9ImageData5widthE"></span><span id="_CPPv2N11trt_edgellm2rt10imageUtils9ImageData5widthE"></span><span id="trt_edgellm::rt::imageUtils::ImageData::width__int64_t"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1imageUtils_1_1ImageData_1a85ff1a4f0b328635988d166837233b27"></span><span class="n"><span class="pre">int64_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">width</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="m"><span class="pre">0</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10imageUtils9ImageData5widthE" title="Link to this definition">#</a><br /></dt>
 <dd><p>Image width. </p>
 </dd></dl>
 
 <dl class="cpp var">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10imageUtils9ImageData6heightE">
-<span id="_CPPv3N11trt_edgellm2rt10imageUtils9ImageData6heightE"></span><span id="_CPPv2N11trt_edgellm2rt10imageUtils9ImageData6heightE"></span><span id="trt_edgellm::rt::imageUtils::ImageData::height__int64_t"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1imageUtils_1_1ImageData_1ad1166e76d94ab8ce75b51ee4c37878f3"></span><span class="n"><span class="pre">int64_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">height</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10imageUtils9ImageData6heightE" title="Link to this definition">#</a><br /></dt>
+<span id="_CPPv3N11trt_edgellm2rt10imageUtils9ImageData6heightE"></span><span id="_CPPv2N11trt_edgellm2rt10imageUtils9ImageData6heightE"></span><span id="trt_edgellm::rt::imageUtils::ImageData::height__int64_t"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1imageUtils_1_1ImageData_1ad1166e76d94ab8ce75b51ee4c37878f3"></span><span class="n"><span class="pre">int64_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">height</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="m"><span class="pre">0</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10imageUtils9ImageData6heightE" title="Link to this definition">#</a><br /></dt>
 <dd><p>Image height. </p>
 </dd></dl>
 
 <dl class="cpp var">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10imageUtils9ImageData8channelsE">
-<span id="_CPPv3N11trt_edgellm2rt10imageUtils9ImageData8channelsE"></span><span id="_CPPv2N11trt_edgellm2rt10imageUtils9ImageData8channelsE"></span><span id="trt_edgellm::rt::imageUtils::ImageData::channels__int64_t"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1imageUtils_1_1ImageData_1a8fb48efd7d3623696667e7a4466caee2"></span><span class="n"><span class="pre">int64_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">channels</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10imageUtils9ImageData8channelsE" title="Link to this definition">#</a><br /></dt>
+<span id="_CPPv3N11trt_edgellm2rt10imageUtils9ImageData8channelsE"></span><span id="_CPPv2N11trt_edgellm2rt10imageUtils9ImageData8channelsE"></span><span id="trt_edgellm::rt::imageUtils::ImageData::channels__int64_t"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1imageUtils_1_1ImageData_1a8fb48efd7d3623696667e7a4466caee2"></span><span class="n"><span class="pre">int64_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">channels</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="m"><span class="pre">0</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10imageUtils9ImageData8channelsE" title="Link to this definition">#</a><br /></dt>
 <dd><p>Number of channels (e.g., 3 for RGB) </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10imageUtils9ImageData6framesE">
+<span id="_CPPv3N11trt_edgellm2rt10imageUtils9ImageData6framesE"></span><span id="_CPPv2N11trt_edgellm2rt10imageUtils9ImageData6framesE"></span><span id="trt_edgellm::rt::imageUtils::ImageData::frames__int64_t"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1imageUtils_1_1ImageData_1ab5fb2b6d4ded843517dc20c0b6cf921d"></span><span class="n"><span class="pre">int64_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">frames</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="m"><span class="pre">1</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10imageUtils9ImageData6framesE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Number of frames (T). 1 for static images, &gt;1 for video. </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10imageUtils9ImageData3fpsE">
+<span id="_CPPv3N11trt_edgellm2rt10imageUtils9ImageData3fpsE"></span><span id="_CPPv2N11trt_edgellm2rt10imageUtils9ImageData3fpsE"></span><span id="trt_edgellm::rt::imageUtils::ImageData::fps__double"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1imageUtils_1_1ImageData_1a07641e957ef073ec3d255b78e923d9ea"></span><span class="kt"><span class="pre">double</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">fps</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="m"><span class="pre">1.0</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10imageUtils9ImageData3fpsE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Video sample fps (used to compute MRoPE timestamps); ignored when frames == 1. </p>
 </dd></dl>
 
 </div>
@@ -820,10 +868,13 @@
 <li class="toc-h6 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10imageUtils9ImageData9ImageDataEv"><code class="docutils literal notranslate"><span class="pre">ImageData()</span></code></a></li>
 <li class="toc-h6 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10imageUtils9ImageData9ImageDataERRN2rt6TensorE"><code class="docutils literal notranslate"><span class="pre">ImageData()</span></code></a></li>
 <li class="toc-h6 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt10imageUtils9ImageData4dataEv"><code class="docutils literal notranslate"><span class="pre">data()</span></code></a></li>
+<li class="toc-h6 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt10imageUtils9ImageData13bytesPerFrameEv"><code class="docutils literal notranslate"><span class="pre">bytesPerFrame()</span></code></a></li>
 <li class="toc-h6 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10imageUtils9ImageData6bufferE"><code class="docutils literal notranslate"><span class="pre">buffer</span></code></a></li>
 <li class="toc-h6 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10imageUtils9ImageData5widthE"><code class="docutils literal notranslate"><span class="pre">width</span></code></a></li>
 <li class="toc-h6 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10imageUtils9ImageData6heightE"><code class="docutils literal notranslate"><span class="pre">height</span></code></a></li>
 <li class="toc-h6 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10imageUtils9ImageData8channelsE"><code class="docutils literal notranslate"><span class="pre">channels</span></code></a></li>
+<li class="toc-h6 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10imageUtils9ImageData6framesE"><code class="docutils literal notranslate"><span class="pre">frames</span></code></a></li>
+<li class="toc-h6 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10imageUtils9ImageData3fpsE"><code class="docutils literal notranslate"><span class="pre">fps</span></code></a></li>
 </ul>
 </li>
 </ul>
@@ -923,9 +974,9 @@
         <div class="footer-item">
 <div class="extra_footer">
   
-  <p>Last updated on July 02, 2026.</p>
+  <p>Last updated on July 22, 2026.</p>
   
-  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/30941a6">30941a6</a>.</p>
+  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/f98267f">f98267f</a>.</p>
   
 </div></div>
       

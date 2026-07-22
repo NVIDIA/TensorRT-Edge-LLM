@@ -1,6 +1,39 @@
 Builder Utils
 =============
 
-.. doxygenfile:: builder/builderUtils.h
+.. doxygenfunction:: trt_edgellm::builder::createDims
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::builder::checkOptimizationProfileDims
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::builder::setOptimizationProfile
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::builder::printNetworkInfo
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::builder::printOptimizationProfile
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::builder::createBuilderAndNetwork
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::builder::createBuilderConfig
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::builder::parseOnnxModel
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::builder::buildAndSerializeEngine
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::builder::loadJsonConfig
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::builder::saveConfigWithBuilderInfo
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::builder::logTrtNativeAttentionPath
    :project: TensorRT Edge-LLM
 

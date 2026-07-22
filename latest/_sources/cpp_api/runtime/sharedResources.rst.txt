@@ -6,3 +6,6 @@ Shared Resources
    :members:
    :undoc-members:
 
+.. doxygenfunction:: trt_edgellm::rt::allocateZeroBuffer
+   :project: TensorRT Edge-LLM
+

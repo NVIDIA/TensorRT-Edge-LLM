@@ -1,6 +1,6 @@
 File Utils
 ==========
 
-.. doxygenfile:: common/fileUtils.h
+.. doxygenfunction:: trt_edgellm::file_io::copyFile
    :project: TensorRT Edge-LLM
 

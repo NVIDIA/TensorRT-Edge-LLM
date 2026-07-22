@@ -27,6 +27,9 @@ tensorrt-edgellm-quantize llm \
   --lm_head_quantization nvfp4
 ```
 
+Calibration uses the default `cnn_dailymail` text dataset. Pick another with
+`--text_dataset <name>` (see [Calibration Datasets](#calibration-datasets)).
+
 The output directory is a HuggingFace-style checkpoint that `tensorrt_edgellm` can export directly. See [Quick Start Guide](../getting_started/quick-start-guide.md) for the full export-build-inference workflow.
 
 ## Enable FP8 KV Cache
@@ -54,8 +57,44 @@ tensorrt-edgellm-quantize llm \
   --quantization nvfp4 \
   --lm_head_quantization nvfp4 \
   --visual_quantization fp8 \
-  --dataset lmms-lab/MMMU
+  --image_dataset mmmu
 ```
+
+`--image_dataset` selects the image-question calibration set (default `mmmu`);
+the LLM path still uses `--text_dataset`.
+
+## Quantize Qwen3-ASR Audio To FP8
+
+Qwen3-ASR calibration streams audio-transcript pairs through the audio tower
+and text decoder. Use an audio dataset with `audio` and `text` columns:
+
+```bash
+tensorrt-edgellm-quantize llm \
+  --model_dir /path/to/qwen3_asr \
+  --output_dir /tmp/qwen3_asr_fp8_audio \
+  --quantization fp8 \
+  --audio_quantization fp8 \
+  --audio_dataset librispeech
+```
+
+## Calibration Datasets
+
+Calibration data is selected **by name**, per modality — the CLI passes only a
+dataset name. Each name maps to a registered dataset implementation; an
+unknown name fails out with the list of available datasets and a pointer to
+the customization guide (it does not silently fall back).
+
+| Modality | Flag (default) | Built-in names | Used for |
+|---|---|---|---|
+| Text  | `--text_dataset` (`cnn_dailymail`) | `cnn_dailymail`, `wikitext` | LLM weights, LM head, KV cache, CodePredictor, MTP, EAGLE3, DFlash |
+| Image | `--image_dataset` (`mmmu`) | `mmmu` | Visual tower (`--visual_quantization`) |
+| Audio | `--audio_dataset` (`librispeech`) | `librispeech` | Qwen3-ASR / audio tower |
+
+To calibrate on your own data, write a generator for your modality and
+register it under a name — see
+[Calibration Dataset Customization](../../developer_guide/customization/calibration-datasets.md).
+To run a built-in offline (e.g. CI), point it at a cached copy with the
+`EDGELLM_QUANT_DATASET_<NAME>` environment variable; the CLI stays name-only.
 
 ## Quantize An EAGLE3 Draft
 
@@ -104,10 +143,11 @@ tensorrt-edgellm-export \
 | LM head | `fp8`, `int4_awq`, `nvfp4`, `mxfp8` |
 | KV cache | `fp8` |
 | Visual tower | `fp8` |
+| Audio tower | `fp8` |
+| CodePredictor | `fp8` |
 | DFlash draft | validated with `nvfp4` backbone and optional `nvfp4` LM-head quantization |
 
 ## Notes
 
 - The package writes unified checkpoints only. It does not export ONNX or build TensorRT engines.
-- Audio calibration is not implemented.
 - GPTQ checkpoints are loaded as pre-quantized checkpoints; this package does not create GPTQ models.

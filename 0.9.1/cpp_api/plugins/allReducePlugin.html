@@ -1,0 +1,1234 @@
+
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>All Reduce Plugin &#8212; TensorRT Edge-LLM</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../_static/styles/theme.css?digest=a95f357e85573c9b56d5" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=a95f357e85573c9b56d5" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=03e43079" />
+    <link rel="stylesheet" type="text/css" href="../../_static/styles/nvidia-sphinx-theme.css?v=933278ad" />
+    <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../../_static/autodoc_pydantic.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/togglebutton.css?v=9c3e77be" />
+    <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=e02be394" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../../_static/scripts/fontawesome.js?digest=a95f357e85573c9b56d5"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=a95f357e85573c9b56d5" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=a95f357e85573c9b56d5" />
+
+
+
+    <script src="../../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../../_static/copybutton.js?v=65e89d2a"></script>
+    <script>let toggleHintShow = 'Click to show';</script>
+    <script>let toggleHintHide = 'Click to hide';</script>
+    <script>let toggleOpenOnPrint = 'true';</script>
+    <script src="../../_static/togglebutton.js?v=b8b12719"></script>
+    <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
+    <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'cpp_api/plugins/allReducePlugin';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.19.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = './_static/switcher.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.9.1';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner =
+            false;
+        </script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+
+    <link rel="icon" href="../../_static/favicon.png"/>
+
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="Attention Plugin" href="attentionPlugin.html" />
+    <link rel="prev" title="Plugins Module" href="index.html" />
+
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.9.1" />
+  
+    
+    <script src="../../_static/searchtools.js"></script>
+    <script src="../../_static/language_data.js"></script>
+    <script src="../../searchindex.js"></script>
+  
+
+
+  </head>
+
+  <body data-default-mode="">
+
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../../_static/nvidia-logo-horiz-rgb-blk-for-screen.svg" class="logo__image only-light" alt="TensorRT Edge-LLM - Home"/>
+    <img src="../../_static/nvidia-logo-horiz-rgb-wht-for-screen.svg" class="logo__image only-dark pst-js-only" alt="TensorRT Edge-LLM - Home"/>
+  
+  
+    <p class="title logo__title">TensorRT Edge-LLM</p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+
+
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-2"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-2"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-2"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-2">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../../_static/nvidia-logo-horiz-rgb-blk-for-screen.svg" class="logo__image only-light" alt="TensorRT Edge-LLM - Home"/>
+    <img src="../../_static/nvidia-logo-horiz-rgb-wht-for-screen.svg" class="logo__image only-dark pst-js-only" alt="TensorRT Edge-LLM - Home"/>
+  
+  
+    <p class="title logo__title">TensorRT Edge-LLM</p>
+  
+</a>
+
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+
+
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-3"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-3"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-3"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-3">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+
+
+
+<nav class="bd-docs-nav bd-links"
+     aria-label="Table of Contents">
+  <p class="bd-links__title" role="heading" aria-level="1">Table of Contents</p>
+  <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../overview.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/supported-models.html">Supported Models</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/quick-start-guide.html">Quick Start Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/limitations.html">Limitations and Known Issues</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Examples</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/index.html">Examples</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/vlm.html">VLM (Vision-Language Model) Inference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/speculative-decoding.html">Speculative Decoding</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/phi4.html">Phi-4-Multimodal</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/asr.html">ASR (Automatic Speech Recognition)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/moe.html">MoE (Mixture of Experts)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/tts.html">TTS (Text-to-Speech)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/vla.html">Alpamayo-R1-10B (Vision-Language-Action)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/experimental-server.html">Experimental High-Level Python API and Server</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Features</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/lora.html">LoRA (Low-Rank Adaptation)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/quantization.html">Quantization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/reduce-vocab.html">Vocabulary Reduction</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/FP8KV.html">FP8 KV Cache</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/fp8-embedding.html">FP8 Embedding</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/streaming.html">Streaming Output</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/system-prompt-cache.html">System Prompt Cache</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Input &amp; Chat Format</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/format/input-format.html">Input JSON Format</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/format/chat-template-format.html">Chat Template Format</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Performance</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/performance/performance-benchmarks.html">Performance Benchmarks</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Software Design</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/checkpoint-export.html">Checkpoint Exporter Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/quantization-design.html">Quantization Package Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/engine-builder.html">Engine Builder</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/cpp-runtime-overview.html">C++ Runtime Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/llm-inference-runtime.html">LLM Inference Runtime</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/llm-streaming.html">LLM Streaming — Design</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Customization</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/customization-guide.html">Customization Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/calibration-datasets.html">Calibration Dataset Customization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/tensorrt-plugins.html">TensorRT Plugins Guide</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Testing</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/code-coverage.html">Code Coverage with SonarQube</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/few-layer-validation.html">Few-Layer Numeric Validation</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">APIs</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../python_api.html">Python API Reference</a></li>
+<li class="toctree-l1 current active has-children"><a class="reference internal" href="../../cpp_api.html">C++ API Reference</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
+<li class="toctree-l2 has-children"><a class="reference internal" href="../action/index.html">Action Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../action/actionModelTypes.html">Action Model Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../action/actionUtils.html">Action Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../action/alpamayo1ActionRunner.html">Alpamayo1 Action Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html">Alpamayo1 Runner Utils</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../builder/index.html">Builder Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../builder/actionBuilder.html">Action Builder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../builder/audioBuilder.html">Audio Builder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../builder/builderUtils.html">Builder Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../builder/llmBuilder.html">LLM Builder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../builder/visualBuilder.html">Visual Builder</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../common/index.html">Common Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../common/bindingNames.html">Binding Names</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/checkMacros.html">Check Macros</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/cudaMacros.html">CUDA Macros</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/cudaUtils.html">CUDA Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/fileUtils.html">File Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/hashUtils.html">Hash Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/inputLimits.html">Input Limits</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/logger.html">Logger</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/mathUtils.html">Math Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/mmapReader.html">MMAP Reader</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/ropeUtils.html">Rope Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/safetensorsUtils.html">Safetensors Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/stringUtils.html">String Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/tensor.html">Tensor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/trtUtils.html">TRT Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/utf8.html">Utf8</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/version.html">Version</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../kernels/index.html">Kernels Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/NvFP4MoEUtils.html">Nv Fp4 Mo E Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/applyRopeWriteKV.html">Apply Rope Write KV</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/audioFbankKernels.html">Audio Fbank Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/batchEvictKernels.html">Batch Evict Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/buildLayout.html">Build Layout</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/causalConv1d.html">Causal Conv1d</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/common.html">Common</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/contextFMHARunner.html">Context FMHA Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/conversion.html">Conversion</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslF16MoeRunner.html">Cute Dsl F16 Moe Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslFFPARunner.html">Cute Dsl Ffpa Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslFMHARunner.html">Cute Dsl FMHA Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGDNRunner.html">Cute Dsl Gdn Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGemmNvFp4Runner.html">Cute Dsl GEMM Nv Fp4 Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGemmRunner.html">Cute Dsl GEMM Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslNvfp4MoeRunner.html">Cute Dsl Nvfp4 Moe Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslNvfp4MoeSm110Runner.html">Cute Dsl Nvfp4 Moe Sm110 Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslSSDRunner.html">Cute Dsl Ssd Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/ddtreeKernels.html">Ddtree Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/decoderXQARunner.html">Decoder XQA Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/dequant.html">Dequant</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/dequantize.html">Dequantize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/dflashRuntimeKernels.html">Dflash Runtime Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/eagleAcceptKernels.html">EAGLE Accept Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/eagleUtilKernels.html">EAGLE Util Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/embeddingKernels.html">Embedding Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/f16MoeSupportKernels.html">F16 Moe Support Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/fmhaParams_v2.html">FMHA Params V2</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/fp4Quantize.html">Fp4 Quantize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/gdnKernelUtils.html">Gdn Kernel Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/gemma4AudioAttention.html">Gemma4 Audio Attention</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/gemma4MTPRuntimeKernels.html">Gemma4 Mtp Runtime Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/imageUtilKernels.html">Image Util Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/initializeCosSinCache.html">Initialize Cos Sin Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/int4GroupwiseGemm.html">Int4 Groupwise GEMM</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/kernel.html">Kernel</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/kernel_selector.html">Kernel Selector</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/kvCacheUtilsKernels.html">KV Cache Utils Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/marlin.html">Marlin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/marlin_dtypes.html">Marlin Dtypes</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/marlin_mma.html">Marlin Mma</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/marlin_template.html">Marlin Template</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moeActivationKernels.html">Moe Activation Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moeAlignSumKernels.html">Moe Align Sum Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moeMarlin.html">Moe Marlin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moeMarlinIndicesKernels.html">Moe Marlin Indices Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moePerExpertScaleKernels.html">Moe Per Expert Scale Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moeSigmoidGroupTopkKernels.html">Moe Sigmoid Group Topk Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moeTopkSoftmaxKernels.html">Moe Topk Softmax Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/mtpStateScatterKernels.html">Mtp State Scatter Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoeTypes.html">Nvfp4 Moe Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4_dequant.html">Nvfp4 Dequant</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4_tensor.html">Nvfp4 Tensor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/scaleConvert.html">Scale Convert</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/selectiveStateUpdate.html">Selective State Update</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/speculativeKernelsUtils.html">Speculative Kernels Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/ssdVarlenMetadata.html">Ssd Varlen Metadata</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/talkerMLPKernels.html">Talker Mlp Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/utilKernels.html">Util Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/vectorizedTypes.html">Vectorized Types</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../multimodal/index.html">Multimodal Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/audioRunner.html">Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/audioUtils.html">Audio Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/code2WavRunner.html">Code2 Wav Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4AudioRunner.html">Gemma4 Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4UnifiedAudioRunner.html">Gemma4 Unified Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4UnifiedVisionRunner.html">Gemma4 Unified Vision Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4ViTRunner.html">Gemma4 ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/imageUtils.html">Image Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/internViTRunner.html">Intern ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/modelTypes.html">Model Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/multimodalRunner.html">Multimodal Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/nemotronOmniAudioRunner.html">Nemotron Omni Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/nemotronOmniViTRunner.html">Nemotron Omni ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/phi4mmViTRunner.html">Phi4mm ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwen25vlViTRunner.html">Qwen25vl ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwen3omniViTRunner.html">Qwen3omni ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwen3vlViTRunner.html">Qwen3vl ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwenViTRunner.html">Qwen ViT Runner</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 current active has-children"><a class="reference internal" href="index.html">Plugins Module</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
+<li class="toctree-l3 current active"><a class="current reference internal" href="#">All Reduce Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="attentionPlugin.html">Attention Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="causalConv1dPlugin.html">Causal Conv1d Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dflashTargetKVCacheUpdatePlugin.html">Dflash Target KV Cache Update Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fp16MoePlugin.html">Fp16 Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fusedNvfp4GemmAllReducePlugin.html">Fused Nvfp4 GEMM All Reduce Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="gatedDeltaNetPlugin.html">Gated Delta Net Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="gemma4AudioAttentionPlugin.html">Gemma4 Audio Attention Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="int4GroupwiseGemmPlugin.html">Int4 Groupwise GEMM Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="int4MoePlugin.html">Int4 Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="mambaPlugin.html">Mamba Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="nvfp4MoePlugin.html">Nvfp4 Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="nvfp4MoePluginGeforce.html">Nvfp4 Moe Plugin Geforce</a></li>
+<li class="toctree-l3"><a class="reference internal" href="pluginUtils.html">Plugin Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="vitAttentionPlugin.html">VIT Attention Plugin</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../profiling/index.html">Profiling Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../profiling/layerProfiler.html">Layer Profiler</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../profiling/metrics.html">Metrics</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../profiling/nvtx_wrapper.html">Nvtx Wrapper</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../profiling/timer.html">Timer</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../runtime/index.html">Runtime Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/audioLoader.html">Audio Loader</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/audioUtils.html">Audio Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/decoderRegistry.html">Decoder Registry</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/decoderUtils.html">Decoder Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/decodingInferenceContext.html">Decoding Inference Context</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/decodingStrategy.html">Decoding Strategy</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/deepstackBinding.html">Deepstack Binding</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/deploymentConfig.html">Deployment Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/dflashDecodeUtils.html">Dflash Decode Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/dflashDecoder.html">Dflash Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/eagleDecoder.html">EAGLE Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/embeddingPreprocessor.html">Embedding Preprocessor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/engineExecutor.html">Engine Executor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/externalWeightManager.html">External Weight Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/gemma4EmbeddingPreprocessor.html">Gemma4 Embedding Preprocessor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/gemma4MTPDecoder.html">Gemma4 Mtp Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/hybridCacheManager.html">Hybrid Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/imageUtils.html">Image Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/inferenceDims.html">Inference Dims</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/inferencePhase.html">Inference Phase</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/kvCacheManager.html">KV Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/layerDebugger.html">Layer Debugger</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/llmEngineConfig.html">LLM Engine Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/llmInferenceRuntime.html">LLM Inference Runtime</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/llmRuntimeUtils.html">LLM Runtime Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/logitBias.html">Logit Bias</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/loraManager.html">Lora Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/mambaCacheManager.html">Mamba Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/melSpectrogram.html">Mel Spectrogram</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/mtpDecoder.html">Mtp Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/pipelineIO.html">Pipeline Io</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/qwen3OmniTTSRuntime.html">Qwen3 Omni Tts Runtime</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/registryBuilder.html">Registry Builder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/ropeCache.html">Rope Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/sharedResources.html">Shared Resources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/stepPreparer.html">Step Preparer</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/streaming.html">Streaming</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/systemPromptKVCache.html">System Prompt KV Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/tensorMap.html">Tensor Map</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/tensorRegistry.html">Tensor Registry</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/vanillaDecoder.html">Vanilla Decoder</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../sampler/index.html">Sampler Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../sampler/sampling.html">Sampling</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../tokenizer/index.html">Tokenizer Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../tokenizer/preTokenizer.html">Pre Tokenizer</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../tokenizer/tokenEncoder.html">Token Encoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../tokenizer/tokenizer.html">Tokenizer</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../tokenizer/tokenizerUtils.html">Tokenizer Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../tokenizer/unicodeData.html">Unicode Data</a></li>
+</ul>
+</details></li>
+</ul>
+</details></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Quick Links</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference external" href="https://github.com/NVIDIA/TensorRT-Edge-LLM/releases">Releases</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/NVIDIA/TensorRT-Edge-LLM">GitHub</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/NVIDIA/TensorRT-Edge-LLM/issues?q=is%3Aissue%20state%3Aopen%20label%3ARoadmap">Roadmap</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+  </div>
+
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="../../cpp_api.html" class="nav-link">C++ API Reference</a></li>
+    
+    
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Plugins Module</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">All Reduce Plugin</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="all-reduce-plugin">
+<h1>All Reduce Plugin<a class="headerlink" href="#all-reduce-plugin" title="Link to this heading">#</a></h1>
+<dl class="cpp class">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7plugins15AllReducePluginE">
+<span id="_CPPv3N11trt_edgellm7plugins15AllReducePluginE"></span><span id="_CPPv2N11trt_edgellm7plugins15AllReducePluginE"></span><span id="trt_edgellm::plugins::AllReducePlugin"></span><span class="target" id="classtrt__edgellm_1_1plugins_1_1AllReducePlugin"></span><span class="k"><span class="pre">class</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">AllReducePlugin</span></span></span><span class="w"> </span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="k"><span class="pre">public</span></span><span class="w"> </span><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">IPluginV3</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="k"><span class="pre">public</span></span><span class="w"> </span><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">IPluginV3OneCore</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="k"><span class="pre">public</span></span><span class="w"> </span><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">IPluginV3OneBuild</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="k"><span class="pre">public</span></span><span class="w"> </span><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">IPluginV3OneRuntime</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm7plugins15AllReducePluginE" title="Link to this definition">#</a><br /></dt>
+<dd><p>TensorRT plugin for NCCL all-reduce in tensor parallel inference. </p>
+<p>This plugin performs NCCL all-reduce (sum) on intermediate activations during TensorRT engine execution. It is inserted after row-parallel linear layers (attention output projection and MLP down projection) to combine partial results from different tensor parallel ranks.</p>
+<p>The plugin is a passthrough when tpSize=1 (no tensor parallelism). It uses communicator handles registered by the runtime plugin communication registry. </p>
+<div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-ipluginv3-methods">IPluginV3 Methods</p>
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7plugins15AllReducePlugin22getCapabilityInterfaceEN8nvinfer120PluginCapabilityTypeE">
+<span id="_CPPv3N11trt_edgellm7plugins15AllReducePlugin22getCapabilityInterfaceEN8nvinfer120PluginCapabilityTypeE"></span><span id="_CPPv2N11trt_edgellm7plugins15AllReducePlugin22getCapabilityInterfaceEN8nvinfer120PluginCapabilityTypeE"></span><span id="trt_edgellm::plugins::AllReducePlugin::getCapabilityInterface__nvinfer1::PluginCapabilityType"></span><span class="target" id="classtrt__edgellm_1_1plugins_1_1AllReducePlugin_1a57b34893ec3e02beff2cabafae404ed3"></span><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">IPluginCapability</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">getCapabilityInterface</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">PluginCapabilityType</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">type</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><span class="w"> </span><span class="k"><span class="pre">override</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm7plugins15AllReducePlugin22getCapabilityInterfaceEN8nvinfer120PluginCapabilityTypeE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7plugins15AllReducePlugin5cloneEv">
+<span id="_CPPv3N11trt_edgellm7plugins15AllReducePlugin5cloneEv"></span><span id="_CPPv2N11trt_edgellm7plugins15AllReducePlugin5cloneEv"></span><span id="trt_edgellm::plugins::AllReducePlugin::clone"></span><span class="target" id="classtrt__edgellm_1_1plugins_1_1AllReducePlugin_1a3fa22f86bf60a0cbfd3ee119f82be666"></span><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">IPluginV3</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">clone</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><span class="w"> </span><span class="k"><span class="pre">override</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm7plugins15AllReducePlugin5cloneEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+</div>
+<div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-ipluginv3onecore-methods">IPluginV3OneCore Methods</p>
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm7plugins15AllReducePlugin13getPluginNameEv">
+<span id="_CPPv3NK11trt_edgellm7plugins15AllReducePlugin13getPluginNameEv"></span><span id="_CPPv2NK11trt_edgellm7plugins15AllReducePlugin13getPluginNameEv"></span><span id="trt_edgellm::plugins::AllReducePlugin::getPluginNameC"></span><span class="target" id="classtrt__edgellm_1_1plugins_1_1AllReducePlugin_1aab44b463a7ae27d40a3aa1c9f2981d3c"></span><span class="kt"><span class="pre">char</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">getPluginName</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><span class="w"> </span><span class="k"><span class="pre">override</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm7plugins15AllReducePlugin13getPluginNameEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm7plugins15AllReducePlugin18getPluginNamespaceEv">
+<span id="_CPPv3NK11trt_edgellm7plugins15AllReducePlugin18getPluginNamespaceEv"></span><span id="_CPPv2NK11trt_edgellm7plugins15AllReducePlugin18getPluginNamespaceEv"></span><span id="trt_edgellm::plugins::AllReducePlugin::getPluginNamespaceC"></span><span class="target" id="classtrt__edgellm_1_1plugins_1_1AllReducePlugin_1a76f03fc06b6ab8f5bbd7cde68a93f16d"></span><span class="kt"><span class="pre">char</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">getPluginNamespace</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><span class="w"> </span><span class="k"><span class="pre">override</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm7plugins15AllReducePlugin18getPluginNamespaceEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm7plugins15AllReducePlugin16getPluginVersionEv">
+<span id="_CPPv3NK11trt_edgellm7plugins15AllReducePlugin16getPluginVersionEv"></span><span id="_CPPv2NK11trt_edgellm7plugins15AllReducePlugin16getPluginVersionEv"></span><span id="trt_edgellm::plugins::AllReducePlugin::getPluginVersionC"></span><span class="target" id="classtrt__edgellm_1_1plugins_1_1AllReducePlugin_1a1d62868348364a7e3b360b6ca4bbbf96"></span><span class="kt"><span class="pre">char</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">getPluginVersion</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><span class="w"> </span><span class="k"><span class="pre">override</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm7plugins15AllReducePlugin16getPluginVersionEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+</div>
+<div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-ipluginv3onebuild-methods">IPluginV3OneBuild Methods</p>
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm7plugins15AllReducePlugin12getNbOutputsEv">
+<span id="_CPPv3NK11trt_edgellm7plugins15AllReducePlugin12getNbOutputsEv"></span><span id="_CPPv2NK11trt_edgellm7plugins15AllReducePlugin12getNbOutputsEv"></span><span id="trt_edgellm::plugins::AllReducePlugin::getNbOutputsC"></span><span class="target" id="classtrt__edgellm_1_1plugins_1_1AllReducePlugin_1a2aafb73f9d0f33d570c2cb95f9c0b5f9"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">getNbOutputs</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><span class="w"> </span><span class="k"><span class="pre">override</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm7plugins15AllReducePlugin12getNbOutputsEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm7plugins15AllReducePlugin18getOutputDataTypesEPN8nvinfer18DataTypeE7int32_tPKN8nvinfer18DataTypeE7int32_t">
+<span id="_CPPv3NK11trt_edgellm7plugins15AllReducePlugin18getOutputDataTypesEPN8nvinfer18DataTypeE7int32_tPKN8nvinfer18DataTypeE7int32_t"></span><span id="_CPPv2NK11trt_edgellm7plugins15AllReducePlugin18getOutputDataTypesEPN8nvinfer18DataTypeE7int32_tPKN8nvinfer18DataTypeE7int32_t"></span><span id="trt_edgellm::plugins::AllReducePlugin::getOutputDataTypes__nvinfer1::DataTypeP.int32_t.nvinfer1::DataTypeCP.int32_tC"></span><span class="target" id="classtrt__edgellm_1_1plugins_1_1AllReducePlugin_1ac568a9f9bec434b651b0ee74e0aeb950"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">getOutputDataTypes</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">DataType</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">outputTypes</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">nbOutputs</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">DataType</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">inputTypes</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">nbInputs</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><span class="w"> </span><span class="k"><span class="pre">override</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm7plugins15AllReducePlugin18getOutputDataTypesEPN8nvinfer18DataTypeE7int32_tPKN8nvinfer18DataTypeE7int32_t" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7plugins15AllReducePlugin15getOutputShapesEPKN8nvinfer19DimsExprsE7int32_tPKN8nvinfer19DimsExprsE7int32_tPN8nvinfer19DimsExprsE7int32_tRN8nvinfer112IExprBuilderE">
+<span id="_CPPv3N11trt_edgellm7plugins15AllReducePlugin15getOutputShapesEPKN8nvinfer19DimsExprsE7int32_tPKN8nvinfer19DimsExprsE7int32_tPN8nvinfer19DimsExprsE7int32_tRN8nvinfer112IExprBuilderE"></span><span id="_CPPv2N11trt_edgellm7plugins15AllReducePlugin15getOutputShapesEPKN8nvinfer19DimsExprsE7int32_tPKN8nvinfer19DimsExprsE7int32_tPN8nvinfer19DimsExprsE7int32_tRN8nvinfer112IExprBuilderE"></span><span id="trt_edgellm::plugins::AllReducePlugin::getOutputShapes__nvinfer1::DimsExprsCP.int32_t.nvinfer1::DimsExprsCP.int32_t.nvinfer1::DimsExprsP.int32_t.nvinfer1::IExprBuilderR"></span><span class="target" id="classtrt__edgellm_1_1plugins_1_1AllReducePlugin_1a4f2dd4e47bd2e13cac8e93c0bf136a06"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">getOutputShapes</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">DimsExprs</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">inputs</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">nbInputs</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">DimsExprs</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">shapeInputs</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">nbShapeInputs</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">DimsExprs</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">outputs</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">nbOutputs</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">IExprBuilder</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">exprBuilder</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><span class="w"> </span><span class="k"><span class="pre">override</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm7plugins15AllReducePlugin15getOutputShapesEPKN8nvinfer19DimsExprsE7int32_tPKN8nvinfer19DimsExprsE7int32_tPN8nvinfer19DimsExprsE7int32_tRN8nvinfer112IExprBuilderE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7plugins15AllReducePlugin25supportsFormatCombinationE7int32_tPKN8nvinfer123DynamicPluginTensorDescE7int32_t7int32_t">
+<span id="_CPPv3N11trt_edgellm7plugins15AllReducePlugin25supportsFormatCombinationE7int32_tPKN8nvinfer123DynamicPluginTensorDescE7int32_t7int32_t"></span><span id="_CPPv2N11trt_edgellm7plugins15AllReducePlugin25supportsFormatCombinationE7int32_tPKN8nvinfer123DynamicPluginTensorDescE7int32_t7int32_t"></span><span id="trt_edgellm::plugins::AllReducePlugin::supportsFormatCombination__int32_t.nvinfer1::DynamicPluginTensorDescCP.int32_t.int32_t"></span><span class="target" id="classtrt__edgellm_1_1plugins_1_1AllReducePlugin_1a5f9b9f184e1de5556f71061993d41ddd"></span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">supportsFormatCombination</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">pos</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">DynamicPluginTensorDesc</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">inOut</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">nbInputs</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">nbOutputs</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><span class="w"> </span><span class="k"><span class="pre">override</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm7plugins15AllReducePlugin25supportsFormatCombinationE7int32_tPKN8nvinfer123DynamicPluginTensorDescE7int32_t7int32_t" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7plugins15AllReducePlugin15configurePluginEPKN8nvinfer123DynamicPluginTensorDescE7int32_tPKN8nvinfer123DynamicPluginTensorDescE7int32_t">
+<span id="_CPPv3N11trt_edgellm7plugins15AllReducePlugin15configurePluginEPKN8nvinfer123DynamicPluginTensorDescE7int32_tPKN8nvinfer123DynamicPluginTensorDescE7int32_t"></span><span id="_CPPv2N11trt_edgellm7plugins15AllReducePlugin15configurePluginEPKN8nvinfer123DynamicPluginTensorDescE7int32_tPKN8nvinfer123DynamicPluginTensorDescE7int32_t"></span><span id="trt_edgellm::plugins::AllReducePlugin::configurePlugin__nvinfer1::DynamicPluginTensorDescCP.int32_t.nvinfer1::DynamicPluginTensorDescCP.int32_t"></span><span class="target" id="classtrt__edgellm_1_1plugins_1_1AllReducePlugin_1a83769547e96bc3f2cd6138f8abb5f0b5"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">configurePlugin</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">DynamicPluginTensorDesc</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">in</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">nbInputs</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">DynamicPluginTensorDesc</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">out</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">nbOutputs</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><span class="w"> </span><span class="k"><span class="pre">override</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm7plugins15AllReducePlugin15configurePluginEPKN8nvinfer123DynamicPluginTensorDescE7int32_tPKN8nvinfer123DynamicPluginTensorDescE7int32_t" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm7plugins15AllReducePlugin16getWorkspaceSizeEPKN8nvinfer123DynamicPluginTensorDescE7int32_tPKN8nvinfer123DynamicPluginTensorDescE7int32_t">
+<span id="_CPPv3NK11trt_edgellm7plugins15AllReducePlugin16getWorkspaceSizeEPKN8nvinfer123DynamicPluginTensorDescE7int32_tPKN8nvinfer123DynamicPluginTensorDescE7int32_t"></span><span id="_CPPv2NK11trt_edgellm7plugins15AllReducePlugin16getWorkspaceSizeEPKN8nvinfer123DynamicPluginTensorDescE7int32_tPKN8nvinfer123DynamicPluginTensorDescE7int32_t"></span><span id="trt_edgellm::plugins::AllReducePlugin::getWorkspaceSize__nvinfer1::DynamicPluginTensorDescCP.int32_t.nvinfer1::DynamicPluginTensorDescCP.int32_tC"></span><span class="target" id="classtrt__edgellm_1_1plugins_1_1AllReducePlugin_1ab1dc6b7fab3f56f9588314020e03c420"></span><span class="n"><span class="pre">size_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">getWorkspaceSize</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">DynamicPluginTensorDesc</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">inputs</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">nbInputs</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">DynamicPluginTensorDesc</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">outputs</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">nbOutputs</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><span class="w"> </span><span class="k"><span class="pre">override</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm7plugins15AllReducePlugin16getWorkspaceSizeEPKN8nvinfer123DynamicPluginTensorDescE7int32_tPKN8nvinfer123DynamicPluginTensorDescE7int32_t" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+</div>
+<div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-ipluginv3oneruntime-methods">IPluginV3OneRuntime Methods</p>
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7plugins15AllReducePlugin7enqueueEPKN8nvinfer116PluginTensorDescEPKN8nvinfer116PluginTensorDescEPPCKvPPCvPv12cudaStream_t">
+<span id="_CPPv3N11trt_edgellm7plugins15AllReducePlugin7enqueueEPKN8nvinfer116PluginTensorDescEPKN8nvinfer116PluginTensorDescEPPCKvPPCvPv12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm7plugins15AllReducePlugin7enqueueEPKN8nvinfer116PluginTensorDescEPKN8nvinfer116PluginTensorDescEPPCKvPPCvPv12cudaStream_t"></span><span id="trt_edgellm::plugins::AllReducePlugin::enqueue__nvinfer1::PluginTensorDescCP.nvinfer1::PluginTensorDescCP.voidCPCP.voidPCP.voidP.cudaStream_t"></span><span class="target" id="classtrt__edgellm_1_1plugins_1_1AllReducePlugin_1a777c4dc9844e479b4b2fd634221d7a14"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">enqueue</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">PluginTensorDesc</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">inputDesc</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">PluginTensorDesc</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">outputDesc</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">inputs</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">outputs</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">workspace</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><span class="w"> </span><span class="k"><span class="pre">override</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm7plugins15AllReducePlugin7enqueueEPKN8nvinfer116PluginTensorDescEPKN8nvinfer116PluginTensorDescEPPCKvPPCvPv12cudaStream_t" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7plugins15AllReducePlugin13onShapeChangeEPKN8nvinfer116PluginTensorDescE7int32_tPKN8nvinfer116PluginTensorDescE7int32_t">
+<span id="_CPPv3N11trt_edgellm7plugins15AllReducePlugin13onShapeChangeEPKN8nvinfer116PluginTensorDescE7int32_tPKN8nvinfer116PluginTensorDescE7int32_t"></span><span id="_CPPv2N11trt_edgellm7plugins15AllReducePlugin13onShapeChangeEPKN8nvinfer116PluginTensorDescE7int32_tPKN8nvinfer116PluginTensorDescE7int32_t"></span><span id="trt_edgellm::plugins::AllReducePlugin::onShapeChange__nvinfer1::PluginTensorDescCP.int32_t.nvinfer1::PluginTensorDescCP.int32_t"></span><span class="target" id="classtrt__edgellm_1_1plugins_1_1AllReducePlugin_1aee7adec7420ae07b0e2175fee9ded56e"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">onShapeChange</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">PluginTensorDesc</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">in</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">nbInputs</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">PluginTensorDesc</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">out</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">nbOutputs</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><span class="w"> </span><span class="k"><span class="pre">override</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm7plugins15AllReducePlugin13onShapeChangeEPKN8nvinfer116PluginTensorDescE7int32_tPKN8nvinfer116PluginTensorDescE7int32_t" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7plugins15AllReducePlugin15attachToContextEPN8nvinfer122IPluginResourceContextE">
+<span id="_CPPv3N11trt_edgellm7plugins15AllReducePlugin15attachToContextEPN8nvinfer122IPluginResourceContextE"></span><span id="_CPPv2N11trt_edgellm7plugins15AllReducePlugin15attachToContextEPN8nvinfer122IPluginResourceContextE"></span><span id="trt_edgellm::plugins::AllReducePlugin::attachToContext__nvinfer1::IPluginResourceContextP"></span><span class="target" id="classtrt__edgellm_1_1plugins_1_1AllReducePlugin_1af9648df2a3a8682fe7ee555658130f85"></span><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">IPluginV3</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">attachToContext</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">IPluginResourceContext</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">context</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><span class="w"> </span><span class="k"><span class="pre">override</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm7plugins15AllReducePlugin15attachToContextEPN8nvinfer122IPluginResourceContextE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7plugins15AllReducePlugin20getFieldsToSerializeEv">
+<span id="_CPPv3N11trt_edgellm7plugins15AllReducePlugin20getFieldsToSerializeEv"></span><span id="_CPPv2N11trt_edgellm7plugins15AllReducePlugin20getFieldsToSerializeEv"></span><span id="trt_edgellm::plugins::AllReducePlugin::getFieldsToSerialize"></span><span class="target" id="classtrt__edgellm_1_1plugins_1_1AllReducePlugin_1a83c878d6f24f27cd7419d1c84a1a1c3f"></span><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">PluginFieldCollection</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">getFieldsToSerialize</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+</dl>
+
+<span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><span class="w"> </span><span class="k"><span class="pre">override</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm7plugins15AllReducePlugin20getFieldsToSerializeEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+</div>
+<div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-functions">Public Functions</p>
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7plugins15AllReducePlugin15AllReducePluginERKNSt6stringE7int32_t">
+<span id="_CPPv3N11trt_edgellm7plugins15AllReducePlugin15AllReducePluginERKNSt6stringE7int32_t"></span><span id="_CPPv2N11trt_edgellm7plugins15AllReducePlugin15AllReducePluginERKNSt6stringE7int32_t"></span><span id="trt_edgellm::plugins::AllReducePlugin::AllReducePlugin__ssCR.int32_t"></span><span class="target" id="classtrt__edgellm_1_1plugins_1_1AllReducePlugin_1a19b0e94b6093beba17832a2df0d98503"></span><span class="sig-name descname"><span class="n"><span class="pre">AllReducePlugin</span></span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">string</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">tpSize</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm7plugins15AllReducePlugin15AllReducePluginERKNSt6stringE7int32_t" title="Link to this definition">#</a><br /></dt>
+<dd><p>Constructor with TP configuration. </p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>name</strong> – <strong>[in]</strong> Plugin instance name </p></li>
+<li><p><strong>tpSize</strong> – <strong>[in]</strong> Tensor parallel world size </p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7plugins15AllReducePlugin15AllReducePluginERKNSt6stringEPKN8nvinfer121PluginFieldCollectionE">
+<span id="_CPPv3N11trt_edgellm7plugins15AllReducePlugin15AllReducePluginERKNSt6stringEPKN8nvinfer121PluginFieldCollectionE"></span><span id="_CPPv2N11trt_edgellm7plugins15AllReducePlugin15AllReducePluginERKNSt6stringEPKN8nvinfer121PluginFieldCollectionE"></span><span id="trt_edgellm::plugins::AllReducePlugin::AllReducePlugin__ssCR.nvinfer1::PluginFieldCollectionCP"></span><span class="target" id="classtrt__edgellm_1_1plugins_1_1AllReducePlugin_1ab953e674a233d457d6de3ee8640169c2"></span><span class="sig-name descname"><span class="n"><span class="pre">AllReducePlugin</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">string</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">name</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">PluginFieldCollection</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">fc</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm7plugins15AllReducePlugin15AllReducePluginERKNSt6stringEPKN8nvinfer121PluginFieldCollectionE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Constructor from TensorRT plugin fields. </p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>name</strong> – <strong>[in]</strong> Plugin instance name </p></li>
+<li><p><strong>fc</strong> – <strong>[in]</strong> Plugin field collection </p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7plugins15AllReducePlugin15AllReducePluginEv">
+<span id="_CPPv3N11trt_edgellm7plugins15AllReducePlugin15AllReducePluginEv"></span><span id="_CPPv2N11trt_edgellm7plugins15AllReducePlugin15AllReducePluginEv"></span><span id="trt_edgellm::plugins::AllReducePlugin::AllReducePlugin"></span><span class="target" id="classtrt__edgellm_1_1plugins_1_1AllReducePlugin_1a7dceb8645d806582160cf4716f1b17aa"></span><span class="sig-name descname"><span class="n"><span class="pre">AllReducePlugin</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="k"><span class="pre">delete</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm7plugins15AllReducePlugin15AllReducePluginEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7plugins15AllReducePlugin15AllReducePluginERK15AllReducePlugin">
+<span id="_CPPv3N11trt_edgellm7plugins15AllReducePlugin15AllReducePluginERK15AllReducePlugin"></span><span id="_CPPv2N11trt_edgellm7plugins15AllReducePlugin15AllReducePluginERK15AllReducePlugin"></span><span id="trt_edgellm::plugins::AllReducePlugin::AllReducePlugin__AllReducePluginCR"></span><span class="target" id="classtrt__edgellm_1_1plugins_1_1AllReducePlugin_1adc7a82050e3eb369a6bd8dbc2dbc9bce"></span><span class="sig-name descname"><span class="n"><span class="pre">AllReducePlugin</span></span></span><span class="sig-paren">(</span><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm7plugins15AllReducePlugin15AllReducePluginERK15AllReducePlugin" title="trt_edgellm::plugins::AllReducePlugin::AllReducePlugin"><span class="n"><span class="pre">AllReducePlugin</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="p"><span class="pre">&amp;</span></span></em><span class="sig-paren">)</span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="k"><span class="pre">delete</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm7plugins15AllReducePlugin15AllReducePluginERK15AllReducePlugin" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7plugins15AllReducePluginD0Ev">
+<span id="_CPPv3N11trt_edgellm7plugins15AllReducePluginD0Ev"></span><span id="_CPPv2N11trt_edgellm7plugins15AllReducePluginD0Ev"></span><span id="trt_edgellm::plugins::AllReducePlugin::~AllReducePlugin"></span><span class="target" id="classtrt__edgellm_1_1plugins_1_1AllReducePlugin_1a4d8069d525fc817efaf106cd63898d9a"></span><span class="sig-name descname"><span class="n"><span class="pre">~AllReducePlugin</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">override</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm7plugins15AllReducePluginD0Ev" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7plugins15AllReducePlugin18setPluginNamespaceEPKc">
+<span id="_CPPv3N11trt_edgellm7plugins15AllReducePlugin18setPluginNamespaceEPKc"></span><span id="_CPPv2N11trt_edgellm7plugins15AllReducePlugin18setPluginNamespaceEPKc"></span><span id="trt_edgellm::plugins::AllReducePlugin::setPluginNamespace__cCP"></span><span class="target" id="classtrt__edgellm_1_1plugins_1_1AllReducePlugin_1a739fbb0d3684d347a4538a2eb3a866ac"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">setPluginNamespace</span></span></span><span class="sig-paren">(</span><em class="sig-param"><span class="kt"><span class="pre">char</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">pluginNamespace</span></span></em><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm7plugins15AllReducePlugin18setPluginNamespaceEPKc" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+</div>
+</dd></dl>
+
+<dl class="cpp class">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7plugins22AllReducePluginCreatorE">
+<span id="_CPPv3N11trt_edgellm7plugins22AllReducePluginCreatorE"></span><span id="_CPPv2N11trt_edgellm7plugins22AllReducePluginCreatorE"></span><span id="trt_edgellm::plugins::AllReducePluginCreator"></span><span class="target" id="classtrt__edgellm_1_1plugins_1_1AllReducePluginCreator"></span><span class="k"><span class="pre">class</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">AllReducePluginCreator</span></span></span><span class="w"> </span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="k"><span class="pre">public</span></span><span class="w"> </span><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">IPluginCreatorV3One</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm7plugins22AllReducePluginCreatorE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Factory class for creating <a class="reference internal" href="#classtrt__edgellm_1_1plugins_1_1AllReducePlugin"><span class="std std-ref">AllReducePlugin</span></a> instances. </p>
+<div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-functions">Public Functions</p>
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7plugins22AllReducePluginCreator22AllReducePluginCreatorEv">
+<span id="_CPPv3N11trt_edgellm7plugins22AllReducePluginCreator22AllReducePluginCreatorEv"></span><span id="_CPPv2N11trt_edgellm7plugins22AllReducePluginCreator22AllReducePluginCreatorEv"></span><span id="trt_edgellm::plugins::AllReducePluginCreator::AllReducePluginCreator"></span><span class="target" id="classtrt__edgellm_1_1plugins_1_1AllReducePluginCreator_1ac870a4e0c64f6dc5c745387c65c3c8a2"></span><span class="sig-name descname"><span class="n"><span class="pre">AllReducePluginCreator</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm7plugins22AllReducePluginCreator22AllReducePluginCreatorEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7plugins22AllReducePluginCreatorD0Ev">
+<span id="_CPPv3N11trt_edgellm7plugins22AllReducePluginCreatorD0Ev"></span><span id="_CPPv2N11trt_edgellm7plugins22AllReducePluginCreatorD0Ev"></span><span id="trt_edgellm::plugins::AllReducePluginCreator::~AllReducePluginCreator"></span><span class="target" id="classtrt__edgellm_1_1plugins_1_1AllReducePluginCreator_1a5d5dffd371ef7aaf77a882e24d5336aa"></span><span class="sig-name descname"><span class="n"><span class="pre">~AllReducePluginCreator</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">override</span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="k"><span class="pre">default</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm7plugins22AllReducePluginCreatorD0Ev" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm7plugins22AllReducePluginCreator13getPluginNameEv">
+<span id="_CPPv3NK11trt_edgellm7plugins22AllReducePluginCreator13getPluginNameEv"></span><span id="_CPPv2NK11trt_edgellm7plugins22AllReducePluginCreator13getPluginNameEv"></span><span id="trt_edgellm::plugins::AllReducePluginCreator::getPluginNameC"></span><span class="target" id="classtrt__edgellm_1_1plugins_1_1AllReducePluginCreator_1acf6c6dbb2144407e40dfdebec5737141"></span><span class="kt"><span class="pre">char</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">getPluginName</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><span class="w"> </span><span class="k"><span class="pre">override</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm7plugins22AllReducePluginCreator13getPluginNameEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7plugins22AllReducePluginCreator13getFieldNamesEv">
+<span id="_CPPv3N11trt_edgellm7plugins22AllReducePluginCreator13getFieldNamesEv"></span><span id="_CPPv2N11trt_edgellm7plugins22AllReducePluginCreator13getFieldNamesEv"></span><span id="trt_edgellm::plugins::AllReducePluginCreator::getFieldNames"></span><span class="target" id="classtrt__edgellm_1_1plugins_1_1AllReducePluginCreator_1a8a429789c5447f93d0752e6b774ffce9"></span><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">PluginFieldCollection</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">getFieldNames</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+</dl>
+
+<span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><span class="w"> </span><span class="k"><span class="pre">override</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm7plugins22AllReducePluginCreator13getFieldNamesEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7plugins22AllReducePluginCreator18setPluginNamespaceEPKc">
+<span id="_CPPv3N11trt_edgellm7plugins22AllReducePluginCreator18setPluginNamespaceEPKc"></span><span id="_CPPv2N11trt_edgellm7plugins22AllReducePluginCreator18setPluginNamespaceEPKc"></span><span id="trt_edgellm::plugins::AllReducePluginCreator::setPluginNamespace__cCP"></span><span class="target" id="classtrt__edgellm_1_1plugins_1_1AllReducePluginCreator_1a913ee3f040371569c198299895d5a440"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">setPluginNamespace</span></span></span><span class="sig-paren">(</span><em class="sig-param"><span class="kt"><span class="pre">char</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">pluginNamespace</span></span></em><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm7plugins22AllReducePluginCreator18setPluginNamespaceEPKc" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm7plugins22AllReducePluginCreator18getPluginNamespaceEv">
+<span id="_CPPv3NK11trt_edgellm7plugins22AllReducePluginCreator18getPluginNamespaceEv"></span><span id="_CPPv2NK11trt_edgellm7plugins22AllReducePluginCreator18getPluginNamespaceEv"></span><span id="trt_edgellm::plugins::AllReducePluginCreator::getPluginNamespaceC"></span><span class="target" id="classtrt__edgellm_1_1plugins_1_1AllReducePluginCreator_1a6512e36224439249924da359a0fa1a2f"></span><span class="kt"><span class="pre">char</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">getPluginNamespace</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><span class="w"> </span><span class="k"><span class="pre">override</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm7plugins22AllReducePluginCreator18getPluginNamespaceEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm7plugins22AllReducePluginCreator16getPluginVersionEv">
+<span id="_CPPv3NK11trt_edgellm7plugins22AllReducePluginCreator16getPluginVersionEv"></span><span id="_CPPv2NK11trt_edgellm7plugins22AllReducePluginCreator16getPluginVersionEv"></span><span id="trt_edgellm::plugins::AllReducePluginCreator::getPluginVersionC"></span><span class="target" id="classtrt__edgellm_1_1plugins_1_1AllReducePluginCreator_1a0a24226256b9cea88f66ea8e4beecc24"></span><span class="kt"><span class="pre">char</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">getPluginVersion</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><span class="w"> </span><span class="k"><span class="pre">override</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm7plugins22AllReducePluginCreator16getPluginVersionEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7plugins22AllReducePluginCreator12createPluginEPKcPKN8nvinfer121PluginFieldCollectionEN8nvinfer113TensorRTPhaseE">
+<span id="_CPPv3N11trt_edgellm7plugins22AllReducePluginCreator12createPluginEPKcPKN8nvinfer121PluginFieldCollectionEN8nvinfer113TensorRTPhaseE"></span><span id="_CPPv2N11trt_edgellm7plugins22AllReducePluginCreator12createPluginEPKcPKN8nvinfer121PluginFieldCollectionEN8nvinfer113TensorRTPhaseE"></span><span id="trt_edgellm::plugins::AllReducePluginCreator::createPlugin__cCP.nvinfer1::PluginFieldCollectionCP.nvinfer1::TensorRTPhase"></span><span class="target" id="classtrt__edgellm_1_1plugins_1_1AllReducePluginCreator_1a703a47da3a6aafc5399b65aa9ec878e0"></span><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">IPluginV3</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">createPlugin</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><span class="kt"><span class="pre">char</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">name</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">PluginFieldCollection</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">fc</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">TensorRTPhase</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">phase</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><span class="w"> </span><span class="k"><span class="pre">override</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm7plugins22AllReducePluginCreator12createPluginEPKcPKN8nvinfer121PluginFieldCollectionEN8nvinfer113TensorRTPhaseE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+</div>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7plugins34registerNcclCommForAllReducePluginEiPvPv">
+<span id="_CPPv3N11trt_edgellm7plugins34registerNcclCommForAllReducePluginEiPvPv"></span><span id="_CPPv2N11trt_edgellm7plugins34registerNcclCommForAllReducePluginEiPvPv"></span><span id="trt_edgellm::plugins::registerNcclCommForAllReducePlugin__i.voidP.voidP"></span><span class="target" id="allReducePlugin_8cpp_1a4d52fe9237e69632d41cfa8178f3a05c"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">plugins</span></span><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">registerNcclCommForAllReducePlugin</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><span class="kt"><span class="pre">int</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">deviceId</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">ncclComm</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">ncclAllReduceFunc</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm7plugins34registerNcclCommForAllReducePluginEiPvPv" title="Link to this definition">#</a><br /></dt>
+<dd><p>Register NCCL communicator for use by <a class="reference internal" href="#classtrt__edgellm_1_1plugins_1_1AllReducePlugin"><span class="std std-ref">AllReducePlugin</span></a> instances. </p>
+<p>Must be called by the runtime after NCCL initialization and before any TRT engine execution that contains <a class="reference internal" href="#classtrt__edgellm_1_1plugins_1_1AllReducePlugin"><span class="std std-ref">AllReducePlugin</span></a> nodes. This avoids linking the plugin shared library against the runtime library.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>deviceId</strong> – CUDA device ID this communicator is for </p></li>
+<li><p><strong>ncclComm</strong> – NCCL communicator handle (ncclComm_t) </p></li>
+<li><p><strong>ncclAllReduceFunc</strong> – Pointer to ncclAllReduce function </p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7plugins28getNcclRegistrationForDeviceEiPPvPPv">
+<span id="_CPPv3N11trt_edgellm7plugins28getNcclRegistrationForDeviceEiPPvPPv"></span><span id="_CPPv2N11trt_edgellm7plugins28getNcclRegistrationForDeviceEiPPvPPv"></span><span id="trt_edgellm::plugins::getNcclRegistrationForDevice__i.voidPP.voidPP"></span><span class="target" id="allReducePlugin_8cpp_1a7bdf4c3ab74c08d04d7c111a34fe6f3a"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">plugins</span></span><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">getNcclRegistrationForDevice</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><span class="kt"><span class="pre">int</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">deviceId</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">ncclComm</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">ncclAllReduceFunc</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm7plugins28getNcclRegistrationForDeviceEiPPvPPv" title="Link to this definition">#</a><br /></dt>
+<dd><p>Snapshot the NCCL communicator and AllReduce function for one CUDA device. </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7plugins20getNcclCommForDeviceEi">
+<span id="_CPPv3N11trt_edgellm7plugins20getNcclCommForDeviceEi"></span><span id="_CPPv2N11trt_edgellm7plugins20getNcclCommForDeviceEi"></span><span id="trt_edgellm::plugins::getNcclCommForDevice__i"></span><span class="target" id="allReducePlugin_8cpp_1a3fa777c7e072d66700981f87ac27ba83"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">plugins</span></span><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">getNcclCommForDevice</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><span class="kt"><span class="pre">int</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">deviceId</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm7plugins20getNcclCommForDeviceEi" title="Link to this definition">#</a><br /></dt>
+<dd><p>Get the NCCL communicator for a given CUDA device. </p>
+<dl class="field-list simple">
+<dt class="field-odd">Returns<span class="colon">:</span></dt>
+<dd class="field-odd"><p>ncclComm_t handle, or nullptr if not registered </p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7plugins20getNcclAllReduceFuncEv">
+<span id="_CPPv3N11trt_edgellm7plugins20getNcclAllReduceFuncEv"></span><span id="_CPPv2N11trt_edgellm7plugins20getNcclAllReduceFuncEv"></span><span id="trt_edgellm::plugins::getNcclAllReduceFunc"></span><span class="target" id="allReducePlugin_8cpp_1a84c2b4f19fea30a7bc3f1e4ddd465165"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">plugins</span></span><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">getNcclAllReduceFunc</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm7plugins20getNcclAllReduceFuncEv" title="Link to this definition">#</a><br /></dt>
+<dd><p>Get the registered NCCL AllReduce function pointer. </p>
+</dd></dl>
+
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="index.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Plugins Module</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="attentionPlugin.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Attention Plugin</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+
+
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7plugins15AllReducePluginE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::plugins::AllReducePlugin</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7plugins15AllReducePlugin22getCapabilityInterfaceEN8nvinfer120PluginCapabilityTypeE"><code class="docutils literal notranslate"><span class="pre">getCapabilityInterface()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7plugins15AllReducePlugin5cloneEv"><code class="docutils literal notranslate"><span class="pre">clone()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm7plugins15AllReducePlugin13getPluginNameEv"><code class="docutils literal notranslate"><span class="pre">getPluginName()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm7plugins15AllReducePlugin18getPluginNamespaceEv"><code class="docutils literal notranslate"><span class="pre">getPluginNamespace()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm7plugins15AllReducePlugin16getPluginVersionEv"><code class="docutils literal notranslate"><span class="pre">getPluginVersion()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm7plugins15AllReducePlugin12getNbOutputsEv"><code class="docutils literal notranslate"><span class="pre">getNbOutputs()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm7plugins15AllReducePlugin18getOutputDataTypesEPN8nvinfer18DataTypeE7int32_tPKN8nvinfer18DataTypeE7int32_t"><code class="docutils literal notranslate"><span class="pre">getOutputDataTypes()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7plugins15AllReducePlugin15getOutputShapesEPKN8nvinfer19DimsExprsE7int32_tPKN8nvinfer19DimsExprsE7int32_tPN8nvinfer19DimsExprsE7int32_tRN8nvinfer112IExprBuilderE"><code class="docutils literal notranslate"><span class="pre">getOutputShapes()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7plugins15AllReducePlugin25supportsFormatCombinationE7int32_tPKN8nvinfer123DynamicPluginTensorDescE7int32_t7int32_t"><code class="docutils literal notranslate"><span class="pre">supportsFormatCombination()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7plugins15AllReducePlugin15configurePluginEPKN8nvinfer123DynamicPluginTensorDescE7int32_tPKN8nvinfer123DynamicPluginTensorDescE7int32_t"><code class="docutils literal notranslate"><span class="pre">configurePlugin()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm7plugins15AllReducePlugin16getWorkspaceSizeEPKN8nvinfer123DynamicPluginTensorDescE7int32_tPKN8nvinfer123DynamicPluginTensorDescE7int32_t"><code class="docutils literal notranslate"><span class="pre">getWorkspaceSize()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7plugins15AllReducePlugin7enqueueEPKN8nvinfer116PluginTensorDescEPKN8nvinfer116PluginTensorDescEPPCKvPPCvPv12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">enqueue()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7plugins15AllReducePlugin13onShapeChangeEPKN8nvinfer116PluginTensorDescE7int32_tPKN8nvinfer116PluginTensorDescE7int32_t"><code class="docutils literal notranslate"><span class="pre">onShapeChange()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7plugins15AllReducePlugin15attachToContextEPN8nvinfer122IPluginResourceContextE"><code class="docutils literal notranslate"><span class="pre">attachToContext()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7plugins15AllReducePlugin20getFieldsToSerializeEv"><code class="docutils literal notranslate"><span class="pre">getFieldsToSerialize()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7plugins15AllReducePlugin15AllReducePluginERKNSt6stringE7int32_t"><code class="docutils literal notranslate"><span class="pre">AllReducePlugin()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7plugins15AllReducePlugin15AllReducePluginERKNSt6stringEPKN8nvinfer121PluginFieldCollectionE"><code class="docutils literal notranslate"><span class="pre">AllReducePlugin()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7plugins15AllReducePlugin15AllReducePluginEv"><code class="docutils literal notranslate"><span class="pre">AllReducePlugin()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7plugins15AllReducePlugin15AllReducePluginERK15AllReducePlugin"><code class="docutils literal notranslate"><span class="pre">AllReducePlugin()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7plugins15AllReducePluginD0Ev"><code class="docutils literal notranslate"><span class="pre">~AllReducePlugin()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7plugins15AllReducePlugin18setPluginNamespaceEPKc"><code class="docutils literal notranslate"><span class="pre">setPluginNamespace()</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7plugins22AllReducePluginCreatorE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::plugins::AllReducePluginCreator</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7plugins22AllReducePluginCreator22AllReducePluginCreatorEv"><code class="docutils literal notranslate"><span class="pre">AllReducePluginCreator()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7plugins22AllReducePluginCreatorD0Ev"><code class="docutils literal notranslate"><span class="pre">~AllReducePluginCreator()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm7plugins22AllReducePluginCreator13getPluginNameEv"><code class="docutils literal notranslate"><span class="pre">getPluginName()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7plugins22AllReducePluginCreator13getFieldNamesEv"><code class="docutils literal notranslate"><span class="pre">getFieldNames()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7plugins22AllReducePluginCreator18setPluginNamespaceEPKc"><code class="docutils literal notranslate"><span class="pre">setPluginNamespace()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm7plugins22AllReducePluginCreator18getPluginNamespaceEv"><code class="docutils literal notranslate"><span class="pre">getPluginNamespace()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm7plugins22AllReducePluginCreator16getPluginVersionEv"><code class="docutils literal notranslate"><span class="pre">getPluginVersion()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7plugins22AllReducePluginCreator12createPluginEPKcPKN8nvinfer121PluginFieldCollectionEN8nvinfer113TensorRTPhaseE"><code class="docutils literal notranslate"><span class="pre">createPlugin()</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7plugins34registerNcclCommForAllReducePluginEiPvPv"><code class="docutils literal notranslate"><span class="pre">registerNcclCommForAllReducePlugin()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7plugins28getNcclRegistrationForDeviceEiPPvPPv"><code class="docutils literal notranslate"><span class="pre">getNcclRegistrationForDevice()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7plugins20getNcclCommForDeviceEi"><code class="docutils literal notranslate"><span class="pre">getNcclCommForDevice()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7plugins20getNcclAllReduceFuncEv"><code class="docutils literal notranslate"><span class="pre">getNcclAllReduceFunc()</span></code></a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../../_static/scripts/bootstrap.js?digest=a95f357e85573c9b56d5"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=a95f357e85573c9b56d5"></script>
+
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+<a class="footer-brand logo" href="https://www.nvidia.com">
+  <img src="../../_static/nvidia-logo-horiz-rgb-1c-blk-for-screen.svg" class="logo__image only-light" alt="NVIDIA"/>
+  <img src="../../_static/nvidia-logo-horiz-rgb-1c-wht-for-screen.svg" class="logo__image only-dark" alt="NVIDIA"/>
+</a></div>
+      
+        <div class="footer-item">
+
+<div class="footer-links">
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/about-nvidia/privacy-policy/">Privacy Policy</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/about-nvidia/privacy-center/">Your Privacy Choices</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/about-nvidia/terms-of-service/">Terms of Service</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/about-nvidia/accessibility/">Accessibility</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/about-nvidia/company-policies/">Corporate Policies</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/product-security/">Product Security</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/contact/">Contact</a>
+  
+  
+  
+</div>
+</div>
+      
+        <div class="footer-item">
+
+
+
+
+  <p class="copyright">
+    
+      Copyright © 2025, Nvidia.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+<div class="extra_footer">
+  
+  <p>Last updated on July 22, 2026.</p>
+  
+  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/f98267f">f98267f</a>.</p>
+  
+</div></div>
+      
+    </div>
+  
+  
+  
+</div>
+
+  </footer>
+  </body>
+</html>

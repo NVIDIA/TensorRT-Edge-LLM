@@ -1,6 +1,6 @@
 Build Layout
 ============
 
-.. doxygenfile:: kernels/moe/fp4SupportKernels/buildLayout.h
+.. doxygenfunction:: trt_edgellm::kernel::buildLayoutGpu
    :project: TensorRT Edge-LLM
 

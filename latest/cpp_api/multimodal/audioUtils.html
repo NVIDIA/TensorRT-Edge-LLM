@@ -47,8 +47,8 @@
 
 
     <script src="../../_static/documentation_options.js?v=5929fcd5"></script>
-    <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
-    <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
     <script src="../../_static/copybutton.js?v=65e89d2a"></script>
     <script>let toggleHintShow = 'Click to show';</script>
@@ -56,11 +56,12 @@
     <script>let toggleOpenOnPrint = 'true';</script>
     <script src="../../_static/togglebutton.js?v=b8b12719"></script>
     <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
+    <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'cpp_api/multimodal/audioUtils';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.19.0';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = './_static/switcher.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.9.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.9.1';
         DOCUMENTATION_OPTIONS.show_version_warning_banner =
             false;
         </script>
@@ -76,7 +77,7 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.9.0" />
+  <meta name="docsearch:version" content="0.9.1" />
   
     
     <script src="../../_static/searchtools.js"></script>
@@ -395,11 +396,13 @@
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Customization</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/customization-guide.html">Customization Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/calibration-datasets.html">Calibration Dataset Customization</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/tensorrt-plugins.html">TensorRT Plugins Guide</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Testing</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/code-coverage.html">Code Coverage with SonarQube</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/few-layer-validation.html">Few-Layer Numeric Validation</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">APIs</span></p>
 <ul class="current nav bd-sidenav">
@@ -443,31 +446,36 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../kernels/index.html">Kernels Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/NvFP4MoEUtils.html">Nv Fp4 Mo E Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/applyRopeWriteKV.html">Apply Rope Write KV</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/audioFbankKernels.html">Audio Fbank Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/batchEvictKernels.html">Batch Evict Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/buildLayout.html">Build Layout</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/causalConv1d.html">Causal Conv1d</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/common.html">Common</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/contextFMHARunner.html">Context FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/conversion.html">Conversion</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslF16MoeRunner.html">Cute Dsl F16 Moe Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslFFPARunner.html">Cute Dsl Ffpa Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslFMHARunner.html">Cute Dsl FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGDNRunner.html">Cute Dsl Gdn Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGemmNvFp4Runner.html">Cute Dsl GEMM Nv Fp4 Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGemmRunner.html">Cute Dsl GEMM Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslNvfp4MoeRunner.html">Cute Dsl Nvfp4 Moe Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslNvfp4MoeSm110Runner.html">Cute Dsl Nvfp4 Moe Sm110 Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslSSDRunner.html">Cute Dsl Ssd Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/ddtreeKernels.html">Ddtree Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/decoderXQARunner.html">Decoder XQA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/dequant.html">Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/dequantize.html">Dequantize</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../kernels/dflashAcceptKernels.html">Dflash Accept Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/dflashRuntimeKernels.html">Dflash Runtime Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/eagleAcceptKernels.html">EAGLE Accept Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/eagleUtilKernels.html">EAGLE Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/embeddingKernels.html">Embedding Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/f16MoeSupportKernels.html">F16 Moe Support Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/fmhaParams_v2.html">FMHA Params V2</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/fp4Quantize.html">Fp4 Quantize</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/gdnKernelUtils.html">Gdn Kernel Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/gemma4AudioAttention.html">Gemma4 Audio Attention</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/gemma4MTPRuntimeKernels.html">Gemma4 Mtp Runtime Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/imageUtilKernels.html">Image Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/initializeCosSinCache.html">Initialize Cos Sin Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/int4GroupwiseGemm.html">Int4 Groupwise GEMM</a></li>
@@ -482,13 +490,16 @@
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeAlignSumKernels.html">Moe Align Sum Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeMarlin.html">Moe Marlin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeMarlinIndicesKernels.html">Moe Marlin Indices Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moePerExpertScaleKernels.html">Moe Per Expert Scale Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeSigmoidGroupTopkKernels.html">Moe Sigmoid Group Topk Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeTopkSoftmaxKernels.html">Moe Topk Softmax Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/mtpStateScatterKernels.html">Mtp State Scatter Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoeTypes.html">Nvfp4 Moe Types</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4_dequant.html">Nvfp4 Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4_tensor.html">Nvfp4 Tensor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/scaleConvert.html">Scale Convert</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/selectiveStateUpdate.html">Selective State Update</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/speculativeKernelsUtils.html">Speculative Kernels Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/ssdVarlenMetadata.html">Ssd Varlen Metadata</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/talkerMLPKernels.html">Talker Mlp Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/utilKernels.html">Util Kernels</a></li>
@@ -499,6 +510,9 @@
 <li class="toctree-l3"><a class="reference internal" href="audioRunner.html">Audio Runner</a></li>
 <li class="toctree-l3 current active"><a class="current reference internal" href="#">Audio Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="code2WavRunner.html">Code2 Wav Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="gemma4AudioRunner.html">Gemma4 Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="gemma4UnifiedAudioRunner.html">Gemma4 Unified Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="gemma4UnifiedVisionRunner.html">Gemma4 Unified Vision Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="gemma4ViTRunner.html">Gemma4 ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="imageUtils.html">Image Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="internViTRunner.html">Intern ViT Runner</a></li>
@@ -507,14 +521,21 @@
 <li class="toctree-l3"><a class="reference internal" href="nemotronOmniAudioRunner.html">Nemotron Omni Audio Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="nemotronOmniViTRunner.html">Nemotron Omni ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="phi4mmViTRunner.html">Phi4mm ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="qwen25vlViTRunner.html">Qwen25vl ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="qwen3omniViTRunner.html">Qwen3omni ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="qwen3vlViTRunner.html">Qwen3vl ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="qwenViTRunner.html">Qwen ViT Runner</a></li>
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../plugins/index.html">Plugins Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/allReducePlugin.html">All Reduce Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/attentionPlugin.html">Attention Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/causalConv1dPlugin.html">Causal Conv1d Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/dflashTargetKVCacheUpdatePlugin.html">Dflash Target KV Cache Update Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/fp16MoePlugin.html">Fp16 Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/fusedNvfp4GemmAllReducePlugin.html">Fused Nvfp4 GEMM All Reduce Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/gatedDeltaNetPlugin.html">Gated Delta Net Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/gemma4AudioAttentionPlugin.html">Gemma4 Audio Attention Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/int4GroupwiseGemmPlugin.html">Int4 Groupwise GEMM Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/int4MoePlugin.html">Int4 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/mambaPlugin.html">Mamba Plugin</a></li>
@@ -535,24 +556,29 @@
 <li class="toctree-l3"><a class="reference internal" href="../runtime/audioLoader.html">Audio Loader</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/audioUtils.html">Audio Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/decoderRegistry.html">Decoder Registry</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/decoderUtils.html">Decoder Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/decodingInferenceContext.html">Decoding Inference Context</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/decodingStrategy.html">Decoding Strategy</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/deepstackBinding.html">Deepstack Binding</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/deploymentConfig.html">Deployment Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/dflashDecodeUtils.html">Dflash Decode Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/dflashDecoder.html">Dflash Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/eagleDecoder.html">EAGLE Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/embeddingPreprocessor.html">Embedding Preprocessor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/engineExecutor.html">Engine Executor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/externalWeightManager.html">External Weight Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/gemma4EmbeddingPreprocessor.html">Gemma4 Embedding Preprocessor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/gemma4MTPDecoder.html">Gemma4 Mtp Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/hybridCacheManager.html">Hybrid Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/imageUtils.html">Image Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/inferenceDims.html">Inference Dims</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/inferencePhase.html">Inference Phase</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/kvCacheManager.html">KV Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/layerDebugger.html">Layer Debugger</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/llmEngineConfig.html">LLM Engine Config</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/llmInferenceRuntime.html">LLM Inference Runtime</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/llmRuntimeUtils.html">LLM Runtime Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/logitBias.html">Logit Bias</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/loraManager.html">Lora Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/mambaCacheManager.html">Mamba Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/melSpectrogram.html">Mel Spectrogram</a></li>
@@ -562,7 +588,6 @@
 <li class="toctree-l3"><a class="reference internal" href="../runtime/registryBuilder.html">Registry Builder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/ropeCache.html">Rope Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/sharedResources.html">Shared Resources</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../runtime/specDecodeUtils.html">Spec Decode Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/stepPreparer.html">Step Preparer</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/streaming.html">Streaming</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/systemPromptKVCache.html">System Prompt KV Cache</a></li>
@@ -659,7 +684,16 @@
 <dd><dl class="cpp type">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10audioUtilsE">
 <span id="_CPPv3N11trt_edgellm2rt10audioUtilsE"></span><span id="_CPPv2N11trt_edgellm2rt10audioUtilsE"></span><span id="trt_edgellm::rt::audioUtils"></span><span class="target" id="namespacetrt__edgellm_1_1rt_1_1audioUtils"></span><span class="k"><span class="pre">namespace</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">audioUtils</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10audioUtilsE" title="Link to this definition">#</a><br /></dt>
-<dd><dl class="cpp struct">
+<dd><div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-variables">Variables</p>
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10audioUtils18kParakeetZScoreEpsE">
+<span id="_CPPv3N11trt_edgellm2rt10audioUtils18kParakeetZScoreEpsE"></span><span id="_CPPv2N11trt_edgellm2rt10audioUtils18kParakeetZScoreEpsE"></span><span id="trt_edgellm::rt::audioUtils::kParakeetZScoreEps__float"></span><span class="target" id="multimodal_2audioUtils_8h_1ad54f0d698134b50cf11420b50d1963cf"></span><span class="kt"><span class="pre">float</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">kParakeetZScoreEps</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="m"><span class="pre">1e-5f</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10audioUtils18kParakeetZScoreEpsE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Per-feature z-score epsilon for the parakeet log-mel normalise (HF ParakeetFeatureExtractor norm_eps == 1e-5). Matches the CPU MelExtractor’s per-feature epsilon (runtime/melSpectrogram.cpp). </p>
+</dd></dl>
+
+</div>
+<dl class="cpp struct">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10audioUtils9ChunkInfoE">
 <span id="_CPPv3N11trt_edgellm2rt10audioUtils9ChunkInfoE"></span><span id="_CPPv2N11trt_edgellm2rt10audioUtils9ChunkInfoE"></span><span id="trt_edgellm::rt::audioUtils::ChunkInfo"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audioUtils_1_1ChunkInfo"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ChunkInfo</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10audioUtils9ChunkInfoE" title="Link to this definition">#</a><br /></dt>
 <dd><div class="docutils container">
@@ -686,6 +720,120 @@
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10audioUtils9ChunkInfo14maxChunkLengthE">
 <span id="_CPPv3N11trt_edgellm2rt10audioUtils9ChunkInfo14maxChunkLengthE"></span><span id="_CPPv2N11trt_edgellm2rt10audioUtils9ChunkInfo14maxChunkLengthE"></span><span id="trt_edgellm::rt::audioUtils::ChunkInfo::maxChunkLength__int64_t"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audioUtils_1_1ChunkInfo_1a3a5787994646a1c140953b8e7f1fecaa"></span><span class="n"><span class="pre">int64_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">maxChunkLength</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10audioUtils9ChunkInfo14maxChunkLengthE" title="Link to this definition">#</a><br /></dt>
 <dd></dd></dl>
+
+</div>
+</dd></dl>
+
+<dl class="cpp struct">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeetE">
+<span id="_CPPv3N11trt_edgellm2rt10audioUtils22FbankResourcesParakeetE"></span><span id="_CPPv2N11trt_edgellm2rt10audioUtils22FbankResourcesParakeetE"></span><span id="trt_edgellm::rt::audioUtils::FbankResourcesParakeet"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audioUtils_1_1FbankResourcesParakeet"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">FbankResourcesParakeet</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeetE" title="Link to this definition">#</a><br /></dt>
+<dd><div class="docutils container">
+<em>#include &lt;audioUtils.h&gt;</em></div>
+<p>Persistent parakeet fbank resources, built once by NemotronOmniAudioRunner::initFbankResources and reused across clips. Every device tensor is allocated exactly once — the weight/table tensors at their natural shapes, the workspace below at the engine kMAX bound; per-clip steady state performs no device allocation — only a capacity-checked reshape of the workspace.</p>
+<p>The scalar STFT/mel params are populated from the bound CPU MelExtractor’s MelExtractorConfig (single source of truth), except normEps, which is not a MelExtractorConfig field and comes from kParakeetZScoreEps above. initFbankResources validates the config is parakeet-spec before filling these. </p>
+<div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-members">Public Members</p>
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet19melFilterFp16KmajorE">
+<span id="_CPPv3N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet19melFilterFp16KmajorE"></span><span id="_CPPv2N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet19melFilterFp16KmajorE"></span><span id="trt_edgellm::rt::audioUtils::FbankResourcesParakeet::melFilterFp16Kmajor__rt::Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audioUtils_1_1FbankResourcesParakeet_1a4757db1bbdccd8bf0d16e0c4ffaca6c0"></span><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">melFilterFp16Kmajor</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet19melFilterFp16KmajorE" title="Link to this definition">#</a><br /></dt>
+<dd><p>[nMel, round_up(nFreq,16)] Half — Slaney weights, K-padded </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet9windowF32E">
+<span id="_CPPv3N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet9windowF32E"></span><span id="_CPPv2N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet9windowF32E"></span><span id="trt_edgellm::rt::audioUtils::FbankResourcesParakeet::windowF32__rt::Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audioUtils_1_1FbankResourcesParakeet_1a83a30aded006c538bff9f8a50930c9b7"></span><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">windowF32</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet9windowF32E" title="Link to this definition">#</a><br /></dt>
+<dd><p>[nFft] Float — symmetric Hann (win_length) centered in nFft </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet10fftTwiddleE">
+<span id="_CPPv3N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet10fftTwiddleE"></span><span id="_CPPv2N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet10fftTwiddleE"></span><span id="trt_edgellm::rt::audioUtils::FbankResourcesParakeet::fftTwiddle__rt::Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audioUtils_1_1FbankResourcesParakeet_1ae2748a97f04e2cd0d02c0a5d99b3b74e"></span><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">fftTwiddle</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet10fftTwiddleE" title="Link to this definition">#</a><br /></dt>
+<dd><p>[nFft, 2] Float — outer-stage W_512^k table </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet9framedF32E">
+<span id="_CPPv3N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet9framedF32E"></span><span id="_CPPv2N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet9framedF32E"></span><span id="trt_edgellm::rt::audioUtils::FbankResourcesParakeet::framedF32__rt::Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audioUtils_1_1FbankResourcesParakeet_1a20accd1d79bd1354e59067e5ff4b3936"></span><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">framedF32</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet9framedF32E" title="Link to this definition">#</a><br /></dt>
+<dd><p>[T_out, nFft] Float </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet7magFp16E">
+<span id="_CPPv3N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet7magFp16E"></span><span id="_CPPv2N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet7magFp16E"></span><span id="trt_edgellm::rt::audioUtils::FbankResourcesParakeet::magFp16__rt::Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audioUtils_1_1FbankResourcesParakeet_1a2636356c8091ba8d269a07a69290fc0e"></span><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">magFp16</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet7magFp16E" title="Link to this definition">#</a><br /></dt>
+<dd><p>[N_pad, K_pad] Half — GEMM B-matrix </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet11melPowerF32E">
+<span id="_CPPv3N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet11melPowerF32E"></span><span id="_CPPv2N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet11melPowerF32E"></span><span id="trt_edgellm::rt::audioUtils::FbankResourcesParakeet::melPowerF32__rt::Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audioUtils_1_1FbankResourcesParakeet_1adec387327f4a188770ce000fcb438769"></span><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">melPowerF32</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet11melPowerF32E" title="Link to this definition">#</a><br /></dt>
+<dd><p>[nMel, N_pad] Float — GEMM C-matrix (FP32, not FP16) </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet4meanE">
+<span id="_CPPv3N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet4meanE"></span><span id="_CPPv2N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet4meanE"></span><span id="trt_edgellm::rt::audioUtils::FbankResourcesParakeet::mean__rt::Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audioUtils_1_1FbankResourcesParakeet_1ab4dc5bf625acd11493d19617752b769a"></span><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">mean</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet4meanE" title="Link to this definition">#</a><br /></dt>
+<dd><p>[nMel] Float — per-feature ln mean </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet8invDenomE">
+<span id="_CPPv3N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet8invDenomE"></span><span id="_CPPv2N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet8invDenomE"></span><span id="trt_edgellm::rt::audioUtils::FbankResourcesParakeet::invDenom__rt::Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audioUtils_1_1FbankResourcesParakeet_1aae6f2c8750a95728def2327a479ca779"></span><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">invDenom</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet8invDenomE" title="Link to this definition">#</a><br /></dt>
+<dd><p>[nMel] Float — per-feature 1/(std + eps) </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet4nFftE">
+<span id="_CPPv3N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet4nFftE"></span><span id="_CPPv2N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet4nFftE"></span><span id="trt_edgellm::rt::audioUtils::FbankResourcesParakeet::nFft__int32_t"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audioUtils_1_1FbankResourcesParakeet_1a0937d956fc9e7d2ba18c2dc19013b52b"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">nFft</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="m"><span class="pre">0</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet4nFftE" title="Link to this definition">#</a><br /></dt>
+<dd><p>STFT size (== MelExtractorConfig::nFFT; kernels require 512) </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet9hopLengthE">
+<span id="_CPPv3N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet9hopLengthE"></span><span id="_CPPv2N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet9hopLengthE"></span><span id="trt_edgellm::rt::audioUtils::FbankResourcesParakeet::hopLength__int32_t"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audioUtils_1_1FbankResourcesParakeet_1a99626c2619acc2e3e6455ce32130fbc3"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">hopLength</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="m"><span class="pre">0</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet9hopLengthE" title="Link to this definition">#</a><br /></dt>
+<dd><p>STFT hop (== MelExtractorConfig::hopLength == 160) </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet9centerPadE">
+<span id="_CPPv3N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet9centerPadE"></span><span id="_CPPv2N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet9centerPadE"></span><span id="trt_edgellm::rt::audioUtils::FbankResourcesParakeet::centerPad__int32_t"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audioUtils_1_1FbankResourcesParakeet_1a09fbffe907278b30ac4daf6d1b67da6c"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">centerPad</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="m"><span class="pre">0</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet9centerPadE" title="Link to this definition">#</a><br /></dt>
+<dd><p>center zero-pad each side (== nFft / 2 == 256) </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet4nMelE">
+<span id="_CPPv3N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet4nMelE"></span><span id="_CPPv2N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet4nMelE"></span><span id="trt_edgellm::rt::audioUtils::FbankResourcesParakeet::nMel__int32_t"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audioUtils_1_1FbankResourcesParakeet_1a249fd836a7d7e8c54fe0864e017ac852"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">nMel</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="m"><span class="pre">0</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet4nMelE" title="Link to this definition">#</a><br /></dt>
+<dd><p>mel bins (== MelExtractorConfig::nMel == 128) </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet5nFreqE">
+<span id="_CPPv3N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet5nFreqE"></span><span id="_CPPv2N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet5nFreqE"></span><span id="trt_edgellm::rt::audioUtils::FbankResourcesParakeet::nFreq__int32_t"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audioUtils_1_1FbankResourcesParakeet_1a57bd732241a4c761baf7bec4aa99bca8"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">nFreq</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="m"><span class="pre">0</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet5nFreqE" title="Link to this definition">#</a><br /></dt>
+<dd><p>FFT bins == nFft / 2 + 1 == 257 (active K-window before K-pad) </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet9maxFramesE">
+<span id="_CPPv3N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet9maxFramesE"></span><span id="_CPPv2N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet9maxFramesE"></span><span id="trt_edgellm::rt::audioUtils::FbankResourcesParakeet::maxFrames__int32_t"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audioUtils_1_1FbankResourcesParakeet_1ae1254d80779182e014931f1ca976fd93"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">maxFrames</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="m"><span class="pre">0</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet9maxFramesE" title="Link to this definition">#</a><br /></dt>
+<dd><p>workspace capacity in mel frames (engine input_features kMAX bound) </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet7preemphE">
+<span id="_CPPv3N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet7preemphE"></span><span id="_CPPv2N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet7preemphE"></span><span id="trt_edgellm::rt::audioUtils::FbankResourcesParakeet::preemph__float"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audioUtils_1_1FbankResourcesParakeet_1a711be3b54542f0f59759f80ca1b819b0"></span><span class="kt"><span class="pre">float</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">preemph</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="m"><span class="pre">0.0f</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet7preemphE" title="Link to this definition">#</a><br /></dt>
+<dd><p>preemphasis coefficient (== 0.97) </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet8logGuardE">
+<span id="_CPPv3N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet8logGuardE"></span><span id="_CPPv2N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet8logGuardE"></span><span id="trt_edgellm::rt::audioUtils::FbankResourcesParakeet::logGuard__float"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audioUtils_1_1FbankResourcesParakeet_1a3c5095945f3c727c84df82655901d8cb"></span><span class="kt"><span class="pre">float</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">logGuard</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="m"><span class="pre">0.0f</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet8logGuardE" title="Link to this definition">#</a><br /></dt>
+<dd><p>natural-log input floor (== 2^-24) </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet7normEpsE">
+<span id="_CPPv3N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet7normEpsE"></span><span id="_CPPv2N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet7normEpsE"></span><span id="trt_edgellm::rt::audioUtils::FbankResourcesParakeet::normEps__float"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1audioUtils_1_1FbankResourcesParakeet_1ad7a4622b893b7bb0331899d5ee35586f"></span><span class="kt"><span class="pre">float</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">normEps</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="m"><span class="pre">0.0f</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet7normEpsE" title="Link to this definition">#</a><br /></dt>
+<dd><p>per-feature std epsilon (== kParakeetZScoreEps) </p>
+</dd></dl>
 
 </div>
 </dd></dl>
@@ -750,11 +898,32 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv411trt_edgellm"><code class="docutils literal notranslate"><span class="pre">trt_edgellm</span></code></a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rtE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::rt</span></code></a><ul class="nav section-nav flex-column">
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10audioUtilsE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::rt::audioUtils</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10audioUtils18kParakeetZScoreEpsE"><code class="docutils literal notranslate"><span class="pre">kParakeetZScoreEps</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10audioUtils9ChunkInfoE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::rt::audioUtils::ChunkInfo</span></code></a><ul class="nav section-nav flex-column">
 <li class="toc-h6 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10audioUtils9ChunkInfo9numChunksE"><code class="docutils literal notranslate"><span class="pre">numChunks</span></code></a></li>
 <li class="toc-h6 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10audioUtils9ChunkInfo12chunkLengthsE"><code class="docutils literal notranslate"><span class="pre">chunkLengths</span></code></a></li>
 <li class="toc-h6 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10audioUtils9ChunkInfo12chunkOffsetsE"><code class="docutils literal notranslate"><span class="pre">chunkOffsets</span></code></a></li>
 <li class="toc-h6 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10audioUtils9ChunkInfo14maxChunkLengthE"><code class="docutils literal notranslate"><span class="pre">maxChunkLength</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeetE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::rt::audioUtils::FbankResourcesParakeet</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h6 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet19melFilterFp16KmajorE"><code class="docutils literal notranslate"><span class="pre">melFilterFp16Kmajor</span></code></a></li>
+<li class="toc-h6 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet9windowF32E"><code class="docutils literal notranslate"><span class="pre">windowF32</span></code></a></li>
+<li class="toc-h6 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet10fftTwiddleE"><code class="docutils literal notranslate"><span class="pre">fftTwiddle</span></code></a></li>
+<li class="toc-h6 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet9framedF32E"><code class="docutils literal notranslate"><span class="pre">framedF32</span></code></a></li>
+<li class="toc-h6 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet7magFp16E"><code class="docutils literal notranslate"><span class="pre">magFp16</span></code></a></li>
+<li class="toc-h6 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet11melPowerF32E"><code class="docutils literal notranslate"><span class="pre">melPowerF32</span></code></a></li>
+<li class="toc-h6 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet4meanE"><code class="docutils literal notranslate"><span class="pre">mean</span></code></a></li>
+<li class="toc-h6 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet8invDenomE"><code class="docutils literal notranslate"><span class="pre">invDenom</span></code></a></li>
+<li class="toc-h6 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet4nFftE"><code class="docutils literal notranslate"><span class="pre">nFft</span></code></a></li>
+<li class="toc-h6 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet9hopLengthE"><code class="docutils literal notranslate"><span class="pre">hopLength</span></code></a></li>
+<li class="toc-h6 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet9centerPadE"><code class="docutils literal notranslate"><span class="pre">centerPad</span></code></a></li>
+<li class="toc-h6 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet4nMelE"><code class="docutils literal notranslate"><span class="pre">nMel</span></code></a></li>
+<li class="toc-h6 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet5nFreqE"><code class="docutils literal notranslate"><span class="pre">nFreq</span></code></a></li>
+<li class="toc-h6 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet9maxFramesE"><code class="docutils literal notranslate"><span class="pre">maxFrames</span></code></a></li>
+<li class="toc-h6 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet7preemphE"><code class="docutils literal notranslate"><span class="pre">preemph</span></code></a></li>
+<li class="toc-h6 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet8logGuardE"><code class="docutils literal notranslate"><span class="pre">logGuard</span></code></a></li>
+<li class="toc-h6 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10audioUtils22FbankResourcesParakeet7normEpsE"><code class="docutils literal notranslate"><span class="pre">normEps</span></code></a></li>
 </ul>
 </li>
 </ul>
@@ -854,9 +1023,9 @@
         <div class="footer-item">
 <div class="extra_footer">
   
-  <p>Last updated on July 02, 2026.</p>
+  <p>Last updated on July 22, 2026.</p>
   
-  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/30941a6">30941a6</a>.</p>
+  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/f98267f">f98267f</a>.</p>
   
 </div></div>
       

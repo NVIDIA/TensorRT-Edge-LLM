@@ -47,8 +47,8 @@
 
 
     <script src="../../_static/documentation_options.js?v=5929fcd5"></script>
-    <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
-    <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
     <script src="../../_static/copybutton.js?v=65e89d2a"></script>
     <script>let toggleHintShow = 'Click to show';</script>
@@ -56,11 +56,12 @@
     <script>let toggleOpenOnPrint = 'true';</script>
     <script src="../../_static/togglebutton.js?v=b8b12719"></script>
     <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
+    <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'cpp_api/multimodal/nemotronOmniAudioRunner';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.19.0';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = './_static/switcher.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.9.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.9.1';
         DOCUMENTATION_OPTIONS.show_version_warning_banner =
             false;
         </script>
@@ -76,7 +77,7 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.9.0" />
+  <meta name="docsearch:version" content="0.9.1" />
   
     
     <script src="../../_static/searchtools.js"></script>
@@ -395,11 +396,13 @@
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Customization</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/customization-guide.html">Customization Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/calibration-datasets.html">Calibration Dataset Customization</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/tensorrt-plugins.html">TensorRT Plugins Guide</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Testing</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/code-coverage.html">Code Coverage with SonarQube</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/few-layer-validation.html">Few-Layer Numeric Validation</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">APIs</span></p>
 <ul class="current nav bd-sidenav">
@@ -443,31 +446,36 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../kernels/index.html">Kernels Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/NvFP4MoEUtils.html">Nv Fp4 Mo E Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/applyRopeWriteKV.html">Apply Rope Write KV</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/audioFbankKernels.html">Audio Fbank Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/batchEvictKernels.html">Batch Evict Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/buildLayout.html">Build Layout</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/causalConv1d.html">Causal Conv1d</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/common.html">Common</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/contextFMHARunner.html">Context FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/conversion.html">Conversion</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslF16MoeRunner.html">Cute Dsl F16 Moe Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslFFPARunner.html">Cute Dsl Ffpa Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslFMHARunner.html">Cute Dsl FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGDNRunner.html">Cute Dsl Gdn Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGemmNvFp4Runner.html">Cute Dsl GEMM Nv Fp4 Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGemmRunner.html">Cute Dsl GEMM Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslNvfp4MoeRunner.html">Cute Dsl Nvfp4 Moe Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslNvfp4MoeSm110Runner.html">Cute Dsl Nvfp4 Moe Sm110 Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslSSDRunner.html">Cute Dsl Ssd Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/ddtreeKernels.html">Ddtree Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/decoderXQARunner.html">Decoder XQA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/dequant.html">Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/dequantize.html">Dequantize</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../kernels/dflashAcceptKernels.html">Dflash Accept Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/dflashRuntimeKernels.html">Dflash Runtime Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/eagleAcceptKernels.html">EAGLE Accept Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/eagleUtilKernels.html">EAGLE Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/embeddingKernels.html">Embedding Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/f16MoeSupportKernels.html">F16 Moe Support Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/fmhaParams_v2.html">FMHA Params V2</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/fp4Quantize.html">Fp4 Quantize</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/gdnKernelUtils.html">Gdn Kernel Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/gemma4AudioAttention.html">Gemma4 Audio Attention</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/gemma4MTPRuntimeKernels.html">Gemma4 Mtp Runtime Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/imageUtilKernels.html">Image Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/initializeCosSinCache.html">Initialize Cos Sin Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/int4GroupwiseGemm.html">Int4 Groupwise GEMM</a></li>
@@ -482,13 +490,16 @@
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeAlignSumKernels.html">Moe Align Sum Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeMarlin.html">Moe Marlin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeMarlinIndicesKernels.html">Moe Marlin Indices Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moePerExpertScaleKernels.html">Moe Per Expert Scale Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeSigmoidGroupTopkKernels.html">Moe Sigmoid Group Topk Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeTopkSoftmaxKernels.html">Moe Topk Softmax Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/mtpStateScatterKernels.html">Mtp State Scatter Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoeTypes.html">Nvfp4 Moe Types</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4_dequant.html">Nvfp4 Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4_tensor.html">Nvfp4 Tensor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/scaleConvert.html">Scale Convert</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/selectiveStateUpdate.html">Selective State Update</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/speculativeKernelsUtils.html">Speculative Kernels Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/ssdVarlenMetadata.html">Ssd Varlen Metadata</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/talkerMLPKernels.html">Talker Mlp Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/utilKernels.html">Util Kernels</a></li>
@@ -499,6 +510,9 @@
 <li class="toctree-l3"><a class="reference internal" href="audioRunner.html">Audio Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="audioUtils.html">Audio Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="code2WavRunner.html">Code2 Wav Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="gemma4AudioRunner.html">Gemma4 Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="gemma4UnifiedAudioRunner.html">Gemma4 Unified Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="gemma4UnifiedVisionRunner.html">Gemma4 Unified Vision Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="gemma4ViTRunner.html">Gemma4 ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="imageUtils.html">Image Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="internViTRunner.html">Intern ViT Runner</a></li>
@@ -507,14 +521,21 @@
 <li class="toctree-l3 current active"><a class="current reference internal" href="#">Nemotron Omni Audio Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="nemotronOmniViTRunner.html">Nemotron Omni ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="phi4mmViTRunner.html">Phi4mm ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="qwen25vlViTRunner.html">Qwen25vl ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="qwen3omniViTRunner.html">Qwen3omni ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="qwen3vlViTRunner.html">Qwen3vl ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="qwenViTRunner.html">Qwen ViT Runner</a></li>
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../plugins/index.html">Plugins Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/allReducePlugin.html">All Reduce Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/attentionPlugin.html">Attention Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/causalConv1dPlugin.html">Causal Conv1d Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/dflashTargetKVCacheUpdatePlugin.html">Dflash Target KV Cache Update Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/fp16MoePlugin.html">Fp16 Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/fusedNvfp4GemmAllReducePlugin.html">Fused Nvfp4 GEMM All Reduce Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/gatedDeltaNetPlugin.html">Gated Delta Net Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/gemma4AudioAttentionPlugin.html">Gemma4 Audio Attention Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/int4GroupwiseGemmPlugin.html">Int4 Groupwise GEMM Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/int4MoePlugin.html">Int4 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/mambaPlugin.html">Mamba Plugin</a></li>
@@ -535,24 +556,29 @@
 <li class="toctree-l3"><a class="reference internal" href="../runtime/audioLoader.html">Audio Loader</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/audioUtils.html">Audio Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/decoderRegistry.html">Decoder Registry</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/decoderUtils.html">Decoder Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/decodingInferenceContext.html">Decoding Inference Context</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/decodingStrategy.html">Decoding Strategy</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/deepstackBinding.html">Deepstack Binding</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/deploymentConfig.html">Deployment Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/dflashDecodeUtils.html">Dflash Decode Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/dflashDecoder.html">Dflash Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/eagleDecoder.html">EAGLE Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/embeddingPreprocessor.html">Embedding Preprocessor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/engineExecutor.html">Engine Executor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/externalWeightManager.html">External Weight Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/gemma4EmbeddingPreprocessor.html">Gemma4 Embedding Preprocessor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/gemma4MTPDecoder.html">Gemma4 Mtp Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/hybridCacheManager.html">Hybrid Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/imageUtils.html">Image Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/inferenceDims.html">Inference Dims</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/inferencePhase.html">Inference Phase</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/kvCacheManager.html">KV Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/layerDebugger.html">Layer Debugger</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/llmEngineConfig.html">LLM Engine Config</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/llmInferenceRuntime.html">LLM Inference Runtime</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/llmRuntimeUtils.html">LLM Runtime Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/logitBias.html">Logit Bias</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/loraManager.html">Lora Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/mambaCacheManager.html">Mamba Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/melSpectrogram.html">Mel Spectrogram</a></li>
@@ -562,7 +588,6 @@
 <li class="toctree-l3"><a class="reference internal" href="../runtime/registryBuilder.html">Registry Builder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/ropeCache.html">Rope Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/sharedResources.html">Shared Resources</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../runtime/specDecodeUtils.html">Spec Decode Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/stepPreparer.html">Step Preparer</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/streaming.html">Streaming</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/systemPromptKVCache.html">System Prompt KV Cache</a></li>
@@ -650,135 +675,6 @@
                   
   <section id="nemotron-omni-audio-runner">
 <h1>Nemotron Omni Audio Runner<a class="headerlink" href="#nemotron-omni-audio-runner" title="Link to this heading">#</a></h1>
-<dl class="cpp class">
-<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt23NemotronOmniAudioRunnerE">
-<span id="_CPPv3N11trt_edgellm2rt23NemotronOmniAudioRunnerE"></span><span id="_CPPv2N11trt_edgellm2rt23NemotronOmniAudioRunnerE"></span><span id="trt_edgellm::rt::NemotronOmniAudioRunner"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1NemotronOmniAudioRunner"></span><span class="k"><span class="pre">class</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">NemotronOmniAudioRunner</span></span></span><span class="w"> </span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="k"><span class="pre">public</span></span><span class="w"> </span><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../action/actionUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="multimodalRunner.html#_CPPv4N11trt_edgellm2rt16MultimodalRunnerE" title="trt_edgellm::rt::MultimodalRunner"><span class="n"><span class="pre">MultimodalRunner</span></span></a><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt23NemotronOmniAudioRunnerE" title="Link to this definition">#</a><br /></dt>
-<dd><p>Runner for Nemotron-Omni Parakeet audio encoder. </p>
-<p>The encoder is exported and built at fixed batch=1: the Conformer’s depthwise convolution is a local operator that ignores attention masks, so cross-clip batching with padding silently corrupts short-clip outputs at their right edge. <code class="docutils literal notranslate"><a class="reference internal" href="#classtrt__edgellm_1_1rt_1_1NemotronOmniAudioRunner_1aae17ecc6c78d436d8e2b563dfc79484b"><span class="std std-ref"><span class="pre">preprocess()</span></span></a></code> walks every audio clip in the request batch and invokes the encoder once per clip, writing the encoded rows directly into <code class="docutils literal notranslate"><span class="pre">mAudioEmbedding</span></code> at sequential offsets. <code class="docutils literal notranslate"><a class="reference internal" href="#classtrt__edgellm_1_1rt_1_1NemotronOmniAudioRunner_1aa4bb9bece463158e515c4b4086a69ff8"><span class="std std-ref"><span class="pre">infer()</span></span></a></code> is a no-op. </p>
-<div class="breathe-sectiondef docutils container">
-<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-functions">Public Functions</p>
-<dl class="cpp function">
-<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt23NemotronOmniAudioRunner23NemotronOmniAudioRunnerERKNSt6stringE12cudaStream_t">
-<span id="_CPPv3N11trt_edgellm2rt23NemotronOmniAudioRunner23NemotronOmniAudioRunnerERKNSt6stringE12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm2rt23NemotronOmniAudioRunner23NemotronOmniAudioRunnerERKNSt6stringE12cudaStream_t"></span><span id="trt_edgellm::rt::NemotronOmniAudioRunner::NemotronOmniAudioRunner__ssCR.cudaStream_t"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1NemotronOmniAudioRunner_1a80c9a50d49e0c9a6ed857b2e43a93c62"></span><span class="sig-name descname"><span class="n"><span class="pre">NemotronOmniAudioRunner</span></span></span><span class="sig-paren">(</span>
-
-<dl>
-<dd><em class="sig-param"><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">string</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">engineDir</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em></dd>
-</dl>
-
-<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt23NemotronOmniAudioRunner23NemotronOmniAudioRunnerERKNSt6stringE12cudaStream_t" title="Link to this definition">#</a><br /></dt>
-<dd><p>Constructor for <a class="reference internal" href="#classtrt__edgellm_1_1rt_1_1NemotronOmniAudioRunner"><span class="std std-ref">NemotronOmniAudioRunner</span></a>. </p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>engineDir</strong> – <strong>[in]</strong> Directory containing the audio encoder engine </p></li>
-<li><p><strong>stream</strong> – <strong>[in]</strong> CUDA stream for execution </p></li>
-</ul>
-</dd>
-<dt class="field-even">Throws<span class="colon">:</span></dt>
-<dd class="field-even"><p><span><span class="cpp-expr sig sig-inline cpp"><span class="n">std</span><span class="p">::</span><span class="n">runtime_error</span></span></span> – if engine loading fails or configuration is invalid </p>
-</dd>
-</dl>
-</dd></dl>
-
-<dl class="cpp function">
-<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt23NemotronOmniAudioRunnerD0Ev">
-<span id="_CPPv3N11trt_edgellm2rt23NemotronOmniAudioRunnerD0Ev"></span><span id="_CPPv2N11trt_edgellm2rt23NemotronOmniAudioRunnerD0Ev"></span><span id="trt_edgellm::rt::NemotronOmniAudioRunner::~NemotronOmniAudioRunner"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1NemotronOmniAudioRunner_1ad2a68d89d8559c704521e69c1038fd75"></span><span class="sig-name descname"><span class="n"><span class="pre">~NemotronOmniAudioRunner</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="k"><span class="pre">default</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt23NemotronOmniAudioRunnerD0Ev" title="Link to this definition">#</a><br /></dt>
-<dd></dd></dl>
-
-<dl class="cpp function">
-<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt23NemotronOmniAudioRunner10preprocessERKN2rt20LLMGenerationRequestERNSt6vectorINSt6vectorI7int32_tEEEEPKN9tokenizer9TokenizerEN2rt20OptionalOutputTensorE12cudaStream_tb">
-<span id="_CPPv3N11trt_edgellm2rt23NemotronOmniAudioRunner10preprocessERKN2rt20LLMGenerationRequestERNSt6vectorINSt6vectorI7int32_tEEEEPKN9tokenizer9TokenizerEN2rt20OptionalOutputTensorE12cudaStream_tb"></span><span id="_CPPv2N11trt_edgellm2rt23NemotronOmniAudioRunner10preprocessERKN2rt20LLMGenerationRequestERNSt6vectorINSt6vectorI7int32_tEEEEPKN9tokenizer9TokenizerEN2rt20OptionalOutputTensorE12cudaStream_tb"></span><span id="trt_edgellm::rt::NemotronOmniAudioRunner::preprocess__rt::LLMGenerationRequestCR.std::vector:std::vector:int32_t::R.tokenizer::TokenizerCP.rt::OptionalOutputTensor.cudaStream_t.b"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1NemotronOmniAudioRunner_1aae17ecc6c78d436d8e2b563dfc79484b"></span><span class="k"><span class="pre">virtual</span></span><span class="w"> </span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">preprocess</span></span></span><span class="sig-paren">(</span>
-
-<dl>
-<dd><em class="sig-param"><a class="reference internal" href="../action/actionUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../runtime/llmRuntimeUtils.html#_CPPv4N11trt_edgellm2rt20LLMGenerationRequestE" title="trt_edgellm::rt::LLMGenerationRequest"><span class="n"><span class="pre">LLMGenerationRequest</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">request</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">int32_t</span></span><span class="p"><span class="pre">&gt;</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">batchedInputIds</span></span></em>,</dd>
-<dd><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt23NemotronOmniAudioRunner10preprocessERKN2rt20LLMGenerationRequestERNSt6vectorINSt6vectorI7int32_tEEEEPKN9tokenizer9TokenizerEN2rt20OptionalOutputTensorE12cudaStream_tb" title="trt_edgellm::rt::NemotronOmniAudioRunner::preprocess::tokenizer"><span class="n"><span class="pre">tokenizer</span></span></a><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">Tokenizer</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">tokenizer</span></span></em>,</dd>
-<dd><em class="sig-param"><a class="reference internal" href="../action/actionUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">OptionalOutputTensor</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">mropeCosSinOut</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">imageOnly</span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="k"><span class="pre">false</span></span></em></dd>
-</dl>
-
-<span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">override</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt23NemotronOmniAudioRunner10preprocessERKN2rt20LLMGenerationRequestERNSt6vectorINSt6vectorI7int32_tEEEEPKN9tokenizer9TokenizerEN2rt20OptionalOutputTensorE12cudaStream_tb" title="Link to this definition">#</a><br /></dt>
-<dd><p>Preprocess multimodal input including audio and text. </p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>request</strong> – <strong>[in]</strong> LLM generation request containing audio and text </p></li>
-<li><p><strong>batchedInputIds</strong> – <strong>[inout]</strong> Batched input token IDs after preprocessing </p></li>
-<li><p><strong>tokenizer</strong> – <strong>[in]</strong> Tokenizer for text processing </p></li>
-<li><p><strong>mropeCosSinOut</strong> – <strong>[inout]</strong> MRoPE cos/sin output tensor (unused by this model) </p></li>
-<li><p><strong>stream</strong> – <strong>[in]</strong> CUDA stream for execution </p></li>
-</ul>
-</dd>
-<dt class="field-even">Returns<span class="colon">:</span></dt>
-<dd class="field-even"><p>True if preprocessing succeeded, false otherwise </p>
-</dd>
-</dl>
-</dd></dl>
-
-<dl class="cpp function">
-<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt23NemotronOmniAudioRunner5inferE12cudaStream_t">
-<span id="_CPPv3N11trt_edgellm2rt23NemotronOmniAudioRunner5inferE12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm2rt23NemotronOmniAudioRunner5inferE12cudaStream_t"></span><span id="trt_edgellm::rt::NemotronOmniAudioRunner::infer__cudaStream_t"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1NemotronOmniAudioRunner_1aa4bb9bece463158e515c4b4086a69ff8"></span><span class="k"><span class="pre">virtual</span></span><span class="w"> </span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">infer</span></span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">override</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt23NemotronOmniAudioRunner5inferE12cudaStream_t" title="Link to this definition">#</a><br /></dt>
-<dd><p>Run inference on the audio encoder. </p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>stream</strong> – <strong>[in]</strong> CUDA stream for execution </p>
-</dd>
-<dt class="field-even">Returns<span class="colon">:</span></dt>
-<dd class="field-even"><p>True if inference succeeded, false otherwise </p>
-</dd>
-</dl>
-</dd></dl>
-
-<dl class="cpp function">
-<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt23NemotronOmniAudioRunner21validateAndFillConfigERKNSt6stringE">
-<span id="_CPPv3N11trt_edgellm2rt23NemotronOmniAudioRunner21validateAndFillConfigERKNSt6stringE"></span><span id="_CPPv2N11trt_edgellm2rt23NemotronOmniAudioRunner21validateAndFillConfigERKNSt6stringE"></span><span id="trt_edgellm::rt::NemotronOmniAudioRunner::validateAndFillConfig__ssCR"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1NemotronOmniAudioRunner_1a442ea3ebbfb97665dcbaa0f56f57d094"></span><span class="k"><span class="pre">virtual</span></span><span class="w"> </span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">validateAndFillConfig</span></span></span><span class="sig-paren">(</span>
-
-<dl>
-<dd><em class="sig-param"><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">string</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">engineDir</span></span></em></dd>
-</dl>
-
-<span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">override</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt23NemotronOmniAudioRunner21validateAndFillConfigERKNSt6stringE" title="Link to this definition">#</a><br /></dt>
-<dd><p>Validate and load configuration from JSON file. </p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>engineDir</strong> – <strong>[in]</strong> Path to engine directory </p>
-</dd>
-<dt class="field-even">Returns<span class="colon">:</span></dt>
-<dd class="field-even"><p>True if configuration is valid and loaded successfully, false otherwise </p>
-</dd>
-</dl>
-</dd></dl>
-
-<dl class="cpp function">
-<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt23NemotronOmniAudioRunner14allocateBufferE12cudaStream_t">
-<span id="_CPPv3N11trt_edgellm2rt23NemotronOmniAudioRunner14allocateBufferE12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm2rt23NemotronOmniAudioRunner14allocateBufferE12cudaStream_t"></span><span id="trt_edgellm::rt::NemotronOmniAudioRunner::allocateBuffer__cudaStream_t"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1NemotronOmniAudioRunner_1a269d34daebe02ce897f46a208e6f4b1b"></span><span class="k"><span class="pre">virtual</span></span><span class="w"> </span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">allocateBuffer</span></span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">override</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt23NemotronOmniAudioRunner14allocateBufferE12cudaStream_t" title="Link to this definition">#</a><br /></dt>
-<dd><p>Allocate buffers for inference. </p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>stream</strong> – <strong>[in]</strong> CUDA stream for execution </p>
-</dd>
-<dt class="field-even">Returns<span class="colon">:</span></dt>
-<dd class="field-even"><p>True if allocation succeeded, false otherwise </p>
-</dd>
-</dl>
-</dd></dl>
-
-<dl class="cpp function">
-<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt23NemotronOmniAudioRunner18getOutputEmbeddingEv">
-<span id="_CPPv3N11trt_edgellm2rt23NemotronOmniAudioRunner18getOutputEmbeddingEv"></span><span id="_CPPv2N11trt_edgellm2rt23NemotronOmniAudioRunner18getOutputEmbeddingEv"></span><span id="trt_edgellm::rt::NemotronOmniAudioRunner::getOutputEmbedding"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1NemotronOmniAudioRunner_1a89a70040404e13c9be5ea51d971b096f"></span><span class="k"><span class="pre">virtual</span></span><span class="w"> </span><a class="reference internal" href="../action/actionUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="n"><span class="pre">getOutputEmbedding</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">override</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt23NemotronOmniAudioRunner18getOutputEmbeddingEv" title="Link to this definition">#</a><br /></dt>
-<dd><p>Get audio embeddings from encoder output. </p>
-<dl class="field-list simple">
-<dt class="field-odd">Returns<span class="colon">:</span></dt>
-<dd class="field-odd"><p>Reference to audio embedding tensor </p>
-</dd>
-</dl>
-</dd></dl>
-
-</div>
-</dd></dl>
-
 <dl class="cpp struct">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt23NemotronOmniAudioConfigE">
 <span id="_CPPv3N11trt_edgellm2rt23NemotronOmniAudioConfigE"></span><span id="_CPPv2N11trt_edgellm2rt23NemotronOmniAudioConfigE"></span><span id="trt_edgellm::rt::NemotronOmniAudioConfig"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1NemotronOmniAudioConfig"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">NemotronOmniAudioConfig</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt23NemotronOmniAudioConfigE" title="Link to this definition">#</a><br /></dt>
@@ -810,6 +706,84 @@
 </dd></dl>
 
 </div>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt14produceClipMelER8ClipPlanRN2rt6TensorE12cudaStream_t">
+<span id="_CPPv3N11trt_edgellm2rt14produceClipMelER8ClipPlanRN2rt6TensorE12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm2rt14produceClipMelER8ClipPlanRN2rt6TensorE12cudaStream_t"></span><span id="trt_edgellm::rt::produceClipMel__ClipPlanR.rt::TensorR.cudaStream_t"></span><span class="target" id="nemotronOmniAudioRunner_8h_1a6ef154cb382cdfb76eb6b45ff5e0bb8d"></span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">produceClipMel</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><span class="n"><span class="pre">ClipPlan</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">plan</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">melSpec</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt14produceClipMelER8ClipPlanRN2rt6TensorE12cudaStream_t" title="Link to this definition">#</a><br /></dt>
+<dd><p>Runner for Nemotron-Omni Parakeet audio encoder. </p>
+<p>The encoder is exported and built at fixed batch=1: the Conformer’s depthwise convolution is a local operator that ignores attention masks, so cross-clip batching with padding silently corrupts short-clip outputs at their right edge. <code class="docutils literal notranslate"><span class="pre">preprocess()</span></code> walks every audio clip in the ! request batch and invokes the encoder once per clip, writing the encoded ! rows directly into <code class="docutils literal notranslate"><span class="pre">mAudioEmbedding</span></code> at sequential offsets. <code class="docutils literal notranslate"><span class="pre">infer()</span></code> ! is a no-op. class NemotronOmniAudioRunner : public <a class="reference internal" href="multimodalRunner.html#classtrt__edgellm_1_1rt_1_1MultimodalRunner"><span class="std std-ref">MultimodalRunner</span></a><p>{ public: ! Constructor for NemotronOmniAudioRunner !</p>
+<p>~NemotronOmniAudioRunner() noexcept = default;</p>
+</p>
+<p><p>! Preprocess multimodal input including audio and text !</p>
+<p>! Run inference on the audio encoder !</p>
+<p>! Validate and load configuration from JSON file !</p>
+<p>! Allocate buffers for inference !</p>
+<p>! Get audio embeddings from encoder output !</p>
+<p>private: ! Encode all audio clips in the request batch into mAudioEmbedding. ! ! Iterates</p>
+<code class="docutils literal notranslate"><span class="pre">request.requests</span></code> (and each request’s audioBuffers) in ! placeholder order, runs the bs=1 encoder once per clip, and packs the ! valid rows of every clip into a contiguous <code class="docutils literal notranslate"><span class="pre">[totalRows,</span> <span class="pre">hidden]</span></code> ! buffer. <code class="docutils literal notranslate"><span class="pre">audioTokenLengths</span></code> is filled in the same order so ! <code class="docutils literal notranslate"><span class="pre">textPreprocess</span></code> can replace each <code class="docutils literal notranslate"><span class="pre">&lt;so_embedding&gt;</span></code><p>placeholder ! with the right number of audio tokens. bool encodeAllClips(</p>
+<p>rt::LLMGenerationRequest const&amp; request, std::vector&lt;int64_t&gt;&amp; audioTokenLengths, cudaStream_t stream);</p>
+</p>
+<p>! Encode a single mel-spectrogram clip into mAudioEmbedding at ! the specified row offset. Returns the number of encoded rows. bool encodeSingleClip(rt::Tensor const&amp; mel, int64_t destRowOffset, int64_t&amp; encodedRowsOut, cudaStream_t stream);</p>
+<p>! Resize mAudioEmbedding to <code class="docutils literal notranslate"><span class="pre">[rows,</span> <span class="pre">hiddenDim]</span></code>, reallocating ! if the existing buffer cannot hold that many rows. bool resizeEmbeddingForRows(int64_t rows);</p>
+<p><p>! Tokenize text and insert audio placeholder tokens !</p>
+<p>! Build the online GPU fbank resources (mel filter / window / FFT ! twiddle + scalar params) from the bound CPU MelExtractor’s config, ! validated parakeet-spec. Best-effort: returns false (→ CPU fallback) ! when the extractor isn’t parakeet-spec, the CuTe DSL GEMM is ! unavailable for this device/build, or a resource upload fails. bool initFbankResources(cudaStream_t stream);</p>
+</p>
+<p>! Whether the online GPU fbank can run for this clip: resources ready, ! engine mel width agrees, and the sample rate matches what the kernels ! assume. Checked in pass 1 of encodeAllClips before committing a clip ! to the GPU path. bool gpuFbankViable(rt::audio::AudioPCM const&amp; pcm) const;</p>
+<p>! Pass 2 GPU fbank for one clip: upload PCM and run fbankParakeet into a ! fresh <code class="docutils literal notranslate"><span class="pre">[1,</span> <span class="pre">numFrames,</span> <span class="pre">mel_bins]</span></code> FP16 <code class="docutils literal notranslate"><span class="pre">melSpec</span></code><p>. Returns false on ! upload / kernel failure so the caller can fall back to the CPU ! extractor (which yields the same frame count, keeping pass-1 sizing valid). bool runGpuFbankClip(</p>
+<p>rt::audio::AudioPCM const&amp; pcm, int64_t const numFrames, rt::Tensor&amp; melSpec, cudaStream_t stream);</p>
+</p>
+<p>! Per-clip mel plan: built in pass 1 of encodeAllClips (frame count + ! chosen path), consumed in pass 2 by produceClipMel. struct ClipPlan { <a class="reference internal" href="../runtime/audioLoader.html#structtrt__edgellm_1_1rt_1_1audio_1_1AudioPCM"><span class="std std-ref">rt::audio::AudioPCM</span></a> const* pcm{nullptr}; //!&lt; non-null → run GPU fbank in pass 2 <a class="reference internal" href="../common/tensor.html#classtrt__edgellm_1_1rt_1_1Tensor"><span class="std std-ref">rt::Tensor</span></a> hostMel{}; //!&lt; valid → CPU mel already extracted (upload in pass 2) int64_t numFrames{0}; //!&lt; T (shapes the GPU melSpec view) };</p>
+<p>! Pass 2: produce one clip’s <code class="docutils literal notranslate"><span class="pre">[1,</span> <span class="pre">T,</span> <span class="pre">mel_bins]</span></code> FP16 GPU mel from its</p>
+<p>plan — GPU fbank when planned (falling back to a CPU re-extract on runtime failure), otherwise upload the pass-1 CPU mel. The fallback yields the same floor(N/hop) frame count, keeping pass-1 sizing valid. </p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>engineDir</strong> – <strong>[in]</strong> Directory containing the audio encoder engine !</p></li>
+<li><p><strong>stream</strong> – <strong>[in]</strong> CUDA stream for execution ! </p></li>
+<li><p><strong>request</strong> – <strong>[in]</strong> LLM generation request containing audio and text !</p></li>
+<li><p><strong>batchedInputIds</strong> – <strong>[inout]</strong> Batched input token IDs after preprocessing !</p></li>
+<li><p><strong>tokenizer</strong> – <strong>[in]</strong> Tokenizer for text processing !</p></li>
+<li><p><strong>mropeCosSinOut</strong> – <strong>[inout]</strong> MRoPE cos/sin output tensor (unused by this model) !</p></li>
+<li><p><strong>stream</strong> – <strong>[in]</strong> CUDA stream for execution ! </p></li>
+<li><p><strong>stream</strong> – <strong>[in]</strong> CUDA stream for execution ! </p></li>
+<li><p><strong>engineDir</strong> – <strong>[in]</strong> Path to engine directory ! </p></li>
+<li><p><strong>stream</strong> – <strong>[in]</strong> CUDA stream for execution ! </p></li>
+<li><p><strong>request</strong> – <strong>[in]</strong> LLM generation request !</p></li>
+<li><p><strong>batchInputIds</strong> – <strong>[out]</strong> Batched input IDs after tokenization and audio token insertion !</p></li>
+<li><p><strong>audioTokenLengths</strong> – <strong>[in]</strong> Token lengths for each audio clip !</p></li>
+<li><p><strong>tokenizer</strong> – <strong>[in]</strong> <p>Tokenizer for text encoding void textPreprocess(rt::LLMGenerationRequest const&amp; request, std::vector&lt;std::vector&lt;int32_t&gt;&gt;&amp; batchInputIds,</p>
+<p>std::vector&lt;int64_t&gt; const&amp; audioTokenLengths, tokenizer::Tokenizer const* tokenizer);</p>
+</p></li>
+</ul>
+</dd>
+<dt class="field-even">Throws<span class="colon">:</span></dt>
+<dd class="field-even"><p><span><span class="cpp-expr sig sig-inline cpp"><span class="n">std</span><span class="p">::</span><span class="n">runtime_error</span></span></span> – if engine loading fails or configuration is invalid NemotronOmniAudioRunner(std::string const&amp; engineDir, cudaStream_t stream);</p>
+</dd>
+<dt class="field-odd">Returns<span class="colon">:</span></dt>
+<dd class="field-odd"><p>True if preprocessing succeeded, false otherwise bool preprocess(<a class="reference internal" href="../runtime/llmRuntimeUtils.html#structtrt__edgellm_1_1rt_1_1LLMGenerationRequest"><span class="std std-ref">rt::LLMGenerationRequest</span></a> const&amp; request, std::vector&lt;std::vector&lt;int32_t&gt;&gt;&amp; batchedInputIds, <a class="reference internal" href="../tokenizer/tokenizer.html#classtrt__edgellm_1_1tokenizer_1_1Tokenizer"><span class="std std-ref">tokenizer::Tokenizer</span></a> const* tokenizer, [[maybe_unused]] rt::OptionalOutputTensor mropeCosSinOut, cudaStream_t stream, bool imageOnly = false) override;</p>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>True if inference succeeded, false otherwise bool infer(cudaStream_t stream) override;</p>
+</dd>
+<dt class="field-odd">Returns<span class="colon">:</span></dt>
+<dd class="field-odd"><p>True if configuration is valid and loaded successfully, false otherwise bool validateAndFillConfig(std::string const&amp; engineDir) override;</p>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>True if allocation succeeded, false otherwise bool allocateBuffer(cudaStream_t stream) override;</p>
+</dd>
+<dt class="field-odd">Returns<span class="colon">:</span></dt>
+<dd class="field-odd"><p>Reference to audio embedding tensor <a class="reference internal" href="../common/tensor.html#classtrt__edgellm_1_1rt_1_1Tensor"><span class="std std-ref">rt::Tensor</span></a>&amp; getOutputEmbedding() override;</p>
+</dd>
+</dl>
 </dd></dl>
 
 </section>
@@ -863,16 +837,6 @@
   </div>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt23NemotronOmniAudioRunnerE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::rt::NemotronOmniAudioRunner</span></code></a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt23NemotronOmniAudioRunner23NemotronOmniAudioRunnerERKNSt6stringE12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">NemotronOmniAudioRunner()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt23NemotronOmniAudioRunnerD0Ev"><code class="docutils literal notranslate"><span class="pre">~NemotronOmniAudioRunner()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt23NemotronOmniAudioRunner10preprocessERKN2rt20LLMGenerationRequestERNSt6vectorINSt6vectorI7int32_tEEEEPKN9tokenizer9TokenizerEN2rt20OptionalOutputTensorE12cudaStream_tb"><code class="docutils literal notranslate"><span class="pre">preprocess()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt23NemotronOmniAudioRunner5inferE12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">infer()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt23NemotronOmniAudioRunner21validateAndFillConfigERKNSt6stringE"><code class="docutils literal notranslate"><span class="pre">validateAndFillConfig()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt23NemotronOmniAudioRunner14allocateBufferE12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">allocateBuffer()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt23NemotronOmniAudioRunner18getOutputEmbeddingEv"><code class="docutils literal notranslate"><span class="pre">getOutputEmbedding()</span></code></a></li>
-</ul>
-</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt23NemotronOmniAudioConfigE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::rt::NemotronOmniAudioConfig</span></code></a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt23NemotronOmniAudioConfig7melBinsE"><code class="docutils literal notranslate"><span class="pre">melBins</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt23NemotronOmniAudioConfig15audioFeatureDimE"><code class="docutils literal notranslate"><span class="pre">audioFeatureDim</span></code></a></li>
@@ -880,6 +844,7 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt23NemotronOmniAudioConfig19soundContextTokenIdE"><code class="docutils literal notranslate"><span class="pre">soundContextTokenId</span></code></a></li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt14produceClipMelER8ClipPlanRN2rt6TensorE12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">produceClipMel()</span></code></a></li>
 </ul>
   </nav></div>
 
@@ -971,9 +936,9 @@
         <div class="footer-item">
 <div class="extra_footer">
   
-  <p>Last updated on July 02, 2026.</p>
+  <p>Last updated on July 22, 2026.</p>
   
-  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/30941a6">30941a6</a>.</p>
+  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/f98267f">f98267f</a>.</p>
   
 </div></div>
       

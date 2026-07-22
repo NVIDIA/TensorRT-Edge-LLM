@@ -32,7 +32,6 @@ The model class names were checked against the installed `transformers==5.9.0` p
 | Qwen2/Qwen2.5 dense | [`Qwen2ForCausalLM`](https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen2/modeling_qwen2.py) | `qwen2` -> default `CausalLM` | Dense precision set |
 | Qwen3 dense | [`Qwen3ForCausalLM`](https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen3/modeling_qwen3.py) | `qwen3` -> default `CausalLM` | Dense precision set |
 | Qwen3.5/3.6 text | [`Qwen3_5ForCausalLM`](https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen3_5/modeling_qwen3_5.py) | `qwen3_5_text` -> `Qwen3_5CausalLM` | Dense precision set |
-| Gemma4 E2B/E4B text | [`Gemma4ForCausalLM`](https://github.com/huggingface/transformers/blob/main/src/transformers/models/gemma4/modeling_gemma4.py) | `gemma4` / `gemma4_text` -> text decoder with PLE and dual-RoPE support | BF16/FP16 source checkpoints; no image/audio/video/MTP |
 | Nemotron Nano dense | [`NemotronHForCausalLM`](https://github.com/huggingface/transformers/blob/main/src/transformers/models/nemotron_h/modeling_nemotron_h.py) | `nemotron_h` -> `NemotronHCausalLM` | BF16, FP8, NVFP4 |
 
 <details>
@@ -192,8 +191,7 @@ The model class names were checked against the installed `transformers==5.9.0` p
 |--------------|--------------------|-----------------------|----------------------|
 | Qwen3-MoE | [`Qwen3MoeForCausalLM`](https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen3_moe/modeling_qwen3_moe.py) | `qwen3_moe` -> `Qwen3MoeCausalLM` | INT4, NVFP4 |
 | Qwen3.5/3.6-MoE | [`Qwen3_5MoeForConditionalGeneration`](https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen3_5_moe/modeling_qwen3_5_moe.py) | `qwen3_5_moe` -> `Qwen3_5MoeCausalLM` + `Qwen3_5VLVisualModel` | INT4 GPTQ, NVFP4 |
-| Nemotron3-MoE | [`NemotronHForCausalLM`](https://github.com/huggingface/transformers/blob/main/src/transformers/models/nemotron_h/modeling_nemotron_h.py) | `nemotron_h` -> `NemotronHCausalLM` | NVFP4 only |
-| Nemotron3 Super 120B-A12B | [`NemotronHForCausalLM`](https://github.com/huggingface/transformers/blob/main/src/transformers/models/nemotron_h/modeling_nemotron_h.py) | `nemotron_h` -> `NemotronHCausalLM` with latent MoE routed path | NVFP4 only |
+| Nemotron3-MoE (Nano 30B-A3B, Super 120B-A12B) | [`NemotronHForCausalLM`](https://github.com/huggingface/transformers/blob/main/src/transformers/models/nemotron_h/modeling_nemotron_h.py) | `nemotron_h` -> `NemotronHCausalLM` (the Super 120B-A12B variant uses a latent MoE routed path) | NVFP4 only |
 
 NVFP4 MoE export picks the plugin and FC1 weight layout from
 `EDGELLM_NVFP4_MOE_TARGET`; see [MoE Example](../examples/moe.md).
@@ -365,13 +363,51 @@ Qwen3.5 and Qwen3.6 checkpoints are unified text+VLM models. The same checkpoint
 
 | Model Series | Transformers Class | `tensorrt_edgellm` Handling | Supported Precisions |
 |--------------|--------------------|-----------------------|----------------------|
-| Qwen3-Omni | [`Qwen3OmniMoeForConditionalGeneration`](https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen3_omni_moe/modeling_qwen3_omni_moe.py) | `Qwen3OmniMoeThinkerCausalLM` + `Qwen3OmniMoeTalkerCausalLM` + visual/audio/Code2Wav | NVFP4 only |
+| Qwen3-Omni | [`Qwen3OmniMoeForConditionalGeneration`](https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen3_omni_moe/modeling_qwen3_omni_moe.py) | `Qwen3OmniMoeThinkerCausalLM` + `Qwen3OmniMoeTalkerCausalLM` + `CodePredictorCausalLM` + visual/audio/Code2Wav (six-engine layout; see the [Omni example](../examples/omni.md)) | NVFP4 only |
 | [Nemotron-Omni](https://huggingface.co/nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4/blob/main/modeling.py) | Checkpoint architecture `NemotronH_Nano_Omni_Reasoning_V3`; LLM is Nemotron-H compatible with [`NemotronHForCausalLM`](https://github.com/huggingface/transformers/blob/main/src/transformers/models/nemotron_h/modeling_nemotron_h.py) | `NemotronHCausalLM` + `NemotronOmniVisualModel` + `NemotronOmniAudioModel` | NVFP4 only |
+| Gemma4 E2B/E4B (text + image + audio) | [`Gemma4ForCausalLM`](https://github.com/huggingface/transformers/blob/main/src/transformers/models/gemma4/modeling_gemma4.py) | `gemma4` / `gemma4_text` -> text decoder (PLE, dual-RoPE) with paired-assistant MTP, plus `Gemma4VisualModel` (image) and `Gemma4AudioModel` (audio) | BF16/FP16 source checkpoints; paired-assistant MTP via a matched Gemma4 assistant checkpoint (released for both sizes); text + image + audio input |
+| Gemma4 31B (text + image) | [`Gemma4ForCausalLM`](https://github.com/huggingface/transformers/blob/main/src/transformers/models/gemma4/modeling_gemma4.py) | `gemma4` / `gemma4_text` -> text decoder (PLE, dual-RoPE) with paired-assistant MTP, plus `Gemma4VisualModel` for image input | BF16/FP16 source plus NVFP4; paired-assistant MTP via a matched Gemma4 assistant checkpoint; text + image input |
+| Gemma4 26B-A4B MoE (text + image) | [`Gemma4ForCausalLM`](https://github.com/huggingface/transformers/blob/main/src/transformers/models/gemma4/modeling_gemma4.py) | `gemma4` / `gemma4_text` -> text decoder (PLE, dual-RoPE) with GeGLU sparse-MoE FFN and paired-assistant MTP, plus `Gemma4VisualModel` for image input | NVFP4; paired-assistant MTP via a matched Gemma4 assistant checkpoint; text + image input |
+| Gemma4 Unified 12B | Checkpoint architecture `Gemma4UnifiedForConditionalGeneration`; text backbone compatible with [`Gemma4ForCausalLM`](https://github.com/huggingface/transformers/blob/main/src/transformers/models/gemma4/modeling_gemma4.py) | `gemma4_unified` -> Gemma4 text decoder (dual-RoPE, per-layer heterogeneous KV, decoder-side vision-block bidirectional attention) + `Gemma4UnifiedVisualModel` + `Gemma4UnifiedAudioModel` (encoder-free patch/PCM embedders) | FP16 LLM backbone; FP32 multimodal embedders; image and audio input |
 
 <details>
 <summary><b>Nemotron-Omni</b> checkpoints</summary>
 
 - [nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4](https://huggingface.co/nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4)
+
+</details>
+
+> **Note:** The end-to-end Omni [example workflow](../examples/omni.md) currently documents **Qwen3-Omni**. Nemotron-Omni is supported through its dedicated `NemotronOmniVisualModel` / `NemotronOmniAudioModel` component paths; follow the same export → engine-build → inference structure as the Qwen3-Omni example, substituting the Nemotron-Omni checkpoint.
+
+<details>
+<summary><b>Gemma4 E2B/E4B/12B/31B</b> checkpoints</summary>
+
+**Modality:** E2B, E4B, and the Unified 12B accept **text + image + audio**; 31B accepts **text + image**. E2B/E4B/31B support paired-assistant MTP.
+
+**Original (BF16/FP16):**
+- [google/gemma-4-E2B-it](https://huggingface.co/google/gemma-4-E2B-it)
+- [google/gemma-4-E4B-it](https://huggingface.co/google/gemma-4-E4B-it)
+- [google/gemma-4-12B-it](https://huggingface.co/google/gemma-4-12B-it)
+- [google/gemma-4-31B-it](https://huggingface.co/google/gemma-4-31B-it)
+
+**Quantized:**
+- [nvidia/Gemma-4-31B-IT-NVFP4](https://huggingface.co/nvidia/Gemma-4-31B-IT-NVFP4)
+
+**Paired MTP assistant checkpoints** (one per base; pair with the matching size — released for every size):
+- [google/gemma-4-E2B-it-assistant](https://huggingface.co/google/gemma-4-E2B-it-assistant)
+- [google/gemma-4-E4B-it-assistant](https://huggingface.co/google/gemma-4-E4B-it-assistant)
+- [google/gemma-4-31B-it-assistant](https://huggingface.co/google/gemma-4-31B-it-assistant)
+
+</details>
+
+<details>
+<summary><b>Gemma4 26B-A4B MoE</b> checkpoints</summary>
+
+**Quantized (NVFP4):**
+- [nvidia/Gemma-4-26B-A4B-NVFP4](https://huggingface.co/nvidia/Gemma-4-26B-A4B-NVFP4)
+
+**Paired MTP assistant:**
+- [google/gemma-4-26B-A4B-it-assistant](https://huggingface.co/google/gemma-4-26B-A4B-it-assistant)
 
 </details>
 
@@ -394,7 +430,7 @@ EAGLE3 draft checkpoints are detected by `draft_vocab_size` in `config.json` and
 
 ## DFlash Draft Models
 
-DFlash draft checkpoints are detected by `dflash_config` in `config.json` and exported with `DFlashDraftModel`. DFlash base export uses `--dflash-base --dflash-draft-dir <draft_checkpoint>`, and draft export uses `--dflash-draft --dflash-draft-dir <draft_checkpoint>`. DFlash draft checkpoints can be quantized with `tensorrt-edgellm-quantize draft`; NVFP4 backbone quantization and optional NVFP4 LM-head quantization are validated.
+DFlash draft checkpoints are detected by `dflash_config` in `config.json` and exported with `DFlashDraftModel`. Linear DFlash base export uses `--dflash-base --dflash-draft-dir <draft_checkpoint>`, Qwen3.5 hybrid DDTree base export uses `--dflash-tree-base --dflash-draft-dir <draft_checkpoint>`, and draft export uses `--dflash-draft --dflash-draft-dir <draft_checkpoint>`. Use the tree-base engine only with DFlash DDTree runtime settings such as `--specDraftTopK 8`, not with linear `--specDraftTopK 1`. DFlash draft checkpoints can be quantized with `tensorrt-edgellm-quantize draft`; NVFP4 backbone quantization and optional NVFP4 LM-head quantization are validated.
 
 So far DFlash support in TensorRT Edge-LLM is validated for Qwen3 and Qwen3.5 only. Other DFlash draft models in the z-lab collection are not tested for TensorRT Edge-LLM accuracy, acceptance rate, or runtime compatibility. For the listed pairs, match the paired HuggingFace generation behavior when evaluating performance: enable thinking for Qwen3.5 DFlash models and disable thinking for Qwen3 DFlash models.
 

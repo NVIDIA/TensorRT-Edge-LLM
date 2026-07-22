@@ -47,8 +47,8 @@
 
 
     <script src="../../_static/documentation_options.js?v=5929fcd5"></script>
-    <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
-    <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
     <script src="../../_static/copybutton.js?v=65e89d2a"></script>
     <script>let toggleHintShow = 'Click to show';</script>
@@ -56,11 +56,12 @@
     <script>let toggleOpenOnPrint = 'true';</script>
     <script src="../../_static/togglebutton.js?v=b8b12719"></script>
     <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
+    <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'cpp_api/kernels/imageUtilKernels';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.19.0';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = './_static/switcher.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.9.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.9.1';
         DOCUMENTATION_OPTIONS.show_version_warning_banner =
             false;
         </script>
@@ -71,12 +72,12 @@
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
     <link rel="next" title="Initialize Cos Sin Cache" href="initializeCosSinCache.html" />
-    <link rel="prev" title="Gemma4 Audio Attention" href="gemma4AudioAttention.html" />
+    <link rel="prev" title="Gemma4 Mtp Runtime Kernels" href="gemma4MTPRuntimeKernels.html" />
 
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.9.0" />
+  <meta name="docsearch:version" content="0.9.1" />
   
     
     <script src="../../_static/searchtools.js"></script>
@@ -395,11 +396,13 @@
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Customization</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/customization-guide.html">Customization Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/calibration-datasets.html">Calibration Dataset Customization</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/tensorrt-plugins.html">TensorRT Plugins Guide</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Testing</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/code-coverage.html">Code Coverage with SonarQube</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/few-layer-validation.html">Few-Layer Numeric Validation</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">APIs</span></p>
 <ul class="current nav bd-sidenav">
@@ -443,31 +446,36 @@
 <li class="toctree-l2 current active has-children"><a class="reference internal" href="index.html">Kernels Module</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
 <li class="toctree-l3"><a class="reference internal" href="NvFP4MoEUtils.html">Nv Fp4 Mo E Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="applyRopeWriteKV.html">Apply Rope Write KV</a></li>
+<li class="toctree-l3"><a class="reference internal" href="audioFbankKernels.html">Audio Fbank Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="batchEvictKernels.html">Batch Evict Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="buildLayout.html">Build Layout</a></li>
 <li class="toctree-l3"><a class="reference internal" href="causalConv1d.html">Causal Conv1d</a></li>
 <li class="toctree-l3"><a class="reference internal" href="common.html">Common</a></li>
 <li class="toctree-l3"><a class="reference internal" href="contextFMHARunner.html">Context FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="conversion.html">Conversion</a></li>
+<li class="toctree-l3"><a class="reference internal" href="cuteDslF16MoeRunner.html">Cute Dsl F16 Moe Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="cuteDslFFPARunner.html">Cute Dsl Ffpa Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="cuteDslFMHARunner.html">Cute Dsl FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="cuteDslGDNRunner.html">Cute Dsl Gdn Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="cuteDslGemmNvFp4Runner.html">Cute Dsl GEMM Nv Fp4 Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="cuteDslGemmRunner.html">Cute Dsl GEMM Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="cuteDslNvfp4MoeRunner.html">Cute Dsl Nvfp4 Moe Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="cuteDslNvfp4MoeSm110Runner.html">Cute Dsl Nvfp4 Moe Sm110 Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="cuteDslSSDRunner.html">Cute Dsl Ssd Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="ddtreeKernels.html">Ddtree Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="decoderXQARunner.html">Decoder XQA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="dequant.html">Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="dequantize.html">Dequantize</a></li>
-<li class="toctree-l3"><a class="reference internal" href="dflashAcceptKernels.html">Dflash Accept Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="dflashRuntimeKernels.html">Dflash Runtime Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="eagleAcceptKernels.html">EAGLE Accept Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="eagleUtilKernels.html">EAGLE Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="embeddingKernels.html">Embedding Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="f16MoeSupportKernels.html">F16 Moe Support Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="fmhaParams_v2.html">FMHA Params V2</a></li>
 <li class="toctree-l3"><a class="reference internal" href="fp4Quantize.html">Fp4 Quantize</a></li>
 <li class="toctree-l3"><a class="reference internal" href="gdnKernelUtils.html">Gdn Kernel Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="gemma4AudioAttention.html">Gemma4 Audio Attention</a></li>
+<li class="toctree-l3"><a class="reference internal" href="gemma4MTPRuntimeKernels.html">Gemma4 Mtp Runtime Kernels</a></li>
 <li class="toctree-l3 current active"><a class="current reference internal" href="#">Image Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="initializeCosSinCache.html">Initialize Cos Sin Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="int4GroupwiseGemm.html">Int4 Groupwise GEMM</a></li>
@@ -482,13 +490,16 @@
 <li class="toctree-l3"><a class="reference internal" href="moeAlignSumKernels.html">Moe Align Sum Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="moeMarlin.html">Moe Marlin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="moeMarlinIndicesKernels.html">Moe Marlin Indices Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="moePerExpertScaleKernels.html">Moe Per Expert Scale Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="moeSigmoidGroupTopkKernels.html">Moe Sigmoid Group Topk Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="moeTopkSoftmaxKernels.html">Moe Topk Softmax Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="mtpStateScatterKernels.html">Mtp State Scatter Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="nvfp4MoeTypes.html">Nvfp4 Moe Types</a></li>
 <li class="toctree-l3"><a class="reference internal" href="nvfp4_dequant.html">Nvfp4 Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="nvfp4_tensor.html">Nvfp4 Tensor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scaleConvert.html">Scale Convert</a></li>
 <li class="toctree-l3"><a class="reference internal" href="selectiveStateUpdate.html">Selective State Update</a></li>
+<li class="toctree-l3"><a class="reference internal" href="speculativeKernelsUtils.html">Speculative Kernels Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="ssdVarlenMetadata.html">Ssd Varlen Metadata</a></li>
 <li class="toctree-l3"><a class="reference internal" href="talkerMLPKernels.html">Talker Mlp Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="utilKernels.html">Util Kernels</a></li>
@@ -499,6 +510,9 @@
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/audioRunner.html">Audio Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/audioUtils.html">Audio Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/code2WavRunner.html">Code2 Wav Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4AudioRunner.html">Gemma4 Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4UnifiedAudioRunner.html">Gemma4 Unified Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4UnifiedVisionRunner.html">Gemma4 Unified Vision Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4ViTRunner.html">Gemma4 ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/imageUtils.html">Image Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/internViTRunner.html">Intern ViT Runner</a></li>
@@ -507,14 +521,21 @@
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/nemotronOmniAudioRunner.html">Nemotron Omni Audio Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/nemotronOmniViTRunner.html">Nemotron Omni ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/phi4mmViTRunner.html">Phi4mm ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwen25vlViTRunner.html">Qwen25vl ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwen3omniViTRunner.html">Qwen3omni ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwen3vlViTRunner.html">Qwen3vl ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/qwenViTRunner.html">Qwen ViT Runner</a></li>
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../plugins/index.html">Plugins Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/allReducePlugin.html">All Reduce Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/attentionPlugin.html">Attention Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/causalConv1dPlugin.html">Causal Conv1d Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/dflashTargetKVCacheUpdatePlugin.html">Dflash Target KV Cache Update Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/fp16MoePlugin.html">Fp16 Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/fusedNvfp4GemmAllReducePlugin.html">Fused Nvfp4 GEMM All Reduce Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/gatedDeltaNetPlugin.html">Gated Delta Net Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/gemma4AudioAttentionPlugin.html">Gemma4 Audio Attention Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/int4GroupwiseGemmPlugin.html">Int4 Groupwise GEMM Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/int4MoePlugin.html">Int4 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/mambaPlugin.html">Mamba Plugin</a></li>
@@ -535,24 +556,29 @@
 <li class="toctree-l3"><a class="reference internal" href="../runtime/audioLoader.html">Audio Loader</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/audioUtils.html">Audio Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/decoderRegistry.html">Decoder Registry</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/decoderUtils.html">Decoder Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/decodingInferenceContext.html">Decoding Inference Context</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/decodingStrategy.html">Decoding Strategy</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/deepstackBinding.html">Deepstack Binding</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/deploymentConfig.html">Deployment Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/dflashDecodeUtils.html">Dflash Decode Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/dflashDecoder.html">Dflash Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/eagleDecoder.html">EAGLE Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/embeddingPreprocessor.html">Embedding Preprocessor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/engineExecutor.html">Engine Executor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/externalWeightManager.html">External Weight Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/gemma4EmbeddingPreprocessor.html">Gemma4 Embedding Preprocessor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/gemma4MTPDecoder.html">Gemma4 Mtp Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/hybridCacheManager.html">Hybrid Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/imageUtils.html">Image Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/inferenceDims.html">Inference Dims</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/inferencePhase.html">Inference Phase</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/kvCacheManager.html">KV Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/layerDebugger.html">Layer Debugger</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/llmEngineConfig.html">LLM Engine Config</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/llmInferenceRuntime.html">LLM Inference Runtime</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/llmRuntimeUtils.html">LLM Runtime Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/logitBias.html">Logit Bias</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/loraManager.html">Lora Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/mambaCacheManager.html">Mamba Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/melSpectrogram.html">Mel Spectrogram</a></li>
@@ -562,7 +588,6 @@
 <li class="toctree-l3"><a class="reference internal" href="../runtime/registryBuilder.html">Registry Builder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/ropeCache.html">Rope Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/sharedResources.html">Shared Resources</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../runtime/specDecodeUtils.html">Spec Decode Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/stepPreparer.html">Step Preparer</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/streaming.html">Streaming</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/systemPromptKVCache.html">System Prompt KV Cache</a></li>
@@ -737,6 +762,214 @@
 </div>
 </dd></dl>
 
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm6kernel14normalizeImageERKN2rt6TensorERKN2rt6TensorERKN2rt6TensorERN2rt6TensorE12cudaStream_t">
+<span id="_CPPv3N11trt_edgellm6kernel14normalizeImageERKN2rt6TensorERKN2rt6TensorERKN2rt6TensorERN2rt6TensorE12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm6kernel14normalizeImageERKN2rt6TensorERKN2rt6TensorERKN2rt6TensorERN2rt6TensorE12cudaStream_t"></span><span id="trt_edgellm::kernel::normalizeImage__rt::TensorCR.rt::TensorCR.rt::TensorCR.rt::TensorR.cudaStream_t"></span><span class="target" id="imageUtilKernels_8cu_1abab86ce795f99c5ac6a1fda043d5b0b2"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="speculativeKernelsUtils.html#_CPPv4N11trt_edgellm6kernelE" title="trt_edgellm::kernel"><span class="n"><span class="pre">kernel</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">normalizeImage</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">originalImage</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">mean</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">std</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">normalizedImage</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm6kernel14normalizeImageERKN2rt6TensorERKN2rt6TensorERKN2rt6TensorERN2rt6TensorE12cudaStream_t" title="Link to this definition">#</a><br /></dt>
+<dd><p>The kernel will normalize image data and convert to half Inputs: originalImage [GPU, UInt8]: [batch, height, width, channels] mean [GPU, Float]: [channels] std [GPU, Float]: [channels] stream: CUDA stream for execution Outputs: normalizedImage [GPU, Half]: [batch, height, width, channels] </p>
+<dl class="field-list simple">
+<dt class="field-odd">Throws<span class="colon">:</span></dt>
+<dd class="field-odd"><p><span><span class="cpp-expr sig sig-inline cpp"><a class="reference internal" href="#_CPPv4N11trt_edgellm6kernel14normalizeImageERKN2rt6TensorERKN2rt6TensorERKN2rt6TensorERN2rt6TensorE12cudaStream_t" title="trt_edgellm::kernel::normalizeImage::std"><span class="n">std</span></a><span class="p">::</span><span class="n">runtime_error</span></span></span> – if image has invalid shape, data type or location </p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm6kernel25transposeToPatchGemma4ViTERKN2rt6TensorERN2rt6TensorEK7int64_tK7int64_t12cudaStream_t">
+<span id="_CPPv3N11trt_edgellm6kernel25transposeToPatchGemma4ViTERKN2rt6TensorERN2rt6TensorEK7int64_tK7int64_t12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm6kernel25transposeToPatchGemma4ViTERKN2rt6TensorERN2rt6TensorEK7int64_tK7int64_t12cudaStream_t"></span><span id="trt_edgellm::kernel::transposeToPatchGemma4ViT__rt::TensorCR.rt::TensorR.int64_tC.int64_tC.cudaStream_t"></span><span class="target" id="imageUtilKernels_8cu_1a323ef1ded03524123f09eb44921865d3"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="speculativeKernelsUtils.html#_CPPv4N11trt_edgellm6kernelE" title="trt_edgellm::kernel"><span class="n"><span class="pre">kernel</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">transposeToPatchGemma4ViT</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">originalImage</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">inputPatches</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int64_t</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">inputOffset</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int64_t</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">patchSize</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm6kernel25transposeToPatchGemma4ViTERKN2rt6TensorERN2rt6TensorEK7int64_tK7int64_t12cudaStream_t" title="Link to this definition">#</a><br /></dt>
+<dd><p>The kernel will transpose image data to patch format for Gemma4 VIT (channel-last within patch) Gemma4’s vision encoder expects patches with element order [patchH, patchW, C] matching HuggingFace convert_image_to_patches: reshape(C,pH,ps,pW,ps).permute(1,3,2,4,0).reshape(pH*pW,-1) Inputs: originalImage [GPU, Half]: Current image [1, height, width, channels] inputOffset: Offset in elements into inputPatches (prevCuSeqlen * inputDim) patchSize: Patch size for the vision transformer stream: CUDA stream for execution Outputs: inputPatches [GPU, Half]: Total VIT input tensor [totalSeqLength, inputDim] inputDim = patchSize * patchSize * channels </p>
+<dl class="field-list simple">
+<dt class="field-odd">Throws<span class="colon">:</span></dt>
+<dd class="field-odd"><p><span><span class="cpp-expr sig sig-inline cpp"><span class="n">std</span><span class="p">::</span><span class="n">runtime_error</span></span></span> – if image has invalid shape, data type or location </p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm6kernel23transposeToPatchQwenViTERKN2rt6TensorERN2rt6TensorEK7int64_tK7int64_tK7int64_tK7int64_t12cudaStream_t">
+<span id="_CPPv3N11trt_edgellm6kernel23transposeToPatchQwenViTERKN2rt6TensorERN2rt6TensorEK7int64_tK7int64_tK7int64_tK7int64_t12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm6kernel23transposeToPatchQwenViTERKN2rt6TensorERN2rt6TensorEK7int64_tK7int64_tK7int64_tK7int64_t12cudaStream_t"></span><span id="trt_edgellm::kernel::transposeToPatchQwenViT__rt::TensorCR.rt::TensorR.int64_tC.int64_tC.int64_tC.int64_tC.cudaStream_t"></span><span class="target" id="imageUtilKernels_8cu_1ad30453d5f3cbadc74444e9c578f28fed"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="speculativeKernelsUtils.html#_CPPv4N11trt_edgellm6kernelE" title="trt_edgellm::kernel"><span class="n"><span class="pre">kernel</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">transposeToPatchQwenViT</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">originalImage</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">inputPatches</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int64_t</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">inputOffset</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int64_t</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">temporalPatchSize</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int64_t</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">patchSize</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int64_t</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">mergeSize</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm6kernel23transposeToPatchQwenViTERKN2rt6TensorERN2rt6TensorEK7int64_tK7int64_tK7int64_tK7int64_t12cudaStream_t" title="Link to this definition">#</a><br /></dt>
+<dd><p>The kernel will transpose image data to patch format for Qwen2-VL and Qwen2.5-VL VIT The transpose is corresponding to the following python code: <a class="github reference external" href="https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen2_vl/image_processing_qwen2_vl.py#L299">huggingface/transformers</a> Inputs: originalImage [GPU, Half]: Current image [T, height, width, channels] inputOffset: Offset of the input patches, denoting the start index of the current image temporalPatchSize: Temporal patch size for the vision transformer patchSize: Patch size for the vision transformer mergeSize: Merge size for the vision transformer stream: CUDA stream for execution Outputs: inputPatches [GPU, Half]: Total VIT input tensor of all images [totalSeqLength, inputDim] curSeqLength = gridT * gridH * gridW * mergeSize * mergeSize totalSeqLength = sum(curSeqLength) over all images inputDim = channels * temporalPatchSize * patchSize * patchSize </p>
+<dl class="field-list simple">
+<dt class="field-odd">Throws<span class="colon">:</span></dt>
+<dd class="field-odd"><p><span><span class="cpp-expr sig sig-inline cpp"><span class="n">std</span><span class="p">::</span><span class="n">runtime_error</span></span></span> – if image has invalid shape, data type or location </p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm6kernel30transposeToPatchInternVLPhi4MMERKN2rt6TensorERN2rt6TensorEK7int64_t12cudaStream_t">
+<span id="_CPPv3N11trt_edgellm6kernel30transposeToPatchInternVLPhi4MMERKN2rt6TensorERN2rt6TensorEK7int64_t12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm6kernel30transposeToPatchInternVLPhi4MMERKN2rt6TensorERN2rt6TensorEK7int64_t12cudaStream_t"></span><span id="trt_edgellm::kernel::transposeToPatchInternVLPhi4MM__rt::TensorCR.rt::TensorR.int64_tC.cudaStream_t"></span><span class="target" id="imageUtilKernels_8cu_1ac33eaf02210ae0477d5e34d4f1470b47"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="speculativeKernelsUtils.html#_CPPv4N11trt_edgellm6kernelE" title="trt_edgellm::kernel"><span class="n"><span class="pre">kernel</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">transposeToPatchInternVLPhi4MM</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">originalImage</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">inputPatches</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int64_t</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">inputOffset</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm6kernel30transposeToPatchInternVLPhi4MMERKN2rt6TensorERN2rt6TensorEK7int64_t12cudaStream_t" title="Link to this definition">#</a><br /></dt>
+<dd><p>The kernel will transpose image data to patch format for InternVL VIT Inputs: originalImage [GPU, Half]: Current image [1, height, width, channels] inputOffset: Offset of the input patches, denoting the start index of the current image stream: CUDA stream for execution Outputs: inputPatches [GPU, Half]: Total VIT input tensor of all images [totalNumBlocks, channels, blockSizeH, blockSizeW] curNumBlocks = blockH * blockW totalNumBlocks = sum(curNumBlocks) over all images </p>
+<dl class="field-list simple">
+<dt class="field-odd">Throws<span class="colon">:</span></dt>
+<dd class="field-odd"><p><span><span class="cpp-expr sig sig-inline cpp"><span class="n">std</span><span class="p">::</span><span class="n">runtime_error</span></span></span> – if image has invalid shape, data type or location </p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm6kernel29phi4mmPostprocessVisionTokensERKN2rt6TensorERN2rt6TensorERK11Phi4MMIndexRK8Phi4MMGN7int64_t12cudaStream_t">
+<span id="_CPPv3N11trt_edgellm6kernel29phi4mmPostprocessVisionTokensERKN2rt6TensorERN2rt6TensorERK11Phi4MMIndexRK8Phi4MMGN7int64_t12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm6kernel29phi4mmPostprocessVisionTokensERKN2rt6TensorERN2rt6TensorERK11Phi4MMIndexRK8Phi4MMGN7int64_t12cudaStream_t"></span><span id="trt_edgellm::kernel::phi4mmPostprocessVisionTokens__rt::TensorCR.rt::TensorR.Phi4MMIndexCR.Phi4MMGNCR.int64_t.cudaStream_t"></span><span class="target" id="imageUtilKernels_8cu_1a7d99c876f211b3954341d8be405fd853"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="speculativeKernelsUtils.html#_CPPv4N11trt_edgellm6kernelE" title="trt_edgellm::kernel"><span class="n"><span class="pre">kernel</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">phi4mmPostprocessVisionTokens</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">srcEmbedding</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">dstEmbedding</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm6kernel11Phi4MMIndexE" title="trt_edgellm::kernel::Phi4MMIndex"><span class="n"><span class="pre">Phi4MMIndex</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">indices</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm6kernel8Phi4MMGNE" title="trt_edgellm::kernel::Phi4MMGN"><span class="n"><span class="pre">Phi4MMGN</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">gn</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int64_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">totalOutTokens</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm6kernel29phi4mmPostprocessVisionTokensERKN2rt6TensorERN2rt6TensorERK11Phi4MMIndexRK8Phi4MMGN7int64_t12cudaStream_t" title="Link to this definition">#</a><br /></dt>
+<dd><p>phi4mmPostprocessVisionTokens Purpose: Construct the Phi-4MM HD image token sequence for a batch by gathering from raw ViT tokens and inserting Grid Newline (GN) separators.</p>
+<p>Inputs:<ul class="simple">
+<li><p>src: [numViTTokens, hidden] FP16 Raw ViT tokens for all images (global + sub), concatenated across images.</p></li>
+<li><p>dst: [totalOutTokens, hidden] FP16 Output buffer for the packed HD sequence.</p></li>
+<li><p>idx: <a class="reference internal" href="#structtrt__edgellm_1_1kernel_1_1Phi4MMIndex"><span class="std std-ref">Phi4MMIndex</span></a> (device indices and sizes)</p></li>
+<li><p>gn: <a class="reference internal" href="#structtrt__edgellm_1_1kernel_1_1Phi4MMGN"><span class="std std-ref">Phi4MMGN</span></a> (newline and separator embeddings) Output layout per image (contiguous in <code class="docutils literal notranslate"><span class="pre">dst</span></code>): 1) Sub segment: rows = tokensPerSide*hb, cols = tokensPerSide*wb, strideOut = cols+1; last col is subGN (newline). Non-newline positions gather from src via (srcSubStart + blockId*256 + patchId). 2) One glb_GN token (glbGN). 3) Global segment: 16x16 grid with strideOut = 17; last col is subGN; others gather from srcGlbStart.</p></li>
+</ul>
+</p>
+<p>Launch config:<ul class="simple">
+<li><p>gridDim.x = idx.totalOutTokens, blockDim.x = 128</p></li>
+<li><p>Each CUDA block writes one output token vector; threads cooperate to copy <code class="docutils literal notranslate"><span class="pre">idx.hidden</span></code> elements. </p></li>
+</ul>
+</p>
+<dl class="field-list simple">
+<dt class="field-odd">Throws<span class="colon">:</span></dt>
+<dd class="field-odd"><p><span><span class="cpp-expr sig sig-inline cpp"><span class="n">std</span><span class="p">::</span><span class="n">runtime_error</span></span></span> – invalid tensor shape, location or data type </p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm6kernel23initRotaryPosEmbQwenViTERN2rt6TensorERKNSt6vectorI7int64_tEEK7int64_tK7int64_tKfKf12cudaStream_t">
+<span id="_CPPv3N11trt_edgellm6kernel23initRotaryPosEmbQwenViTERN2rt6TensorERKNSt6vectorI7int64_tEEK7int64_tK7int64_tKfKf12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm6kernel23initRotaryPosEmbQwenViTERN2rt6TensorERKNSt6vectorI7int64_tEEK7int64_tK7int64_tKfKf12cudaStream_t"></span><span id="trt_edgellm::kernel::initRotaryPosEmbQwenViT__rt::TensorR.std::vector:int64_t:CR.int64_tC.int64_tC.floatC.floatC.cudaStream_t"></span><span class="target" id="imageUtilKernels_8cu_1a7d3398f48dd1eb6b536634f014ce7904"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="speculativeKernelsUtils.html#_CPPv4N11trt_edgellm6kernelE" title="trt_edgellm::kernel"><span class="n"><span class="pre">kernel</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">initRotaryPosEmbQwenViT</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">rotaryPosEmb</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">int64_t</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">gridTHW</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int64_t</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">mergeSize</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int64_t</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">startIdx</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="kt"><span class="pre">float</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">rotaryBaseFrequency</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="kt"><span class="pre">float</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">scale</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm6kernel23initRotaryPosEmbQwenViTERN2rt6TensorERKNSt6vectorI7int64_tEEK7int64_tK7int64_tKfKf12cudaStream_t" title="Link to this definition">#</a><br /></dt>
+<dd><p>The kernel will initialize the rotary position embeddings for Qwen2.5-VL VIT Inputs: gridTHW: Image grid dimensions [T, H, W] (Temporal, Height, Width) mergeSize: Merge size for the vision transformer startIdx: Start index for the current image rotaryBaseFrequency: Rotary base frequency scale: Scale for the rotary position embeddings stream: CUDA stream for execution Outputs: rotaryPosEmb [GPU, Float]: Rotary position embeddings tensor [totalSeqLength, vitPosEmbDim] </p>
+<dl class="field-list simple">
+<dt class="field-odd">Throws<span class="colon">:</span></dt>
+<dd class="field-odd"><p><span><span class="cpp-expr sig sig-inline cpp"><span class="n">std</span><span class="p">::</span><span class="n">runtime_error</span></span></span> – if image has invalid shape, data type or location </p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm6kernel25initRotaryPosEmbGemma4ViTERN2rt6TensorERKN2rt6TensorEf12cudaStream_t">
+<span id="_CPPv3N11trt_edgellm6kernel25initRotaryPosEmbGemma4ViTERN2rt6TensorERKN2rt6TensorEf12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm6kernel25initRotaryPosEmbGemma4ViTERN2rt6TensorERKN2rt6TensorEf12cudaStream_t"></span><span id="trt_edgellm::kernel::initRotaryPosEmbGemma4ViT__rt::TensorR.rt::TensorCR.float.cudaStream_t"></span><span class="target" id="imageUtilKernels_8cu_1a913fd6cdf45d955380718b13b0ad5ded"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="speculativeKernelsUtils.html#_CPPv4N11trt_edgellm6kernelE" title="trt_edgellm::kernel"><span class="n"><span class="pre">kernel</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">initRotaryPosEmbGemma4ViT</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">rotaryPosEmb</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">pixelPositionIds</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="kt"><span class="pre">float</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">rotaryBaseFrequency</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm6kernel25initRotaryPosEmbGemma4ViTERN2rt6TensorERKN2rt6TensorEf12cudaStream_t" title="Link to this definition">#</a><br /></dt>
+<dd><p>The kernel will initialize Gemma4 vision 2-D rotary angle embeddings from pixel position ids Inputs: pixelPositionIds [GPU, Int64]: Pixel position ids [totalSeqLength, 2] (x, y) rotaryBaseFrequency: Rotary base frequency stream: CUDA stream for execution Outputs: rotaryPosEmb [GPU, Float]: Rotary angle embeddings tensor [totalSeqLength, headDim] </p>
+<dl class="field-list simple">
+<dt class="field-odd">Throws<span class="colon">:</span></dt>
+<dd class="field-odd"><p><span><span class="cpp-expr sig sig-inline cpp"><span class="n">std</span><span class="p">::</span><span class="n">runtime_error</span></span></span> – if tensors have invalid shape, data type or location </p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm6kernel27initPoolingWeightsGemma4ViTERN2rt6TensorE7int64_t7int64_t7int64_t7int64_t7int64_t12cudaStream_t">
+<span id="_CPPv3N11trt_edgellm6kernel27initPoolingWeightsGemma4ViTERN2rt6TensorE7int64_t7int64_t7int64_t7int64_t7int64_t12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm6kernel27initPoolingWeightsGemma4ViTERN2rt6TensorE7int64_t7int64_t7int64_t7int64_t7int64_t12cudaStream_t"></span><span id="trt_edgellm::kernel::initPoolingWeightsGemma4ViT__rt::TensorR.int64_t.int64_t.int64_t.int64_t.int64_t.cudaStream_t"></span><span class="target" id="imageUtilKernels_8cu_1aa6268991c16342b37d31d5d588de7b39"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="speculativeKernelsUtils.html#_CPPv4N11trt_edgellm6kernelE" title="trt_edgellm::kernel"><span class="n"><span class="pre">kernel</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">initPoolingWeightsGemma4ViT</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">poolingWeights</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int64_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">patchStart</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int64_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">softStart</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int64_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">patchHeight</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int64_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">patchWidth</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int64_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">poolingKernelSize</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm6kernel27initPoolingWeightsGemma4ViTERN2rt6TensorE7int64_t7int64_t7int64_t7int64_t7int64_t12cudaStream_t" title="Link to this definition">#</a><br /></dt>
+<dd><p>The kernel will initialize Gemma4 vision dense pooling weights on GPU Inputs: patchStart: First patch column for the current image in the packed patch tensor softStart: First soft-token row for the current image in the pooled output patchHeight: Patch-grid height for the current image patchWidth: Patch-grid width for the current image poolingKernelSize: Spatial pooling kernel size stream: CUDA stream for execution Outputs: poolingWeights [GPU, Half]: Dense pooling weight tensor [totalSoftTokens, totalPatches] </p>
+<dl class="field-list simple">
+<dt class="field-odd">Throws<span class="colon">:</span></dt>
+<dd class="field-odd"><p><span><span class="cpp-expr sig sig-inline cpp"><span class="n">std</span><span class="p">::</span><span class="n">runtime_error</span></span></span> – if tensors have invalid shape, data type or location </p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm6kernel23initFastPosEmbedQwenViTERN2rt6TensorERN2rt6TensorERKNSt6vectorI7int64_tEEK7int64_tK7int64_tK7int64_t12cudaStream_t">
+<span id="_CPPv3N11trt_edgellm6kernel23initFastPosEmbedQwenViTERN2rt6TensorERN2rt6TensorERKNSt6vectorI7int64_tEEK7int64_tK7int64_tK7int64_t12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm6kernel23initFastPosEmbedQwenViTERN2rt6TensorERN2rt6TensorERKNSt6vectorI7int64_tEEK7int64_tK7int64_tK7int64_t12cudaStream_t"></span><span id="trt_edgellm::kernel::initFastPosEmbedQwenViT__rt::TensorR.rt::TensorR.std::vector:int64_t:CR.int64_tC.int64_tC.int64_tC.cudaStream_t"></span><span class="target" id="imageUtilKernels_8cu_1ace886deb32c7aaa8977fa6c8cb59c997"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="speculativeKernelsUtils.html#_CPPv4N11trt_edgellm6kernelE" title="trt_edgellm::kernel"><span class="n"><span class="pre">kernel</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">initFastPosEmbedQwenViT</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">fastPosEmbedIdx</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">fastPosEmbedWeight</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">int64_t</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">gridTHW</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int64_t</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">mergeSize</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int64_t</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">numGridPerSide</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int64_t</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">startIdx</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em>,</dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm6kernel23initFastPosEmbedQwenViTERN2rt6TensorERN2rt6TensorERKNSt6vectorI7int64_tEEK7int64_tK7int64_tK7int64_t12cudaStream_t" title="Link to this definition">#</a><br /></dt>
+<dd><p>The kernel will initialize the fast position embeddings for Qwen3-VL VIT Inputs gridTHW: Image grid dimensions [T, H, W] (only H and W are used) mergeSize: Merge size for the vision transformer numGridPerSide: Number of grid per side for the vision transformer startIdx: Start index for the image stream: CUDA stream for execution Outputs: fastPosEmbedIdx [GPU, Int64]: Fast position embeddings index tensor [4, totalSeqLength] fastPosEmbedWeight [GPU, Half]: Fast position embeddings weight tensor [4, totalSeqLength] </p>
+<dl class="field-list simple">
+<dt class="field-odd">Throws<span class="colon">:</span></dt>
+<dd class="field-odd"><p><span><span class="cpp-expr sig sig-inline cpp"><span class="n">std</span><span class="p">::</span><span class="n">runtime_error</span></span></span> – if image has invalid shape, data type or location </p>
+</dd>
+</dl>
+</dd></dl>
+
 </section>
 
 
@@ -750,12 +983,12 @@
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="gemma4AudioAttention.html"
+       href="gemma4MTPRuntimeKernels.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Gemma4 Audio Attention</p>
+        <p class="prev-next-title">Gemma4 Mtp Runtime Kernels</p>
       </div>
     </a>
     <a class="right-next"
@@ -805,6 +1038,15 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm6kernel8Phi4MMGN5glbGNE"><code class="docutils literal notranslate"><span class="pre">glbGN</span></code></a></li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm6kernel14normalizeImageERKN2rt6TensorERKN2rt6TensorERKN2rt6TensorERN2rt6TensorE12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">normalizeImage()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm6kernel25transposeToPatchGemma4ViTERKN2rt6TensorERN2rt6TensorEK7int64_tK7int64_t12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">transposeToPatchGemma4ViT()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm6kernel23transposeToPatchQwenViTERKN2rt6TensorERN2rt6TensorEK7int64_tK7int64_tK7int64_tK7int64_t12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">transposeToPatchQwenViT()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm6kernel30transposeToPatchInternVLPhi4MMERKN2rt6TensorERN2rt6TensorEK7int64_t12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">transposeToPatchInternVLPhi4MM()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm6kernel29phi4mmPostprocessVisionTokensERKN2rt6TensorERN2rt6TensorERK11Phi4MMIndexRK8Phi4MMGN7int64_t12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">phi4mmPostprocessVisionTokens()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm6kernel23initRotaryPosEmbQwenViTERN2rt6TensorERKNSt6vectorI7int64_tEEK7int64_tK7int64_tKfKf12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">initRotaryPosEmbQwenViT()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm6kernel25initRotaryPosEmbGemma4ViTERN2rt6TensorERKN2rt6TensorEf12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">initRotaryPosEmbGemma4ViT()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm6kernel27initPoolingWeightsGemma4ViTERN2rt6TensorE7int64_t7int64_t7int64_t7int64_t7int64_t12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">initPoolingWeightsGemma4ViT()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm6kernel23initFastPosEmbedQwenViTERN2rt6TensorERN2rt6TensorERKNSt6vectorI7int64_tEEK7int64_tK7int64_tK7int64_t12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">initFastPosEmbedQwenViT()</span></code></a></li>
 </ul>
   </nav></div>
 
@@ -896,9 +1138,9 @@
         <div class="footer-item">
 <div class="extra_footer">
   
-  <p>Last updated on July 02, 2026.</p>
+  <p>Last updated on July 22, 2026.</p>
   
-  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/30941a6">30941a6</a>.</p>
+  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/f98267f">f98267f</a>.</p>
   
 </div></div>
       

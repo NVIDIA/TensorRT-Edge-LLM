@@ -1,6 +1,6 @@
 String Utils
 ============
 
-.. doxygenfile:: common/stringUtils.h
+.. doxygenfunction:: trt_edgellm::format::fmtstr
    :project: TensorRT Edge-LLM
 

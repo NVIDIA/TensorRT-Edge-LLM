@@ -1,0 +1,25 @@
+All Reduce Plugin
+=================
+
+.. doxygenclass:: trt_edgellm::plugins::AllReducePlugin
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::plugins::AllReducePluginCreator
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::plugins::registerNcclCommForAllReducePlugin
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::plugins::getNcclRegistrationForDevice
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::plugins::getNcclCommForDevice
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::plugins::getNcclAllReduceFunc
+   :project: TensorRT Edge-LLM
+

@@ -1,0 +1,12 @@
+Gemma4 Mtp Runtime Kernels
+==========================
+
+.. doxygenfunction:: trt_edgellm::kernel::launchGemma4MTPBuildVerifyTokens
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchGemma4MTPGatherSeedHidden
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchGemma4MTPStoreDraftToken
+   :project: TensorRT Edge-LLM
+

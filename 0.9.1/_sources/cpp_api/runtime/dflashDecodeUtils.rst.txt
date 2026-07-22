@@ -1,0 +1,9 @@
+Dflash Decode Utils
+===================
+
+.. doxygenfunction:: trt_edgellm::rt::dflash_utils::runtimeBlockSize
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::dflash_utils::shouldUseDDTree
+   :project: TensorRT Edge-LLM
+

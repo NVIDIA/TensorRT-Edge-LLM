@@ -16,3 +16,9 @@ Layer Profiler
    :members:
    :undoc-members:
 
+.. doxygenfunction:: trt_edgellm::layerProfiler::enableLayerProfilers
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::layerProfiler::disableLayerProfilers
+   :project: TensorRT Edge-LLM
+

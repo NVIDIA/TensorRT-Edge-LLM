@@ -64,6 +64,43 @@ $QUANT_ROOT/
 └── talker/         # standalone HF NVFP4 ckpt, model_type=qwen3_omni_moe_talker
 ```
 
+### Optional: CodePredictor FP8
+
+By default the CodePredictor stays FP16 (above the NVFP4 backbone path
+and in any FP16 baseline). CP is a 5-layer decoder with 15 lm_heads that
+runs 15 sequential AR steps per audio frame, so its per-frame cost is
+disproportionate to its parameter count. Adding `--cp_quantization fp8`
+quantizes only the CP body Linears (q/k/v/o + gate/up) at FP8 with
+per-channel weight + per-tensor static activation scales; `down_proj`, the
+15 lm_heads, and CP KV-cache BMM stay FP16 because static per-tensor FP8
+on the CP's `silu(gate)*up` intermediate ([-39.5, 72.4]) drops top-1 codec
+agreement below 80%.
+
+The CP FP8 pass runs against the original HF root (independent of the
+NVFP4 Thinker / Talker checkpoints from Part 1 — CP is excluded from the
+NVFP4 pass, so this command is what quantizes it). Part 3's engine build
+consumes NVFP4 Thinker + Talker from `$QUANT_ROOT/{thinker,talker}` and
+CP FP8 from `$QUANT_ROOT/cp_fp8` side by side.
+
+```bash
+tensorrt-edgellm-quantize llm \
+    --model_dir  $HF_ROOT \
+    --output_dir $QUANT_ROOT/cp_fp8 \
+    --cp_quantization fp8 \
+    --text_dataset cnn_dailymail
+```
+
+Then export the `code_predictor` component from the CP-quantized checkpoint;
+the Thinker / Talker / audio / visual / code2wav components come from the
+original HF root unchanged:
+
+```bash
+tensorrt-edgellm-export \
+    --components code_predictor \
+    $QUANT_ROOT/cp_fp8 $ONNX/multimodal
+```
+
+
 ---
 
 ## Part 2: Export ONNX

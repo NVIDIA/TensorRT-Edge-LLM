@@ -1,6 +1,15 @@
 Gdn Kernel Utils
 ================
 
-.. doxygenfile:: kernels/gdnKernels/gdnKernelUtils.cuh
+.. doxygenfunction:: trt_edgellm::launchGdnCalCuSeqLens
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::launchGdnL2NormQK
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::launchGdnDDTreePrecompute
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::launchGdnStateTranspose
    :project: TensorRT Edge-LLM
 

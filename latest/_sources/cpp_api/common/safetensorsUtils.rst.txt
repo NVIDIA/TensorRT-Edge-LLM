@@ -1,6 +1,9 @@
 Safetensors Utils
 =================
 
-.. doxygenfile:: common/safetensorsUtils.h
+.. doxygenfunction:: trt_edgellm::rt::safetensors::saveSafetensors
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::safetensors::loadSafetensors
    :project: TensorRT Edge-LLM
 

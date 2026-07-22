@@ -1,8 +1,25 @@
 LLM Engine Config
 =================
 
+.. doxygenstruct:: trt_edgellm::rt::Gemma4MTPKVSharingEntry
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
 .. doxygenstruct:: trt_edgellm::rt::LLMEngineConfig
    :project: TensorRT Edge-LLM
    :members:
    :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::parseEngineConfig
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::parseDraftEngineConfig
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::formatEngineConfig
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::validateAgainstEngine
+   :project: TensorRT Edge-LLM
 

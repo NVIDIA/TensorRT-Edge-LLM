@@ -6,3 +6,6 @@ Gemma4 Audio Attention
    :members:
    :undoc-members:
 
+.. doxygenfunction:: trt_edgellm::kernel::gemma4AudioAttentionForward
+   :project: TensorRT Edge-LLM
+

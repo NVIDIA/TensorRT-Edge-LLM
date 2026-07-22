@@ -8,8 +8,8 @@ Complete workflow for Mixture of Experts (MoE) models using pre-quantized INT4 o
 
 > **Note:** NVFP4 MoE uses separate plugins with different FC1 weight layouts:
 > `Nvfp4MoePlugin` on SM100/101/110 (default) and `NvFP4MoEPluginGeforce` on
-> SM120/121. Set `EDGELLM_NVFP4_MOE_TARGET=sm12x` before export for SM120/SM121
-> deployments; re-export if you change deployment GPU.
+> SM120/121. Set `EDGELLM_NVFP4_MOE_TARGET=sm12x` before export for consumer
+> Blackwell (including DGX Spark GB10); re-export if you change deployment GPU.
 
 > **Prerequisites:** Complete the [Installation Guide](../getting_started/installation.md) before proceeding.
 

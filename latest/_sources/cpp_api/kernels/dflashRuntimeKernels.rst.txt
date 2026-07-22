@@ -1,6 +1,15 @@
 Dflash Runtime Kernels
 ======================
 
-.. doxygenfile:: kernels/speculative/dflashRuntimeKernels.h
+.. doxygenfunction:: trt_edgellm::kernel::launchDFlashTargetKVCacheUpdate
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchDFlashPrepareProposalInputs
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchDFlashPrepareBaseVerifyInputs
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchDFlashBuildLinearVerifyInputs
    :project: TensorRT Edge-LLM
 

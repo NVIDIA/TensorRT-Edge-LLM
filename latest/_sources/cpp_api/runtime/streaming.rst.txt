@@ -26,3 +26,24 @@ Streaming
    :members:
    :undoc-members:
 
+.. doxygenfunction:: trt_edgellm::rt::attachStreamChannel
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::validateStreamingSubmission
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::finishReasonName
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::applyStopStringMatch
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::applyCancellationToFinishStates
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::decodePerSlot
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::emitChunks
+   :project: TensorRT Edge-LLM
+

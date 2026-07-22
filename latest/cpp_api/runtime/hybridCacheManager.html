@@ -47,8 +47,8 @@
 
 
     <script src="../../_static/documentation_options.js?v=5929fcd5"></script>
-    <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
-    <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
     <script src="../../_static/copybutton.js?v=65e89d2a"></script>
     <script>let toggleHintShow = 'Click to show';</script>
@@ -56,11 +56,12 @@
     <script>let toggleOpenOnPrint = 'true';</script>
     <script src="../../_static/togglebutton.js?v=b8b12719"></script>
     <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
+    <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'cpp_api/runtime/hybridCacheManager';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.19.0';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = './_static/switcher.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.9.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.9.1';
         DOCUMENTATION_OPTIONS.show_version_warning_banner =
             false;
         </script>
@@ -71,12 +72,12 @@
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
     <link rel="next" title="Image Utils" href="imageUtils.html" />
-    <link rel="prev" title="Gemma4 Embedding Preprocessor" href="gemma4EmbeddingPreprocessor.html" />
+    <link rel="prev" title="Gemma4 Mtp Decoder" href="gemma4MTPDecoder.html" />
 
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.9.0" />
+  <meta name="docsearch:version" content="0.9.1" />
   
     
     <script src="../../_static/searchtools.js"></script>
@@ -395,11 +396,13 @@
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Customization</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/customization-guide.html">Customization Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/calibration-datasets.html">Calibration Dataset Customization</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/tensorrt-plugins.html">TensorRT Plugins Guide</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Testing</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/code-coverage.html">Code Coverage with SonarQube</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/few-layer-validation.html">Few-Layer Numeric Validation</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">APIs</span></p>
 <ul class="current nav bd-sidenav">
@@ -443,31 +446,36 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../kernels/index.html">Kernels Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/NvFP4MoEUtils.html">Nv Fp4 Mo E Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/applyRopeWriteKV.html">Apply Rope Write KV</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/audioFbankKernels.html">Audio Fbank Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/batchEvictKernels.html">Batch Evict Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/buildLayout.html">Build Layout</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/causalConv1d.html">Causal Conv1d</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/common.html">Common</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/contextFMHARunner.html">Context FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/conversion.html">Conversion</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslF16MoeRunner.html">Cute Dsl F16 Moe Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslFFPARunner.html">Cute Dsl Ffpa Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslFMHARunner.html">Cute Dsl FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGDNRunner.html">Cute Dsl Gdn Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGemmNvFp4Runner.html">Cute Dsl GEMM Nv Fp4 Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGemmRunner.html">Cute Dsl GEMM Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslNvfp4MoeRunner.html">Cute Dsl Nvfp4 Moe Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslNvfp4MoeSm110Runner.html">Cute Dsl Nvfp4 Moe Sm110 Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslSSDRunner.html">Cute Dsl Ssd Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/ddtreeKernels.html">Ddtree Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/decoderXQARunner.html">Decoder XQA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/dequant.html">Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/dequantize.html">Dequantize</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../kernels/dflashAcceptKernels.html">Dflash Accept Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/dflashRuntimeKernels.html">Dflash Runtime Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/eagleAcceptKernels.html">EAGLE Accept Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/eagleUtilKernels.html">EAGLE Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/embeddingKernels.html">Embedding Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/f16MoeSupportKernels.html">F16 Moe Support Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/fmhaParams_v2.html">FMHA Params V2</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/fp4Quantize.html">Fp4 Quantize</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/gdnKernelUtils.html">Gdn Kernel Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/gemma4AudioAttention.html">Gemma4 Audio Attention</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/gemma4MTPRuntimeKernels.html">Gemma4 Mtp Runtime Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/imageUtilKernels.html">Image Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/initializeCosSinCache.html">Initialize Cos Sin Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/int4GroupwiseGemm.html">Int4 Groupwise GEMM</a></li>
@@ -482,13 +490,16 @@
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeAlignSumKernels.html">Moe Align Sum Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeMarlin.html">Moe Marlin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeMarlinIndicesKernels.html">Moe Marlin Indices Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moePerExpertScaleKernels.html">Moe Per Expert Scale Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeSigmoidGroupTopkKernels.html">Moe Sigmoid Group Topk Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeTopkSoftmaxKernels.html">Moe Topk Softmax Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/mtpStateScatterKernels.html">Mtp State Scatter Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoeTypes.html">Nvfp4 Moe Types</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4_dequant.html">Nvfp4 Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4_tensor.html">Nvfp4 Tensor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/scaleConvert.html">Scale Convert</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/selectiveStateUpdate.html">Selective State Update</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/speculativeKernelsUtils.html">Speculative Kernels Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/ssdVarlenMetadata.html">Ssd Varlen Metadata</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/talkerMLPKernels.html">Talker Mlp Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/utilKernels.html">Util Kernels</a></li>
@@ -499,6 +510,9 @@
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/audioRunner.html">Audio Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/audioUtils.html">Audio Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/code2WavRunner.html">Code2 Wav Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4AudioRunner.html">Gemma4 Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4UnifiedAudioRunner.html">Gemma4 Unified Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4UnifiedVisionRunner.html">Gemma4 Unified Vision Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4ViTRunner.html">Gemma4 ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/imageUtils.html">Image Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/internViTRunner.html">Intern ViT Runner</a></li>
@@ -507,14 +521,21 @@
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/nemotronOmniAudioRunner.html">Nemotron Omni Audio Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/nemotronOmniViTRunner.html">Nemotron Omni ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/phi4mmViTRunner.html">Phi4mm ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwen25vlViTRunner.html">Qwen25vl ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwen3omniViTRunner.html">Qwen3omni ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwen3vlViTRunner.html">Qwen3vl ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/qwenViTRunner.html">Qwen ViT Runner</a></li>
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../plugins/index.html">Plugins Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/allReducePlugin.html">All Reduce Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/attentionPlugin.html">Attention Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/causalConv1dPlugin.html">Causal Conv1d Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/dflashTargetKVCacheUpdatePlugin.html">Dflash Target KV Cache Update Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/fp16MoePlugin.html">Fp16 Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/fusedNvfp4GemmAllReducePlugin.html">Fused Nvfp4 GEMM All Reduce Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/gatedDeltaNetPlugin.html">Gated Delta Net Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/gemma4AudioAttentionPlugin.html">Gemma4 Audio Attention Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/int4GroupwiseGemmPlugin.html">Int4 Groupwise GEMM Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/int4MoePlugin.html">Int4 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/mambaPlugin.html">Mamba Plugin</a></li>
@@ -535,24 +556,29 @@
 <li class="toctree-l3"><a class="reference internal" href="audioLoader.html">Audio Loader</a></li>
 <li class="toctree-l3"><a class="reference internal" href="audioUtils.html">Audio Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="decoderRegistry.html">Decoder Registry</a></li>
+<li class="toctree-l3"><a class="reference internal" href="decoderUtils.html">Decoder Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="decodingInferenceContext.html">Decoding Inference Context</a></li>
 <li class="toctree-l3"><a class="reference internal" href="decodingStrategy.html">Decoding Strategy</a></li>
 <li class="toctree-l3"><a class="reference internal" href="deepstackBinding.html">Deepstack Binding</a></li>
 <li class="toctree-l3"><a class="reference internal" href="deploymentConfig.html">Deployment Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dflashDecodeUtils.html">Dflash Decode Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="dflashDecoder.html">Dflash Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="eagleDecoder.html">EAGLE Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="embeddingPreprocessor.html">Embedding Preprocessor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="engineExecutor.html">Engine Executor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="externalWeightManager.html">External Weight Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="gemma4EmbeddingPreprocessor.html">Gemma4 Embedding Preprocessor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="gemma4MTPDecoder.html">Gemma4 Mtp Decoder</a></li>
 <li class="toctree-l3 current active"><a class="current reference internal" href="#">Hybrid Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="imageUtils.html">Image Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="inferenceDims.html">Inference Dims</a></li>
 <li class="toctree-l3"><a class="reference internal" href="inferencePhase.html">Inference Phase</a></li>
 <li class="toctree-l3"><a class="reference internal" href="kvCacheManager.html">KV Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="layerDebugger.html">Layer Debugger</a></li>
 <li class="toctree-l3"><a class="reference internal" href="llmEngineConfig.html">LLM Engine Config</a></li>
 <li class="toctree-l3"><a class="reference internal" href="llmInferenceRuntime.html">LLM Inference Runtime</a></li>
 <li class="toctree-l3"><a class="reference internal" href="llmRuntimeUtils.html">LLM Runtime Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="logitBias.html">Logit Bias</a></li>
 <li class="toctree-l3"><a class="reference internal" href="loraManager.html">Lora Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="mambaCacheManager.html">Mamba Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="melSpectrogram.html">Mel Spectrogram</a></li>
@@ -562,7 +588,6 @@
 <li class="toctree-l3"><a class="reference internal" href="registryBuilder.html">Registry Builder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="ropeCache.html">Rope Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="sharedResources.html">Shared Resources</a></li>
-<li class="toctree-l3"><a class="reference internal" href="specDecodeUtils.html">Spec Decode Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="stepPreparer.html">Step Preparer</a></li>
 <li class="toctree-l3"><a class="reference internal" href="streaming.html">Streaming</a></li>
 <li class="toctree-l3"><a class="reference internal" href="systemPromptKVCache.html">System Prompt KV Cache</a></li>
@@ -739,8 +764,33 @@
 </dd></dl>
 
 <dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm2rt18HybridCacheManager9numLayersEv">
+<span id="_CPPv3NK11trt_edgellm2rt18HybridCacheManager9numLayersEv"></span><span id="_CPPv2NK11trt_edgellm2rt18HybridCacheManager9numLayersEv"></span><span id="trt_edgellm::rt::HybridCacheManager::numLayersC"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1HybridCacheManager_1a93e17f7098ee58b1aa34c81e6fdc8e94"></span><span class="k"><span class="pre">inline</span></span><span class="w"> </span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">numLayers</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm2rt18HybridCacheManager9numLayersEv" title="Link to this definition">#</a><br /></dt>
+<dd><p>Total number of decoder layers (attention + Mamba). </p>
+<dl class="field-list simple">
+<dt class="field-odd">Returns<span class="colon">:</span></dt>
+<dd class="field-odd"><p>Number of layers (== size of the configured layer-type list). </p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm2rt18HybridCacheManager12getLayerTypeE7int32_t">
+<span id="_CPPv3NK11trt_edgellm2rt18HybridCacheManager12getLayerTypeE7int32_t"></span><span id="_CPPv2NK11trt_edgellm2rt18HybridCacheManager12getLayerTypeE7int32_t"></span><span id="trt_edgellm::rt::HybridCacheManager::getLayerType__int32_tC"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1HybridCacheManager_1ad4e6c9ae3fc7159ef44014fb93fbefe3"></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt18HybridCacheManager9LayerTypeE" title="trt_edgellm::rt::HybridCacheManager::LayerType"><span class="n"><span class="pre">LayerType</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">getLayerType</span></span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">absLayerIdx</span></span></em><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm2rt18HybridCacheManager12getLayerTypeE7int32_t" title="Link to this definition">#</a><br /></dt>
+<dd><p>Type (attention or Mamba/recurrent) of a given absolute layer index. </p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>absLayerIdx</strong> – Absolute decoder-layer index in [0, <a class="reference internal" href="#classtrt__edgellm_1_1rt_1_1HybridCacheManager_1a93e17f7098ee58b1aa34c81e6fdc8e94"><span class="std std-ref">numLayers()</span></a>). </p>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>The layer’s type. </p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt18HybridCacheManager18getCombinedKVCacheE7int32_t">
-<span id="_CPPv3N11trt_edgellm2rt18HybridCacheManager18getCombinedKVCacheE7int32_t"></span><span id="_CPPv2N11trt_edgellm2rt18HybridCacheManager18getCombinedKVCacheE7int32_t"></span><span id="trt_edgellm::rt::HybridCacheManager::getCombinedKVCache__int32_t"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1HybridCacheManager_1af6427cdb3620b0ad43d53cce214ec3a7"></span><a class="reference internal" href="../action/actionUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="n"><span class="pre">getCombinedKVCache</span></span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">absLayerIdx</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt18HybridCacheManager18getCombinedKVCacheE7int32_t" title="Link to this definition">#</a><br /></dt>
+<span id="_CPPv3N11trt_edgellm2rt18HybridCacheManager18getCombinedKVCacheE7int32_t"></span><span id="_CPPv2N11trt_edgellm2rt18HybridCacheManager18getCombinedKVCacheE7int32_t"></span><span id="trt_edgellm::rt::HybridCacheManager::getCombinedKVCache__int32_t"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1HybridCacheManager_1af6427cdb3620b0ad43d53cce214ec3a7"></span><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="n"><span class="pre">getCombinedKVCache</span></span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">absLayerIdx</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt18HybridCacheManager18getCombinedKVCacheE7int32_t" title="Link to this definition">#</a><br /></dt>
 <dd><p>Get the combined KV cache for a given absolute layer index (must be an attention layer). </p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
@@ -753,28 +803,8 @@
 </dd></dl>
 
 <dl class="cpp function">
-<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt18HybridCacheManager18getSeparateKVCacheE7int32_t">
-<span id="_CPPv3N11trt_edgellm2rt18HybridCacheManager18getSeparateKVCacheE7int32_t"></span><span id="_CPPv2N11trt_edgellm2rt18HybridCacheManager18getSeparateKVCacheE7int32_t"></span><span id="trt_edgellm::rt::HybridCacheManager::getSeparateKVCache__int32_t"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1HybridCacheManager_1ae5e104ce889e7ae9c18ced5581fdfb15"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">pair</span></span><span class="p"><span class="pre">&lt;</span></span><a class="reference internal" href="../action/actionUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="p"><span class="pre">,</span></span><span class="w"> </span><a class="reference internal" href="../action/actionUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">getSeparateKVCache</span></span></span><span class="sig-paren">(</span>
-
-<dl>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">absLayerIdx</span></span></em></dd>
-</dl>
-
-<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt18HybridCacheManager18getSeparateKVCacheE7int32_t" title="Link to this definition">#</a><br /></dt>
-<dd><p>Get the separate K and V caches for a given absolute layer index (must be an attention layer). </p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>absLayerIdx</strong> – Absolute decoder-layer index. </p>
-</dd>
-<dt class="field-even">Returns<span class="colon">:</span></dt>
-<dd class="field-even"><p>Pair of non-owned view tensors (K, V). </p>
-</dd>
-</dl>
-</dd></dl>
-
-<dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt18HybridCacheManager17getRecurrentStateE7int32_t">
-<span id="_CPPv3N11trt_edgellm2rt18HybridCacheManager17getRecurrentStateE7int32_t"></span><span id="_CPPv2N11trt_edgellm2rt18HybridCacheManager17getRecurrentStateE7int32_t"></span><span id="trt_edgellm::rt::HybridCacheManager::getRecurrentState__int32_t"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1HybridCacheManager_1a5cd5dd33246dc9dcc311232911579b0d"></span><a class="reference internal" href="../action/actionUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="n"><span class="pre">getRecurrentState</span></span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">absLayerIdx</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt18HybridCacheManager17getRecurrentStateE7int32_t" title="Link to this definition">#</a><br /></dt>
+<span id="_CPPv3N11trt_edgellm2rt18HybridCacheManager17getRecurrentStateE7int32_t"></span><span id="_CPPv2N11trt_edgellm2rt18HybridCacheManager17getRecurrentStateE7int32_t"></span><span id="trt_edgellm::rt::HybridCacheManager::getRecurrentState__int32_t"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1HybridCacheManager_1a5cd5dd33246dc9dcc311232911579b0d"></span><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="n"><span class="pre">getRecurrentState</span></span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">absLayerIdx</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt18HybridCacheManager17getRecurrentStateE7int32_t" title="Link to this definition">#</a><br /></dt>
 <dd><p>Get the recurrent state for a given absolute layer index (must be a Mamba layer). </p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
@@ -788,7 +818,7 @@
 
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt18HybridCacheManager12getConvStateE7int32_t">
-<span id="_CPPv3N11trt_edgellm2rt18HybridCacheManager12getConvStateE7int32_t"></span><span id="_CPPv2N11trt_edgellm2rt18HybridCacheManager12getConvStateE7int32_t"></span><span id="trt_edgellm::rt::HybridCacheManager::getConvState__int32_t"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1HybridCacheManager_1a548300017d8b3d26afd9161fb5725ebd"></span><a class="reference internal" href="../action/actionUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="n"><span class="pre">getConvState</span></span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">absLayerIdx</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt18HybridCacheManager12getConvStateE7int32_t" title="Link to this definition">#</a><br /></dt>
+<span id="_CPPv3N11trt_edgellm2rt18HybridCacheManager12getConvStateE7int32_t"></span><span id="_CPPv2N11trt_edgellm2rt18HybridCacheManager12getConvStateE7int32_t"></span><span id="trt_edgellm::rt::HybridCacheManager::getConvState__int32_t"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1HybridCacheManager_1a548300017d8b3d26afd9161fb5725ebd"></span><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="n"><span class="pre">getConvState</span></span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">absLayerIdx</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt18HybridCacheManager12getConvStateE7int32_t" title="Link to this definition">#</a><br /></dt>
 <dd><p>Get the conv state for a given absolute layer index (must be a Mamba layer). </p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
@@ -836,7 +866,7 @@
 
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt18HybridCacheManager17getKVCacheLengthsEv">
-<span id="_CPPv3N11trt_edgellm2rt18HybridCacheManager17getKVCacheLengthsEv"></span><span id="_CPPv2N11trt_edgellm2rt18HybridCacheManager17getKVCacheLengthsEv"></span><span id="trt_edgellm::rt::HybridCacheManager::getKVCacheLengths"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1HybridCacheManager_1ab341007f809ab898705b4dfab91cf95c"></span><a class="reference internal" href="../action/actionUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="n"><span class="pre">getKVCacheLengths</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt18HybridCacheManager17getKVCacheLengthsEv" title="Link to this definition">#</a><br /></dt>
+<span id="_CPPv3N11trt_edgellm2rt18HybridCacheManager17getKVCacheLengthsEv"></span><span id="_CPPv2N11trt_edgellm2rt18HybridCacheManager17getKVCacheLengthsEv"></span><span id="trt_edgellm::rt::HybridCacheManager::getKVCacheLengths"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1HybridCacheManager_1ab341007f809ab898705b4dfab91cf95c"></span><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="n"><span class="pre">getKVCacheLengths</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt18HybridCacheManager17getKVCacheLengthsEv" title="Link to this definition">#</a><br /></dt>
 <dd><p>Get the shared device KV cache lengths tensor. </p>
 <dl class="field-list simple">
 <dt class="field-odd">Returns<span class="colon">:</span></dt>
@@ -850,8 +880,8 @@
 <span id="_CPPv3N11trt_edgellm2rt18HybridCacheManager20resetForNewSequencesERKN2rt6TensorE12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm2rt18HybridCacheManager20resetForNewSequencesERKN2rt6TensorE12cudaStream_t"></span><span id="trt_edgellm::rt::HybridCacheManager::resetForNewSequences__rt::TensorCR.cudaStream_t"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1HybridCacheManager_1a55e28c05008b9c86018ae617f09c7e2f"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">resetForNewSequences</span></span></span><span class="sig-paren">(</span>
 
 <dl>
-<dd><em class="sig-param"><a class="reference internal" href="../action/actionUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">reuseKVCacheLengths</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em></dd>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">reuseKVCacheLengths</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em>,</dd>
 </dl>
 
 <span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt18HybridCacheManager20resetForNewSequencesERKN2rt6TensorE12cudaStream_t" title="Link to this definition">#</a><br /></dt>
@@ -871,8 +901,8 @@
 <span id="_CPPv3N11trt_edgellm2rt18HybridCacheManager20commitSequenceLengthERKN2rt6TensorE12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm2rt18HybridCacheManager20commitSequenceLengthERKN2rt6TensorE12cudaStream_t"></span><span id="trt_edgellm::rt::HybridCacheManager::commitSequenceLength__rt::TensorCR.cudaStream_t"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1HybridCacheManager_1a295c9813c4adbdd4b117af5f1b1aec0d"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">commitSequenceLength</span></span></span><span class="sig-paren">(</span>
 
 <dl>
-<dd><em class="sig-param"><a class="reference internal" href="../action/actionUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">newContextLengths</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em></dd>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">newContextLengths</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em>,</dd>
 </dl>
 
 <span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt18HybridCacheManager20commitSequenceLengthERKN2rt6TensorE12cudaStream_t" title="Link to this definition">#</a><br /></dt>
@@ -942,10 +972,10 @@
 <span id="_CPPv3N11trt_edgellm2rt18HybridCacheManager12compactBatchERKN2rt6TensorE7int32_t7int32_t12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm2rt18HybridCacheManager12compactBatchERKN2rt6TensorE7int32_t7int32_t12cudaStream_t"></span><span id="trt_edgellm::rt::HybridCacheManager::compactBatch__rt::TensorCR.int32_t.int32_t.cudaStream_t"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1HybridCacheManager_1ad8a4bc8bed70fbd6551807cc55bab8e6"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">compactBatch</span></span></span><span class="sig-paren">(</span>
 
 <dl>
-<dd><em class="sig-param"><a class="reference internal" href="../action/actionUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">batchMapping</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">batchMapping</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">oldBatch</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">newBatch</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em></dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em>,</dd>
 </dl>
 
 <span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt18HybridCacheManager12compactBatchERKN2rt6TensorE7int32_t7int32_t12cudaStream_t" title="Link to this definition">#</a><br /></dt>
@@ -964,12 +994,12 @@
 
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt18HybridCacheManager14captureKVCacheE7int32_t7int32_t12cudaStream_t">
-<span id="_CPPv3N11trt_edgellm2rt18HybridCacheManager14captureKVCacheE7int32_t7int32_t12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm2rt18HybridCacheManager14captureKVCacheE7int32_t7int32_t12cudaStream_t"></span><span id="trt_edgellm::rt::HybridCacheManager::captureKVCache__int32_t.int32_t.cudaStream_t"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1HybridCacheManager_1a0453d19fd8881bbef64beccb2e7d1ae1"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><a class="reference internal" href="../action/actionUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">captureKVCache</span></span></span><span class="sig-paren">(</span>
+<span id="_CPPv3N11trt_edgellm2rt18HybridCacheManager14captureKVCacheE7int32_t7int32_t12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm2rt18HybridCacheManager14captureKVCacheE7int32_t7int32_t12cudaStream_t"></span><span id="trt_edgellm::rt::HybridCacheManager::captureKVCache__int32_t.int32_t.cudaStream_t"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1HybridCacheManager_1a0453d19fd8881bbef64beccb2e7d1ae1"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">captureKVCache</span></span></span><span class="sig-paren">(</span>
 
 <dl>
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">batchIdx</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">sequenceLength</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em></dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em>,</dd>
 </dl>
 
 <span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt18HybridCacheManager14captureKVCacheE7int32_t7int32_t12cudaStream_t" title="Link to this definition">#</a><br /></dt>
@@ -993,9 +1023,9 @@
 <span id="_CPPv3N11trt_edgellm2rt18HybridCacheManager14restoreKVCacheERKNSt6vectorIN2rt6TensorEEE7int32_t12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm2rt18HybridCacheManager14restoreKVCacheERKNSt6vectorIN2rt6TensorEEE7int32_t12cudaStream_t"></span><span id="trt_edgellm::rt::HybridCacheManager::restoreKVCache__std::vector:rt::Tensor:CR.int32_t.cudaStream_t"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1HybridCacheManager_1a6dd6b0c884e80f656529c60707aa66fc"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">restoreKVCache</span></span></span><span class="sig-paren">(</span>
 
 <dl>
-<dd><em class="sig-param"><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><a class="reference internal" href="../action/actionUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">saved</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">saved</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">batchIdx</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em></dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em>,</dd>
 </dl>
 
 <span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt18HybridCacheManager14restoreKVCacheERKNSt6vectorIN2rt6TensorEEE7int32_t12cudaStream_t" title="Link to this definition">#</a><br /></dt>
@@ -1013,11 +1043,11 @@
 
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt18HybridCacheManager22captureRecurrentStatesE7int32_t12cudaStream_t">
-<span id="_CPPv3N11trt_edgellm2rt18HybridCacheManager22captureRecurrentStatesE7int32_t12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm2rt18HybridCacheManager22captureRecurrentStatesE7int32_t12cudaStream_t"></span><span id="trt_edgellm::rt::HybridCacheManager::captureRecurrentStates__int32_t.cudaStream_t"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1HybridCacheManager_1a8c256acee9bf78e4174726981073bb69"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><a class="reference internal" href="../action/actionUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">captureRecurrentStates</span></span></span><span class="sig-paren">(</span>
+<span id="_CPPv3N11trt_edgellm2rt18HybridCacheManager22captureRecurrentStatesE7int32_t12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm2rt18HybridCacheManager22captureRecurrentStatesE7int32_t12cudaStream_t"></span><span id="trt_edgellm::rt::HybridCacheManager::captureRecurrentStates__int32_t.cudaStream_t"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1HybridCacheManager_1a8c256acee9bf78e4174726981073bb69"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">captureRecurrentStates</span></span></span><span class="sig-paren">(</span>
 
 <dl>
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">batchIdx</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em></dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em>,</dd>
 </dl>
 
 <span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt18HybridCacheManager22captureRecurrentStatesE7int32_t12cudaStream_t" title="Link to this definition">#</a><br /></dt>
@@ -1037,11 +1067,11 @@
 
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt18HybridCacheManager17captureConvStatesE7int32_t12cudaStream_t">
-<span id="_CPPv3N11trt_edgellm2rt18HybridCacheManager17captureConvStatesE7int32_t12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm2rt18HybridCacheManager17captureConvStatesE7int32_t12cudaStream_t"></span><span id="trt_edgellm::rt::HybridCacheManager::captureConvStates__int32_t.cudaStream_t"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1HybridCacheManager_1aef7695f7681b809c2c26bd30a83eff46"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><a class="reference internal" href="../action/actionUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">captureConvStates</span></span></span><span class="sig-paren">(</span>
+<span id="_CPPv3N11trt_edgellm2rt18HybridCacheManager17captureConvStatesE7int32_t12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm2rt18HybridCacheManager17captureConvStatesE7int32_t12cudaStream_t"></span><span id="trt_edgellm::rt::HybridCacheManager::captureConvStates__int32_t.cudaStream_t"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1HybridCacheManager_1aef7695f7681b809c2c26bd30a83eff46"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">captureConvStates</span></span></span><span class="sig-paren">(</span>
 
 <dl>
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">batchIdx</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em></dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em>,</dd>
 </dl>
 
 <span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt18HybridCacheManager17captureConvStatesE7int32_t12cudaStream_t" title="Link to this definition">#</a><br /></dt>
@@ -1069,7 +1099,7 @@
 <p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-members">Public Members</p>
 <dl class="cpp var">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt18HybridCacheManager18KVHeadDimGroupView16deviceLayerInfosE">
-<span id="_CPPv3N11trt_edgellm2rt18HybridCacheManager18KVHeadDimGroupView16deviceLayerInfosE"></span><span id="_CPPv2N11trt_edgellm2rt18HybridCacheManager18KVHeadDimGroupView16deviceLayerInfosE"></span><span id="trt_edgellm::rt::HybridCacheManager::KVHeadDimGroupView::deviceLayerInfos__kernel::KVLayerInfoCP"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1HybridCacheManager_1_1KVHeadDimGroupView_1a3e728b7e63c3a057eed7b712f88fc8cc"></span><a class="reference internal" href="../kernels/applyRopeWriteKV.html#_CPPv4N11trt_edgellm6kernelE" title="trt_edgellm::kernel"><span class="n"><span class="pre">kernel</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../kernels/batchEvictKernels.html#_CPPv4N11trt_edgellm6kernel11KVLayerInfoE" title="trt_edgellm::kernel::KVLayerInfo"><span class="n"><span class="pre">KVLayerInfo</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">deviceLayerInfos</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt18HybridCacheManager18KVHeadDimGroupView16deviceLayerInfosE" title="Link to this definition">#</a><br /></dt>
+<span id="_CPPv3N11trt_edgellm2rt18HybridCacheManager18KVHeadDimGroupView16deviceLayerInfosE"></span><span id="_CPPv2N11trt_edgellm2rt18HybridCacheManager18KVHeadDimGroupView16deviceLayerInfosE"></span><span id="trt_edgellm::rt::HybridCacheManager::KVHeadDimGroupView::deviceLayerInfos__kernel::KVLayerInfoCP"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1HybridCacheManager_1_1KVHeadDimGroupView_1a3e728b7e63c3a057eed7b712f88fc8cc"></span><a class="reference internal" href="../kernels/speculativeKernelsUtils.html#_CPPv4N11trt_edgellm6kernelE" title="trt_edgellm::kernel"><span class="n"><span class="pre">kernel</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../kernels/batchEvictKernels.html#_CPPv4N11trt_edgellm6kernel11KVLayerInfoE" title="trt_edgellm::kernel::KVLayerInfo"><span class="n"><span class="pre">KVLayerInfo</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">deviceLayerInfos</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt18HybridCacheManager18KVHeadDimGroupView16deviceLayerInfosE" title="Link to this definition">#</a><br /></dt>
 <dd><p>Device pointer to layer-info array (size == numLayers) </p>
 </dd></dl>
 
@@ -1105,7 +1135,7 @@
 <p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-members">Public Members</p>
 <dl class="cpp var">
 <dt class="sig sig-object cpp">
-<span class="target" id="structtrt__edgellm_1_1rt_1_1HybridCacheManager_1_1KVHeadDimGroupView_1a3e728b7e63c3a057eed7b712f88fc8cc"></span><a class="reference internal" href="../kernels/applyRopeWriteKV.html#_CPPv4N11trt_edgellm6kernelE" title="trt_edgellm::kernel"><span class="n"><span class="pre">kernel</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../kernels/batchEvictKernels.html#_CPPv4N11trt_edgellm6kernel11KVLayerInfoE" title="trt_edgellm::kernel::KVLayerInfo"><span class="n"><span class="pre">KVLayerInfo</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">deviceLayerInfos</span></span></span><br /></dt>
+<span class="target" id="structtrt__edgellm_1_1rt_1_1HybridCacheManager_1_1KVHeadDimGroupView_1a3e728b7e63c3a057eed7b712f88fc8cc"></span><a class="reference internal" href="../kernels/speculativeKernelsUtils.html#_CPPv4N11trt_edgellm6kernelE" title="trt_edgellm::kernel"><span class="n"><span class="pre">kernel</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../kernels/batchEvictKernels.html#_CPPv4N11trt_edgellm6kernel11KVLayerInfoE" title="trt_edgellm::kernel::KVLayerInfo"><span class="n"><span class="pre">KVLayerInfo</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">deviceLayerInfos</span></span></span><br /></dt>
 <dd><p>Device pointer to layer-info array (size == numLayers) </p>
 </dd></dl>
 
@@ -1143,12 +1173,12 @@
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="gemma4EmbeddingPreprocessor.html"
+       href="gemma4MTPDecoder.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Gemma4 Embedding Preprocessor</p>
+        <p class="prev-next-title">Gemma4 Mtp Decoder</p>
       </div>
     </a>
     <a class="right-next"
@@ -1194,8 +1224,9 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt18HybridCacheManageraSERK18HybridCacheManager"><code class="docutils literal notranslate"><span class="pre">operator=()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt18HybridCacheManager18HybridCacheManagerERR18HybridCacheManager"><code class="docutils literal notranslate"><span class="pre">HybridCacheManager()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt18HybridCacheManageraSERR18HybridCacheManager"><code class="docutils literal notranslate"><span class="pre">operator=()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt18HybridCacheManager9numLayersEv"><code class="docutils literal notranslate"><span class="pre">numLayers()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt18HybridCacheManager12getLayerTypeE7int32_t"><code class="docutils literal notranslate"><span class="pre">getLayerType()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt18HybridCacheManager18getCombinedKVCacheE7int32_t"><code class="docutils literal notranslate"><span class="pre">getCombinedKVCache()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt18HybridCacheManager18getSeparateKVCacheE7int32_t"><code class="docutils literal notranslate"><span class="pre">getSeparateKVCache()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt18HybridCacheManager17getRecurrentStateE7int32_t"><code class="docutils literal notranslate"><span class="pre">getRecurrentState()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt18HybridCacheManager12getConvStateE7int32_t"><code class="docutils literal notranslate"><span class="pre">getConvState()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt18HybridCacheManager17getKVCacheManagerEv"><code class="docutils literal notranslate"><span class="pre">getKVCacheManager()</span></code></a></li>
@@ -1313,9 +1344,9 @@
         <div class="footer-item">
 <div class="extra_footer">
   
-  <p>Last updated on July 02, 2026.</p>
+  <p>Last updated on July 22, 2026.</p>
   
-  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/30941a6">30941a6</a>.</p>
+  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/f98267f">f98267f</a>.</p>
   
 </div></div>
       

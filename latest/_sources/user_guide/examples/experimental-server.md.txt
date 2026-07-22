@@ -185,9 +185,13 @@ curl -X POST http://127.0.0.1:8000/v1/chat/completions \
 | `temperature` | `0.7` | Sampling temperature |
 | `top_p` | `0.9` | Nucleus sampling threshold |
 | `top_k` | `50` | Top-K sampling |
+| `logit_bias` | `{}` | Sparse OpenAI-compatible map from token ID to bias value; incompatible with active speculative decoding |
 | `max_tokens` | `2048` | Maximum generated tokens |
 | `enable_thinking` | `False` | Enables Qwen-style thinking output |
 | `disable_spec_decode` | `False` | Disables EAGLE for one request |
+
+Requests with a non-empty `logit_bias` map are rejected while speculative decoding is active. Set
+`disable_spec_decode: true` to explicitly use vanilla decoding for that request batch.
 
 ## Tool Calls
 

@@ -6,10 +6,14 @@ API documentation for the plugins module.
 .. toctree::
    :maxdepth: 1
 
+   allReducePlugin
    attentionPlugin
    causalConv1dPlugin
    dflashTargetKVCacheUpdatePlugin
+   fp16MoePlugin
+   fusedNvfp4GemmAllReducePlugin
    gatedDeltaNetPlugin
+   gemma4AudioAttentionPlugin
    int4GroupwiseGemmPlugin
    int4MoePlugin
    mambaPlugin

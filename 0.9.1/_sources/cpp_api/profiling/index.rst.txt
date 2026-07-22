@@ -1,0 +1,12 @@
+Profiling Module
+================
+
+API documentation for the profiling module.
+
+.. toctree::
+   :maxdepth: 1
+
+   layerProfiler
+   metrics
+   nvtx_wrapper
+   timer

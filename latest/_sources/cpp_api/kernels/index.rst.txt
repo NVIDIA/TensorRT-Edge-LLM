@@ -8,31 +8,36 @@ API documentation for the kernels module.
 
    NvFP4MoEUtils
    applyRopeWriteKV
+   audioFbankKernels
    batchEvictKernels
    buildLayout
    causalConv1d
    common
    contextFMHARunner
    conversion
+   cuteDslF16MoeRunner
    cuteDslFFPARunner
    cuteDslFMHARunner
    cuteDslGDNRunner
+   cuteDslGemmNvFp4Runner
    cuteDslGemmRunner
    cuteDslNvfp4MoeRunner
    cuteDslNvfp4MoeSm110Runner
    cuteDslSSDRunner
+   ddtreeKernels
    decoderXQARunner
    dequant
    dequantize
-   dflashAcceptKernels
    dflashRuntimeKernels
    eagleAcceptKernels
    eagleUtilKernels
    embeddingKernels
+   f16MoeSupportKernels
    fmhaParams_v2
    fp4Quantize
    gdnKernelUtils
    gemma4AudioAttention
+   gemma4MTPRuntimeKernels
    imageUtilKernels
    initializeCosSinCache
    int4GroupwiseGemm
@@ -47,13 +52,16 @@ API documentation for the kernels module.
    moeAlignSumKernels
    moeMarlin
    moeMarlinIndicesKernels
+   moePerExpertScaleKernels
    moeSigmoidGroupTopkKernels
    moeTopkSoftmaxKernels
    mtpStateScatterKernels
    nvfp4MoeTypes
    nvfp4_dequant
    nvfp4_tensor
+   scaleConvert
    selectiveStateUpdate
+   speculativeKernelsUtils
    ssdVarlenMetadata
    talkerMLPKernels
    utilKernels

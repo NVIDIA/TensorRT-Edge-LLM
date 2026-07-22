@@ -1,6 +1,6 @@
 Moe Activation Kernels
 ======================
 
-.. doxygenfile:: kernels/moe/moeActivationKernels.h
+.. doxygenfunction:: trt_edgellm::kernel::swiGluActivation
    :project: TensorRT Edge-LLM
 

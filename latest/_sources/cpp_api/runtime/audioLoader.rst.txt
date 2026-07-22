@@ -6,3 +6,6 @@ Audio Loader
    :members:
    :undoc-members:
 
+.. doxygenfunction:: trt_edgellm::rt::audio::loadAudioFile
+   :project: TensorRT Edge-LLM
+

@@ -11,6 +11,11 @@ Decoding Strategy
    :members:
    :undoc-members:
 
+.. doxygenstruct:: trt_edgellm::rt::LogprobsBuffers
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
 .. doxygenstruct:: trt_edgellm::rt::BaseEngineResources
    :project: TensorRT Edge-LLM
    :members:

@@ -47,8 +47,8 @@
 
 
     <script src="../../_static/documentation_options.js?v=5929fcd5"></script>
-    <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
-    <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
     <script src="../../_static/copybutton.js?v=65e89d2a"></script>
     <script>let toggleHintShow = 'Click to show';</script>
@@ -56,11 +56,12 @@
     <script>let toggleOpenOnPrint = 'true';</script>
     <script src="../../_static/togglebutton.js?v=b8b12719"></script>
     <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
+    <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'cpp_api/runtime/decodingStrategy';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.19.0';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = './_static/switcher.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.9.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.9.1';
         DOCUMENTATION_OPTIONS.show_version_warning_banner =
             false;
         </script>
@@ -76,7 +77,7 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.9.0" />
+  <meta name="docsearch:version" content="0.9.1" />
   
     
     <script src="../../_static/searchtools.js"></script>
@@ -395,11 +396,13 @@
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Customization</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/customization-guide.html">Customization Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/calibration-datasets.html">Calibration Dataset Customization</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/tensorrt-plugins.html">TensorRT Plugins Guide</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Testing</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/code-coverage.html">Code Coverage with SonarQube</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/few-layer-validation.html">Few-Layer Numeric Validation</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">APIs</span></p>
 <ul class="current nav bd-sidenav">
@@ -443,31 +446,36 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../kernels/index.html">Kernels Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/NvFP4MoEUtils.html">Nv Fp4 Mo E Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/applyRopeWriteKV.html">Apply Rope Write KV</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/audioFbankKernels.html">Audio Fbank Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/batchEvictKernels.html">Batch Evict Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/buildLayout.html">Build Layout</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/causalConv1d.html">Causal Conv1d</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/common.html">Common</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/contextFMHARunner.html">Context FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/conversion.html">Conversion</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslF16MoeRunner.html">Cute Dsl F16 Moe Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslFFPARunner.html">Cute Dsl Ffpa Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslFMHARunner.html">Cute Dsl FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGDNRunner.html">Cute Dsl Gdn Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGemmNvFp4Runner.html">Cute Dsl GEMM Nv Fp4 Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGemmRunner.html">Cute Dsl GEMM Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslNvfp4MoeRunner.html">Cute Dsl Nvfp4 Moe Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslNvfp4MoeSm110Runner.html">Cute Dsl Nvfp4 Moe Sm110 Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslSSDRunner.html">Cute Dsl Ssd Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/ddtreeKernels.html">Ddtree Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/decoderXQARunner.html">Decoder XQA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/dequant.html">Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/dequantize.html">Dequantize</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../kernels/dflashAcceptKernels.html">Dflash Accept Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/dflashRuntimeKernels.html">Dflash Runtime Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/eagleAcceptKernels.html">EAGLE Accept Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/eagleUtilKernels.html">EAGLE Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/embeddingKernels.html">Embedding Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/f16MoeSupportKernels.html">F16 Moe Support Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/fmhaParams_v2.html">FMHA Params V2</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/fp4Quantize.html">Fp4 Quantize</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/gdnKernelUtils.html">Gdn Kernel Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/gemma4AudioAttention.html">Gemma4 Audio Attention</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/gemma4MTPRuntimeKernels.html">Gemma4 Mtp Runtime Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/imageUtilKernels.html">Image Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/initializeCosSinCache.html">Initialize Cos Sin Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/int4GroupwiseGemm.html">Int4 Groupwise GEMM</a></li>
@@ -482,13 +490,16 @@
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeAlignSumKernels.html">Moe Align Sum Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeMarlin.html">Moe Marlin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeMarlinIndicesKernels.html">Moe Marlin Indices Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moePerExpertScaleKernels.html">Moe Per Expert Scale Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeSigmoidGroupTopkKernels.html">Moe Sigmoid Group Topk Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/moeTopkSoftmaxKernels.html">Moe Topk Softmax Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/mtpStateScatterKernels.html">Mtp State Scatter Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoeTypes.html">Nvfp4 Moe Types</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4_dequant.html">Nvfp4 Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4_tensor.html">Nvfp4 Tensor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/scaleConvert.html">Scale Convert</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/selectiveStateUpdate.html">Selective State Update</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/speculativeKernelsUtils.html">Speculative Kernels Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/ssdVarlenMetadata.html">Ssd Varlen Metadata</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/talkerMLPKernels.html">Talker Mlp Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/utilKernels.html">Util Kernels</a></li>
@@ -499,6 +510,9 @@
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/audioRunner.html">Audio Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/audioUtils.html">Audio Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/code2WavRunner.html">Code2 Wav Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4AudioRunner.html">Gemma4 Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4UnifiedAudioRunner.html">Gemma4 Unified Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4UnifiedVisionRunner.html">Gemma4 Unified Vision Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4ViTRunner.html">Gemma4 ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/imageUtils.html">Image Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/internViTRunner.html">Intern ViT Runner</a></li>
@@ -507,14 +521,21 @@
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/nemotronOmniAudioRunner.html">Nemotron Omni Audio Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/nemotronOmniViTRunner.html">Nemotron Omni ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/phi4mmViTRunner.html">Phi4mm ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwen25vlViTRunner.html">Qwen25vl ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwen3omniViTRunner.html">Qwen3omni ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwen3vlViTRunner.html">Qwen3vl ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/qwenViTRunner.html">Qwen ViT Runner</a></li>
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../plugins/index.html">Plugins Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/allReducePlugin.html">All Reduce Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/attentionPlugin.html">Attention Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/causalConv1dPlugin.html">Causal Conv1d Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/dflashTargetKVCacheUpdatePlugin.html">Dflash Target KV Cache Update Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/fp16MoePlugin.html">Fp16 Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/fusedNvfp4GemmAllReducePlugin.html">Fused Nvfp4 GEMM All Reduce Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/gatedDeltaNetPlugin.html">Gated Delta Net Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/gemma4AudioAttentionPlugin.html">Gemma4 Audio Attention Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/int4GroupwiseGemmPlugin.html">Int4 Groupwise GEMM Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/int4MoePlugin.html">Int4 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/mambaPlugin.html">Mamba Plugin</a></li>
@@ -535,24 +556,29 @@
 <li class="toctree-l3"><a class="reference internal" href="audioLoader.html">Audio Loader</a></li>
 <li class="toctree-l3"><a class="reference internal" href="audioUtils.html">Audio Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="decoderRegistry.html">Decoder Registry</a></li>
+<li class="toctree-l3"><a class="reference internal" href="decoderUtils.html">Decoder Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="decodingInferenceContext.html">Decoding Inference Context</a></li>
 <li class="toctree-l3 current active"><a class="current reference internal" href="#">Decoding Strategy</a></li>
 <li class="toctree-l3"><a class="reference internal" href="deepstackBinding.html">Deepstack Binding</a></li>
 <li class="toctree-l3"><a class="reference internal" href="deploymentConfig.html">Deployment Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dflashDecodeUtils.html">Dflash Decode Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="dflashDecoder.html">Dflash Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="eagleDecoder.html">EAGLE Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="embeddingPreprocessor.html">Embedding Preprocessor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="engineExecutor.html">Engine Executor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="externalWeightManager.html">External Weight Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="gemma4EmbeddingPreprocessor.html">Gemma4 Embedding Preprocessor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="gemma4MTPDecoder.html">Gemma4 Mtp Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="hybridCacheManager.html">Hybrid Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="imageUtils.html">Image Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="inferenceDims.html">Inference Dims</a></li>
 <li class="toctree-l3"><a class="reference internal" href="inferencePhase.html">Inference Phase</a></li>
 <li class="toctree-l3"><a class="reference internal" href="kvCacheManager.html">KV Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="layerDebugger.html">Layer Debugger</a></li>
 <li class="toctree-l3"><a class="reference internal" href="llmEngineConfig.html">LLM Engine Config</a></li>
 <li class="toctree-l3"><a class="reference internal" href="llmInferenceRuntime.html">LLM Inference Runtime</a></li>
 <li class="toctree-l3"><a class="reference internal" href="llmRuntimeUtils.html">LLM Runtime Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="logitBias.html">Logit Bias</a></li>
 <li class="toctree-l3"><a class="reference internal" href="loraManager.html">Lora Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="mambaCacheManager.html">Mamba Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="melSpectrogram.html">Mel Spectrogram</a></li>
@@ -562,7 +588,6 @@
 <li class="toctree-l3"><a class="reference internal" href="registryBuilder.html">Registry Builder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="ropeCache.html">Rope Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="sharedResources.html">Shared Resources</a></li>
-<li class="toctree-l3"><a class="reference internal" href="specDecodeUtils.html">Spec Decode Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="stepPreparer.html">Step Preparer</a></li>
 <li class="toctree-l3"><a class="reference internal" href="streaming.html">Streaming</a></li>
 <li class="toctree-l3"><a class="reference internal" href="systemPromptKVCache.html">System Prompt KV Cache</a></li>
@@ -653,7 +678,7 @@
 <dl class="cpp class">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt16DecodingStrategyE">
 <span id="_CPPv3N11trt_edgellm2rt16DecodingStrategyE"></span><span id="_CPPv2N11trt_edgellm2rt16DecodingStrategyE"></span><span id="trt_edgellm::rt::DecodingStrategy"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1DecodingStrategy"></span><span class="k"><span class="pre">class</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">DecodingStrategy</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt16DecodingStrategyE" title="Link to this definition">#</a><br /></dt>
-<dd><p>Subclassed by <a class="reference internal" href="dflashDecoder.html#classtrt__edgellm_1_1rt_1_1DFlashDecoder"><span class="std std-ref">trt_edgellm::rt::DFlashDecoder</span></a>, <a class="reference internal" href="eagleDecoder.html#classtrt__edgellm_1_1rt_1_1EagleDecoder"><span class="std std-ref">trt_edgellm::rt::EagleDecoder</span></a>, <a class="reference internal" href="mtpDecoder.html#classtrt__edgellm_1_1rt_1_1MTPDecoder"><span class="std std-ref">trt_edgellm::rt::MTPDecoder</span></a>, <a class="reference internal" href="vanillaDecoder.html#classtrt__edgellm_1_1rt_1_1VanillaDecoder"><span class="std std-ref">trt_edgellm::rt::VanillaDecoder</span></a></p>
+<dd><p>Subclassed by <a class="reference internal" href="dflashDecoder.html#classtrt__edgellm_1_1rt_1_1DFlashDecoder"><span class="std std-ref">trt_edgellm::rt::DFlashDecoder</span></a>, <a class="reference internal" href="eagleDecoder.html#classtrt__edgellm_1_1rt_1_1EagleDecoder"><span class="std std-ref">trt_edgellm::rt::EagleDecoder</span></a>, <a class="reference internal" href="gemma4MTPDecoder.html#classtrt__edgellm_1_1rt_1_1Gemma4MTPDecoder"><span class="std std-ref">trt_edgellm::rt::Gemma4MTPDecoder</span></a>, <a class="reference internal" href="mtpDecoder.html#classtrt__edgellm_1_1rt_1_1MTPDecoder"><span class="std std-ref">trt_edgellm::rt::MTPDecoder</span></a>, <a class="reference internal" href="vanillaDecoder.html#classtrt__edgellm_1_1rt_1_1VanillaDecoder"><span class="std std-ref">trt_edgellm::rt::VanillaDecoder</span></a></p>
 <div class="breathe-sectiondef docutils container">
 <p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-functions">Public Functions</p>
 <dl class="cpp function">
@@ -675,23 +700,6 @@
 <dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm2rt16DecodingStrategy13isSpeculativeEv">
 <span id="_CPPv3NK11trt_edgellm2rt16DecodingStrategy13isSpeculativeEv"></span><span id="_CPPv2NK11trt_edgellm2rt16DecodingStrategy13isSpeculativeEv"></span><span id="trt_edgellm::rt::DecodingStrategy::isSpeculativeC"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1DecodingStrategy_1a499ec57cba1848e1a033f55c73daaf55"></span><span class="k"><span class="pre">virtual</span></span><span class="w"> </span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">isSpeculative</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="m"><span class="pre">0</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm2rt16DecodingStrategy13isSpeculativeEv" title="Link to this definition">#</a><br /></dt>
 <dd></dd></dl>
-
-<dl class="cpp function">
-<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm2rt16DecodingStrategy17unsupportedReasonERK20LLMGenerationRequest">
-<span id="_CPPv3NK11trt_edgellm2rt16DecodingStrategy17unsupportedReasonERK20LLMGenerationRequest"></span><span id="_CPPv2NK11trt_edgellm2rt16DecodingStrategy17unsupportedReasonERK20LLMGenerationRequest"></span><span id="trt_edgellm::rt::DecodingStrategy::unsupportedReason__LLMGenerationRequestCRC"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1DecodingStrategy_1a53f86737a8d8862e6a77743f72432f2e"></span><span class="k"><span class="pre">virtual</span></span><span class="w"> </span><span class="kt"><span class="pre">char</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">unsupportedReason</span></span></span><span class="sig-paren">(</span>
-
-<dl>
-<dd><em class="sig-param"><a class="reference internal" href="llmRuntimeUtils.html#_CPPv4N11trt_edgellm2rt20LLMGenerationRequestE" title="trt_edgellm::rt::LLMGenerationRequest"><span class="n"><span class="pre">LLMGenerationRequest</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="p"><span class="pre">&amp;</span></span></em></dd>
-</dl>
-
-<span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="m"><span class="pre">0</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm2rt16DecodingStrategy17unsupportedReasonERK20LLMGenerationRequest" title="Link to this definition">#</a><br /></dt>
-<dd><p>Check whether this strategy can handle the given request. </p>
-<dl class="field-list simple">
-<dt class="field-odd">Returns<span class="colon">:</span></dt>
-<dd class="field-odd"><p>nullptr if supported; a human-readable reason string if not. </p>
-</dd>
-</dl>
-</dd></dl>
 
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt16DecodingStrategy10decodeStepER24DecodingInferenceContext">
@@ -718,7 +726,7 @@
 <span id="_CPPv3NK11trt_edgellm2rt16DecodingStrategy22hasSystemPromptKVCacheERK20SystemPromptCacheKey"></span><span id="_CPPv2NK11trt_edgellm2rt16DecodingStrategy22hasSystemPromptKVCacheERK20SystemPromptCacheKey"></span><span id="trt_edgellm::rt::DecodingStrategy::hasSystemPromptKVCache__SystemPromptCacheKeyCRC"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1DecodingStrategy_1ab0cf2ee2f5968ab4f3820681f771f751"></span><span class="k"><span class="pre">virtual</span></span><span class="w"> </span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">hasSystemPromptKVCache</span></span></span><span class="sig-paren">(</span>
 
 <dl>
-<dd><em class="sig-param"><span class="n"><span class="pre">SystemPromptCacheKey</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="p"><span class="pre">&amp;</span></span></em></dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">SystemPromptCacheKey</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="p"><span class="pre">&amp;</span></span></em>,</dd>
 </dl>
 
 <span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="m"><span class="pre">0</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm2rt16DecodingStrategy22hasSystemPromptKVCacheERK20SystemPromptCacheKey" title="Link to this definition">#</a><br /></dt>
@@ -731,7 +739,7 @@
 <dl>
 <dd><em class="sig-param"><span class="n"><span class="pre">SystemPromptCacheKey</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="p"><span class="pre">&amp;</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span></em></dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span></em>,</dd>
 </dl>
 
 <span class="sig-paren">)</span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="m"><span class="pre">0</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt16DecodingStrategy26restoreSystemPromptKVCacheERK20SystemPromptCacheKey7int32_t12cudaStream_t" title="Link to this definition">#</a><br /></dt>
@@ -751,7 +759,7 @@
 <dd><em class="sig-param"><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">string</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="p"><span class="pre">&amp;</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">tokenizer</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">Rank</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="p"><span class="pre">&amp;</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span></em></dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span></em>,</dd>
 </dl>
 
 <span class="sig-paren">)</span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="m"><span class="pre">0</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt16DecodingStrategy23saveSystemPromptKVCacheERK20SystemPromptCacheKeyRKNSt6stringERKNSt6vectorIN9tokenizer4RankEEE7int32_t12cudaStream_t" title="Link to this definition">#</a><br /></dt>
@@ -771,7 +779,7 @@
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span></em>,</dd>
 <dd><em class="sig-param"><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="p"><span class="pre">&amp;</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span></em></dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span></em>,</dd>
 </dl>
 
 <span class="sig-paren">)</span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="m"><span class="pre">0</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt16DecodingStrategy12onBatchEvictERKNSt6vectorI7int32_tEE7int32_t7int32_tR6Tensor12cudaStream_t" title="Link to this definition">#</a><br /></dt>
@@ -814,6 +822,45 @@
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt15SamplingBuffers20hostSelectedTokenIdsE">
 <span id="_CPPv3N11trt_edgellm2rt15SamplingBuffers20hostSelectedTokenIdsE"></span><span id="_CPPv2N11trt_edgellm2rt15SamplingBuffers20hostSelectedTokenIdsE"></span><span id="trt_edgellm::rt::SamplingBuffers::hostSelectedTokenIds__TensorR"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1SamplingBuffers_1ac53826d2cae7e9f255de436ef729f2b2"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="n"><span class="pre">hostSelectedTokenIds</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt15SamplingBuffers20hostSelectedTokenIdsE" title="Link to this definition">#</a><br /></dt>
 <dd></dd></dl>
+
+</div>
+</dd></dl>
+
+<dl class="cpp struct">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt15LogprobsBuffersE">
+<span id="_CPPv3N11trt_edgellm2rt15LogprobsBuffersE"></span><span id="_CPPv2N11trt_edgellm2rt15LogprobsBuffersE"></span><span id="trt_edgellm::rt::LogprobsBuffers"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1LogprobsBuffers"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">LogprobsBuffers</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt15LogprobsBuffersE" title="Link to this definition">#</a><br /></dt>
+<dd><p>GPU/CPU buffers for logprobs computation (owned by <a class="reference internal" href="llmInferenceRuntime.html#classtrt__edgellm_1_1rt_1_1LLMInferenceRuntime"><span class="std std-ref">LLMInferenceRuntime</span></a>). Referenced here so decoders can call log-softmax + top-K on the output logits. </p>
+<div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-members">Public Members</p>
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt15LogprobsBuffers20deviceLogprobsValuesE">
+<span id="_CPPv3N11trt_edgellm2rt15LogprobsBuffers20deviceLogprobsValuesE"></span><span id="_CPPv2N11trt_edgellm2rt15LogprobsBuffers20deviceLogprobsValuesE"></span><span id="trt_edgellm::rt::LogprobsBuffers::deviceLogprobsValues__TensorR"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1LogprobsBuffers_1a4ea1e6429d2a4a6f3802bcd52c1dccbb"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="n"><span class="pre">deviceLogprobsValues</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt15LogprobsBuffers20deviceLogprobsValuesE" title="Link to this definition">#</a><br /></dt>
+<dd><p>GPU [logprobsMaxBatch, kMaxLogprobsK] top-K log-prob values. </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt15LogprobsBuffers21deviceLogprobsIndicesE">
+<span id="_CPPv3N11trt_edgellm2rt15LogprobsBuffers21deviceLogprobsIndicesE"></span><span id="_CPPv2N11trt_edgellm2rt15LogprobsBuffers21deviceLogprobsIndicesE"></span><span id="trt_edgellm::rt::LogprobsBuffers::deviceLogprobsIndices__TensorR"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1LogprobsBuffers_1ab94abd1aded1b32b475bedbc13b3b96b"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="n"><span class="pre">deviceLogprobsIndices</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt15LogprobsBuffers21deviceLogprobsIndicesE" title="Link to this definition">#</a><br /></dt>
+<dd><p>GPU [logprobsMaxBatch, kMaxLogprobsK] top-K token indices. </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt15LogprobsBuffers18hostLogprobsValuesE">
+<span id="_CPPv3N11trt_edgellm2rt15LogprobsBuffers18hostLogprobsValuesE"></span><span id="_CPPv2N11trt_edgellm2rt15LogprobsBuffers18hostLogprobsValuesE"></span><span id="trt_edgellm::rt::LogprobsBuffers::hostLogprobsValues__TensorR"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1LogprobsBuffers_1ad473fc66e7fcf1c279d93a8b79a847c0"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="n"><span class="pre">hostLogprobsValues</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt15LogprobsBuffers18hostLogprobsValuesE" title="Link to this definition">#</a><br /></dt>
+<dd><p>CPU pinned [logprobsMaxBatch, kMaxLogprobsK]. </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt15LogprobsBuffers19hostLogprobsIndicesE">
+<span id="_CPPv3N11trt_edgellm2rt15LogprobsBuffers19hostLogprobsIndicesE"></span><span id="_CPPv2N11trt_edgellm2rt15LogprobsBuffers19hostLogprobsIndicesE"></span><span id="trt_edgellm::rt::LogprobsBuffers::hostLogprobsIndices__TensorR"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1LogprobsBuffers_1a9f1d44d4cfce9b8fa8225a75daf3594f"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="n"><span class="pre">hostLogprobsIndices</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt15LogprobsBuffers19hostLogprobsIndicesE" title="Link to this definition">#</a><br /></dt>
+<dd><p>CPU pinned [logprobsMaxBatch, kMaxLogprobsK] </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt15LogprobsBuffers14gatheredLogitsE">
+<span id="_CPPv3N11trt_edgellm2rt15LogprobsBuffers14gatheredLogitsE"></span><span id="_CPPv2N11trt_edgellm2rt15LogprobsBuffers14gatheredLogitsE"></span><span id="trt_edgellm::rt::LogprobsBuffers::gatheredLogits__TensorR"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1LogprobsBuffers_1a67419989839c878a8464a48954c3b8c4"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="n"><span class="pre">gatheredLogits</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt15LogprobsBuffers14gatheredLogitsE" title="Link to this definition">#</a><br /></dt>
+<dd><p>GPU [maxBatch * maxAcceptDepth, vocab] accepted verify rows gathered before extraction. Used by the spec-decode verify paths whose accepted rows are non-contiguous in the output logits (EAGLE / MTP / DFlash); Gemma4 MTP’s sequential chain reads logits directly. </p>
+</dd></dl>
 
 </div>
 </dd></dl>
@@ -927,8 +974,18 @@
 <dd></dd></dl>
 
 <dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt22DecodingRuntimeContext9logitBiasE">
+<span id="_CPPv3N11trt_edgellm2rt22DecodingRuntimeContext9logitBiasE"></span><span id="_CPPv2N11trt_edgellm2rt22DecodingRuntimeContext9logitBiasE"></span><span id="trt_edgellm::rt::DecodingRuntimeContext::logitBias__LogitBiasR"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1DecodingRuntimeContext_1a2b671b908ab3ab5d4ebd41d9d3158ec0"></span><a class="reference internal" href="logitBias.html#_CPPv4N11trt_edgellm2rt9LogitBiasE" title="trt_edgellm::rt::LogitBias"><span class="n"><span class="pre">LogitBias</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="n"><span class="pre">logitBias</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt22DecodingRuntimeContext9logitBiasE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt22DecodingRuntimeContext8samplingE">
 <span id="_CPPv3N11trt_edgellm2rt22DecodingRuntimeContext8samplingE"></span><span id="_CPPv2N11trt_edgellm2rt22DecodingRuntimeContext8samplingE"></span><span id="trt_edgellm::rt::DecodingRuntimeContext::sampling__SamplingBuffers"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1DecodingRuntimeContext_1a32bacf09a1aabaf3e1712a67bacd54ad"></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt15SamplingBuffersE" title="trt_edgellm::rt::SamplingBuffers"><span class="n"><span class="pre">SamplingBuffers</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">sampling</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt22DecodingRuntimeContext8samplingE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt22DecodingRuntimeContext8logprobsE">
+<span id="_CPPv3N11trt_edgellm2rt22DecodingRuntimeContext8logprobsE"></span><span id="_CPPv2N11trt_edgellm2rt22DecodingRuntimeContext8logprobsE"></span><span id="trt_edgellm::rt::DecodingRuntimeContext::logprobs__LogprobsBuffers"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1DecodingRuntimeContext_1a319bc6ed310aed2a071c4f121dec6285"></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt15LogprobsBuffersE" title="trt_edgellm::rt::LogprobsBuffers"><span class="n"><span class="pre">LogprobsBuffers</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">logprobs</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt22DecodingRuntimeContext8logprobsE" title="Link to this definition">#</a><br /></dt>
 <dd></dd></dl>
 
 </div>
@@ -990,7 +1047,6 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt16DecodingStrategy4kindEv"><code class="docutils literal notranslate"><span class="pre">kind()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt16DecodingStrategy4nameEv"><code class="docutils literal notranslate"><span class="pre">name()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt16DecodingStrategy13isSpeculativeEv"><code class="docutils literal notranslate"><span class="pre">isSpeculative()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt16DecodingStrategy17unsupportedReasonERK20LLMGenerationRequest"><code class="docutils literal notranslate"><span class="pre">unsupportedReason()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt16DecodingStrategy10decodeStepER24DecodingInferenceContext"><code class="docutils literal notranslate"><span class="pre">decodeStep()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt16DecodingStrategy17captureCudaGraphsE12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">captureCudaGraphs()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt16DecodingStrategy28getRequiredContextMemorySizeEv"><code class="docutils literal notranslate"><span class="pre">getRequiredContextMemorySize()</span></code></a></li>
@@ -1010,6 +1066,14 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt15SamplingBuffers21baseVocabMappingTableE"><code class="docutils literal notranslate"><span class="pre">baseVocabMappingTable</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt15SamplingBuffers18hostPackedTokenIdsE"><code class="docutils literal notranslate"><span class="pre">hostPackedTokenIds</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt15SamplingBuffers20hostSelectedTokenIdsE"><code class="docutils literal notranslate"><span class="pre">hostSelectedTokenIds</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt15LogprobsBuffersE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::rt::LogprobsBuffers</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt15LogprobsBuffers20deviceLogprobsValuesE"><code class="docutils literal notranslate"><span class="pre">deviceLogprobsValues</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt15LogprobsBuffers21deviceLogprobsIndicesE"><code class="docutils literal notranslate"><span class="pre">deviceLogprobsIndices</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt15LogprobsBuffers18hostLogprobsValuesE"><code class="docutils literal notranslate"><span class="pre">hostLogprobsValues</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt15LogprobsBuffers19hostLogprobsIndicesE"><code class="docutils literal notranslate"><span class="pre">hostLogprobsIndices</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt15LogprobsBuffers14gatheredLogitsE"><code class="docutils literal notranslate"><span class="pre">gatheredLogits</span></code></a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt19BaseEngineResourcesE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::rt::BaseEngineResources</span></code></a><ul class="nav section-nav flex-column">
@@ -1036,7 +1100,9 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt22DecodingRuntimeContext4baseE"><code class="docutils literal notranslate"><span class="pre">base</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt22DecodingRuntimeContext10preprocessE"><code class="docutils literal notranslate"><span class="pre">preprocess</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt22DecodingRuntimeContext9tokenizerE"><code class="docutils literal notranslate"><span class="pre">tokenizer</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt22DecodingRuntimeContext9logitBiasE"><code class="docutils literal notranslate"><span class="pre">logitBias</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt22DecodingRuntimeContext8samplingE"><code class="docutils literal notranslate"><span class="pre">sampling</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt22DecodingRuntimeContext8logprobsE"><code class="docutils literal notranslate"><span class="pre">logprobs</span></code></a></li>
 </ul>
 </li>
 </ul>
@@ -1130,9 +1196,9 @@
         <div class="footer-item">
 <div class="extra_footer">
   
-  <p>Last updated on July 02, 2026.</p>
+  <p>Last updated on July 22, 2026.</p>
   
-  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/30941a6">30941a6</a>.</p>
+  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/f98267f">f98267f</a>.</p>
   
 </div></div>
       

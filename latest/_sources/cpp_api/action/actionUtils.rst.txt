@@ -1,6 +1,6 @@
 Action Utils
 ============
 
-.. doxygenfile:: action/actionUtils.h
+.. doxygenfunction:: trt_edgellm::rt::action_utils::trajectoryToTokenIds
    :project: TensorRT Edge-LLM
 

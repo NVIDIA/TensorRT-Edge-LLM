@@ -124,7 +124,9 @@ visual or audio engine directory for multimodal workflows.
 int main()
 {
     cudaStream_t stream{};
-    cudaStreamCreate(&stream);
+    // Non-blocking so unrelated work on the legacy default stream (stream 0) does not
+    // implicitly synchronize with TensorRT's internal auxiliary streams.
+    cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking);
 
     std::string engineDir = "/path/to/engine";
     std::string multimodalEngineDir = "";  // empty string = LLM-only, no multimodal engines

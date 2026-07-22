@@ -273,7 +273,7 @@ cmake .. \
     -DTRT_PACKAGE_DIR=/usr \
     -DCMAKE_TOOLCHAIN_FILE=cmake/aarch64_linux_toolchain.cmake \
     -DEMBEDDED_TARGET=auto-thor \
-    -DCUDA_CTK_VERSION=13.0 \
+    -DCUDA_CTK_VERSION=13.3 \
     -DENABLE_CUTE_DSL=ALL
 ```
 
@@ -349,7 +349,7 @@ cmake .. \
 | `TRT_PACKAGE_DIR` | Path to TensorRT installation. Auto-detected; manual hint to disambiguate multiple versions. | N/A |
 | `CMAKE_TOOLCHAIN_FILE` | **Required for Edge devices**: Use `cmake/aarch64_linux_toolchain.cmake` for Edge device builds. **Not needed for GPU builds** | N/A |
 | `EMBEDDED_TARGET` | **Required for Edge devices**: `jetson-thor` (Jetson Thor), `auto-thor` (DRIVE Thor / DriveOS), `gb10` (DGX Spark), or `jetson-orin` (Jetson Orin). **Not needed for GPU builds** | N/A |
-| `CUDA_CTK_VERSION` | CUDA Toolkit version. Use the platform command above to select `13.2`, `13.0`, or `12.6`. Do not pass `-DCUDA_VERSION`; CMake reserves that name for CUDA headers and rejects it. | target default |
+| `CUDA_CTK_VERSION` | CUDA Toolkit version. Use the platform command above to select `13.3`, `13.2`, `13.0`, or `12.6`. Do not pass `-DCUDA_VERSION`; CMake reserves that name for CUDA headers and rejects it. | target default |
 | `BUILD_UNIT_TESTS` | Build unit tests | OFF |
 | `ENABLE_COVERAGE` | Enable gcov code coverage instrumentation (see [Code Coverage](../../developer_guide/testing/code-coverage.md)) | OFF |
 | `ENABLE_CUTE_DSL` | Enable prebuilt CuTe DSL kernels: `OFF`, `ALL`, or a group list such as `gdn`, `fmha`, `gemm`, or `ssd`. Set this to `ALL` for customer builds. | OFF |

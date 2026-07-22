@@ -1,0 +1,6 @@
+Scale Convert
+=============
+
+.. doxygenfunction:: trt_edgellm::kernels::fusedFp32ToSfAtom
+   :project: TensorRT Edge-LLM
+

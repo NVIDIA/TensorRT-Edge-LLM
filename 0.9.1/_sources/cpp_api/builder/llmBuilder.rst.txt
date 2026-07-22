@@ -1,0 +1,13 @@
+LLM Builder
+===========
+
+.. doxygenclass:: trt_edgellm::builder::LLMBuilder
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::builder::LLMBuilderConfig
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
