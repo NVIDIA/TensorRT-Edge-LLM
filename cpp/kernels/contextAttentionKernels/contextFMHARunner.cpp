@@ -24,7 +24,7 @@
 #include <cstring>
 #include <cuda.h>
 #include <cuda_fp16.h>
-#include <math.h>
+#include <cmath>
 #include <memory>
 #include <mutex>
 #include <unordered_map>

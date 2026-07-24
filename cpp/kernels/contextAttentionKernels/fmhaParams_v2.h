@@ -18,7 +18,7 @@
 #pragma once
 
 #include <limits.h>
-#include <math.h>
+#include <cmath>
 #include <stdint.h>
 
 //! \brief Parameters for ALiBi (Attention with Linear Biases) positional encoding
