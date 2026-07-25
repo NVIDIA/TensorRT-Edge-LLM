@@ -362,7 +362,8 @@ TEST_P(VisionFMHACustomMaskParityTest, MatchesVisionBlockReferenceOracle)
     // Establish the CUDA primary context before the driver-API cubin loads
     // below (needed when this test is the first CUDA user in the process).
     CUDA_CHECK(cudaFree(nullptr));
-    ASSERT_TRUE(ContextFMHARunner::loadContextFMHAKernels(smVersion, DataType::kHALF));
+    ASSERT_TRUE(ContextFMHARunner::loadContextFMHAKernels(
+        smVersion, DataType::kHALF, ContextAttentionMaskType::CUSTOM_MASK));
     ContextFMHARunner runner(DataType::kHALF, /*batchSize=*/1, seqLen, numQHeads, numKVHeads, headDim, smVersion,
         inputLayout, ContextAttentionMaskType::CUSTOM_MASK);
     ASSERT_TRUE(runner.isKernelAvailable())

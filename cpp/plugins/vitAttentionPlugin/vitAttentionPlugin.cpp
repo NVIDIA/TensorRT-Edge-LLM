@@ -106,7 +106,8 @@ ViTAttentionPlugin::ViTAttentionPlugin(
             mHeadSize, mSMVersion, mDataType, AttentionInputLayout::SEPARATE_Q_K_V, ContextAttentionMaskType::PADDING);
         if (canImplementFMHA)
         {
-            ContextFMHARunner::loadContextFMHAKernels(mSMVersion, mDataType);
+            ContextFMHARunner::loadContextFMHAKernels(
+                mSMVersion, mDataType, ContextAttentionMaskType::PADDING);
         }
     }
 
@@ -147,7 +148,7 @@ ViTAttentionPlugin::ViTAttentionPlugin(std::string const& name, PluginFieldColle
     if (!mUseCuteDslFMHA)
 #endif
     {
-        ContextFMHARunner::loadContextFMHAKernels(mSMVersion, mDataType);
+        ContextFMHARunner::loadContextFMHAKernels(mSMVersion, mDataType, ContextAttentionMaskType::PADDING);
     }
 }
 

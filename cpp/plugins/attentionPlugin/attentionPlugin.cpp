@@ -172,12 +172,13 @@ bool loadFMHAKernels(
     if (!useCuteDslFMHA)
 #endif
     {
-        canImplementFMHA = ContextFMHARunner::canImplement(headSize, smVersion, dataType,
-            AttentionInputLayout::SEPARATE_Q_K_V,
-            useSlidingWindow ? ContextAttentionMaskType::SLIDING_OR_CHUNKED_CAUSAL : ContextAttentionMaskType::CAUSAL);
+        auto const maskType = useSlidingWindow ? ContextAttentionMaskType::SLIDING_OR_CHUNKED_CAUSAL
+                                               : ContextAttentionMaskType::CAUSAL;
+        canImplementFMHA = ContextFMHARunner::canImplement(
+            headSize, smVersion, dataType, AttentionInputLayout::SEPARATE_Q_K_V, maskType);
         if (canImplementFMHA)
         {
-            if (!ContextFMHARunner::loadContextFMHAKernels(smVersion, dataType))
+            if (!ContextFMHARunner::loadContextFMHAKernels(smVersion, dataType, maskType))
             {
                 LOG_ERROR("Failed to load FMHA_v2 cubins for SM%d", smVersion);
                 canImplementFMHA = false;
@@ -407,7 +408,8 @@ AttentionPlugin::AttentionPlugin(std::string const& name, int32_t numQHeads, int
         // Availability is discovered from the cubin metadata table.
         mCanImplementCustomMaskFMHA = ContextFMHARunner::canImplement(mHeadSize, mSMVersion, mDataType,
                                           AttentionInputLayout::SEPARATE_Q_K_V, ContextAttentionMaskType::CUSTOM_MASK)
-            && ContextFMHARunner::loadContextFMHAKernels(mSMVersion, mDataType);
+            && ContextFMHARunner::loadContextFMHAKernels(
+                mSMVersion, mDataType, ContextAttentionMaskType::CUSTOM_MASK);
 
         enforceVisionBlockKernelSupport();
 
@@ -511,7 +513,8 @@ AttentionPlugin::AttentionPlugin(std::string const& name, PluginFieldCollection 
     {
         mCanImplementCustomMaskFMHA = ContextFMHARunner::canImplement(mHeadSize, mSMVersion, mDataType,
                                           AttentionInputLayout::SEPARATE_Q_K_V, ContextAttentionMaskType::CUSTOM_MASK)
-            && ContextFMHARunner::loadContextFMHAKernels(mSMVersion, mDataType);
+            && ContextFMHARunner::loadContextFMHAKernels(
+                mSMVersion, mDataType, ContextAttentionMaskType::CUSTOM_MASK);
 
         enforceVisionBlockKernelSupport();
     }

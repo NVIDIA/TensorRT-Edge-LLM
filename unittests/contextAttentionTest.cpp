@@ -114,7 +114,7 @@ void TestContextAttentionAccuracy(std::vector<int32_t> const& cuSeqlens, int32_t
         cudaMemcpy(outReference.data(), oTensorRef.rawPointer(), outSize * sizeof(half), cudaMemcpyDeviceToHost));
 
     // Load context FMHA kernels
-    EXPECT_TRUE(ContextFMHARunner::loadContextFMHAKernels(smVersion, DataType::kHALF));
+    EXPECT_TRUE(ContextFMHARunner::loadContextFMHAKernels(smVersion, DataType::kHALF, maskType));
 
     // Create context FMHA runner
     ContextFMHARunner runner(DataType::kHALF, batchSize, maxSeqLen, numQHeads, numKVHeads, headSize, smVersion,

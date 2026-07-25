@@ -131,10 +131,12 @@ public:
      * @brief Load FMHA kernel cubins into device
      * @param sm CUDA compute capability
      * @param dataType Data type
+     * @param maskType Attention mask type
      * @return True if successful
      * @throws std::runtime_error if a CUDA driver error occurs
      */
-    static bool loadContextFMHAKernels(int32_t sm, nvinfer1::DataType dataType);
+    static bool loadContextFMHAKernels(
+        int32_t sm, nvinfer1::DataType dataType, ContextAttentionMaskType maskType);
 
 private:
     nvinfer1::DataType mDataType; //!< Data type
