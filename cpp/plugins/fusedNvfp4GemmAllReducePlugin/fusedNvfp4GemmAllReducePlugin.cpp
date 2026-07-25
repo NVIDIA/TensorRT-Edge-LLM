@@ -215,11 +215,19 @@ bool FusedNvfp4GemmAllReducePlugin::supportsFormatCombination(
     }
     if (pos == kFP4_ACT_IDX)
     {
+#if NV_TENSORRT_MAJOR >= 11 || (NV_TENSORRT_MAJOR == 10 && NV_TENSORRT_MINOR >= 8)
         return desc.type == DataType::kFP4 || desc.type == DataType::kINT8 || desc.type == DataType::kFP8;
+#else
+        return desc.type == DataType::kINT8 || desc.type == DataType::kFP8;
+#endif
     }
     if (pos == kFP4_WEIGHT_IDX)
     {
+#if NV_TENSORRT_MAJOR >= 11 || (NV_TENSORRT_MAJOR == 10 && NV_TENSORRT_MINOR >= 8)
         return desc.type == DataType::kFP4 || desc.type == DataType::kINT8 || desc.type == DataType::kFP8;
+#else
+        return desc.type == DataType::kINT8 || desc.type == DataType::kFP8;
+#endif
     }
     if (pos == kFP4_ACT_SCALE_IDX)
     {
