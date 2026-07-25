@@ -15,6 +15,16 @@
 
 cmake_minimum_required(VERSION 3.20 FATAL_ERROR)
 
+# Record whether the user explicitly requested CUDA architectures before
+# project() runs. enable_language(CUDA) initializes CMAKE_CUDA_ARCHITECTURES to
+# a compiler default, so testing it afterwards cannot distinguish a
+# user-provided value from that default.
+set(_EDGELLM_USER_CUDA_ARCHS FALSE)
+if(DEFINED CMAKE_CUDA_ARCHITECTURES
+   AND NOT CMAKE_CUDA_ARCHITECTURES STREQUAL "")
+  set(_EDGELLM_USER_CUDA_ARCHS TRUE)
+endif()
+
 project(
   tensorrt_edgellm_sdk
   VERSION 0.9.1
@@ -61,7 +71,7 @@ endif()
 set_ifndef(CUDA_CTK_VERSION 12.8)
 set_ifndef(CUDA_DIR /usr/local/cuda-${CUDA_CTK_VERSION})
 
-if(NOT DEFINED AARCH64_BUILD)
+if(NOT _EDGELLM_USER_CUDA_ARCHS AND NOT DEFINED AARCH64_BUILD)
   set(CMAKE_CUDA_ARCHITECTURES 80;86;89)
   if(CUDA_CTK_VERSION VERSION_GREATER_EQUAL 12.8)
     list(APPEND CMAKE_CUDA_ARCHITECTURES 100a 120)
