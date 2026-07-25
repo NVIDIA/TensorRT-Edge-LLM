@@ -38,6 +38,7 @@ namespace trt_edgellm
 namespace
 {
 
+#if NV_TENSORRT_MAJOR >= 11 || (NV_TENSORRT_MAJOR == 10 && NV_TENSORRT_MINOR >= 7)
 constexpr std::size_t kEngineDeviceTransferChunkSize = 4U * 1024U * 1024U;
 constexpr std::size_t kEngineDeviceTransferBufferCount = 2U;
 
@@ -151,14 +152,22 @@ private:
     cudaEvent_t mEvent{nullptr};
     bool mCopyPending{false};
 };
+#endif
 
-class FileStreamReaderV2 : public nvinfer1::IStreamReaderV2
+#if NV_TENSORRT_MAJOR >= 11 || (NV_TENSORRT_MAJOR == 10 && NV_TENSORRT_MINOR >= 7)
+class FileStreamReader : public nvinfer1::IStreamReaderV2
+#else
+class FileStreamReader : public nvinfer1::IStreamReader
+#endif
 {
 public:
-    explicit FileStreamReaderV2(std::filesystem::path const& filePath)
+    explicit FileStreamReader(std::filesystem::path const& filePath)
         : mPath(filePath.string())
-        , mDeviceTransferBuffers{
-              PinnedHostBuffer{kEngineDeviceTransferChunkSize}, PinnedHostBuffer{kEngineDeviceTransferChunkSize}}
+#if NV_TENSORRT_MAJOR >= 11 || (NV_TENSORRT_MAJOR == 10 && NV_TENSORRT_MINOR >= 7)
+        , mDeviceTransferBuffers{PinnedHostBuffer{kEngineDeviceTransferChunkSize}, PinnedHostBuffer {
+                                     kEngineDeviceTransferChunkSize
+                                 }}
+#endif
     {
         mFd = open(mPath.c_str(), O_RDONLY);
         if (mFd < 0)
@@ -182,10 +191,10 @@ public:
         mSize = static_cast<int64_t>(status.st_size);
     }
 
-    FileStreamReaderV2(FileStreamReaderV2 const&) = delete;
-    FileStreamReaderV2& operator=(FileStreamReaderV2 const&) = delete;
+    FileStreamReader(FileStreamReader const&) = delete;
+    FileStreamReader& operator=(FileStreamReader const&) = delete;
 
-    ~FileStreamReaderV2() override
+    ~FileStreamReader() override
     {
         if (mFd >= 0)
         {
@@ -193,7 +202,11 @@ public:
         }
     }
 
+#if NV_TENSORRT_MAJOR >= 11 || (NV_TENSORRT_MAJOR == 10 && NV_TENSORRT_MINOR >= 7)
     int64_t read(void* destination, int64_t nbBytes, cudaStream_t stream) noexcept override
+#else
+    int64_t read(void* destination, int64_t nbBytes) override
+#endif
     {
         if (destination == nullptr || nbBytes < 0)
         {
@@ -205,13 +218,16 @@ public:
         }
 
         int64_t const bytesToRead = std::min(nbBytes, mSize - mOffset);
+#if NV_TENSORRT_MAJOR >= 11 || (NV_TENSORRT_MAJOR == 10 && NV_TENSORRT_MINOR >= 7)
         if (isDeviceAccessiblePointer(destination))
         {
             return readToDevice(destination, bytesToRead, stream);
         }
+#endif
         return readToHost(destination, bytesToRead);
     }
 
+#if NV_TENSORRT_MAJOR >= 11 || (NV_TENSORRT_MAJOR == 10 && NV_TENSORRT_MINOR >= 7)
     bool seek(int64_t offset, nvinfer1::SeekPosition where) noexcept override
     {
         int64_t base = 0;
@@ -231,6 +247,7 @@ public:
         mOffset = nextOffset;
         return true;
     }
+#endif
 
 private:
     int64_t readToHost(void* destination, int64_t bytesToRead) noexcept
@@ -259,6 +276,7 @@ private:
         return totalRead;
     }
 
+#if NV_TENSORRT_MAJOR >= 11 || (NV_TENSORRT_MAJOR == 10 && NV_TENSORRT_MINOR >= 7)
     int64_t readToDevice(void* destination, int64_t bytesToRead, cudaStream_t stream) noexcept
     {
         auto* output = static_cast<std::byte*>(destination);
@@ -296,12 +314,15 @@ private:
         }
         return totalRead;
     }
+#endif
 
     std::string mPath;
     int mFd{-1};
     int64_t mSize{0};
     int64_t mOffset{0};
+#if NV_TENSORRT_MAJOR >= 11 || (NV_TENSORRT_MAJOR == 10 && NV_TENSORRT_MINOR >= 7)
     std::array<PinnedHostBuffer, kEngineDeviceTransferBufferCount> mDeviceTransferBuffers;
+#endif
 };
 
 } // namespace
@@ -461,7 +482,7 @@ bool engineHasOutputTensor(nvinfer1::ICudaEngine const* engine, char const* tens
 std::unique_ptr<nvinfer1::ICudaEngine> deserializeCudaEngineFromFile(
     nvinfer1::IRuntime& runtime, std::filesystem::path const& enginePath)
 {
-    FileStreamReaderV2 streamReader(enginePath);
+    FileStreamReader streamReader(enginePath);
     auto engine = std::unique_ptr<nvinfer1::ICudaEngine>(runtime.deserializeCudaEngine(streamReader));
     if (!engine)
     {
