@@ -37,8 +37,8 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 try:
-    from tensorrt_edgellm.checkpoint.checkpoint_utils import \
-        load_checkpoint_config_dicts
+    from tensorrt_edgellm.checkpoint.checkpoint_utils import (
+        load_checkpoint_config_dicts, normalize_rope_scaling_for_runtime)
 except ImportError as exc:  # pragma: no cover
     pytest.skip(f"tensorrt_edgellm not importable: {exc}",
                 allow_module_level=True)
@@ -93,6 +93,39 @@ def _assert_kmrope(rope_scaling):
     assert rope_type in ("default", "mrope"), (
         "rope type must be 'default' (+ mrope_section) or 'mrope' "
         f"for kMRope; got {rope_type!r}")
+
+
+def test_linear_rope_with_mrope_section_is_normalized_for_runtime():
+    """Qwen3-ASR uses linear scaling metadata for an MRoPE configuration."""
+    source = {
+        "factor": 1.0,
+        "mrope_section": [24, 20, 20],
+        "rope_type": "linear",
+    }
+
+    normalized = normalize_rope_scaling_for_runtime(source)
+
+    assert normalized == {
+        "factor": 1.0,
+        "mrope_section": [24, 20, 20],
+        "rope_type": "default",
+        "type": "default",
+    }
+    assert source["rope_type"] == "linear"
+
+
+def test_linear_rope_without_mrope_section_keeps_linear_semantics():
+    """Ordinary linear RoPE must not be classified as MRoPE."""
+    normalized = normalize_rope_scaling_for_runtime({
+        "factor": 2.0,
+        "rope_type": "linear",
+    })
+
+    assert normalized == {
+        "factor": 2.0,
+        "rope_type": "linear",
+        "type": "linear",
+    }
 
 
 def test_qwen3_vl_transformers_v5_recovers_rope_from_text_config_rope_parameters(

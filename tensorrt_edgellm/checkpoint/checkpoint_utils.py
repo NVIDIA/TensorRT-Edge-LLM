@@ -61,7 +61,7 @@ def normalize_rope_scaling_for_runtime(rope_scaling: Any) -> Any:
     normalized = dict(rope_scaling)
     if "mrope_section" in normalized:
         rope_type = normalized.get("type") or normalized.get("rope_type")
-        if rope_type in (None, "default", "mrope"):
+        if rope_type in (None, "default", "linear", "mrope"):
             normalized["type"] = "default"
             normalized["rope_type"] = "default"
     # rope_parameters (transformers v5) carries "rope_type" without "type";
