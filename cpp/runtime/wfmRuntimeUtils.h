@@ -1,6 +1,23 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
@@ -116,8 +133,8 @@ struct WFMGenerationRequest
 {
     std::string prompt;
     VideoBuffer pixels;
-    AudioBuffer inputWaveform; //!< Optional conditioning waveform (requires audio_encode engine).
-    bool generateSound{false}; //!< When true, run sound denoise/decode path if engines are present.
+    AudioBuffer inputWaveform;    //!< Optional conditioning waveform (requires audio_encode engine).
+    bool generateSound{false};    //!< When true, run sound denoise/decode path if engines are present.
     int32_t numInferenceSteps{0}; //!< 0 = use value from config.json
     int32_t seed{0};
 };
@@ -149,8 +166,8 @@ std::vector<int32_t> tokenizeCosmosPrompt(
     tokenizer::Tokenizer const& tokenizer, std::string const& prompt, CosmosEngineConfig const& config);
 
 //! Build joint mRoPE position IDs [3, sequence_length] for text + vision tokens.
-std::vector<int64_t> buildCosmosPositionIds(int32_t undLen, CosmosPackedStatic const& packed,
-    CosmosEngineConfig const& config);
+std::vector<int64_t> buildCosmosPositionIds(
+    int32_t undLen, CosmosPackedStatic const& packed, CosmosEngineConfig const& config);
 
 //! Lookup und_seq and build und/gen rotary tensors for the MoT backbone.
 bool prepareCosmosTextPhase0(tokenizer::Tokenizer const& tokenizer, EmbeddingData const& embedding,
@@ -186,7 +203,8 @@ public:
 
 private:
     void resetState();
-    std::vector<float> convertModelOutput(std::vector<float> const& sample, std::vector<float> const& modelOutput) const;
+    std::vector<float> convertModelOutput(
+        std::vector<float> const& sample, std::vector<float> const& modelOutput) const;
     std::vector<float> multistepUniPBhUpdate(
         std::vector<float> const& sample, std::vector<float> const& convertedOutput, int32_t order) const;
     std::vector<float> multistepUniCBhUpdate(std::vector<float> const& convertedOutput,

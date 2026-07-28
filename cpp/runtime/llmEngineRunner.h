@@ -62,15 +62,15 @@ struct LLMEngineRunnerConfig
     int32_t maxKVCacheCapacity{};        //!< Maximum KV cache capacity
     int32_t vocabSize{};                 //!< Vocabulary size (full vocabulary)
     int32_t reducedVocabSize{0};         //!< Reduced vocabulary size (0 if not using reduced vocab)
-    int32_t outputVocabSize{};       //!< Actual output vocabulary size (reducedVocabSize if enabled, else vocabSize)
-    int32_t maxSupportedLoraRank{};  //!< Maximum supported LoRA rank
-    int32_t outputHiddenDim{};       //!< Output hidden dimension for Eagle speculative decoding (hidden_size * 3)
-    int32_t maxVerifyTreeSize{};     //!< Maximum verification tree size for Eagle speculative decoding
-    int32_t contextEmbDim{};         //!< context_embs hidden dim for GR00T VLA action head
+    int32_t outputVocabSize{};      //!< Actual output vocabulary size (reducedVocabSize if enabled, else vocabSize)
+    int32_t maxSupportedLoraRank{}; //!< Maximum supported LoRA rank
+    int32_t outputHiddenDim{};      //!< Output hidden dimension for Eagle speculative decoding (hidden_size * 3)
+    int32_t maxVerifyTreeSize{};    //!< Maximum verification tree size for Eagle speculative decoding
+    int32_t contextEmbDim{};        //!< context_embs hidden dim for GR00T VLA action head
     std::vector<int64_t> prefixKVOutputShape{}; //!< PI0.5 prefix_k / prefix_v max output shape from engine
-    int32_t numDeepstackFeatures{0}; //!< Number of deepstack features for Qwen3-VL and Qwen3-Omni
-    int32_t audioTokenId{0};         //!< Special token ID for audio in Qwen3-Omni
-    int32_t imageTokenId{0};         //!< Special token ID for image in Qwen3-Omni
+    int32_t numDeepstackFeatures{0};            //!< Number of deepstack features for Qwen3-VL and Qwen3-Omni
+    int32_t audioTokenId{0};                    //!< Special token ID for audio in Qwen3-Omni
+    int32_t imageTokenId{0};                    //!< Special token ID for image in Qwen3-Omni
 
     // Hybrid model configuration
     int32_t numLinearAttnLayers{0};    //!< Number of recurrent layers (0 for pure attention models)
@@ -168,8 +168,7 @@ public:
     bool executePrefillStep(rt::Tensor const& inputsEmbeds, rt::Tensor const& contextLengths,
         rt::OptionalInputTensors deepstackEmbeds, rt::Tensor& outputLogits, rt::OptionalOutputTensor outputHiddenStates,
         cudaStream_t stream, rt::OptionalOutputTensor outputContextEmbeds = std::nullopt,
-        rt::OptionalOutputTensor outputPrefixK = std::nullopt,
-        rt::OptionalOutputTensor outputPrefixV = std::nullopt);
+        rt::OptionalOutputTensor outputPrefixK = std::nullopt, rt::OptionalOutputTensor outputPrefixV = std::nullopt);
 
     //! API entry to execute one vanilla decoding engine action for a batched request. The API will perform decoding
     //!     operations fill the KVCache of the new generated tokens and produce the output logits. The decoding
@@ -306,7 +305,8 @@ private:
     //! runtime design clean, we will route unused output tensors to this dummy tensor.
     rt::Tensor mDummyOutputTensor{};
 
-    //! Dummy output tensor for context_embs / lm_hidden_states when the engine exports it but the caller does not need it.
+    //! Dummy output tensor for context_embs / lm_hidden_states when the engine exports it but the caller does not need
+    //! it.
     rt::Tensor mDummyContextEmbTensor{};
 
     //! Prefill auxiliary sequence output binding (context_embs or lm_hidden_states).

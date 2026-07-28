@@ -1,6 +1,23 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "runtime/wfmInferenceRuntime.h"
@@ -34,8 +51,7 @@ bool componentPresent(std::filesystem::path const& root, char const* name)
     return std::filesystem::exists(root / name / "config.json");
 }
 
-std::optional<rt::Coords> soundLatentShapeFromPacked(
-    CosmosEngineConfig const& config, CosmosPackedStatic const& packed)
+std::optional<rt::Coords> soundLatentShapeFromPacked(CosmosEngineConfig const& config, CosmosPackedStatic const& packed)
 {
     if (packed.soundTokenShape.empty())
     {
@@ -77,18 +93,18 @@ WFMInferenceRuntime::WFMInferenceRuntime(std::string const& engineDir, cudaStrea
     mEmbedding = loadEmbeddingTable(root / "embedding.safetensors", stream);
 
     int32_t const maxUndLen = mPackedStatic.sequenceLength;
-    int32_t const maxGenLen = mPackedStatic.visionTokenShape[0] * mPackedStatic.visionTokenShape[1]
-        * mPackedStatic.visionTokenShape[2];
+    int32_t const maxGenLen
+        = mPackedStatic.visionTokenShape[0] * mPackedStatic.visionTokenShape[1] * mPackedStatic.visionTokenShape[2];
     mTextPhase0.undSeq = rt::Tensor({maxUndLen, mConfig.hiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF,
         "WFMInferenceRuntime::undSeq");
-    mTextPhase0.cosUnd = rt::Tensor({maxUndLen, mConfig.headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF,
-        "WFMInferenceRuntime::cosUnd");
-    mTextPhase0.sinUnd = rt::Tensor({maxUndLen, mConfig.headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF,
-        "WFMInferenceRuntime::sinUnd");
-    mTextPhase0.cosGen = rt::Tensor({maxGenLen, mConfig.headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF,
-        "WFMInferenceRuntime::cosGen");
-    mTextPhase0.sinGen = rt::Tensor({maxGenLen, mConfig.headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF,
-        "WFMInferenceRuntime::sinGen");
+    mTextPhase0.cosUnd = rt::Tensor(
+        {maxUndLen, mConfig.headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "WFMInferenceRuntime::cosUnd");
+    mTextPhase0.sinUnd = rt::Tensor(
+        {maxUndLen, mConfig.headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "WFMInferenceRuntime::sinUnd");
+    mTextPhase0.cosGen = rt::Tensor(
+        {maxGenLen, mConfig.headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "WFMInferenceRuntime::cosGen");
+    mTextPhase0.sinGen = rt::Tensor(
+        {maxGenLen, mConfig.headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "WFMInferenceRuntime::sinGen");
 
     std::string const visualEncodeDir = (root / "visual_encode").string();
     std::string const visualDecodeDir = (root / "visual_decode").string();
@@ -119,27 +135,23 @@ WFMInferenceRuntime::WFMInferenceRuntime(std::string const& engineDir, cudaStrea
     }
     else
     {
-        LOG_WARNING(
-            "WFMInferenceRuntime: denoise engines incomplete under %s; denoise path will be unavailable.",
+        LOG_WARNING("WFMInferenceRuntime: denoise engines incomplete under %s; denoise path will be unavailable.",
             engineDir.c_str());
     }
 
-    int64_t sharedContextMemorySize = std::max(mVaeEncodeRunner->getRequiredContextMemorySize(),
-        mVaeDecodeRunner->getRequiredContextMemorySize());
+    int64_t sharedContextMemorySize
+        = std::max(mVaeEncodeRunner->getRequiredContextMemorySize(), mVaeDecodeRunner->getRequiredContextMemorySize());
     if (mAudioEncodeRunner)
     {
-        sharedContextMemorySize
-            = std::max(sharedContextMemorySize, mAudioEncodeRunner->getRequiredContextMemorySize());
+        sharedContextMemorySize = std::max(sharedContextMemorySize, mAudioEncodeRunner->getRequiredContextMemorySize());
     }
     if (mAudioDecodeRunner)
     {
-        sharedContextMemorySize
-            = std::max(sharedContextMemorySize, mAudioDecodeRunner->getRequiredContextMemorySize());
+        sharedContextMemorySize = std::max(sharedContextMemorySize, mAudioDecodeRunner->getRequiredContextMemorySize());
     }
     if (mDenoiseRunner)
     {
-        sharedContextMemorySize
-            = std::max(sharedContextMemorySize, mDenoiseRunner->getRequiredContextMemorySize());
+        sharedContextMemorySize = std::max(sharedContextMemorySize, mDenoiseRunner->getRequiredContextMemorySize());
     }
     mSharedExecContextMemory = rt::Tensor({sharedContextMemorySize}, rt::DeviceType::kGPU, nvinfer1::DataType::kUINT8,
         "WFMInferenceRuntime::mSharedExecContextMemory");
@@ -195,10 +207,10 @@ WFMInferenceRuntime::WFMInferenceRuntime(std::string const& engineDir, cudaStrea
 
     if (soundLatentShape.getNumDims() == 3)
     {
-        mNoisySoundLatents = rt::Tensor(soundLatentShape, rt::DeviceType::kGPU, soundLatentDtype,
-            "WFMInferenceRuntime::mNoisySoundLatents");
-        mZeroSoundLatents = rt::Tensor(soundLatentShape, rt::DeviceType::kGPU, soundLatentDtype,
-            "WFMInferenceRuntime::mZeroSoundLatents");
+        mNoisySoundLatents = rt::Tensor(
+            soundLatentShape, rt::DeviceType::kGPU, soundLatentDtype, "WFMInferenceRuntime::mNoisySoundLatents");
+        mZeroSoundLatents = rt::Tensor(
+            soundLatentShape, rt::DeviceType::kGPU, soundLatentDtype, "WFMInferenceRuntime::mZeroSoundLatents");
         CUDA_CHECK(cudaMemsetAsync(mZeroSoundLatents.rawPointer(), 0,
             static_cast<size_t>(mZeroSoundLatents.getShape().volume())
                 * rt::utils::getTypeSize(mZeroSoundLatents.getDataType()),
@@ -207,10 +219,11 @@ WFMInferenceRuntime::WFMInferenceRuntime(std::string const& engineDir, cudaStrea
     }
 
     LOG_INFO(
-        "WFMInferenceRuntime loaded from %s (frames=%d, %dx%d, hidden=%d, seq_len=%d, denoise=%s, sound=%s, shared_ctx=%zu bytes)",
+        "WFMInferenceRuntime loaded from %s (frames=%d, %dx%d, hidden=%d, seq_len=%d, denoise=%s, sound=%s, "
+        "shared_ctx=%zu bytes)",
         engineDir.c_str(), mConfig.numFrames, mConfig.height, mConfig.width, mConfig.hiddenSize,
-        mPackedStatic.sequenceLength, mDenoiseRunner ? "yes" : "no",
-        mConfig.enableSound ? "enabled" : "disabled", static_cast<size_t>(sharedContextMemorySize));
+        mPackedStatic.sequenceLength, mDenoiseRunner ? "yes" : "no", mConfig.enableSound ? "enabled" : "disabled",
+        static_cast<size_t>(sharedContextMemorySize));
 }
 
 bool WFMInferenceRuntime::examineRequest(WFMGenerationRequest const& request) const noexcept
@@ -262,8 +275,8 @@ bool WFMInferenceRuntime::handleRequest(
         return false;
     }
 
-    if (!seedNoisyVisionLatents(mVaeEncodeRunner->getLatents(), mNoisyLatents,
-            mPackedStatic.visionNoisyFrameIndexes, request.seed, 1.F, stream))
+    if (!seedNoisyVisionLatents(mVaeEncodeRunner->getLatents(), mNoisyLatents, mPackedStatic.visionNoisyFrameIndexes,
+            request.seed, 1.F, stream))
     {
         LOG_ERROR("WFMInferenceRuntime: failed to seed noisy vision latents.");
         return false;
@@ -313,8 +326,8 @@ bool WFMInferenceRuntime::handleRequest(
         }
 
         rt::Tensor const& soundSeedSource = cleanSoundLatents != nullptr ? *cleanSoundLatents : mZeroSoundLatents;
-        if (!seedNoisySoundLatents(soundSeedSource, mNoisySoundLatents, mPackedStatic.soundNoisySlotIndexes,
-                request.seed, 1.F, stream))
+        if (!seedNoisySoundLatents(
+                soundSeedSource, mNoisySoundLatents, mPackedStatic.soundNoisySlotIndexes, request.seed, 1.F, stream))
         {
             LOG_ERROR("WFMInferenceRuntime: failed to seed noisy sound latents.");
             return false;
@@ -323,8 +336,7 @@ bool WFMInferenceRuntime::handleRequest(
 
     if (mDenoiseRunner)
     {
-        int32_t const numSteps
-            = request.numInferenceSteps > 0 ? request.numInferenceSteps : mConfig.numInferenceSteps;
+        int32_t const numSteps = request.numInferenceSteps > 0 ? request.numInferenceSteps : mConfig.numInferenceSteps;
 
         CosmosDenoiseLatents denoiseLatents{};
         denoiseLatents.vision = &mNoisyLatents;
@@ -342,7 +354,8 @@ bool WFMInferenceRuntime::handleRequest(
     else
     {
         LOG_WARNING(
-            "WFMInferenceRuntime: CosmosDenoiseRunner unavailable; skipping denoise (encode->seed->decode smoke path).");
+            "WFMInferenceRuntime: CosmosDenoiseRunner unavailable; skipping denoise (encode->seed->decode smoke "
+            "path).");
     }
 
     if (!mVaeDecodeRunner->copyLatentsFrom(mNoisyLatents, stream))

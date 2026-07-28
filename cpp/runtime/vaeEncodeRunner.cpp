@@ -1,6 +1,23 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "runtime/vaeEncodeRunner.h"
@@ -110,8 +127,8 @@ bool copyTensorToDevice(rt::Tensor& dst, rt::Tensor const& src, cudaStream_t str
     auto const srcBytes = tensorBytes(src);
     if (dstBytes == srcBytes)
     {
-        CUDA_CHECK(cudaMemcpyAsync(dst.rawPointer(), src.rawPointer(), static_cast<size_t>(dstBytes),
-            cudaMemcpyDeviceToDevice, stream));
+        CUDA_CHECK(cudaMemcpyAsync(
+            dst.rawPointer(), src.rawPointer(), static_cast<size_t>(dstBytes), cudaMemcpyDeviceToDevice, stream));
         return true;
     }
 
@@ -127,32 +144,32 @@ bool copyTensorToDevice(rt::Tensor& dst, rt::Tensor const& src, cudaStream_t str
     if (srcType == nvinfer1::DataType::kHALF && dstType == nvinfer1::DataType::kFLOAT)
     {
         std::vector<half> hostSrc(static_cast<std::size_t>(elements));
-        CUDA_CHECK(cudaMemcpyAsync(hostSrc.data(), src.rawPointer(), static_cast<size_t>(srcBytes),
-            cudaMemcpyDeviceToHost, stream));
+        CUDA_CHECK(cudaMemcpyAsync(
+            hostSrc.data(), src.rawPointer(), static_cast<size_t>(srcBytes), cudaMemcpyDeviceToHost, stream));
         CUDA_CHECK(cudaStreamSynchronize(stream));
         std::vector<float> hostDst(static_cast<std::size_t>(elements));
         for (int64_t i = 0; i < elements; ++i)
         {
             hostDst[static_cast<std::size_t>(i)] = __half2float(hostSrc[static_cast<std::size_t>(i)]);
         }
-        CUDA_CHECK(cudaMemcpyAsync(dst.rawPointer(), hostDst.data(), static_cast<size_t>(dstBytes),
-            cudaMemcpyHostToDevice, stream));
+        CUDA_CHECK(cudaMemcpyAsync(
+            dst.rawPointer(), hostDst.data(), static_cast<size_t>(dstBytes), cudaMemcpyHostToDevice, stream));
         return true;
     }
 
     if (srcType == nvinfer1::DataType::kFLOAT && dstType == nvinfer1::DataType::kHALF)
     {
         std::vector<float> hostSrc(static_cast<std::size_t>(elements));
-        CUDA_CHECK(cudaMemcpyAsync(hostSrc.data(), src.rawPointer(), static_cast<size_t>(srcBytes),
-            cudaMemcpyDeviceToHost, stream));
+        CUDA_CHECK(cudaMemcpyAsync(
+            hostSrc.data(), src.rawPointer(), static_cast<size_t>(srcBytes), cudaMemcpyDeviceToHost, stream));
         CUDA_CHECK(cudaStreamSynchronize(stream));
         std::vector<half> hostDst(static_cast<std::size_t>(elements));
         for (int64_t i = 0; i < elements; ++i)
         {
             hostDst[static_cast<std::size_t>(i)] = __float2half(hostSrc[static_cast<std::size_t>(i)]);
         }
-        CUDA_CHECK(cudaMemcpyAsync(dst.rawPointer(), hostDst.data(), static_cast<size_t>(dstBytes),
-            cudaMemcpyHostToDevice, stream));
+        CUDA_CHECK(cudaMemcpyAsync(
+            dst.rawPointer(), hostDst.data(), static_cast<size_t>(dstBytes), cudaMemcpyHostToDevice, stream));
         return true;
     }
 
@@ -183,10 +200,8 @@ VaeEncodeRunner::VaeEncodeRunner(std::string const& engineDir, cudaStream_t stre
         throw std::runtime_error("VaeEncodeRunner: failed to allocate buffers for " + engineDir);
     }
 
-    LOG_INFO(
-        "VaeEncodeRunner loaded from %s (%s -> %s, pixels=%s, latents=%s)",
-        engineDir.c_str(), mInputName.c_str(), mOutputName.c_str(), mInputShape.formatString().c_str(),
-        mOutputShape.formatString().c_str());
+    LOG_INFO("VaeEncodeRunner loaded from %s (%s -> %s, pixels=%s, latents=%s)", engineDir.c_str(), mInputName.c_str(),
+        mOutputName.c_str(), mInputShape.formatString().c_str(), mOutputShape.formatString().c_str());
 }
 
 bool VaeEncodeRunner::loadConfig()

@@ -211,7 +211,8 @@ std::vector<float> loadRobotStateBin(std::filesystem::path const& path)
     std::ifstream file(path, std::ios::binary | std::ios::ate);
     check::check(file.is_open(), "Failed to open robot state file: " + path.string());
     auto const fileSize = static_cast<std::size_t>(file.tellg());
-    check::check(fileSize % sizeof(float) == 0, "Robot state file size must be a multiple of 4 bytes: " + path.string());
+    check::check(
+        fileSize % sizeof(float) == 0, "Robot state file size must be a multiple of 4 bytes: " + path.string());
     file.seekg(0);
     std::vector<float> values(fileSize / sizeof(float));
     file.read(reinterpret_cast<char*>(values.data()), static_cast<std::streamsize>(fileSize));
@@ -410,8 +411,9 @@ std::pair<std::unordered_map<std::string, std::string>, std::vector<rt::LLMGener
                 {
                     std::string const& contentStr = contentJson.get<std::string>();
                     check::check(contentStr.size() <= limits::security::kMaxMessageContentSizeBytes,
-                        format::fmtstr("Input rejected: message content too large in request %zu: %zu bytes (max: %zu). "
-                                       "Limit defined in %s.",
+                        format::fmtstr(
+                            "Input rejected: message content too large in request %zu: %zu bytes (max: %zu). "
+                            "Limit defined in %s.",
                             requestIdx, contentStr.size(), limits::security::kMaxMessageContentSizeBytes,
                             limits::kInputLimitsLocation));
 
@@ -661,8 +663,7 @@ int main(int argc, char* argv[])
             }
             responseJson["messages"] = messagesJson;
 
-            if (requestStatus && batchIdx < response.outputActions.size()
-                && !response.outputActions[batchIdx].empty())
+            if (requestStatus && batchIdx < response.outputActions.size() && !response.outputActions[batchIdx].empty())
             {
                 responseJson["actions"] = response.outputActions[batchIdx];
             }

@@ -511,6 +511,7 @@ def _export_llm(model_dir: str,
                 llm_out_dir: str,
                 model_type: str = "",
                 eagle_base: bool = False,
+                emit_normed_hidden_states: bool = False,
                 fp8_embedding: bool = False,
                 reduced_vocab_dir: str = "",
                 mtp_base: bool = False,
@@ -573,6 +574,8 @@ def _export_llm(model_dir: str,
                 tp_size=world,
                 tp_rank=rank,
             )
+            if emit_normed_hidden_states:
+                model.emit_normed_hidden_states = True
         except (OSError, ValueError, RuntimeError, ImportError) as exc:
             logger.exception("[LLM] Failed to load checkpoint")
             raise SystemExit(1) from exc
@@ -1830,6 +1833,13 @@ def main() -> None:
         "Write embedding.safetensors in FP8 E4M3 format with per-row block scales.",
     )
     p.add_argument(
+        "--emit-normed-hidden-states",
+        action="store_true",
+        help=(
+            "Add the full-sequence final RMSNorm hidden_states output to the "
+            "LLM ONNX graph for eager parity debugging."),
+    )
+    p.add_argument(
         "--reduced-vocab-dir",
         "--reduced_vocab_dir",
         dest="reduced_vocab_dir",
@@ -2009,18 +2019,19 @@ def main() -> None:
     # drive both the pre-run log and the post-run summary below.
     stages = [
         (_has_llm_component(model_type, "thinker") and not args.skip_llm
-         and not _draft_only and _allow("thinker"), "thinker",
-         lambda out: _export_llm(model_dir,
-                                 out,
-                                 model_type=model_type,
-                                 eagle_base=args.eagle_base,
-                                 mtp_base=args.mtp,
-                                 dflash_base=args.dflash_base,
-                                 dflash_draft_dir=args.dflash_draft_dir,
-                                 fp8_embedding=args.fp8_embedding,
-                                 reduced_vocab_dir=args.reduced_vocab_dir,
-                                 externalize_weights=externalize_weights,
-                                 tp_size=args.tp_size)),
+         and not _draft_only and _allow("thinker"), "thinker", lambda out:
+         _export_llm(model_dir,
+                     out,
+                     model_type=model_type,
+                     eagle_base=args.eagle_base,
+                     emit_normed_hidden_states=args.emit_normed_hidden_states,
+                     mtp_base=args.mtp,
+                     dflash_base=args.dflash_base,
+                     dflash_draft_dir=args.dflash_draft_dir,
+                     fp8_embedding=args.fp8_embedding,
+                     reduced_vocab_dir=args.reduced_vocab_dir,
+                     externalize_weights=externalize_weights,
+                     tp_size=args.tp_size)),
         (args.mtp, "mtp_draft", lambda out: _export_mtp_draft(
             model_dir, out, externalize_weights=externalize_weights)),
         (args.dflash_draft, "dflash_draft", lambda out: _export_dflash_draft(

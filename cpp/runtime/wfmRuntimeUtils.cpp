@@ -1,6 +1,23 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "runtime/wfmRuntimeUtils.h"
@@ -41,7 +58,8 @@ bool videoShapeMatchesConfig(VideoBuffer const& video, CosmosEngineConfig const&
 
     if (video.batch != 1)
     {
-        LOG_ERROR("Cosmos Edge runtime currently supports batch=1 (got batch=%lld).", static_cast<long long>(video.batch));
+        LOG_ERROR(
+            "Cosmos Edge runtime currently supports batch=1 (got batch=%lld).", static_cast<long long>(video.batch));
         return false;
     }
 
@@ -53,8 +71,7 @@ bool videoShapeMatchesConfig(VideoBuffer const& video, CosmosEngineConfig const&
 
     if (video.numFrames != config.numFrames || video.height != config.height || video.width != config.width)
     {
-        LOG_ERROR(
-            "Video shape [1,3,%lld,%lld,%lld] does not match export config [1,3,%d,%d,%d].",
+        LOG_ERROR("Video shape [1,3,%lld,%lld,%lld] does not match export config [1,3,%d,%d,%d].",
             static_cast<long long>(video.numFrames), static_cast<long long>(video.height),
             static_cast<long long>(video.width), config.numFrames, config.height, config.width);
         return false;
@@ -90,15 +107,15 @@ bool audioShapeMatchesConfig(AudioBuffer const& audio, CosmosEngineConfig const&
 
     if (audio.batch != 1)
     {
-        LOG_ERROR("Cosmos sound runtime currently supports batch=1 (got batch=%lld).",
-            static_cast<long long>(audio.batch));
+        LOG_ERROR(
+            "Cosmos sound runtime currently supports batch=1 (got batch=%lld).", static_cast<long long>(audio.batch));
         return false;
     }
 
     if (audio.sampleRate != config.sampleRate)
     {
-        LOG_ERROR("Audio sample rate %d does not match export config sample_rate=%d.", audio.sampleRate,
-            config.sampleRate);
+        LOG_ERROR(
+            "Audio sample rate %d does not match export config sample_rate=%d.", audio.sampleRate, config.sampleRate);
         return false;
     }
 
@@ -157,8 +174,7 @@ CosmosEngineConfig loadCosmosEngineConfig(std::filesystem::path const& configPat
     config.headDim = configJson.value("head_dim", 128);
     config.ropeTheta = configJson.value("rope_theta", 1000000.F);
     config.enableFpsModulation = configJson.value("enable_fps_modulation", false);
-    config.unified3dMropeTemporalModalityMargin
-        = configJson.value("unified_3d_mrope_temporal_modality_margin", 15000);
+    config.unified3dMropeTemporalModalityMargin = configJson.value("unified_3d_mrope_temporal_modality_margin", 15000);
     config.unified3dMropeResetSpatialIds = configJson.value("unified_3d_mrope_reset_spatial_ids", true);
     config.baseFps = configJson.value("base_fps", 24.F);
     config.temporalCompressionFactor = configJson.value("temporal_compression_factor", 4);

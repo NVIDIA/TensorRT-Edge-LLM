@@ -1,6 +1,23 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "runtime/wfmRuntimeUtils.h"
@@ -130,13 +147,13 @@ void computeCosmosRotaryEmbeddings(std::vector<int64_t> const& positionIds, int3
         for (int32_t axis = 0; axis < 3; ++axis)
         {
             freqs[static_cast<std::size_t>(axis)].resize(static_cast<std::size_t>(halfDim));
-            int64_t const pos
-                = positionIds[static_cast<std::size_t>(axis) * static_cast<std::size_t>(sequenceLength)
-                    + static_cast<std::size_t>(token)];
+            int64_t const pos = positionIds[static_cast<std::size_t>(axis) * static_cast<std::size_t>(sequenceLength)
+                + static_cast<std::size_t>(token)];
             float const posF = static_cast<float>(pos);
             for (int32_t j = 0; j < halfDim; ++j)
             {
-                freqs[static_cast<std::size_t>(axis)][static_cast<std::size_t>(j)] = invFreq[static_cast<std::size_t>(j)] * posF;
+                freqs[static_cast<std::size_t>(axis)][static_cast<std::size_t>(j)]
+                    = invFreq[static_cast<std::size_t>(j)] * posF;
             }
         }
 
@@ -151,13 +168,11 @@ void computeCosmosRotaryEmbeddings(std::vector<int64_t> const& positionIds, int3
             cosOut[static_cast<std::size_t>(token) * static_cast<std::size_t>(headDim) + static_cast<std::size_t>(j)]
                 = c;
             cosOut[static_cast<std::size_t>(token) * static_cast<std::size_t>(headDim) + static_cast<std::size_t>(j)
-                + static_cast<std::size_t>(halfDim)]
-                = c;
+                + static_cast<std::size_t>(halfDim)] = c;
             sinOut[static_cast<std::size_t>(token) * static_cast<std::size_t>(headDim) + static_cast<std::size_t>(j)]
                 = s;
             sinOut[static_cast<std::size_t>(token) * static_cast<std::size_t>(headDim) + static_cast<std::size_t>(j)
-                + static_cast<std::size_t>(halfDim)]
-                = s;
+                + static_cast<std::size_t>(halfDim)] = s;
         }
     }
 }
@@ -169,8 +184,8 @@ void uploadHostFloatToHalfGpu(rt::Tensor& dst, std::vector<float> const& host, c
     {
         converted[i] = __float2half(host[i]);
     }
-    CUDA_CHECK(cudaMemcpyAsync(dst.rawPointer(), converted.data(), converted.size() * sizeof(half),
-        cudaMemcpyHostToDevice, stream));
+    CUDA_CHECK(cudaMemcpyAsync(
+        dst.rawPointer(), converted.data(), converted.size() * sizeof(half), cudaMemcpyHostToDevice, stream));
 }
 
 std::string formatCosmosUserPrompt(std::string const& prompt, CosmosEngineConfig const& config)
@@ -264,8 +279,7 @@ std::vector<int64_t> buildCosmosPositionIds(
     }
 
     auto [textIds, nextOffset] = get3dMropeIdsTextTokens(undLen, 0, config.enableFpsModulation);
-    int64_t const visionTemporalOffset
-        = nextOffset + static_cast<int64_t>(config.unified3dMropeTemporalModalityMargin);
+    int64_t const visionTemporalOffset = nextOffset + static_cast<int64_t>(config.unified3dMropeTemporalModalityMargin);
 
     auto [visionIds, unusedNext] = get3dMropeIdsVaeTokens(packed.visionTokenShape[0], packed.visionTokenShape[1],
         packed.visionTokenShape[2], visionTemporalOffset, config.unified3dMropeResetSpatialIds, config.fps,
@@ -282,13 +296,15 @@ std::vector<int64_t> buildCosmosPositionIds(
         {
             positionIds[static_cast<std::size_t>(axis) * static_cast<std::size_t>(sequenceLength)
                 + static_cast<std::size_t>(i)]
-                = textIds[static_cast<std::size_t>(axis) * static_cast<std::size_t>(undLen) + static_cast<std::size_t>(i)];
+                = textIds[static_cast<std::size_t>(axis) * static_cast<std::size_t>(undLen)
+                    + static_cast<std::size_t>(i)];
         }
         for (int32_t i = 0; i < genLen; ++i)
         {
             positionIds[static_cast<std::size_t>(axis) * static_cast<std::size_t>(sequenceLength)
                 + static_cast<std::size_t>(undLen) + static_cast<std::size_t>(i)]
-                = visionIds[static_cast<std::size_t>(axis) * static_cast<std::size_t>(genLen) + static_cast<std::size_t>(i)];
+                = visionIds[static_cast<std::size_t>(axis) * static_cast<std::size_t>(genLen)
+                    + static_cast<std::size_t>(i)];
         }
     }
 
@@ -309,7 +325,8 @@ bool prepareCosmosTextPhase0(tokenizer::Tokenizer const& tokenizer, EmbeddingDat
         if (phase0.undLen != packed.undLen)
         {
             LOG_WARNING(
-                "Runtime und_len=%d differs from packing_static und_len=%d; vision indexes must be rebuilt before denoise.",
+                "Runtime und_len=%d differs from packing_static und_len=%d; vision indexes must be rebuilt before "
+                "denoise.",
                 phase0.undLen, packed.undLen);
         }
 
@@ -339,7 +356,8 @@ bool prepareCosmosTextPhase0(tokenizer::Tokenizer const& tokenizer, EmbeddingDat
         std::vector<float> sinFull;
         computeCosmosRotaryEmbeddings(positionIds, phase0.sequenceLength, config, cosFull, sinFull);
 
-        if (!phase0.cosUnd.reshape({phase0.undLen, config.headDim}) || !phase0.sinUnd.reshape({phase0.undLen, config.headDim})
+        if (!phase0.cosUnd.reshape({phase0.undLen, config.headDim})
+            || !phase0.sinUnd.reshape({phase0.undLen, config.headDim})
             || !phase0.cosGen.reshape({phase0.genLen, config.headDim})
             || !phase0.sinGen.reshape({phase0.genLen, config.headDim}))
         {
@@ -347,10 +365,14 @@ bool prepareCosmosTextPhase0(tokenizer::Tokenizer const& tokenizer, EmbeddingDat
             return false;
         }
 
-        std::vector<float> cosUndHost(static_cast<std::size_t>(phase0.undLen) * static_cast<std::size_t>(config.headDim));
-        std::vector<float> sinUndHost(static_cast<std::size_t>(phase0.undLen) * static_cast<std::size_t>(config.headDim));
-        std::vector<float> cosGenHost(static_cast<std::size_t>(phase0.genLen) * static_cast<std::size_t>(config.headDim));
-        std::vector<float> sinGenHost(static_cast<std::size_t>(phase0.genLen) * static_cast<std::size_t>(config.headDim));
+        std::vector<float> cosUndHost(
+            static_cast<std::size_t>(phase0.undLen) * static_cast<std::size_t>(config.headDim));
+        std::vector<float> sinUndHost(
+            static_cast<std::size_t>(phase0.undLen) * static_cast<std::size_t>(config.headDim));
+        std::vector<float> cosGenHost(
+            static_cast<std::size_t>(phase0.genLen) * static_cast<std::size_t>(config.headDim));
+        std::vector<float> sinGenHost(
+            static_cast<std::size_t>(phase0.genLen) * static_cast<std::size_t>(config.headDim));
 
         for (int32_t i = 0; i < phase0.undLen; ++i)
         {
@@ -363,10 +385,13 @@ bool prepareCosmosTextPhase0(tokenizer::Tokenizer const& tokenizer, EmbeddingDat
         }
         for (int32_t i = 0; i < phase0.genLen; ++i)
         {
-            std::size_t const src = static_cast<std::size_t>(phase0.undLen + i) * static_cast<std::size_t>(config.headDim);
+            std::size_t const src
+                = static_cast<std::size_t>(phase0.undLen + i) * static_cast<std::size_t>(config.headDim);
             std::size_t const dst = static_cast<std::size_t>(i) * static_cast<std::size_t>(config.headDim);
-            std::memcpy(cosGenHost.data() + dst, cosFull.data() + src, static_cast<std::size_t>(config.headDim) * sizeof(float));
-            std::memcpy(sinGenHost.data() + dst, sinFull.data() + src, static_cast<std::size_t>(config.headDim) * sizeof(float));
+            std::memcpy(cosGenHost.data() + dst, cosFull.data() + src,
+                static_cast<std::size_t>(config.headDim) * sizeof(float));
+            std::memcpy(sinGenHost.data() + dst, sinFull.data() + src,
+                static_cast<std::size_t>(config.headDim) * sizeof(float));
         }
 
         uploadHostFloatToHalfGpu(phase0.cosUnd, cosUndHost, stream);
@@ -402,16 +427,14 @@ bool seedNoisyVisionLatents(rt::Tensor const& cleanLatents, rt::Tensor& noisyLat
     auto const shape = cleanLatents.getShape();
     if (shape.getNumDims() != 5)
     {
-        LOG_ERROR("seedNoisyVisionLatents: expected rank-5 latents [B,C,T,H,W], got %d dims.",
-            shape.getNumDims());
+        LOG_ERROR("seedNoisyVisionLatents: expected rank-5 latents [B,C,T,H,W], got %d dims.", shape.getNumDims());
         return false;
     }
     if (noisyLatents.getShape() != shape)
     {
         if (!noisyLatents.reshape(shape))
         {
-            LOG_ERROR("seedNoisyVisionLatents: failed to reshape noisy latents to %s.",
-                shape.formatString().c_str());
+            LOG_ERROR("seedNoisyVisionLatents: failed to reshape noisy latents to %s.", shape.formatString().c_str());
             return false;
         }
     }
@@ -438,8 +461,8 @@ bool seedNoisyVisionLatents(rt::Tensor const& cleanLatents, rt::Tensor& noisyLat
     std::size_t const elemSize = (dtype == nvinfer1::DataType::kHALF) ? sizeof(half) : sizeof(float);
     std::size_t const tensorBytes = static_cast<std::size_t>(shape.volume()) * elemSize;
 
-    CUDA_CHECK(cudaMemcpyAsync(noisyLatents.rawPointer(), cleanLatents.rawPointer(), tensorBytes,
-        cudaMemcpyDeviceToDevice, stream));
+    CUDA_CHECK(cudaMemcpyAsync(
+        noisyLatents.rawPointer(), cleanLatents.rawPointer(), tensorBytes, cudaMemcpyDeviceToDevice, stream));
 
     std::vector<float> noiseHost(static_cast<std::size_t>(shape.volume()));
     std::mt19937 generator(static_cast<std::mt19937::result_type>(seed));
@@ -462,14 +485,14 @@ bool seedNoisyVisionLatents(rt::Tensor const& cleanLatents, rt::Tensor& noisyLat
         {
             for (int64_t c = 0; c < channels; ++c)
             {
-                int64_t const linearOffset
-                    = ((b * channels + c) * latentT + frameIdx) * temporalStride;
+                int64_t const linearOffset = ((b * channels + c) * latentT + frameIdx) * temporalStride;
                 for (int64_t elem = 0; elem < framePlaneElems; ++elem)
                 {
                     float const value = noiseHost[static_cast<std::size_t>(linearOffset + elem)];
                     if (dtype == nvinfer1::DataType::kHALF)
                     {
-                        reinterpret_cast<half*>(planeBytes.data())[static_cast<std::size_t>(elem)] = __float2half(value);
+                        reinterpret_cast<half*>(planeBytes.data())[static_cast<std::size_t>(elem)]
+                            = __float2half(value);
                     }
                     else
                     {
@@ -513,8 +536,7 @@ bool seedNoisySoundLatents(rt::Tensor const& cleanLatents, rt::Tensor& noisyLate
     {
         if (!noisyLatents.reshape(shape))
         {
-            LOG_ERROR("seedNoisySoundLatents: failed to reshape noisy latents to %s.",
-                shape.formatString().c_str());
+            LOG_ERROR("seedNoisySoundLatents: failed to reshape noisy latents to %s.", shape.formatString().c_str());
             return false;
         }
     }
@@ -537,8 +559,8 @@ bool seedNoisySoundLatents(rt::Tensor const& cleanLatents, rt::Tensor& noisyLate
     std::size_t const elemSize = (dtype == nvinfer1::DataType::kHALF) ? sizeof(half) : sizeof(float);
     std::size_t const tensorBytes = static_cast<std::size_t>(shape.volume()) * elemSize;
 
-    CUDA_CHECK(cudaMemcpyAsync(noisyLatents.rawPointer(), cleanLatents.rawPointer(), tensorBytes,
-        cudaMemcpyDeviceToDevice, stream));
+    CUDA_CHECK(cudaMemcpyAsync(
+        noisyLatents.rawPointer(), cleanLatents.rawPointer(), tensorBytes, cudaMemcpyDeviceToDevice, stream));
 
     std::vector<int32_t> slots = noisySlotIndexes;
     if (slots.empty())

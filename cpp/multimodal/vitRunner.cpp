@@ -1,6 +1,23 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "multimodal/vitRunner.h"
@@ -134,12 +151,13 @@ bool VitRunner::allocateBuffer(cudaStream_t stream)
         mImageStd.rawPointer(), mConfig.imageStd.data(), channels * sizeof(float), cudaMemcpyHostToDevice, stream));
 
     int64_t const maxImagePixels = mConfig.imageHeight * mConfig.imageWidth * mConfig.numChannels;
-    mImageDevice = rt::Tensor({maxImagePixels}, rt::DeviceType::kGPU, nvinfer1::DataType::kUINT8, "VitRunner::mImageDevice");
+    mImageDevice
+        = rt::Tensor({maxImagePixels}, rt::DeviceType::kGPU, nvinfer1::DataType::kUINT8, "VitRunner::mImageDevice");
     mNormalizedImageDevice = rt::Tensor(
         {maxImagePixels}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "VitRunner::mNormalizedImageDevice");
 
-    rt::Tensor resizeBuffer({1, maxImagePixels, channels}, rt::DeviceType::kCPU, nvinfer1::DataType::kUINT8,
-        "VitRunner::resizeBuffer");
+    rt::Tensor resizeBuffer(
+        {1, maxImagePixels, channels}, rt::DeviceType::kCPU, nvinfer1::DataType::kUINT8, "VitRunner::resizeBuffer");
     mResizedImageHost = rt::imageUtils::ImageData(std::move(resizeBuffer));
 
     return true;
@@ -166,12 +184,13 @@ void VitRunner::formatImage(rt::imageUtils::ImageData const& image, int64_t batc
         width = imageToUse->width;
     }
 
-    check::check(mImageDevice.reshape({1, height, width, channels}), "VitRunner::formatImage(): mImageDevice reshape failed");
+    check::check(
+        mImageDevice.reshape({1, height, width, channels}), "VitRunner::formatImage(): mImageDevice reshape failed");
     check::check(mNormalizedImageDevice.reshape({1, height, width, channels}),
         "VitRunner::formatImage(): mNormalizedImageDevice reshape failed");
 
-    CUDA_CHECK(cudaMemcpyAsync(mImageDevice.rawPointer(), imageToUse->data(), height * width * channels,
-        cudaMemcpyHostToDevice, stream));
+    CUDA_CHECK(cudaMemcpyAsync(
+        mImageDevice.rawPointer(), imageToUse->data(), height * width * channels, cudaMemcpyHostToDevice, stream));
     kernel::normalizeImage(mImageDevice, mImageMean, mImageStd, mNormalizedImageDevice, stream);
 
     int64_t const imageBytes = height * width * channels * static_cast<int64_t>(sizeof(half));
@@ -247,9 +266,9 @@ void VitRunner::textPreprocess(rt::LLMGenerationRequest const& request,
         "VitRunner::textPreprocess(): expanded image token count must match engine output rows");
 }
 
-bool VitRunner::preprocess(rt::LLMGenerationRequest const& request,
-    std::vector<std::vector<int32_t>>& batchedInputIds, tokenizer::Tokenizer const* tokenizer,
-    rt::OptionalOutputTensor /*mropeCosSinOut*/, cudaStream_t stream, bool imageOnly) noexcept
+bool VitRunner::preprocess(rt::LLMGenerationRequest const& request, std::vector<std::vector<int32_t>>& batchedInputIds,
+    tokenizer::Tokenizer const* tokenizer, rt::OptionalOutputTensor /*mropeCosSinOut*/, cudaStream_t stream,
+    bool imageOnly) noexcept
 {
     try
     {

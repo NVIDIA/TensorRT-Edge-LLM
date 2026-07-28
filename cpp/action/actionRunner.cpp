@@ -1,6 +1,23 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "action/actionRunner.h"
@@ -29,7 +46,7 @@ namespace trt_edgellm
 {
 namespace rt
 {
-namespace 
+namespace
 {
 
 rt::Coords coordsFromJson(Json const& shape)
@@ -328,8 +345,8 @@ bool fillHostTensorFromFloats(rt::Tensor& tensor, std::vector<float> const& valu
 ActionRunner::ActionRunner(
     std::string const& engineDir, cudaStream_t stream, LinearKVCache::CacheConfig const& kvCacheConfig)
     : mStream(stream)
-    {
-        LOG_DEBUG("Loading action runner from %s", engineDir.c_str());
+{
+    LOG_DEBUG("Loading action runner from %s", engineDir.c_str());
 
     std::string const configPath = engineDir + "/config.json";
     {
@@ -350,75 +367,74 @@ ActionRunner::ActionRunner(
 
     std::string const actionEnginePath = resolveActionEnginePath(engineDir, mConfigJson);
 
-        mRuntime = std::unique_ptr<IRuntime>(createInferRuntime(gLogger));
-        if (!mRuntime)
-        {
-            throw std::runtime_error("Failed to create TensorRT runtime");
-        }
+    mRuntime = std::unique_ptr<IRuntime>(createInferRuntime(gLogger));
+    if (!mRuntime)
+    {
+        throw std::runtime_error("Failed to create TensorRT runtime");
+    }
 
-        auto mmapReader = std::make_unique<file_io::MmapReader>(actionEnginePath);
-        if (mmapReader->getData() == nullptr)
-        {
-            throw std::runtime_error("Failed to read engine file: " + actionEnginePath);
-        }
+    auto mmapReader = std::make_unique<file_io::MmapReader>(actionEnginePath);
+    if (mmapReader->getData() == nullptr)
+    {
+        throw std::runtime_error("Failed to read engine file: " + actionEnginePath);
+    }
 
-    mEngine = std::unique_ptr<ICudaEngine>(
-        mRuntime->deserializeCudaEngine(mmapReader->getData(), mmapReader->getSize()));
-        if (!mEngine)
-        {
-            throw std::runtime_error("Failed to deserialize engine from: " + actionEnginePath);
-        }
+    mEngine
+        = std::unique_ptr<ICudaEngine>(mRuntime->deserializeCudaEngine(mmapReader->getData(), mmapReader->getSize()));
+    if (!mEngine)
+    {
+        throw std::runtime_error("Failed to deserialize engine from: " + actionEnginePath);
+    }
 
     mContext = std::unique_ptr<IExecutionContext>(
         mEngine->createExecutionContext(ExecutionContextAllocationStrategy::kUSER_MANAGED));
-        if (!mContext)
-        {
-            throw std::runtime_error("Failed to create execution context");
-        }
+    if (!mContext)
+    {
+        throw std::runtime_error("Failed to create execution context");
+    }
 
-        if (!mContext->setOptimizationProfileAsync(0, stream))
-        {
-            throw std::runtime_error("Failed to set optimization profile");
-        }
+    if (!mContext->setOptimizationProfileAsync(0, stream))
+    {
+        throw std::runtime_error("Failed to set optimization profile");
+    }
 
     if (!parseModelConfig(configPath))
-        {
-            throw std::runtime_error("Failed to parse model config");
-        }
+    {
+        throw std::runtime_error("Failed to parse model config");
+    }
 
     try
     {
-            allocateTensors(kvCacheConfig);
-        }
-        catch (std::exception const& e)
-        {
-            LOG_ERROR("ActionRunner tensor allocation failed: %s", e.what());
-            throw;
-        }
-
-        CUDA_CHECK(cudaStreamSynchronize(stream));
+        allocateTensors(kvCacheConfig);
+    }
+    catch (std::exception const& e)
+    {
+        LOG_ERROR("ActionRunner tensor allocation failed: %s", e.what());
+        throw;
     }
 
-    int64_t ActionRunner::getRequiredContextMemorySize() const
-    {
-        return mEngine ? mEngine->getDeviceMemorySizeV2() : 0;
-    }
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+}
 
-    bool ActionRunner::setContextMemory(rt::Tensor& sharedContextMemory)
+int64_t ActionRunner::getRequiredContextMemorySize() const
+{
+    return mEngine ? mEngine->getDeviceMemorySizeV2() : 0;
+}
+
+bool ActionRunner::setContextMemory(rt::Tensor& sharedContextMemory)
+{
+    int64_t const requiredSize = getRequiredContextMemorySize();
+    if (sharedContextMemory.getMemoryCapacity() < requiredSize)
     {
-        int64_t const requiredSize = getRequiredContextMemorySize();
-        if (sharedContextMemory.getMemoryCapacity() < requiredSize)
-        {
         LOG_ERROR("Shared context memory (%lld bytes) is smaller than required (%lld bytes)",
-            static_cast<long long>(sharedContextMemory.getMemoryCapacity()),
-            static_cast<long long>(requiredSize));
-            return false;
-        }
-        mExecContextMemory = sharedContextMemory.rawPointer();
-        mExecContextMemoryCapacity = sharedContextMemory.getMemoryCapacity();
-        mContext->setDeviceMemoryV2(mExecContextMemory, mExecContextMemoryCapacity);
-        return true;
+            static_cast<long long>(sharedContextMemory.getMemoryCapacity()), static_cast<long long>(requiredSize));
+        return false;
     }
+    mExecContextMemory = sharedContextMemory.rawPointer();
+    mExecContextMemoryCapacity = sharedContextMemory.getMemoryCapacity();
+    mContext->setDeviceMemoryV2(mExecContextMemory, mExecContextMemoryCapacity);
+    return true;
+}
 
 bool ActionRunner::resetExecutionContext(cudaStream_t stream)
 {
@@ -488,8 +504,8 @@ bool ActionRunner::parseModelConfig(std::string const& configPath)
         mModelType = action::ActionModelType::ALPAMAYO1;
     }
 
-    bool const hasPrefixKV = engineHasTensor(binding_names::kNoiseTrajectory)
-        && engineHasTensor(binding_names::formatKCacheName(0, true));
+    bool const hasPrefixKV
+        = engineHasTensor(binding_names::kNoiseTrajectory) && engineHasTensor(binding_names::formatKCacheName(0, true));
     bool const hasVelocityInputs = mConfigJson.contains("input_names") && mConfigJson.contains("inputs");
 
     if (hasPrefixKV || mModelType == action::ActionModelType::ALPAMAYO1)
@@ -509,8 +525,8 @@ bool ActionRunner::parseModelConfig(std::string const& configPath)
         catch (Json::exception const& e)
         {
             LOG_ERROR("Failed to read Alpamayo fields from %s: %s", configPath.c_str(), e.what());
-        return false;
-    }
+            return false;
+        }
 
         auto const& ropeParams = mConfigJson.contains("rope_scaling") ? mConfigJson["rope_scaling"] : mConfigJson;
         if (ropeParams.contains("mrope_section"))
@@ -544,8 +560,7 @@ bool ActionRunner::parseModelConfig(std::string const& configPath)
             mConfig.numInferenceTimesteps = kDefaultDenoiseSteps;
         }
 
-        Dims const maxNoise
-            = mEngine->getProfileShape(binding_names::kNoiseTrajectory, 0, OptProfileSelector::kMAX);
+        Dims const maxNoise = mEngine->getProfileShape(binding_names::kNoiseTrajectory, 0, OptProfileSelector::kMAX);
         mConfig.actionHorizon = static_cast<int32_t>(maxNoise.d[1]);
         mConfig.actionDim = static_cast<int32_t>(maxNoise.d[2]);
         return true;
@@ -655,10 +670,10 @@ bool ActionRunner::parseModelConfig(std::string const& configPath)
 
     LOG_ERROR("ActionRunner: unrecognized action engine layout in %s", configPath.c_str());
     return false;
-    }
+}
 
-    void ActionRunner::allocateTensors(LinearKVCache::CacheConfig const& kvCacheConfig)
-    {
+void ActionRunner::allocateTensors(LinearKVCache::CacheConfig const& kvCacheConfig)
+{
     if (mContextHandoff == ActionContextHandoff::PREFIX_KV)
     {
         allocatePrefixKVTensors(kvCacheConfig);
@@ -688,15 +703,18 @@ void ActionRunner::allocatePrefixKVTensors(LinearKVCache::CacheConfig const& kvC
 
     rt::Coords const noiseCoords({maxBatch, mConfig.actionHorizon, mConfig.actionDim});
 
-    mNoiseDevice = rt::Tensor(noiseCoords, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "ActionRunner::mNoiseDevice");
+    mNoiseDevice
+        = rt::Tensor(noiseCoords, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "ActionRunner::mNoiseDevice");
     mNoiseHost = rt::Tensor(noiseCoords, rt::DeviceType::kCPU, nvinfer1::DataType::kFLOAT, "ActionRunner::mNoiseHost");
     mDenoisedDevice
         = rt::Tensor(noiseCoords, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "ActionRunner::mDenoisedDevice");
     mDenoisedHost
         = rt::Tensor(noiseCoords, rt::DeviceType::kCPU, nvinfer1::DataType::kFLOAT, "ActionRunner::mDenoisedHost");
 
-    mTimeStepsT0Device = rt::Tensor({1}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "ActionRunner::mTimeStepsT0Device");
-    mTimeStepsT1Device = rt::Tensor({1}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "ActionRunner::mTimeStepsT1Device");
+    mTimeStepsT0Device
+        = rt::Tensor({1}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "ActionRunner::mTimeStepsT0Device");
+    mTimeStepsT1Device
+        = rt::Tensor({1}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "ActionRunner::mTimeStepsT1Device");
     mTimeStepsT0Host = rt::Tensor(std::vector<int64_t>{mConfig.numInferenceTimesteps}, rt::DeviceType::kCPU,
         nvinfer1::DataType::kFLOAT, "ActionRunner::mTimeStepsT0Host");
     mTimeStepsT1Host = rt::Tensor(std::vector<int64_t>{mConfig.numInferenceTimesteps}, rt::DeviceType::kCPU,
@@ -724,16 +742,16 @@ void ActionRunner::allocatePrefixKVTensors(LinearKVCache::CacheConfig const& kvC
     mKvcacheActualLengthsBroadcastDevice = rt::Tensor(std::vector<int64_t>{maxBatch}, rt::DeviceType::kGPU,
         nvinfer1::DataType::kINT32, "ActionRunner::mKvcacheActualLengthsBroadcastDevice");
 
-    rt::Coords const kvcacheShape{maxBatch, kvCacheConfig.numKVHeads, kvCacheConfig.maxSequenceLength,
-        kvCacheConfig.headDim};
+    rt::Coords const kvcacheShape{
+        maxBatch, kvCacheConfig.numKVHeads, kvCacheConfig.maxSequenceLength, kvCacheConfig.headDim};
     mKCacheLayers.resize(static_cast<size_t>(mConfig.numDecoderLayers));
     mVCacheLayers.resize(static_cast<size_t>(mConfig.numDecoderLayers));
     for (int32_t i = 0; i < mConfig.numDecoderLayers; ++i)
     {
-        mKCacheLayers[i]
-            = rt::Tensor(kvcacheShape, rt::DeviceType::kGPU, kvCacheConfig.kvCacheTypeTRT, "ActionRunner::mKCacheLayer");
-        mVCacheLayers[i]
-            = rt::Tensor(kvcacheShape, rt::DeviceType::kGPU, kvCacheConfig.kvCacheTypeTRT, "ActionRunner::mVCacheLayer");
+        mKCacheLayers[i] = rt::Tensor(
+            kvcacheShape, rt::DeviceType::kGPU, kvCacheConfig.kvCacheTypeTRT, "ActionRunner::mKCacheLayer");
+        mVCacheLayers[i] = rt::Tensor(
+            kvcacheShape, rt::DeviceType::kGPU, kvCacheConfig.kvCacheTypeTRT, "ActionRunner::mVCacheLayer");
     }
 }
 
@@ -750,9 +768,10 @@ void ActionRunner::allocateVelocityTensors()
     mPredVelocity = rt::Tensor(coordsFromJson(mConfigJson.at("outputs").at(0).at("shape")), rt::DeviceType::kGPU,
         dataTypeFromTorchString(mConfigJson.at("outputs").at(0).at("dtype").get<std::string>()), mPredVelocityName);
 
-    mNoiseHost = rt::Tensor(getActions().getShape(), rt::DeviceType::kCPU, getActions().getDataType(), "ActionRunner::mNoiseHost");
-    mPredVelocityHost = rt::Tensor(mPredVelocity.getShape(), rt::DeviceType::kCPU, mPredVelocity.getDataType(),
-        "ActionRunner::mPredVelocityHost");
+    mNoiseHost = rt::Tensor(
+        getActions().getShape(), rt::DeviceType::kCPU, getActions().getDataType(), "ActionRunner::mNoiseHost");
+    mPredVelocityHost = rt::Tensor(
+        mPredVelocity.getShape(), rt::DeviceType::kCPU, mPredVelocity.getDataType(), "ActionRunner::mPredVelocityHost");
 
     auto const& timestepMeta = mConfigJson.at("inputs").at(mTimestepName);
     mTimestepHost = rt::Tensor(coordsFromJson(timestepMeta.at("shape")), rt::DeviceType::kCPU,
@@ -762,10 +781,10 @@ void ActionRunner::allocateVelocityTensors()
     {
         throw std::runtime_error("ActionRunner: failed to bind velocity tensors during allocation");
     }
-    }
+}
 
-    bool ActionRunner::reshapeActionTensorsForActiveBatch(int32_t activeBatchSize)
-    {
+bool ActionRunner::reshapeActionTensorsForActiveBatch(int32_t activeBatchSize)
+{
     if (mContextHandoff == ActionContextHandoff::PREFIX_KV)
     {
         rt::Coords const noiseShape({activeBatchSize, mConfig.actionHorizon, mConfig.actionDim});
@@ -823,11 +842,11 @@ void ActionRunner::allocateVelocityTensors()
         return ok;
     }
 
-        return false;
-    }
+    return false;
+}
 
-    void ActionRunner::initializeNoiseTrajectory(int32_t randomSeed, int32_t activeBatchSize)
-    {
+void ActionRunner::initializeNoiseTrajectory(int32_t randomSeed, int32_t activeBatchSize)
+{
     if (mContextHandoff == ActionContextHandoff::PREFIX_KV)
     {
         size_t const elemCount = static_cast<size_t>(activeBatchSize) * static_cast<size_t>(mConfig.actionHorizon)
@@ -841,7 +860,7 @@ void ActionRunner::allocateVelocityTensors()
         }
         return;
     }
-    
+
     if (mContextHandoff == ActionContextHandoff::CONTEXT_TENSOR)
     {
         mRng.seed(static_cast<uint32_t>(randomSeed));
@@ -849,12 +868,11 @@ void ActionRunner::allocateVelocityTensors()
     }
 }
 
-    bool ActionRunner::preprocess(LLMGenerationRequest const& request, std::vector<std::vector<int32_t>>& batchedInputIds,
-        tokenizer::Tokenizer const* tokenizer)
-    {
+bool ActionRunner::preprocess(LLMGenerationRequest const& request, std::vector<std::vector<int32_t>>& batchedInputIds,
+    tokenizer::Tokenizer const* tokenizer)
+{
     int32_t const numUniqueRequests = static_cast<int32_t>(request.requests.size());
-    int32_t const actionBatchSize
-        = (request.actionBatchSize > 0) ? request.actionBatchSize : numUniqueRequests;
+    int32_t const actionBatchSize = (request.actionBatchSize > 0) ? request.actionBatchSize : numUniqueRequests;
 
     if (mContextHandoff == ActionContextHandoff::PREFIX_KV && mConfig.numTrajTokens > 0 && tokenizer != nullptr)
     {
@@ -880,8 +898,8 @@ void ActionRunner::allocateVelocityTensors()
             tokenizer::Rank const padId = itPad->second;
             tokenizer::Rank const endId = itEnd->second;
 
-            std::vector<tokenizer::Rank> const actualTokens
-                = action_utils::trajectoryToTokenIds(*req.pastTrajectory, mConfig.numTrajTokens, mConfig.trajTokenStart);
+            std::vector<tokenizer::Rank> const actualTokens = action_utils::trajectoryToTokenIds(
+                *req.pastTrajectory, mConfig.numTrajTokens, mConfig.trajTokenStart);
 
             size_t scanIdx = 0;
             while (scanIdx < tokenIds.size())
@@ -921,8 +939,8 @@ void ActionRunner::allocateVelocityTensors()
 
     if (actionBatchSize > mMaxActionBatchSize)
     {
-        LOG_ERROR("Requested action batch size %d exceeds engine max batch size %d", actionBatchSize,
-            mMaxActionBatchSize);
+        LOG_ERROR(
+            "Requested action batch size %d exceeds engine max batch size %d", actionBatchSize, mMaxActionBatchSize);
         return false;
     }
 
@@ -943,8 +961,8 @@ void ActionRunner::allocateVelocityTensors()
         return false;
     }
 
-        return true;
-    }
+    return true;
+}
 
 std::pair<rt::Tensor&, rt::Tensor&> ActionRunner::getSeparateKVCacheForDecoderLayer(
     cudaStream_t stream, LinearKVCache& kvcache, int32_t decoderLayerIdx, int32_t activeBatchSize)
@@ -967,8 +985,8 @@ std::pair<rt::Tensor&, rt::Tensor&> ActionRunner::getSeparateKVCacheForDecoderLa
         CUDA_CHECK(cudaMemcpyAsync(dstK + static_cast<size_t>(b) * blockBytes,
             src + static_cast<size_t>(srcSlot) * combinedBatchStride, blockBytes, cudaMemcpyDeviceToDevice, stream));
         CUDA_CHECK(cudaMemcpyAsync(dstV + static_cast<size_t>(b) * blockBytes,
-            src + static_cast<size_t>(srcSlot) * combinedBatchStride + blockBytes, blockBytes,
-            cudaMemcpyDeviceToDevice, stream));
+            src + static_cast<size_t>(srcSlot) * combinedBatchStride + blockBytes, blockBytes, cudaMemcpyDeviceToDevice,
+            stream));
     }
     return {mKCacheLayers[decoderLayerIdx], mVCacheLayers[decoderLayerIdx]};
 }
@@ -983,8 +1001,8 @@ void ActionRunner::setDynamicInputShapes(int32_t activeBatchSize)
     Dims const kvCacheStartIndexShape = {1, {activeBatchSize}};
     Dims const noiseShape = {3, {activeBatchSize, mConfig.actionHorizon, mConfig.actionDim}};
     Dims const ropeIdxShape = {2, {activeBatchSize, mConfig.actionHorizon}};
-    Dims const kvShape = {4, {activeBatchSize, static_cast<int64_t>(mNumKVHeads),
-                          static_cast<int64_t>(mMaxSequenceLength), mKvHeadDim}};
+    Dims const kvShape = {
+        4, {activeBatchSize, static_cast<int64_t>(mNumKVHeads), static_cast<int64_t>(mMaxSequenceLength), mKvHeadDim}};
 
     bool status = true;
     status &= mContext->setInputShape(binding_names::kKVCacheStartIndex, kvCacheStartIndexShape);
@@ -1045,8 +1063,8 @@ std::vector<std::vector<FutureTrajectoryPoint>> ActionRunner::sampleTrajectory(c
         for (int32_t b = 0; b < activeBatchSize; ++b)
         {
             int32_t const srcSlot = b % llmBatch;
-            CUDA_CHECK(cudaMemcpyAsync(broadcastLengths + b, llmLengthsDevice + srcSlot, sizeof(int32_t),
-                cudaMemcpyDeviceToDevice, stream));
+            CUDA_CHECK(cudaMemcpyAsync(
+                broadcastLengths + b, llmLengthsDevice + srcSlot, sizeof(int32_t), cudaMemcpyDeviceToDevice, stream));
         }
         mKvcacheActualLengthsDevice = broadcastLengths;
     }
@@ -1146,8 +1164,10 @@ std::vector<std::vector<FutureTrajectoryPoint>> ActionRunner::sampleTrajectory(c
         float* t0Ptr = static_cast<float*>(mTimeStepsT0Host.rawPointer()) + i;
         float* t1Ptr = static_cast<float*>(mTimeStepsT1Host.rawPointer()) + i;
 
-        CUDA_CHECK(cudaMemcpyAsync(mTimeStepsT0Device.rawPointer(), t0Ptr, sizeof(float), cudaMemcpyHostToDevice, stream));
-        CUDA_CHECK(cudaMemcpyAsync(mTimeStepsT1Device.rawPointer(), t1Ptr, sizeof(float), cudaMemcpyHostToDevice, stream));
+        CUDA_CHECK(
+            cudaMemcpyAsync(mTimeStepsT0Device.rawPointer(), t0Ptr, sizeof(float), cudaMemcpyHostToDevice, stream));
+        CUDA_CHECK(
+            cudaMemcpyAsync(mTimeStepsT1Device.rawPointer(), t1Ptr, sizeof(float), cudaMemcpyHostToDevice, stream));
 
         if (!mContext->enqueueV3(stream))
         {
@@ -1235,8 +1255,8 @@ bool ActionRunner::wireLanguageOutputs(std::vector<rt::Tensor const*> const& lan
             if (lmSlot < 0 || static_cast<std::size_t>(lmSlot) >= languageOutputs.size()
                 || languageOutputs[static_cast<std::size_t>(lmSlot)] == nullptr)
             {
-                LOG_ERROR("ActionRunner: invalid language output slot %d (num outputs=%zu)", lmSlot,
-                    languageOutputs.size());
+                LOG_ERROR(
+                    "ActionRunner: invalid language output slot %d (num outputs=%zu)", lmSlot, languageOutputs.size());
                 return false;
             }
             auto const& actionName = mInputNames[static_cast<std::size_t>(actionSlot)];
@@ -1322,8 +1342,7 @@ bool ActionRunner::preparePi05SuffixInputs(int32_t activeBatchSize, int32_t pref
         for (int32_t queryIdx = 0; queryIdx < suffixLen; ++queryIdx)
         {
             positionIdsData[(static_cast<std::size_t>(batchIdx) * static_cast<std::size_t>(suffixLen))
-                + static_cast<std::size_t>(queryIdx)]
-                = static_cast<int64_t>(prefixValidLen + queryIdx);
+                + static_cast<std::size_t>(queryIdx)] = static_cast<int64_t>(prefixValidLen + queryIdx);
 
             for (int32_t keyIdx = 0; keyIdx < totalKeys; ++keyIdx)
             {
@@ -1363,7 +1382,7 @@ bool ActionRunner::wireStaticInputs(LLMGenerationRequest const& request, cudaStr
     }
 
     int32_t const numUniqueRequests = static_cast<int32_t>(request.requests.size());
-            int32_t const actionBatchSize
+    int32_t const actionBatchSize
         = (request.actionBatchSize > 0) ? request.actionBatchSize : std::max(mActiveActionBatchSize, 1);
 
     auto resolveEmbodimentId = [&](LLMGenerationRequest::Request const& req) -> int64_t {
@@ -1425,8 +1444,8 @@ bool ActionRunner::wireStaticInputs(LLMGenerationRequest const& request, cudaStr
         {
             return false;
         }
-        CUDA_CHECK(cudaMemcpyAsync(tensor.rawPointer(), hostTensor.rawPointer(), tensorBytes(tensor),
-            cudaMemcpyHostToDevice, stream));
+        CUDA_CHECK(cudaMemcpyAsync(
+            tensor.rawPointer(), hostTensor.rawPointer(), tensorBytes(tensor), cudaMemcpyHostToDevice, stream));
     }
 
     return true;
@@ -1445,9 +1464,10 @@ bool ActionRunner::copyActionsToHost(std::vector<std::vector<float>>& actionsPer
         ? actions.getShape().volume() / std::max(actions.getShape()[0], int64_t{1})
         : actions.getShape().volume();
 
-    rt::Tensor actionsHost(actions.getShape(), rt::DeviceType::kCPU, actions.getDataType(), "ActionRunner::actionsHost");
-    CUDA_CHECK(cudaMemcpyAsync(actionsHost.rawPointer(), actions.rawPointer(), tensorBytes(actions),
-        cudaMemcpyDeviceToHost, stream));
+    rt::Tensor actionsHost(
+        actions.getShape(), rt::DeviceType::kCPU, actions.getDataType(), "ActionRunner::actionsHost");
+    CUDA_CHECK(cudaMemcpyAsync(
+        actionsHost.rawPointer(), actions.rawPointer(), tensorBytes(actions), cudaMemcpyDeviceToHost, stream));
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
     actionsPerBatch.clear();
@@ -1592,14 +1612,14 @@ bool ActionRunner::updateActionsOnHost(cudaStream_t stream, float stepSize)
 {
     CUDA_CHECK(cudaMemcpyAsync(mPredVelocityHost.rawPointer(), mPredVelocity.rawPointer(), tensorBytes(mPredVelocity),
         cudaMemcpyDeviceToHost, stream));
-    CUDA_CHECK(cudaMemcpyAsync(mNoiseHost.rawPointer(), getActions().rawPointer(), tensorBytes(getActions()),
-        cudaMemcpyDeviceToHost, stream));
+    CUDA_CHECK(cudaMemcpyAsync(
+        mNoiseHost.rawPointer(), getActions().rawPointer(), tensorBytes(getActions()), cudaMemcpyDeviceToHost, stream));
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
     updateActionTensor(mNoiseHost, mPredVelocityHost, stepSize);
 
-    CUDA_CHECK(cudaMemcpyAsync(getActions().rawPointer(), mNoiseHost.rawPointer(), tensorBytes(getActions()),
-        cudaMemcpyHostToDevice, stream));
+    CUDA_CHECK(cudaMemcpyAsync(
+        getActions().rawPointer(), mNoiseHost.rawPointer(), tensorBytes(getActions()), cudaMemcpyHostToDevice, stream));
     return true;
 }
 
@@ -1619,8 +1639,8 @@ bool ActionRunner::sampleActions(cudaStream_t stream)
         return false;
     }
 
-    CUDA_CHECK(cudaMemcpyAsync(getActions().rawPointer(), mNoiseHost.rawPointer(), tensorBytes(getActions()),
-        cudaMemcpyHostToDevice, stream));
+    CUDA_CHECK(cudaMemcpyAsync(
+        getActions().rawPointer(), mNoiseHost.rawPointer(), tensorBytes(getActions()), cudaMemcpyHostToDevice, stream));
 
     auto const stepSize = static_cast<float>(mRolloutDtSign) / static_cast<float>(mConfig.numInferenceTimesteps);
 

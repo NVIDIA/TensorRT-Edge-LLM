@@ -145,8 +145,8 @@ static int32_t getOutputVocabSizeFromEngine(nvinfer1::ICudaEngine const* engine)
 
     for (int32_t profileIndex : {kPREFILL_PROFILE_INDEX, kGENERATION_PROFILE_INDEX})
     {
-        int32_t const vocabSize = extractVocabSize(
-            engine->getProfileShape(binding_names::kLogits, profileIndex, OptProfileSelector::kMAX));
+        int32_t const vocabSize
+            = extractVocabSize(engine->getProfileShape(binding_names::kLogits, profileIndex, OptProfileSelector::kMAX));
         if (vocabSize > 0)
         {
             return vocabSize;
@@ -418,15 +418,15 @@ LLMEngineRunner::LLMEngineRunner(std::filesystem::path const& enginePath, std::f
             check::check(dim > 0, "Invalid prefix_k output dimension in config");
             dummyOutputSize *= dim;
         }
-        mDummyOutputTensor = rt::Tensor({dummyOutputSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF,
-            "LLMEngineRunner::mDummyOutputTensor");
+        mDummyOutputTensor = rt::Tensor(
+            {dummyOutputSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "LLMEngineRunner::mDummyOutputTensor");
     }
 
     if (mConfig.enableContextEmb || mConfig.enableLmHiddenStates)
     {
         int32_t const auxDim = mConfig.enableContextEmb ? mConfig.contextEmbDim : mConfig.hiddenSize;
-        int64_t const dummyContextEmbSize = static_cast<int64_t>(mConfig.maxSupportedBatchSize)
-            * mConfig.maxSupportedInputLength * auxDim;
+        int64_t const dummyContextEmbSize
+            = static_cast<int64_t>(mConfig.maxSupportedBatchSize) * mConfig.maxSupportedInputLength * auxDim;
         mDummyContextEmbTensor = rt::Tensor({dummyContextEmbSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF,
             "LLMEngineRunner::mDummyContextEmbTensor");
     }
@@ -438,8 +438,8 @@ LLMEngineRunner::LLMEngineRunner(std::filesystem::path const& enginePath, std::f
         Dims const kvStartIndexEngineDim = mEngine->getTensorShape(binding_names::kKVCacheStartIndex);
         setKVCacheStartIndexStatus &= mTRTExecutionContext->setTensorAddress(
             binding_names::kKVCacheStartIndex, mDummyInputTensor.rawPointer());
-        setKVCacheStartIndexStatus &= mTRTExecutionContext->setInputShape(
-            binding_names::kKVCacheStartIndex, kvStartIndexEngineDim);
+        setKVCacheStartIndexStatus
+            &= mTRTExecutionContext->setInputShape(binding_names::kKVCacheStartIndex, kvStartIndexEngineDim);
         if (!setKVCacheStartIndexStatus)
         {
             LOG_ERROR("Failed to set kKVCacheStartIndex dummy tensor for initialization");
@@ -1019,8 +1019,7 @@ bool LLMEngineRunner::bindPluginKVCacheToEngine(int32_t activeBatchSize)
         status &= mTRTExecutionContext->setTensorAddress(pastKeyValuesName.c_str(), kvCacheBlock.rawPointer());
         if (engineHasIOTensor(mEngine.get(), presentKeyValuesName))
         {
-            status &= mTRTExecutionContext->setTensorAddress(
-                presentKeyValuesName.c_str(), kvCacheBlock.rawPointer());
+            status &= mTRTExecutionContext->setTensorAddress(presentKeyValuesName.c_str(), kvCacheBlock.rawPointer());
         }
         status &= mTRTExecutionContext->setInputShape(pastKeyValuesName.c_str(), kvCacheDims);
     }
@@ -1256,8 +1255,8 @@ bool LLMEngineRunner::prefillStepInputValidation(rt::Tensor const& inputsEmbeds,
     if (mConfig.enableContextEmb || mConfig.enableLmHiddenStates)
     {
         int32_t const auxDim = mConfig.enableContextEmb ? mConfig.contextEmbDim : mConfig.hiddenSize;
-        char const* auxName = mConfig.enableContextEmb ? binding_names::kOutputContextEmbeds
-                                                       : binding_names::kOutputLmHiddenStates;
+        char const* auxName
+            = mConfig.enableContextEmb ? binding_names::kOutputContextEmbeds : binding_names::kOutputLmHiddenStates;
         bool const isContextEmbedsShapeValid = outputContextEmbeds.has_value()
             && outputContextEmbeds.value().get().getShape().getNumDims() == 3
             && outputContextEmbeds.value().get().getShape()[0] == activeBatchSize

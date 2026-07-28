@@ -136,9 +136,9 @@ VlaInferenceRuntime::VlaInferenceRuntime(std::string const& engineDir, std::stri
         {
             int32_t const seqOutputDim
                 = mEngineConfig.enableContextEmb ? mEngineConfig.contextEmbDim : mEngineConfig.hiddenSize;
-            mOutputContextEmbeds = rt::Tensor({mEngineConfig.maxSupportedBatchSize,
-                                                  mEngineConfig.maxSupportedInputLength, seqOutputDim},
-                rt::DeviceType::kGPU, DataType::kHALF, "VlaInferenceRuntime::mOutputContextEmbeds");
+            mOutputContextEmbeds
+                = rt::Tensor({mEngineConfig.maxSupportedBatchSize, mEngineConfig.maxSupportedInputLength, seqOutputDim},
+                    rt::DeviceType::kGPU, DataType::kHALF, "VlaInferenceRuntime::mOutputContextEmbeds");
         }
         if (mEngineConfig.enablePrefixKVOutputs)
         {
@@ -263,8 +263,8 @@ VlaInferenceRuntime::VlaInferenceRuntime(std::string const& engineDir, std::stri
         {
             std::string const actionDir = multimodalEngineDir + "/action";
             LOG_INFO("Attempting to load Action runner from %s", actionDir.c_str());
-            mActionRunner = std::make_unique<ActionRunner>(
-                actionDir, stream, mLLMEngineRunner->getLinearKVCache().getConfig());
+            mActionRunner
+                = std::make_unique<ActionRunner>(actionDir, stream, mLLMEngineRunner->getLinearKVCache().getConfig());
             LOG_INFO("Action runner loaded (handoff=%s, rollout=%s).",
                 mActionRunner->getContextHandoff() == ActionContextHandoff::PREFIX_KV ? "prefix_kv" : "context_tensor",
                 mActionRunner->getRolloutMode() == ActionRolloutMode::FLOW_MATCHING ? "flow_matching" : "velocity");
@@ -298,8 +298,8 @@ VlaInferenceRuntime::VlaInferenceRuntime(std::string const& engineDir, std::stri
     int64_t const actionContextRunnerMemorySize
         = mActionContextRunner ? mActionContextRunner->getRequiredContextMemorySize() : 0;
     int64_t const actionContextMemorySize = mActionRunner ? mActionRunner->getRequiredContextMemorySize() : 0;
-    int64_t const sharedContextMemorySize = std::max(
-        {llmContextMemorySize, visionContextMemorySize, audioContextMemorySize, actionContextMemorySize});
+    int64_t const sharedContextMemorySize
+        = std::max({llmContextMemorySize, visionContextMemorySize, audioContextMemorySize, actionContextMemorySize});
     mSharedExecContextMemory = rt::Tensor({sharedContextMemorySize}, rt::DeviceType::kGPU, nvinfer1::DataType::kUINT8,
         "VlaInferenceRuntime::mSharedExecContextMemory");
     mLLMEngineRunner->setContextMemory(mSharedExecContextMemory);
@@ -601,8 +601,7 @@ bool VlaInferenceRuntime::handleRequest(
     bool const hasTrajectoryHistory = std::any_of(request.requests.begin(), request.requests.end(),
         [](auto const& req) { return req.pastTrajectory.has_value(); });
 
-    int32_t const actionBatchSize
-        = (request.actionBatchSize > 0) ? request.actionBatchSize : activeBatchSize;
+    int32_t const actionBatchSize = (request.actionBatchSize > 0) ? request.actionBatchSize : activeBatchSize;
 
     bool const runPrefixKvAction = mActionRunner != nullptr
         && mActionRunner->getContextHandoff() == ActionContextHandoff::PREFIX_KV && hasTrajectoryHistory;
@@ -610,7 +609,8 @@ bool VlaInferenceRuntime::handleRequest(
         && mActionRunner->getContextHandoff() == ActionContextHandoff::CONTEXT_TENSOR && hasVision
         && mEngineConfig.enablePrefixKVOutputs && mActionContextRunner == nullptr;
     bool const runContextTensorAction = mActionRunner != nullptr
-        && mActionRunner->getContextHandoff() == ActionContextHandoff::CONTEXT_TENSOR && hasVision && !runPi05VelocityAction
+        && mActionRunner->getContextHandoff() == ActionContextHandoff::CONTEXT_TENSOR && hasVision
+        && !runPi05VelocityAction
         && ((mEngineConfig.enableContextEmb && mActionContextRunner == nullptr)
             || (mActionContextRunner != nullptr && mEngineConfig.enableLmHiddenStates));
 
@@ -876,9 +876,9 @@ bool VlaInferenceRuntime::handleRequest(
         {
             outputContextEmbeds = std::ref(mOutputContextEmbeds);
         }
-        bool prefillStatus = mLLMEngineRunner->executePrefillStep(mInputsEmbeds, mHostContextLengths, deepstackEmbeds,
-            mOutputLogits, rt::OptionalOutputTensor{std::nullopt}, stream, outputContextEmbeds, outputPrefixK,
-            outputPrefixV);
+        bool prefillStatus
+            = mLLMEngineRunner->executePrefillStep(mInputsEmbeds, mHostContextLengths, deepstackEmbeds, mOutputLogits,
+                rt::OptionalOutputTensor{std::nullopt}, stream, outputContextEmbeds, outputPrefixK, outputPrefixV);
         if (!prefillStatus)
         {
             LOG_ERROR(
@@ -986,7 +986,8 @@ bool VlaInferenceRuntime::handleRequest(
         bool const isQwen3ViT = visionType == multimodal::ModelType::QWEN3_VL;
         if (!isQwen3ViT)
         {
-            LOG_ERROR("Prefix-KV action runner requires a Qwen3-VL vision runner but a different vision runner is loaded.");
+            LOG_ERROR(
+                "Prefix-KV action runner requires a Qwen3-VL vision runner but a different vision runner is loaded.");
             return false;
         }
 
@@ -1336,9 +1337,8 @@ bool VlaInferenceRuntime::genAndSaveSystemPromptKVCache(
     {
         outputContextEmbeds = std::ref(mOutputContextEmbeds);
     }
-    bool prefillStatus = mLLMEngineRunner->executePrefillStep(
-        mInputsEmbeds, mHostContextLengths, deepstackEmbeds, mOutputLogits, outputHiddenStates, stream,
-        outputContextEmbeds);
+    bool prefillStatus = mLLMEngineRunner->executePrefillStep(mInputsEmbeds, mHostContextLengths, deepstackEmbeds,
+        mOutputLogits, outputHiddenStates, stream, outputContextEmbeds);
     if (!prefillStatus)
     {
         LOG_ERROR("VlaInferenceRuntime(): Failed to execute prefill step.");

@@ -1,6 +1,23 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "runtime/wfmRuntimeUtils.h"
@@ -8,9 +25,9 @@
 #include "common/cudaUtils.h"
 #include "common/logger.h"
 
-#include <cuda_fp16.h>
 #include <cmath>
 #include <cstring>
+#include <cuda_fp16.h>
 #include <stdexcept>
 
 namespace trt_edgellm
@@ -26,14 +43,14 @@ std::vector<float> tensorToHostFloat(rt::Tensor const& tensor, cudaStream_t stre
     std::vector<float> host(elements);
     if (tensor.getDataType() == nvinfer1::DataType::kFLOAT)
     {
-        CUDA_CHECK(cudaMemcpyAsync(host.data(), tensor.rawPointer(), elements * sizeof(float),
-            cudaMemcpyDeviceToHost, stream));
+        CUDA_CHECK(cudaMemcpyAsync(
+            host.data(), tensor.rawPointer(), elements * sizeof(float), cudaMemcpyDeviceToHost, stream));
     }
     else
     {
         std::vector<half> hostHalf(elements);
-        CUDA_CHECK(cudaMemcpyAsync(hostHalf.data(), tensor.rawPointer(), elements * sizeof(half),
-            cudaMemcpyDeviceToHost, stream));
+        CUDA_CHECK(cudaMemcpyAsync(
+            hostHalf.data(), tensor.rawPointer(), elements * sizeof(half), cudaMemcpyDeviceToHost, stream));
         CUDA_CHECK(cudaStreamSynchronize(stream));
         for (std::size_t i = 0; i < elements; ++i)
         {
@@ -55,8 +72,8 @@ void hostFloatToTensor(std::vector<float> const& host, rt::Tensor& tensor, cudaS
 
     if (tensor.getDataType() == nvinfer1::DataType::kFLOAT)
     {
-        CUDA_CHECK(cudaMemcpyAsync(tensor.rawPointer(), host.data(), elements * sizeof(float),
-            cudaMemcpyHostToDevice, stream));
+        CUDA_CHECK(cudaMemcpyAsync(
+            tensor.rawPointer(), host.data(), elements * sizeof(float), cudaMemcpyHostToDevice, stream));
     }
     else
     {
@@ -65,8 +82,8 @@ void hostFloatToTensor(std::vector<float> const& host, rt::Tensor& tensor, cudaS
         {
             hostHalf[i] = __float2half(host[i]);
         }
-        CUDA_CHECK(cudaMemcpyAsync(tensor.rawPointer(), hostHalf.data(), elements * sizeof(half),
-            cudaMemcpyHostToDevice, stream));
+        CUDA_CHECK(cudaMemcpyAsync(
+            tensor.rawPointer(), hostHalf.data(), elements * sizeof(half), cudaMemcpyHostToDevice, stream));
     }
 }
 
@@ -126,8 +143,7 @@ void CosmosVisionScheduler::setTimesteps(int32_t numInferenceSteps)
             sigma -= 1e-6F;
         }
         mSigmas[static_cast<std::size_t>(i)] = sigma;
-        mTimesteps[static_cast<std::size_t>(i)]
-            = sigma * static_cast<float>(mConfig.numTrainTimesteps);
+        mTimesteps[static_cast<std::size_t>(i)] = sigma * static_cast<float>(mConfig.numTrainTimesteps);
     }
     mSigmas[static_cast<std::size_t>(numInferenceSteps)] = 0.F;
     resetState();

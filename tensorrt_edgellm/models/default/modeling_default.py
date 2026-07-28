@@ -518,6 +518,9 @@ class CausalLM(nn.Module):
     #: Subclasses override to True when the model must emit ``hidden_states``
     #: as an ONNX output in addition to ``logits``.
     emit_hidden_states: bool = False
+    #: Debug/export option for emitting the final RMSNorm output. Unlike
+    #: ``emit_hidden_states``, this matches HuggingFace ``last_hidden_state``.
+    emit_normed_hidden_states: bool = False
 
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
@@ -632,7 +635,9 @@ class CausalLM(nn.Module):
                        ] + [f"deepstack_embeds_{i}" for i in range(Nd)])
         output_names = (["logits"] +
                         [f"present_key_values_{i}" for i in range(Na)])
-        if self.emit_hidden_states and not eagle_base:
+        emit_hidden_output = (self.emit_hidden_states
+                              or self.emit_normed_hidden_states)
+        if emit_hidden_output and not eagle_base:
             output_names = (["logits", "hidden_states"] +
                             [f"present_key_values_{i}" for i in range(Na)])
 
@@ -688,12 +693,11 @@ class CausalLM(nn.Module):
                 2: mask_kv_len
             })  # attention_mask
 
-        wrapped = _make_flat_wrapper(
-            self,
-            Na,
-            Nd,
-            eagle_base=eagle_base,
-            emit_hidden_states=self.emit_hidden_states)
+        wrapped = _make_flat_wrapper(self,
+                                     Na,
+                                     Nd,
+                                     eagle_base=eagle_base,
+                                     emit_hidden_states=emit_hidden_output)
         wrapped.eval()
 
         return OnnxSpec(wrapped=wrapped,
@@ -765,6 +769,9 @@ class CausalLM(nn.Module):
             ],
                                      dim=-1).to(torch.float16)
             return logits, eagle_hidden, present_key_values
+
+        if self.emit_normed_hidden_states:
+            return logits, hidden_states, present_key_values
 
         if self.emit_hidden_states:
             # Full-sequence last-layer pre-norm residual, populated by

@@ -166,9 +166,9 @@ private:
     rt::Tensor mHostSelectedTokenIds{};       //!< Host tensor for selected token IDs
     rt::Tensor mHostReuseKVCacheLengths{};    //!< Reuse KV cache lengths for prefill
     rt::Tensor mVocabMappingTable{};          //!< Vocab mapping table for reduced vocab (empty if not used)
-    rt::Tensor mOutputContextEmbeds{}; //!< Language prefill sequence output (context_embs or lm_hidden_states)
-    rt::Tensor mOutputPrefixK{};       //!< PI0.5 stacked prefix K cache for action head
-    rt::Tensor mOutputPrefixV{};       //!< PI0.5 stacked prefix V cache for action head
+    rt::Tensor mOutputContextEmbeds{};        //!< Language prefill sequence output (context_embs or lm_hidden_states)
+    rt::Tensor mOutputPrefixK{};              //!< PI0.5 stacked prefix K cache for action head
+    rt::Tensor mOutputPrefixV{};              //!< PI0.5 stacked prefix V cache for action head
     std::string mEmptyLoraWeightsName{""};    //!< Empty LoRA weights name for default case
 
     bool mUseCompactPrefixPadding{false}; //!< Pad compact VLA prefixes to engine max_seq_len

@@ -1,6 +1,23 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
@@ -36,18 +53,48 @@ public:
     int64_t getRequiredContextMemorySize() const;
     bool setContextMemory(rt::Tensor& contextMemory);
 
-    int32_t getMaxBatchSize() const noexcept { return mMaxBatchSize; }
-    int32_t getMaxSeqLen() const noexcept { return mMaxSeqLen; }
-    int32_t getHiddenSize() const noexcept { return mHiddenSize; }
-    int32_t getContextHiddenSize() const noexcept { return mContextHiddenSize; }
+    int32_t getMaxBatchSize() const noexcept
+    {
+        return mMaxBatchSize;
+    }
+    int32_t getMaxSeqLen() const noexcept
+    {
+        return mMaxSeqLen;
+    }
+    int32_t getHiddenSize() const noexcept
+    {
+        return mHiddenSize;
+    }
+    int32_t getContextHiddenSize() const noexcept
+    {
+        return mContextHiddenSize;
+    }
 
-    std::string const& getInputName() const noexcept { return mInputName; }
-    std::string const& getOutputName() const noexcept { return mOutputName; }
+    std::string const& getInputName() const noexcept
+    {
+        return mInputName;
+    }
+    std::string const& getOutputName() const noexcept
+    {
+        return mOutputName;
+    }
 
-    rt::Tensor& getLmHiddenStatesInput() noexcept { return mInputTensor; }
-    rt::Tensor const& getLmHiddenStatesInput() const noexcept { return mInputTensor; }
-    rt::Tensor& getVlEmbs() noexcept { return mOutputTensor; }
-    rt::Tensor const& getVlEmbs() const noexcept { return mOutputTensor; }
+    rt::Tensor& getLmHiddenStatesInput() noexcept
+    {
+        return mInputTensor;
+    }
+    rt::Tensor const& getLmHiddenStatesInput() const noexcept
+    {
+        return mInputTensor;
+    }
+    rt::Tensor& getVlEmbs() noexcept
+    {
+        return mOutputTensor;
+    }
+    rt::Tensor const& getVlEmbs() const noexcept
+    {
+        return mOutputTensor;
+    }
 
     bool reshapeForContext(int32_t batchSize, int32_t seqLen);
     bool copyLmHiddenFrom(rt::Tensor const& lmHidden, cudaStream_t stream, int32_t validSeqLen = -1);

@@ -63,7 +63,7 @@ repos:
     hooks:
     -   id: codespell
         args:
-        - --ignore-words-list=rouge,inout,atleast,strat,nd,subtile,thrid,ans,datas,thw
+        - --ignore-words-list=rouge,inout,atleast,strat,nd,subtile,thrid,ans,datas,thw,mot
         exclude: '.*\.json$'
 -   repo: https://github.com/PyCQA/autoflake
     rev: v2.3.3

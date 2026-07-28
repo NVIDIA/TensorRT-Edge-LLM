@@ -982,8 +982,7 @@ AttentionPluginCreator::AttentionPluginCreator()
     mPluginAttributes.emplace_back(PluginField("sliding_window_size", nullptr, PluginFieldType::kINT32, 0));
     // Optional context attention mask type (ContextAttentionMaskType: 0 = PADDING, 1 = CAUSAL,
     // 2 = SLIDING_OR_CHUNKED_CAUSAL, 3 = CUSTOM_MASK). Defaults to CAUSAL when unset.
-    mPluginAttributes.emplace_back(
-        PluginField("context_attention_mask_type", nullptr, PluginFieldType::kINT32, 0));
+    mPluginAttributes.emplace_back(PluginField("context_attention_mask_type", nullptr, PluginFieldType::kINT32, 0));
     // Optional QKV dequant scales [q, k, v] for FP8 attention
     mPluginAttributes.emplace_back(PluginField("qkv_scales", nullptr, PluginFieldType::kFLOAT32, 0));
     // Enforce Core parameters are specified.

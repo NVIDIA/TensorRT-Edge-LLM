@@ -1,6 +1,23 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "runtime/cosmosDenoiseRunner.h"
@@ -37,8 +54,8 @@ CosmosDenoiseRunner::CosmosDenoiseRunner(
     if (!componentExists(engineRoot, "embed") || !componentExists(engineRoot, "mot_backbone")
         || !componentExists(engineRoot, "denoise_head"))
     {
-        throw std::runtime_error("CosmosDenoiseRunner: missing embed/, mot_backbone/, or denoise_head/ under "
-            + engineRoot.string());
+        throw std::runtime_error(
+            "CosmosDenoiseRunner: missing embed/, mot_backbone/, or denoise_head/ under " + engineRoot.string());
     }
 
     mEmbedRunner = std::make_unique<EmbedRunner>(componentDir(engineRoot, "embed"), stream);
@@ -47,8 +64,7 @@ CosmosDenoiseRunner::CosmosDenoiseRunner(
 
     if (componentExists(engineRoot, "denoise_head_sound"))
     {
-        mSoundHeadRunner
-            = std::make_unique<DenoiseHeadRunner>(componentDir(engineRoot, "denoise_head_sound"), stream);
+        mSoundHeadRunner = std::make_unique<DenoiseHeadRunner>(componentDir(engineRoot, "denoise_head_sound"), stream);
         LOG_INFO("CosmosDenoiseRunner: loaded optional denoise_head_sound.");
     }
 
@@ -187,8 +203,8 @@ bool CosmosDenoiseRunner::runDenoiseStep(CosmosTextPhase0 const& phase0, CosmosD
     return true;
 }
 
-bool CosmosDenoiseRunner::sampleLatents(CosmosTextPhase0 const& phase0, CosmosDenoiseLatents latents,
-    int32_t numInferenceSteps, cudaStream_t stream)
+bool CosmosDenoiseRunner::sampleLatents(
+    CosmosTextPhase0 const& phase0, CosmosDenoiseLatents latents, int32_t numInferenceSteps, cudaStream_t stream)
 {
     if (!isReady())
     {
@@ -240,8 +256,8 @@ bool CosmosDenoiseRunner::sampleLatents(CosmosTextPhase0 const& phase0, CosmosDe
     return true;
 }
 
-bool CosmosDenoiseRunner::sampleVisionLatents(CosmosTextPhase0 const& phase0, rt::Tensor& visionLatents,
-    int32_t numInferenceSteps, cudaStream_t stream)
+bool CosmosDenoiseRunner::sampleVisionLatents(
+    CosmosTextPhase0 const& phase0, rt::Tensor& visionLatents, int32_t numInferenceSteps, cudaStream_t stream)
 {
     CosmosDenoiseLatents latents{};
     latents.vision = &visionLatents;

@@ -141,7 +141,8 @@ void printUsage(char const* programName)
     std::cerr << "  --debug                   Enable debug logging" << std::endl;
     std::cerr << "  --dumpOutput              Dump inference output shapes to console" << std::endl;
     std::cerr << "  --numInferenceSteps       Override num_inference_steps from input file" << std::endl;
-    std::cerr << "  --seed                    Default random seed when not set in input JSON (default: 42)" << std::endl;
+    std::cerr << "  --seed                    Default random seed when not set in input JSON (default: 42)"
+              << std::endl;
 }
 
 //! Parse and validate command-line options.
@@ -154,7 +155,8 @@ void printUsage(char const* programName)
 //! @param argv Array of argument strings.
 //! @return true if parsing succeeds (including --help), otherwise false.
 //! @note This also selects INFO or VERBOSE logging after validation.
-bool parseWfmInferenceArgs(WfmInferenceArgs& args, int argc, char* argv[]) // NOLINT(readability-function-cognitive-complexity)
+bool parseWfmInferenceArgs(
+    WfmInferenceArgs& args, int argc, char* argv[]) // NOLINT(readability-function-cognitive-complexity)
 {
     // Each entry maps a long option such as "--engineDir" to an enum value.
     // required_argument means the option must be followed by a value.
@@ -280,8 +282,8 @@ std::vector<half> loadFp16BinaryFile(std::filesystem::path const& path, std::siz
     std::ifstream file(path, std::ios::binary | std::ios::ate);
     check::check(file.is_open(), "Failed to open binary file: " + path.string());
     auto const fileSize = static_cast<std::size_t>(file.tellg());
-    check::check(fileSize % sizeof(half) == 0,
-        "Binary file size must be a multiple of 2 bytes (fp16): " + path.string());
+    check::check(
+        fileSize % sizeof(half) == 0, "Binary file size must be a multiple of 2 bytes (fp16): " + path.string());
     std::size_t const numElements = fileSize / sizeof(half);
     check::check(expectedElements == 0 || numElements == expectedElements,
         format::fmtstr("Binary file %s has %zu fp16 elements, expected %zu", path.string().c_str(), numElements,
@@ -318,13 +320,11 @@ void saveFp16BinaryFile(std::filesystem::path const& path, half const* data, std
 //! @param seed Seed for the CPU pseudo-random number generator.
 //! @param stream CUDA stream used for the host-to-device copy.
 //! @return Shared ownership of an FP16 tensor allocated on the GPU.
-std::shared_ptr<rt::Tensor> makeRandomPixels(
-    rt::CosmosEngineConfig const& config, int32_t seed, cudaStream_t stream)
+std::shared_ptr<rt::Tensor> makeRandomPixels(rt::CosmosEngineConfig const& config, int32_t seed, cudaStream_t stream)
 {
     // Tensor allocates device memory because DeviceType::kGPU is requested.
-    auto pixels = std::make_shared<rt::Tensor>(
-        rt::Coords({1, 3, config.numFrames, config.height, config.width}), rt::DeviceType::kGPU,
-        nvinfer1::DataType::kHALF, "wfm_inference::input_pixels");
+    auto pixels = std::make_shared<rt::Tensor>(rt::Coords({1, 3, config.numFrames, config.height, config.width}),
+        rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "wfm_inference::input_pixels");
 
     std::vector<half> host(static_cast<std::size_t>(pixels->getShape().volume()));
     std::mt19937 rng(static_cast<std::uint32_t>(seed));
@@ -336,8 +336,8 @@ std::shared_ptr<rt::Tensor> makeRandomPixels(
 
     // cudaMemcpyAsync schedules the copy. Synchronization keeps the temporary
     // CPU vector alive until the GPU has finished reading from it.
-    CUDA_CHECK(cudaMemcpyAsync(pixels->rawPointer(), host.data(), host.size() * sizeof(half), cudaMemcpyHostToDevice,
-        stream));
+    CUDA_CHECK(
+        cudaMemcpyAsync(pixels->rawPointer(), host.data(), host.size() * sizeof(half), cudaMemcpyHostToDevice, stream));
     CUDA_CHECK(cudaStreamSynchronize(stream));
     return pixels;
 }
@@ -353,14 +353,12 @@ std::shared_ptr<rt::Tensor> makeRandomPixels(
 std::shared_ptr<rt::Tensor> loadPixelsFromFile(
     std::filesystem::path const& path, rt::CosmosEngineConfig const& config, cudaStream_t stream)
 {
-    std::size_t const expectedElements
-        = static_cast<std::size_t>(config.numFrames) * config.height * config.width * 3U;
+    std::size_t const expectedElements = static_cast<std::size_t>(config.numFrames) * config.height * config.width * 3U;
     auto host = loadFp16BinaryFile(path, expectedElements);
-    auto pixels = std::make_shared<rt::Tensor>(
-        rt::Coords({1, 3, config.numFrames, config.height, config.width}), rt::DeviceType::kGPU,
-        nvinfer1::DataType::kHALF, "wfm_inference::input_pixels");
-    CUDA_CHECK(cudaMemcpyAsync(pixels->rawPointer(), host.data(), host.size() * sizeof(half), cudaMemcpyHostToDevice,
-        stream));
+    auto pixels = std::make_shared<rt::Tensor>(rt::Coords({1, 3, config.numFrames, config.height, config.width}),
+        rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "wfm_inference::input_pixels");
+    CUDA_CHECK(
+        cudaMemcpyAsync(pixels->rawPointer(), host.data(), host.size() * sizeof(half), cudaMemcpyHostToDevice, stream));
     CUDA_CHECK(cudaStreamSynchronize(stream));
     return pixels;
 }
@@ -382,10 +380,10 @@ std::shared_ptr<rt::Tensor> loadWaveformFromFile(
     numSamples = static_cast<int64_t>(host.size());
     check::check(numSamples > 0, "Waveform file is empty: " + path.string());
 
-    auto waveform = std::make_shared<rt::Tensor>(
-        rt::Coords({1, 1, numSamples}), rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "wfm_inference::input_waveform");
-    CUDA_CHECK(cudaMemcpyAsync(waveform->rawPointer(), host.data(), host.size() * sizeof(half), cudaMemcpyHostToDevice,
-        stream));
+    auto waveform = std::make_shared<rt::Tensor>(rt::Coords({1, 1, numSamples}), rt::DeviceType::kGPU,
+        nvinfer1::DataType::kHALF, "wfm_inference::input_waveform");
+    CUDA_CHECK(cudaMemcpyAsync(
+        waveform->rawPointer(), host.data(), host.size() * sizeof(half), cudaMemcpyHostToDevice, stream));
     CUDA_CHECK(cudaStreamSynchronize(stream));
     return waveform;
 }
@@ -400,8 +398,8 @@ void saveTensorToFp16File(std::filesystem::path const& path, rt::Tensor const& t
     check::check(tensor.getDataType() == nvinfer1::DataType::kHALF, "saveTensorToFp16File only supports fp16 tensors");
     std::size_t const numElements = static_cast<std::size_t>(tensor.getShape().volume());
     std::vector<half> host(numElements);
-    CUDA_CHECK(cudaMemcpyAsync(host.data(), tensor.rawPointer(), numElements * sizeof(half), cudaMemcpyDeviceToHost,
-        stream));
+    CUDA_CHECK(
+        cudaMemcpyAsync(host.data(), tensor.rawPointer(), numElements * sizeof(half), cudaMemcpyDeviceToHost, stream));
     CUDA_CHECK(cudaStreamSynchronize(stream));
     saveFp16BinaryFile(path, host.data(), numElements);
 }
@@ -539,8 +537,8 @@ std::pair<WfmInputGlobals, std::vector<WfmRequestSpec>> parseInputFile(std::file
     globals.numInferenceSteps = inputData.value("num_inference_steps", 0);
     globals.seed = inputData.value("seed", 0);
 
-    check::check(inputData.contains("requests") && inputData["requests"].is_array(),
-        "'requests' array not found in input file");
+    check::check(
+        inputData.contains("requests") && inputData["requests"].is_array(), "'requests' array not found in input file");
 
     auto const& requestsArray = inputData["requests"];
     for (size_t requestIdx = 0; requestIdx < requestsArray.size(); ++requestIdx)
@@ -802,8 +800,8 @@ int main(int argc, char* argv[])
     }
 
     // Phase 6: Stop measurement and report aggregate request status.
-    LOG_INFO("Processing complete: %zu/%zu requests successful", requestSpecs.size() - failedCount,
-        requestSpecs.size());
+    LOG_INFO(
+        "Processing complete: %zu/%zu requests successful", requestSpecs.size() - failedCount, requestSpecs.size());
     if (failedCount > 0)
     {
         LOG_ERROR("*** %zu REQUESTS FAILED ***", failedCount);
