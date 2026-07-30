@@ -55,6 +55,14 @@ enum class DecodingStrategyKind : int32_t
     kGemma4MTP,
 };
 
+//! Return whether this request should use the stable Hybrid-MTP endpoint path.
+constexpr bool shouldUseHybridMtpEndpointReuse(DecodingStrategyKind selectedStrategy, bool hybridBase,
+    bool contextCacheLookupEnabled, bool contextCachePublicationEnabled) noexcept
+{
+    return selectedStrategy == DecodingStrategyKind::kMTP && hybridBase
+        && (contextCacheLookupEnabled || contextCachePublicationEnabled);
+}
+
 struct SamplingBuffers
 {
     Tensor& workspace;
@@ -91,6 +99,20 @@ struct BaseEngineResources
     HybridCacheManager& cacheManager;
     PipelineIO& pipelineIO;
     std::function<bool(InferenceDims const&, cudaStream_t)> captureGraph;
+    //! Execute the base engine and publish logits through PipelineIO's common
+    //! FP32 contract. The callback is a no-op for FLOAT-output engines and
+    //! upcasts a dedicated engine-output buffer for supported HALF engines.
+    std::function<void(cudaStream_t)> publishLogits;
+
+    bool execute(cudaStream_t stream)
+    {
+        bool const success = executor.execute(stream);
+        if (success)
+        {
+            publishLogits(stream);
+        }
+        return success;
+    }
 };
 
 //! Preprocessing resources: embedding lookup, step preparation, deepstack.
@@ -127,6 +149,12 @@ public:
     virtual bool isSpeculative() const noexcept = 0;
 
     virtual bool decodeStep(DecodingInferenceContext& context) = 0;
+    //! Prepare strategy-owned state needed before round zero. The runtime may call this early when a coherent
+    //! prefill checkpoint must be published before verification mutates base state.
+    virtual bool prepareFirstDecodeStep(DecodingInferenceContext&)
+    {
+        return true;
+    }
     virtual bool captureCudaGraphs(cudaStream_t stream) = 0;
 
     virtual int64_t getRequiredContextMemorySize() const noexcept = 0;

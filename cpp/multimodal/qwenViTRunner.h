@@ -58,6 +58,7 @@ struct VisionSpan
 {
     LlmVisionBlock llm{};
     VitFrameGrid vit{};
+    size_t artifactIndex{}; //!< Flattened source image/video buffer that owns this span.
 };
 
 //! \brief Configuration for Qwen-VL vision encoder
@@ -136,6 +137,11 @@ public:
     //! \param[in] stream CUDA stream for execution
     //! \return True if inference succeeded, false otherwise
     bool infer(cudaStream_t stream) noexcept override;
+
+    bool prepareArtifactSubset(rt::LLMGenerationRequest const& request, std::vector<size_t> const& originalItemIndices,
+        cudaStream_t stream) override;
+
+    std::vector<int64_t> preparedArtifactRowCounts() const override;
 
     //! \brief Validate and load configuration from JSON file
     //! \param[in] engineDir Path to engine directory
@@ -276,6 +282,7 @@ protected:
     bool mHasMaxSeqLenCarrier{false}; //!< Whether the visual engine has the max_seqlen_carrier binding
 
     std::vector<VisionSpan> mLastSpans; //!< Last round's spans; ViT-input tensors are reused when vit geometry matches.
+    std::vector<int64_t> mPreparedArtifactRowCounts; //!< Output rows grouped by source image/video buffer.
     std::vector<int64_t> mMropeRopeDeltasPerBatch{}; //!< Used by downstream runners like Alpamayo1ActionRunner to set
                                                      //!< base MRoPE positions so the action expert's RoPE continues
                                                      //!< coherently after the VLM sequence.

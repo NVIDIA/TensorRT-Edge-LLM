@@ -20,6 +20,7 @@
 #include "common/cudaUtils.h"
 #include "common/logger.h"
 #include "kernels/embeddingKernels/embeddingKernels.h"
+#include "kernels/posEncoding/applyRopeWriteKV.h"
 #include "profiling/metrics.h"
 #include "profiling/nvtx_wrapper.h"
 #include "profiling/timer.h"
@@ -96,7 +97,7 @@ bool VanillaDecoder::decodeStep(DecodingInferenceContext& context)
         = mRuntime.base.executor.prepare(kDecodeProfile, decodeDims, mRuntime.base.tensorMap, context.stream);
     if (decodingStatus)
     {
-        decodingStatus = mRuntime.base.executor.execute(context.stream);
+        decodingStatus = mRuntime.base.execute(context.stream);
     }
     if (decodingStatus)
     {

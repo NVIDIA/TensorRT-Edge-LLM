@@ -140,6 +140,18 @@ TEST(GenerateVisionBlockIds, BlockIdsRestartPerBatch)
     EXPECT_EQ(v, (std::vector<int32_t>{0, -1, 1, -1, 0, 0}));
 }
 
+TEST(GenerateMultimodalIndices, PerSlotOffsetsPreserveFullPromptArtifactRowsForSuffixPrefill)
+{
+    int32_t constexpr kAudioTok = 99;
+    int32_t constexpr kImageTok = 50;
+    int32_t constexpr kVocab = 100;
+    auto ids = makeCpuIds({kAudioTok, kImageTok, 10, kAudioTok, kImageTok, kImageTok}, 2, 3);
+
+    auto result = rt::generateMultimodalIndices(
+        ids, kAudioTok, kImageTok, kVocab, /*audioIndexOffsets=*/{4, 8}, /*imageIndexOffsets=*/{12, 20});
+    EXPECT_EQ(toVec(result), (std::vector<int32_t>{4, 12, 0, 8, 20, 21}));
+}
+
 TEST(LLMRuntimeUtils, ClampMaxGenerateLengthForKVCapacitySingleBatch)
 {
     EXPECT_EQ(rt::clampMaxGenerateLengthForKVCapacity({100}, 80, 256, 0), 80);

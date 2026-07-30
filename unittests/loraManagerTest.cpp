@@ -185,3 +185,24 @@ TEST_F(LoRAManagerTest, OverwriteAdapter)
     mgr.switchWeights("adapter1");
     EXPECT_EQ(mgr.getActiveWeight("lora_A_layer_0").getShape()[0], 64);
 }
+
+TEST_F(LoRAManagerTest, AdapterGenerationAdvancesOnlyForTheReplacedAdapter)
+{
+    LoRAManager mgr;
+    EXPECT_EQ(mgr.getActiveAdapterGeneration(), 0U);
+
+    mgr.addWeights("adapter1", buildTestWeights("a1"));
+    mgr.addWeights("adapter2", buildTestWeights("a2"));
+    EXPECT_EQ(mgr.getAdapterGeneration("adapter1"), 1U);
+    EXPECT_EQ(mgr.getAdapterGeneration("adapter2"), 1U);
+
+    mgr.addWeights("adapter1", buildTestWeights("a1_replaced"));
+    EXPECT_EQ(mgr.getAdapterGeneration("adapter1"), 2U);
+    EXPECT_EQ(mgr.getAdapterGeneration("adapter2"), 1U);
+
+    mgr.switchWeights("adapter1");
+    EXPECT_EQ(mgr.getActiveAdapterGeneration(), 2U);
+    mgr.resetWeights();
+    EXPECT_EQ(mgr.getActiveAdapterGeneration(), 0U);
+    EXPECT_THROW((void) mgr.getAdapterGeneration("missing"), std::runtime_error);
+}

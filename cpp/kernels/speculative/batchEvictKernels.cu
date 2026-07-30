@@ -278,153 +278,129 @@ void compactTensorBatch(rt::Tensor const& src, rt::Tensor const& batchMapping, r
         compactTensorBatchKernel<int32_t><<<gridDim, blockDim, 0, stream>>>(
             src.dataPointer<int32_t>(), batchMappingPtr, dst.dataPointer<int32_t>(), oldActiveBatch, batchStrideInt);
         break;
+    // FP8 is 1-byte POD storage; copy it byte-wise via uint8_t. This is what lets
+    // HybridCacheManager::compactBatch compact an FP8 NHD KV pool half through this generic path.
+    case nvinfer1::DataType::kFP8:
+        compactTensorBatchKernel<uint8_t>
+            <<<gridDim, blockDim, 0, stream>>>(static_cast<uint8_t const*>(src.rawPointer()), batchMappingPtr,
+                static_cast<uint8_t*>(dst.rawPointer()), oldActiveBatch, batchStrideInt);
+        break;
     default:
-        throw std::invalid_argument(
-            format::fmtstr("compactTensorBatch: Unsupported data type=%d. Only HALF, FLOAT, and INT32 are supported.",
-                static_cast<int>(dataType)));
+        throw std::invalid_argument(format::fmtstr(
+            "compactTensorBatch: Unsupported data type=%d. Only HALF, FLOAT, INT32, and FP8 are supported.",
+            static_cast<int>(dataType)));
     }
 
     CUDA_CHECK(cudaGetLastError());
 }
 
 //=============================================================================
-// Batched KV Cache Compaction Kernel
+// Generic Tensor Compaction Kernel — live-prefix variant
 //=============================================================================
 
-template <typename T, int32_t HEAD_DIM>
-__global__ void compactKVCacheBatchedKernel(KVLayerInfo const* __restrict__ layerInfos,
-    int32_t const* __restrict__ batchMapping, int32_t const* __restrict__ srcKVLengths, int32_t maxBatchSize,
-    int32_t oldActiveBatch)
+template <typename T>
+__global__ void compactKVCacheBatchedKernel(T const* src, int32_t const* batchMapping, int32_t const* liveLengths,
+    T* dst, int32_t oldActiveBatch, int32_t batchStride, int32_t elemsPerToken)
 {
-    static_assert(HEAD_DIM == 64 || HEAD_DIM == 128 || HEAD_DIM == 256 || HEAD_DIM == 512,
-        "Only HEAD_DIM = 64, 128, 256, or 512 are supported");
+    int32_t const elemIdx = blockIdx.x * blockDim.x + threadIdx.x;
 
-    // 2D grid: x = kv * head (within layer), y = layer index
-    int32_t const layerIdx = blockIdx.y;
-    KVLayerInfo const info = layerInfos[layerIdx];
-
-    int32_t const numKVHeads = info.numKVHeads;
-    int32_t const maxSeqLen = info.maxSeqLen;
-    int32_t const totalKVHeads = numKVHeads * 2;
-
-    // x dimension: kv * head within this layer
-    int32_t const localCTAIdx = blockIdx.x;
-    if (localCTAIdx >= totalKVHeads)
+    if (elemIdx >= batchStride)
     {
         return;
     }
-
-    int32_t const kvIdx = localCTAIdx / numKVHeads;
-    int32_t const kvHeadIdx = localCTAIdx % numKVHeads;
-
-    // Strides for this layer (no layer stride — each layer has its own buffer)
-    int64_t const headStride = static_cast<int64_t>(maxSeqLen) * HEAD_DIM;
-    int64_t const kvStride = static_cast<int64_t>(numKVHeads) * headStride;
-    int64_t const batchStride = 2 * kvStride;
-
-    T* kvCache = static_cast<T*>(info.data);
-
-    using Vec = DVec<T>;
-    constexpr int32_t VEC_SIZE = Vec::vec_size;
-    int32_t const threadsPerBlock = blockDim.x;
 
     for (int32_t oldBatchIdx = 0; oldBatchIdx < oldActiveBatch; ++oldBatchIdx)
     {
         int32_t const newBatchIdx = batchMapping[oldBatchIdx];
-        if (newBatchIdx < 0 || newBatchIdx >= maxBatchSize || oldBatchIdx == newBatchIdx)
+
+        if (newBatchIdx < 0 || newBatchIdx >= oldActiveBatch)
         {
             continue;
         }
 
-        int32_t const seqLen = srcKVLengths[oldBatchIdx];
-        if (seqLen == 0)
+        if (oldBatchIdx == newBatchIdx)
         {
             continue;
         }
 
-        int32_t const elemsPerKV = seqLen * HEAD_DIM;
-        int64_t const srcOffset = oldBatchIdx * batchStride + kvIdx * kvStride + kvHeadIdx * headStride;
-        int64_t const dstOffset = newBatchIdx * batchStride + kvIdx * kvStride + kvHeadIdx * headStride;
-
-        T const* srcPtr = kvCache + srcOffset;
-        T* dstPtr = kvCache + dstOffset;
-
-        int32_t const numVecs = elemsPerKV / VEC_SIZE;
-        for (int32_t vecIdx = threadIdx.x; vecIdx < numVecs; vecIdx += threadsPerBlock)
+        // Only the live prefix of the row is copied; padding beyond the live length is left untouched.
+        int64_t const liveElems = static_cast<int64_t>(liveLengths[oldBatchIdx]) * elemsPerToken;
+        if (elemIdx >= liveElems)
         {
-            Vec vec;
-            vec.load(srcPtr + vecIdx * VEC_SIZE);
-            vec.store(dstPtr + vecIdx * VEC_SIZE);
+            continue;
         }
+
+        int64_t const srcIdx = static_cast<int64_t>(oldBatchIdx) * batchStride + elemIdx;
+        int64_t const dstIdx = static_cast<int64_t>(newBatchIdx) * batchStride + elemIdx;
+        dst[dstIdx] = src[srcIdx];
     }
 }
 
-void compactKVCacheBatched(KVLayerInfo const* layerInfos, rt::Tensor const& batchMapping,
-    rt::Tensor const& kvCacheLengths, int32_t numLayers, int32_t headDim, nvinfer1::DataType kvCacheType,
-    int32_t maxKVHeads, int32_t maxBatchSize, int32_t oldActiveBatch, int32_t newActiveBatch, cudaStream_t stream)
+void compactKVCacheBatched(rt::Tensor const& src, rt::Tensor const& batchMapping, rt::Tensor const& liveLengths,
+    rt::Tensor& dst, int32_t oldActiveBatch, int32_t newActiveBatch, int32_t elemsPerToken, cudaStream_t stream)
 {
-    if (oldActiveBatch == newActiveBatch || numLayers == 0)
+    check::check(dst.getDeviceType() == rt::DeviceType::kGPU, "Destination tensor must be on GPU");
+    check::check(src.getDeviceType() == rt::DeviceType::kGPU, "Source tensor must be on GPU");
+    check::check(batchMapping.getDeviceType() == rt::DeviceType::kGPU, "Batch mapping must be on GPU");
+    check::check(liveLengths.getDeviceType() == rt::DeviceType::kGPU, "Live lengths must be on GPU");
+    check::check(elemsPerToken > 0, "elemsPerToken must be positive");
+
+    auto const& srcShape = src.getShape();
+    check::check(srcShape.getNumDims() >= 1, "Tensor must have at least 1 dimension");
+    check::check(srcShape[0] == oldActiveBatch, "First dimension must match oldActiveBatch");
+
+    int64_t batchStride = 1;
+    for (int32_t i = 1; i < srcShape.getNumDims(); ++i)
+    {
+        batchStride *= srcShape[i];
+    }
+
+    check::check(batchStride <= std::numeric_limits<int32_t>::max(), "Batch stride too large for int32_t");
+    check::check(batchStride % elemsPerToken == 0, "Batch stride must be a whole number of token rows");
+
+    auto const batchStrideInt = static_cast<int32_t>(batchStride);
+
+    if (batchStrideInt == 0)
     {
         return;
     }
 
-    // Grid: (maxKVHeads * 2, numLayers). CTAs with blockIdx.x >= layer's totalKVHeads will early-exit.
-    dim3 grid(maxKVHeads * 2, numLayers);
-    dim3 block(256);
+    int32_t const threadsPerBlock = 512;
+    int32_t const numBlocks = (batchStrideInt + threadsPerBlock - 1) / threadsPerBlock;
+
+    dim3 gridDim(numBlocks);
+    dim3 blockDim(threadsPerBlock);
 
     int32_t const* batchMappingPtr = batchMapping.dataPointer<int32_t>();
-    int32_t const* srcKVLengthsPtr = kvCacheLengths.dataPointer<int32_t>();
+    int32_t const* liveLengthsPtr = liveLengths.dataPointer<int32_t>();
 
-    // Dispatch on (kvCacheType, headDim).
-    //
-    // The kernel template parameter T controls pointer arithmetic and vectorised load/store size.
-    // Using the wrong T for a given buffer dtype doubles (or halves) all computed byte offsets,
-    // causing out-of-bounds accesses.  KV caches can be either FP16 (2 bytes) or FP8 (1 byte).
-    //
-    //   kHALF → T = half     (DVec<half>    : vec_size=8,  16 bytes per load)
-    //   kFP8  → T = uint8_t  (DVec<uint8_t> : vec_size=16, 16 bytes per load)
-    //
-    // uint8_t is used for FP8 because it has the correct element size (1 byte) and is a plain
-    // POD type, which avoids FP8 hardware requirements while keeping memcpy semantics correct.
+    nvinfer1::DataType const dataType = src.getDataType();
 
-#define LAUNCH_COMPACT_KV_KERNEL(T)                                                                                    \
-    do                                                                                                                 \
-    {                                                                                                                  \
-        switch (headDim)                                                                                               \
-        {                                                                                                              \
-        case 64:                                                                                                       \
-            compactKVCacheBatchedKernel<T, 64><<<grid, block, 0, stream>>>(                                            \
-                layerInfos, batchMappingPtr, srcKVLengthsPtr, maxBatchSize, oldActiveBatch);                           \
-            break;                                                                                                     \
-        case 128:                                                                                                      \
-            compactKVCacheBatchedKernel<T, 128><<<grid, block, 0, stream>>>(                                           \
-                layerInfos, batchMappingPtr, srcKVLengthsPtr, maxBatchSize, oldActiveBatch);                           \
-            break;                                                                                                     \
-        case 256:                                                                                                      \
-            compactKVCacheBatchedKernel<T, 256><<<grid, block, 0, stream>>>(                                           \
-                layerInfos, batchMappingPtr, srcKVLengthsPtr, maxBatchSize, oldActiveBatch);                           \
-            break;                                                                                                     \
-        case 512:                                                                                                      \
-            compactKVCacheBatchedKernel<T, 512><<<grid, block, 0, stream>>>(                                           \
-                layerInfos, batchMappingPtr, srcKVLengthsPtr, maxBatchSize, oldActiveBatch);                           \
-            break;                                                                                                     \
-        default:                                                                                                       \
-            throw std::invalid_argument(                                                                               \
-                format::fmtstr("compactKVCacheBatched: Unsupported headDim=%d. Only 64, 128, 256, or 512.", headDim)); \
-        }                                                                                                              \
-    } while (0)
-
-    switch (kvCacheType)
+    switch (dataType)
     {
-    case nvinfer1::DataType::kHALF: LAUNCH_COMPACT_KV_KERNEL(half); break;
-    case nvinfer1::DataType::kFP8: LAUNCH_COMPACT_KV_KERNEL(uint8_t); break;
+    case nvinfer1::DataType::kHALF:
+        compactKVCacheBatchedKernel<half><<<gridDim, blockDim, 0, stream>>>(src.dataPointer<half>(), batchMappingPtr,
+            liveLengthsPtr, dst.dataPointer<half>(), oldActiveBatch, batchStrideInt, elemsPerToken);
+        break;
+    case nvinfer1::DataType::kFLOAT:
+        compactKVCacheBatchedKernel<float><<<gridDim, blockDim, 0, stream>>>(src.dataPointer<float>(), batchMappingPtr,
+            liveLengthsPtr, dst.dataPointer<float>(), oldActiveBatch, batchStrideInt, elemsPerToken);
+        break;
+    case nvinfer1::DataType::kINT32:
+        compactKVCacheBatchedKernel<int32_t><<<gridDim, blockDim, 0, stream>>>(src.dataPointer<int32_t>(),
+            batchMappingPtr, liveLengthsPtr, dst.dataPointer<int32_t>(), oldActiveBatch, batchStrideInt, elemsPerToken);
+        break;
+    // FP8 is 1-byte POD storage; copy it byte-wise via uint8_t.
+    case nvinfer1::DataType::kFP8:
+        compactKVCacheBatchedKernel<uint8_t>
+            <<<gridDim, blockDim, 0, stream>>>(static_cast<uint8_t const*>(src.rawPointer()), batchMappingPtr,
+                liveLengthsPtr, static_cast<uint8_t*>(dst.rawPointer()), oldActiveBatch, batchStrideInt, elemsPerToken);
+        break;
     default:
-        throw std::invalid_argument(
-            format::fmtstr("compactKVCacheBatched: Unsupported kvCacheType=%d. Only kHALF and kFP8 are supported.",
-                static_cast<int>(kvCacheType)));
+        throw std::invalid_argument(format::fmtstr(
+            "compactKVCacheBatched: Unsupported data type=%d. Only HALF, FLOAT, INT32, and FP8 are supported.",
+            static_cast<int>(dataType)));
     }
-
-#undef LAUNCH_COMPACT_KV_KERNEL
 
     CUDA_CHECK(cudaGetLastError());
 }

@@ -33,7 +33,10 @@
 #include "runtime/llmRuntimeUtils.h"
 #include "runtime/preprocess/embeddingPreprocessor.h"
 #include "runtime/preprocess/gemma4EmbeddingPreprocessor.h"
+#include "runtime/preprocess/mediaArtifactCache.h"
 #include "runtime/preprocess/stepPreparer.h"
+#include "runtime/state/contextCache/contextCacheRuntimeAdapter.h"
+#include "runtime/state/contextCache/hybridSnapshotStorage.h"
 #include "runtime/state/decodingInferenceContext.h"
 #include "runtime/state/pipelineIO.h"
 #include "runtime/state/sharedResources.h"
@@ -68,11 +71,13 @@ public:
      * @param loraWeightsMap Map of LoRA weight names to file paths
      * @param draftingConfig Speculative decoding drafting configuration
      * @param stream CUDA stream for operations
+     * @param contextCacheConfig Production context-cache policy and snapshot/artifact budgets
      * @throws std::runtime_error if directories do not contain expected data, or runner initialization fails
      */
     LLMInferenceRuntime(std::string const& engineDir, std::string const& multimodalEngineDir,
         std::unordered_map<std::string, std::string> const& loraWeightsMap,
-        SpecDecodeDraftingConfig const& draftingConfig, cudaStream_t stream);
+        SpecDecodeDraftingConfig const& draftingConfig, cudaStream_t stream,
+        ContextCacheConfig const& contextCacheConfig = {});
 
     /*!
      * @brief Construct runtime for vanilla-only decoding (no draft model)
@@ -80,10 +85,12 @@ public:
      * @param multimodalEngineDir Directory containing multimodal engine files
      * @param loraWeightsMap Map of LoRA weight names to file paths
      * @param stream CUDA stream for operations
+     * @param contextCacheConfig Production context-cache policy and snapshot/artifact budgets
      * @throws std::runtime_error if directories do not contain expected data, or runner initialization fails
      */
     LLMInferenceRuntime(std::string const& engineDir, std::string const& multimodalEngineDir,
-        std::unordered_map<std::string, std::string> const& loraWeightsMap, cudaStream_t stream);
+        std::unordered_map<std::string, std::string> const& loraWeightsMap, cudaStream_t stream,
+        ContextCacheConfig const& contextCacheConfig = {});
 
     //! @brief Destructor
     ~LLMInferenceRuntime() noexcept = default;
@@ -213,7 +220,8 @@ private:
     //! @brief Common initialization logic shared between both constructors
     void initializeCommon(std::string const& engineDir, std::string const& multimodalEngineDir,
         std::unordered_map<std::string, std::string> const& loraWeightsMap,
-        std::optional<SpecDecodeDraftingConfig> const& draftingConfig, cudaStream_t stream);
+        std::optional<SpecDecodeDraftingConfig> const& draftingConfig, cudaStream_t stream,
+        ContextCacheConfig const& contextCacheConfig);
 
     //! @brief Capture a CUDA graph on the base executor for the default (no-adapter)
     //! state, then one additional graph per registered LoRA adapter. Returns the
@@ -224,6 +232,10 @@ private:
     //! @brief Build the strategy runtime reference bundle after common resources are allocated.
     void buildDecodingRuntimeContext();
 
+    //! Publish a HALF base-engine logits output through PipelineIO's FP32
+    //! sampler contract. No-op for the normal FLOAT-output engine ABI.
+    void publishBaseLogits(cudaStream_t stream);
+
     rt::Tensor mSharedExecContextMemory{}; //!< Shared device memory for all execution contexts
     int32_t mMaxRuntimeBatchSize{1};       //!< Maximum runtime batch size
 
@@ -232,9 +244,18 @@ private:
     std::unique_ptr<SharedResources> mSharedResources; //!< KV caches / RoPE / LoRA / context memory
     std::unique_ptr<PipelineIO> mPipelineIO;           //!< Per-pipeline I/O tensors
     TensorMap mBaseTensorMap;                          //!< Base engine binding map
+    bool mConvertBaseLogits{false};                    //!< Base engine emits HALF instead of the common FLOAT ABI
+    rt::Tensor mBaseEngineOutputLogits;                //!< Dedicated HALF binding for supported MTP base engines
     LogitBias mLogitBias; //!< Runtime-owned resources that outlive decoding objects borrowing them
     std::unique_ptr<DecodingRuntimeContext> mDecodingRuntimeContext;
     std::unique_ptr<DecoderRegistry> mDecoderRegistry;
+    ContextCacheConfig mContextCacheConfig{};
+    std::unique_ptr<ContextCacheRuntimeAdapter> mContextCache;
+    std::unique_ptr<HybridSnapshotStorage> mHybridSnapshotStorage;
+    std::unique_ptr<MediaArtifactCache> mMediaArtifactCache;
+    CacheDomainId mContextCacheDomain{};
+    std::optional<DraftEngineSignature> mDraftEngineSignature;
+    std::optional<RecurrentStateSchemaId> mRecurrentStateSchema;
     std::unique_ptr<StepPreparer> mStepPreparer;             //!< Per-step sequence preprocessor
     std::unique_ptr<EmbeddingPreprocessor> mEmbeddingPre;    //!< Embedding-lookup preprocessor
     std::unique_ptr<Gemma4EmbeddingPreprocessor> mGemma4Ple; //!< Gemma4 PLE token-identity preprocessor
@@ -271,9 +292,18 @@ private:
     rt::Tensor mHostPackedTokenIds;      //!< Host pinned memory for packed token IDs
     rt::Tensor mHostSelectedTokenIds;    //!< Host pinned memory for selected token IDs from sampling
     rt::Tensor mHostReuseKVCacheLengths; //!< Host pinned memory for reuse KV cache lengths
+    //! Host reuse KV cache lengths for the draft (speculative) engine; equals the base lengths except at a Hybrid+MTP
+    //! checkpoint boundary, where the draft reuses one fewer token so the boundary slot is recomputed.
+    rt::Tensor mHostDraftReuseKVCacheLengths;
+    //! Scratch [maxSeq, baseOutputHiddenDim] used to shift base hidden states by one row when folding the Hybrid+MTP
+    //! checkpoint boundary into the suffix draft prefill.
+    rt::Tensor mBoundaryFoldScratch;
 
     // [5] Multimodal support tensors for audio/image token indexing
-    rt::Tensor mMultimodalIndices; //!< Multimodal indices tensor [batchSize, seqLen] for audio/image embeddings
+    rt::Tensor mMultimodalIndices;      //!< Multimodal indices tensor [batchSize, seqLen] for audio/image embeddings
+    rt::Tensor mVisionArtifactAssembly; //!< Request-local full-row assembly when ViT is skipped
+    std::vector<rt::Tensor> mVisionDeepstackArtifactAssembly;
+    rt::Tensor mAudioArtifactAssembly; //!< Request-local full-row assembly when audio encoder is skipped
 
     // [6] Logprobs support tensors (allocated once in the constructor)
     // logprobsRows = B (vanilla) or B * maxAcceptDepth (EAGLE, accepted rows only, not the full verify tree).
@@ -307,16 +337,24 @@ private:
     // Key functions to drive the runtime, defined in a consumer-producer pattern.
     // Consume tokenized IDS as input and produce hidden states for the whole sequence and first generated token.
     //! @throws std::runtime_error if a CUDA error occurs
-    bool runBaseModelPrefill(DecodingInferenceContext& context);
+    bool runBaseModelPrefill(DecodingInferenceContext& context, bool sampleOutput = true);
+    //! Split a single-sequence hybrid suffix at configured exact-capture boundaries, then sample only on the final
+    //! chunk.
+    bool runBaseModelPrefillWithPeriodicHybridCaptures(DecodingInferenceContext& context);
+    //! Publish a stable Hybrid-MTP predecessor endpoint, then replay the prompt tail before round zero.
+    bool runHybridMtpPrefill(DecodingInferenceContext& context, DecodingStrategy& strategy);
 
-    //! Validate request shape/runtime compatibility.
-    bool validateRequestConfig(LLMGenerationRequest const& request);
+    //! Validate request shape/runtime compatibility against the decoder selected for this request.
+    bool validateRequestConfig(LLMGenerationRequest const& request, DecodingStrategyKind selectedStrategy);
 
     //! Prepare per-request runtime state for models built with multimodal support.
     //! Runs multimodal preprocessing when audio or vision inputs are present.
     //! For text-only requests on MRope-based multimodal models, restores text-only RoPE state
     //! and clears stale multimodal request state.
     bool multiModalRuntimePreprocess(
+        LLMGenerationRequest const& request, DecodingInferenceContext& context, cudaStream_t stream);
+    //! Resolve cached media artifacts after sequence acquisition, running only encoders still required by the suffix.
+    bool resolveMultimodalArtifacts(
         LLMGenerationRequest const& request, DecodingInferenceContext& context, cudaStream_t stream);
 
     // Consume system prompt, produce the hash table of system prompt KVCache if kv cache reuse is enabled.
@@ -327,6 +365,17 @@ private:
     // lengths. Instantiate the KVCache from the hash table if the system prompt has been cached.
     //! @throws std::runtime_error if system prompt is malformed
     bool setUpForPrefillExecution(DecodingInferenceContext& context, DecodingStrategy& strategy);
+
+    //! Grow active vanilla page paths before a decode step crosses a page boundary.
+    bool prepareContextCacheForDecode(DecodingInferenceContext& context);
+
+    //! Publish a ready boundary and rebind a final duplicate page when no descendants were computed from it.
+    void publishContextCacheBoundary(
+        DecodingInferenceContext& context, int32_t slot, PublicationPoint point, int32_t residentStateLength);
+    void publishHybridContextCacheBoundary(
+        DecodingInferenceContext& context, int32_t slot, PublicationPoint point, int32_t residentStateLength);
+    void publishHybridMtpContextCacheBoundary(
+        DecodingInferenceContext& context, int32_t slot, PublicationPoint point, int32_t residentStateLength);
 
     // Batch eviction support
     //! @brief Perform batch eviction

@@ -40,6 +40,7 @@ Forward-pass conventions
     rope_rotary_cos_sin  [batch, max_pos, rotary_dim]               float32
     context_lengths      [batch]                                    int32
     kvcache_start_index  [batch]                                    int32
+    kv_page_table        [batch, 2, max_pages_per_seq]              int32
     last_token_ids       [batch, num_tokens]                        int64
     conv_states          tuple of [batch, conv_dim, conv_kernel-1] per mamba-layer
     ssm_states           tuple of [batch, num_heads, head_dim, ssm_state] per mamba-layer
@@ -61,9 +62,9 @@ from ...config import (LAYER_ATTN, LAYER_MAMBA, LAYER_MLP, LAYER_MOE,
                        MambaConfig, ModelConfig)
 from ..default.modeling_default import OnnxSpec
 from ..linear import FP16Linear, make_linear
-from ..ops import (attention_plugin, causal_conv1d, nvfp4_moe_plugin,
-                   nvfp4_moe_plugin_geforce, update_ssm_state,
-                   use_geforce_nvfp4_moe)
+from ..ops import (KV_PAGE_SIZE, attention_plugin, causal_conv1d,
+                   nvfp4_moe_plugin, nvfp4_moe_plugin_geforce,
+                   update_ssm_state, use_geforce_nvfp4_moe)
 
 _NVFP4_ACTIVATION_RELU2 = 4
 _NVFP4_ROUTING_MODE_SIGMOID_GROUP_TOPK = 1
@@ -117,12 +118,12 @@ def _make_flat_wrapper_mamba(model: nn.Module, Na: int, Nm: int) -> nn.Module:
 
     ``Na`` = number of attention layers, ``Nm`` = number of Mamba layers.
     """
-    param_names: List[str] = (["inputs_embeds"] +
-                              [f"past_key_values_{i}" for i in range(Na)] + [
-                                  "rope_rotary_cos_sin", "context_lengths",
-                                  "kvcache_start_index", "last_token_ids"
-                              ] + [f"conv_state_{i}" for i in range(Nm)] +
-                              [f"recurrent_state_{i}" for i in range(Nm)])
+    param_names: List[str] = (
+        ["inputs_embeds"] + [f"past_key_values_{i}" for i in range(Na)] + [
+            "rope_rotary_cos_sin", "context_lengths", "kvcache_start_index",
+            "kv_page_table", "last_token_ids"
+        ] + [f"conv_state_{i}"
+             for i in range(Nm)] + [f"recurrent_state_{i}" for i in range(Nm)])
 
     past_kv_tuple = "({},)".format(", ".join(
         f"past_key_values_{i}" for i in range(Na))) if Na else "()"
@@ -135,7 +136,8 @@ def _make_flat_wrapper_mamba(model: nn.Module, Na: int, Nm: int) -> nn.Module:
         f"    logits, present_key_values, present_conv_states, "
         f"present_ssm_states = self._model(\n"
         f"        inputs_embeds, {past_kv_tuple}, rope_rotary_cos_sin, "
-        f"context_lengths, kvcache_start_index, last_token_ids,\n"
+        f"context_lengths, kvcache_start_index, kv_page_table, "
+        f"last_token_ids,\n"
         f"        {conv_tuple}, {ssm_tuple})\n"
         f"    return ((logits,) + tuple(present_key_values)\n"
         f"            + tuple(present_conv_states) + tuple(present_ssm_states))\n"
@@ -705,6 +707,7 @@ class NemotronHAttentionMixer(nn.Module):
         rope_rotary_cos_sin: torch.Tensor,
         context_lengths: torch.Tensor,
         kvcache_start_index: torch.Tensor,
+        kv_page_table: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         batch_size, seq_len, _ = hidden_states.shape
 
@@ -729,7 +732,7 @@ class NemotronHAttentionMixer(nn.Module):
         attn_output, present_key_value = attention_plugin(
             query_states, key_states, value_states, past_key_value,
             context_lengths, rope_rotary_cos_sin, kvcache_start_index,
-            **kwargs)
+            kv_page_table, **kwargs)
 
         attn_output = attn_output.reshape(batch_size, seq_len,
                                           self.num_heads * self.head_dim)
@@ -777,6 +780,7 @@ class NemotronHDecoderLayer(nn.Module):
         rope_rotary_cos_sin: Optional[torch.Tensor] = None,
         context_lengths: Optional[torch.Tensor] = None,
         kvcache_start_index: Optional[torch.Tensor] = None,
+        kv_page_table: Optional[torch.Tensor] = None,
         # Mamba-specific (ignored by Attention/MLP/MoE layers)
         conv_state: Optional[torch.Tensor] = None,
         ssm_state: Optional[torch.Tensor] = None,
@@ -793,7 +797,8 @@ class NemotronHDecoderLayer(nn.Module):
             attn_out, present_kv = self.mixer(normed, past_key_value,
                                               rope_rotary_cos_sin,
                                               context_lengths,
-                                              kvcache_start_index)
+                                              kvcache_start_index,
+                                              kv_page_table)
             return residual + attn_out, present_kv
 
 
@@ -828,6 +833,7 @@ class NemotronHBackbone(nn.Module):
         rope_rotary_cos_sin: torch.Tensor,
         context_lengths: torch.Tensor,
         kvcache_start_index: torch.Tensor,
+        kv_page_table: torch.Tensor,
         conv_states: Tuple[torch.Tensor, ...] = (),
         ssm_states: Tuple[torch.Tensor, ...] = (),
     ) -> Tuple[torch.Tensor, Tuple, Tuple, Tuple]:
@@ -859,6 +865,7 @@ class NemotronHBackbone(nn.Module):
                     rope_rotary_cos_sin=rope_rotary_cos_sin,
                     context_lengths=context_lengths,
                     kvcache_start_index=kvcache_start_index,
+                    kv_page_table=kv_page_table,
                 )
                 present_key_values_list.append(present_kv)
                 attn_idx += 1
@@ -940,11 +947,12 @@ class NemotronHCausalLM(nn.Module):
                                     device=device)
         kv_dtype = (torch.float8_e4m3fn
                     if config.quant.kv_cache_quant == "fp8" else dtype16)
+        # Paged KV pool binding: [2, num_pages, KV_PAGE_SIZE, num_kv_heads, head_dim].
         past_key_values_list: List[torch.Tensor] = [
-            torch.zeros(batch_size,
-                        2,
+            torch.zeros(2,
+                        1,
+                        KV_PAGE_SIZE,
                         config.num_key_value_heads,
-                        past_len,
                         config.head_dim,
                         dtype=kv_dtype,
                         device=device) for _ in range(Na)
@@ -960,6 +968,11 @@ class NemotronHCausalLM(nn.Module):
         kvcache_start_index = torch.zeros(batch_size,
                                           dtype=torch.int32,
                                           device=device)
+        kv_page_table = torch.zeros(batch_size,
+                                    2,
+                                    1,
+                                    dtype=torch.int32,
+                                    device=device)
         last_token_ids = torch.zeros(batch_size,
                                      1,
                                      dtype=torch.int64,
@@ -983,15 +996,15 @@ class NemotronHCausalLM(nn.Module):
         ]
 
         args = (inputs_embeds, *past_key_values_list, rope_rotary_cos_sin,
-                context_lengths, kvcache_start_index, last_token_ids,
-                *conv_states, *ssm_states)
+                context_lengths, kvcache_start_index, kv_page_table,
+                last_token_ids, *conv_states, *ssm_states)
 
-        input_names = (["inputs_embeds"] +
-                       [f"past_key_values_{i}" for i in range(Na)] + [
-                           "rope_rotary_cos_sin", "context_lengths",
-                           "kvcache_start_index", "last_token_ids"
-                       ] + [f"conv_state_{i}" for i in range(Nm)] +
-                       [f"recurrent_state_{i}" for i in range(Nm)])
+        input_names = (
+            ["inputs_embeds"] + [f"past_key_values_{i}" for i in range(Na)] + [
+                "rope_rotary_cos_sin", "context_lengths",
+                "kvcache_start_index", "kv_page_table", "last_token_ids"
+            ] + [f"conv_state_{i}" for i in range(Nm)] +
+            [f"recurrent_state_{i}" for i in range(Nm)])
         output_names = (["logits"] +
                         [f"present_key_values_{i}" for i in range(Na)] +
                         [f"present_conv_state_{i}" for i in range(Nm)] +
@@ -1000,16 +1013,20 @@ class NemotronHCausalLM(nn.Module):
         batch = torch.export.Dim("batch", min=1, max=256)
         seq = torch.export.Dim("seq_len", min=1, max=32768)
         pos = torch.export.Dim("max_pos", min=1, max=32768)
-        past = torch.export.Dim("past_len", min=1, max=32768)
         rope_batch = torch.export.Dim("rope_batch", min=1, max=256)
         kv_batch = torch.export.Dim("kv_batch", min=1, max=256)
+        page_batch = torch.export.Dim("page_batch", min=1, max=256)
+        max_pages = torch.export.Dim("max_pages_per_seq", min=1, max=32768)
+        num_pages = torch.export.Dim("num_pages", min=1, max=1048576)
 
         all_shapes: list = [{0: batch, 1: seq}]  # inputs_embeds
         for _ in range(Na):
-            all_shapes.append({0: batch, 3: past})  # past_key_values_i
+            all_shapes.append({1:
+                               num_pages})  # past_key_values_i (pool-shaped)
         all_shapes.append({0: rope_batch, 1: pos})  # rope_rotary_cos_sin
         all_shapes.append({0: batch})  # context_lengths
         all_shapes.append({0: kv_batch})  # kvcache_start_index
+        all_shapes.append({0: page_batch, 2: max_pages})  # kv_page_table
         all_shapes.append({0: batch})  # last_token_ids
         for _ in range(Nm):
             all_shapes.append({0: batch})  # conv_state_i
@@ -1032,6 +1049,7 @@ class NemotronHCausalLM(nn.Module):
             rope_rotary_cos_sin: torch.Tensor,
             context_lengths: torch.Tensor,
             kvcache_start_index: torch.Tensor,
+            kv_page_table: torch.Tensor,
             last_token_ids: torch.Tensor,
             conv_states: Tuple[torch.Tensor, ...] = (),
             ssm_states: Tuple[torch.Tensor, ...] = (),
@@ -1043,6 +1061,7 @@ class NemotronHCausalLM(nn.Module):
              rope_rotary_cos_sin,
              context_lengths,
              kvcache_start_index,
+             kv_page_table,
              conv_states,
              ssm_states,
          )

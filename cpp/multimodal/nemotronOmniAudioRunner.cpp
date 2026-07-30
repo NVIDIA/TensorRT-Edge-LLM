@@ -459,7 +459,7 @@ bool NemotronOmniAudioRunner::runGpuFbankClip(
     // floor(N/hop), so the shape contract holds). A move-assignment into melSpec on
     // the CPU-fallback path (produceClipMel → uploadHostMelFp32ToFp16Gpu) rebinds it
     // to a freshly-owned tensor and cannot free mMelSpecDevice; every consumer of
-    // melSpec runs within this encodeAllClips call, inside mMelSpecDevice's lifetime.
+    // melSpec runs within this encodePreparedClips call, inside mMelSpecDevice's lifetime.
     melSpec
         = rt::Tensor(mMelSpecDevice.rawPointer(), {1, numFrames, static_cast<int64_t>(mFbankResourcesParakeet.nMel)},
             rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
@@ -468,7 +468,7 @@ bool NemotronOmniAudioRunner::runGpuFbankClip(
 
 bool NemotronOmniAudioRunner::produceClipMel(ClipPlan& plan, rt::Tensor& melSpec, cudaStream_t stream)
 {
-    if (plan.pcm != nullptr)
+    if (plan.pcm)
     {
         if (runGpuFbankClip(*plan.pcm, plan.numFrames, melSpec, stream))
         {
@@ -488,21 +488,13 @@ bool NemotronOmniAudioRunner::produceClipMel(ClipPlan& plan, rt::Tensor& melSpec
     return audioUtils::uploadHostMelFp32ToFp16Gpu(plan.hostMel, melSpec, stream, "NemotronOmniAudioRunner::mel");
 }
 
-bool NemotronOmniAudioRunner::encodeAllClips(
-    rt::LLMGenerationRequest const& request, std::vector<int64_t>& audioTokenLengths, cudaStream_t stream)
+bool NemotronOmniAudioRunner::inspectAllClips(
+    rt::LLMGenerationRequest const& request, std::vector<int64_t>& audioTokenLengths)
 {
-    // Two-pass: size mAudioEmbedding from every clip's mel frame count first, then
-    // produce each clip's mel + encode it. Mid-loop encoder reallocation would
-    // invalidate addresses on prior clips whose enqueueV3 may not yet have run on
-    // the stream, so the output buffer must be sized once up front.
-    //
-    // The online GPU fbank slots into pass 1 cheaply: T = floor(N / hop) is
-    // closed-form (computeNumMelFramesParakeet), so a GPU clip needs no kernel to
-    // size the buffer — the actual fbank runs in pass 2. A non-viable clip (gate
-    // miss) is CPU-extracted in pass 1; both paths yield the same T, so the sizing
-    // is valid regardless of which path a clip takes (incl. a pass-2 GPU→CPU fallback).
-    std::vector<ClipPlan> plans;
-    int64_t totalEncodedRows = 0;
+    // Choose each clip's fbank path and derive its encoded row count without running the encoder. Online fbank uses
+    // the closed-form frame count; CPU fallback retains the extracted host mel for infer().
+    mPreparedClipPlans.clear();
+    mPreparedTokenLengths.clear();
     auto alignUp = [](int64_t x, int64_t a) { return (x + a - 1) / a * a; };
 
     // Pass 1: determine each clip's mel frame count T and size mAudioEmbedding.
@@ -530,11 +522,11 @@ bool NemotronOmniAudioRunner::encodeAllClips(
                 // touching the GPU. Both paths yield the same floor(N/hop) T.
                 if (t > 0 && t <= mFbankResourcesParakeet.maxFrames)
                 {
-                    plan.pcm = audio.pcm.get();
+                    plan.pcm = audio.pcm;
                     numFrames = t;
                 }
             }
-            if (plan.pcm == nullptr)
+            if (!plan.pcm)
             {
                 // CPU path (gate miss, clip too short for the GPU framing, or over-bound).
                 if (!mFeMel.extract(*audio.pcm, plan.hostMel))
@@ -549,9 +541,19 @@ bool NemotronOmniAudioRunner::encodeAllClips(
             // ceil(T / subsamplingFactor).
             int64_t const encodedSeqLen = alignUp(numFrames, mConfig.subsamplingFactor) / mConfig.subsamplingFactor;
             audioTokenLengths.push_back(encodedSeqLen);
-            totalEncodedRows += encodedSeqLen;
-            plans.push_back(std::move(plan));
+            mPreparedTokenLengths.push_back(encodedSeqLen);
+            mPreparedClipPlans.push_back(std::move(plan));
         }
+    }
+    return true;
+}
+
+bool NemotronOmniAudioRunner::encodePreparedClips(cudaStream_t stream)
+{
+    int64_t totalEncodedRows{};
+    for (int64_t const length : mPreparedTokenLengths)
+    {
+        totalEncodedRows += length;
     }
 
     if (totalEncodedRows == 0)
@@ -570,7 +572,7 @@ bool NemotronOmniAudioRunner::encodeAllClips(
     // Pass 2: produce each clip's [1, T, mel_bins] FP16 mel (GPU fbank or CPU
     // upload) and encode it into its row slot.
     int64_t rowOffset = 0;
-    for (auto& plan : plans)
+    for (auto& plan : mPreparedClipPlans)
     {
         rt::Tensor melSpec;
         if (!produceClipMel(plan, melSpec, stream))
@@ -584,6 +586,7 @@ bool NemotronOmniAudioRunner::encodeAllClips(
         }
         rowOffset += encodedRows;
     }
+    ELLM_CHECK(rowOffset == totalEncodedRows, "Nemotron audio encoder produced an unexpected row count");
     return true;
 }
 
@@ -643,7 +646,7 @@ bool NemotronOmniAudioRunner::preprocess(rt::LLMGenerationRequest const& request
     try
     {
         TIME_STAGE(metrics::StageNames::kMULTIMODAL_PROCESSING, stream);
-        if (!encodeAllClips(request, audioTokenLengths, stream))
+        if (!inspectAllClips(request, audioTokenLengths))
         {
             return false;
         }
@@ -658,12 +661,45 @@ bool NemotronOmniAudioRunner::preprocess(rt::LLMGenerationRequest const& request
     return true;
 }
 
-bool NemotronOmniAudioRunner::infer([[maybe_unused]] cudaStream_t stream)
+bool NemotronOmniAudioRunner::infer(cudaStream_t stream)
 {
-    // Encoder is invoked per-clip from preprocess() above; nothing left to
-    // do here. The base interface still requires this method, so keep it
-    // as an explicit no-op rather than removing the override.
+    bool const success = encodePreparedClips(stream);
+    discardPreparedInput();
+    return success;
+}
+
+bool NemotronOmniAudioRunner::prepareArtifactSubset([[maybe_unused]] rt::LLMGenerationRequest const& request,
+    std::vector<size_t> const& originalItemIndices, [[maybe_unused]] cudaStream_t stream)
+{
+    std::vector<ClipPlan> selectedPlans;
+    std::vector<int64_t> selectedLengths;
+    selectedPlans.reserve(originalItemIndices.size());
+    selectedLengths.reserve(originalItemIndices.size());
+    size_t previous = 0;
+    bool first = true;
+    for (size_t const index : originalItemIndices)
+    {
+        ELLM_CHECK(index < mPreparedClipPlans.size(), "Selected audio artifact index is out of range");
+        ELLM_CHECK(first || index > previous, "Selected audio artifact indices must be unique and ordered");
+        selectedPlans.push_back(std::move(mPreparedClipPlans[index]));
+        selectedLengths.push_back(mPreparedTokenLengths[index]);
+        previous = index;
+        first = false;
+    }
+    mPreparedClipPlans = std::move(selectedPlans);
+    mPreparedTokenLengths = std::move(selectedLengths);
     return true;
+}
+
+std::vector<int64_t> NemotronOmniAudioRunner::preparedArtifactRowCounts() const
+{
+    return mPreparedTokenLengths;
+}
+
+void NemotronOmniAudioRunner::discardPreparedInput() noexcept
+{
+    mPreparedClipPlans.clear();
+    mPreparedTokenLengths.clear();
 }
 
 rt::Tensor& NemotronOmniAudioRunner::getOutputEmbedding()

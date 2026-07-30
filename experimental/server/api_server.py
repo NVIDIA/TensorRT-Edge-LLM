@@ -99,6 +99,43 @@ def _create_app(llm_instance):
             }],
         }
 
+    @app.post("/v1/completions")
+    def completions(body: Dict[str, Any]):
+        """Raw text completion — runs the prompt verbatim (no chat template).
+
+        Lets a caller drive this server and another engine with an identical
+        pre-rendered prompt for apples-to-apples comparison.
+        """
+        prompt = body.get("prompt")
+        if not isinstance(prompt, str) or not prompt:
+            return JSONResponse(status_code=400,
+                                content={"error": "prompt (string) required"})
+        params = SamplingParams(
+            temperature=body.get("temperature", 0.0),
+            top_p=body.get("top_p", 1.0),
+            top_k=body.get("top_k", 1),
+            max_tokens=body.get("max_tokens", 128),
+        )
+        try:
+            out = llm_instance.generate_raw(prompt, params)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Raw completion failed")
+            return JSONResponse(status_code=500, content={"error": str(exc)})
+        return {
+            "object":
+            "text_completion",
+            "model":
+            llm_instance._model_id,
+            "choices": [{
+                "index": 0,
+                "text": out.text,
+                "finish_reason": out.finish_reason,
+            }],
+            "usage": {
+                "completion_tokens": len(out.token_ids)
+            },
+        }
+
     @app.post("/v1/chat/completions")
     def chat_completions(body: Dict[str, Any]):
         messages = body.get("messages", [])
@@ -109,7 +146,11 @@ def _create_app(llm_instance):
         temperature = body.get("temperature", 0.7)
         top_p = body.get("top_p", 0.9)
         top_k = body.get("top_k", 50)
-        max_tokens = body.get("max_tokens", 2048)
+        max_tokens = body.get("max_completion_tokens")
+        if max_tokens is None:
+            max_tokens = body.get("max_tokens")
+        if max_tokens is None:
+            max_tokens = 2048
         stream = body.get("stream", False)
         enable_thinking = body.get("enable_thinking", False)
         disable_spec_decode = body.get("disable_spec_decode", False)
@@ -215,6 +256,7 @@ def _create_app(llm_instance):
                 tool_config=tool_config,
             )
             response = llm_instance._runtime.handle_request(request)
+            llm_instance._log_prefill_cache_hit_rate()
         except (ValueError, KeyError) as exc:
             return JSONResponse(
                 status_code=400,
@@ -403,7 +445,22 @@ def _generate_stream_sse(llm_instance,
 
 def _generate_tool_stream_sse(llm_instance, messages, params, response_id,
                               tool_config: ToolConfig):
+    """Stream tool-capable generations with correct TTFT and OSL.
+
+    Agentic metrics tokenize assistant messages via the chat template. If we
+    stream the raw tool-call markup as ``content`` *and* also emit structured
+    ``tool_calls``, OSL/TPS roughly double. So:
+
+    - Emit the first token as ``content`` immediately (TTFT).
+    - Buffer the rest until parse completes.
+    - If the turn has tool calls: emit only structured ``tool_calls`` (no more
+      content). OSL then counts the template rendering of tool_calls, matching
+      the pre-fix buffered path (~true generated length).
+    - If the turn is pure text: emit the remaining text as ``content`` so OSL
+      still covers the full answer.
+    """
     text_parts: List[str] = []
+    first_text: Optional[str] = None
     finish_reason: Optional[str] = None
     try:
         for delta in llm_instance.generate_stream(
@@ -413,6 +470,13 @@ def _generate_tool_stream_sse(llm_instance, messages, params, response_id,
                 tool_choice=tool_config.tool_choice):
             if delta.text:
                 text_parts.append(delta.text)
+                if first_text is None:
+                    first_text = delta.text
+                    # TTFT sentinel only — never the full delta. A single StreamChannel
+                    # pop may contain the entire tool-call text; putting that in
+                    # ``content`` plus structured ``tool_calls`` double-counts OSL/TPS.
+                    sentinel = delta.text[:1] if delta.text else " "
+                    yield _sse_chunk(response_id, {"content": sentinel})
             if delta.finished:
                 finish_reason = delta.finish_reason or "stop"
     except Exception:
@@ -424,11 +488,7 @@ def _generate_tool_stream_sse(llm_instance, messages, params, response_id,
                                     llm_instance.model_dir)
     tool_index = 0
     for event in parsed.events:
-        if event["type"] == "reasoning" and event["text"]:
-            yield _sse_chunk(response_id, {"reasoning": event["text"]})
-        elif event["type"] == "content" and event["text"]:
-            yield _sse_chunk(response_id, {"content": event["text"]})
-        elif event["type"] == "tool_call":
+        if event["type"] == "tool_call":
             call = event["tool_call"]
             yield _sse_chunk(
                 response_id, {
@@ -453,6 +513,14 @@ def _generate_tool_stream_sse(llm_instance, messages, params, response_id,
                         }]
                     })
             tool_index += 1
+
+    if tool_index == 0:
+        # Pure-text turn: first-char sentinel already sent; emit the remainder.
+        already = (first_text[:1] if first_text else "")
+        rest = (output_text[len(already):]
+                if already and output_text.startswith(already) else output_text)
+        if rest:
+            yield _sse_chunk(response_id, {"content": rest})
 
     finish = "tool_calls" if tool_index else finish_reason or "stop"
     yield _sse_chunk(response_id, {}, finish_reason=finish)
@@ -574,9 +642,46 @@ def main():
         description="TensorRT Edge-LLM OpenAI-compatible server")
     parser.add_argument(
         "--model",
-        required=True,
+        default="",
         help="HuggingFace model ID or local checkpoint path",
     )
+    parser.add_argument(
+        "--engine-dir",
+        dest="engine_dir",
+        default="",
+        help=
+        "Pre-built TensorRT engine directory (serve as-is, no export/build)",
+    )
+    parser.add_argument(
+        "--enable-context-reuse",
+        dest="enable_context_reuse",
+        action="store_true",
+        help=
+        "Enable content-addressed KV cache (context) reuse across requests",
+    )
+    parser.add_argument("--context-cache-max-records",
+                        type=int,
+                        default=1024,
+                        help="Max retained context-reuse records")
+    parser.add_argument("--context-cache-recurrent-snapshot-pool-bytes",
+                        type=int,
+                        default=134217728,
+                        help="Recurrent-state snapshot pool size (bytes)")
+    parser.add_argument("--context-cache-partial-kv-snapshot-pool-bytes",
+                        type=int,
+                        default=16777216,
+                        help="Partial-KV snapshot pool size (bytes)")
+    parser.add_argument(
+        "--recurrent-capture-interval",
+        type=int,
+        default=0,
+        help="Capture recurrent (GDN) snapshots every N tokens "
+        "during prefill (multiple of 128). Request endpoints "
+        "are captured independently.")
+    parser.add_argument("--context-reuse-prefill-state-only",
+                        dest="context_cache_prefill_state_only",
+                        action="store_true",
+                        help="Commit only prefill state for multi-turn replay")
     parser.add_argument("--host", default="0.0.0.0", help="Bind address")
     parser.add_argument("--port", type=int, default=8000, help="Bind port")
     parser.add_argument(
@@ -615,11 +720,14 @@ def main():
                         default=60,
                         help="Speculative decoding: verification tree size")
     args = parser.parse_args()
+    if bool(args.model) == bool(args.engine_dir):
+        parser.error("Provide exactly one of --model or --engine-dir")
 
     from .engine import LLM
 
     llm = LLM(
         model=args.model,
+        engine_dir=args.engine_dir,
         max_input_len=args.max_input_len,
         max_batch_size=args.max_batch_size,
         max_kv_cache_capacity=args.max_kv_cache_capacity,
@@ -627,6 +735,15 @@ def main():
         draft_top_k=args.draft_top_k,
         draft_step=args.draft_step,
         verify_tree_size=args.verify_tree_size,
+        enable_context_reuse=args.enable_context_reuse,
+        context_cache_max_records=args.context_cache_max_records,
+        context_cache_recurrent_snapshot_pool_bytes=(
+            args.context_cache_recurrent_snapshot_pool_bytes),
+        context_cache_partial_kv_snapshot_pool_bytes=(
+            args.context_cache_partial_kv_snapshot_pool_bytes),
+        recurrent_capture_interval=args.recurrent_capture_interval,
+        context_cache_prefill_state_only=(
+            args.context_cache_prefill_state_only),
     )
     llm.serve(host=args.host, port=args.port)
 

@@ -62,11 +62,17 @@ public:
     //! \param engineDir Path to directory containing action.engine and config.json
     //! \param stream CUDA stream for operations
     //! \param kvCacheConfig KV cache layout from the LLM (from KVCacheManager::Config())
-    //! \throws std::runtime_error If engine loading, configuration parsing, or allocation fails
+    //! \param basePageTableIsIdentity Whether the base cache manager's KV page table is (and is
+    //!        guaranteed to remain) an identity mapping. See the identity-only contract note on
+    //!        getSeparateKVCacheForDecoderLayer() -- this consumer reads physical slot rows directly
+    //!        and is not page-table-aware, so it must refuse to load rather than
+    //!        silently consume unrelated physical pages once non-identity reuse exists.
+    //! \throws std::runtime_error If engine loading, configuration parsing, or allocation fails, or
+    //!         if `basePageTableIsIdentity` is false.
     //!
     //! config.json must include rope_theta and num_hidden_layers (decoder layer count)
-    Alpamayo1ActionRunner(
-        std::string const& engineDir, cudaStream_t stream, KVCacheManager::Config const& kvCacheConfig);
+    Alpamayo1ActionRunner(std::string const& engineDir, cudaStream_t stream,
+        KVCacheManager::Config const& kvCacheConfig, bool basePageTableIsIdentity);
 
     ~Alpamayo1ActionRunner() noexcept = default;
 
@@ -149,6 +155,13 @@ private:
     //! into owned buffers and return refs to them. The Alpamayo action expert's exported graph consumes separate K/V
     //! caches of shape [2, maxBatchSize, H, S, D] (the TRT native attention op layout), so this runner repacks the
     //! plugin-path combined buffer into that layout.
+    //!
+    //! CONTRACT: this reads KV from physical slot row `b` of the combined pool
+    //! directly -- it does not receive or consult the base cache manager's KVPageTable. It is
+    //! therefore only correct while the base cache is identity-mapped (slot == physical row), which
+    //! is enforced once, at construction time, by the `basePageTableIsIdentity` check in the
+    //! constructor. If non-identity base-cache reuse is ever enabled for a model with an Alpamayo
+    //! action head, this function must gain page-aware gather logic before that check is relaxed.
     //! \param stream CUDA stream for execution
     //! \param kvcache KV cache containing the VLM outputs; used to read active batch size and KV cache lengths
     //! \param decoderLayerIdx Index of the decoder layer

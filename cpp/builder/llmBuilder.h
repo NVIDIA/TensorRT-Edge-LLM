@@ -17,7 +17,11 @@
 
 #pragma once
 
+#include "common/checkMacros.h"
+#include "common/pagedKvTypes.h"
+
 #include <NvInfer.h>
+#include <algorithm>
 #include <filesystem>
 #include <nlohmann/json.hpp>
 #include <sstream>
@@ -36,15 +40,43 @@ namespace builder
 //! for Large Language Models, including standard and speculative-decoding engines.
 struct LLMBuilderConfig
 {
-    int64_t maxInputLen{1024};        //!< Maximum input sequence length for the model
+    int64_t maxInputLen{1024}; //!< Maximum input sequence length for the model
+    //! Prefill optimization-profile seq length. Zero selects maxInputLen/2 (historical default).
+    int64_t optInputLen{0};
     bool specDraft{false};            //!< Whether this is a speculative-decoding draft model
     bool specBase{false};             //!< Whether this is a speculative-decoding base model
     int64_t maxBatchSize{4};          //!< Maximum batch size for inference
     int64_t maxLoraRank{0};           //!< Maximum LoRA rank (0 = no LoRA support)
     int64_t maxKVCacheCapacity{4096}; //!< Maximum KV cache capacity (sequence length)
-    int64_t maxVerifyTreeSize{60};    //!< Maximum length of input_ids passed into spec base model for verification
-    int64_t maxDraftTreeSize{60};     //!< Maximum length of input_ids passed into spec draft model for draft generation
-    bool profilingDetailed{false};    //!< Enable detailed profiling verbosity for layer info extraction
+    //! Physical K-page count for the engine's KV pool. Zero selects the active-capacity floor.
+    int64_t maxKVPoolPages{0};
+    int64_t maxVerifyTreeSize{60}; //!< Maximum length of input_ids passed into spec base model for verification
+    int64_t maxDraftTreeSize{60};  //!< Maximum length of input_ids passed into spec draft model for draft generation
+    bool profilingDetailed{false}; //!< Enable detailed profiling verbosity for layer info extraction
+
+    //! Resolve the exact physical K-page count serialized into the engine binding shape.
+    //! @return `maxKVPoolPages`, or the active-capacity floor when it is zero.
+    //! @throws std::runtime_error when a nonzero override is smaller than the floor.
+    int64_t resolvedKVPoolPages() const
+    {
+        int64_t const floorPages
+            = rt::computeKvPoolFloorPages(static_cast<int32_t>(maxBatchSize), static_cast<int32_t>(maxKVCacheCapacity));
+        ELLM_CHECK(maxKVPoolPages == 0 || maxKVPoolPages >= floorPages,
+            "LLMBuilderConfig: maxKVPoolPages (" + std::to_string(maxKVPoolPages)
+                + ") must be zero or at least the active-capacity floor (" + std::to_string(floorPages) + ").");
+        return maxKVPoolPages == 0 ? floorPages : maxKVPoolPages;
+    }
+
+    //! Resolve prefill opt seq length used in classic 2-profile engines.
+    //! @return `optInputLen` clamped to `[1, maxInputLen]`, or `maxInputLen/2` when unset.
+    int64_t resolvedOptInputLen() const
+    {
+        if (optInputLen > 0)
+        {
+            return std::min(optInputLen, std::max<int64_t>(1, maxInputLen));
+        }
+        return std::max<int64_t>(1, maxInputLen / 2);
+    }
 
     //! Convert configuration to JSON format for serialization.
     //! @return JSON object containing all configuration parameters
@@ -52,11 +84,13 @@ struct LLMBuilderConfig
     {
         Json json;
         json["max_input_len"] = maxInputLen;
+        json["opt_input_len"] = resolvedOptInputLen();
         json["spec_draft"] = specDraft;
         json["spec_base"] = specBase;
         json["max_batch_size"] = maxBatchSize;
         json["max_lora_rank"] = maxLoraRank;
         json["max_kv_cache_capacity"] = maxKVCacheCapacity;
+        json["max_kv_pool_pages"] = resolvedKVPoolPages();
         // Only include speculative-decoding limits for the engine role that owns them.
         if (specBase)
         {
@@ -79,6 +113,10 @@ struct LLMBuilderConfig
         if (json.contains("max_input_len"))
         {
             config.maxInputLen = json["max_input_len"];
+        }
+        if (json.contains("opt_input_len"))
+        {
+            config.optInputLen = json["opt_input_len"];
         }
         if (json.contains("spec_draft"))
         {
@@ -108,6 +146,10 @@ struct LLMBuilderConfig
         {
             config.maxKVCacheCapacity = json["max_kv_cache_capacity"];
         }
+        if (json.contains("max_kv_pool_pages"))
+        {
+            config.maxKVPoolPages = json["max_kv_pool_pages"];
+        }
         if (json.contains("max_verify_tree_size"))
         {
             config.maxVerifyTreeSize = json["max_verify_tree_size"];
@@ -126,11 +168,13 @@ struct LLMBuilderConfig
         std::ostringstream oss;
         oss << "LLMBuilderConfig:\n";
         oss << "  maxInputLen: " << maxInputLen << "\n";
+        oss << "  optInputLen: " << resolvedOptInputLen() << "\n";
         oss << "  specDraft: " << (specDraft ? "true" : "false") << "\n";
         oss << "  specBase: " << (specBase ? "true" : "false") << "\n";
         oss << "  maxBatchSize: " << maxBatchSize << "\n";
         oss << "  maxLoraRank: " << maxLoraRank << "\n";
         oss << "  maxKVCacheCapacity: " << maxKVCacheCapacity << "\n";
+        oss << "  maxKVPoolPages: " << resolvedKVPoolPages() << "\n";
         // Only show speculative-decoding limits for the engine role that owns them.
         if (specBase)
         {
@@ -296,8 +340,8 @@ private:
     bool setupConvStateProfiles(
         nvinfer1::IOptimizationProfile* contextProfile, nvinfer1::IOptimizationProfile* generationProfile);
 
-    //! Set up optimization profiles for MTP intermediate recurrent state output tensors.
-    //! These are per-step checkpoints of GDN recurrent states during tree verification.
+    //! Set up profiles for compact hybrid speculative recurrent replay outputs.
+    //! These contain replay cells and transient scratch produced during GDN verification.
     //! Only needed for hybrid MTP/DFlash base verification engines.
     //! @param contextProfile Optimization profile for context processing
     //! @param generationProfile Optimization profile for generation processing

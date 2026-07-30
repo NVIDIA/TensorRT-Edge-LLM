@@ -29,8 +29,10 @@
 #include "profiling/metrics.h"
 #include "profiling/timer.h"
 #include <algorithm>
+#include <cstddef>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <vector>
@@ -288,22 +290,19 @@ bool Qwen3OmniAudioRunner::preprocess(rt::LLMGenerationRequest const& request,
     }
 
     std::vector<int64_t> audioTokenLengths;
+    mPreparedClipPlans.clear();
+    mPreparedTokenLengths.clear();
 
-    // Step 1: Process audio inputs to get embeddings and token lengths
+    // Step 1: Inspect audio inputs to derive token lengths without running the encoder.
     for (auto const& req : request.requests)
     {
         if (!req.audioBuffers.empty())
         {
-            if (!preprocessAudio(req.audioBuffers, audioTokenLengths, stream))
+            if (!inspectAudio(req.audioBuffers, audioTokenLengths))
             {
                 LOG_ERROR("Audio preprocessing failed");
                 return false;
             }
-        }
-        else
-        {
-            // No audio in this request, add 0 length
-            audioTokenLengths.push_back(0);
         }
     }
 
@@ -328,9 +327,7 @@ void Qwen3OmniAudioRunner::textPreprocess(rt::LLMGenerationRequest const& reques
     std::vector<std::vector<int32_t>>& batchInputIds, std::vector<int64_t> const& audioTokenLengths,
     tokenizer::Tokenizer const* tokenizer)
 {
-    ELLM_CHECK(audioTokenLengths.size() == request.requests.size(),
-        "audioTokenLengths.size() != request.requests.size(), " + std::to_string(audioTokenLengths.size())
-            + " != " + std::to_string(request.requests.size()));
+    size_t audioIndex{};
 
     for (size_t i = 0; i < request.requests.size(); ++i)
     {
@@ -348,17 +345,18 @@ void Qwen3OmniAudioRunner::textPreprocess(rt::LLMGenerationRequest const& reques
             ids = tokenizer->encode(request.formattedRequests[i].formattedCompleteRequest);
         }
 
-        // Insert audio tokens if present
-        if (audioTokenLengths[i] > 0)
+        if (!request.requests[i].audioBuffers.empty())
         {
             std::vector<int32_t> newIds;
             for (size_t j = 0; j < ids.size(); ++j)
             {
                 if (ids[j] == mConfig.audioTokenId)
                 {
+                    ELLM_CHECK(
+                        audioIndex < audioTokenLengths.size(), "Audio placeholder count exceeds inspected audio clips");
                     // Expand the <|audio_pad|> placeholder to N×<|audio_pad|> in place. The <|audio_start|>/
                     // <|audio_end|> markers come from the (unified) chat template, so we do NOT re-add them here.
-                    int64_t numAudioTokens = audioTokenLengths[i];
+                    int64_t const numAudioTokens = audioTokenLengths[audioIndex++];
                     for (int64_t k = 0; k < numAudioTokens; ++k)
                     {
                         newIds.push_back(mConfig.audioTokenId);
@@ -393,6 +391,8 @@ void Qwen3OmniAudioRunner::textPreprocess(rt::LLMGenerationRequest const& reques
             }
         }
     }
+    ELLM_CHECK(audioIndex == audioTokenLengths.size(),
+        "Inspected audio clip count does not match audio placeholders in the formatted request");
 }
 
 namespace
@@ -552,34 +552,34 @@ bool Qwen3OmniAudioRunner::initFbankResources(cudaStream_t stream)
     return true;
 }
 
-bool Qwen3OmniAudioRunner::tryOnlineGpuFbank(rt::audio::AudioPCM const& pcm, rt::Tensor& melSpec, cudaStream_t stream)
+int32_t Qwen3OmniAudioRunner::plannedGpuFbankFrames(rt::audio::AudioPCM const& pcm) const
 {
-    // Gate: online fbank ready (config validated Whisper-spec, params published
-    // into mFbankResources), the engine mel width agrees, and the sample rate
-    // matches what the kernels assume. The CPU MelExtractor rejects a rate
-    // mismatch, so the GPU path must too, or it would silently produce a
-    // wrong-but-plausible spectrogram.
     if (!mFbankReady || mConfig.melBins != mFbankResources.nMel || pcm.sampleRate != mFeMel.config().sampleRate)
     {
-        return false;
+        return 0;
     }
 
-    // Frame count from the host PCM length, before any upload. Clips too short
-    // for the GPU fbank framing (numFrames <= 0; the CPU MelExtractor clamps to
-    // >= 1 frame) and clips beyond the engine kMAX profile the fbank buffers
-    // were pre-allocated for (numFrames > maxFrames) fall back to the CPU path
-    // without touching the GPU.
     int32_t const numFrames = audioUtils::computeNumMelFrames(static_cast<int64_t>(pcm.samples.size()),
         mFbankResources.nFft, mFbankResources.hopLength, mFbankResources.padLength);
     if (numFrames <= 0 || numFrames > mFbankResources.maxFrames)
+    {
+        return 0;
+    }
+    return numFrames;
+}
+
+bool Qwen3OmniAudioRunner::tryOnlineGpuFbank(rt::audio::AudioPCM const& pcm, rt::Tensor& melSpec, cudaStream_t stream)
+{
+    // Validate the same static capability and frame bound used during inspection before touching the GPU.
+    int32_t const numFrames = plannedGpuFbankFrames(pcm);
+    if (numFrames == 0)
     {
         return false;
     }
 
     // Upload host FP32 PCM [-1, 1] into the pre-allocated [N] GPU staging tensor
-    // (metadata-only reshape; the maxFrames gate above bounds N). pcm.samples is
-    // owned by the request and outlives preprocessAudio, covering the async
-    // fbank launches and the cudaStreamSynchronize at the end of that function.
+    // (metadata-only reshape; the maxFrames gate above bounds N). The prepared
+    // clip owns pcm until infer() has enqueued and synchronized all work.
     if (!audioUtils::uploadHostPcmF32ToGpu(pcm.samples, mPcmF32Device, stream))
     {
         return false;
@@ -588,7 +588,7 @@ bool Qwen3OmniAudioRunner::tryOnlineGpuFbank(rt::audio::AudioPCM const& pcm, rt:
     // Non-owning view of the pre-allocated backing store at this clip's width.
     // A move-assignment into melSpec (the CPU fallback path) cannot free the
     // backing store, and every consumer of melSpec runs within this
-    // preprocessAudio call — inside mMelSpecDevice's lifetime.
+    // encodePreparedAudio call — inside mMelSpecDevice's lifetime.
     melSpec = rt::Tensor(mMelSpecDevice.rawPointer(),
         {1, static_cast<int64_t>(mFbankResources.nMel), static_cast<int64_t>(numFrames)}, rt::DeviceType::kGPU,
         nvinfer1::DataType::kHALF);
@@ -600,24 +600,11 @@ bool Qwen3OmniAudioRunner::tryOnlineGpuFbank(rt::audio::AudioPCM const& pcm, rt:
     return true;
 }
 
-bool Qwen3OmniAudioRunner::preprocessAudio(std::vector<rt::audioUtils::AudioData> const& audioBuffers,
-    std::vector<int64_t>& audioTokenLengths, cudaStream_t stream)
+bool Qwen3OmniAudioRunner::inspectAudio(
+    std::vector<rt::audioUtils::AudioData> const& audioBuffers, std::vector<int64_t>& audioTokenLengths)
 {
-    if (audioBuffers.empty())
-    {
-        return true;
-    }
-
-    if (!mAudioEngine || !mAudioContext)
-    {
-        LOG_ERROR("Audio encoder not loaded");
-        return false;
-    }
-
-    // Process each audio clip
     for (auto const& audio : audioBuffers)
     {
-        // PCM-only contract; runner extracts mel internally via mFeMel.
         if (!audio.pcm)
         {
             LOG_ERROR(
@@ -625,194 +612,299 @@ bool Qwen3OmniAudioRunner::preprocessAudio(std::vector<rt::audioUtils::AudioData
                 "(server) or requestFileParser (CLI).");
             return false;
         }
-        rt::Tensor melSpec;
-
-        // Default path: online GPU fbank — PCM→log-mel entirely on device. On
-        // any gate miss or kernel failure it returns false and we fall through
-        // to the CPU MelExtractor below; both produce the identical
-        // [1, nMel, T] FP16 contract, so the encoder is oblivious.
-        bool const gpuFbankDone = tryOnlineGpuFbank(*audio.pcm, melSpec, stream);
-
-        // Fallback path (also the default when online fbank is unavailable):
-        // CPU MelExtractor → FP16 GPU upload (the legacy CPU mel path).
-        if (!gpuFbankDone)
+        ClipPlan plan;
+        plan.numFrames = plannedGpuFbankFrames(*audio.pcm);
+        if (plan.numFrames > 0)
         {
-            rt::Tensor hostMel;
-            if (!mFeMel.extract(*audio.pcm, hostMel))
+            plan.pcm = audio.pcm;
+        }
+        else
+        {
+            if (!mFeMel.extract(*audio.pcm, plan.hostMel))
             {
                 LOG_ERROR("Mel extraction failed");
                 return false;
             }
-            // FP32 host mel -> FP16 GPU mel ([1, mel_bins, T] for whisper layout).
-            if (!audioUtils::uploadHostMelFp32ToFp16Gpu(hostMel, melSpec, stream, "Qwen3OmniAudioRunner::mel"))
-            {
-                return false;
-            }
+            ELLM_CHECK(
+                plan.hostMel.getShape().getNumDims() == 2, "Qwen3 Omni audio mel must have shape [mel_bins, time]");
+            plan.numFrames = plan.hostMel.getShape()[1];
         }
 
-        int64_t const timeSteps = melSpec.getShape()[2];
-        LOG_DEBUG("Mel-spectrogram shape: [%ld, %ld, %ld]", melSpec.getShape()[0], melSpec.getShape()[1], timeSteps);
-
-        // Preprocess for audio encoder
-        std::vector<int64_t> afterCNNLens;
-        if (!audioUtils::preprocessAudioForEncoder(
-                melSpec, mConfig.nWindow, mPaddedFeature, mPaddedMaskAfterCNN, afterCNNLens, stream))
+        audioUtils::ChunkInfo const chunkInfo = audioUtils::computeChunkInfo(plan.numFrames, mConfig.nWindow);
+        int64_t totalAudioTokens{};
+        for (int64_t const chunkLength : chunkInfo.chunkLengths)
         {
-            LOG_ERROR("Failed to preprocess audio for encoder");
-            return false;
+            totalAudioTokens += audioUtils::computeFeatExtractOutputLength(chunkLength, mConfig.nWindow);
         }
-
-        // Convert mask to indices
-        if (!audioUtils::convertMaskToIndices(mPaddedMaskAfterCNN, mPaddedMaskIndices, stream))
-        {
-            LOG_ERROR("Failed to convert mask to indices");
-            return false;
-        }
-
-        LOG_DEBUG("Mask shape: [%ld, %ld], Indices shape: [%ld, %ld]", mPaddedMaskAfterCNN.getShape()[0],
-            mPaddedMaskAfterCNN.getShape()[1], mPaddedMaskIndices.getShape()[0], mPaddedMaskIndices.getShape()[1]);
-
-        // Create attention mask with merged windows (matching PyTorch cu_seqlens logic)
-        if (!audioUtils::createChunkwiseAttentionMask(
-                afterCNNLens, mConfig.nWindow, mConfig.nWindowInfer, mAudioAttentionMask, stream))
-        {
-            LOG_ERROR("Failed to create attention mask");
-            return false;
-        }
-
-        LOG_DEBUG(
-            "Created attention mask [%ld, %ld]", mAudioAttentionMask.getShape()[0], mAudioAttentionMask.getShape()[1]);
-
-        // Calculate total audio tokens
-        int64_t const totalAudioTokens = mPaddedMaskIndices.getShape()[0];
-
-        if (mHasCuSeqlens || mHasKvLengths)
-        {
-            // NOTE: Currently, audio encoder always runs at batch size of 1.
-            // Thus, we always set the seqlens size to 2 and set values to {0, totalAudioTokens}.
-            int64_t const seqlensSize = 2;
-            int64_t const seqlensSizeInBytes = seqlensSize * static_cast<int64_t>(sizeof(int32_t));
-            if (mCuSeqlensHost.getMemoryCapacity() < seqlensSizeInBytes)
-            {
-                LOG_ERROR("cu_seqlens host capacity too small: need=%ld bytes, capacity=%ld bytes", seqlensSizeInBytes,
-                    mCuSeqlensHost.getMemoryCapacity());
-                return false;
-            }
-
-            if (!mCuSeqlensHost.reshape({seqlensSize}))
-            {
-                LOG_ERROR("Failed to reshape host cu_seqlens buffer");
-                return false;
-            }
-            int32_t* seqlensData = mCuSeqlensHost.dataPointer<int32_t>();
-            seqlensData[0] = 0;
-            seqlensData[1] = static_cast<int32_t>(totalAudioTokens);
-
-            if (mHasCuSeqlens)
-            {
-                if (!prepareSeqlensInput(mCuSeqlens, *mAudioContext, binding_names::kCuSeqlens, mCuSeqlensHost,
-                        seqlensSize, seqlensSizeInBytes, stream, "cu_seqlens"))
-                {
-                    return false;
-                }
-            }
-
-            if (mHasKvLengths)
-            {
-                if (!prepareSeqlensInput(mKvLengths, *mAudioContext, binding_names::kKvLengths, mCuSeqlensHost,
-                        seqlensSize, seqlensSizeInBytes, stream, "kv_lengths"))
-                {
-                    return false;
-                }
-            }
-        }
-
-        // Reshape output buffer
-        if (!mAudioEmbedding.reshape({totalAudioTokens, mConfig.audioFeatureDim}))
-        {
-            LOG_ERROR("Failed to reshape audio output");
-            return false;
-        }
-
-        LOG_DEBUG("Reshaped audio output to [%ld, %d]", totalAudioTokens, mConfig.audioFeatureDim);
-
-        // Set input shapes
-        if (!mAudioContext->setInputShape(binding_names::kAudioPaddedFeatures, mPaddedFeature.getShape().getTRTDims()))
-        {
-            LOG_ERROR("Failed to set padded features input shape");
-            return false;
-        }
-
-        if (!mAudioContext->setInputShape(
-                binding_names::kAudioPaddedMaskIndices, mPaddedMaskIndices.getShape().getTRTDims()))
-        {
-            LOG_ERROR("Failed to set padded mask indices input shape");
-            return false;
-        }
-
-        if (!mAudioContext->setInputShape(
-                binding_names::kAudioAttentionMask, mAudioAttentionMask.getShape().getTRTDims()))
-        {
-            LOG_ERROR("Failed to set attention mask input shape");
-            return false;
-        }
-
-        // Set tensor addresses
-        if (!mAudioContext->setTensorAddress(binding_names::kAudioPaddedFeatures, mPaddedFeature.rawPointer()))
-        {
-            LOG_ERROR("Failed to set padded features input address");
-            return false;
-        }
-
-        if (!mAudioContext->setTensorAddress(binding_names::kAudioPaddedMaskIndices, mPaddedMaskIndices.rawPointer()))
-        {
-            LOG_ERROR("Failed to set padded mask indices input address");
-            return false;
-        }
-
-        if (!mAudioContext->setTensorAddress(binding_names::kAudioAttentionMask, mAudioAttentionMask.rawPointer()))
-        {
-            LOG_ERROR("Failed to set attention mask input address");
-            return false;
-        }
-
-        if (!mAudioContext->setTensorAddress(binding_names::kAudioOutput, mAudioEmbedding.rawPointer()))
-        {
-            LOG_ERROR("Failed to set audio output address");
-            return false;
-        }
-
-        // Execute audio encoder
-        LOG_DEBUG(
-            "Executing audio encoder with shapes: "
-            "input=[%ld,%ld,%ld], indices=[%ld,2], mask=[%ld,%ld], output=[%ld,%ld]",
-            mPaddedFeature.getShape()[0], mPaddedFeature.getShape()[1], mPaddedFeature.getShape()[2],
-            mPaddedMaskIndices.getShape()[0], mAudioAttentionMask.getShape()[0], mAudioAttentionMask.getShape()[1],
-            mAudioEmbedding.getShape()[0], mAudioEmbedding.getShape()[1]);
-
-        {
-            TIME_STAGE(metrics::StageNames::kAUDIO_ENCODER, stream);
-
-            if (!mAudioContext->enqueueV3(stream))
-            {
-                LOG_ERROR("Audio encoder inference failed");
-                return false;
-            }
-        }
-
-        LOG_DEBUG("Audio encoder inference completed");
+        ELLM_CHECK(totalAudioTokens > 0, "Qwen3 Omni audio clip produced no encoder tokens");
         audioTokenLengths.push_back(totalAudioTokens);
-        mMultimodalMetrics.recordRun(0, 0, 1, totalAudioTokens);
+        mPreparedTokenLengths.push_back(totalAudioTokens);
+        mPreparedClipPlans.push_back(std::move(plan));
     }
+    return true;
+}
+
+bool Qwen3OmniAudioRunner::resizeEmbeddingForRows(int64_t rows)
+{
+    ELLM_CHECK(rows >= 0 && mConfig.audioFeatureDim > 0, "Qwen3 Omni audio output shape must be non-negative");
+    int64_t const rowBytes = static_cast<int64_t>(mConfig.audioFeatureDim) * static_cast<int64_t>(sizeof(__half));
+    ELLM_CHECK(
+        rows <= std::numeric_limits<int64_t>::max() / rowBytes, "Qwen3 Omni audio output byte size overflows int64");
+    int64_t const bytes = rows * rowBytes;
+    if (mAudioEmbedding.isEmpty() || mAudioEmbedding.getMemoryCapacity() < bytes)
+    {
+        mAudioEmbedding = rt::Tensor({rows, static_cast<int64_t>(mConfig.audioFeatureDim)}, rt::DeviceType::kGPU,
+            nvinfer1::DataType::kHALF, "Qwen3OmniAudioRunner::embedding");
+        return true;
+    }
+    return mAudioEmbedding.reshape({rows, static_cast<int64_t>(mConfig.audioFeatureDim)});
+}
+
+bool Qwen3OmniAudioRunner::produceClipMel(ClipPlan& plan, rt::Tensor& melSpec, cudaStream_t stream)
+{
+    if (plan.pcm && tryOnlineGpuFbank(*plan.pcm, melSpec, stream))
+    {
+        return true;
+    }
+    if (plan.hostMel.isEmpty())
+    {
+        ELLM_CHECK(plan.pcm != nullptr, "Qwen3 Omni prepared audio clip has no PCM or host mel");
+        if (!mFeMel.extract(*plan.pcm, plan.hostMel))
+        {
+            LOG_ERROR("Mel extraction failed");
+            return false;
+        }
+        ELLM_CHECK(plan.hostMel.getShape().getNumDims() == 2 && plan.hostMel.getShape()[1] == plan.numFrames,
+            "Qwen3 Omni GPU-fbank fallback changed the inspected frame count");
+    }
+    return audioUtils::uploadHostMelFp32ToFp16Gpu(plan.hostMel, melSpec, stream, "Qwen3OmniAudioRunner::mel");
+}
+
+bool Qwen3OmniAudioRunner::encodeClipMel(
+    rt::Tensor const& melSpec, int64_t destRowOffset, int64_t expectedRows, cudaStream_t stream)
+{
+    if (melSpec.isEmpty())
+    {
+        LOG_ERROR("Qwen3 Omni audio encoder received an empty mel tensor");
+        return false;
+    }
+
+    int64_t const timeSteps = melSpec.getShape()[2];
+    LOG_DEBUG("Mel-spectrogram shape: [%ld, %ld, %ld]", melSpec.getShape()[0], melSpec.getShape()[1], timeSteps);
+
+    std::vector<int64_t> afterCNNLens;
+    if (!audioUtils::preprocessAudioForEncoder(
+            melSpec, mConfig.nWindow, mPaddedFeature, mPaddedMaskAfterCNN, afterCNNLens, stream))
+    {
+        LOG_ERROR("Failed to preprocess audio for encoder");
+        return false;
+    }
+
+    if (!audioUtils::convertMaskToIndices(mPaddedMaskAfterCNN, mPaddedMaskIndices, stream))
+    {
+        LOG_ERROR("Failed to convert mask to indices");
+        return false;
+    }
+
+    LOG_DEBUG("Mask shape: [%ld, %ld], Indices shape: [%ld, %ld]", mPaddedMaskAfterCNN.getShape()[0],
+        mPaddedMaskAfterCNN.getShape()[1], mPaddedMaskIndices.getShape()[0], mPaddedMaskIndices.getShape()[1]);
+
+    if (!audioUtils::createChunkwiseAttentionMask(
+            afterCNNLens, mConfig.nWindow, mConfig.nWindowInfer, mAudioAttentionMask, stream))
+    {
+        LOG_ERROR("Failed to create attention mask");
+        return false;
+    }
+
+    LOG_DEBUG(
+        "Created attention mask [%ld, %ld]", mAudioAttentionMask.getShape()[0], mAudioAttentionMask.getShape()[1]);
+
+    int64_t const totalAudioTokens = mPaddedMaskIndices.getShape()[0];
+    ELLM_CHECK(totalAudioTokens == expectedRows,
+        "Qwen3 Omni audio inspection and encoder preprocessing disagree on token count");
+
+    if (mHasCuSeqlens || mHasKvLengths)
+    {
+        int64_t const seqlensSize = 2;
+        int64_t const seqlensSizeInBytes = seqlensSize * static_cast<int64_t>(sizeof(int32_t));
+        if (mCuSeqlensHost.getMemoryCapacity() < seqlensSizeInBytes)
+        {
+            LOG_ERROR("cu_seqlens host capacity too small: need=%ld bytes, capacity=%ld bytes", seqlensSizeInBytes,
+                mCuSeqlensHost.getMemoryCapacity());
+            return false;
+        }
+
+        if (!mCuSeqlensHost.reshape({seqlensSize}))
+        {
+            LOG_ERROR("Failed to reshape host cu_seqlens buffer");
+            return false;
+        }
+        int32_t* seqlensData = mCuSeqlensHost.dataPointer<int32_t>();
+        seqlensData[0] = 0;
+        seqlensData[1] = static_cast<int32_t>(totalAudioTokens);
+
+        if (mHasCuSeqlens)
+        {
+            if (!prepareSeqlensInput(mCuSeqlens, *mAudioContext, binding_names::kCuSeqlens, mCuSeqlensHost, seqlensSize,
+                    seqlensSizeInBytes, stream, "cu_seqlens"))
+            {
+                return false;
+            }
+        }
+
+        if (mHasKvLengths)
+        {
+            if (!prepareSeqlensInput(mKvLengths, *mAudioContext, binding_names::kKvLengths, mCuSeqlensHost, seqlensSize,
+                    seqlensSizeInBytes, stream, "kv_lengths"))
+            {
+                return false;
+            }
+        }
+    }
+
+    if (!mAudioContext->setInputShape(binding_names::kAudioPaddedFeatures, mPaddedFeature.getShape().getTRTDims()))
+    {
+        LOG_ERROR("Failed to set padded features input shape");
+        return false;
+    }
+
+    if (!mAudioContext->setInputShape(
+            binding_names::kAudioPaddedMaskIndices, mPaddedMaskIndices.getShape().getTRTDims()))
+    {
+        LOG_ERROR("Failed to set padded mask indices input shape");
+        return false;
+    }
+
+    if (!mAudioContext->setInputShape(binding_names::kAudioAttentionMask, mAudioAttentionMask.getShape().getTRTDims()))
+    {
+        LOG_ERROR("Failed to set attention mask input shape");
+        return false;
+    }
+
+    if (!mAudioContext->setTensorAddress(binding_names::kAudioPaddedFeatures, mPaddedFeature.rawPointer()))
+    {
+        LOG_ERROR("Failed to set padded features input address");
+        return false;
+    }
+
+    if (!mAudioContext->setTensorAddress(binding_names::kAudioPaddedMaskIndices, mPaddedMaskIndices.rawPointer()))
+    {
+        LOG_ERROR("Failed to set padded mask indices input address");
+        return false;
+    }
+
+    if (!mAudioContext->setTensorAddress(binding_names::kAudioAttentionMask, mAudioAttentionMask.rawPointer()))
+    {
+        LOG_ERROR("Failed to set attention mask input address");
+        return false;
+    }
+
+    size_t const rowBytes = static_cast<size_t>(mConfig.audioFeatureDim) * sizeof(__half);
+    auto* output
+        = static_cast<std::byte*>(mAudioEmbedding.rawPointer()) + static_cast<size_t>(destRowOffset) * rowBytes;
+    if (!mAudioContext->setTensorAddress(binding_names::kAudioOutput, output))
+    {
+        LOG_ERROR("Failed to set audio output address");
+        return false;
+    }
+
+    LOG_DEBUG(
+        "Executing audio encoder with shapes: input=[%ld,%ld,%ld], indices=[%ld,2], mask=[%ld,%ld], "
+        "output=[%ld,%d] at row %ld",
+        mPaddedFeature.getShape()[0], mPaddedFeature.getShape()[1], mPaddedFeature.getShape()[2],
+        mPaddedMaskIndices.getShape()[0], mAudioAttentionMask.getShape()[0], mAudioAttentionMask.getShape()[1],
+        totalAudioTokens, mConfig.audioFeatureDim, destRowOffset);
+
+    {
+        TIME_STAGE(metrics::StageNames::kAUDIO_ENCODER, stream);
+
+        if (!mAudioContext->enqueueV3(stream))
+        {
+            LOG_ERROR("Audio encoder inference failed");
+            return false;
+        }
+    }
+
+    LOG_DEBUG("Audio encoder inference completed");
+    mMultimodalMetrics.recordRun(0, 0, 1, totalAudioTokens);
+    return true;
+}
+
+bool Qwen3OmniAudioRunner::encodePreparedAudio(cudaStream_t stream)
+{
+    if (!mAudioEngine || !mAudioContext)
+    {
+        LOG_ERROR("Audio encoder not loaded");
+        return false;
+    }
+
+    int64_t totalRows{};
+    for (int64_t const rows : mPreparedTokenLengths)
+    {
+        totalRows += rows;
+    }
+    if (!resizeEmbeddingForRows(totalRows))
+    {
+        LOG_ERROR("Failed to size audio output for %ld rows", totalRows);
+        return false;
+    }
+
+    int64_t rowOffset{};
+    for (size_t index = 0; index < mPreparedClipPlans.size(); ++index)
+    {
+        rt::Tensor melSpec;
+        if (!produceClipMel(mPreparedClipPlans[index], melSpec, stream)
+            || !encodeClipMel(melSpec, rowOffset, mPreparedTokenLengths[index], stream))
+        {
+            return false;
+        }
+        rowOffset += mPreparedTokenLengths[index];
+    }
+    ELLM_CHECK(rowOffset == totalRows, "Qwen3 Omni audio output packing produced an invalid row count");
 
     CUDA_CHECK(cudaStreamSynchronize(stream));
     return true;
 }
 
-bool Qwen3OmniAudioRunner::infer([[maybe_unused]] cudaStream_t stream)
+bool Qwen3OmniAudioRunner::infer(cudaStream_t stream)
 {
-    LOG_DEBUG("No-op (inference already done in preprocessAudio)");
+    bool const success = encodePreparedAudio(stream);
+    discardPreparedInput();
+    return success;
+}
+
+bool Qwen3OmniAudioRunner::prepareArtifactSubset([[maybe_unused]] rt::LLMGenerationRequest const& request,
+    std::vector<size_t> const& originalItemIndices, [[maybe_unused]] cudaStream_t stream)
+{
+    std::vector<ClipPlan> selectedPlans;
+    std::vector<int64_t> selectedLengths;
+    selectedPlans.reserve(originalItemIndices.size());
+    selectedLengths.reserve(originalItemIndices.size());
+    size_t previous = 0;
+    bool first = true;
+    for (size_t const index : originalItemIndices)
+    {
+        ELLM_CHECK(index < mPreparedClipPlans.size(), "Selected audio artifact index is out of range");
+        ELLM_CHECK(first || index > previous, "Selected audio artifact indices must be unique and ordered");
+        selectedPlans.push_back(std::move(mPreparedClipPlans[index]));
+        selectedLengths.push_back(mPreparedTokenLengths[index]);
+        previous = index;
+        first = false;
+    }
+    mPreparedClipPlans = std::move(selectedPlans);
+    mPreparedTokenLengths = std::move(selectedLengths);
     return true;
+}
+
+std::vector<int64_t> Qwen3OmniAudioRunner::preparedArtifactRowCounts() const
+{
+    return mPreparedTokenLengths;
+}
+
+void Qwen3OmniAudioRunner::discardPreparedInput() noexcept
+{
+    mPreparedClipPlans.clear();
+    mPreparedTokenLengths.clear();
 }
 
 rt::Tensor& Qwen3OmniAudioRunner::getOutputEmbedding()

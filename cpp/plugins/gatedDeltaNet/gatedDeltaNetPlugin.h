@@ -59,11 +59,11 @@ namespace plugins
 //! \par Outputs
 //!   [0]  o               [n, seq_len, hv, v]   FP16  output
 //!   [1]  h0_out          [n, hv, k, v]         FP32  recurrent state out
-//!   [2]  intermediate_states [n, seq_len, hv, k, v] FP32  (spec-verify only, optional)
-//!        Per-step recurrent state cache for speculative-decoding rollback.
-//!        Present when spec-verify state checkpoints are enabled (legacy use_mtp or use_ddtree).
-//!        DDTree verify keeps h0_source read-only. The runtime commits accepted
-//!        recurrent state from intermediate_states by accepted tree node id.
+//!   [2]  intermediate_states [n, compact_words] FP32  (spec-verify only, optional)
+//!        Opaque replay cells and transient chunk-verification scratch. FP32 is
+//!        the storage carrier; the internal layout contains FP32 and FP16 data.
+//!        Speculative verification keeps h0_source read-only, and the runtime
+//!        replays accepted node ids to commit the recurrent state.
 class GatedDeltaNetPlugin : public nvinfer1::IPluginV3,
                             public nvinfer1::IPluginV3OneCore,
                             public nvinfer1::IPluginV3OneBuildV2,
@@ -120,7 +120,7 @@ private:
     std::string mNamespace;
     int32_t mKDim{128};              //!< Head dimension K (kernel supports 128 only)
     int32_t mVDim{128};              //!< Head dimension V (kernel supports 128 only)
-    bool mUseSpecVerifyState{false}; //!< Enable spec-verify intermediate_states output
+    bool mUseSpecVerifyState{false}; //!< Enable compact spec-verify replay-buffer output
     bool mUseDDTree{false};          //!< Enable DDTree parent/depth metadata inputs for tree-state execution.
     int32_t mSMVersion{0};           //!< Captured device SM version used for build-time capability checks
     int32_t mUseSpecVerifyStateField{0};

@@ -547,6 +547,15 @@ def test_checkpoint_mtp_export(test_param: str, test_logger,
         llm_output = os.path.join(tmp_dir, "llm")
         if not os.path.isdir(llm_output):
             pytest.fail(f"MTP export did not produce llm/ in {tmp_dir}")
+        if base_model_name not in GEMMA4_MTP_ASSISTANT_MODELS_MAP:
+            input_names = _onnx_graph_input_names(
+                os.path.join(llm_output, "model.onnx"))
+            expected_tree_inputs = {"tree_parent_ids", "tree_depths"}
+            missing = expected_tree_inputs - input_names
+            if missing:
+                pytest.fail(
+                    "Qwen-style MTP base ONNX must expose tree metadata for "
+                    f"every runtime topK; missing {sorted(missing)}")
         shutil.copytree(llm_output, llm_onnx_dir, dirs_exist_ok=True)
         _verify_externalized_outputs(llm_onnx_dir, extw_kinds)
 

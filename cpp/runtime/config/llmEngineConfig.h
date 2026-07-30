@@ -70,6 +70,7 @@ struct LLMEngineConfig
     int32_t maxSupportedBatchSize{};   //!< Maximum supported batch size
     int32_t maxSupportedInputLength{}; //!< Maximum supported input length
     int32_t maxKVCacheCapacity{};      //!< Maximum KV cache capacity (sequence length)
+    int32_t kvPoolPages{};             //!< Physical K-page count serialized into the engine's KV binding shape
     int32_t rotaryDim{};               //!< Rotary embedding dimension
     int32_t numDecoderLayers{};        //!< Total decoder layers (attention + linear)
     int32_t vocabSize{};               //!< Full vocabulary size
@@ -101,6 +102,9 @@ struct LLMEngineConfig
     int32_t slidingRotaryDim{};          //!< Rotary dimension for sliding attention RoPE
     int32_t fullRotaryDim{};             //!< Rotary dimension for full attention RoPE
     bool useContextDependentRope{false}; //!< Use context-dependent RoPE
+    //! Serialized attention window size. -1 means full attention; absence identifies a legacy sidecar whose
+    //! attention semantics cannot be proven by runtime capability checks.
+    std::optional<int32_t> slidingWindowSize;
 
     // --- Optional feature fields ---
     int32_t numDeepstackFeatures{0}; //!< Deepstack features (Qwen3-VL/Qwen3-Omni)

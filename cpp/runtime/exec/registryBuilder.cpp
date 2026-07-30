@@ -18,6 +18,8 @@
 #include "runtime/exec/registryBuilder.h"
 #include "common/bindingNames.h"
 #include "common/checkMacros.h"
+#include "common/pagedKvTypes.h"
+#include "kernels/gdnKernels/gdnTreeChunkKernels.h"
 
 namespace trt_edgellm
 {
@@ -28,6 +30,26 @@ namespace rt
 // Symbolic-dim registration (formerly `addCommonSymbolicDims` / `addSymbolicDim`)
 // is no longer needed — every symbolic reference is a pointer-to-member of
 // `InferenceDims`, so the set of dims exists by construction of the type.
+
+//! Page count for paged-pool KV-cache bindings
+//! [2, numPages, kTOKENS_PER_PAGE, numKVHeads, headDim]. A single fixed value per engine
+//! (not resized per inference step), matching the serialized builder profile and
+//! KVCacheManager::numPages() (see sharedResources.cpp).
+constexpr int32_t kTokensPerPage = rt::kTOKENS_PER_PAGE;
+
+static int32_t computeNumPages(LLMEngineConfig const& cfg)
+{
+    int32_t const floorPages = rt::computeKvPoolFloorPages(cfg.maxSupportedBatchSize, cfg.maxKVCacheCapacity);
+    ELLM_CHECK(cfg.kvPoolPages >= floorPages,
+        "KV pool page count (" + std::to_string(cfg.kvPoolPages) + ") is smaller than the active-capacity floor ("
+            + std::to_string(floorPages) + ").");
+    return cfg.kvPoolPages;
+}
+
+static int32_t computeFloorNumPages(int32_t maxBatchSize, int32_t maxKVCacheCapacity)
+{
+    return rt::computeKvPoolFloorPages(maxBatchSize, maxKVCacheCapacity);
+}
 
 void addRopeTensorSpecs(TensorRegistry& reg, LLMEngineConfig const& cfg)
 {
@@ -58,10 +80,10 @@ TensorRegistry buildRegistryForLLM(LLMEngineConfig const& cfg, std::optional<int
     reg.addTensor({binding_names::kInputsEmbeds, TensorIO::kInput, nvinfer1::DataType::kHALF,
         {sym(&InferenceDims::batch), sym(&InferenceDims::seqLen), fixed(cfg.hiddenSize)}});
 
-    // logits: [batch, outputVocabSize] FLOAT for vanilla, or
-    // [batch, seq_len, outputVocabSize] for SpecDecode. The engine binding
-    // shape depends on mode, but output address is always set.
-    // For the registry we use the common 2D shape; SpecDecode resolves via symbolic dims.
+    // logits: [batch, outputVocabSize] FLOAT for vanilla. SpecDecode engines may
+    // expose [batch, selectLen, outputVocabSize] or the equivalent flattened
+    // [batch * selectLen, outputVocabSize]. Output bindings are address-only, so
+    // the registry uses the common 2D runtime view.
     reg.addTensor({binding_names::kLogits, TensorIO::kOutput, nvinfer1::DataType::kFLOAT,
         {sym(&InferenceDims::batch), fixed(cfg.outputVocabSize)}});
 
@@ -113,9 +135,11 @@ TensorRegistry buildRegistryForLLM(LLMEngineConfig const& cfg, std::optional<int
             auto addKVCacheTensor = [&](char const* tmpl, TensorIO io, std::vector<ShapeDim> const& shape) {
                 reg.addTensor({std::string(tmpl) + "_" + std::to_string(localAttnIdx), io, cfg.kvCacheDtype, shape});
             };
-            // Plugin: combined KV, 5D [batch, 2, numKVHeads, kv_len, headDim]
-            std::vector<ShapeDim> const shape{sym(&InferenceDims::batch), fixed(2), fixed(lc.numKVHeads),
-                sym(&InferenceDims::kvLen), fixed(lc.headDim)};
+            // Plugin: paged pool, 5D [2, numPages, kTOKENS_PER_PAGE, numKVHeads, headDim].
+            // numPages is fixed for the life of this engine context (see computeNumPages).
+            int32_t const numPages = computeNumPages(cfg);
+            std::vector<ShapeDim> const shape{
+                fixed(2), fixed(numPages), fixed(kTokensPerPage), fixed(lc.numKVHeads), fixed(lc.headDim)};
             addKVCacheTensor(binding_names::kPastKeyValuesTemplate, TensorIO::kInput, shape);
             addKVCacheTensor(binding_names::kPresentKeyValuesTemplate, TensorIO::kOutput, shape);
             ++localAttnIdx;
@@ -139,17 +163,22 @@ TensorRegistry buildRegistryForLLM(LLMEngineConfig const& cfg, std::optional<int
             addMambaTensor(binding_names::kPresentConvStateTemplate, TensorIO::kOutput, cfg.convStateDtype, convShape);
 
             // Hybrid MTP/DFlash base only: per-layer intermediate state outputs
-            // written during prefill/verification so accepted recurrent/conv
-            // state snapshots can be committed after speculative verification.
+            // written during verification. Recurrent state uses an opaque
+            // compact replay buffer; conv state retains per-node checkpoints.
             //
-            // intermediate_recurrent_state_%d: [batch, seqLen, recurrentNumHeads, recurrentHeadDim, recurrentStateSize]
+            // intermediate_recurrent_state_%d: [batch, compactElements]
             // intermediate_conv_state_%d:      [batch, seqLen, convDim, convKernel]
             if (cfg.specDecodeType == SpecDecodeMode::kMTP || cfg.specDecodeType == SpecDecodeMode::kDFlash)
             {
-                std::vector<ShapeDim> const interRecShape{sym(&InferenceDims::batch), sym(&InferenceDims::seqLen),
-                    fixed(cfg.recurrentStateNumHeads), fixed(cfg.recurrentStateHeadDim), fixed(cfg.recurrentStateSize)};
+                int32_t const h = kernel::gdnTreeChunkNumKeyHeads(
+                    cfg.convDim, cfg.recurrentStateNumHeads, cfg.recurrentStateHeadDim, cfg.recurrentStateSize);
+                ELLM_CHECK(cfg.recurrentStateDtype == nvinfer1::DataType::kFLOAT && h > 0
+                        && cfg.recurrentStateNumHeads % h == 0,
+                    "Hybrid speculative base has an invalid compact GDN replay-buffer contract.");
+                int64_t const compactElements = kernel::gdnTreeChunkBufferElements(h, cfg.recurrentStateNumHeads);
+                std::vector<ShapeDim> const interRecShape{sym(&InferenceDims::batch), fixed(compactElements)};
                 addMambaTensor(binding_names::kIntermediateRecurrentStateTemplate, TensorIO::kOutput,
-                    cfg.recurrentStateDtype, interRecShape);
+                    nvinfer1::DataType::kFLOAT, interRecShape);
                 if (cfg.convDim > 0 && cfg.convKernel > 0)
                 {
                     std::vector<ShapeDim> const interConvShape{sym(&InferenceDims::batch), sym(&InferenceDims::seqLen),
@@ -309,8 +338,12 @@ TensorRegistry buildRegistryForSpecDecodeDraft(DeploymentConfig const& bundle)
                 continue;
             }
             auto const& lc = cfg.kvLayerConfigs[localAttnIdx];
-            std::vector<ShapeDim> const shape{sym(&InferenceDims::batch), fixed(2), fixed(lc.numKVHeads),
-                sym(&InferenceDims::kvLen), fixed(lc.headDim)};
+            // Plugin: paged pool, 5D [2, numPages, kTOKENS_PER_PAGE, numKVHeads, headDim] — same
+            // contract as the base LLM engine (see buildRegistryForLLM); EAGLE/MTP drafts share the
+            // AttentionPlugin binding via KVCacheManager's paged-pool view.
+            int32_t const numPages = computeNumPages(cfg);
+            std::vector<ShapeDim> const shape{
+                fixed(2), fixed(numPages), fixed(kTokensPerPage), fixed(lc.numKVHeads), fixed(lc.headDim)};
             auto addKVCacheTensor = [&](char const* tmpl, TensorIO io) {
                 reg.addTensor({std::string(tmpl) + "_" + std::to_string(localAttnIdx), io, cfg.kvCacheDtype, shape});
             };
@@ -380,8 +413,16 @@ TensorRegistry buildRegistryForDFlashDraft(DeploymentConfig const& bundle)
                 continue;
             }
             auto const& lc = cfg.kvLayerConfigs[localAttnIdx];
-            std::vector<ShapeDim> const shape{sym(&InferenceDims::batch), fixed(2), fixed(lc.numKVHeads),
-                sym(&InferenceDims::kvLen), fixed(lc.headDim)};
+            // DFlash's own combined draft cache: unified on the paged-pool contract shared with
+            // the main model and EAGLE/MTP drafts — [2, numPages, kTOKENS_PER_PAGE, numKVHeads,
+            // headDim] — but NOT extended by the pool-capacity profile range:
+            // DFlashTargetKVCacheUpdatePlugin recovers maxBatch/cap at enqueue time by dividing
+            // numPages by the builder-configured pages_per_slot attribute, so this binding always
+            // stays at the active-capacity floor (see computeFloorNumPages). This cache still has
+            // no page table of its own (identity-contiguous, reuse opt-out).
+            int32_t const numPages = computeFloorNumPages(cfg.maxSupportedBatchSize, cfg.maxKVCacheCapacity);
+            std::vector<ShapeDim> const shape{
+                fixed(2), fixed(numPages), fixed(kTokensPerPage), fixed(lc.numKVHeads), fixed(lc.headDim)};
             auto addKVCacheTensor = [&](char const* tmpl, TensorIO io) {
                 reg.addTensor({std::string(tmpl) + "_" + std::to_string(localAttnIdx), io, cfg.kvCacheDtype, shape});
             };
@@ -436,9 +477,13 @@ TensorRegistry buildRegistryForGemma4MTPDraft(DeploymentConfig const& bundle)
                 && entry.targetAttentionLayerIdx < static_cast<int32_t>(bundle.base.kvLayerConfigs.size()),
             "buildRegistryForGemma4MTPDraft: invalid target attention layer index");
 
+        // The assistant binds the TARGET model's paged pool tensor directly, so the
+        // expected shape is the target pool contract [2, numPages, kTOKENS_PER_PAGE,
+        // numKVHeads, headDim] with the target's runtime-chosen numPages.
         auto const& targetKV = bundle.base.kvLayerConfigs[entry.targetAttentionLayerIdx];
-        std::vector<ShapeDim> const shape{sym(&InferenceDims::batch), fixed(2), fixed(targetKV.numKVHeads),
-            sym(&InferenceDims::kvLen), fixed(targetKV.headDim)};
+        int32_t const targetNumPages = computeNumPages(bundle.base);
+        std::vector<ShapeDim> const shape{fixed(2), fixed(targetNumPages), fixed(kTokensPerPage),
+            fixed(targetKV.numKVHeads), fixed(targetKV.headDim)};
         reg.addTensor({binding_names::formatKVCacheName(entry.assistantLayerIdx, /*isPast=*/true), TensorIO::kInput,
             bundle.base.kvCacheDtype, shape});
     }

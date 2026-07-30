@@ -157,9 +157,12 @@ void buildTensorMap(
                 ? cfg.kvSharingDonors[localAttnIdx]
                 : -1;
 
-            // Plugin (combined KV): bind to donor's tensor if shared, else own tensor.
-            auto& combinedKV
-                = (donorIdx >= 0) ? kvMgr.getCombinedKVCache(donorIdx) : kvMgr.getCombinedKVCache(localAttnIdx);
+            // Plugin (combined KV): bind to donor's tensor if shared, else own tensor. Bind the
+            // pool-shaped view — the AttentionPlugin engine binding contract is the paged pool
+            // [2, numPages, kTOKENS_PER_PAGE, numKVHeads, headDim], not the internal slot-shaped
+            // allocation (see KVCacheManager::getCombinedKVCachePoolView()).
+            auto& combinedKV = (donorIdx >= 0) ? kvMgr.getCombinedKVCachePoolView(donorIdx)
+                                               : kvMgr.getCombinedKVCachePoolView(localAttnIdx);
             map.set(binding_names::formatKVCacheName(localAttnIdx, /*isPast=*/true), combinedKV);
             map.set(binding_names::formatKVCacheName(localAttnIdx, /*isPast=*/false), combinedKV); // alias: in-place
             ++localAttnIdx;
@@ -201,6 +204,10 @@ void buildTensorMap(
     // `batch` otherwise), so the same address serves every phase without a
     // per-step rebind.
     map.set(binding_names::kKVCacheStartIndex, cacheMgr.getKVCacheLengths());
+
+    // kv_page_table: one stable TensorMap binding per cache manager. SharedResources initializes identity rows;
+    // production context reuse updates the bound tensor in place with leased physical page IDs.
+    map.set(binding_names::kKVPageTable, res.kvPageTables[kvCacheIndex]->kernelView());
 
     // Deepstack: initial bind is the shared zero buffer (sized large enough
     // to cover the worst-case non-prefill shape). DeepstackBinding (owned by
@@ -294,9 +301,12 @@ void buildTensorMapForGemma4MTPDraft(
 
     auto& baseCacheManager = *res.cacheManagers[0];
     map.set(binding_names::kContextLengths, baseCacheManager.getKVCacheLengths());
+    // kv_page_table: the assistant reads the target model's paged pool, so it binds the same target table as the
+    // base engine. Context reuse is currently rejected for Gemma4 MTP deployments.
+    map.set(binding_names::kKVPageTable, res.kvPageTables[0]->kernelView());
     for (auto const& entry : draftCfg.gemma4MTPKVSharingMap)
     {
-        rt::Tensor& targetKV = baseCacheManager.getCombinedKVCache(entry.targetAbsoluteLayerIdx);
+        rt::Tensor& targetKV = baseCacheManager.getCombinedKVCachePoolView(entry.targetAbsoluteLayerIdx);
         map.set(binding_names::formatKVCacheName(entry.assistantLayerIdx, /*isPast=*/true), targetKV);
     }
 }
@@ -419,9 +429,10 @@ PipelineIO PipelineIO::createForSpecDecode(
     CUDA_CHECK(cudaMemsetAsync(
         io.specVerifyPhaseMarker.rawPointer(), 0, io.specVerifyPhaseMarker.getMemoryCapacity(), stream));
 
-    bool const useDFlashTree
-        = bundle.specDecodeMode() == SpecDecodeMode::kDFlash && bundle.specConfig->draftingTopK > 1;
-    if (useDFlashTree)
+    SpecDecodeMode const specMode = bundle.specDecodeMode();
+    bool const useSpecTree = specMode == SpecDecodeMode::kMTP
+        || (specMode == SpecDecodeMode::kDFlash && bundle.specConfig->draftingTopK > 1);
+    if (useSpecTree)
     {
         io.specTreeParentIds = Tensor({maxRuntimeBatchSize, effectiveMaxDraftProposalSize}, DeviceType::kGPU,
             nvinfer1::DataType::kINT32, "PipelineIO::specTreeParentIds");

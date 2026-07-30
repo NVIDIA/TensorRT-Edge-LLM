@@ -388,12 +388,22 @@ class LLM:
         draft_top_k: int = 10,
         draft_step: int = 6,
         verify_tree_size: int = 60,
+        enable_context_reuse: bool = False,
+        context_cache_max_records: int = 1024,
+        context_cache_recurrent_snapshot_pool_bytes: int = 134217728,
+        context_cache_partial_kv_snapshot_pool_bytes: int = 16777216,
+        recurrent_capture_interval: int = 0,
+        context_cache_prefill_state_only: bool = False,
     ):
         sources = sum(bool(s) for s in (model, onnx_dir, engine_dir))
         if sources != 1:
             raise ValueError(
                 "Exactly one of 'model', 'onnx_dir', or 'engine_dir' "
                 "must be provided.")
+        if engine_dir and eagle_engine_dir:
+            raise ValueError(
+                "'engine_dir' already identifies the complete pre-built "
+                "engine bundle; do not also provide 'eagle_engine_dir'.")
 
         self._model_id = (model or os.path.basename(onnx_dir)
                           or os.path.basename(engine_dir))
@@ -401,6 +411,14 @@ class LLM:
         self._draft_top_k = draft_top_k
         self._draft_step = draft_step
         self._verify_tree_size = verify_tree_size
+        self._enable_context_reuse = enable_context_reuse
+        self._context_cache_max_records = context_cache_max_records
+        self._context_cache_recurrent_snapshot_pool_bytes = (
+            context_cache_recurrent_snapshot_pool_bytes)
+        self._context_cache_partial_kv_snapshot_pool_bytes = (
+            context_cache_partial_kv_snapshot_pool_bytes)
+        self._recurrent_capture_interval = recurrent_capture_interval
+        self._context_cache_prefill_state_only = context_cache_prefill_state_only
         self._tool_template_formatter: Optional[
             ToolChatTemplateFormatter] = None
 
@@ -574,6 +592,21 @@ class LLM:
         if self._visual_engine_dir:
             logger.info("Loading visual engine from %s ...",
                         self._visual_engine_dir)
+        ctx_cache = self._rt.ContextCacheConfig()
+        ctx_cache.enabled = self._enable_context_reuse
+        if self._enable_context_reuse:
+            ctx_cache.max_records = self._context_cache_max_records
+            ctx_cache.recurrent_snapshot_pool_bytes = (
+                self._context_cache_recurrent_snapshot_pool_bytes)
+            ctx_cache.partial_kv_snapshot_pool_bytes = (
+                self._context_cache_partial_kv_snapshot_pool_bytes)
+            logger.info(
+                "Context reuse (KV cache reuse) ENABLED "
+                "(max_records=%d, recurrent_pool=%d B, partial_kv_pool=%d B)",
+                self._context_cache_max_records,
+                self._context_cache_recurrent_snapshot_pool_bytes,
+                self._context_cache_partial_kv_snapshot_pool_bytes,
+            )
         spec_decode_engine_dir = self._eagle_engine_dir
         if spec_decode_engine_dir:
             logger.info(
@@ -589,14 +622,28 @@ class LLM:
                 self._draft_top_k,
                 self._draft_step,
                 self._verify_tree_size,
+                ctx_cache,
             )
         else:
             self._runtime = self._rt.LLMRuntime(
                 self._engine_dir,
                 self._visual_engine_dir,
                 {},
+                ctx_cache,
             )
         self._runtime.capture_decoding_cuda_graph()
+        # Metrics (LLMPrefillMetrics.recordRun) only accumulate when profiling
+        # is enabled; it is off by default. Turn it on so per-request token
+        # cache reuse counters are populated.
+        self._rt.set_profiling_enabled(True)
+        # KV/token cache reuse accounting. get_prefill_metrics() returns
+        # server-lifetime cumulative counters; we snapshot the previous values
+        # to derive per-request deltas. The lock keeps the delta exact under
+        # the single-stream (concurrency 1) MLPerf load; with concurrent
+        # in-flight requests the per-request split is only approximate.
+        self._cache_metric_lock = threading.Lock()
+        self._prev_reused_tokens = 0
+        self._prev_computed_tokens = 0
         logger.info("Engine loaded and ready.")
 
     # ------------------------------------------------------------------
@@ -772,13 +819,24 @@ class LLM:
             if tool_config.tool_choice != "none":
                 template_tool_choice = self._tool_choice_for_template(
                     tool_config)
-            prompt = self._get_tool_template_formatter().format(
-                messages,
-                tools=template_tools,
-                tool_choice=template_tool_choice,
-                add_generation_prompt=True,
-                enable_thinking=enable_thinking,
-            )
+            formatter = self._get_tool_template_formatter()
+            replay_tail_length = 0
+            if (self._enable_context_reuse and self.has_draft_model
+                    and self._context_cache_prefill_state_only):
+                prompt, replay_tail_length = formatter.format_with_replay_tail(
+                    messages,
+                    tools=template_tools,
+                    tool_choice=template_tool_choice,
+                    enable_thinking=enable_thinking,
+                )
+            else:
+                prompt = formatter.format(
+                    messages,
+                    tools=template_tools,
+                    tool_choice=template_tool_choice,
+                    add_generation_prompt=True,
+                    enable_thinking=enable_thinking,
+                )
             cpp_messages = _convert_messages_to_cpp(
                 self._rt,
                 [{
@@ -786,10 +844,11 @@ class LLM:
                     "content": prompt,
                 }],
             )
-            return cpp_messages, image_buffers, False, False
+            return (cpp_messages, image_buffers, False, False,
+                    replay_tail_length)
 
         cpp_messages = _convert_messages_to_cpp(self._rt, messages)
-        return cpp_messages, image_buffers, True, True
+        return cpp_messages, image_buffers, True, True, 0
 
     def _make_generation_request(
         self,
@@ -800,6 +859,7 @@ class LLM:
         tool_choice: Optional[Union[str, Dict[str, Any]]] = None,
         tool_config: Optional[ToolConfig] = None,
         stream_channel: Optional[Any] = None,
+        raw_prompt: Optional[str] = None,
     ):
         normalized_logit_bias = _normalize_logit_bias(params.logit_bias)
         _validate_logit_bias_spec_decode(
@@ -808,16 +868,51 @@ class LLM:
             has_draft_model=self.has_draft_model,
         )
 
+        if raw_prompt is not None:
+            # Raw-prompt path (/v1/completions): the caller supplies the
+            # already-formatted prompt; feed it verbatim with no chat template
+            # so both engines can be driven with an identical pre-rendered
+            # prompt for apples-to-apples comparison.
+            request = self._rt.LLMGenerationRequest()
+            req = self._rt.Request(messages=_convert_messages_to_cpp(
+                self._rt, [{
+                    "role": "user",
+                    "content": raw_prompt
+                }]))
+            req.stop_strings = params.stop
+            req.logit_bias = normalized_logit_bias
+            request.requests = [req]
+            if stream_channel is not None:
+                request.stream_channels = [stream_channel]
+            request.temperature = params.temperature
+            request.top_p = params.top_p
+            request.top_k = params.top_k
+            request.max_generate_length = params.max_tokens
+            request.apply_chat_template = False
+            request.add_generation_prompt = False
+            request.enable_thinking = params.enable_thinking
+            request.disable_spec_decode = params.disable_spec_decode
+            request.num_logprobs = params.num_logprobs
+            if (self._enable_context_reuse
+                    and self._recurrent_capture_interval > 0):
+                request.recurrent_capture_interval = (
+                    self._recurrent_capture_interval)
+            if (self._enable_context_reuse
+                    and self._context_cache_prefill_state_only):
+                request.context_cache_commit_policy = (
+                    self._rt.ContextCacheCommitPolicy.PREFILL_STATE_ONLY)
+            return request
+
         tool_config = tool_config or validate_tool_request(
             messages, tools, tool_choice)
-        cpp_messages, image_buffers, apply_template, add_prompt = (
-            self._prepare_messages_for_runtime(
-                messages,
-                tools=tool_config.tools,
-                tool_choice=tool_config.tool_choice,
-                tool_config=tool_config,
-                enable_thinking=params.enable_thinking,
-            ))
+        (cpp_messages, image_buffers, apply_template, add_prompt,
+         replay_tail_length) = (self._prepare_messages_for_runtime(
+             messages,
+             tools=tool_config.tools,
+             tool_choice=tool_config.tool_choice,
+             tool_config=tool_config,
+             enable_thinking=params.enable_thinking,
+         ))
 
         audio_buffers = _load_audio_buffers(self._rt, messages)
 
@@ -839,6 +934,16 @@ class LLM:
         request.enable_thinking = params.enable_thinking
         request.disable_spec_decode = params.disable_spec_decode
         request.num_logprobs = params.num_logprobs
+        request.context_cache_replay_tail_length = replay_tail_length
+        if (self._enable_context_reuse
+                and self._recurrent_capture_interval > 0):
+            # Periodically snapshot recurrent (GDN) state during prefill so a
+            # later request sharing this prefix can reuse it instead of
+            # recomputing. Required for hybrid (linear-attn) context reuse.
+            request.recurrent_capture_interval = self._recurrent_capture_interval
+        if self._enable_context_reuse and self._context_cache_prefill_state_only:
+            request.context_cache_commit_policy = (
+                self._rt.ContextCacheCommitPolicy.PREFILL_STATE_ONLY)
         return request
 
     def _parse_generation_output(
@@ -866,6 +971,38 @@ class LLM:
     # ------------------------------------------------------------------
     # Inference API (vLLM-style)
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _hit_rate(reused: int, computed: int) -> float:
+        total = reused + computed
+        return reused / total if total > 0 else 0.0
+
+    def _log_prefill_cache_hit_rate(self) -> None:
+        """Log token-cache reuse for the request that just finished plus the
+        server-lifetime cumulative total.
+
+        ``get_prefill_metrics()`` accumulates ``reused_tokens`` /
+        ``computed_tokens`` across the whole server run, so the per-request
+        figure is the delta since the previous request.
+        """
+        with self._cache_metric_lock:
+            pm = self._runtime.get_prefill_metrics()
+            cum_reused = int(pm.reused_tokens)
+            cum_computed = int(pm.computed_tokens)
+            req_reused = cum_reused - self._prev_reused_tokens
+            req_computed = cum_computed - self._prev_computed_tokens
+            self._prev_reused_tokens = cum_reused
+            self._prev_computed_tokens = cum_computed
+        logger.info(
+            "[token-cache] request: reused=%d computed=%d hit_rate=%.4f | "
+            "cumulative: reused=%d computed=%d hit_rate=%.4f",
+            req_reused,
+            req_computed,
+            self._hit_rate(req_reused, req_computed),
+            cum_reused,
+            cum_computed,
+            self._hit_rate(cum_reused, cum_computed),
+        )
 
     def generate(
         self,
@@ -913,6 +1050,7 @@ class LLM:
             )
 
             response = self._runtime.handle_request(request)
+            self._log_prefill_cache_hit_rate()
             text = response.output_texts[0] if response.output_texts else ""
             ids = response.output_ids[0] if response.output_ids else []
             reason = finish_reason_name(self._rt, response.finish_reasons[0]) \
@@ -924,6 +1062,26 @@ class LLM:
             outputs.append(out)
 
         return outputs
+
+    def generate_raw(
+        self,
+        prompt: str,
+        sampling_params: Optional[SamplingParams] = None,
+    ) -> CompletionOutput:
+        """Generate from an already-formatted prompt (no chat template).
+
+        Used by ``/v1/completions`` so both engines can be driven with an
+        identical pre-rendered prompt.
+        """
+        params = sampling_params or SamplingParams()
+        request = self._make_generation_request([], params, raw_prompt=prompt)
+        response = self._runtime.handle_request(request)
+        self._log_prefill_cache_hit_rate()
+        text = response.output_texts[0] if response.output_texts else ""
+        ids = list(response.output_ids[0]) if response.output_ids else []
+        reason = finish_reason_name(self._rt, response.finish_reasons[0]) \
+            if response.finish_reasons else "stop"
+        return CompletionOutput(text=text, token_ids=ids, finish_reason=reason)
 
     def chat(
         self,
@@ -1011,6 +1169,8 @@ class LLM:
 
         if error_holder[0] is not None:
             raise error_holder[0]
+
+        self._log_prefill_cache_hit_rate()
 
     # ------------------------------------------------------------------
     # Server API

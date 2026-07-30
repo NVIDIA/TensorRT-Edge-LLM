@@ -134,6 +134,28 @@ public:
      */
     virtual bool infer(cudaStream_t stream) = 0;
 
+    /*!\brief Replace the prepared encoder input with the selected artifact subset.
+     *
+     * The request contains only the selected media buffers, while originalItemIndices identifies their positions in
+     * the media list inspected by preprocess(). Vision runners rebuild their packed input from the filtered request;
+     * audio runners retain the already-extracted mel tensors at the supplied indices.
+     */
+    virtual bool prepareArtifactSubset([[maybe_unused]] rt::LLMGenerationRequest const& request,
+        [[maybe_unused]] std::vector<size_t> const& originalItemIndices, [[maybe_unused]] cudaStream_t stream)
+    {
+        return false;
+    }
+
+    //! Encoder-output rows for each media buffer retained by the most recent preprocess(), in flattened order.
+    //! Empty asks the runtime to use the legacy one-placeholder-run-per-buffer mapping.
+    virtual std::vector<int64_t> preparedArtifactRowCounts() const
+    {
+        return {};
+    }
+
+    //! Drop request-local prepared encoder inputs when an artifact hit makes infer() unnecessary.
+    virtual void discardPreparedInput() noexcept {}
+
     //! @brief Get output embeddings from vision encoder
     //! @return Reference to output embedding tensor
     virtual rt::Tensor& getOutputEmbedding();

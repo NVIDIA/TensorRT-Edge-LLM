@@ -31,13 +31,25 @@ namespace plugins
 /// Inputs:
 ///   0: k_delta              [B, L, numKVHeads, headDim] FP16
 ///   1: v_delta              [B, L, numKVHeads, headDim] FP16
-///   2: past_key_value       [B, 2, numKVHeads, maxSeqLen, headDim] FP16
-///   3: rope_cos_sin         [ropeBatch, maxSeqLen, rotaryDim] FP32
+///   2: past_key_value       Paged KV pool [2, numPages, kTOKENS_PER_PAGE, numKVHeads, headDim] FP16 —
+///                           the same KVCacheManager allocation as the AttentionPlugin binding (K/V
+///                           split OUTERMOST), bound unreshaped. maxBatch/capPadded are recovered at
+///                           enqueue time from numPages (dim 1) and the build-time `pages_per_slot`
+///                           attribute (maxBatch = numPages / pagesPerSlot, cap = pagesPerSlot *
+///                           kTOKENS_PER_PAGE) — see setPagesPerSlot().
+///   3: rope_cos_sin         [ropeBatch, cosSinSeqLen, rotaryDim] FP32 — cosSinSeqLen <= cap
 ///   4: delta_start_positions [B] INT32
 ///   5: delta_lengths         [B] INT32
 ///
 /// Outputs:
 ///   0: present_key_value    same shape/dtype as past_key_value (aliased)
+///
+/// BREAKING ABI NOTE (paged-KV substrate): `past_key_value`/`present_key_value` moved to the paged
+/// pool layout above and a new serialized `pages_per_slot` field was added (see setPagesPerSlot()).
+/// The plugin version string was deliberately NOT bumped -- this project always regenerates ONNX and
+/// rebuilds engines together with the runtime, so an ABI break here is accepted rather than
+/// versioned. Any ONNX/engine older than this change must be re-exported and rebuilt; it will not
+/// load correctly against this plugin.
 class DFlashTargetKVCacheUpdatePlugin : public nvinfer1::IPluginV3,
                                         public nvinfer1::IPluginV3OneCore,
                                         public nvinfer1::IPluginV3OneBuildV2,
@@ -85,6 +97,13 @@ public:
 
     void setPluginNamespace(char const* pluginNamespace) noexcept;
 
+    //! @brief Set the pool's pages-per-slot (capPadded / kTOKENS_PER_PAGE), a build-time-only fact
+    //! not derivable from the pool-shaped past_key_value binding alone (dim 1 there is numPages =
+    //! maxBatch * pagesPerSlot). Called by the builder (llmBuilder.cpp) right after ONNX parsing,
+    //! from mBuilderConfig.maxKVCacheCapacity; propagated through clone() and engine
+    //! serialization (getFieldsToSerialize) so the deserialized runtime plugin has it too.
+    void setPagesPerSlot(int32_t pagesPerSlot) noexcept;
+
 private:
     // Input indices
     static constexpr int32_t kIN_K_DELTA = 0;
@@ -99,6 +118,9 @@ private:
 
     std::string mLayerName;
     std::string mNamespace;
+    //! Pool pages per slot (capPadded / kTOKENS_PER_PAGE); see setPagesPerSlot(). 0 means unset —
+    //! enqueue() rejects that as a builder-configuration bug rather than silently misderiving cap.
+    int32_t mPagesPerSlot{0};
 
     std::vector<nvinfer1::PluginField> mDataToSerialize;
     nvinfer1::PluginFieldCollection mFCToSerialize{};

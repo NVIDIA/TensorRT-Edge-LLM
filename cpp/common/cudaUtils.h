@@ -18,6 +18,7 @@
 #pragma once
 
 #include "common/checkMacros.h"
+#include <cstdint>
 #include <cuda_runtime.h>
 
 namespace trt_edgellm
@@ -59,6 +60,27 @@ inline int getSMVersion()
     CUDA_CHECK(cudaDeviceGetAttribute(&sm_major, cudaDevAttrComputeCapabilityMajor, device));
     CUDA_CHECK(cudaDeviceGetAttribute(&sm_minor, cudaDevAttrComputeCapabilityMinor, device));
     return sm_major * 10 + sm_minor;
+}
+
+/*!
+ * @brief Multiprocessor count of the current CUDA device.
+ *
+ * Persistent CuTe DSL kernels use this runtime value instead of baking the
+ * build machine's SM count into an AOT artifact.
+ */
+inline int32_t getDeviceMultiProcessorCount()
+{
+    static int32_t const smCount = []() {
+        int device{-1};
+        CUDA_CHECK(cudaGetDevice(&device));
+        ELLM_CHECK(device >= 0, "Invalid CUDA device");
+
+        int count{0};
+        CUDA_CHECK(cudaDeviceGetAttribute(&count, cudaDevAttrMultiProcessorCount, device));
+        ELLM_CHECK(count > 0, "Invalid CUDA SM count");
+        return count;
+    }();
+    return smCount;
 }
 
 /*!

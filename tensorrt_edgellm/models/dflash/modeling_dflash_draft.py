@@ -24,14 +24,22 @@ tree attention enabled.
 Engine bindings (cached path):
     inputs_embeds        [B, BS, H]     Embedding of [y0, mask, mask, ..., mask]
     target_hidden_concat [B, L, Nl*H]   Target hidden DELTA from base
-    past_key_values_i    [B, 2, Hkv, capacity, D]  Draft combined KV cache
+    past_key_values_i    [2, num_pages, KV_PAGE_SIZE, Hkv, D]  Draft combined KV cache —
+                         the paged pool (same contract as the AttentionPlugin kv_cache
+                         binding). maxBatch/capPadded are recovered at enqueue time from
+                         numPages and the builder-configured pages_per_slot attribute
+                         (see DFlashTargetKVCacheUpdatePlugin::setPagesPerSlot); this cache
+                         has no page table of its own (identity-contiguous, reuse opt-out).
     rope_rotary_cos_sin  [1, capacity, rotaryDim]   Shared RoPE cache
     context_lengths      [B]            Total context length (target + proposal)
     kvcache_start_index  [B]            Draft cache start index (for delta write)
+    kv_page_table        [B, 2, max_pages_per_seq]  int32 page table (proposal
+                         self-attention only; the draft KV cache above has no
+                         page table of its own)
     attention_mask       [B, BS, divUp(BS,32)]  Packed proposal mask
     attention_pos_id     [B, BS]        Position IDs for proposal tokens
     logits               [B, BS, V]     Full vocab logits
-    present_key_values_i [B, 2, Hkv, capacity, D]  Updated draft KV cache
+    present_key_values_i [2, num_pages, KV_PAGE_SIZE, Hkv, D]  Updated draft KV cache
 """
 
 import itertools
@@ -44,7 +52,7 @@ import torch.nn.functional as F
 from ...config import ModelConfig
 from ..default.modeling_default import OnnxSpec, RMSNorm
 from ..linear import FP16Linear, make_linear
-from ..ops import attention_plugin, dflash_target_kv_cache_update
+from ..ops import KV_PAGE_SIZE, attention_plugin, dflash_target_kv_cache_update
 
 __all__ = ["DFlashDraftModel"]
 
@@ -138,9 +146,11 @@ class DFlashCachedAttention(nn.Module):
             hidden_states: torch.Tensor,  # [B, BS, H] proposal hidden
             h_delta: torch.
         Tensor,  # [B, L, H] target hidden delta (after fc+norm)
-            past_key_value: torch.Tensor,  # [B, 2, Hkv, capacity, D]
+            past_key_value: torch.
+        Tensor,  # paged pool [2, num_pages, KV_PAGE_SIZE, Hkv, D]
             rope_cos_sin: torch.Tensor,  # [ropeBatch, capacity, rotaryDim]
             kvcache_start_index: torch.Tensor,  # [B] INT32
+            kv_page_table: torch.Tensor,  # [B, 2, maxPagesPerSeq] INT32
             delta_lengths: torch.Tensor,  # [B] INT32, per-batch delta lengths
             context_lengths: torch.Tensor,  # [B] INT32
             attention_mask: torch.Tensor,  # [B, BS, packedMaskLen] INT32
@@ -189,6 +199,7 @@ class DFlashCachedAttention(nn.Module):
             context_lengths,
             rope_cos_sin,
             kvcache_start_index,
+            kv_page_table,
             num_q_heads=self.num_heads,
             num_kv_heads=self.num_kv_heads,
             head_size=self.head_dim,
@@ -232,6 +243,7 @@ class DFlashCachedDecoderLayer(nn.Module):
         past_key_value: torch.Tensor,
         rope_cos_sin: torch.Tensor,
         kvcache_start_index: torch.Tensor,
+        kv_page_table: torch.Tensor,
         delta_lengths: torch.Tensor,
         context_lengths: torch.Tensor,
         attention_mask: torch.Tensor,
@@ -242,7 +254,8 @@ class DFlashCachedDecoderLayer(nn.Module):
 
         attn_output, present_kv = self.self_attn(
             normed, h_delta, past_key_value, rope_cos_sin, kvcache_start_index,
-            delta_lengths, context_lengths, attention_mask, attention_pos_id)
+            kv_page_table, delta_lengths, context_lengths, attention_mask,
+            attention_pos_id)
 
         hidden_states = residual + attn_output
 
@@ -269,20 +282,21 @@ def _make_flat_wrapper_dflash(model: nn.Module, num_layers: int) -> nn.Module:
     # Build explicit parameter list
     param_names = ([
         "inputs_embeds", "dflash_target_hidden_concat", "rope_rotary_cos_sin",
-        "context_lengths", "kvcache_start_index", "dflash_delta_lengths",
-        "attention_mask", "attention_pos_id"
+        "context_lengths", "kvcache_start_index", "kv_page_table",
+        "dflash_delta_lengths", "attention_mask", "attention_pos_id"
     ] + [f"past_key_values_{i}" for i in range(num_layers)])
 
     past_kv_tuple = "({},)".format(", ".join(f"past_key_values_{i}"
                                              for i in range(num_layers)))
 
-    body = (f"    logits, present_kv_list = self._model(\n"
-            f"        inputs_embeds, dflash_target_hidden_concat,\n"
-            f"        rope_rotary_cos_sin, context_lengths,\n"
-            f"        kvcache_start_index, dflash_delta_lengths,\n"
-            f"        attention_mask, attention_pos_id,\n"
-            f"        list({past_kv_tuple}))\n"
-            f"    return (logits,) + tuple(present_kv_list)\n")
+    body = (
+        f"    logits, present_kv_list = self._model(\n"
+        f"        inputs_embeds, dflash_target_hidden_concat,\n"
+        f"        rope_rotary_cos_sin, context_lengths,\n"
+        f"        kvcache_start_index, kv_page_table, dflash_delta_lengths,\n"
+        f"        attention_mask, attention_pos_id,\n"
+        f"        list({past_kv_tuple}))\n"
+        f"    return (logits,) + tuple(present_kv_list)\n")
 
     src = "def _forward(self, {}):\n{}".format(", ".join(param_names), body)
     globs: dict = {}
@@ -352,6 +366,7 @@ class DFlashDraftModel(nn.Module):
         rope_rotary_cos_sin: torch.Tensor,  # [ropeBatch, capacity, rotaryDim]
         context_lengths: torch.Tensor,  # [B] INT32
         kvcache_start_index: torch.Tensor,  # [B] INT32
+        kv_page_table: torch.Tensor,  # [B, 2, maxPagesPerSeq] INT32
         delta_lengths: torch.Tensor,  # [B] INT32, per-batch delta lengths
         attention_mask: torch.Tensor,  # [B, BS, packedMaskLen] INT32
         attention_pos_id: torch.Tensor,  # [B, BS] INT32
@@ -380,12 +395,11 @@ class DFlashDraftModel(nn.Module):
         present_key_values = []
 
         for i, layer in enumerate(self.layers):
-            hidden_states, present_kv = layer(hidden_states, h_delta,
-                                              past_key_values[i],
-                                              rope_rotary_cos_sin,
-                                              kvcache_start_index,
-                                              delta_lengths, context_lengths,
-                                              attention_mask, attention_pos_id)
+            hidden_states, present_kv = layer(
+                hidden_states, h_delta, past_key_values[i],
+                rope_rotary_cos_sin, kvcache_start_index, kv_page_table,
+                delta_lengths, context_lengths, attention_mask,
+                attention_pos_id)
             present_key_values.append(present_kv)
 
         # Final norm + lm_head
@@ -437,6 +451,11 @@ class DFlashDraftModel(nn.Module):
         kvcache_start_index = torch.zeros(batch_size,
                                           dtype=torch.int32,
                                           device=device)
+        kv_page_table = torch.zeros(batch_size,
+                                    2,
+                                    1,
+                                    dtype=torch.int32,
+                                    device=device)
         delta_lengths = torch.zeros(batch_size,
                                     dtype=torch.int32,
                                     device=device)
@@ -450,19 +469,24 @@ class DFlashDraftModel(nn.Module):
                                        dtype=torch.int32,
                                        device=device)
 
+        # Paged KV pool binding — same contract as the AttentionPlugin's kv_cache input:
+        # [2, num_pages, KV_PAGE_SIZE, numKVHeads, headDim]. See
+        # DFlashTargetKVCacheUpdatePlugin's input 2 doc; maxBatch/cap are recovered at
+        # enqueue time from the builder-configured pages_per_slot attribute.
         past_key_values = [
-            torch.zeros(batch_size,
-                        2,
+            torch.zeros(2,
+                        1,
+                        KV_PAGE_SIZE,
                         num_kv_heads,
-                        kv_capacity,
                         head_dim,
                         dtype=dtype16,
                         device=device) for _ in range(num_layers)
         ]
 
         args = (inputs_embeds, target_hidden_concat, rope_rotary_cos_sin,
-                context_lengths, kvcache_start_index, delta_lengths,
-                attention_mask, attention_pos_id, *past_key_values)
+                context_lengths, kvcache_start_index, kv_page_table,
+                delta_lengths, attention_mask, attention_pos_id,
+                *past_key_values)
 
         input_names = [
             "inputs_embeds",
@@ -470,6 +494,7 @@ class DFlashDraftModel(nn.Module):
             "rope_rotary_cos_sin",
             "context_lengths",
             "kvcache_start_index",
+            "kv_page_table",
             "dflash_delta_lengths",
             "attention_mask",
             "attention_pos_id",
@@ -486,6 +511,9 @@ class DFlashDraftModel(nn.Module):
         delta_seq = torch.export.Dim("delta_seq", min=1, max=32768)
         kv_len = torch.export.Dim("kv_len", min=1, max=32768)
         packed_mask = torch.export.Dim("packed_mask", min=1, max=64)
+        page_batch = torch.export.Dim("page_batch", min=1, max=256)
+        max_pages = torch.export.Dim("max_pages_per_seq", min=1, max=32768)
+        num_pages = torch.export.Dim("num_pages", min=1, max=1048576)
 
         dynamic_shapes = [
             {
@@ -506,6 +534,10 @@ class DFlashDraftModel(nn.Module):
                 0: batch
             },  # kvcache_start_index
             {
+                0: page_batch,
+                2: max_pages
+            },  # kv_page_table
+            {
                 0: batch
             },  # dflash_delta_lengths
             {
@@ -519,7 +551,8 @@ class DFlashDraftModel(nn.Module):
             },  # attention_pos_id
         ]
         for _ in range(num_layers):
-            dynamic_shapes.append({0: batch, 3: kv_len})  # past_key_values_i
+            dynamic_shapes.append({1: num_pages
+                                   })  # past_key_values_i (pool-shaped)
 
         wrapped = _make_flat_wrapper_dflash(self, num_layers)
         wrapped.eval()

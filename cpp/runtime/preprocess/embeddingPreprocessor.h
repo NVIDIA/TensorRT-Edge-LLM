@@ -24,6 +24,7 @@
 
 #include <cstdint>
 #include <cuda_runtime.h>
+#include <vector>
 
 namespace trt_edgellm
 {
@@ -63,7 +64,8 @@ public:
     //! @param io           Pipeline I/O – `inputsEmbeds` is written.
     //! @param stream       CUDA stream for execution.
     void embed(Tensor const& tokenIds, OptionalInputTensor visionEmbeds, OptionalInputTensor audioEmbeds,
-        PipelineIO& io, cudaStream_t stream);
+        PipelineIO& io, cudaStream_t stream, std::vector<int32_t> const& visionIndexOffsets = {},
+        std::vector<int32_t> const& audioIndexOffsets = {});
 
     //! Assemble deepstack features at image placeholder positions.
     //!

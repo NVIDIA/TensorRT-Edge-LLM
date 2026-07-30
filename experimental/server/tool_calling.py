@@ -423,16 +423,93 @@ def _parse_qwen_xml_calls(text: str,
         name = match.group(1).strip()
         if not _tool_name_allowed(name, tool_config):
             continue
+        parameter_schemas = _tool_parameter_schemas(name, tool_config)
         args: Dict[str, Any] = {}
         for param in re.finditer(r"<parameter=([^>]+)>(.*?)</parameter>",
                                  match.group(2),
                                  flags=re.S):
-            args[param.group(1).strip()] = param.group(2).strip()
+            parameter_name = param.group(1).strip()
+            args[parameter_name] = _parse_qwen_parameter_value(
+                param.group(2).strip(),
+                parameter_schemas.get(parameter_name, {}),
+            )
         calls.append(
             ToolCall(id=_new_call_id(),
                      name=name,
                      arguments=_arguments_to_json(args)))
     return calls
+
+
+def _tool_parameter_schemas(name: str,
+                            tool_config: ToolConfig) -> Dict[str, Any]:
+    for tool in tool_config.tools:
+        function = tool.get("function")
+        if not isinstance(function, dict) or function.get("name") != name:
+            continue
+        parameters = function.get("parameters")
+        if not isinstance(parameters, dict):
+            return {}
+        properties = parameters.get("properties")
+        return properties if isinstance(properties, dict) else {}
+    return {}
+
+
+def _parse_qwen_parameter_value(value: Any, schema: Dict[str, Any]) -> Any:
+    """Restore XML parameter types using the request's JSON schema."""
+    schema_type = schema.get("type")
+    if isinstance(schema_type, str):
+        parameter_types = [schema_type]
+    elif isinstance(schema_type, list):
+        if not schema_type or not all(
+                isinstance(item, str) for item in schema_type):
+            return value
+        parameter_types = list(dict.fromkeys(schema_type))
+    else:
+        return value
+
+    if "null" in parameter_types:
+        if value is None:
+            return None
+        if isinstance(value, str) and value.strip() == "null":
+            return None
+
+    non_null_types = [item for item in parameter_types if item != "null"]
+    if len(non_null_types) != 1:
+        return value
+    parameter_type = non_null_types[0]
+
+    parsed = value
+    if isinstance(value, str):
+        if parameter_type == "string":
+            return value
+        parsed = _loads_payload(value)
+        if parsed is None:
+            return value
+
+    if parameter_type == "integer":
+        return parsed if isinstance(
+            parsed, int) and not isinstance(parsed, bool) else value
+    if parameter_type == "number":
+        return parsed if isinstance(
+            parsed, (int, float)) and not isinstance(parsed, bool) else value
+    if parameter_type == "boolean":
+        return parsed if isinstance(parsed, bool) else value
+    if parameter_type == "array" and isinstance(parsed, list):
+        item_schema = schema.get("items")
+        if not isinstance(item_schema, dict):
+            return parsed
+        return [
+            _parse_qwen_parameter_value(item, item_schema) for item in parsed
+        ]
+    if parameter_type == "object" and isinstance(parsed, dict):
+        properties = schema.get("properties")
+        if not isinstance(properties, dict):
+            return parsed
+        return {
+            key: _parse_qwen_parameter_value(item, properties.get(key, {}))
+            for key, item in parsed.items()
+        }
+    return value
 
 
 def _parse_pythonic_calls(text: str,

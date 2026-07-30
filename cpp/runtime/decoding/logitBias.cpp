@@ -136,9 +136,9 @@ bool hasLogitBias(LLMGenerationRequest const& request) noexcept
         request.requests.begin(), request.requests.end(), [](auto const& slot) { return !slot.logitBias.empty(); });
 }
 
-bool shouldRejectLogitBiasWithSpecDecode(LLMGenerationRequest const& request, bool speculativeDecoderAvailable) noexcept
+bool shouldRejectLogitBiasWithSpecDecode(LLMGenerationRequest const& request, bool speculativeDecoderSelected) noexcept
 {
-    return speculativeDecoderAvailable && !request.disableSpecDecode && hasLogitBias(request);
+    return speculativeDecoderSelected && !request.disableSpecDecode && hasLogitBias(request);
 }
 
 void prepareLogitBias(

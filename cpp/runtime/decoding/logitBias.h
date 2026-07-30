@@ -78,13 +78,12 @@ bool hasLogitBias(LLMGenerationRequest const& request) noexcept;
 /**
  * @brief Return true when logit bias must be rejected for an active speculative decoder.
  *
- * Logit bias remains valid when speculative decoding is unavailable or the caller explicitly disables it.
+ * Logit bias remains valid when speculative decoding is not selected or the caller explicitly disables it.
  *
  * @param request Batched generation request
- * @param speculativeDecoderAvailable Whether the runtime has a speculative decoder
+ * @param speculativeDecoderSelected Whether this request selected a speculative decoder
  */
-bool shouldRejectLogitBiasWithSpecDecode(
-    LLMGenerationRequest const& request, bool speculativeDecoderAvailable) noexcept;
+bool shouldRejectLogitBiasWithSpecDecode(LLMGenerationRequest const& request, bool speculativeDecoderSelected) noexcept;
 
 /*!
  * @brief Prepare request-local bias maps in the model output vocabulary.

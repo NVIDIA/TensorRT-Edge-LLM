@@ -65,6 +65,10 @@ public:
 
     bool infer(cudaStream_t stream) noexcept override;
 
+    bool prepareArtifactSubset(rt::LLMGenerationRequest const& request, std::vector<size_t> const& originalItemIndices,
+        cudaStream_t stream) override;
+    std::vector<int64_t> preparedArtifactRowCounts() const override;
+
     bool validateAndFillConfig(std::string const& engineDir) override;
 
     bool allocateBuffer(cudaStream_t stream) override;
@@ -92,21 +96,22 @@ private:
     void generatePoolingWeights(
         std::vector<ImageGrid> const& imageGrids, int64_t totalPatches, int64_t totalSoftTokens, cudaStream_t stream);
 
-    Gemma4ViTConfig mConfig{};                     //!< Gemma4 vision configuration
-    rt::Tensor mVitInput{};                        //!< Vision encoder input patches
-    rt::Tensor mPixelPositionIds{};                //!< Pixel position IDs device tensor
-    rt::Tensor mPixelPositionIdsHost{};            //!< Pixel position IDs host tensor
-    rt::Tensor mRotaryPosEmb{};                    //!< Gemma4 visual RoPE angle tensor
-    rt::Tensor mPoolingWeights{};                  //!< Dense pooling weights device tensor
-    rt::Tensor mCuSeqlens{};                       //!< Cumulative sequence lengths tensor
-    rt::Tensor mCuSeqlensHost{};                   //!< Cumulative sequence lengths host tensor
-    rt::Tensor mKvLengths{};                       //!< KV lengths for TRT-native attention
-    rt::Tensor mMaxSeqLenCarrier{};                //!< Shape-only max sequence length carrier
-    rt::Tensor mImageMean{};                       //!< Image mean tensor
-    rt::Tensor mImageStd{};                        //!< Image standard deviation tensor
-    rt::Tensor mImageDevice{};                     //!< Temporary image buffer
-    rt::Tensor mNormalizedImageDevice{};           //!< Temporary normalized image buffer
-    rt::imageUtils::ImageData mResizedImageHost{}; //!< Pre-allocated resize buffer
+    Gemma4ViTConfig mConfig{};                       //!< Gemma4 vision configuration
+    std::vector<int64_t> mPreparedArtifactRowCounts; //!< Output rows grouped by source image buffer.
+    rt::Tensor mVitInput{};                          //!< Vision encoder input patches
+    rt::Tensor mPixelPositionIds{};                  //!< Pixel position IDs device tensor
+    rt::Tensor mPixelPositionIdsHost{};              //!< Pixel position IDs host tensor
+    rt::Tensor mRotaryPosEmb{};                      //!< Gemma4 visual RoPE angle tensor
+    rt::Tensor mPoolingWeights{};                    //!< Dense pooling weights device tensor
+    rt::Tensor mCuSeqlens{};                         //!< Cumulative sequence lengths tensor
+    rt::Tensor mCuSeqlensHost{};                     //!< Cumulative sequence lengths host tensor
+    rt::Tensor mKvLengths{};                         //!< KV lengths for TRT-native attention
+    rt::Tensor mMaxSeqLenCarrier{};                  //!< Shape-only max sequence length carrier
+    rt::Tensor mImageMean{};                         //!< Image mean tensor
+    rt::Tensor mImageStd{};                          //!< Image standard deviation tensor
+    rt::Tensor mImageDevice{};                       //!< Temporary image buffer
+    rt::Tensor mNormalizedImageDevice{};             //!< Temporary normalized image buffer
+    rt::imageUtils::ImageData mResizedImageHost{};   //!< Pre-allocated resize buffer
 
     bool mUseTrtNativeVitAttn{false}; //!< Use TRT IAttentionV2 instead of ViTAttentionPlugin
     bool mHasMaxSeqLenCarrier{false}; //!< Whether the visual engine has max_seqlen_carrier binding

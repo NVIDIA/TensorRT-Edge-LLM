@@ -41,6 +41,7 @@ Json makeMinimalConfig()
     config["hidden_size"] = 768;
     config["vocab_size"] = 32000;
     config["kv_cache_dtype"] = "fp16";
+    config["sliding_window"] = -1;
     config["spec_decode_type"] = "none";
     config["engine_role"] = "llm";
 
@@ -119,11 +120,64 @@ TEST_F(LLMEngineConfigTest, ParseMinimalConfig)
     EXPECT_EQ(cfg.maxSupportedBatchSize, 2);
     EXPECT_EQ(cfg.maxSupportedInputLength, 128);
     EXPECT_EQ(cfg.maxKVCacheCapacity, 256);
+    EXPECT_EQ(cfg.slidingWindowSize, std::optional<int32_t>{-1});
     EXPECT_EQ(cfg.maxSupportedLoraRank, 0);
     EXPECT_FALSE(cfg.isSpecDecodeBase);
     EXPECT_EQ(cfg.maxVerifyTreeSize, 0);
     EXPECT_EQ(cfg.maxDraftTreeSize, 0);
     EXPECT_EQ(cfg.kvCacheDtype, nvinfer1::DataType::kHALF);
+}
+
+TEST_F(LLMEngineConfigTest, SlidingWindowSizeIsParsed)
+{
+    Json json = makeMinimalConfig();
+    json["sliding_window"] = 4096;
+    auto const path = writeJsonToTempFile(json);
+
+    EXPECT_EQ(parseEngineConfig(path).slidingWindowSize, std::optional<int32_t>{4096});
+}
+
+TEST_F(LLMEngineConfigTest, MissingSlidingWindowMetadataRemainsUnknown)
+{
+    Json json = makeMinimalConfig();
+    json.erase("sliding_window");
+    auto const path = writeJsonToTempFile(json);
+
+    EXPECT_FALSE(parseEngineConfig(path).slidingWindowSize.has_value());
+}
+
+TEST_F(LLMEngineConfigTest, InvalidSlidingWindowSizeThrows)
+{
+    Json json = makeMinimalConfig();
+    json["sliding_window"] = 0;
+    auto const path = writeJsonToTempFile(json);
+
+    EXPECT_THROW(parseEngineConfig(path), std::runtime_error);
+}
+
+TEST_F(LLMEngineConfigTest, KVPoolPagesDefaultsToActiveCapacityFloor)
+{
+    auto const path = writeJsonToTempFile(makeMinimalConfig());
+
+    EXPECT_EQ(parseEngineConfig(path).kvPoolPages, 4);
+}
+
+TEST_F(LLMEngineConfigTest, KVPoolPagesUsesSerializedOverride)
+{
+    Json json = makeMinimalConfig();
+    json["builder_config"]["max_kv_pool_pages"] = 9;
+    auto const path = writeJsonToTempFile(json);
+
+    EXPECT_EQ(parseEngineConfig(path).kvPoolPages, 9);
+}
+
+TEST_F(LLMEngineConfigTest, KVPoolPagesBelowActiveCapacityFloorThrows)
+{
+    Json json = makeMinimalConfig();
+    json["builder_config"]["max_kv_pool_pages"] = 3;
+    auto const path = writeJsonToTempFile(json);
+
+    EXPECT_THROW(parseEngineConfig(path), std::runtime_error);
 }
 
 TEST_F(LLMEngineConfigTest, ReducedVocabSize)

@@ -27,6 +27,7 @@ Inputs:
     rope_rotary_cos_sin     [batch, max_pos, rotary_dim]  float32
     context_lengths         [batch]                       int32
     kvcache_start_index     [batch]                       int32
+    kv_page_table           [batch, 2, max_pages_per_seq] int32
     last_token_ids          [batch, 1]                    int64
 
 Outputs:
@@ -229,18 +230,19 @@ def _strip_attention_plugin_optional_inputs(onnx_path: str) -> None:
 
     ``torch.export`` emits the two optional inputs (``attention_mask``,
     ``attention_pos_id``) on every node, as empty strings when unused.  The
-    TRT AttentionPlugin C++ requires exactly ``kNUM_REQUIRED_INPUTS=7``
-    inputs for vanilla mode and raises ``(input) != nullptr`` when it
+    TRT AttentionPlugin C++ requires exactly ``kNUM_REQUIRED_INPUTS=8``
+    inputs (``[..., kvcache_start_index, kv_page_table]``; optionals start
+    at index 8) for vanilla mode and raises ``(input) != nullptr`` when it
     encounters the extra null entries via
     ``INetworkDefinition::addPluginV2``.
 
     This pass trims each ``AttentionPlugin`` node to its expected input
-    count: 7 for vanilla nodes, 8 for vision-block-attention nodes (the
+    count: 8 for vanilla nodes, 9 for vision-block-attention nodes (the
     real ``attention_mask`` input carrying block IDs is kept, the empty
-    ``attention_pos_id`` placeholder is dropped), and 9 for tree-attention
+    ``attention_pos_id`` placeholder is dropped), and 10 for tree-attention
     nodes (both optional inputs are real and kept).
     """
-    _REQUIRED = 7
+    _REQUIRED = 8
     model = onnx.load(onnx_path, load_external_data=False)
     changed = 0
     for node in model.graph.node:

@@ -29,6 +29,11 @@ import torch
 
 logger = logging.getLogger(__name__)
 
+#: Tokens per paged-KV page. Must match ``rt::kTOKENS_PER_PAGE``
+#: (cpp/runtime/state/pagedKvTypes.h) — the AttentionPlugin's KV cache
+#: binding is the pool ``[2, num_pages, KV_PAGE_SIZE, num_kv_heads, head_size]``.
+KV_PAGE_SIZE = 128
+
 # ---------------------------------------------------------------------------
 # NVFP4 MoE target arch selector
 # ---------------------------------------------------------------------------
@@ -88,6 +93,7 @@ def attention_plugin(
     context_lengths: torch.Tensor,
     rope_rotary_cos_sin: torch.Tensor,
     kvcache_start_index: torch.Tensor,
+    kv_page_table: torch.Tensor,
     num_q_heads: int,
     num_kv_heads: int,
     head_size: int,
@@ -116,6 +122,19 @@ def attention_plugin(
     | EAGLE + FP8 KV        | True               | True  (qkv_scales set)     |
     +-----------------------+--------------------+----------------------------+
 
+    ``kv_page_table`` is a required ``[batch, 2, max_pages_per_seq]`` int32
+    per-request page table (K page ids then derived V page ids); the runtime
+    feeds an identity table by default (bit-equivalent to the non-paged path).
+
+    ``past_key_value`` / ``present_key_value`` are the same paged-pool
+    allocation, in-place aliased by the TRT plugin (no growth per call —
+    the pool is a fixed-size allocation and writes land at page-table
+    positions). ``present_key_value`` therefore always has the exact same
+    shape as ``past_key_value``, whatever that is (all models — including
+    DFlash's combined draft cache — declare the pool shape ``[2, num_pages,
+    kTOKENS_PER_PAGE, num_kv_heads, head_size]``; DFlash recovers its logical
+    ``[2, max_batch, cap_padded, num_kv_heads, head_size]`` view at enqueue).
+
     ``enable_tree_attention``, ``enable_fp8_kv_cache``,
     ``enable_vision_block_attention``, and ``attention_scale`` are
     required (no default) so that ``torch.export`` always includes them
@@ -140,20 +159,13 @@ def attention_plugin(
     ``[batch, seq_len, num_q_heads * head_size]``.
     """
     batch_size, seq_len, _ = query_states.shape
-    past_len = past_key_value.shape[3]
     attn_output = torch.zeros(batch_size,
                               seq_len,
                               num_q_heads,
                               head_size,
                               dtype=query_states.dtype,
                               device=query_states.device)
-    present_key_value = torch.zeros(batch_size,
-                                    2,
-                                    num_kv_heads,
-                                    past_len + seq_len,
-                                    head_size,
-                                    dtype=past_key_value.dtype,
-                                    device=past_key_value.device)
+    present_key_value = torch.zeros_like(past_key_value)
     return attn_output, present_key_value
 
 
@@ -165,6 +177,7 @@ def _(query_states,
       context_lengths,
       rope_rotary_cos_sin,
       kvcache_start_index,
+      kv_page_table,
       num_q_heads,
       num_kv_heads,
       head_size,
@@ -177,20 +190,13 @@ def _(query_states,
       attention_pos_id=None,
       qkv_scales=None):
     batch_size, seq_len, _ = query_states.shape
-    past_len = past_key_value.shape[3]
     return (torch.empty(batch_size,
                         seq_len,
                         num_q_heads,
                         head_size,
                         dtype=query_states.dtype,
                         device=query_states.device),
-            torch.empty(batch_size,
-                        2,
-                        num_kv_heads,
-                        past_len + seq_len,
-                        head_size,
-                        dtype=past_key_value.dtype,
-                        device=past_key_value.device))
+            torch.empty_like(past_key_value))
 
 
 # ---------------------------------------------------------------------------
@@ -318,8 +324,13 @@ def dflash_target_kv_cache_update(
 
     k_delta: [B, L, numKVHeads, headDim] FP16, k_normed, not RoPE-applied.
     v_delta: [B, L, numKVHeads, headDim] FP16.
-    past_key_value: [B, 2, numKVHeads, maxSeqLen, headDim] FP16.
-    rope_cos_sin: [ropeBatch, maxSeqLen, rotaryDim] FP32.
+    past_key_value: [2, num_pages, KV_PAGE_SIZE, numKVHeads, headDim] FP16 —
+        the paged KV pool (same contract as the AttentionPlugin kv_cache
+        binding). maxBatch/capPadded are recovered at enqueue time from
+        num_pages and the builder-configured pages_per_slot attribute (see
+        DFlashTargetKVCacheUpdatePlugin::setPagesPerSlot); this cache has no
+        page table of its own.
+    rope_cos_sin: [ropeBatch, cosSinSeqLen, rotaryDim] FP32, cosSinSeqLen <= capPadded.
     delta_start_positions: [B] INT32, old committed draft target cache length.
     delta_lengths: [B] INT32, per-batch delta lengths.
 
@@ -1068,6 +1079,22 @@ def _(query, key, value, attn_mask, is_causal, scale):
 # Custom op: trt_edgellm::gated_delta_net  (Qwen3.5 GDN linear attention)
 # ---------------------------------------------------------------------------
 
+_GDN_CHUNK_MAX_NODES = 64
+_GDN_CHUNK_PREP_WORDS = (2 * _GDN_CHUNK_MAX_NODES * _GDN_CHUNK_MAX_NODES +
+                         5 * _GDN_CHUNK_MAX_NODES + 4)
+
+
+def _gdn_chunk_buffer_elements(num_k_heads, num_v_heads, k_dim: int,
+                               v_dim: int):
+    """Return FP32 storage elements for one compact replay-buffer row."""
+    stash_node_bytes = (num_k_heads * k_dim * 4 + num_v_heads * 2 * 4 +
+                        num_v_heads * v_dim * 2)
+    stash_bytes = _GDN_CHUNK_MAX_NODES * stash_node_bytes
+    stash_elements = ((stash_bytes + 255) // 256 * 256) // 4
+    ks_qs_elements = (num_v_heads * 2 * _GDN_CHUNK_MAX_NODES * k_dim)
+    prep_elements = num_v_heads * _GDN_CHUNK_PREP_WORDS
+    return stash_elements + ks_qs_elements + prep_elements
+
 
 @torch.library.custom_op("trt_edgellm::gated_delta_net", mutates_args=())
 def gated_delta_net(
@@ -1112,13 +1139,12 @@ def gated_delta_net_with_intermediate(
     tree_depths: Optional[torch.Tensor] = None,  # [batch, verify_seq] int32
     use_ddtree_state: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Stub: GatedDeltaNet with per-token recurrent state output."""
-    batch_size, seq_len, num_v_heads, _ = v.shape
+    """Stub: GatedDeltaNet with a compact replay-buffer output."""
+    batch_size = v.shape[0]
+    buffer_elements = _gdn_chunk_buffer_elements(q.shape[2], v.shape[2], k_dim,
+                                                 v_dim)
     intermediate_recurrent_state = torch.zeros(batch_size,
-                                               seq_len,
-                                               num_v_heads,
-                                               k_dim,
-                                               v_dim,
+                                               buffer_elements,
                                                dtype=h0_source.dtype,
                                                device=h0_source.device)
     return torch.zeros_like(v), h0_source.clone(), intermediate_recurrent_state
@@ -1140,12 +1166,11 @@ def _(q,
       tree_parent_ids=None,
       tree_depths=None,
       use_ddtree_state=False):
-    batch_size, seq_len, num_v_heads, _ = v.shape
+    batch_size = v.shape[0]
+    buffer_elements = _gdn_chunk_buffer_elements(q.shape[2], v.shape[2], k_dim,
+                                                 v_dim)
     intermediate_recurrent_state = torch.empty(batch_size,
-                                               seq_len,
-                                               num_v_heads,
-                                               k_dim,
-                                               v_dim,
+                                               buffer_elements,
                                                dtype=h0_source.dtype,
                                                device=h0_source.device)
     return torch.empty_like(v), h0_source.clone(), intermediate_recurrent_state

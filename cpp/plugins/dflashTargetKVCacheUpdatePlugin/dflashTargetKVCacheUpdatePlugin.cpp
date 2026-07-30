@@ -17,8 +17,11 @@
 
 #include "dflashTargetKVCacheUpdatePlugin.h"
 #include "common/logger.h"
+#include "common/pagedKvTypes.h"
 #include "kernels/speculative/dflashRuntimeKernels.h"
+#include "plugins/utils/pluginUtils.h"
 
+#include <NvInfer.h>
 #include <cstdint>
 
 using namespace nvinfer1;
@@ -57,10 +60,14 @@ DFlashTargetKVCacheUpdatePlugin::DFlashTargetKVCacheUpdatePlugin(std::string con
 }
 
 DFlashTargetKVCacheUpdatePlugin::DFlashTargetKVCacheUpdatePlugin(
-    std::string const& name, PluginFieldCollection const* /* fc */)
+    std::string const& name, PluginFieldCollection const* fc)
     : mLayerName(name)
 {
-    // No plugin attributes needed for this plugin
+    // pages_per_slot is absent at ONNX-parse time (export doesn't know maxKVCacheCapacity); the
+    // builder sets it via setPagesPerSlot() after parsing, before the network is built. It IS
+    // present when this constructor runs during engine deserialization (round-tripped via
+    // getFieldsToSerialize()), so parse it here for that path.
+    mPagesPerSlot = parsePluginScalarField<int32_t>("pages_per_slot", fc).value_or(0);
 }
 
 // IPluginV3
@@ -94,6 +101,7 @@ IPluginV3* DFlashTargetKVCacheUpdatePlugin::clone() noexcept
     {
         auto* plugin = new DFlashTargetKVCacheUpdatePlugin(mLayerName);
         plugin->setPluginNamespace(mNamespace.c_str());
+        plugin->setPagesPerSlot(mPagesPerSlot);
         return plugin;
     }
     catch (std::exception const& e)
@@ -283,19 +291,46 @@ int32_t DFlashTargetKVCacheUpdatePlugin::enqueue(PluginTensorDesc const* inputDe
             return -1;
         }
 
-        // past_key_value: [B, 2, numKVHeads, maxSeqLen, headDim]
+        // past_key_value is the runtime's KVCacheManager-allocated pool, bound as the same paged-pool
+        // contract as the AttentionPlugin binding: [2, numPages, kTOKENS_PER_PAGE, numKVHeads,
+        // headDim] (K/V split OUTERMOST; see kvCacheManager.h). numPages = maxBatch * pagesPerSlot,
+        // so maxBatch/cap are recovered using the build-time pagesPerSlot fact (see
+        // setPagesPerSlot()) rather than read directly off dims 1/2.
         auto const& pastKVDesc = inputDesc[kIN_PAST_KV];
-        if (pastKVDesc.type != DataType::kHALF || pastKVDesc.dims.nbDims != 5 || pastKVDesc.dims.d[0] != batchSize
-            || pastKVDesc.dims.d[1] != 2 || pastKVDesc.dims.d[2] != numKVHeads || pastKVDesc.dims.d[4] != headDim)
+        if (pastKVDesc.type != DataType::kHALF || pastKVDesc.dims.nbDims != 5 || pastKVDesc.dims.d[0] != 2
+            || pastKVDesc.dims.d[2] != rt::kTOKENS_PER_PAGE || pastKVDesc.dims.d[3] != numKVHeads
+            || pastKVDesc.dims.d[4] != headDim)
         {
             LOG_ERROR(
-                "DFlashTargetKVCacheUpdatePlugin: past_key_value must be [B, 2, numKVHeads, maxSeqLen, headDim] FP16");
+                "DFlashTargetKVCacheUpdatePlugin: past_key_value must be the paged pool "
+                "[2, numPages, %d, numKVHeads, headDim] FP16",
+                rt::kTOKENS_PER_PAGE);
             return -1;
         }
-        int32_t const maxSeqLen = pastKVDesc.dims.d[3];
-        if (maxSeqLen <= 0)
+        if (mPagesPerSlot <= 0)
         {
-            LOG_ERROR("DFlashTargetKVCacheUpdatePlugin: past_key_value maxSeqLen must be positive");
+            LOG_ERROR(
+                "DFlashTargetKVCacheUpdatePlugin: pages_per_slot was never configured (builder bug — "
+                "setPagesPerSlot() must run before the engine is built)");
+            return -1;
+        }
+        int32_t const numPages = pastKVDesc.dims.d[1];
+        if (numPages % mPagesPerSlot != 0)
+        {
+            LOG_ERROR(
+                "DFlashTargetKVCacheUpdatePlugin: past_key_value numPages (%d) is not a multiple of "
+                "pages_per_slot (%d)",
+                numPages, mPagesPerSlot);
+            return -1;
+        }
+        int32_t const maxBatch = numPages / mPagesPerSlot;
+        int32_t const cap = mPagesPerSlot * rt::kTOKENS_PER_PAGE;
+        if (maxBatch < batchSize || cap <= 0)
+        {
+            LOG_ERROR(
+                "DFlashTargetKVCacheUpdatePlugin: past_key_value maxBatch (%d) must be >= active batchSize "
+                "(%d), and cap (%d) must be positive",
+                maxBatch, batchSize, cap);
             return -1;
         }
 
@@ -309,12 +344,17 @@ int32_t DFlashTargetKVCacheUpdatePlugin::enqueue(PluginTensorDesc const* inputDe
         int32_t const cosSinBatch = ropeDesc.dims.d[0];
         int32_t const cosSinSeqLen = ropeDesc.dims.d[1];
         int32_t const rotaryDim = ropeDesc.dims.d[2];
-        if ((cosSinBatch != 1 && cosSinBatch != batchSize) || cosSinSeqLen < maxSeqLen || rotaryDim <= 0
-            || rotaryDim > headDim || (rotaryDim % 2) != 0)
+        if ((cosSinBatch != 1 && cosSinBatch != batchSize) || rotaryDim <= 0 || rotaryDim > headDim
+            || (rotaryDim % 2) != 0)
         {
             LOG_ERROR("DFlashTargetKVCacheUpdatePlugin: invalid rope_cos_sin shape");
             return -1;
         }
+        // cap is the KV pool's PADDED capacity; cosSinSeqLen is sized to the real (unpadded) max
+        // sequence length, so cosSinSeqLen < cap is expected whenever that length isn't already
+        // page-aligned. The only real invariant is cosSinSeqLen <= cap (see checkDFlashRopeCapacity).
+        // Throws on violation; caught by this function's enclosing try/catch below.
+        kernel::checkDFlashRopeCapacity(cosSinSeqLen, cap);
 
         auto const& deltaStartDesc = inputDesc[kIN_DELTA_START];
         auto const& deltaLengthsDesc = inputDesc[kIN_DELTA_LENGTHS];
@@ -357,7 +397,7 @@ int32_t DFlashTargetKVCacheUpdatePlugin::enqueue(PluginTensorDesc const* inputDe
         auto const* deltaLengths = static_cast<int32_t const*>(inputs[kIN_DELTA_LENGTHS]);
 
         kernel::launchDFlashTargetKVCacheUpdate(kDelta, vDelta, kvCache, cosSinCache, deltaStartPositions, deltaLengths,
-            batchSize, deltaLen, numKVHeads, headDim, maxSeqLen, rotaryDim, cosSinBatch, cosSinSeqLen, stream);
+            batchSize, deltaLen, numKVHeads, headDim, rotaryDim, cosSinBatch, cosSinSeqLen, maxBatch, cap, stream);
 
         return 0;
     }
@@ -382,14 +422,20 @@ IPluginV3* DFlashTargetKVCacheUpdatePlugin::attachToContext([[maybe_unused]] IPl
 PluginFieldCollection const* DFlashTargetKVCacheUpdatePlugin::getFieldsToSerialize() noexcept
 {
     mDataToSerialize.clear();
-    mFCToSerialize.nbFields = 0;
-    mFCToSerialize.fields = nullptr;
+    mDataToSerialize.emplace_back("pages_per_slot", &mPagesPerSlot, PluginFieldType::kINT32, 1);
+    mFCToSerialize.nbFields = static_cast<int32_t>(mDataToSerialize.size());
+    mFCToSerialize.fields = mDataToSerialize.data();
     return &mFCToSerialize;
 }
 
 void DFlashTargetKVCacheUpdatePlugin::setPluginNamespace(char const* pluginNamespace) noexcept
 {
     mNamespace = pluginNamespace;
+}
+
+void DFlashTargetKVCacheUpdatePlugin::setPagesPerSlot(int32_t pagesPerSlot) noexcept
+{
+    mPagesPerSlot = pagesPerSlot;
 }
 
 // ---------------------------------------------------------------------------
@@ -451,3 +497,41 @@ REGISTER_TENSORRT_PLUGIN(DFlashTargetKVCacheUpdatePluginCreator);
 
 } // namespace plugins
 } // namespace trt_edgellm
+
+// ---------------------------------------------------------------------------
+// Builder configuration hook (see cpp/common/trtUtils.h::loadEdgellmPluginLib)
+// ---------------------------------------------------------------------------
+//
+// The builder (edgellmBuilder/llm_build) does not link this plugin's concrete class — plugins are
+// opaque .so modules loaded via EDGELLM_PLUGIN_PATH, resolved through the generic IPluginV3
+// interface only. pages_per_slot (see DFlashTargetKVCacheUpdatePlugin::setPagesPerSlot) is a
+// builder-only fact (mBuilderConfig.maxKVCacheCapacity) with nowhere else to enter the ONNX-parsed
+// network, so the builder resolves this exported hook via dlsym on the plugin library it already
+// dlopen'd, instead of adding a new link dependency. EDGELLM_PLUGIN_EXPORT is required: the plugin
+// builds with -fvisibility=hidden, so an unannotated extern "C" symbol would not reach .dynsym.
+extern "C" EDGELLM_PLUGIN_EXPORT bool edgellm_dflash_configure_pages_per_slot(
+    nvinfer1::INetworkDefinition* network, int32_t pagesPerSlot) noexcept
+{
+    if (network == nullptr || pagesPerSlot <= 0)
+    {
+        return false;
+    }
+    bool foundAny = false;
+    for (int32_t i = 0; i < network->getNbLayers(); ++i)
+    {
+        nvinfer1::ILayer* layer = network->getLayer(i);
+        if (layer == nullptr || layer->getType() != nvinfer1::LayerType::kPLUGIN_V3)
+        {
+            continue;
+        }
+        auto* pluginLayer = static_cast<nvinfer1::IPluginV3Layer*>(layer);
+        auto* ours = dynamic_cast<trt_edgellm::plugins::DFlashTargetKVCacheUpdatePlugin*>(&pluginLayer->getPlugin());
+        if (ours == nullptr)
+        {
+            continue;
+        }
+        ours->setPagesPerSlot(pagesPerSlot);
+        foundAny = true;
+    }
+    return foundAny;
+}

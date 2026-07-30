@@ -88,6 +88,12 @@ _attention_plugin_schema = OpSchema(
             type_str="tensor(int32)",
         ),
         OpSchema.FormalParameter(
+            name="kv_page_table",
+            description=
+            "Per-request page table of shape [batch, 2, max_pages_per_seq]",
+            type_str="tensor(int32)",
+        ),
+        OpSchema.FormalParameter(
             name="attention_mask",
             description="Attention mask tensor (optional)",
             type_str="tensor(int32)",
@@ -1002,7 +1008,8 @@ _gated_delta_net_schema = OpSchema(
             type_str="T_A"),
         OpSchema.FormalParameter(
             name="intermediate_h0_out",
-            description="Per-token recurrent states [n, seq, hv, k, v]",
+            description=
+            "Opaque compact recurrent replay buffer [n, compact_words]",
             type_str="T_A",
             param_option=OpSchema.FormalParameterOption.Optional),
     ],

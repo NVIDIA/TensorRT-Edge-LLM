@@ -18,6 +18,9 @@
 #pragma once
 
 #include "runtime/llmRuntimeUtils.h"
+#include "runtime/preprocess/mediaArtifactCache.h"
+#include "runtime/state/contextCache/blockHash.h"
+#include "runtime/state/contextCache/contextCacheManager.h"
 #include "runtime/streaming.h"
 
 #include <cstdint>
@@ -68,6 +71,43 @@ struct BatchResult
         FinishReason::kNotFinished}; //!< Why this batch terminated (EOS, length, stop string, cancel, error)
 };
 
+//! One contiguous token segment belonging to a media artifact. A video may contribute several segments separated by
+//! timestamp or delimiter text while its encoder rows remain one contiguous artifact.
+struct MediaTokenSegment
+{
+    int32_t tokenStart{};
+    int32_t tokenLength{};
+    int32_t artifactRowOffset{};
+};
+
+//! One media item's semantic identity and placement in the expanded LLM token stream.
+struct MediaSpanDescriptor
+{
+    MediaArtifactKey artifactKey;
+    std::vector<MediaTokenSegment> tokenSegments;
+    int32_t tokenLength{}; //!< Total encoder rows across all token segments.
+    int32_t embeddingOffset{};
+    int32_t itemOrder{};
+};
+
+//! Active production-context-cache ownership for one logical sequence.
+struct SequenceCacheState
+{
+    CacheRequestLease lease;
+    CacheDomainId domain{};
+    BlockKeyExtras blockExtras;
+    CommitPolicy commitPolicy{CommitPolicy::kIncludingGeneratedTokens};
+    bool publicationEnabled{true};
+    bool hybridCheckpoint{false};
+    bool hybridMtp{false};
+    bool specEagle{false};
+    //! EAGLE draft KV is physically shorter than base KV between verification and the next accept step.
+    std::optional<int32_t> draftResidentStateLength;
+    //! Cleared if this producer's base pages had to be rebound after draft conditioning was computed.
+    bool draftPublicationEnabled{true};
+    std::vector<MediaSpanDescriptor> mediaSpans;
+};
+
 /*!
  * @brief Per-request execution context shared by runtime and decoding strategies.
  *
@@ -82,6 +122,22 @@ struct DecodingInferenceContext
     std::vector<int32_t> currentGenerateLengths;          //!< Current generation length for each sequence
     std::vector<int32_t> effectivePrefillLengths;         //!< Prefill length after system prompt cache reuse
     std::vector<int8_t> finishedStates;                   //!< Finished state for each sequence
+    std::vector<std::optional<SequenceCacheState>> sequenceCacheStates; //!< Moves with batch compaction
+    bool contextReuseEnabled{false};            //!< Whether this request uses production page-backed reuse
+    bool contextCacheLookupEnabled{false};      //!< Whether this request may consult reusable-state indices
+    bool contextCachePublicationEnabled{false}; //!< Whether completed base state has complete V1 identity
+    std::string contextCacheIsolationKey;       //!< Request-level cache partition identity
+    CommitPolicy contextCacheCommitPolicy{CommitPolicy::kIncludingGeneratedTokens};
+    int32_t recurrentCaptureInterval{0};
+    int32_t contextCacheReplayTailLength{0};
+    bool mediaIdentityComplete{true}; //!< False forces sequence-cache bypass for an unrecognized runner layout
+    bool hasVisionInput{false};
+    bool hasAudioInput{false};
+    bool mediaArtifactReuseEnabled{false};
+    std::vector<std::vector<MediaSpanDescriptor>> mediaSpans; //!< Expanded-token media spans by active slot
+    std::vector<int32_t> visionEmbeddingOffsets;         //!< Absolute first vision row consumed by each prefill suffix
+    std::vector<int32_t> audioEmbeddingOffsets;          //!< Absolute first audio row consumed by each prefill suffix
+    std::vector<MediaArtifactLease> mediaArtifactLeases; //!< Pins cached outputs through base prefill
 
     std::unordered_map<int32_t, BatchResult> completedBatches; //!< Results of completed batches
     std::vector<int32_t> batchIndexMapping;                    //!< Maps current batch index to original index
@@ -90,10 +146,11 @@ struct DecodingInferenceContext
     rt::OptionalInputTensor audioEmbeddings;                   //!< Optional audio embeddings
     rt::OptionalInputTensors deepstackFeatures;                //!< Optional Deepstack features
     int32_t generationRound{};                                 //!< Current generation round
-    int32_t maxGenerateLength{};                               //!< Maximum generation length
-    int32_t activeBatchSize{};                                 //!< Current active batch size
-    std::string loraWeightsName{""};                           //!< LoRA adapter name used by this request
-    cudaStream_t stream{};                                     //!< CUDA stream
+    bool speculativeDraftPrefillComplete{false}; //!< True after an early draft prefill prepared round zero
+    int32_t maxGenerateLength{};                 //!< Maximum generation length
+    int32_t activeBatchSize{};                   //!< Current active batch size
+    std::string loraWeightsName{""};             //!< LoRA adapter name used by this request
+    cudaStream_t stream{};                       //!< CUDA stream
 
     float temperature{1.0f}; //!< Temperature for sampling
     float topP{1.0f};        //!< Top-P sampling parameter

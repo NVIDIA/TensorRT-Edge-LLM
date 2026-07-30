@@ -33,6 +33,7 @@
 #include "runtime/streaming.h"
 #include "tokenizer/tokenizer.h"
 #include <algorithm>
+#include <charconv>
 #include <filesystem>
 #include <fstream>
 #include <getopt.h>
@@ -40,7 +41,9 @@
 #include <iostream>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <string_view>
 #include <tuple>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -73,7 +76,14 @@ enum LLMInferenceOptionId : int
     OUTPUT_AUDIO_DIR = 919,
     ENABLE_THINKER_TALKER_STREAMING = 920,
     DFLASH_BLOCK_SIZE = 921,
-    NUM_LOGPROBS = 922
+    NUM_LOGPROBS = 922,
+    ENABLE_CONTEXT_REUSE = 923,
+    CONTEXT_CACHE_MAX_RECORDS = 924,
+    CONTEXT_CACHE_RECURRENT_SNAPSHOT_POOL_BYTES = 925,
+    CONTEXT_CACHE_PARTIAL_KV_SNAPSHOT_POOL_BYTES = 926,
+    CONTEXT_CACHE_MEDIA_ARTIFACT_POOL_BYTES = 927,
+    CONTEXT_CACHE_MAX_MEDIA_ARTIFACTS = 928,
+    CONTEXT_CACHE_PREFILL_STATE_ONLY = 929
 };
 
 // Struct to hold speculative decoding arguments (used by both EAGLE and MTP)
@@ -115,6 +125,10 @@ struct LLMInferenceArgs
     int64_t maxGenerateLength{-1}; // -1 means use value from input file
     int32_t numLogprobs{-1};       // -1 means use value from input file
     SpecDecodeArgs specDecodeArgs;
+    rt::ContextCacheConfig contextCacheConfig;
+    //! Force PREFILL_STATE_ONLY commit policy on every request (required to exercise Hybrid+MTP context reuse from the
+    //! CLI, which the server otherwise sets per request).
+    bool contextCachePrefillStateOnly{false};
 
     // Qwen3-Omni audio output options
     bool enableAudioOutput{false};
@@ -146,7 +160,7 @@ void printUsage(char const* programName)
                  "[--dumpProfile] [--profileOutputFile=<path to profile output file>] [--warmup=<number>] [--debug] "
                  "[--dumpOutput] [--batchSize=<number>] [--maxGenerateLength=<number>] [--specDecode] "
                  "[--specDraftTopK=<number>] [--specDraftStep=<number>] "
-                 "[--specVerifySize=<number>] [--dflashBlockSize=<number>]"
+                 "[--specVerifySize=<number>] [--dflashBlockSize=<number>] [--enableContextReuse]"
               << std::endl;
     std::cerr << "Options:" << std::endl;
     std::cerr << "  --help                    Display this help message" << std::endl;
@@ -177,12 +191,51 @@ void printUsage(char const* programName)
               << std::endl;
     std::cerr << "  --dflashBlockSize         DFlash proposal block size; 0 means infer from engine config"
               << std::endl;
+    std::cerr << "\nProduction Context Reuse Options:" << std::endl;
+    std::cerr << "  --enableContextReuse      Enable process-local content-addressed context reuse" << std::endl;
+    std::cerr << "  --contextCacheMaxRecords  Maximum retained context records (default: 1024)" << std::endl;
+    std::cerr << "  --contextCacheRecurrentSnapshotPoolBytes" << std::endl;
+    std::cerr << "                            Device byte budget for hybrid recurrent/conv snapshots (default: 0)"
+              << std::endl;
+    std::cerr << "  --contextCachePartialKVSnapshotPoolBytes" << std::endl;
+    std::cerr << "                            Device byte budget for hybrid partial-KV snapshots (default: 0)"
+              << std::endl;
+    std::cerr << "  --contextCacheMediaArtifactPoolBytes" << std::endl;
+    std::cerr << "                            Device byte limit for ViT/audio artifacts (default: 536870912)"
+              << std::endl;
+    std::cerr << "  --contextCacheMaxMediaArtifacts" << std::endl;
+    std::cerr << "                            Maximum retained media artifacts (default: 1024)" << std::endl;
+    std::cerr << "                            KV retention capacity is configured at build time with"
+              << " --maxKVPoolPages" << std::endl;
+    std::cerr << "                            Send full histories as sequential batches (batch_size=1)"
+              << " for multi-turn reuse" << std::endl;
     std::cerr << "\nQwen3-Omni Audio Output Options:" << std::endl;
     std::cerr << "  --enableAudioOutput       Enable audio output from Thinker hidden states" << std::endl;
     std::cerr << "  --talkerEngineDir         Path to Talker engine directory" << std::endl;
     std::cerr << "  --code2wavEngineDir       Path to Code2Wav engine directory (optional)" << std::endl;
     std::cerr << "  --outputAudioDir          Directory to save generated audio (.wav) files" << std::endl;
 }
+
+namespace
+{
+
+template <typename IntegerType>
+bool parseNonNegativeIntegerOption(char const* optionName, char const* value, IntegerType& output)
+{
+    static_assert(std::is_integral_v<IntegerType> && std::is_signed_v<IntegerType>);
+    std::string_view const text{value == nullptr ? "" : value};
+    IntegerType parsed{};
+    auto const [end, error] = std::from_chars(text.data(), text.data() + text.size(), parsed);
+    if (error != std::errc{} || end != text.data() + text.size() || parsed < 0)
+    {
+        LOG_ERROR("Invalid --%s value: %s (must be a non-negative integer)", optionName, text.data());
+        return false;
+    }
+    output = parsed;
+    return true;
+}
+
+} // namespace
 
 bool parseLLMInferenceArgs(LLMInferenceArgs& args, int argc, char* argv[])
 {
@@ -214,6 +267,17 @@ bool parseLLMInferenceArgs(LLMInferenceArgs& args, int argc, char* argv[])
         {"code2wavEngineDir", required_argument, 0, LLMInferenceOptionId::CODE2WAV_ENGINE_DIR},
         {"outputAudioDir", required_argument, 0, LLMInferenceOptionId::OUTPUT_AUDIO_DIR},
         {"enableThinkerTalkerStreaming", no_argument, 0, LLMInferenceOptionId::ENABLE_THINKER_TALKER_STREAMING},
+        {"enableContextReuse", no_argument, 0, LLMInferenceOptionId::ENABLE_CONTEXT_REUSE},
+        {"contextCacheMaxRecords", required_argument, 0, LLMInferenceOptionId::CONTEXT_CACHE_MAX_RECORDS},
+        {"contextCacheRecurrentSnapshotPoolBytes", required_argument, 0,
+            LLMInferenceOptionId::CONTEXT_CACHE_RECURRENT_SNAPSHOT_POOL_BYTES},
+        {"contextCachePartialKVSnapshotPoolBytes", required_argument, 0,
+            LLMInferenceOptionId::CONTEXT_CACHE_PARTIAL_KV_SNAPSHOT_POOL_BYTES},
+        {"contextCacheMediaArtifactPoolBytes", required_argument, 0,
+            LLMInferenceOptionId::CONTEXT_CACHE_MEDIA_ARTIFACT_POOL_BYTES},
+        {"contextCacheMaxMediaArtifacts", required_argument, 0,
+            LLMInferenceOptionId::CONTEXT_CACHE_MAX_MEDIA_ARTIFACTS},
+        {"contextCachePrefillStateOnly", no_argument, 0, LLMInferenceOptionId::CONTEXT_CACHE_PREFILL_STATE_ONLY},
         {0, 0, 0, 0}};
 
     int opt;
@@ -364,6 +428,42 @@ bool parseLLMInferenceArgs(LLMInferenceArgs& args, int argc, char* argv[])
                 return false;
             }
             break;
+        case LLMInferenceOptionId::ENABLE_CONTEXT_REUSE: args.contextCacheConfig.enabled = true; break;
+        case LLMInferenceOptionId::CONTEXT_CACHE_PREFILL_STATE_ONLY: args.contextCachePrefillStateOnly = true; break;
+        case LLMInferenceOptionId::CONTEXT_CACHE_MAX_RECORDS:
+            if (!parseNonNegativeIntegerOption("contextCacheMaxRecords", optarg, args.contextCacheConfig.maxRecords))
+            {
+                return false;
+            }
+            break;
+        case LLMInferenceOptionId::CONTEXT_CACHE_RECURRENT_SNAPSHOT_POOL_BYTES:
+            if (!parseNonNegativeIntegerOption("contextCacheRecurrentSnapshotPoolBytes", optarg,
+                    args.contextCacheConfig.recurrentSnapshotPoolBytes))
+            {
+                return false;
+            }
+            break;
+        case LLMInferenceOptionId::CONTEXT_CACHE_PARTIAL_KV_SNAPSHOT_POOL_BYTES:
+            if (!parseNonNegativeIntegerOption("contextCachePartialKVSnapshotPoolBytes", optarg,
+                    args.contextCacheConfig.partialKvSnapshotPoolBytes))
+            {
+                return false;
+            }
+            break;
+        case LLMInferenceOptionId::CONTEXT_CACHE_MEDIA_ARTIFACT_POOL_BYTES:
+            if (!parseNonNegativeIntegerOption(
+                    "contextCacheMediaArtifactPoolBytes", optarg, args.contextCacheConfig.mediaArtifactPoolBytes))
+            {
+                return false;
+            }
+            break;
+        case LLMInferenceOptionId::CONTEXT_CACHE_MAX_MEDIA_ARTIFACTS:
+            if (!parseNonNegativeIntegerOption(
+                    "contextCacheMaxMediaArtifacts", optarg, args.contextCacheConfig.maxMediaArtifacts))
+            {
+                return false;
+            }
+            break;
         default: return false;
         }
     }
@@ -419,6 +519,23 @@ bool parseLLMInferenceArgs(LLMInferenceArgs& args, int argc, char* argv[])
         LOG_INFO("Spec draft step: %d", args.specDecodeArgs.draftStep);
         LOG_INFO("Spec verify size: %d", args.specDecodeArgs.verifySize);
         LOG_INFO("DFlash block size: %d", args.specDecodeArgs.dflashBlockSize);
+    }
+
+    if (args.contextCacheConfig.enabled)
+    {
+        LOG_INFO("Production context reuse enabled");
+        LOG_INFO(
+            "Context cache config: maxRecords=%d recurrentSnapshotPoolBytes=%lld "
+            "partialKVSnapshotPoolBytes=%lld mediaArtifactPoolBytes=%lld maxMediaArtifacts=%d",
+            args.contextCacheConfig.maxRecords,
+            static_cast<long long>(args.contextCacheConfig.recurrentSnapshotPoolBytes),
+            static_cast<long long>(args.contextCacheConfig.partialKvSnapshotPoolBytes),
+            static_cast<long long>(args.contextCacheConfig.mediaArtifactPoolBytes),
+            args.contextCacheConfig.maxMediaArtifacts);
+        if (args.warmup > 0)
+        {
+            LOG_INFO("Warmup requests will bypass context reuse and will not populate the cache");
+        }
     }
 
     if (args.enableAudioOutput)
@@ -550,6 +667,16 @@ int main(int argc, char* argv[])
         return EXIT_FAILURE;
     }
 
+    if (args.contextCachePrefillStateOnly)
+    {
+        for (auto& request : batchedRequests)
+        {
+            request.contextCacheCommitPolicy = rt::CommitPolicy::kPrefillStateOnly;
+        }
+        LOG_INFO("Forced PREFILL_STATE_ONLY commit policy on %zu requests for Hybrid+MTP context reuse.",
+            batchedRequests.size());
+    }
+
     if (batchedRequests.empty())
     {
         LOG_ERROR("No valid requests found in input file.");
@@ -570,8 +697,8 @@ int main(int argc, char* argv[])
         draftingConfig.dflashBlockSize = args.specDecodeArgs.dflashBlockSize;
         try
         {
-            runtime = std::make_unique<rt::LLMInferenceRuntime>(
-                args.engineDir, args.multimodalEngineDir, loraWeightsMap, draftingConfig, stream);
+            runtime = std::make_unique<rt::LLMInferenceRuntime>(args.engineDir, args.multimodalEngineDir,
+                loraWeightsMap, draftingConfig, stream, args.contextCacheConfig);
         }
         catch (std::exception const& e)
         {
@@ -585,7 +712,7 @@ int main(int argc, char* argv[])
         try
         {
             runtime = std::make_unique<rt::LLMInferenceRuntime>(
-                args.engineDir, args.multimodalEngineDir, loraWeightsMap, stream);
+                args.engineDir, args.multimodalEngineDir, loraWeightsMap, stream, args.contextCacheConfig);
         }
         catch (std::exception const& e)
         {
@@ -653,6 +780,9 @@ int main(int argc, char* argv[])
         setProfilingEnabled(false);
         LOG_INFO("Starting warmup with %d runs using the first request...", args.warmup);
         auto& firstRequest = batchedRequests[0];
+        // Warmup primes execution resources, not application-visible context state.
+        bool const originalDisableContextReuse = firstRequest.disableContextReuse;
+        firstRequest.disableContextReuse = true;
 
         for (int32_t warmupRun = 0; warmupRun < args.warmup; ++warmupRun)
         {
@@ -661,10 +791,12 @@ int main(int argc, char* argv[])
 
             if (!requestStatus)
             {
+                firstRequest.disableContextReuse = originalDisableContextReuse;
                 LOG_ERROR("Warmup run %d/%d failed", warmupRun + 1, args.warmup);
                 return EXIT_FAILURE;
             }
         }
+        firstRequest.disableContextReuse = originalDisableContextReuse;
         LOG_INFO("Warmup of %d runs completed. Starting actual benchmark runs...", args.warmup);
     }
 

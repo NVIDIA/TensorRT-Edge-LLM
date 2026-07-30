@@ -24,6 +24,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -91,6 +92,53 @@ Tensor copyBatchPrefix(Tensor const& src, int32_t activeBatchSize, std::string c
     CUDA_CHECK(cudaMemcpy(host.rawPointer(), src.rawPointer(), bytes, cudaMemcpyDeviceToHost));
     return host;
 }
+
+//! Copy the first @p activeBatchSize slots of an attention layer's KV cache into a host tensor
+//! shaped [activeBatch, 2, kvHeads, capPadded, headDim] — the dump contract the comparison tool
+//! expects (matching HF's [B, heads, seq, dim] KV layout after the K/V split).
+//!
+//! The KV cache is stored as a paged NHD pool whose K and V halves are each a contiguous
+//! [maxBatch, capPadded, kvHeads, headDim] region (identity slot mapping while KV-cache reuse is
+//! off, which is the only mode the few-layer validation runs in). This stages each half's
+//! active-batch prefix to the host and transposes [seq, head, dim] -> [head, seq, dim] per slot.
+Tensor copyKVCacheAsHND(
+    HybridCacheManager& cacheManager, int32_t layer, int32_t activeBatchSize, std::string const& name)
+{
+    auto const [kView, vView] = cacheManager.getSeparateKVCache(layer);
+    Coords const s = kView.getShape(); // [maxBatch, capPadded, kvHeads, headDim]
+    int64_t const cap = s[1];
+    int64_t const heads = s[2];
+    int64_t const dim = s[3];
+    nvinfer1::DataType const dtype = kView.getDataType();
+    size_t const elemSize = utils::getTypeSize(dtype);
+    size_t const slotBytes = static_cast<size_t>(cap) * heads * dim * elemSize;
+    size_t const rowBytes = static_cast<size_t>(dim) * elemSize;
+
+    std::vector<std::byte> staging(2 * static_cast<size_t>(activeBatchSize) * slotBytes);
+    std::byte* const kStage = staging.data();
+    std::byte* const vStage = staging.data() + static_cast<size_t>(activeBatchSize) * slotBytes;
+    CUDA_CHECK(cudaMemcpy(kStage, kView.rawPointer(), activeBatchSize * slotBytes, cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(vStage, vView.rawPointer(), activeBatchSize * slotBytes, cudaMemcpyDeviceToHost));
+
+    Tensor host({activeBatchSize, 2, heads, cap, dim}, DeviceType::kCPU, dtype, name);
+    std::byte* const out = static_cast<std::byte*>(host.rawPointer());
+    for (int64_t b = 0; b < activeBatchSize; ++b)
+    {
+        for (int64_t kv = 0; kv < 2; ++kv)
+        {
+            std::byte const* const slotSrc = (kv == 0 ? kStage : vStage) + b * slotBytes;
+            std::byte* const slotDst = out + (b * 2 + kv) * slotBytes;
+            for (int64_t t = 0; t < cap; ++t)
+            {
+                for (int64_t h = 0; h < heads; ++h)
+                {
+                    std::memcpy(slotDst + (h * cap + t) * rowBytes, slotSrc + (t * heads + h) * rowBytes, rowBytes);
+                }
+            }
+        }
+    }
+    return host;
+}
 } // namespace
 
 LayerDebugger::LayerDebugger(std::set<int32_t> layers, std::string dir, std::vector<std::vector<int32_t>> forcedTokens)
@@ -152,7 +200,7 @@ void LayerDebugger::dumpRound(HybridCacheManager& cacheManager, Tensor const& lo
     // Every per-layer tensor is dumped as-is over the active-batch prefix (a plain contiguous
     // copy); no sequence-length truncation happens here. The comparison tool slices each sequence
     // to its valid length in PyTorch (using the dumped context_lengths), keeping this side simple.
-    //   Attention layers   -> full combined KV cache [activeBatch, 2, kvHeads, maxSeqLen, headDim].
+    //   Attention layers   -> full KV cache [activeBatch, 2, kvHeads, capPadded, headDim].
     //   Mamba / Gated-DeltaNet -> fixed-size recurrent + conv state (no sequence dim).
     int32_t const numLayers = cacheManager.numLayers();
     for (int32_t layer : mLayers)
@@ -172,8 +220,9 @@ void LayerDebugger::dumpRound(HybridCacheManager& cacheManager, Tensor const& lo
             mTensors.push_back(copyBatchPrefix(cacheManager.getConvState(layer), activeBatchSize, lp + "conv_state"));
             continue;
         }
-        // Attention: combined KV cache [maxBatch, 2, kvHeads, maxSeqLen, headDim], contiguous.
-        mTensors.push_back(copyBatchPrefix(cacheManager.getCombinedKVCache(layer), activeBatchSize, lp + "kv"));
+        // Attention: KV cache dumped as [activeBatch, 2, kvHeads, capPadded, headDim] (transposed
+        // out of the NHD pool storage; capPadded >= maxSeqLen, the comparison tool slices).
+        mTensors.push_back(copyKVCacheAsHND(cacheManager, layer, activeBatchSize, lp + "kv"));
     }
 
     // ---- per-sequence valid lengths ----

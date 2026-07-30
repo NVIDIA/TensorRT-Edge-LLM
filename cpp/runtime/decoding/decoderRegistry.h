@@ -36,6 +36,13 @@ struct DecoderRegistryConfig
     cudaStream_t stream{};
 };
 
+//! Return whether an EAGLE deployment must execute this request with the vanilla decoder.
+//!
+//! EAGLE is currently greedy-only, has no audio draft path, and only supports vision inputs represented by legacy
+//! out-of-vocabulary IDs. This request policy is independent of context reuse: disabling the context cache must not
+//! silently change the selected decoder.
+bool eagleRequiresVanillaFallback(LLMGenerationRequest const& request, bool visionNeedsFallback) noexcept;
+
 class DecoderRegistry final
 {
 public:
@@ -58,6 +65,8 @@ public:
     }
 
 private:
+    //! EAGLE draft prefill only supports legacy vision IDs (`tokenId >= vocabSize`), not fixed multimodal token IDs.
+    bool mEagleVisionNeedsVanillaFallback{false};
     std::unique_ptr<DecodingStrategy> mDefaultDecoder;
     std::unique_ptr<DecodingStrategy> mSpeculativeDecoder;
 };

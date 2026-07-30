@@ -45,10 +45,9 @@ struct NemotronOmniAudioConfig
 //! The encoder is exported and built at fixed batch=1: the Conformer's
 //! depthwise convolution is a local operator that ignores attention masks,
 //! so cross-clip batching with padding silently corrupts short-clip outputs
-//! at their right edge. ``preprocess()`` walks every audio clip in the
-//! request batch and invokes the encoder once per clip, writing the encoded
-//! rows directly into ``mAudioEmbedding`` at sequential offsets. ``infer()``
-//! is a no-op.
+//! at their right edge. ``preprocess()`` retains one prepared clip plan and
+//! derives token counts. ``infer()`` materializes and encodes each retained clip
+//! into ``mAudioEmbedding`` at sequential offsets.
 class NemotronOmniAudioRunner : public MultimodalRunner
 {
 public:
@@ -75,6 +74,10 @@ public:
     //! \param[in] stream CUDA stream for execution
     //! \return True if inference succeeded, false otherwise
     bool infer(cudaStream_t stream) override;
+    bool prepareArtifactSubset(rt::LLMGenerationRequest const& request, std::vector<size_t> const& originalItemIndices,
+        cudaStream_t stream) override;
+    std::vector<int64_t> preparedArtifactRowCounts() const override;
+    void discardPreparedInput() noexcept override;
 
     //! \brief Validate and load configuration from JSON file
     //! \param[in] engineDir Path to engine directory
@@ -91,16 +94,17 @@ public:
     rt::Tensor& getOutputEmbedding() override;
 
 private:
-    //! \brief Encode all audio clips in the request batch into mAudioEmbedding.
+    //! \brief Inspect all audio clips and retain their prepared inputs until infer().
     //!
     //! Iterates ``request.requests`` (and each request's audioBuffers) in
-    //! placeholder order, runs the bs=1 encoder once per clip, and packs the
-    //! valid rows of every clip into a contiguous ``[totalRows, hidden]``
-    //! buffer. ``audioTokenLengths`` is filled in the same order so
+    //! placeholder order, selects GPU fbank or CPU mel for each clip, and retains that plan for infer().
+    //! ``audioTokenLengths`` is filled in the same order so
     //! ``textPreprocess`` can replace each ``<so_embedding>`` placeholder
     //! with the right number of audio tokens.
-    bool encodeAllClips(
-        rt::LLMGenerationRequest const& request, std::vector<int64_t>& audioTokenLengths, cudaStream_t stream);
+    bool inspectAllClips(rt::LLMGenerationRequest const& request, std::vector<int64_t>& audioTokenLengths);
+
+    //! \brief Encode the clips prepared by inspectAllClips into one offset-correct output tensor.
+    bool encodePreparedClips(cudaStream_t stream);
 
     //! \brief Encode a single mel-spectrogram clip into mAudioEmbedding at
     //!        the specified row offset. Returns the number of encoded rows.
@@ -127,7 +131,7 @@ private:
 
     //! \brief Whether the online GPU fbank can run for this clip: resources ready,
     //!        engine mel width agrees, and the sample rate matches what the kernels
-    //!        assume. Checked in pass 1 of encodeAllClips before committing a clip
+    //!        assume. Checked during inspectAllClips before committing a clip
     //!        to the GPU path.
     bool gpuFbankViable(rt::audio::AudioPCM const& pcm) const;
 
@@ -138,13 +142,12 @@ private:
     bool runGpuFbankClip(
         rt::audio::AudioPCM const& pcm, int64_t const numFrames, rt::Tensor& melSpec, cudaStream_t stream);
 
-    //! \brief Per-clip mel plan: built in pass 1 of encodeAllClips (frame count +
-    //!        chosen path), consumed in pass 2 by produceClipMel.
+    //! \brief Per-clip mel plan built by inspectAllClips and consumed by produceClipMel during infer().
     struct ClipPlan
     {
-        rt::audio::AudioPCM const* pcm{nullptr}; //!< non-null → run GPU fbank in pass 2
-        rt::Tensor hostMel{};                    //!< valid → CPU mel already extracted (upload in pass 2)
-        int64_t numFrames{0};                    //!< T (shapes the GPU melSpec view)
+        std::shared_ptr<rt::audio::AudioPCM> pcm; //!< non-null → run GPU fbank in pass 2
+        rt::Tensor hostMel{};                     //!< valid → CPU mel already extracted (upload in pass 2)
+        int64_t numFrames{0};                     //!< T (shapes the GPU melSpec view)
     };
 
     //! \brief Pass 2: produce one clip's ``[1, T, mel_bins]`` FP16 GPU mel from its
@@ -166,6 +169,8 @@ private:
         mFbankResourcesParakeet{}; //!< weights / tables / scalars + pre-allocated workspace
     rt::Tensor mPcmF32Device{};    //!< [maxPcmSamples] Float — mono FP32 PCM staging, reshaped to [N] per clip
     rt::Tensor mMelSpecDevice{}; //!< [1, maxFrames, nMel] Half — fbank output backing store, viewed at [1, T_out, nMel]
+    std::vector<ClipPlan> mPreparedClipPlans;   //!< Request-local clip plans retained between inspect and infer
+    std::vector<int64_t> mPreparedTokenLengths; //!< Encoder row counts aligned with mPreparedClipPlans
 };
 
 } // namespace rt

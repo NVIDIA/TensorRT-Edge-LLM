@@ -372,6 +372,97 @@ TEST(DDTreeKernels, BuildPrefixClosedTreeAndPackedMask)
     EXPECT_EQ(actual.packedAncestorMask[0], 1);
 }
 
+// MTP tree drafting stacks one full logits row per chain depth into a
+// [batch, draftingStep+1, vocab] buffer and feeds it to ddtreeBuild with
+// "blockSize" = draftingStep+1. Row 0 is a root placeholder that the builder
+// must ignore (the root token comes from rootTokenIds, not from logits).
+TEST(DDTreeKernels, MtpChainStackedLogitsBuildsTree)
+{
+    constexpr int32_t kBatchSize{1};
+    constexpr int32_t kDraftingStep{3};
+    constexpr int32_t kProposalDepthSize{kDraftingStep + 1}; // MTP "blockSize"
+    constexpr int32_t kVocabSize{10};
+    constexpr int32_t kCandidateFanout{2};
+    // Within the tree capacity (full fanout-ary tree of depth step: 1+2+4+8=15),
+    // so the greedy builder fills every requested node.
+    constexpr int32_t kVerifySize{7};
+
+    std::vector<float> logits(static_cast<size_t>(kBatchSize) * kProposalDepthSize * kVocabSize, -12.0F);
+    // Poison the root placeholder row: it must not contribute any candidate.
+    for (int32_t tokenId = 0; tokenId < kVocabSize; ++tokenId)
+    {
+        setLogit(logits, 0, 0, tokenId, kProposalDepthSize, kVocabSize, 999.0F);
+    }
+    // Depth rows 1..step mimic the chain-conditioned per-round logits.
+    setLogit(logits, 0, 1, 1, kProposalDepthSize, kVocabSize, 6.0F);
+    setLogit(logits, 0, 1, 2, kProposalDepthSize, kVocabSize, 5.0F);
+    setLogit(logits, 0, 2, 4, kProposalDepthSize, kVocabSize, 6.0F);
+    setLogit(logits, 0, 2, 5, kProposalDepthSize, kVocabSize, 5.0F);
+    setLogit(logits, 0, 3, 7, kProposalDepthSize, kVocabSize, 6.0F);
+    setLogit(logits, 0, 3, 8, kProposalDepthSize, kVocabSize, 5.0F);
+
+    std::vector<int32_t> const rootTokenIds{42};
+    std::vector<int32_t> const baseLengths{100};
+    DDTreeBuildOutputs actual = runDDTreeBuild(
+        logits, rootTokenIds, baseLengths, kBatchSize, kProposalDepthSize, kVocabSize, kVerifySize, kCandidateFanout);
+    DDTreeReference expected = buildReference(
+        logits, rootTokenIds, baseLengths, kBatchSize, kProposalDepthSize, kVocabSize, kVerifySize, kCandidateFanout);
+    validateBuildAgainstReference(actual, expected, kBatchSize, kVerifySize);
+
+    // verifySize is within the tree capacity, so every requested node is filled
+    // and no poisoned root-row token appears.
+    EXPECT_EQ(actual.validCounts[0], kVerifySize);
+    EXPECT_EQ(actual.nodeTokenIds[0], 42);
+    int32_t maxDepth{0};
+    for (int32_t nodeIdx = 0; nodeIdx < actual.validCounts[0]; ++nodeIdx)
+    {
+        maxDepth = std::max(maxDepth, actual.nodeDepths[nodeIdx]);
+        if (actual.nodeDepths[nodeIdx] == 1)
+        {
+            EXPECT_TRUE(actual.nodeTokenIds[nodeIdx] == 1 || actual.nodeTokenIds[nodeIdx] == 2)
+                << "depth-1 candidates must come from logits row 1";
+        }
+    }
+    // Proposal depth is capped at draftingStep (= "blockSize" - 1).
+    EXPECT_EQ(maxDepth, kDraftingStep);
+}
+
+// With candidateFanout = 1 the greedy builder must reproduce the linear MTP
+// chain exactly: parent[i] = i-1, depth[i] = i, one token per depth row.
+TEST(DDTreeKernels, MtpFanoutOneDegeneratesToChain)
+{
+    constexpr int32_t kBatchSize{1};
+    constexpr int32_t kDraftingStep{4};
+    constexpr int32_t kProposalDepthSize{kDraftingStep + 1};
+    constexpr int32_t kVocabSize{6};
+    constexpr int32_t kCandidateFanout{1};
+    constexpr int32_t kVerifySize{1 + kDraftingStep};
+
+    std::vector<float> logits(static_cast<size_t>(kBatchSize) * kProposalDepthSize * kVocabSize, -2.0F);
+    for (int32_t depthIdx = 1; depthIdx < kProposalDepthSize; ++depthIdx)
+    {
+        setLogit(logits, 0, depthIdx, depthIdx, kProposalDepthSize, kVocabSize, 5.0F);
+    }
+
+    std::vector<int32_t> const rootTokenIds{3};
+    std::vector<int32_t> const baseLengths{64};
+    DDTreeBuildOutputs actual = runDDTreeBuild(
+        logits, rootTokenIds, baseLengths, kBatchSize, kProposalDepthSize, kVocabSize, kVerifySize, kCandidateFanout);
+    DDTreeReference expected = buildReference(
+        logits, rootTokenIds, baseLengths, kBatchSize, kProposalDepthSize, kVocabSize, kVerifySize, kCandidateFanout);
+    validateBuildAgainstReference(actual, expected, kBatchSize, kVerifySize);
+
+    EXPECT_EQ(actual.validCounts[0], kVerifySize);
+    for (int32_t nodeIdx = 0; nodeIdx < kVerifySize; ++nodeIdx)
+    {
+        EXPECT_EQ(actual.parentIds[nodeIdx], nodeIdx - 1) << "chain parent mismatch at node " << nodeIdx;
+        EXPECT_EQ(actual.nodeDepths[nodeIdx], nodeIdx) << "chain depth mismatch at node " << nodeIdx;
+        EXPECT_EQ(actual.nodeTokenIds[nodeIdx], nodeIdx == 0 ? 3 : nodeIdx)
+            << "chain token mismatch at node " << nodeIdx;
+        EXPECT_EQ(actual.verifyPositionIds[nodeIdx], 64 + nodeIdx);
+    }
+}
+
 TEST(DDTreeKernels, MultiBatchPaddingUsesFixedVerifyShape)
 {
     constexpr int32_t kBatchSize{2};

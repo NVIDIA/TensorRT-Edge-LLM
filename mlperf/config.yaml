@@ -1,0 +1,45 @@
+# MLPerf Edge-Agentic (BFCL v4) — Edge-LLM MTP server. Both phases:
+#   performance (agentic replay, inline IoU) + accuracy (BFCL single-turn gate).
+# Deterministic (temp 0 / model seed 42), reasoning off, single-stream. Run from the
+# inference-endpoints repo root (the performance `path` is repo-relative).
+# Edit `tokenizer_name` to your combined engine dir ($WORK/engines/base).
+type: "online"
+timeout: 21600
+model_params:
+  name: "base"                              # served model id from /v1/models
+  tokenizer_name: "/path/to/engines/base"   # dir with tokenizer.json + chat_template (client-side ISL/OSL/TPOT)
+  temperature: 0
+  seed: 42
+  max_new_tokens: 1024
+datasets:
+  - name: agentic_coding                    # ---- performance (agentic replay) ----
+    type: performance
+    path: examples/11_Edge_Agentic_Example/agentic_coding_2.5h.jsonl
+    accuracy_config: { eval_method: agentic_inference_inline }
+    agentic_inference:
+      turn_timeout_s: 600.0
+      num_trajectories_to_issue: 20          # all 20 conversations (full set)
+  - name: bfcl_v4::function_calling          # ---- accuracy (BFCL single-turn gate) ----
+    type: accuracy
+    generate_params:
+      categories: ["non_live", "live", "hallucination"]
+      category_sample_pct: { non_live: 62, live: 10, hallucination: 10 }
+      subset_floor: 25
+    accuracy_config:
+      eval_method: bfcl_v4
+      ground_truth: ground_truth
+      extractor: function_call_extractor
+      num_repeats: 1
+settings:
+  runtime:
+    min_duration_ms: 600000
+    max_duration_ms: 14400000
+    scheduler_random_seed: 16159082839903944936
+    dataloader_random_seed: 2747215439041700203
+  load_pattern: { type: agentic_inference, target_concurrency: 1 }   # single-stream
+  client: { num_workers: 1, max_connections: 1, warmup_connections: 0 }
+endpoint_config:
+  endpoints: ["http://localhost:8001"]
+  api_type: openai
+  api_key: null
+report_dir: results/edge_agentic/

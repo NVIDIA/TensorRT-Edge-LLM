@@ -22,6 +22,7 @@
 #include "runtime/config/llmEngineConfig.h"
 #include "runtime/hybridCacheManager.h"
 #include "runtime/state/externalWeightManager.h"
+#include "runtime/state/kvPageTable.h"
 #include "runtime/state/loraManager.h"
 #include "runtime/state/ropeCache.h"
 
@@ -42,6 +43,11 @@ struct SharedResources
     //! One HybridCacheManager per engine (index 0 = base, 1 = draft for SpecDecode).
     //! unique_ptr because HybridCacheManager is move-only.
     std::vector<std::unique_ptr<HybridCacheManager>> cacheManagers;
+
+    //! One KVPageTable per cache manager, index-aligned with `cacheManagers`. Every table starts with the legacy
+    //! identity mapping. Production context reuse replaces rows with leased global page IDs, uploads changed rows,
+    //! and compacts row metadata without moving KV bytes; the reuse-off path retains identity rows and compacts KV.
+    std::vector<std::unique_ptr<KVPageTable>> kvPageTables;
 
     RopeCache ropePool;
     std::unique_ptr<LoRAManager> loraManager;

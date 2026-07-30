@@ -49,7 +49,7 @@ public:
         int32_t recurrentStateSize{0};     //!< Recurrent state dimension
         int32_t convDim{0};                //!< Conv1d channel dimension
         int32_t convKernel{0};             //!< Conv1d kernel width
-        int32_t maxIntermediateSeqLen{0};  //!< Spec-verify intermediate state seq dim (0 = disabled)
+        int32_t maxIntermediateSeqLen{0};  //!< Maximum speculative verify nodes (0 = disabled)
         nvinfer1::DataType recurrentStateType{nvinfer1::DataType::kHALF}; //!< Recurrent state dtype
         nvinfer1::DataType convStateType{nvinfer1::DataType::kHALF};      //!< Conv state dtype
     };
@@ -123,7 +123,7 @@ public:
     std::vector<rt::Tensor> captureConvStates(int32_t batchIdx, cudaStream_t stream);
 
     //! Get spec-verify intermediate recurrent state tensor for a given layer.
-    //! Shape: [maxBatchSize, maxIntermediateSeqLen, recurrentStateNumHeads, recurrentStateHeadDim, recurrentStateSize]
+    //! Shape: [maxBatchSize, compactReplayBufferElements].
     //! @param recurrentLayerIdx The recurrent layer index.
     //! @return A reference to the owned device tensor.
     rt::Tensor& getIntermediateRecurrentState(int32_t recurrentLayerIdx) noexcept;
@@ -137,9 +137,9 @@ public:
     /*!
      * @brief Reshape spec-verify intermediate state tensors to actual runtime dimensions.
      *
-     * TRT writes intermediate state outputs contiguously as [activeBatchSize, seqLen, ...],
-     * but the buffers are allocated at [maxBatchSize, maxIntermediateSeqLen, ...].
-     * Call this before any code that reads the tensor shape for stride calculations.
+     * The recurrent replay buffer has a fixed per-batch row size, while conv
+     * checkpoints retain a runtime sequence dimension. Call this before
+     * speculative verification to select the active batch and verify length.
      * No-op when intermediate states are not allocated.
      *
      * @param activeBatchSize Current active batch size
@@ -161,27 +161,22 @@ public:
     //! @return Cache configuration
     Config const& getConfig() const noexcept;
 
-    //! Scatter spec-verify intermediate states to main state pools after verify (one
-    //! batched launch per state kind).  No-op when spec-verify intermediate states are not enabled.
-    void scatterAcceptedLinearStates(rt::Tensor const& acceptLengths, cudaStream_t stream);
-
-    //! Scatter DDTree base-verify intermediate states to persistent state pools.
-    //! acceptedStateNodeIds shape: [activeBatchSize, maxAcceptLen], INT32 GPU.
-    //! Entries with -1 are ignored. The ids should name the tree node whose
-    //! intermediate state represents each accepted token.
-    //! acceptLengths shape: [activeBatchSize], INT32 GPU.
-    void scatterAcceptedTreeStates(
+    //! Commit branching-tree or linear-chain recurrent states by replaying the
+    //! accepted path from the committed state. Conv states still commit via
+    //! checkpoint scatter.
+    void replayCommitAcceptedTreeStates(
         rt::Tensor const& acceptedStateNodeIds, rt::Tensor const& acceptLengths, cudaStream_t stream);
 
 private:
     Config mConfig{};                                     //!< Cache configuration
     std::vector<rt::Tensor> mRecurrentStates;             //!< Per-layer recurrent state tensors on device
     std::vector<rt::Tensor> mConvStates;                  //!< Per-layer conv state tensors on device
-    std::vector<rt::Tensor> mIntermediateRecurrentStates; //!< Per-layer spec-verify intermediate recurrent states
+    std::vector<rt::Tensor> mIntermediateRecurrentStates; //!< Per-layer compact recurrent replay buffers
     std::vector<rt::Tensor> mIntermediateConvStates;      //!< Per-layer spec-verify intermediate conv states
+    int32_t mActiveIntermediateSeqLen{0};                 //!< Verify nodes selected by reshapeIntermediateStates
 
-    //! Device-resident MtpLayerInfo[numRecurrentLayers] for batched spec-verify state scatter,
-    //! built once at construction.  Empty when spec-verify intermediate states are unallocated.
+    //! Device-resident MtpLayerInfo[numRecurrentLayers] for batched replay and conv scatter.
+    //! Built once at construction; empty when spec-verify buffers are unallocated.
     rt::Tensor mDeviceMtpLayerInfos;
 };
 

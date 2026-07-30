@@ -458,6 +458,8 @@ template void compactVector<std::unordered_map<int32_t, float>>(
     std::vector<int32_t> const&, std::vector<std::unordered_map<int32_t, float>>&);
 template void compactVector<SlotStreamState>(std::vector<int32_t> const&, std::vector<SlotStreamState>&);
 template void compactVector<LogprobsSlot>(std::vector<int32_t> const&, std::vector<LogprobsSlot>&);
+template void compactVector<std::optional<SequenceCacheState>>(
+    std::vector<int32_t> const&, std::vector<std::optional<SequenceCacheState>>&);
 
 // Build batch mapping from finished states
 // Returns a vector mapping old batch indices to new indices (-1 for evicted batches)
@@ -566,13 +568,13 @@ EmbeddingData loadEmbeddingTable(std::filesystem::path const& embeddingPath, cud
     return result;
 }
 
-int32_t clampMaxGenerateLengthForKVCapacity(std::vector<int32_t> const& effectivePrefillLengths,
+int32_t clampMaxGenerateLengthForKVCapacity(std::vector<int32_t> const& residentPrefillLengths,
     int32_t requestedMaxGenerateLength, int32_t kvCacheCapacity, int32_t kvCacheReserveLength)
 {
-    check::check(!effectivePrefillLengths.empty(), "effectivePrefillLengths must not be empty");
+    check::check(!residentPrefillLengths.empty(), "residentPrefillLengths must not be empty");
 
     int32_t clampedMaxGenerateLength = requestedMaxGenerateLength;
-    for (int32_t const prefillLength : effectivePrefillLengths)
+    for (int32_t const prefillLength : residentPrefillLengths)
     {
         int32_t const availableGenerateLength = std::max(0, kvCacheCapacity - prefillLength - kvCacheReserveLength);
         clampedMaxGenerateLength = std::min(clampedMaxGenerateLength, availableGenerateLength);
@@ -582,7 +584,8 @@ int32_t clampMaxGenerateLengthForKVCapacity(std::vector<int32_t> const& effectiv
 }
 
 rt::Tensor generateMultimodalIndices(rt::Tensor const& inputIds, std::optional<int32_t> audioTokenId,
-    std::optional<int32_t> imageTokenId, int32_t vocabSize)
+    std::optional<int32_t> imageTokenId, int32_t vocabSize, std::vector<int32_t> const& audioIndexOffsets,
+    std::vector<int32_t> const& imageIndexOffsets)
 {
     auto const shape = inputIds.getShape();
     check::check(shape.getNumDims() == 2, "inputIds must be 2D tensor");
@@ -594,11 +597,17 @@ rt::Tensor generateMultimodalIndices(rt::Tensor const& inputIds, std::optional<i
     int32_t const* inputIdsPtr = inputIds.dataPointer<int32_t>();
     int32_t* indicesPtr = multimodalIndices.dataPointer<int32_t>();
 
-    int32_t audioIndex = 0;
-    int32_t imageIndex = 0;
+    check::check(audioIndexOffsets.empty() || audioIndexOffsets.size() == static_cast<size_t>(batchSize),
+        "audioIndexOffsets must be empty or match batch size");
+    check::check(imageIndexOffsets.empty() || imageIndexOffsets.size() == static_cast<size_t>(batchSize),
+        "imageIndexOffsets must be empty or match batch size");
+    int32_t globalAudioIndex = 0;
+    int32_t globalImageIndex = 0;
 
     for (int64_t b = 0; b < batchSize; ++b)
     {
+        int32_t audioIndex = audioIndexOffsets.empty() ? globalAudioIndex : audioIndexOffsets[static_cast<size_t>(b)];
+        int32_t imageIndex = imageIndexOffsets.empty() ? globalImageIndex : imageIndexOffsets[static_cast<size_t>(b)];
         for (int64_t s = 0; s < seqLen; ++s)
         {
             int64_t const pos = b * seqLen + s;
@@ -616,6 +625,14 @@ rt::Tensor generateMultimodalIndices(rt::Tensor const& inputIds, std::optional<i
             {
                 indicesPtr[pos] = 0;
             }
+        }
+        if (audioIndexOffsets.empty())
+        {
+            globalAudioIndex = audioIndex;
+        }
+        if (imageIndexOffsets.empty())
+        {
+            globalImageIndex = imageIndex;
         }
     }
 

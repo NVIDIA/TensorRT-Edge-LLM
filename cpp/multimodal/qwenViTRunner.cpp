@@ -440,6 +440,7 @@ void QwenViTRunner::imagePreprocess(
     {
         for (auto const& image : req.imageBuffers)
         {
+            size_t const spanBegin = spans.size();
             if (doResize)
             {
                 auto [resizedHeight, resizedWidth] = getResizedImageSize(image.frames, image.height, image.width);
@@ -451,8 +452,19 @@ void QwenViTRunner::imagePreprocess(
             {
                 formatPatch(image, spans, totalSeqLength, stream);
             }
+            for (size_t spanIndex = spanBegin; spanIndex < spans.size(); ++spanIndex)
+            {
+                spans[spanIndex].artifactIndex = static_cast<size_t>(imageCount);
+            }
             ++imageCount;
         }
+    }
+
+    mPreparedArtifactRowCounts.assign(static_cast<size_t>(imageCount), 0);
+    for (VisionSpan const& span : spans)
+    {
+        ELLM_CHECK(span.artifactIndex < mPreparedArtifactRowCounts.size(), "Vision span has no source artifact");
+        mPreparedArtifactRowCounts[span.artifactIndex] += span.llm.numTokens;
     }
 
     if (totalSeqLength == 0)
@@ -708,6 +720,27 @@ bool QwenViTRunner::preprocess(rt::LLMGenerationRequest const& request,
     }
 
     return true;
+}
+
+bool QwenViTRunner::prepareArtifactSubset(rt::LLMGenerationRequest const& request,
+    [[maybe_unused]] std::vector<size_t> const& originalItemIndices, cudaStream_t stream)
+{
+    std::vector<VisionSpan> spans;
+    try
+    {
+        imagePreprocess(request, spans, /*doResize=*/true, stream);
+    }
+    catch (std::exception const& e)
+    {
+        LOG_ERROR("Failed to prepare selected vision artifacts: %s", e.what());
+        return false;
+    }
+    return true;
+}
+
+std::vector<int64_t> QwenViTRunner::preparedArtifactRowCounts() const
+{
+    return mPreparedArtifactRowCounts;
 }
 
 bool QwenViTRunner::preprocessSystemPrompt(std::string const& systemPrompt, tokenizer::Tokenizer const* tokenizer,

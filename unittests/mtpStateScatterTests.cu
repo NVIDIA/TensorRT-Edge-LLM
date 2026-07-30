@@ -15,6 +15,7 @@
  * limitations under the License.
  */
 
+#include "kernels/gdnKernels/gdnTreeChunkKernels.h"
 #include "kernels/speculative/mtpStateScatterKernels.h"
 #include "runtime/mambaCacheManager.h"
 
@@ -36,11 +37,6 @@ constexpr float kSentinel = -999.0f;
 inline float refRecurrent(int32_t layer, int32_t batch, int32_t step, int32_t elem)
 {
     return static_cast<float>(layer * 1000000 + batch * 10000 + step * 100 + (elem % 100));
-}
-
-inline float refConv(int32_t layer, int32_t batch, int32_t step, int32_t elem)
-{
-    return static_cast<float>(layer * 1000 + batch * 100 + step * 10 + (elem % 10));
 }
 
 template <typename T>
@@ -358,19 +354,16 @@ TEST_F(MTPStateScatterConvTest, MultiLayer_Mixed)
     runTest(3, 4, 2, 16384, {1, 2, 1, 0});
 }
 
-TEST(MambaCacheManagerAcceptedTreeScatterTest, UsesLastNonNegativeAcceptedNodeId)
+TEST(MambaCacheManagerCompactReplayTest, AllocatesFixedRecurrentRowsAndPerNodeConvStates)
 {
-    constexpr int32_t kNumLayers = 2;
-    constexpr int32_t kBatchSize = 3;
+    constexpr int32_t kNumLayers = 1;
+    constexpr int32_t kBatchSize = 2;
     constexpr int32_t kVerifyTreeSize = 6;
-    constexpr int32_t kMaxAcceptLen = 4;
     constexpr int32_t kRecurrentHeads = 2;
-    constexpr int32_t kRecurrentHeadDim = 2;
-    constexpr int32_t kRecurrentStateSize = 8;
-    constexpr int32_t kConvDim = 8;
-    constexpr int32_t kConvKernel = 2;
-    constexpr int32_t kRecurrentElements = kRecurrentHeads * kRecurrentHeadDim * kRecurrentStateSize;
-    constexpr int32_t kConvElements = kConvDim * kConvKernel;
+    constexpr int32_t kRecurrentHeadDim = 128;
+    constexpr int32_t kRecurrentStateSize = 128;
+    constexpr int32_t kConvDim = 512;
+    constexpr int32_t kConvKernel = 4;
 
     rt::MambaCacheManager::Config cfg{};
     cfg.numRecurrentLayers = kNumLayers;
@@ -387,91 +380,15 @@ TEST(MambaCacheManagerAcceptedTreeScatterTest, UsesLastNonNegativeAcceptedNodeId
     rt::MambaCacheManager mgr(cfg, nullptr);
     mgr.reshapeIntermediateStates(kBatchSize, kVerifyTreeSize);
 
-    int64_t const recSrcSize = static_cast<int64_t>(kBatchSize) * kVerifyTreeSize * kRecurrentElements;
-    int64_t const recDstSize = static_cast<int64_t>(kBatchSize) * kRecurrentElements;
-    int64_t const convSrcSize = static_cast<int64_t>(kBatchSize) * kVerifyTreeSize * kConvElements;
-    int64_t const convDstSize = static_cast<int64_t>(kBatchSize) * kConvElements;
+    auto const recurrentShape = mgr.getIntermediateRecurrentState(0).getShape();
+    ASSERT_EQ(recurrentShape.getNumDims(), 2);
+    EXPECT_EQ(recurrentShape[0], kBatchSize);
+    EXPECT_EQ(recurrentShape[1], gdnTreeChunkBufferElements(/*h=*/1, /*hv=*/kRecurrentHeads));
 
-    __half const hSentinel = __float2half(kSentinel);
-    for (int32_t layer = 0; layer < kNumLayers; ++layer)
-    {
-        std::vector<float> hRecSrc(recSrcSize);
-        std::vector<float> hRecDst(recDstSize, kSentinel);
-        std::vector<__half> hConvSrc(convSrcSize);
-        std::vector<__half> hConvDst(convDstSize, hSentinel);
-
-        for (int32_t b = 0; b < kBatchSize; ++b)
-        {
-            for (int32_t node = 0; node < kVerifyTreeSize; ++node)
-            {
-                for (int32_t e = 0; e < kRecurrentElements; ++e)
-                {
-                    int64_t const idx = (static_cast<int64_t>(b) * kVerifyTreeSize + node) * kRecurrentElements + e;
-                    hRecSrc[idx] = refRecurrent(layer, b, node, e);
-                }
-                for (int32_t e = 0; e < kConvElements; ++e)
-                {
-                    int64_t const idx = (static_cast<int64_t>(b) * kVerifyTreeSize + node) * kConvElements + e;
-                    hConvSrc[idx] = __float2half(refConv(layer, b, node, e));
-                }
-            }
-        }
-
-        cudaMemcpy(mgr.getIntermediateRecurrentState(layer).rawPointer(), hRecSrc.data(), recSrcSize * sizeof(float),
-            cudaMemcpyHostToDevice);
-        cudaMemcpy(mgr.getRecurrentState(layer).rawPointer(), hRecDst.data(), recDstSize * sizeof(float),
-            cudaMemcpyHostToDevice);
-        cudaMemcpy(mgr.getIntermediateConvState(layer).rawPointer(), hConvSrc.data(), convSrcSize * sizeof(__half),
-            cudaMemcpyHostToDevice);
-        cudaMemcpy(mgr.getConvState(layer).rawPointer(), hConvDst.data(), convDstSize * sizeof(__half),
-            cudaMemcpyHostToDevice);
-    }
-
-    rt::Tensor acceptedNodeIds(
-        {kBatchSize, kMaxAcceptLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "acceptedNodeIds");
-    rt::Tensor acceptLengths({kBatchSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "acceptLengths");
-
-    std::vector<int32_t> hAcceptedNodeIds{
-        0, 5, -1, -1, // batch 0: bonus token at the end, scatter node 5
-        3, -1, 1, 4,  // batch 1: acceptLength excludes stale tail node 4, scatter node 1
-        -1, -1, 0, 0  // batch 2: no accepted verify node in range, leave state unchanged
-    };
-    std::vector<int32_t> hAcceptLengths{4, 3, 2};
-    cudaMemcpy(acceptedNodeIds.rawPointer(), hAcceptedNodeIds.data(), hAcceptedNodeIds.size() * sizeof(int32_t),
-        cudaMemcpyHostToDevice);
-    cudaMemcpy(acceptLengths.rawPointer(), hAcceptLengths.data(), hAcceptLengths.size() * sizeof(int32_t),
-        cudaMemcpyHostToDevice);
-
-    mgr.scatterAcceptedTreeStates(acceptedNodeIds, acceptLengths, nullptr);
-    cudaDeviceSynchronize();
-
-    std::vector<int32_t> const expectedNodeIds{5, 1, -1};
-    for (int32_t layer = 0; layer < kNumLayers; ++layer)
-    {
-        std::vector<float> recResult(recDstSize);
-        std::vector<__half> convResult(convDstSize);
-        cudaMemcpy(recResult.data(), mgr.getRecurrentState(layer).rawPointer(), recDstSize * sizeof(float),
-            cudaMemcpyDeviceToHost);
-        cudaMemcpy(convResult.data(), mgr.getConvState(layer).rawPointer(), convDstSize * sizeof(__half),
-            cudaMemcpyDeviceToHost);
-
-        for (int32_t b = 0; b < kBatchSize; ++b)
-        {
-            int64_t const recDstBase = static_cast<int64_t>(b) * kRecurrentElements;
-            int64_t const convDstBase = static_cast<int64_t>(b) * kConvElements;
-            int32_t const expectedNodeId = expectedNodeIds[b];
-            for (int32_t e = 0; e < kRecurrentElements; ++e)
-            {
-                float const expected = expectedNodeId >= 0 ? refRecurrent(layer, b, expectedNodeId, e) : kSentinel;
-                EXPECT_EQ(recResult[recDstBase + e], expected) << "layer=" << layer << " batch=" << b << " elem=" << e;
-            }
-            for (int32_t e = 0; e < kConvElements; ++e)
-            {
-                float const expected
-                    = expectedNodeId >= 0 ? refConv(layer, b, expectedNodeId, e) : __half2float(hSentinel);
-                EXPECT_EQ(__half2float(convResult[convDstBase + e]), expected)
-                    << "layer=" << layer << " batch=" << b << " elem=" << e;
-            }
-        }
-    }
+    auto const convShape = mgr.getIntermediateConvState(0).getShape();
+    ASSERT_EQ(convShape.getNumDims(), 4);
+    EXPECT_EQ(convShape[0], kBatchSize);
+    EXPECT_EQ(convShape[1], kVerifyTreeSize);
+    EXPECT_EQ(convShape[2], kConvDim);
+    EXPECT_EQ(convShape[3], kConvKernel);
 }

@@ -243,7 +243,7 @@ cd /path/to/TensorRT-Edge-LLM
 
 ## MTP (Multi-Token Prediction)
 
-MTP is a speculative decoding method that proposes a linear chain of draft tokens and verifies them with the base model. The runtime reuses the same speculative decoding pipeline as EAGLE with `topK=1`.
+Qwen-style MTP proposes one greedy draft chain while retaining the full logits at each depth. A DDTree builder converts those logits into a prefix-closed verification tree for every `specDraftTopK`: `specDraftTopK=1` produces a degenerate chain-shaped tree, while larger values add candidate branches. Gemma4 uses its separate sequential MTP decoder.
 
 TensorRT Edge-LLM supports two MTP checkpoint layouts:
 
@@ -350,9 +350,9 @@ cd /path/to/TensorRT-Edge-LLM
 ```
 
 **Key differences from EAGLE:**
-- `--specDraftTopK 1`: MTP uses a linear chain (no branching), so topK=1
+- `--specDraftTopK 1`: Candidate fanout one produces a chain-shaped verification tree; it does not select a separate linear runtime mode
 - `--specDraftStep 3`: Number of MTP draft tokens (typically 3-7, matching the model's MTP head count)
-- `--specVerifySize 4`: Equals `draftStep + 1` for the linear chain
+- `--specVerifySize 4`: Equals `draftStep + 1` for a fanout-one tree
 
 ---
 

@@ -186,7 +186,8 @@ curl -X POST http://127.0.0.1:8000/v1/chat/completions \
 | `top_p` | `0.9` | Nucleus sampling threshold |
 | `top_k` | `50` | Top-K sampling |
 | `logit_bias` | `{}` | Sparse OpenAI-compatible map from token ID to bias value; incompatible with active speculative decoding |
-| `max_tokens` | `2048` | Maximum generated tokens |
+| `max_completion_tokens` | `2048` | Maximum generated tokens; preferred OpenAI-compatible field |
+| `max_tokens` | — | Deprecated alias used when `max_completion_tokens` is omitted or `null` |
 | `enable_thinking` | `False` | Enables Qwen-style thinking output |
 | `disable_spec_decode` | `False` | Disables EAGLE for one request |
 

@@ -61,6 +61,46 @@ class _RecordingTemplateOwner:
             sort_keys=True)
 
 
+class _ReplayTemplateOwner:
+
+    def __init__(self, extra_generation_token=False):
+        self.extra_generation_token = extra_generation_token
+        self.tokenizer = self
+        self.apply_count = 0
+
+    def apply_chat_template(self, messages, **kwargs):
+        self.apply_count += 1
+        prefix = "history<assistant><think>\n"
+        if kwargs["add_generation_prompt"]:
+            suffix = "\n</think>\n\n"
+            if self.extra_generation_token:
+                suffix += "<extra>"
+            return prefix + suffix
+        assistant = messages[-1]
+        return (prefix + assistant["reasoning_content"] + "\n</think>\n\n" +
+                assistant["content"])
+
+    def encode(self, prompt, *, add_special_tokens):
+        assert add_special_tokens is False
+        special_token_ids = {
+            "</think>": 256,
+            "<extra>": 257,
+            "\n\n": 258,
+        }
+        token_ids = []
+        offset = 0
+        while offset < len(prompt):
+            special_token = next((token for token in special_token_ids
+                                  if prompt.startswith(token, offset)), None)
+            if special_token is None:
+                token_ids.append(ord(prompt[offset]))
+                offset += 1
+            else:
+                token_ids.append(special_token_ids[special_token])
+                offset += len(special_token)
+        return token_ids
+
+
 def test_formats_tool_template():
     owner = _RecordingTemplateOwner()
     formatter = ToolChatTemplateFormatter([], template_owner=owner)
@@ -116,3 +156,33 @@ def test_formats_tool_template():
     assert formatted["add_generation_prompt"] is True
     assert tool_call["function"]["arguments"] == {"city": "Paris"}
     assert tool_message["content"] == '{"temperature": 22}'
+
+
+def test_computes_context_reuse_replay_tail_from_tokenized_template():
+    owner = _ReplayTemplateOwner()
+    formatter = ToolChatTemplateFormatter([], template_owner=owner)
+    _, replay_tail_length = formatter.format_with_replay_tail([{
+        "role":
+        "user",
+        "content":
+        "hello",
+    }])
+    assert replay_tail_length == 4
+    _, replay_tail_length = formatter.format_with_replay_tail([{
+        "role":
+        "user",
+        "content":
+        "another request",
+    }])
+    assert replay_tail_length == 4
+    assert owner.apply_count == 3
+
+    formatter = ToolChatTemplateFormatter(
+        [], template_owner=_ReplayTemplateOwner(extra_generation_token=True))
+    _, replay_tail_length = formatter.format_with_replay_tail([{
+        "role":
+        "user",
+        "content":
+        "hello",
+    }])
+    assert replay_tail_length == 5

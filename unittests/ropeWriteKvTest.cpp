@@ -136,8 +136,9 @@ void TestRopeWriteKvPrefill(int32_t const batchSize, AttnParams const& attnParam
     rt::Tensor kvCacheTensor(rt::Coords{batchSize, 2, numKVHeads, kvCacheCapacity, headDim}, rt::DeviceType::kGPU,
         nvinfer1::DataType::kHALF);
 
-    launchApplyRopeWriteKV(
-        cosSinCacheTensor, std::nullopt, qTensor, kTensor, vTensor, kvCacheTensor, 1.0f, 1.0f, stream, true);
+    launchApplyRopeWriteKV(cosSinCacheTensor, std::nullopt, qTensor, kTensor, vTensor, kvCacheTensor, 1.0f, 1.0f,
+        stream, true,
+        /*pageTable=*/nullptr, /*maxPagesPerSeq=*/0);
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
     auto const qOut = copyDeviceToHost<half>(qTensor);
@@ -239,7 +240,7 @@ void TestRopeWriteKvPrefill(int32_t const batchSize, AttnParams const& attnParam
         float const vScaleOrigQuant = 1.0F / vScaleQuantOrig;
 
         launchApplyRopeWriteKV(cosSinCacheTensor, std::nullopt, qTensorForFP8, kTensorForFP8, vTensorForFP8, kvFp8,
-            kScaleQuantOrig, vScaleQuantOrig, stream, true);
+            kScaleQuantOrig, vScaleQuantOrig, stream, true, /*pageTable=*/nullptr, /*maxPagesPerSeq=*/0);
         CUDA_CHECK(cudaStreamSynchronize(stream));
 
         auto const kvOutFp8 = copyDeviceToHost<__nv_fp8_e4m3>(kvFp8);
@@ -409,13 +410,14 @@ void TestRopeWriteKvDecode(int32_t const batchSize, AttnParams const& attnParams
 
     if (!isTreeAttention)
     {
-        launchApplyRopeWriteKV(
-            cosSinCacheTensor, seqLensTensor, qTensor, kTensor, vTensor, kvCacheTensor, 1.0f, 1.0f, stream, false);
+        launchApplyRopeWriteKV(cosSinCacheTensor, seqLensTensor, qTensor, kTensor, vTensor, kvCacheTensor, 1.0f, 1.0f,
+            stream, false,
+            /*pageTable=*/nullptr, /*maxPagesPerSeq=*/0);
     }
     else
     {
         launchApplyRopeWriteKVTreeDecoding(cosSinCacheTensor, seqLensTensor, customSeqLensTensor, qTensor, kTensor,
-            vTensor, kvCacheTensor, 1.0f, 1.0f, stream);
+            vTensor, kvCacheTensor, 1.0f, 1.0f, stream, /*pageTable=*/nullptr, /*maxPagesPerSeq=*/0);
     }
 
     CUDA_CHECK(cudaStreamSynchronize(stream));
@@ -513,12 +515,13 @@ void TestRopeWriteKvDecode(int32_t const batchSize, AttnParams const& attnParams
         if (!isTreeAttention)
         {
             launchApplyRopeWriteKV(cosSinCacheTensor, seqLensTensor, qTensorForFP8, kTensorForFP8, vTensorForFP8, kvFp8,
-                kScaleQuantOrig, vScaleQuantOrig, stream, false);
+                kScaleQuantOrig, vScaleQuantOrig, stream, false, /*pageTable=*/nullptr, /*maxPagesPerSeq=*/0);
         }
         else
         {
             launchApplyRopeWriteKVTreeDecoding(cosSinCacheTensor, seqLensTensor, customSeqLensTensor, qTensorForFP8,
-                kTensorForFP8, vTensorForFP8, kvFp8, kScaleQuantOrig, vScaleQuantOrig, stream);
+                kTensorForFP8, vTensorForFP8, kvFp8, kScaleQuantOrig, vScaleQuantOrig, stream, /*pageTable=*/nullptr,
+                /*maxPagesPerSeq=*/0);
         }
         CUDA_CHECK(cudaStreamSynchronize(stream));
 
@@ -602,8 +605,9 @@ void BenchmarkRopeWriteKv(
     cudaStream_t stream{nullptr};
 
     auto launchPrefill = [&]() {
-        launchApplyRopeWriteKV(
-            cosSinCacheTensor, std::nullopt, qTensor, kTensor, vTensor, kvCacheTensor, 1.0f, 1.0f, stream, true);
+        launchApplyRopeWriteKV(cosSinCacheTensor, std::nullopt, qTensor, kTensor, vTensor, kvCacheTensor, 1.0f, 1.0f,
+            stream, true,
+            /*pageTable=*/nullptr, /*maxPagesPerSeq=*/0);
     };
 
     constexpr int32_t numWarmup = 10;
@@ -638,8 +642,9 @@ void BenchmarkRopeWriteKv(
         rt::Coords{batchSize, 2, numKVHeads, kvCacheCapacity, headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kFP8);
 
     auto launchPrefillFp8 = [&]() {
-        launchApplyRopeWriteKV(
-            cosSinCacheTensor, std::nullopt, qTensor, kTensor, vTensor, kvCacheTensorFp8, 1.0f, 1.0f, stream, true);
+        launchApplyRopeWriteKV(cosSinCacheTensor, std::nullopt, qTensor, kTensor, vTensor, kvCacheTensorFp8, 1.0f, 1.0f,
+            stream, true,
+            /*pageTable=*/nullptr, /*maxPagesPerSeq=*/0);
     };
 
     for (int32_t i = 0; i < numWarmup; i++)

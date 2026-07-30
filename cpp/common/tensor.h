@@ -318,6 +318,15 @@ public:
      */
     int64_t getMemoryCapacity() const noexcept;
 
+    /*!
+     * @brief Bytes covered by the current shape (not the allocated capacity).
+     *
+     * Prefer this over getMemoryCapacity() when zeroing or copying only the live
+     * view after reshape — capacity can be hundreds of MiB for spec-decode
+     * hidden-state scratch allocated at max input length.
+     */
+    int64_t getActiveBytes() const noexcept;
+
     //! @brief Get stride of the tensor at given dimension
     //! @param idx Dimension index
     //! @return Stride value

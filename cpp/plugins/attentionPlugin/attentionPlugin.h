@@ -36,6 +36,13 @@ namespace plugins
 //!
 //! This plugin implements efficient attention mechanisms including context attention (prefill)
 //! and decode attention with KV cache support.
+//!
+//! BREAKING ABI NOTE (paged-KV substrate): this plugin's required input count changed from 7 to 8
+//! (added `kv_page_table`, see kIN_KV_PAGE_TABLE_IDX) and the tree-attention optional inputs shifted
+//! accordingly. The plugin version string was deliberately NOT bumped -- this project always
+//! regenerates ONNX and rebuilds engines together with the runtime, so an ABI break here is
+//! accepted rather than versioned. Any ONNX/engine older than this change must be re-exported and
+//! rebuilt; it will not load correctly against this plugin.
 class AttentionPlugin : public nvinfer1::IPluginV3,
                         public nvinfer1::IPluginV3OneCore,
                         public nvinfer1::IPluginV3OneBuildV2,
@@ -98,13 +105,22 @@ public:
     void setPluginNamespace(char const* pluginNamespace) noexcept;
 
 private:
-    //! Split a BHSD-layout KV cache [B, 2, Hkv, cap, D] into separate K and V tensors.
-    //! When seqLen == 0 (default), copies the full capacity → output is [B, cap, Hkv, D].
-    //! When seqLen > 0, copies only the first seqLen tokens → output is [B, seqLen, Hkv, D].
-    //! The compact form allows downstream kernels to derive batch stride from the output's S dimension.
-    static std::pair<rt::Tensor, rt::Tensor> deinterleaveKVCache(rt::Tensor const& kvCacheTensor,
-        std::byte*& workspacePtr, int32_t batchSize, int32_t numKVHeads, int32_t kvCacheCapacity, int32_t headSize,
-        int32_t seqLen, cudaStream_t stream);
+    //! Produce split K/V FP16 for prefill consumers that cannot read the paged pool directly
+    //! (FMHA_v2 fallback, FFPA d512). Always device-gathers the page table into @p workspacePtr
+    //! (no in-place alias): the gather follows any page table (identity or scrambled) correctly
+    //! and identically in debug and release, and dequantizes an FP8 pool to FP16 using @p kScale /
+    //! @p vScale so `dataPointer<half>()` consumers never reinterpret FP8 bytes. The V half lives
+    //! at pool page id + numPages.
+    //! When @p seqLen == 0, gathers the full capacity → output is [B, capPadded, Hkv, D].
+    //! When @p seqLen > 0, gathers only the first seqLen tokens → output is [B, seqLen, Hkv, D];
+    //! the compact form lets downstream kernels derive batch stride from the output's S dimension.
+    //! An unmapped page zero-fills its destination span (@p kvSeqLens gives each slot's live
+    //! length, which bounds the copied prefix); the runtime guarantees mapped coverage for live
+    //! positions, so an in-range unmapped page cannot occur by construction.
+    static std::pair<rt::Tensor, rt::Tensor> splitPagedKV(rt::Tensor const& poolTensor, int32_t const* pageTable,
+        int32_t const* kvSeqLens, int32_t maxPagesPerSeq, std::byte*& workspacePtr, int32_t batchSize,
+        int32_t numKVHeads, int32_t capPadded, int32_t headSize, int32_t seqLen, float kScale, float vScale,
+        cudaStream_t stream);
 
     //! enqueue() body. enqueue() wraps it in a try/catch so a thrown error
     //! fails the call instead of terminating the process (enqueue is noexcept).
@@ -165,6 +181,12 @@ protected:
     bool mUseCuteDslFMHA{true};
 #else
     bool mUseCuteDslFMHA{false};
+#endif
+
+#ifdef CUTE_DSL_FMHA_V2_ENABLED
+    bool mUseCuteDslFMHAV2{true};
+#else
+    bool mUseCuteDslFMHAV2{false};
 #endif
 
     //! Whether FMHA context kernels are available for this configuration.

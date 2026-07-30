@@ -28,9 +28,12 @@ namespace kernel
 /// Per-layer KV cache metadata for batched kernel operations.
 struct KVLayerInfo
 {
-    void* data;         //!< Pointer to this layer's KV buffer [maxB, 2, H, S, D]
+    void* data;         //!< Pointer to this layer's two-pool NHD KV buffer [2, maxB, capPadded, H, D]
     int32_t numKVHeads; //!< Number of KV heads for this layer
-    int32_t maxSeqLen;  //!< Max sequence length for this layer
+    int32_t maxSeqLen;  //!< Per-row token capacity of this layer's pool (capPadded)
+    int32_t maxBatch;   //!< Allocation batch (outer dim of each K/V half); needed to compute the
+                        //!< V-half offset (= maxBatch*maxSeqLen*H*D) for kernels that address a
+                        //!< single KVLayerInfo without a separately-passed maxBatchSize parameter.
 };
 
 /**
@@ -71,26 +74,28 @@ void compactTensorBatch(rt::Tensor const& src, rt::Tensor const& batchMapping, r
     int32_t newActiveBatch, cudaStream_t stream);
 
 /**
- * @brief Batched compaction across multiple layers in a single kernel launch.
+ * @brief Batched KV-cache row compaction, copying only each row's live token prefix.
  *
- * All layers in the batch must share the same headDim (template-selected).
- * Layers may have different numKVHeads and maxSeqLen.
+ * Like compactTensorBatch, but `src`/`dst` are treated as [batch, tokenCapacity * elemsPerToken] and
+ * only the first `liveLengths[oldBatchIdx] * elemsPerToken` elements of each moved row are copied —
+ * the remainder of the row (padding beyond the live sequence length) is left untouched. This bounds
+ * compaction traffic to the live KV length instead of the full padded row capacity.
  *
- * @param layerInfos      [numLayers] GPU array of KVLayerInfo
- * @param batchMapping    [oldActiveBatch] GPU tensor
- * @param kvCacheLengths  [maxBatch] GPU tensor of sequence lengths
- * @param numLayers       Number of layers in this batch
- * @param headDim         Head dimension (same for all layers in batch)
- * @param kvCacheType     KV cache storage dtype (kHALF or kFP8); controls element size for stride calculation
- * @param maxKVHeads      Maximum numKVHeads across all layers (for grid sizing)
- * @param maxBatchSize    Max batch size
- * @param oldActiveBatch  Batches before eviction
- * @param newActiveBatch  Batches after eviction
- * @param stream          CUDA stream
+ * @param src               Source tensor (const input), shape [oldActiveBatch, tokenCapacity * elemsPerToken]
+ * @param batchMapping      [oldActiveBatch] GPU tensor (const input), mapping[i] = newBatchIdx or -1
+ * @param liveLengths       [oldActiveBatch] GPU INT32 tensor (const input), live token length per old batch slot
+ * @param dst               Destination tensor (output, can be same as src for in-place operation)
+ * @param oldActiveBatch    Number of batches before eviction
+ * @param newActiveBatch    Number of batches after eviction
+ * @param elemsPerToken     Number of tensor elements per token row (e.g. numKVHeads * headDim)
+ * @param stream            CUDA stream
+ *
+ * @note Assumes batch dimension is the first dimension (dim 0)
+ * @note For in-place operation, pass the same tensor as both src and dst
+ * @throws std::runtime_error if tensors are not located on the GPU, or tensor shapes are invalid
  */
-void compactKVCacheBatched(KVLayerInfo const* layerInfos, rt::Tensor const& batchMapping,
-    rt::Tensor const& kvCacheLengths, int32_t numLayers, int32_t headDim, nvinfer1::DataType kvCacheType,
-    int32_t maxKVHeads, int32_t maxBatchSize, int32_t oldActiveBatch, int32_t newActiveBatch, cudaStream_t stream);
+void compactKVCacheBatched(rt::Tensor const& src, rt::Tensor const& batchMapping, rt::Tensor const& liveLengths,
+    rt::Tensor& dst, int32_t oldActiveBatch, int32_t newActiveBatch, int32_t elemsPerToken, cudaStream_t stream);
 
 } // namespace kernel
 } // namespace trt_edgellm

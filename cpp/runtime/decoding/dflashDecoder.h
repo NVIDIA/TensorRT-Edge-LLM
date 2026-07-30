@@ -33,7 +33,6 @@ class DFlashDecoder final : public DecodingStrategy
 public:
     DFlashDecoder(DecodingRuntimeContext& runtime, std::filesystem::path const& engineDir,
         SpecDecodeDraftingConfig const& draftingConfig, cudaStream_t stream);
-
     DecodingStrategyKind kind() const noexcept override
     {
         return DecodingStrategyKind::kDFlash;

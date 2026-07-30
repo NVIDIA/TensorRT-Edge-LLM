@@ -48,7 +48,8 @@ inline std::string const kAUDIO_ENCODER = "audio_encoder";                 //!< 
 inline std::string const kVISION_ENCODER = "vision_encoder";               //!< Vision encoder stage
 inline std::string const kSPEC_DECODE_DRAFT_PREFILL = "spec_decode_draft_prefill"; //!< Speculative decode draft prefill
 inline std::string const kSPEC_DECODE_DRAFT_PROPOSAL
-    = "spec_decode_draft_proposal"; //!< Speculative decode draft proposal
+    = "spec_decode_draft_proposal";                                              //!< Speculative decode draft proposal
+inline std::string const kSPEC_DECODE_DRAFT_ACCEPT = "spec_decode_draft_accept"; //!< Speculative decode draft accept
 inline std::string const kSPEC_DECODE_BASE_VERIFICATION
     = "spec_decode_base_verification";                             //!< Speculative decode base verification
 inline std::string const kCODE2WAV = "code2wav";                   //!< Code2Wav vocoder stage
@@ -175,12 +176,14 @@ class SpecDecodeGenerationMetrics : public BaseMetrics
 {
 public:
     int64_t totalIterations{0};      //!< Total number of speculative decoding iterations
-    int64_t totalGeneratedTokens{0}; //!< Total number of generated tokens
+    int64_t totalGeneratedTokens{0}; //!< Total number of generated tokens, including base-prefill tokens
+    int64_t totalAcceptedTokens{0};  //!< Total tokens produced by speculative decoding iterations
 
     //! @brief Record a speculative decoding generation run
     //! @param iterations Number of iterations
     //! @param generatedTokens Number of generated tokens
-    void recordRun(int64_t iterations, int64_t generatedTokens) noexcept
+    //! @param acceptedTokens Number of tokens produced by speculative decoding iterations
+    void recordRun(int64_t iterations, int64_t generatedTokens, int64_t acceptedTokens) noexcept
     {
         if (!getProfilingEnabled())
         {
@@ -189,6 +192,7 @@ public:
         totalRuns++;
         totalIterations += iterations;
         totalGeneratedTokens += generatedTokens;
+        totalAcceptedTokens += acceptedTokens;
     }
 };
 

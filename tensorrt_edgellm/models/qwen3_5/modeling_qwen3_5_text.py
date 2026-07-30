@@ -61,7 +61,7 @@ from ...config import LAYER_GDN, GdnConfig, ModelConfig
 from ..default.modeling_default import MLP, OnnxSpec, RMSNorm
 from ..linear import (FP16Linear, NVFP4LinearMethod, ReplicatedLinear,
                       is_nvfp4_linear, make_linear)
-from ..ops import (attention_plugin, causal_conv1d,
+from ..ops import (KV_PAGE_SIZE, attention_plugin, causal_conv1d,
                    causal_conv1d_with_intermediate, gated_delta_net,
                    gated_delta_net_with_intermediate)
 
@@ -379,6 +379,7 @@ class GatedAttention(nn.Module):
         rope_rotary_cos_sin: torch.Tensor,
         context_lengths: torch.Tensor,
         kvcache_start_index: torch.Tensor,
+        kv_page_table: torch.Tensor,
         attention_mask: "torch.Tensor | None" = None,
         attention_pos_id: "torch.Tensor | None" = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -427,7 +428,7 @@ class GatedAttention(nn.Module):
         attn_output, present_key_value = attention_plugin(
             query_states, key_states, value_states, past_key_value,
             context_lengths, rope_rotary_cos_sin, kvcache_start_index,
-            **kwargs)
+            kv_page_table, **kwargs)
 
         # attn_output: [batch, seq, num_heads, head_dim]
         # Apply gating: sigmoid(gate) * attn_output
@@ -475,6 +476,7 @@ class Qwen3_5DecoderLayer(nn.Module):
         rope_rotary_cos_sin: "torch.Tensor | None" = None,
         context_lengths: "torch.Tensor | None" = None,
         kvcache_start_index: "torch.Tensor | None" = None,
+        kv_page_table: "torch.Tensor | None" = None,
         attention_mask: "torch.Tensor | None" = None,
         attention_pos_id: "torch.Tensor | None" = None,
         # GDN-specific (ignored by attention layers)
@@ -508,7 +510,8 @@ class Qwen3_5DecoderLayer(nn.Module):
         else:
             attn_out, present_kv = self.self_attn(
                 normed, past_key_value, rope_rotary_cos_sin, context_lengths,
-                kvcache_start_index, attention_mask, attention_pos_id)
+                kvcache_start_index, kv_page_table, attention_mask,
+                attention_pos_id)
             hidden_states = residual + attn_out
             residual = hidden_states
             hidden_states = residual + self.mlp(
@@ -547,6 +550,7 @@ class Qwen3_5Backbone(nn.Module):
         rope_rotary_cos_sin: torch.Tensor,
         context_lengths: torch.Tensor,
         kvcache_start_index: torch.Tensor,
+        kv_page_table: torch.Tensor,
         conv_states: Tuple[torch.Tensor, ...] = (),
         recurrent_states: Tuple[torch.Tensor, ...] = (),
         attention_mask: "torch.Tensor | None" = None,
@@ -596,6 +600,7 @@ class Qwen3_5Backbone(nn.Module):
                     rope_rotary_cos_sin=rope_rotary_cos_sin,
                     context_lengths=context_lengths,
                     kvcache_start_index=kvcache_start_index,
+                    kv_page_table=kv_page_table,
                     attention_mask=attention_mask,
                     attention_pos_id=attention_pos_id,
                 )
@@ -641,9 +646,14 @@ def _is_dflash_base_export(config: ModelConfig) -> bool:
     return bool(getattr(config, "dflash_base", False))
 
 
-def _is_dflash_tree_base_export(config: ModelConfig) -> bool:
-    """Return True when exporting DDTree metadata for Qwen3.5 hybrid state."""
-    return bool(getattr(config, "dflash_tree_base", False))
+def _is_spec_tree_base_export(config: ModelConfig) -> bool:
+    """Return True when exporting DDTree metadata for Qwen3.5 hybrid state.
+
+    Both the DFlash DDTree base and the MTP tree base consume the same
+    ``tree_parent_ids`` / ``tree_depths`` verify inputs.
+    """
+    return bool(getattr(config, "dflash_tree_base", False)) or bool(
+        getattr(config, "mtp_tree_base", False))
 
 
 def _make_flat_wrapper_hybrid(model: nn.Module,
@@ -660,12 +670,12 @@ def _make_flat_wrapper_hybrid(model: nn.Module,
 
     ``Na`` = number of attention layers, ``Ng`` = number of GDN layers.
     """
-    param_names: List[str] = (["inputs_embeds"] +
-                              [f"past_key_values_{i}" for i in range(Na)] + [
-                                  "rope_rotary_cos_sin", "context_lengths",
-                                  "kvcache_start_index", "last_token_ids"
-                              ] + [f"conv_state_{i}" for i in range(Ng)] +
-                              [f"recurrent_state_{i}" for i in range(Ng)])
+    param_names: List[str] = (
+        ["inputs_embeds"] + [f"past_key_values_{i}" for i in range(Na)] + [
+            "rope_rotary_cos_sin", "context_lengths", "kvcache_start_index",
+            "kv_page_table", "last_token_ids"
+        ] + [f"conv_state_{i}"
+             for i in range(Ng)] + [f"recurrent_state_{i}" for i in range(Ng)])
     spec_base = mtp_base or dflash_base
     if spec_base:
         param_names += [
@@ -695,7 +705,8 @@ def _make_flat_wrapper_hybrid(model: nn.Module,
             f"present_conv_states, present_recurrent_states, "
             f"intermediate_conv_states, intermediate_recurrent_states = self._model(\n"
             f"        inputs_embeds, {past_kv_tuple}, rope_rotary_cos_sin, "
-            f"context_lengths, kvcache_start_index, last_token_ids,\n"
+            f"context_lengths, kvcache_start_index, kv_page_table, "
+            f"last_token_ids,\n"
             f"        {conv_tuple}, {rec_tuple}{mtp_kwargs})\n"
             f"    return ((logits, hidden_states) + tuple(present_key_values)\n"
             f"            + tuple(present_conv_states)"
@@ -707,7 +718,8 @@ def _make_flat_wrapper_hybrid(model: nn.Module,
             f"    logits, present_key_values, present_conv_states, "
             f"present_recurrent_states = self._model(\n"
             f"        inputs_embeds, {past_kv_tuple}, rope_rotary_cos_sin, "
-            f"context_lengths, kvcache_start_index, last_token_ids,\n"
+            f"context_lengths, kvcache_start_index, kv_page_table, "
+            f"last_token_ids,\n"
             f"        {conv_tuple}, {rec_tuple})\n"
             f"    return ((logits,) + tuple(present_key_values)\n"
             f"            + tuple(present_conv_states)"
@@ -895,7 +907,7 @@ class Qwen3_5CausalLM(nn.Module):
         Ng = config.num_gdn_layers
         mtp_base = _is_mtp_base_export(config)
         dflash_base = _is_dflash_base_export(config)
-        dflash_tree_base = _is_dflash_tree_base_export(config)
+        spec_tree_base = _is_spec_tree_base_export(config)
         device = next(itertools.chain(self.parameters(),
                                       self.buffers())).device
         dtype16 = torch.float16
@@ -909,11 +921,12 @@ class Qwen3_5CausalLM(nn.Module):
                                     device=device)
         kv_dtype = (torch.float8_e4m3fn
                     if config.quant.kv_cache_quant == "fp8" else dtype16)
+        # Paged KV pool binding: [2, num_pages, KV_PAGE_SIZE, num_kv_heads, head_dim].
         past_key_values_list: List[torch.Tensor] = [
-            torch.zeros(batch_size,
-                        2,
+            torch.zeros(2,
+                        1,
+                        KV_PAGE_SIZE,
                         config.num_key_value_heads,
-                        past_len,
                         config.head_dim,
                         dtype=kv_dtype,
                         device=device) for _ in range(Na)
@@ -930,6 +943,11 @@ class Qwen3_5CausalLM(nn.Module):
         kvcache_start_index = torch.zeros(batch_size,
                                           dtype=torch.int32,
                                           device=device)
+        kv_page_table = torch.zeros(batch_size,
+                                    2,
+                                    1,
+                                    dtype=torch.int32,
+                                    device=device)
         spec_base = mtp_base or dflash_base
         select_len = 2 if spec_base else 1
         last_token_ids = torch.zeros(batch_size,
@@ -954,15 +972,15 @@ class Qwen3_5CausalLM(nn.Module):
         ]
 
         args = (inputs_embeds, *past_key_values_list, rope_rotary_cos_sin,
-                context_lengths, kvcache_start_index, last_token_ids,
-                *conv_states, *recurrent_states)
+                context_lengths, kvcache_start_index, kv_page_table,
+                last_token_ids, *conv_states, *recurrent_states)
 
-        input_names = (["inputs_embeds"] +
-                       [f"past_key_values_{i}" for i in range(Na)] + [
-                           "rope_rotary_cos_sin", "context_lengths",
-                           "kvcache_start_index", "last_token_ids"
-                       ] + [f"conv_state_{i}" for i in range(Ng)] +
-                       [f"recurrent_state_{i}" for i in range(Ng)])
+        input_names = (
+            ["inputs_embeds"] + [f"past_key_values_{i}" for i in range(Na)] + [
+                "rope_rotary_cos_sin", "context_lengths",
+                "kvcache_start_index", "kv_page_table", "last_token_ids"
+            ] + [f"conv_state_{i}" for i in range(Ng)] +
+            [f"recurrent_state_{i}" for i in range(Ng)])
         output_names = (["logits"] +
                         [f"present_key_values_{i}" for i in range(Na)] +
                         [f"present_conv_state_{i}" for i in range(Ng)] +
@@ -971,18 +989,22 @@ class Qwen3_5CausalLM(nn.Module):
         batch = torch.export.Dim("batch", min=1, max=256)
         seq = torch.export.Dim("seq_len", min=1, max=32768)
         pos = torch.export.Dim("max_pos", min=1, max=32768)
-        past = torch.export.Dim("past_len", min=1, max=32768)
         rope_batch = torch.export.Dim("rope_batch", min=1, max=256)
         kv_batch = torch.export.Dim("kv_batch", min=1, max=256)
+        page_batch = torch.export.Dim("page_batch", min=1, max=256)
+        max_pages = torch.export.Dim("max_pages_per_seq", min=1, max=32768)
+        num_pages = torch.export.Dim("num_pages", min=1, max=1048576)
         num_selected = torch.export.Dim("num_selected", min=1,
                                         max=256) if spec_base else None
 
         all_shapes: list = [{0: batch, 1: seq}]  # inputs_embeds
         for _ in range(Na):
-            all_shapes.append({0: batch, 3: past})  # past_key_values_i
+            all_shapes.append({1:
+                               num_pages})  # past_key_values_i (pool-shaped)
         all_shapes.append({0: rope_batch, 1: pos})  # rope_rotary_cos_sin
         all_shapes.append({0: batch})  # context_lengths
         all_shapes.append({0: kv_batch})  # kvcache_start_index
+        all_shapes.append({0: page_batch, 2: max_pages})  # kv_page_table
         if spec_base:
             all_shapes.append({0: batch, 1: num_selected})  # last_token_ids
         else:
@@ -1029,7 +1051,7 @@ class Qwen3_5CausalLM(nn.Module):
             })  # attention_mask
             all_shapes.append({0: torch.export.Dim.AUTO
                                })  # spec_verify_phase_marker
-            if dflash_tree_base:
+            if spec_tree_base:
                 tree_parent_ids = torch.zeros(batch_size,
                                               seq_len,
                                               dtype=torch.int32,
@@ -1048,7 +1070,7 @@ class Qwen3_5CausalLM(nn.Module):
                                             Ng,
                                             mtp_base=mtp_base,
                                             dflash_base=dflash_base,
-                                            dflash_tree_base=dflash_tree_base)
+                                            dflash_tree_base=spec_tree_base)
         wrapped.eval()
 
         return OnnxSpec(wrapped=wrapped,
@@ -1064,6 +1086,7 @@ class Qwen3_5CausalLM(nn.Module):
         rope_rotary_cos_sin: torch.Tensor,
         context_lengths: torch.Tensor,
         kvcache_start_index: torch.Tensor,
+        kv_page_table: torch.Tensor,
         last_token_ids: torch.Tensor,
         conv_states: Tuple[torch.Tensor, ...] = (),
         recurrent_states: Tuple[torch.Tensor, ...] = (),
@@ -1085,6 +1108,7 @@ class Qwen3_5CausalLM(nn.Module):
              rope_rotary_cos_sin,
              context_lengths,
              kvcache_start_index,
+             kv_page_table,
              conv_states,
              recurrent_states,
              attention_mask=attention_mask,
@@ -1099,7 +1123,21 @@ class Qwen3_5CausalLM(nn.Module):
         selected_hidden_states = torch.ops.trt.gather_nd(
             hidden_states, last_token_ids)
 
-        logits = self.lm_head(selected_hidden_states).to(torch.float32)
+        nvfp4_mtp_base = mtp_base and is_nvfp4_linear(self.lm_head)
+        if nvfp4_mtp_base:
+            # TensorRT 11.1 cannot compile the rank-3 GatherND -> NVFP4 lm_head
+            # fusion for this vocabulary size on Thor.  Flattening only the
+            # independent token rows preserves the projection and matches the
+            # runtime's [batch * selected, vocab] logits view.
+            selected_hidden_states = selected_hidden_states.reshape(
+                -1, self.config.hidden_size)
+        logits = self.lm_head(selected_hidden_states)
+        # MTP base engines keep the public logits output in FP16, keeping the vocabulary-sized output conversion
+        # outside the fragile Myelin tail. The runtime immediately upcasts the engine output before sampling or
+        # acceptance. Other base variants retain the FP32 ABI.
+        keep_fp16_logits = self.config.mtp_tree_base or nvfp4_mtp_base
+        if not keep_fp16_logits:
+            logits = logits.to(torch.float32)
         if dflash_base:
             return (logits, dflash_hidden_concat, present_key_values,
                     present_conv_states, present_recurrent_states,

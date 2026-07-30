@@ -870,6 +870,7 @@ def _export_llm(model_dir: str,
                 key_remap=key_remap,
                 reduced_vocab_dir=reduced_vocab_dir or None,
                 mtp_base=mtp_base,
+                mtp_tree_base=mtp_base,
                 dflash_base=dflash_base,
                 dflash_tree_base=dflash_tree_base,
                 dflash_draft_dir=dflash_draft_dir or None,
@@ -939,7 +940,8 @@ def _export_mtp_draft(model_dir: str,
         from ..model import AutoModel
         model = AutoModel.from_pretrained(model_dir,
                                           device="cpu",
-                                          mtp_draft=True)
+                                          mtp_draft=True,
+                                          mtp_tree_base=True)
     except (OSError, ValueError, RuntimeError, ImportError) as exc:
         logger.exception("[MTP Draft] Failed to load checkpoint")
         raise SystemExit(1) from exc
@@ -2466,8 +2468,8 @@ def main() -> None:
         action="store_true",
         help=
         ("Export MTP components. Qwen-style checkpoints use checkpoint-internal "
-         "MTP weights; paired MTP models such as Gemma4 require --mtp-draft-dir."
-         ),
+         "MTP weights and always use tree verification; paired MTP models such as "
+         "Gemma4 require --mtp-draft-dir."),
     )
     p.add_argument(
         "--mtp-draft-dir",
@@ -2487,6 +2489,11 @@ def main() -> None:
     p.add_argument(
         "--gemma4-mtp-assistant-dir",
         default="",
+        help=argparse.SUPPRESS,
+    )
+    p.add_argument(
+        "--mtp-tree-base",
+        action="store_true",
         help=argparse.SUPPRESS,
     )
     p.add_argument(
@@ -2586,6 +2593,8 @@ def main() -> None:
         p.error("Only Qwen3-TTS CustomVoice checkpoints are supported. "
                 f"Got tts_model_type={config.get('tts_model_type')!r}.")
 
+    if args.mtp_tree_base:
+        args.mtp = True
     if args.eagle_base and args.mtp:
         p.error("--eagle-base and --mtp cannot be enabled together")
     if args.mtp_draft_dir and args.gemma4_mtp_assistant_dir:

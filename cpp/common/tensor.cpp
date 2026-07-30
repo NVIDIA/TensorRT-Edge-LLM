@@ -298,6 +298,11 @@ int64_t Tensor::getMemoryCapacity() const noexcept
     return memoryCapacity;
 }
 
+int64_t Tensor::getActiveBytes() const noexcept
+{
+    return getShape().volume() * static_cast<int64_t>(utils::getTypeSize(getDataType()));
+}
+
 int64_t Tensor::getStride(int32_t idx) const
 {
     if (idx < 0 || idx >= mShape.getNumDims())

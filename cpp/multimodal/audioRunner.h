@@ -74,6 +74,10 @@ public:
     //! \param[in] stream CUDA stream for execution
     //! \return True if inference succeeded, false otherwise
     bool infer(cudaStream_t stream) override;
+    bool prepareArtifactSubset(rt::LLMGenerationRequest const& request, std::vector<size_t> const& originalItemIndices,
+        cudaStream_t stream) override;
+    std::vector<int64_t> preparedArtifactRowCounts() const override;
+    void discardPreparedInput() noexcept override;
 
     //! \brief Validate and load configuration from JSON file
     //! \param[in] engineDir Path to engine directory
@@ -102,13 +106,31 @@ public:
         rt::OptionalOutputTensor mropeCosSinOut, cudaStream_t stream) override;
 
 private:
-    //! \brief Preprocess audio buffers (PCM → mel internally) and run encoder.
+    struct ClipPlan
+    {
+        std::shared_ptr<rt::audio::AudioPCM> pcm;
+        rt::Tensor hostMel;
+        int64_t numFrames{};
+    };
+
+    //! \brief Inspect audio buffers, select a fbank path, and derive per-clip encoder row counts.
     //! \param[in] audioBuffers Input audio data carrying raw PCM (``AudioData::pcm``)
     //! \param[out] audioTokenLengths Output token lengths for each audio clip
     //! \param[in] stream CUDA stream for execution
-    //! \return True if preprocessing and inference succeeded, false otherwise
-    bool preprocessAudio(std::vector<rt::audioUtils::AudioData> const& audioBuffers,
-        std::vector<int64_t>& audioTokenLengths, cudaStream_t stream);
+    //! \return True if inspection succeeded, false otherwise
+    bool inspectAudio(
+        std::vector<rt::audioUtils::AudioData> const& audioBuffers, std::vector<int64_t>& audioTokenLengths);
+
+    //! \brief Encode all clips retained by inspectAudio into one offset-correct output tensor.
+    bool encodePreparedAudio(cudaStream_t stream);
+
+    //! \brief Materialize one prepared clip as a device mel tensor, using online fbank when available.
+    bool produceClipMel(ClipPlan& plan, rt::Tensor& melSpec, cudaStream_t stream);
+
+    //! \brief Encode one device mel tensor into the output at destRowOffset.
+    bool encodeClipMel(rt::Tensor const& melSpec, int64_t destRowOffset, int64_t expectedRows, cudaStream_t stream);
+
+    bool resizeEmbeddingForRows(int64_t rows);
 
     //! \brief Initialize persistent online-GPU-fbank state: load the CuTe DSL
     //!        GEMM module, pre-allocate every device buffer the fbank path
@@ -135,6 +157,9 @@ private:
     //! \param[in] stream CUDA stream
     //! \return True if melSpec was produced on the GPU, false to use the CPU path
     bool tryOnlineGpuFbank(rt::audio::AudioPCM const& pcm, rt::Tensor& melSpec, cudaStream_t stream);
+
+    //! \brief Return the planned online-fbank frame count, or zero when this clip must use CPU mel extraction.
+    int32_t plannedGpuFbankFrames(rt::audio::AudioPCM const& pcm) const;
 
     //! \brief Tokenize text and insert audio tokens
     //! \param[in] request LLM generation request
@@ -179,6 +204,8 @@ private:
     rt::audioUtils::FbankResources mFbankResources{}; //!< Weights/tables, params, pre-allocated workspace
     rt::Tensor mPcmF32Device{};                       //!< [maxPcmSamples] Float — PCM staging, reshaped to [N] per clip
     rt::Tensor mMelSpecDevice{}; //!< [1, nMel, maxFrames] Half — fbank output backing store, viewed at [1, nMel, T_out]
+    std::vector<ClipPlan> mPreparedClipPlans;   //!< Request-local clip inputs retained between inspect and infer
+    std::vector<int64_t> mPreparedTokenLengths; //!< Encoder row counts aligned with mPreparedClipPlans
 };
 
 } // namespace rt

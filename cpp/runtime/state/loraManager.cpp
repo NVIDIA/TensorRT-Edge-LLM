@@ -24,6 +24,7 @@
 #include "runtime/exec/engineExecutor.h"
 
 #include <NvInferRuntime.h>
+#include <limits>
 #include <set>
 #include <stdexcept>
 
@@ -34,6 +35,14 @@ namespace rt
 
 namespace
 {
+
+void advanceAdapterGeneration(std::map<std::string, uint64_t>& generations, std::string const& name)
+{
+    uint64_t const current = generations[name];
+    ELLM_CHECK(
+        current < std::numeric_limits<uint64_t>::max(), "LoRAManager: adapter generation exhausted for '" + name + "'");
+    generations[name] = current + 1;
+}
 
 //! Enumerate LoRA weight tensor names from an engine's I/O bindings.
 std::vector<std::string> collectLoraWeightsTensorNames(nvinfer1::ICudaEngine const& engine)
@@ -71,12 +80,14 @@ void LoRAManager::loadWeights(std::string const& name, std::filesystem::path con
     LOG_INFO("LoRAManager: adapter '%s' loaded with %zu binding(s)", name.c_str(), weights.size());
 
     mAdapters[name] = std::move(weights);
+    advanceAdapterGeneration(mAdapterGenerations, name);
 }
 
 void LoRAManager::addWeights(std::string const& name, std::map<std::string, rt::Tensor> weights)
 {
     LOG_INFO("LoRAManager: adding adapter '%s' with %zu binding(s)", name.c_str(), weights.size());
     mAdapters[name] = std::move(weights);
+    advanceAdapterGeneration(mAdapterGenerations, name);
 }
 
 void LoRAManager::switchWeights(std::string const& name)
@@ -122,6 +133,18 @@ rt::Tensor& LoRAManager::getActiveWeight(std::string const& bindingName)
 std::string const& LoRAManager::getActiveAdapterName() const noexcept
 {
     return mActiveAdapterName;
+}
+
+uint64_t LoRAManager::getAdapterGeneration(std::string const& name) const
+{
+    auto const generation = mAdapterGenerations.find(name);
+    ELLM_CHECK(generation != mAdapterGenerations.end(), "LoRAManager: adapter '" + name + "' not found");
+    return generation->second;
+}
+
+uint64_t LoRAManager::getActiveAdapterGeneration() const
+{
+    return mActiveAdapterName.empty() ? 0U : getAdapterGeneration(mActiveAdapterName);
 }
 
 std::vector<std::string> LoRAManager::getBindingNames() const

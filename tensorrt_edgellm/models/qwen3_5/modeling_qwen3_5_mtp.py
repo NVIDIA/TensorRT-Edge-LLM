@@ -23,8 +23,8 @@ import torch.nn.functional as F
 
 from ...config import ModelConfig
 from ..default.modeling_default import OnnxSpec
-from ..linear import make_linear
-from ..ops import attention_plugin
+from ..linear import is_nvfp4_linear, make_linear
+from ..ops import KV_PAGE_SIZE, attention_plugin
 from .modeling_qwen3_5_text import MLP, GatedAttention, Qwen3_5RMSNorm
 
 __all__ = ["Qwen3_5MtpDraftModel", "Qwen3_5MtpDecoderLayer"]
@@ -55,6 +55,7 @@ class Qwen3_5MtpDecoderLayer(nn.Module):
         rope_rotary_cos_sin: torch.Tensor,
         context_lengths: torch.Tensor,
         kvcache_start_index: torch.Tensor,
+        kv_page_table: torch.Tensor,
         attention_mask: torch.Tensor,
         attention_pos_id: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -85,6 +86,7 @@ class Qwen3_5MtpDecoderLayer(nn.Module):
             context_lengths,
             rope_rotary_cos_sin,
             kvcache_start_index,
+            kv_page_table,
             num_q_heads=attn.num_heads,
             num_kv_heads=attn.num_kv_heads,
             head_size=attn.head_dim,
@@ -109,6 +111,7 @@ class Qwen3_5MtpDecoderLayer(nn.Module):
         rope_rotary_cos_sin: torch.Tensor,
         context_lengths: torch.Tensor,
         kvcache_start_index: torch.Tensor,
+        kv_page_table: torch.Tensor,
         attention_mask: torch.Tensor,
         attention_pos_id: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -120,6 +123,7 @@ class Qwen3_5MtpDecoderLayer(nn.Module):
             rope_rotary_cos_sin,
             context_lengths,
             kvcache_start_index,
+            kv_page_table,
             attention_mask,
             attention_pos_id,
         )
@@ -139,6 +143,7 @@ def _make_flat_wrapper_qwen3_5_mtp(model: nn.Module,
             "rope_rotary_cos_sin",
             "context_lengths",
             "kvcache_start_index",
+            "kv_page_table",
             "last_token_ids",
             "hidden_states_input",
             "hidden_states_from_draft",
@@ -152,7 +157,8 @@ def _make_flat_wrapper_qwen3_5_mtp(model: nn.Module,
     body = (
         f"    logits, hidden_states, present_key_values = self._model(\n"
         f"        inputs_embeds, {past_kv_tuple}, rope_rotary_cos_sin,\n"
-        f"        context_lengths, kvcache_start_index, last_token_ids,\n"
+        f"        context_lengths, kvcache_start_index, kv_page_table,\n"
+        f"        last_token_ids,\n"
         f"        hidden_states_input, hidden_states_from_draft,\n"
         f"        attention_pos_id, attention_mask)\n"
         f"    return (logits, hidden_states) + tuple(present_key_values)\n")
@@ -208,6 +214,7 @@ class Qwen3_5MtpDraftModel(nn.Module):
         rope_rotary_cos_sin: torch.Tensor,
         context_lengths: torch.Tensor,
         kvcache_start_index: torch.Tensor,
+        kv_page_table: torch.Tensor,
         last_token_ids: torch.Tensor,
         hidden_states_from_base: torch.Tensor,
         hidden_states_from_draft: torch.Tensor,
@@ -233,6 +240,7 @@ class Qwen3_5MtpDraftModel(nn.Module):
                 rope_rotary_cos_sin,
                 context_lengths,
                 kvcache_start_index,
+                kv_page_table,
                 attention_mask,
                 attention_pos_id,
             )
@@ -241,8 +249,14 @@ class Qwen3_5MtpDraftModel(nn.Module):
         # Select hidden states for specified token positions
         hidden_states = torch.ops.trt.gather_nd(hidden_states, last_token_ids)
         hidden_states = self.norm(hidden_states)
-        logits = self.lm_head(hidden_states).to(torch.float32)
-        logits = F.log_softmax(logits, dim=-1)
+        logits = self.lm_head(hidden_states)
+        # Qwen-style MTP always normalizes candidate scores in the DDTree builder. An NVFP4 head also publishes raw
+        # FP16 logits, avoiding a TensorRT 11.1 build failure when Cast + LogSoftmax are fused with the
+        # vocabulary-sized NVFP4 projection on Thor.
+        raw_fp16_logits = (self.config.mtp_tree_base
+                           or is_nvfp4_linear(self.lm_head))
+        if not raw_fp16_logits:
+            logits = F.log_softmax(logits.to(torch.float32), dim=-1)
 
         return logits, hidden_states, tuple(present_key_values)
 
@@ -263,11 +277,12 @@ class Qwen3_5MtpDraftModel(nn.Module):
                                     device=device)
         kv_dtype = (torch.float8_e4m3fn
                     if config.quant.kv_cache_quant == "fp8" else dtype16)
+        # Paged KV pool binding: [2, num_pages, KV_PAGE_SIZE, num_kv_heads, head_dim].
         past_key_values_list: List[torch.Tensor] = [
-            torch.zeros(batch_size,
-                        2,
+            torch.zeros(2,
+                        1,
+                        KV_PAGE_SIZE,
                         config.num_key_value_heads,
-                        past_len,
                         config.head_dim,
                         dtype=kv_dtype,
                         device=device) for _ in range(num_layers)
@@ -288,6 +303,11 @@ class Qwen3_5MtpDraftModel(nn.Module):
         kvcache_start_index = torch.zeros(batch_size,
                                           dtype=torch.int32,
                                           device=device)
+        kv_page_table = torch.zeros(batch_size,
+                                    2,
+                                    1,
+                                    dtype=torch.int32,
+                                    device=device)
         hidden_states_input = torch.zeros(batch_size,
                                           seq_len,
                                           config.hidden_size,
@@ -314,6 +334,7 @@ class Qwen3_5MtpDraftModel(nn.Module):
             rope_rotary_cos_sin,
             context_lengths,
             kvcache_start_index,
+            kv_page_table,
             last_token_ids,
             hidden_states_input,
             hidden_states_from_draft,
@@ -325,6 +346,7 @@ class Qwen3_5MtpDraftModel(nn.Module):
                            "rope_rotary_cos_sin",
                            "context_lengths",
                            "kvcache_start_index",
+                           "kv_page_table",
                            "last_token_ids",
                            "hidden_states_input",
                            "hidden_states_from_draft",
@@ -337,19 +359,23 @@ class Qwen3_5MtpDraftModel(nn.Module):
         batch = torch.export.Dim("batch", min=1, max=256)
         seq = torch.export.Dim("seq_len", min=1, max=32768)
         pos = torch.export.Dim("max_pos", min=1, max=32768)
-        past = torch.export.Dim("past_len", min=1, max=32768)
         rope_batch = torch.export.Dim("rope_batch", min=1, max=256)
         kv_batch = torch.export.Dim("kv_batch", min=1, max=256)
+        page_batch = torch.export.Dim("page_batch", min=1, max=256)
+        max_pages = torch.export.Dim("max_pages_per_seq", min=1, max=32768)
+        num_pages = torch.export.Dim("num_pages", min=1, max=1048576)
         attn_seq = torch.export.Dim("attn_seq_len", min=1, max=32768)
         num_selected = torch.export.Dim("num_selected", min=1, max=256)
         mask_kv_len = torch.export.Dim("mask_kv_len", min=1, max=65536)
 
         dynamic_shapes: list = [{0: batch, 1: seq}]  # inputs_embeds
         for _ in range(num_layers):
-            dynamic_shapes.append({0: batch, 3: past})  # past_key_values_i
+            dynamic_shapes.append({1: num_pages
+                                   })  # past_key_values_i (pool-shaped)
         dynamic_shapes.append({0: rope_batch, 1: pos})  # rope_rotary_cos_sin
         dynamic_shapes.append({0: batch})  # context_lengths
         dynamic_shapes.append({0: kv_batch})  # kvcache_start_index
+        dynamic_shapes.append({0: page_batch, 2: max_pages})  # kv_page_table
         dynamic_shapes.append({0: batch, 1: num_selected})  # last_token_ids
         dynamic_shapes.append({0: batch, 1: seq})  # hidden_states_input
         dynamic_shapes.append({0: batch, 1: seq})  # hidden_states_from_draft

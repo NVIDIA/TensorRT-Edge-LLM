@@ -109,6 +109,16 @@ find_package(
   Python 3.10
   COMPONENTS Interpreter Development
   REQUIRED)
+if(NOT pybind11_DIR)
+  execute_process(
+    COMMAND "${Python_EXECUTABLE}" -m pybind11 --cmakedir
+    RESULT_VARIABLE _pybind11_cmakedir_result
+    OUTPUT_VARIABLE _pybind11_cmakedir
+    OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+  if(_pybind11_cmakedir_result EQUAL 0 AND IS_DIRECTORY "${_pybind11_cmakedir}")
+    list(PREPEND CMAKE_PREFIX_PATH "${_pybind11_cmakedir}")
+  endif()
+endif()
 find_package(pybind11 CONFIG REQUIRED)
 
 # ── Header include paths (from source tree) ───────────────────────────────
@@ -158,10 +168,43 @@ endif()
 # edgellmCore contains CUDA device code; --whole-archive ensures fatbin data and
 # all device-code objects are included in the final .so.
 if(_PYBIND_STANDALONE)
+  # Standalone builds must also link the prebuilt CuTe DSL kernel archive that
+  # edgellmCore references (the subdirectory build gets this via CuteDsl.cmake).
+  if(NOT DEFINED EDGELLM_CUTEDSL_LIB)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+      set(_cutedsl_arch "aarch64")
+    else()
+      set(_cutedsl_arch "x86_64")
+    endif()
+    file(
+      GLOB
+      _cutedsl_libs
+      "${EDGELLM_ROOT}/cpp/kernels/cuteDSLArtifact/${_cutedsl_arch}/*/libcutedsl_${_cutedsl_arch}.a"
+    )
+    list(LENGTH _cutedsl_libs _cutedsl_lib_count)
+    if(_cutedsl_lib_count EQUAL 0)
+      message(
+        FATAL_ERROR
+          "No CuTe DSL archive found for ${_cutedsl_arch}. Set -DEDGELLM_CUTEDSL_LIB=/path/to/libcutedsl_${_cutedsl_arch}.a."
+      )
+    elseif(_cutedsl_lib_count GREATER 1)
+      message(
+        FATAL_ERROR
+          "Multiple CuTe DSL archives found for ${_cutedsl_arch}: ${_cutedsl_libs}. Set -DEDGELLM_CUTEDSL_LIB explicitly."
+      )
+    endif()
+    list(GET _cutedsl_libs 0 EDGELLM_CUTEDSL_LIB)
+  endif()
+  if(NOT EXISTS "${EDGELLM_CUTEDSL_LIB}")
+    message(
+      FATAL_ERROR "CuTe DSL archive does not exist: ${EDGELLM_CUTEDSL_LIB}")
+  endif()
+  message(STATUS "CuTe DSL archive for pybind: ${EDGELLM_CUTEDSL_LIB}")
   target_link_libraries(
     _edgellm_runtime
     PRIVATE -Wl,--whole-archive
             ${EDGELLM_CORE_LIB}
+            ${EDGELLM_CUTEDSL_LIB}
             -Wl,--no-whole-archive
             ${EDGELLM_BUILDER_LIB}
             ${NVINFER_LIB}

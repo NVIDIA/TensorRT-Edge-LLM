@@ -23,6 +23,7 @@
 #include "runtime/decoding/gemma4MTPDecoder.h"
 #include "runtime/decoding/mtpDecoder.h"
 #include "runtime/decoding/vanillaDecoder.h"
+#include "sampler/sampling.h"
 
 #include <algorithm>
 #include <stdexcept>
@@ -31,8 +32,20 @@ namespace trt_edgellm
 {
 namespace rt
 {
+bool eagleRequiresVanillaFallback(LLMGenerationRequest const& request, bool visionNeedsFallback) noexcept
+{
+    bool const unsupportedSampling = shouldUseNonGreedySampling(request.temperature, request.topK, request.topP);
+    bool const unsupportedAudio = std::any_of(
+        request.requests.begin(), request.requests.end(), [](auto const& slot) { return !slot.audioBuffers.empty(); });
+    bool const unsupportedVision = visionNeedsFallback
+        && std::any_of(request.requests.begin(), request.requests.end(),
+            [](auto const& slot) { return !slot.imageBuffers.empty(); });
+    return unsupportedSampling || unsupportedAudio || unsupportedVision;
+}
+
 DecoderRegistry::DecoderRegistry(DecodingRuntimeContext& runtime, DecoderRegistryConfig const& config)
-    : mDefaultDecoder(std::make_unique<VanillaDecoder>(runtime))
+    : mEagleVisionNeedsVanillaFallback(runtime.deployment.base.audioTokenId >= 0)
+    , mDefaultDecoder(std::make_unique<VanillaDecoder>(runtime))
 {
     if (config.draftingConfig.has_value())
     {
@@ -63,7 +76,9 @@ DecoderRegistry::DecoderRegistry(DecodingRuntimeContext& runtime, DecoderRegistr
 
 DecodingStrategy& DecoderRegistry::select(LLMGenerationRequest const& request) const noexcept
 {
-    if (!mSpeculativeDecoder || request.disableSpecDecode)
+    bool const eagle = mSpeculativeDecoder && mSpeculativeDecoder->kind() == DecodingStrategyKind::kEAGLE;
+    if (!mSpeculativeDecoder || request.disableSpecDecode
+        || (eagle && eagleRequiresVanillaFallback(request, mEagleVisionNeedsVanillaFallback)))
     {
         return *mDefaultDecoder;
     }

@@ -14,9 +14,11 @@
 # limitations under the License.
 """Tests for `LLM(engine_dir=...)` routing to LLM vs spec-decode paths."""
 
+from types import SimpleNamespace
+
 import pytest
 
-from experimental.server.engine import LLM
+from experimental.server.engine import LLM, SamplingParams
 from experimental.server.engine_layout import (EngineType, detect_engine_type,
                                                validate_spec_decode_engine_dir)
 
@@ -125,3 +127,109 @@ def test_init_from_engine_unknown_dir_raises(tmp_path):
     """A directory with neither llm.engine nor spec_base.engine is rejected."""
     with pytest.raises(ValueError, match="llm.engine not found"):
         _BareLLM(str(tmp_path))
+
+
+def test_engine_dir_rejects_separate_spec_decode_engine_dir():
+    with pytest.raises(ValueError, match="complete pre-built engine bundle"):
+        LLM(engine_dir="/engine", eagle_engine_dir="/other-spec-engine")
+
+
+def test_load_runtime_spec_decode_passes_context_cache_config(monkeypatch):
+    captured_args = []
+
+    class FakeContextCacheConfig:
+
+        def __init__(self):
+            self.enabled = False
+            self.max_records = 0
+            self.recurrent_snapshot_pool_bytes = 0
+            self.partial_kv_snapshot_pool_bytes = 0
+
+    class FakeLLMRuntime:
+
+        def __init__(self, *args):
+            captured_args.append(args)
+
+        def capture_decoding_cuda_graph(self):
+            pass
+
+    fake_rt = SimpleNamespace(ContextCacheConfig=FakeContextCacheConfig,
+                              LLMRuntime=FakeLLMRuntime)
+    monkeypatch.setattr("experimental.server.engine._import_runtime",
+                        lambda: fake_rt)
+
+    llm = object.__new__(LLM)
+    llm._engine_dir = "/spec-engine"
+    llm._visual_engine_dir = ""
+    llm._eagle_engine_dir = "/spec-engine"
+    llm._draft_top_k = 8
+    llm._draft_step = 6
+    llm._verify_tree_size = 60
+    llm._enable_context_reuse = True
+    llm._context_cache_max_records = 17
+    llm._context_cache_recurrent_snapshot_pool_bytes = 1024
+    llm._context_cache_partial_kv_snapshot_pool_bytes = 256
+
+    llm._load_runtime()
+
+    assert len(captured_args) == 1
+    args = captured_args[0]
+    assert args[:6] == ("/spec-engine", "", {}, 8, 6, 60)
+    context_cache = args[6]
+    assert context_cache.enabled is True
+    assert context_cache.max_records == 17
+    assert context_cache.recurrent_snapshot_pool_bytes == 1024
+    assert context_cache.partial_kv_snapshot_pool_bytes == 256
+
+
+@pytest.mark.parametrize(
+    "enable_context_reuse,prefill_state_only,expected_policy",
+    [
+        (True, True, "prefill-state-only"),
+        (True, False, "default"),
+        (False, True, "default"),
+    ],
+)
+def test_make_generation_request_sets_prefill_only_context_cache_policy(
+        monkeypatch, enable_context_reuse, prefill_state_only,
+        expected_policy):
+
+    class FakeGenerationRequest:
+
+        def __init__(self):
+            self.context_cache_commit_policy = "default"
+            self.context_cache_replay_tail_length = 0
+
+    class FakeRequest:
+
+        def __init__(self, messages):
+            self.messages = messages
+
+    class FakeRuntime:
+        LLMGenerationRequest = FakeGenerationRequest
+        Request = FakeRequest
+        ContextCacheCommitPolicy = SimpleNamespace(
+            PREFILL_STATE_ONLY="prefill-state-only")
+
+        @staticmethod
+        def has_draft_model():
+            return False
+
+    llm = object.__new__(LLM)
+    llm._rt = FakeRuntime
+    llm._runtime = FakeRuntime()
+    llm._enable_context_reuse = enable_context_reuse
+    llm._context_cache_prefill_state_only = prefill_state_only
+    llm._recurrent_capture_interval = 0
+    llm._prepare_messages_for_runtime = lambda *args, **kwargs: ([], [], True,
+                                                                 True, 7)
+    monkeypatch.setattr("experimental.server.engine._load_audio_buffers",
+                        lambda *args: [])
+
+    request = llm._make_generation_request([{
+        "role": "user",
+        "content": "hello"
+    }], SamplingParams())
+
+    assert request.context_cache_commit_policy == expected_policy
+    assert request.context_cache_replay_tail_length == 7

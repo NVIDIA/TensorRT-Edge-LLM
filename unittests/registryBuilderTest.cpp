@@ -17,6 +17,8 @@
 
 #include "runtime/exec/registryBuilder.h"
 #include "common/bindingNames.h"
+#include "common/pagedKvTypes.h"
+#include "kernels/gdnKernels/gdnTreeChunkKernels.h"
 #include "runtime/hybridCacheManager.h"
 #include "runtime/kvCacheManager.h"
 #include <algorithm>
@@ -71,6 +73,7 @@ LLMEngineConfig makeBasicLLMConfig()
     cfg.maxSupportedBatchSize = 4;
     cfg.maxSupportedInputLength = 2048;
     cfg.maxKVCacheCapacity = 4096;
+    cfg.kvPoolPages = computeKvPoolFloorPages(cfg.maxSupportedBatchSize, cfg.maxKVCacheCapacity);
     populateHybridFieldsFromScalars(cfg);
     return cfg;
 }
@@ -131,6 +134,20 @@ TEST(RegistryBuilderTest, StandardLLMHasCorrectSpecAttributes)
     ASSERT_NE(logIt, specs.end());
     EXPECT_EQ(logIt->io, TensorIO::kOutput);
     EXPECT_EQ(logIt->dtype, nvinfer1::DataType::kFLOAT);
+}
+
+TEST(RegistryBuilderTest, KVCacheBindingUsesEnginePoolPages)
+{
+    LLMEngineConfig cfg = makeBasicLLMConfig();
+    cfg.kvPoolPages += 7;
+
+    auto const specs = buildRegistryForLLM(cfg).allExpandedSpecs();
+    auto const it = std::find_if(
+        specs.begin(), specs.end(), [](TensorSpec const& spec) { return spec.name == "past_key_values_0"; });
+
+    ASSERT_NE(it, specs.end());
+    ASSERT_EQ(it->shape.size(), 5U);
+    EXPECT_EQ(it->shape[1].value, cfg.kvPoolPages);
 }
 
 // =====================================================================
@@ -262,10 +279,10 @@ TEST(RegistryBuilderTest, MambaStateAddsRecurrentAndConvTensors)
     cfg.numAttentionLayers = 2;
     cfg.numDecoderLayers = 4;
     cfg.numLinearAttnLayers = 2;
-    cfg.recurrentStateNumHeads = 16;
-    cfg.recurrentStateHeadDim = 64;
+    cfg.recurrentStateNumHeads = 2;
+    cfg.recurrentStateHeadDim = 128;
     cfg.recurrentStateSize = 128;
-    cfg.convDim = 256;
+    cfg.convDim = 512;
     cfg.convKernel = 4;
 
     populateHybridFieldsFromScalars(cfg);
@@ -294,10 +311,10 @@ TEST(RegistryBuilderTest, RecurrentStateShapeMatchesConfig)
     cfg.numAttentionLayers = 1;
     cfg.numDecoderLayers = 2;
     cfg.numLinearAttnLayers = 1;
-    cfg.recurrentStateNumHeads = 16;
-    cfg.recurrentStateHeadDim = 64;
+    cfg.recurrentStateNumHeads = 2;
+    cfg.recurrentStateHeadDim = 128;
     cfg.recurrentStateSize = 128;
-    cfg.convDim = 256;
+    cfg.convDim = 512;
     cfg.convKernel = 4;
 
     populateHybridFieldsFromScalars(cfg);
@@ -309,17 +326,17 @@ TEST(RegistryBuilderTest, RecurrentStateShapeMatchesConfig)
     ASSERT_NE(recIt, specs.end());
     EXPECT_EQ(recIt->shape.size(), 4u);
     EXPECT_TRUE(recIt->shape[0].isSymbolic()); // batch
-    EXPECT_EQ(recIt->shape[1].value, 16);      // numHeads
-    EXPECT_EQ(recIt->shape[2].value, 64);      // headDim
-    EXPECT_EQ(recIt->shape[3].value, 128);     // stateSize
+    EXPECT_EQ(recIt->shape[1].value, cfg.recurrentStateNumHeads);
+    EXPECT_EQ(recIt->shape[2].value, cfg.recurrentStateHeadDim);
+    EXPECT_EQ(recIt->shape[3].value, cfg.recurrentStateSize);
 
     auto convIt
         = std::find_if(specs.begin(), specs.end(), [](TensorSpec const& s) { return s.name == "conv_state_0"; });
     ASSERT_NE(convIt, specs.end());
     EXPECT_EQ(convIt->shape.size(), 3u);
     EXPECT_TRUE(convIt->shape[0].isSymbolic()); // batch
-    EXPECT_EQ(convIt->shape[1].value, 256);     // convDim
-    EXPECT_EQ(convIt->shape[2].value, 4);       // convKernel
+    EXPECT_EQ(convIt->shape[1].value, cfg.convDim);
+    EXPECT_EQ(convIt->shape[2].value, cfg.convKernel);
 }
 
 TEST(RegistryBuilderTest, NoRecurrentStateWhenZeroLinearLayers)
@@ -350,10 +367,11 @@ TEST(RegistryBuilderTest, AllFeaturesEnabled)
     cfg.isSpecDecodeBase = true;
     cfg.specDecodeType = SpecDecodeMode::kMTP;
     cfg.numLinearAttnLayers = 2;
-    cfg.recurrentStateNumHeads = 16;
-    cfg.recurrentStateHeadDim = 64;
+    cfg.recurrentStateNumHeads = 2;
+    cfg.recurrentStateHeadDim = 128;
     cfg.recurrentStateSize = 128;
-    cfg.convDim = 256;
+    cfg.recurrentStateDtype = nvinfer1::DataType::kFLOAT;
+    cfg.convDim = 512;
     cfg.convKernel = 4;
 
     populateHybridFieldsFromScalars(cfg);
@@ -381,10 +399,11 @@ TEST(RegistryBuilderTest, MtpBaseAddsIntermediateStateOutputs)
     cfg.specDecodeType = SpecDecodeMode::kMTP;
     cfg.maxVerifyTreeSize = 4;
     cfg.numLinearAttnLayers = 2;
-    cfg.recurrentStateNumHeads = 16;
-    cfg.recurrentStateHeadDim = 64;
+    cfg.recurrentStateNumHeads = 2;
+    cfg.recurrentStateHeadDim = 128;
     cfg.recurrentStateSize = 128;
-    cfg.convDim = 256;
+    cfg.recurrentStateDtype = nvinfer1::DataType::kFLOAT;
+    cfg.convDim = 512;
     cfg.convKernel = 4;
 
     populateHybridFieldsFromScalars(cfg);
@@ -406,17 +425,14 @@ TEST(RegistryBuilderTest, MtpBaseAddsIntermediateStateOutputs)
     EXPECT_TRUE(markerIt->shape[0].isSymbolic());
     EXPECT_EQ(markerIt->shape[0].symbol, &InferenceDims::specVerifyPhaseLen);
 
-    // Shape: [batch, seqLen, recurrentNumHeads, recurrentHeadDim, recurrentStateSize]
+    // Shape: [batch, compactReplayBufferElements]
     auto irecIt = std::find_if(
         specs.begin(), specs.end(), [](TensorSpec const& s) { return s.name == "intermediate_recurrent_state_0"; });
     ASSERT_NE(irecIt, specs.end());
     EXPECT_EQ(irecIt->io, TensorIO::kOutput);
-    ASSERT_EQ(irecIt->shape.size(), 5u);
+    ASSERT_EQ(irecIt->shape.size(), 2u);
     EXPECT_TRUE(irecIt->shape[0].isSymbolic()); // batch
-    EXPECT_TRUE(irecIt->shape[1].isSymbolic()); // seqLen
-    EXPECT_EQ(irecIt->shape[2].value, 16);      // numHeads
-    EXPECT_EQ(irecIt->shape[3].value, 64);      // headDim
-    EXPECT_EQ(irecIt->shape[4].value, 128);     // stateSize
+    EXPECT_EQ(irecIt->shape[1].value, trt_edgellm::kernel::gdnTreeChunkBufferElements(/*h=*/1, /*hv=*/2));
 
     // Shape: [batch, seqLen, convDim, convKernel]
     auto iconvIt = std::find_if(
@@ -426,7 +442,7 @@ TEST(RegistryBuilderTest, MtpBaseAddsIntermediateStateOutputs)
     ASSERT_EQ(iconvIt->shape.size(), 4u);
     EXPECT_TRUE(iconvIt->shape[0].isSymbolic()); // batch
     EXPECT_TRUE(iconvIt->shape[1].isSymbolic()); // seqLen
-    EXPECT_EQ(iconvIt->shape[2].value, 256);     // convDim
+    EXPECT_EQ(iconvIt->shape[2].value, 512);     // convDim
     EXPECT_EQ(iconvIt->shape[3].value, 4);       // convKernel
 }
 
@@ -554,12 +570,12 @@ TEST(RegistryBuilderTest, DraftEngineKVCacheUsesPluginPath)
     auto reg = buildRegistryForSpecDecodeDraft(bundle);
     auto specs = reg.allExpandedSpecs();
 
-    // KV cache should be 5D (plugin path)
+    // KV cache should be 5D paged-pool shape [2, numPages, kTOKENS_PER_PAGE, numKVHeads, headDim]
     auto kvIt
         = std::find_if(specs.begin(), specs.end(), [](TensorSpec const& s) { return s.name == "past_key_values_0"; });
     ASSERT_NE(kvIt, specs.end());
     EXPECT_EQ(kvIt->shape.size(), 5u);
-    EXPECT_EQ(kvIt->shape[1].value, 2); // combined K+V dimension
+    EXPECT_EQ(kvIt->shape[0].value, 2); // combined K+V dimension (leading, pool contract)
 }
 
 // =====================================================================
@@ -607,12 +623,12 @@ TEST(RegistryBuilderTest, HeterogeneousKVLayerEmitsPerLayerSpecs)
     auto reg = buildRegistryForLLM(cfg);
     auto specs = reg.allExpandedSpecs();
 
-    // past_key_values_0: plugin combined KV shape [batch, 2, numKVHeads, kv_len, headDim]
+    // past_key_values_0: plugin paged-pool shape [2, numPages, kTOKENS_PER_PAGE, numKVHeads, headDim]
     auto layer0
         = std::find_if(specs.begin(), specs.end(), [](TensorSpec const& s) { return s.name == "past_key_values_0"; });
     ASSERT_NE(layer0, specs.end());
     ASSERT_EQ(layer0->shape.size(), 5u);
-    EXPECT_EQ(layer0->shape[2].value, 8);  // numKVHeads for layer 0
+    EXPECT_EQ(layer0->shape[3].value, 8);  // numKVHeads for layer 0
     EXPECT_EQ(layer0->shape[4].value, 64); // headDim for layer 0
 
     // past_key_values_1: different KV config
@@ -620,11 +636,11 @@ TEST(RegistryBuilderTest, HeterogeneousKVLayerEmitsPerLayerSpecs)
         = std::find_if(specs.begin(), specs.end(), [](TensorSpec const& s) { return s.name == "past_key_values_1"; });
     ASSERT_NE(layer1, specs.end());
     ASSERT_EQ(layer1->shape.size(), 5u);
-    EXPECT_EQ(layer1->shape[2].value, 4);   // numKVHeads for layer 1
+    EXPECT_EQ(layer1->shape[3].value, 4);   // numKVHeads for layer 1
     EXPECT_EQ(layer1->shape[4].value, 128); // headDim for layer 1
 
     // Sanity: the two specs must differ on the fixed dims.
-    EXPECT_NE(layer0->shape[2].value, layer1->shape[2].value);
+    EXPECT_NE(layer0->shape[3].value, layer1->shape[3].value);
     EXPECT_NE(layer0->shape[4].value, layer1->shape[4].value);
 }
 

@@ -86,6 +86,10 @@ public:
     //! \throws std::runtime_error if a CUDA operation fails
     bool infer(cudaStream_t stream) override;
 
+    bool prepareArtifactSubset(rt::LLMGenerationRequest const& request, std::vector<size_t> const& originalItemIndices,
+        cudaStream_t stream) override;
+    std::vector<int64_t> preparedArtifactRowCounts() const override;
+
     //! \brief Validate and load configuration from JSON file
     //! \param[in] configPath Path to configuration file
     //! \return True if configuration is valid and loaded successfully, false otherwise
@@ -127,6 +131,7 @@ private:
         int64_t& numImages, int64_t& totalNumBlocks, bool isThumbnail, cudaStream_t stream);
 
     Phi4MMViTConfig mConfig{};                       //!< Phi-4MM visual configuration
+    std::vector<int64_t> mPreparedArtifactRowCounts; //!< Output rows grouped by source image buffer.
     rt::Tensor mVitInput{};                          //!< Visual engine input tensor
     rt::Tensor mImageMean{};                         //!< Image mean tensor [C]
     rt::Tensor mImageStd{};                          //!< Image std tensor [C]

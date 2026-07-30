@@ -29,6 +29,7 @@
 #   OFF      — disable entirely (default)
 #   ALL      — enable all groups found in metadata.json
 #   fmha     — enable only the Blackwell FMHA group
+#   fmha_v2  — enable only the portable FP16 FMHA-v2 group
 #   ffpa     — enable only the Ampere FFPA FMHA group
 #   gdn      — enable only the GDN group
 #   f16_moe  — enable the target-specific homogeneous-FP16 MoE group
@@ -43,6 +44,7 @@
 #
 # Per-group compile definitions set on each target:
 #   CUTE_DSL_FMHA_ENABLED  — set when the fmha group is active
+#   CUTE_DSL_FMHA_V2_ENABLED — set when the fmha_v2 group is active
 #   CUTE_DSL_FFPA_ENABLED  — set when the ffpa group is active
 #   CUTE_DSL_GDN_ENABLED   — set when the gdn group is active
 #   CUTE_DSL_F16_MOE_ENABLED — set when the f16_moe group is active

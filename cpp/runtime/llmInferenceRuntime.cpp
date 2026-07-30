@@ -22,10 +22,13 @@
 #include "common/inputLimits.h"
 #include "common/logger.h"
 #include "common/mathUtils.h"
+#include "common/pagedKvTypes.h"
 #include "common/safetensorsUtils.h"
 #include "kernels/embeddingKernels/embeddingKernels.h"
+#include "kernels/posEncoding/applyRopeWriteKV.h"
 #include "kernels/posEncoding/initializeCosSinCache.h"
 #include "kernels/speculative/batchEvictKernels.h"
+#include "kernels/speculative/eagleUtilKernels.h"
 #include "multimodal/multimodalRunner.h"
 #include "multimodal/qwenViTRunner.h"
 #include "profiling/nvtx_wrapper.h"
@@ -37,11 +40,16 @@
 #include "sampler/sampling.h"
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <functional>
+#include <limits>
+#include <numeric>
 #include <optional>
+#include <sstream>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -56,6 +64,324 @@ namespace
 //! into the engines by `llmBuilder`.
 constexpr int32_t kPrefillProfile{0};
 constexpr int32_t kDecodeProfile{1};
+
+//! Ensures request-scoped cache leases cannot release physical pages while this request still has queued GPU work.
+class ContextCacheStreamGuard
+{
+public:
+    explicit ContextCacheStreamGuard(rt::DecodingInferenceContext& context)
+        : mContext(context)
+    {
+    }
+
+    ~ContextCacheStreamGuard() noexcept
+    {
+        if (mContext.contextReuseEnabled)
+        {
+            (void) cudaStreamSynchronize(mContext.stream);
+        }
+    }
+
+private:
+    rt::DecodingInferenceContext& mContext;
+};
+
+std::vector<int32_t> buildResidentTokenHistory(
+    rt::DecodingInferenceContext const& context, int32_t slot, int32_t residentStateLength)
+{
+    std::vector<int32_t> const& rawInput = context.rawBatchedInputIds[slot];
+    ELLM_CHECK(residentStateLength >= 0, "Context cache resident length must be non-negative");
+    if (residentStateLength <= math::cast<int32_t>(rawInput.size()))
+    {
+        return std::vector<int32_t>(rawInput.begin(), rawInput.begin() + residentStateLength);
+    }
+
+    std::vector<int32_t> logicalTokens = rawInput;
+    int32_t const generatedResidentTokens = residentStateLength - math::cast<int32_t>(rawInput.size());
+    ELLM_CHECK(generatedResidentTokens >= 0 && generatedResidentTokens <= context.currentGenerateLengths[slot],
+        "Context cache resident length is inconsistent with generated tokens");
+    if (generatedResidentTokens > 0)
+    {
+        std::vector<int32_t> const& executionTokens = context.tokenIds[slot];
+        ELLM_CHECK(context.currentGenerateLengths[slot] >= 0
+                && static_cast<size_t>(context.currentGenerateLengths[slot]) <= executionTokens.size(),
+            "Context cache generated-token history exceeds the execution-token history");
+        size_t const generatedBegin
+            = executionTokens.size() - static_cast<size_t>(context.currentGenerateLengths[slot]);
+        logicalTokens.insert(logicalTokens.end(), executionTokens.begin() + static_cast<std::ptrdiff_t>(generatedBegin),
+            executionTokens.begin() + static_cast<std::ptrdiff_t>(generatedBegin + generatedResidentTokens));
+    }
+    ELLM_CHECK(logicalTokens.size() == static_cast<size_t>(residentStateLength),
+        "Context cache logical history does not match the resident boundary");
+    return logicalTokens;
+}
+
+rt::Hash128 hashImageContent(rt::imageUtils::ImageData const& image)
+{
+    ELLM_CHECK(image.buffer != nullptr && image.buffer->getDeviceType() == rt::DeviceType::kCPU
+            && image.buffer->getDataType() == nvinfer1::DataType::kUINT8,
+        "Context reuse requires host UINT8 image input");
+    size_t const bytes = math::cast<size_t>(image.buffer->getShape().volume());
+    rt::Hash128 const pixels
+        = rt::hashOpaqueIdentity(std::string_view{reinterpret_cast<char const*>(image.buffer->rawPointer()), bytes});
+    uint64_t fpsBits{};
+    static_assert(sizeof(fpsBits) == sizeof(image.fps));
+    std::memcpy(&fpsBits, &image.fps, sizeof(fpsBits));
+    std::ostringstream identity;
+    identity << "image-v1:" << pixels.hi << ':' << pixels.lo << ':' << image.frames << ':' << image.height << ':'
+             << image.width << ':' << image.channels << ':' << fpsBits;
+    return rt::hashOpaqueIdentity(identity.str());
+}
+
+rt::Hash128 hashAudioContent(rt::audioUtils::AudioData const& audio)
+{
+    ELLM_CHECK(audio.pcm != nullptr, "Context reuse requires decoded PCM audio input");
+    size_t const bytes = audio.pcm->samples.size() * sizeof(float);
+    rt::Hash128 const samples
+        = rt::hashOpaqueIdentity(std::string_view{reinterpret_cast<char const*>(audio.pcm->samples.data()), bytes});
+    std::ostringstream identity;
+    identity << "audio-pcm-v1:" << samples.hi << ':' << samples.lo << ':' << audio.pcm->samples.size() << ':'
+             << audio.pcm->sampleRate << ':' << audio.pcm->numChannels;
+    return rt::hashOpaqueIdentity(identity.str());
+}
+
+rt::Hash128 mediaPlacementDigest(rt::MediaSpanDescriptor const& span)
+{
+    std::ostringstream identity;
+    identity << "media-placement-v2:" << static_cast<int32_t>(span.artifactKey.modality) << ':' << span.tokenLength
+             << ':' << span.itemOrder;
+    for (rt::MediaTokenSegment const& segment : span.tokenSegments)
+    {
+        identity << ':' << segment.tokenStart << '+' << segment.tokenLength << '@' << segment.artifactRowOffset;
+    }
+    return rt::hashOpaqueIdentity(identity.str());
+}
+
+int32_t mediaRowsBeforeToken(rt::MediaSpanDescriptor const& span, int32_t tokenBoundary)
+{
+    int32_t rows{};
+    for (rt::MediaTokenSegment const& segment : span.tokenSegments)
+    {
+        if (tokenBoundary <= segment.tokenStart)
+        {
+            break;
+        }
+        rows += std::min(tokenBoundary - segment.tokenStart, segment.tokenLength);
+    }
+    ELLM_CHECK(rows >= 0 && rows <= span.tokenLength, "Context cache media boundary is invalid");
+    return rows;
+}
+
+std::vector<rt::BlockKeyExtras> buildBlockExtras(rt::BlockKeyExtras const& common,
+    std::vector<rt::MediaSpanDescriptor> const& mediaSpans, size_t tokenCount, int32_t pageSize)
+{
+    size_t const blockCount = (tokenCount + static_cast<size_t>(pageSize) - 1U) / static_cast<size_t>(pageSize);
+    std::vector<rt::BlockKeyExtras> extras(blockCount, common);
+    for (rt::MediaSpanDescriptor const& span : mediaSpans)
+    {
+        ELLM_CHECK(span.tokenLength > 0 && !span.tokenSegments.empty(), "Context cache media span is invalid");
+        rt::Hash128 const placement = mediaPlacementDigest(span);
+        for (rt::MediaTokenSegment const& segment : span.tokenSegments)
+        {
+            ELLM_CHECK(segment.tokenStart >= 0 && segment.tokenLength > 0 && segment.artifactRowOffset >= 0
+                    && segment.artifactRowOffset + segment.tokenLength <= span.tokenLength,
+                "Context cache media token segment is invalid");
+            if (static_cast<size_t>(segment.tokenStart) >= tokenCount)
+            {
+                continue;
+            }
+            int32_t const firstBlock = segment.tokenStart / pageSize;
+            size_t const segmentEnd
+                = static_cast<size_t>(segment.tokenStart) + static_cast<size_t>(segment.tokenLength);
+            int32_t const finalToken = math::cast<int32_t>(std::min(segmentEnd, tokenCount) - 1U);
+            int32_t const lastBlock = finalToken / pageSize;
+            for (int32_t block = firstBlock; block <= lastBlock; ++block)
+            {
+                if (block < 0 || static_cast<size_t>(block) >= blockCount)
+                {
+                    continue;
+                }
+                extras[static_cast<size_t>(block)].media.push_back(
+                    rt::MediaSpanKey{span.artifactKey.contentDigest, placement, segment.tokenStart - block * pageSize,
+                        span.itemOrder, static_cast<uint8_t>(span.artifactKey.modality)});
+            }
+        }
+    }
+    return extras;
+}
+
+bool populateMediaSpans(rt::LLMGenerationRequest const& request, rt::LLMEngineConfig const& config,
+    std::vector<std::vector<int32_t>> const& batchedInputIds, std::vector<int64_t> const& visionRowCounts,
+    std::vector<int64_t> const& audioRowCounts, rt::DecodingInferenceContext& context)
+{
+    struct TokenRun
+    {
+        rt::MediaModality modality;
+        int32_t start{};
+        int32_t length{};
+    };
+
+    rt::Hash128 const isolation = request.contextCacheIsolationKey.empty()
+        ? rt::Hash128{}
+        : rt::hashOpaqueIdentity(request.contextCacheIsolationKey);
+    size_t const totalVisionArtifacts = std::accumulate(request.requests.begin(), request.requests.end(), size_t{0},
+        [](size_t count, auto const& slot) { return count + slot.imageBuffers.size(); });
+    size_t const totalAudioArtifacts = std::accumulate(request.requests.begin(), request.requests.end(), size_t{0},
+        [](size_t count, auto const& slot) { return count + slot.audioBuffers.size(); });
+    if ((!visionRowCounts.empty() && visionRowCounts.size() != totalVisionArtifacts)
+        || (!audioRowCounts.empty() && audioRowCounts.size() != totalAudioArtifacts))
+    {
+        LOG_WARNING("Context cache media inspection returned an invalid artifact row-count layout.");
+        return false;
+    }
+
+    auto partitionRuns
+        = [](std::vector<TokenRun> const& runs, size_t artifactCount, std::vector<int64_t> const& rowCounts,
+              size_t& globalArtifactIndex,
+              char const* modalityName) -> std::optional<std::vector<std::vector<rt::MediaTokenSegment>>> {
+        if (rowCounts.empty() && runs.size() != artifactCount)
+        {
+            LOG_WARNING("Context cache media inspection could not map %s placeholders: runs=%zu, artifacts=%zu.",
+                modalityName, runs.size(), artifactCount);
+            return std::nullopt;
+        }
+        std::vector<std::vector<rt::MediaTokenSegment>> result(artifactCount);
+        size_t runIndex{};
+        int32_t consumedInRun{};
+        for (size_t artifact = 0; artifact < artifactCount; ++artifact)
+        {
+            int64_t const expectedRows = rowCounts.empty() ? runs[runIndex].length : rowCounts[globalArtifactIndex];
+            if (expectedRows <= 0 || expectedRows > std::numeric_limits<int32_t>::max())
+            {
+                LOG_WARNING("Context cache %s artifact has an invalid encoder row count.", modalityName);
+                return std::nullopt;
+            }
+            int32_t remaining = static_cast<int32_t>(expectedRows);
+            int32_t artifactRowOffset{};
+            while (remaining > 0)
+            {
+                if (runIndex >= runs.size())
+                {
+                    LOG_WARNING("Context cache %s artifact rows exceed token placeholders.", modalityName);
+                    return std::nullopt;
+                }
+                TokenRun const& run = runs[runIndex];
+                int32_t const available = run.length - consumedInRun;
+                int32_t const take = std::min(remaining, available);
+                result[artifact].push_back(rt::MediaTokenSegment{run.start + consumedInRun, take, artifactRowOffset});
+                remaining -= take;
+                artifactRowOffset += take;
+                consumedInRun += take;
+                if (consumedInRun == run.length)
+                {
+                    ++runIndex;
+                    consumedInRun = 0;
+                }
+            }
+            ++globalArtifactIndex;
+        }
+        if (runIndex != runs.size() || consumedInRun != 0)
+        {
+            LOG_WARNING("Context cache %s token placeholders exceed artifact rows.", modalityName);
+            return std::nullopt;
+        }
+        return result;
+    };
+
+    int32_t visionRows{};
+    int32_t audioRows{};
+    size_t visionArtifactIndex{};
+    size_t audioArtifactIndex{};
+    auto classifyMediaToken = [&](int32_t token) -> std::optional<rt::MediaModality> {
+        if (config.audioTokenId >= 0 && token == config.audioTokenId)
+        {
+            return rt::MediaModality::kAudio;
+        }
+        if ((config.imageTokenId >= 0 && token == config.imageTokenId) || token >= config.vocabSize)
+        {
+            return rt::MediaModality::kVision;
+        }
+        return std::nullopt;
+    };
+    for (size_t slot = 0; slot < request.requests.size(); ++slot)
+    {
+        std::vector<TokenRun> runs;
+        std::vector<int32_t> const& tokens = batchedInputIds[slot];
+        for (size_t index = 0; index < tokens.size();)
+        {
+            std::optional<rt::MediaModality> const modality = classifyMediaToken(tokens[index]);
+            if (!modality.has_value())
+            {
+                ++index;
+                continue;
+            }
+            size_t end = index + 1;
+            while (end < tokens.size() && classifyMediaToken(tokens[end]) == modality)
+            {
+                ++end;
+            }
+            runs.push_back(TokenRun{*modality, math::cast<int32_t>(index), math::cast<int32_t>(end - index)});
+            index = end;
+        }
+
+        std::vector<TokenRun> visionRuns;
+        std::vector<TokenRun> audioRuns;
+        for (TokenRun const& run : runs)
+        {
+            (run.modality == rt::MediaModality::kVision ? visionRuns : audioRuns).push_back(run);
+        }
+        std::optional<std::vector<std::vector<rt::MediaTokenSegment>>> visionSegments = partitionRuns(
+            visionRuns, request.requests[slot].imageBuffers.size(), visionRowCounts, visionArtifactIndex, "vision");
+        std::optional<std::vector<std::vector<rt::MediaTokenSegment>>> audioSegments = partitionRuns(
+            audioRuns, request.requests[slot].audioBuffers.size(), audioRowCounts, audioArtifactIndex, "audio");
+        if (!visionSegments.has_value() || !audioSegments.has_value())
+        {
+            return false;
+        }
+
+        for (size_t artifact = 0; artifact < request.requests[slot].imageBuffers.size(); ++artifact)
+        {
+            rt::MediaSpanDescriptor span;
+            span.tokenSegments = std::move((*visionSegments)[artifact]);
+            span.tokenLength = std::accumulate(span.tokenSegments.begin(), span.tokenSegments.end(), int32_t{0},
+                [](int32_t rows, rt::MediaTokenSegment const& segment) { return rows + segment.tokenLength; });
+            span.embeddingOffset = visionRows;
+            span.itemOrder = math::cast<int32_t>(artifact);
+            span.artifactKey = rt::MediaArtifactKey{
+                hashImageContent(request.requests[slot].imageBuffers[artifact]), isolation, rt::MediaModality::kVision};
+            for (rt::MediaTokenSegment const& segment : span.tokenSegments)
+            {
+                int32_t const firstToken = batchedInputIds[slot][static_cast<size_t>(segment.tokenStart)];
+                if (firstToken >= config.vocabSize
+                    && firstToken - config.vocabSize != visionRows + segment.artifactRowOffset)
+                {
+                    LOG_WARNING("Context cache vision token IDs do not match packed encoder row order.");
+                    return false;
+                }
+            }
+            visionRows += span.tokenLength;
+            context.mediaSpans[slot].push_back(std::move(span));
+        }
+        for (size_t artifact = 0; artifact < request.requests[slot].audioBuffers.size(); ++artifact)
+        {
+            rt::MediaSpanDescriptor span;
+            span.tokenSegments = std::move((*audioSegments)[artifact]);
+            span.tokenLength = std::accumulate(span.tokenSegments.begin(), span.tokenSegments.end(), int32_t{0},
+                [](int32_t rows, rt::MediaTokenSegment const& segment) { return rows + segment.tokenLength; });
+            span.embeddingOffset = audioRows;
+            span.itemOrder = math::cast<int32_t>(artifact);
+            span.artifactKey = rt::MediaArtifactKey{
+                hashAudioContent(request.requests[slot].audioBuffers[artifact]), isolation, rt::MediaModality::kAudio};
+            audioRows += span.tokenLength;
+            context.mediaSpans[slot].push_back(std::move(span));
+        }
+        std::sort(
+            context.mediaSpans[slot].begin(), context.mediaSpans[slot].end(), [](auto const& lhs, auto const& rhs) {
+                return lhs.tokenSegments.front().tokenStart < rhs.tokenSegments.front().tokenStart;
+            });
+    }
+    return true;
+}
 
 //! Fires `context.onTokenGenerated` once per active slot using the most recent
 //! token in `tokenIds`. Called at the end of prefill (one token sampled per
@@ -86,67 +412,81 @@ namespace rt
 {
 namespace
 {
-bool needsDFlashDDTreeHybridBindings(DeploymentConfig const& deployment)
+void validateTreeMetadataBindings(DeploymentConfig const& deployment, EngineExecutor const& baseExecutor)
 {
-    return deployment.specConfig.has_value() && deployment.specDecodeMode() == SpecDecodeMode::kDFlash
-        && deployment.specConfig->draftingTopK > 1 && deployment.base.numLinearAttnLayers > 0;
-}
-
-void validateDFlashTreeMetadataBindings(DeploymentConfig const& deployment, EngineExecutor const& baseExecutor)
-{
-    if (!deployment.specConfig.has_value() || deployment.specDecodeMode() != SpecDecodeMode::kDFlash)
+    if (!deployment.specConfig.has_value())
     {
         return;
     }
 
+    SpecDecodeMode const mode = deployment.specDecodeMode();
+    bool const isDFlash = mode == SpecDecodeMode::kDFlash;
+    bool const isMTP = mode == SpecDecodeMode::kMTP;
+    if (!isDFlash && !isMTP)
+    {
+        return;
+    }
+
+    std::string const modeName = isDFlash ? "DFlash" : "MTP";
+    std::string const treeExportFlag = isDFlash ? "--dflash-tree-base" : "--mtp";
     bool const hasTreeParentIds = baseExecutor.hasIOTensor(binding_names::kTreeParentIds);
     bool const hasTreeDepths = baseExecutor.hasIOTensor(binding_names::kTreeDepths);
     bool const hasTreeMetadata = hasTreeParentIds || hasTreeDepths;
-    bool const usesDDTree = deployment.specConfig->draftingTopK > 1;
+    bool const usesTree = isMTP || (isDFlash && deployment.specConfig->draftingTopK > 1);
     if (hasTreeMetadata)
     {
         ELLM_CHECK(hasTreeParentIds && hasTreeDepths,
-            std::string("DFlash tree-base engine must expose both INT32 tree metadata bindings '")
+            modeName + " tree-base engine must expose both INT32 tree metadata bindings '"
                 + binding_names::kTreeParentIds + "' and '" + binding_names::kTreeDepths + "'.");
         ELLM_CHECK(baseExecutor.getBindingDataType(binding_names::kTreeParentIds) == DataType::kINT32
                 && baseExecutor.getBindingDataType(binding_names::kTreeDepths) == DataType::kINT32,
-            std::string("DFlash tree-base engine tree metadata bindings must be INT32: '")
-                + binding_names::kTreeParentIds + "' and '" + binding_names::kTreeDepths + "'.");
-        ELLM_CHECK(usesDDTree,
-            std::string("DFlash base engine was exported with --dflash-tree-base, but runtime is configured for "
-                        "linear DFlash because specDraftTopK=1. Use --specDraftTopK > 1 for DDTree, or re-export "
-                        "the base model with --dflash-base for linear DFlash."));
+            modeName + " tree-base engine tree metadata bindings must be INT32: '" + binding_names::kTreeParentIds
+                + "' and '" + binding_names::kTreeDepths + "'.");
+        if (isDFlash)
+        {
+            ELLM_CHECK(usesTree,
+                "DFlash base engine was exported with --dflash-tree-base, but runtime is configured for linear "
+                "drafting because specDraftTopK=1. Use --specDraftTopK > 1 for DFlash tree drafting, or re-export "
+                "the base model with --dflash-base.");
+        }
     }
 
-    if (!needsDFlashDDTreeHybridBindings(deployment))
+    if (!usesTree || deployment.base.numLinearAttnLayers == 0)
     {
         return;
     }
 
     ELLM_CHECK(hasTreeParentIds && hasTreeDepths,
-        std::string("DFlash DDTree hybrid base engine requires INT32 tree metadata bindings '")
-            + binding_names::kTreeParentIds + "' and '" + binding_names::kTreeDepths
-            + "'. Re-export the base model with --dflash-tree-base, then rebuild spec_base.engine.");
+        modeName + " hybrid tree base engine requires INT32 tree metadata bindings '" + binding_names::kTreeParentIds
+            + "' and '" + binding_names::kTreeDepths + "'. Re-export the base model with " + treeExportFlag
+            + ", then rebuild spec_base.engine.");
 }
 } // namespace
 
 LLMInferenceRuntime::LLMInferenceRuntime(std::string const& engineDir, std::string const& multimodalEngineDir,
     std::unordered_map<std::string, std::string> const& loraWeightsMap, SpecDecodeDraftingConfig const& draftingConfig,
-    cudaStream_t stream)
+    cudaStream_t stream, ContextCacheConfig const& contextCacheConfig)
 {
-    initializeCommon(engineDir, multimodalEngineDir, loraWeightsMap, draftingConfig, stream);
+    initializeCommon(engineDir, multimodalEngineDir, loraWeightsMap, draftingConfig, stream, contextCacheConfig);
 }
 
 LLMInferenceRuntime::LLMInferenceRuntime(std::string const& engineDir, std::string const& multimodalEngineDir,
-    std::unordered_map<std::string, std::string> const& loraWeightsMap, cudaStream_t stream)
+    std::unordered_map<std::string, std::string> const& loraWeightsMap, cudaStream_t stream,
+    ContextCacheConfig const& contextCacheConfig)
 {
-    initializeCommon(engineDir, multimodalEngineDir, loraWeightsMap, std::nullopt, stream);
+    initializeCommon(engineDir, multimodalEngineDir, loraWeightsMap, std::nullopt, stream, contextCacheConfig);
 }
 
 void LLMInferenceRuntime::initializeCommon(std::string const& engineDir, std::string const& multimodalEngineDir,
     std::unordered_map<std::string, std::string> const& loraWeightsMap,
-    std::optional<SpecDecodeDraftingConfig> const& draftingConfig, cudaStream_t stream)
+    std::optional<SpecDecodeDraftingConfig> const& draftingConfig, cudaStream_t stream,
+    ContextCacheConfig const& contextCacheConfig)
 {
+    ELLM_CHECK(contextCacheConfig.maxRecords >= 0 && contextCacheConfig.recurrentSnapshotPoolBytes >= 0
+            && contextCacheConfig.partialKvSnapshotPoolBytes >= 0 && contextCacheConfig.mediaArtifactPoolBytes >= 0
+            && contextCacheConfig.maxMediaArtifacts >= 0,
+        "Context cache record, snapshot, and media budgets must be non-negative");
+    mContextCacheConfig = contextCacheConfig;
     // -----------------------------------------------------------------------
     // 1. Load shared embedding table (shared between base and draft models).
     // -----------------------------------------------------------------------
@@ -167,6 +507,54 @@ void LLMInferenceRuntime::initializeCommon(std::string const& engineDir, std::st
         : std::nullopt;
 
     mDeployment = createDeploymentConfig(baseConfigPath, draftConfigPath, draftingConfig);
+    std::string domainIdentity = baseConfigPath.string();
+    if (draftConfigPath.has_value())
+    {
+        domainIdentity.push_back('\0');
+        domainIdentity += draftConfigPath->string();
+    }
+    if (!multimodalEngineDir.empty())
+    {
+        domainIdentity.push_back('\0');
+        domainIdentity += std::filesystem::path(multimodalEngineDir).lexically_normal().string();
+    }
+    mContextCacheDomain = hashOpaqueIdentity(domainIdentity);
+    SpecDecodeMode const specMode = mDeployment.specDecodeMode();
+    if (specMode == SpecDecodeMode::kEAGLE || specMode == SpecDecodeMode::kMTP)
+    {
+        ELLM_CHECK(draftingConfig.has_value(), "Speculative deployment is missing its drafting configuration");
+        std::string draftIdentity = domainIdentity;
+        draftIdentity.push_back('\0');
+        draftIdentity += specMode == SpecDecodeMode::kEAGLE ? "eagle" : "mtp";
+        draftIdentity.push_back('\0');
+        draftIdentity += std::to_string(draftingConfig->draftingTopK);
+        draftIdentity.push_back(':');
+        draftIdentity += std::to_string(draftingConfig->draftingStep);
+        draftIdentity.push_back(':');
+        draftIdentity += std::to_string(draftingConfig->verifySize);
+        mDraftEngineSignature = hashOpaqueIdentity(draftIdentity);
+    }
+
+    if (mContextCacheConfig.enabled)
+    {
+        SpecDecodeMode const mode = mDeployment.specDecodeMode();
+        ELLM_CHECK(mode == SpecDecodeMode::kNONE || mode == SpecDecodeMode::kEAGLE || mode == SpecDecodeMode::kMTP,
+            "Production context reuse currently supports vanilla, EAGLE, and MTP deployments only");
+        ELLM_CHECK(mode != SpecDecodeMode::kEAGLE || mDeployment.base.numLinearAttnLayers == 0,
+            "Production context reuse does not support hybrid EAGLE deployments");
+        ELLM_CHECK(mode != SpecDecodeMode::kMTP || mDeployment.base.numLinearAttnLayers > 0,
+            "Production MTP context reuse is limited to hybrid base models");
+        ELLM_CHECK(mDeployment.base.slidingWindowSize.has_value()
+                && (!mDeployment.draft.has_value() || mDeployment.draft->slidingWindowSize.has_value()),
+            "Production context reuse requires engine configs with explicit sliding_window metadata; re-export and "
+            "rebuild this engine with the current toolchain");
+        bool const baseUsesSlidingWindow = *mDeployment.base.slidingWindowSize > 0 || mDeployment.base.useDualRope;
+        bool const draftUsesSlidingWindow = mDeployment.draft.has_value()
+            && (*mDeployment.draft->slidingWindowSize > 0 || mDeployment.draft->useDualRope);
+        ELLM_CHECK(!baseUsesSlidingWindow && !draftUsesSlidingWindow,
+            "Production context reuse does not yet support sliding-window attention; disable context reuse or use "
+            "a full-attention engine until backend capability validation is available");
+    }
 
     ELLM_CHECK(mDeployment.base.numDeepstackFeatures <= 0 || !multimodalEngineDir.empty(),
         "--multimodalEngineDir is required for VLM engine.");
@@ -192,7 +580,7 @@ void LLMInferenceRuntime::initializeCommon(std::string const& engineDir, std::st
     // 4. Validate engine binding dtypes against the parsed configs.
     // -----------------------------------------------------------------------
     validateAgainstEngine(mDeployment.base, *mBaseExecutor, "base");
-    validateDFlashTreeMetadataBindings(mDeployment, *mBaseExecutor);
+    validateTreeMetadataBindings(mDeployment, *mBaseExecutor);
 
     // -----------------------------------------------------------------------
     // 5. Set runtime batch size.
@@ -218,6 +606,86 @@ void LLMInferenceRuntime::initializeCommon(std::string const& engineDir, std::st
         mSharedResources = SharedResources::createForLLM(mDeployment.base, loraWeightsMap, stream);
         mPipelineIO = std::make_unique<PipelineIO>(PipelineIO::createForLLM(mDeployment.base, stream));
     }
+    if (mContextCacheConfig.enabled)
+    {
+        ResourceDemand capacities{};
+        bool const baseHasAttention = !mDeployment.base.kvLayerConfigs.empty();
+        capacities.baseKvPages = baseHasAttention ? mDeployment.base.kvPoolPages : 0;
+        if (mDeployment.specDecodeMode() == SpecDecodeMode::kEAGLE
+            || mDeployment.specDecodeMode() == SpecDecodeMode::kMTP)
+        {
+            capacities.draftKvPages = mDeployment.draft->kvPoolPages;
+        }
+        if (mDeployment.base.numLinearAttnLayers > 0)
+        {
+            HybridCacheManager& cacheManager = *mSharedResources->cacheManagers[0];
+            HybridCacheManager::Config const& cacheConfig = cacheManager.getConfig();
+            HybridCacheManager* const draftCacheManager = mDeployment.specDecodeMode() == SpecDecodeMode::kMTP
+                ? mSharedResources->cacheManagers[1].get()
+                : nullptr;
+            HybridCacheManager::Config const* const draftCacheConfig
+                = draftCacheManager == nullptr ? nullptr : &draftCacheManager->getConfig();
+            size_t const recurrentBytesPerSlot = HybridSnapshotStorage::recurrentBytesPerSlot(cacheConfig);
+            size_t const partialKvBytesPerSlot
+                = HybridSnapshotStorage::partialKvBytesPerSlot(cacheConfig, draftCacheConfig);
+            ELLM_CHECK(recurrentBytesPerSlot > 0, "Hybrid recurrent snapshot schema has zero bytes per slot");
+
+            int64_t const recurrentSlotCount
+                = mContextCacheConfig.recurrentSnapshotPoolBytes / static_cast<int64_t>(recurrentBytesPerSlot);
+            int64_t const partialKvSlotCount = partialKvBytesPerSlot == 0
+                ? 0
+                : mContextCacheConfig.partialKvSnapshotPoolBytes / static_cast<int64_t>(partialKvBytesPerSlot);
+            ELLM_CHECK(recurrentSlotCount <= std::numeric_limits<int32_t>::max()
+                    && partialKvSlotCount <= std::numeric_limits<int32_t>::max(),
+                "Hybrid snapshot byte budget produces too many slots");
+            if (mDeployment.specDecodeMode() == SpecDecodeMode::kMTP)
+            {
+                // The scoped MLPerf path is serialized and retains only the immediately preceding endpoint. One
+                // recurrent slot forces the old conversation's canonical lineage to retire before a new endpoint is
+                // published.
+                ELLM_CHECK(recurrentSlotCount == 1 && partialKvSlotCount > 0,
+                    "Hybrid MTP context reuse with concurrency one requires exactly one recurrent snapshot slot and "
+                    "at least one bundled partial-KV slot; realized recurrent="
+                        + std::to_string(recurrentSlotCount) + " (" + std::to_string(recurrentBytesPerSlot)
+                        + " bytes/slot), partialKV=" + std::to_string(partialKvSlotCount) + " ("
+                        + std::to_string(partialKvBytesPerSlot) + " bytes/slot)");
+            }
+            capacities.recurrentSnapshotSlots = static_cast<int32_t>(recurrentSlotCount);
+            capacities.partialKvSnapshotSlots = static_cast<int32_t>(partialKvSlotCount);
+            // Hybrid+MTP saves one base-hidden vector per checkpoint so the successor-dependent boundary draft slot can
+            // be recomputed for any following token at restore. The draft reads baseHiddenStates directly, so match its
+            // width and dtype.
+            int32_t const boundaryHiddenDim
+                = draftCacheManager != nullptr ? mDeployment.specConfig->baseOutputHiddenDim : 0;
+            nvinfer1::DataType const boundaryHiddenType = draftCacheManager != nullptr
+                ? mPipelineIO->baseHiddenStates.getDataType()
+                : nvinfer1::DataType::kHALF;
+            mHybridSnapshotStorage
+                = std::make_unique<HybridSnapshotStorage>(cacheManager, capacities.recurrentSnapshotSlots,
+                    capacities.partialKvSnapshotSlots, draftCacheManager, boundaryHiddenDim, boundaryHiddenType);
+            if (draftCacheManager != nullptr)
+            {
+                // Scratch to shift base hidden states by one row when folding the checkpoint boundary into the draft
+                // prefill; sized to match baseHiddenStates' [maxSeq, hidden].
+                rt::Coords const& bhShape = mPipelineIO->baseHiddenStates.getShape();
+                mBoundaryFoldScratch = rt::Tensor({bhShape[1], bhShape[2]}, rt::DeviceType::kGPU, boundaryHiddenType,
+                    "LLMInferenceRuntime::mBoundaryFoldScratch");
+            }
+            mRecurrentStateSchema = HybridSnapshotStorage::schemaId(cacheConfig, draftCacheConfig);
+            LOG_INFO(
+                "Context cache hybrid snapshots: recurrent=%d slots (%zu bytes/slot), partialKV=%d slots "
+                "(%zu bytes/slot)",
+                capacities.recurrentSnapshotSlots, recurrentBytesPerSlot, capacities.partialKvSnapshotSlots,
+                partialKvBytesPerSlot);
+        }
+        mContextCache = std::make_unique<ContextCacheRuntimeAdapter>(
+            kTOKENS_PER_PAGE, capacities, mContextCacheConfig.maxRecords);
+        if (mContextCacheConfig.mediaArtifactPoolBytes > 0 && mContextCacheConfig.maxMediaArtifacts > 0)
+        {
+            mMediaArtifactCache = std::make_unique<MediaArtifactCache>(
+                math::cast<size_t>(mContextCacheConfig.mediaArtifactPoolBytes), mContextCacheConfig.maxMediaArtifacts);
+        }
+    }
     // Externalized model weights: the SharedResources factory only allocates an
     // empty manager. Load external weights and validate against engine inputs.
     // This handles the base engine; the spec-decode draft engine loads its own
@@ -232,6 +700,19 @@ void LLMInferenceRuntime::initializeCommon(std::string const& engineDir, std::st
     // -----------------------------------------------------------------------
     buildTensorMap(mBaseTensorMap, *mPipelineIO, *mSharedResources, mDeployment.base, /*kvCacheIndex=*/0);
     mSharedResources->externalWeightManager->registerTensorMapEntries(mBaseTensorMap);
+
+    auto const baseLogitsType = mBaseExecutor->getBindingDataType(binding_names::kLogits);
+    mConvertBaseLogits = baseLogitsType == DataType::kHALF;
+    ELLM_CHECK(baseLogitsType == DataType::kFLOAT || mConvertBaseLogits, "Base engine logits must be FLOAT or HALF.");
+    if (mConvertBaseLogits)
+    {
+        bool const supportedHalfLogits = hasDraft && mDeployment.specDecodeMode() == SpecDecodeMode::kMTP;
+        ELLM_CHECK(supportedHalfLogits, "HALF base logits are supported only by MTP.");
+        mBaseEngineOutputLogits = rt::Tensor(mPipelineIO->outputLogits.getShape(), rt::DeviceType::kGPU,
+            DataType::kHALF, "LLMInferenceRuntime::mBaseEngineOutputLogits");
+        mBaseTensorMap.set(binding_names::kLogits, mBaseEngineOutputLogits);
+        LOG_INFO("Base engine emits HALF logits; enabled runtime FP32 publication for MTP.");
+    }
 
     // -----------------------------------------------------------------------
     // 8. LoRA: register engine bindings and seed the base tensor map with
@@ -313,6 +794,8 @@ void LLMInferenceRuntime::initializeCommon(std::string const& engineDir, std::st
             "LLMInferenceRuntime::mHostSelectedTokenIds");
         mHostReuseKVCacheLengths = rt::Tensor({mMaxRuntimeBatchSize}, rt::DeviceType::kCPU, DataType::kINT32,
             "LLMInferenceRuntime::mHostReuseKVCacheLengths");
+        mHostDraftReuseKVCacheLengths = rt::Tensor({mMaxRuntimeBatchSize}, rt::DeviceType::kCPU, DataType::kINT32,
+            "LLMInferenceRuntime::mHostDraftReuseKVCacheLengths");
 
         // Pre-allocate multimodal indices tensor (used for audio/vision embedding lookup).
         mMultimodalIndices = rt::Tensor({mMaxRuntimeBatchSize, maxInputLength}, rt::DeviceType::kGPU, DataType::kINT32,
@@ -418,8 +901,9 @@ void LLMInferenceRuntime::initializeCommon(std::string const& engineDir, std::st
         {
             std::string actionDir = multimodalEngineDir + "/action";
             LOG_INFO("Attempting to load Action runner from %s", actionDir.c_str());
-            mActionRunner = std::make_unique<Alpamayo1ActionRunner>(
-                actionDir, stream, mSharedResources->cacheManagers[0]->getKVCacheManager().getConfig());
+            mActionRunner = std::make_unique<Alpamayo1ActionRunner>(actionDir, stream,
+                mSharedResources->cacheManagers[0]->getKVCacheManager().getConfig(),
+                mSharedResources->kvPageTables[0]->isIdentity());
             LOG_INFO("Alpamayo 1 action expert loaded.");
         }
         catch (std::exception const& e)
@@ -430,6 +914,8 @@ void LLMInferenceRuntime::initializeCommon(std::string const& engineDir, std::st
         // Validate that the action engine's max KV cache capacity matches the LLM engine's.
         if (mActionRunner)
         {
+            ELLM_CHECK(!mContextCacheConfig.enabled,
+                "Production context reuse is incompatible with the identity-only action runner");
             int32_t const actionMaxKVCacheCapacity = mActionRunner->getMaxKVCacheCapacity();
             int32_t const llmMaxKVCacheCapacity = mDeployment.base.maxKVCacheCapacity;
             ELLM_CHECK(actionMaxKVCacheCapacity == llmMaxKVCacheCapacity,
@@ -501,9 +987,9 @@ void LLMInferenceRuntime::allocateLogprobsTensors()
 void LLMInferenceRuntime::buildDecodingRuntimeContext()
 {
     BaseEngineResources baseResources{*mBaseExecutor, mBaseTensorMap, *mSharedResources,
-        *mSharedResources->cacheManagers[0], *mPipelineIO, [this](InferenceDims const& dims, cudaStream_t stream) {
-            return captureBaseGraphWithLoraFanout(dims, stream);
-        }};
+        *mSharedResources->cacheManagers[0], *mPipelineIO,
+        [this](InferenceDims const& dims, cudaStream_t stream) { return captureBaseGraphWithLoraFanout(dims, stream); },
+        [this](cudaStream_t stream) { publishBaseLogits(stream); }};
     PreprocessResources preprocessResources{
         *mStepPreparer, *mEmbeddingPre, mEmbedding, mIdsInput, mDeepstack.get(), mGemma4Ple.get()};
     SamplingBuffers sampling{mSamplingWorkspace, mSamplingIndices, mSamplingScores, mBaseVocabMappingTable,
@@ -512,6 +998,18 @@ void LLMInferenceRuntime::buildDecodingRuntimeContext()
         mDeviceLogprobsValues, mDeviceLogprobsIndices, mHostLogprobsValues, mHostLogprobsIndices, mGatheredLogits};
     mDecodingRuntimeContext.reset(new DecodingRuntimeContext{mDeployment, mMaxRuntimeBatchSize, baseResources,
         preprocessResources, *mTokenizer, mLogitBias, sampling, logprobs});
+}
+
+void LLMInferenceRuntime::publishBaseLogits(cudaStream_t stream)
+{
+    if (!mConvertBaseLogits)
+    {
+        return;
+    }
+
+    ELLM_CHECK(mBaseEngineOutputLogits.reshape(mPipelineIO->outputLogits.getShape()),
+        "Failed to reshape HALF base-engine logits for FP32 publication.");
+    kernel::convertLogitsToFloat(mBaseEngineOutputLogits, mPipelineIO->outputLogits, stream);
 }
 
 void LLMInferenceRuntime::setActionNoiseSeed(int32_t seed) noexcept
@@ -541,8 +1039,19 @@ bool LLMInferenceRuntime::handleRequest(LLMGenerationRequest const& request, LLM
     int32_t const activeBatchSize = static_cast<int32_t>(request.requests.size());
     std::string const& loraWeightsName = request.loraWeightsName;
 
-    if (!validateRequestConfig(request))
+    // Resolve request-level fallback before validation so the constraints describe the decoder that will execute.
+    DecodingStrategy& decodingStrategy = mDecoderRegistry->select(request);
+    if (!validateRequestConfig(request, decodingStrategy.kind()))
     {
+        return false;
+    }
+
+    bool const enableSpecDecode = decodingStrategy.isSpeculative();
+    if (shouldRejectLogitBiasWithSpecDecode(request, enableSpecDecode))
+    {
+        LOG_ERROR(
+            "logit_bias is not supported while speculative decoding is enabled; set disable_spec_decode=true or use "
+            "a vanilla engine.");
         return false;
     }
 
@@ -550,9 +1059,6 @@ bool LLMInferenceRuntime::handleRequest(LLMGenerationRequest const& request, LLM
     {
         return false;
     }
-
-    DecodingStrategy& decodingStrategy = mDecoderRegistry->select(request);
-    bool const enableSpecDecode = decodingStrategy.isSpeculative();
 
     // Current speculative decoders only support greedy-compatible sampling.
     // Warn here; active spec-decode requests are normalized when context sampling params are populated below.
@@ -576,6 +1082,7 @@ bool LLMInferenceRuntime::handleRequest(LLMGenerationRequest const& request, LLM
     DecodingInferenceContext context;
     context.initialize(
         activeBatchSize, maxGenerateLength, std::nullopt, rt::OptionalInputTensors{}, loraWeightsName, stream);
+    ContextCacheStreamGuard contextCacheStreamGuard(context);
 
     // Few-layer-validation debug: per-layer logits/KV dump + optional teacher-forcing (both no-ops
     // unless the env vars are set). Owned by the context via RAII so it shares the request's lifetime
@@ -604,6 +1111,34 @@ bool LLMInferenceRuntime::handleRequest(LLMGenerationRequest const& request, LLM
                 LOG_ERROR("Failed to tokenize input text for request %d in batch", i);
                 return false;
             }
+        }
+    }
+
+    if (mContextCache)
+    {
+        context.contextReuseEnabled = true;
+        bool const baseSequenceReuseSupported = context.mediaIdentityComplete
+            && (mDeployment.base.numLinearAttnLayers == 0 || mHybridSnapshotStorage != nullptr);
+        context.contextCacheLookupEnabled = context.contextReuseEnabled && baseSequenceReuseSupported
+            && !outputThinkerEmbeddings && !request.disableContextReuse;
+        context.contextCachePublicationEnabled
+            = context.contextReuseEnabled && baseSequenceReuseSupported && !request.disableContextReuse;
+        context.mediaArtifactReuseEnabled = context.contextReuseEnabled && context.mediaIdentityComplete
+            && mMediaArtifactCache != nullptr && !request.disableContextReuse;
+        context.contextCacheIsolationKey = request.contextCacheIsolationKey;
+        context.contextCacheCommitPolicy = request.contextCacheCommitPolicy;
+        context.recurrentCaptureInterval = request.recurrentCaptureInterval;
+        context.contextCacheReplayTailLength = request.contextCacheReplayTailLength;
+        if (!context.contextCacheLookupEnabled && !request.disableContextReuse)
+        {
+            LOG_DEBUG("Context cache lookup bypassed for a request path whose exact state identity is not wired yet.");
+        }
+        if (request.recurrentCaptureInterval > 0
+            && (!context.contextCachePublicationEnabled || outputThinkerEmbeddings || context.hasVisionInput
+                || context.hasAudioInput))
+        {
+            LOG_ERROR("Periodic recurrent capture requires a reusable text-only hybrid prefill path.");
+            return false;
         }
     }
 
@@ -664,7 +1199,7 @@ bool LLMInferenceRuntime::handleRequest(LLMGenerationRequest const& request, LLM
     }
 
     // Generate system prompt KVCache for each sequence in the batch
-    if (request.saveSystemPromptKVCache)
+    if (request.saveSystemPromptKVCache && !mContextCache)
     {
         for (int32_t i = 0; i < activeBatchSize; ++i)
         {
@@ -692,6 +1227,12 @@ bool LLMInferenceRuntime::handleRequest(LLMGenerationRequest const& request, LLM
         return false;
     }
 
+    if (!resolveMultimodalArtifacts(request, context, stream))
+    {
+        LOG_ERROR("Failed to resolve multimodal encoder artifacts.");
+        return false;
+    }
+
     // ── Streaming setup ──────────────────────────────────────────────────────
     // Attach first, record in slotStreams only on success — a throw from attach
     // keeps foreign channels out of the finalizer's reach. Seed sentTokenCount
@@ -710,8 +1251,15 @@ bool LLMInferenceRuntime::handleRequest(LLMGenerationRequest const& request, LLM
     }
     StreamChannelFinalizer streamFinalizer(context, *mTokenizer);
 
+    std::vector<int32_t> kvResidentPrefillLengths = context.effectivePrefillLengths;
+    if (context.contextReuseEnabled)
+    {
+        std::transform(context.rawBatchedInputIds.begin(), context.rawBatchedInputIds.end(),
+            kvResidentPrefillLengths.begin(),
+            [](std::vector<int32_t> const& inputIds) { return math::cast<int32_t>(inputIds.size()); });
+    }
     int32_t const clampedMaxGenerateLength = clampMaxGenerateLengthForKVCapacity(
-        context.effectivePrefillLengths, request.maxGenerateLength, kvCacheCapacity, kvcReserve);
+        kvResidentPrefillLengths, request.maxGenerateLength, kvCacheCapacity, kvcReserve);
     if (clampedMaxGenerateLength != context.maxGenerateLength)
     {
         context.maxGenerateLength = clampedMaxGenerateLength;
@@ -723,12 +1271,30 @@ bool LLMInferenceRuntime::handleRequest(LLMGenerationRequest const& request, LLM
         return false;
     }
 
-    // Prefill from the base model; subsequent iterations are delegated to the selected strategy.
-    bool const prefillStatus = runBaseModelPrefill(context);
+    bool const hybridMtpContextReuse
+        = shouldUseHybridMtpEndpointReuse(decodingStrategy.kind(), mDeployment.base.numLinearAttnLayers > 0,
+            context.contextCacheLookupEnabled, context.contextCachePublicationEnabled);
+
+    // Prefill from the base model; subsequent iterations are delegated to the selected strategy. Hybrid MTP recomputes
+    // the successor-dependent boundary draft slot from a saved base hidden state, so a checkpoint reuses across turns
+    // regardless of the token that follows it.
+    bool const prefillStatus = hybridMtpContextReuse ? runHybridMtpPrefill(context, decodingStrategy)
+                                                     : runBaseModelPrefillWithPeriodicHybridCaptures(context);
     if (!prefillStatus)
     {
         LOG_ERROR("Failed to execute prefill step for base model.");
         return false;
+    }
+
+    if (context.contextCachePublicationEnabled && !hybridMtpContextReuse)
+    {
+        for (int32_t i = 0; i < context.activeBatchSize; ++i)
+        {
+            // EAGLE has not run draft prefill yet, so this first commit intentionally publishes base-only state.
+            // The first decode step upgrades the same prefill boundary after paired draft state becomes resident.
+            publishContextCacheBoundary(
+                context, i, PublicationPoint::kPrefillEnd, math::cast<int32_t>(context.rawBatchedInputIds[i].size()));
+        }
     }
 
     // Streaming consumers (e.g. the Qwen3-Omni Talker) run concurrently with
@@ -946,10 +1512,28 @@ bool LLMInferenceRuntime::handleRequest(LLMGenerationRequest const& request, LLM
         // first in the per-slot terminalReason latch.
         applyCancellationToFinishStates(context);
 
+        if (!prepareContextCacheForDecode(context))
+        {
+            LOG_ERROR("Failed to grow context cache for decode.");
+            return false;
+        }
+
         if (!decodingStrategy.decodeStep(context))
         {
             LOG_ERROR("Failed to decode tokens with %s decoding strategy.", decodingStrategy.name());
             return false;
+        }
+
+        if (context.contextReuseEnabled && context.generationRound == 0
+            && decodingStrategy.kind() == DecodingStrategyKind::kEAGLE)
+        {
+            // The first EAGLE step has now completed draft prefill. Publish the logical prompt boundary again so a
+            // base-only prefill record can gain its coherent draft path, including for kPrefillStateOnly requests.
+            for (int32_t i = 0; i < context.activeBatchSize; ++i)
+            {
+                publishContextCacheBoundary(context, i, PublicationPoint::kPrefillEnd,
+                    math::cast<int32_t>(context.rawBatchedInputIds[i].size()));
+            }
         }
 
         // Per-iter pipeline: decode → finalize finish state → emit chunks.
@@ -991,6 +1575,7 @@ bool LLMInferenceRuntime::handleRequest(LLMGenerationRequest const& request, LLM
     int32_t totalReusedTokens = 0;
     int32_t totalComputedTokens = 0;
     int32_t totalGeneratedTokens = 0;
+    int32_t totalAcceptedTokens = 0;
     int32_t totalIterations = 0;
 
     // Accumulate from completed batches
@@ -1001,13 +1586,14 @@ bool LLMInferenceRuntime::handleRequest(LLMGenerationRequest const& request, LLM
         totalReusedTokens += (rawPromptLength - computedLength);
         totalComputedTokens += computedLength;
         totalGeneratedTokens += batchResult.generateLength;
+        totalAcceptedTokens += std::max(batchResult.generateLength - 1, 0);
         totalIterations += batchResult.actualIterations;
     }
 
     mPrefillMetrics.recordRun(totalReusedTokens, totalComputedTokens);
     if (enableSpecDecode)
     {
-        mSpecDecodeGenerationMetrics.recordRun(totalIterations, totalGeneratedTokens);
+        mSpecDecodeGenerationMetrics.recordRun(totalIterations, totalGeneratedTokens, totalAcceptedTokens);
     }
     else
     {
@@ -1118,7 +1704,8 @@ bool LLMInferenceRuntime::handleRequest(LLMGenerationRequest const& request, LLM
     return true;
 }
 
-bool LLMInferenceRuntime::validateRequestConfig(LLMGenerationRequest const& request)
+bool LLMInferenceRuntime::validateRequestConfig(
+    LLMGenerationRequest const& request, DecodingStrategyKind selectedStrategy)
 {
     int32_t const activeBatchSize = static_cast<int32_t>(request.requests.size());
     bool const hasAudio = std::any_of(
@@ -1138,6 +1725,44 @@ bool LLMInferenceRuntime::validateRequestConfig(LLMGenerationRequest const& requ
     {
         LOG_ERROR(
             "Requested batch size %d exceeds maximum supported batch size %d", activeBatchSize, mMaxRuntimeBatchSize);
+        return false;
+    }
+    if (request.recurrentCaptureInterval < 0)
+    {
+        LOG_ERROR("recurrent_capture_interval must be non-negative");
+        return false;
+    }
+    if (request.contextCacheReplayTailLength < 0)
+    {
+        LOG_ERROR("context_cache_replay_tail_length must be non-negative");
+        return false;
+    }
+    bool const requestCacheEnabled = mContextCacheConfig.enabled && !request.disableContextReuse;
+    bool const hybridMtpContextReuse = shouldUseHybridMtpEndpointReuse(
+        selectedStrategy, mDeployment.base.numLinearAttnLayers > 0, requestCacheEnabled, requestCacheEnabled);
+    if (hybridMtpContextReuse
+        && (activeBatchSize != 1 || hasAudio || hasVision || request.recurrentCaptureInterval != 0
+            || request.contextCacheCommitPolicy != CommitPolicy::kPrefillStateOnly))
+    {
+        LOG_ERROR(
+            "Hybrid MTP context reuse requires a text-only batch of one, endpoint-only capture, and "
+            "PREFILL_STATE_ONLY commit policy");
+        return false;
+    }
+    if (request.recurrentCaptureInterval > 0
+        && (!mContextCacheConfig.enabled || mDeployment.base.numLinearAttnLayers == 0
+            || request.recurrentCaptureInterval % kTOKENS_PER_PAGE != 0))
+    {
+        LOG_ERROR("recurrent_capture_interval requires production hybrid context reuse and must be a multiple of %d",
+            kTOKENS_PER_PAGE);
+        return false;
+    }
+    if (request.recurrentCaptureInterval > 0
+        && (activeBatchSize != 1 || hasAudio || hasVision || mHybridSnapshotStorage == nullptr
+            || mHybridSnapshotStorage->recurrentSlotCount() == 0))
+    {
+        LOG_ERROR(
+            "recurrent_capture_interval currently requires a text-only batch of one and retained recurrent slots");
         return false;
     }
     for (int32_t i = 0; i < activeBatchSize; ++i)
@@ -1170,14 +1795,6 @@ bool LLMInferenceRuntime::validateRequestConfig(LLMGenerationRequest const& requ
                 return false;
             }
         }
-    }
-    bool const speculativeDecoderAvailable = mDecoderRegistry && mDecoderRegistry->hasSpeculativeDecoder();
-    if (shouldRejectLogitBiasWithSpecDecode(request, speculativeDecoderAvailable))
-    {
-        LOG_ERROR(
-            "logit_bias is not supported while speculative decoding is enabled; set disable_spec_decode=true or use "
-            "a vanilla engine.");
-        return false;
     }
     if (hasAudio && !mAudioRunner)
     {
@@ -1213,6 +1830,8 @@ bool LLMInferenceRuntime::multiModalRuntimePreprocess(
         request.requests.begin(), request.requests.end(), [](auto const& req) { return !req.imageBuffers.empty(); });
     bool const hasTrajectoryHistory = std::any_of(request.requests.begin(), request.requests.end(),
         [](auto const& req) { return req.pastTrajectory.has_value(); });
+    context.hasAudioInput = hasAudio;
+    context.hasVisionInput = hasVision;
 
     // Clear request-scoped multimodal state up front so previous requests cannot leak through reused runtime members.
     context.visualEmbeddings = std::nullopt;
@@ -1242,12 +1861,6 @@ bool LLMInferenceRuntime::multiModalRuntimePreprocess(
             LOG_ERROR("Audio preprocessing failed. This request cannot be handled.");
             return false;
         }
-
-        if (!mAudioRunner->infer(stream))
-        {
-            LOG_ERROR("Audio inference failed. This request cannot be handled.");
-            return false;
-        }
     }
 
     // Process vision inputs (if present)
@@ -1257,12 +1870,6 @@ bool LLMInferenceRuntime::multiModalRuntimePreprocess(
         if (!mVisionRunner->preprocess(request, batchedInputIds, mTokenizer.get(), mropeCosSinOut, stream))
         {
             LOG_ERROR("Vision preprocessing failed. This request cannot be handled.");
-            return false;
-        }
-
-        if (!mVisionRunner->infer(stream))
-        {
-            LOG_ERROR("Vision inference failed. This request cannot be handled.");
             return false;
         }
     }
@@ -1302,18 +1909,15 @@ bool LLMInferenceRuntime::multiModalRuntimePreprocess(
         }
     }
 
-    // Get embeddings from independent runners — gate on request having multimodal data,
-    // not just runner existence, to avoid leaking stale embeddings from previous requests.
-    rt::OptionalInputTensor visionEmbeddings
-        = (hasVision && mVisionRunner) ? std::optional{std::ref(mVisionRunner->getOutputEmbedding())} : std::nullopt;
-    rt::OptionalInputTensor audioEmbeddings
-        = (hasAudio && mAudioRunner) ? std::optional{std::ref(mAudioRunner->getOutputEmbedding())} : std::nullopt;
-    rt::OptionalInputTensors deepstackFeatures
-        = (hasVision && mVisionRunner) ? mVisionRunner->getDeepstackFeatures() : rt::OptionalInputTensors{};
-
-    context.visualEmbeddings = visionEmbeddings;
-    context.deepstackFeatures = deepstackFeatures;
-    context.audioEmbeddings = audioEmbeddings;
+    if (mContextCache != nullptr && (hasAudio || hasVision))
+    {
+        std::vector<int64_t> const visionRows
+            = mVisionRunner ? mVisionRunner->preparedArtifactRowCounts() : std::vector<int64_t>{};
+        std::vector<int64_t> const audioRows
+            = mAudioRunner ? mAudioRunner->preparedArtifactRowCounts() : std::vector<int64_t>{};
+        context.mediaIdentityComplete
+            = populateMediaSpans(request, mDeployment.base, batchedInputIds, visionRows, audioRows, context);
+    }
 
     // Populate system prompts and raw input IDs from batchedInputIds
     for (int32_t i = 0; i < activeBatchSize; ++i)
@@ -1325,7 +1929,352 @@ bool LLMInferenceRuntime::multiModalRuntimePreprocess(
     return true;
 }
 
-bool LLMInferenceRuntime::runBaseModelPrefill(DecodingInferenceContext& context)
+bool LLMInferenceRuntime::resolveMultimodalArtifacts(
+    LLMGenerationRequest const& request, DecodingInferenceContext& context, cudaStream_t stream)
+{
+    if (!context.hasVisionInput && !context.hasAudioInput)
+    {
+        return true;
+    }
+
+    auto reuseLength = [&](int32_t slot) {
+        if (!context.contextReuseEnabled || !context.sequenceCacheStates[slot].has_value())
+        {
+            return 0;
+        }
+        return context.sequenceCacheStates[slot]->lease.reuseTokenLength();
+    };
+    auto firstArtifactRow = [&](int32_t slot, MediaModality modality) {
+        int32_t const reusedTokens = reuseLength(slot);
+        for (MediaSpanDescriptor const& span : context.mediaSpans[slot])
+        {
+            if (span.artifactKey.modality != modality)
+            {
+                continue;
+            }
+            int32_t const consumedRows = mediaRowsBeforeToken(span, reusedTokens);
+            if (consumedRows < span.tokenLength)
+            {
+                return span.embeddingOffset + consumedRows;
+            }
+        }
+        return 0;
+    };
+    for (int32_t slot = 0; slot < context.activeBatchSize; ++slot)
+    {
+        context.visionEmbeddingOffsets[slot] = firstArtifactRow(slot, MediaModality::kVision);
+        context.audioEmbeddingOffsets[slot] = firstArtifactRow(slot, MediaModality::kAudio);
+    }
+
+    struct ArtifactSpanRef
+    {
+        MediaSpanDescriptor const* span{};
+        int32_t slot{};
+        size_t originalItemIndex{};
+    };
+    struct ArtifactSource
+    {
+        ArtifactSpanRef ref;
+        Tensor const* embedding{};
+        std::vector<Tensor const*> deepstack;
+        std::optional<MediaArtifactLease> lease;
+    };
+
+    auto resolve = [&](MediaModality modality, MultimodalRunner& runner, Tensor& assembly,
+                       std::vector<Tensor>& deepstackAssembly, OptionalInputTensor& output,
+                       OptionalInputTensors* deepstackOutput) -> bool {
+        std::vector<ArtifactSpanRef> allSpans;
+        std::vector<ArtifactSpanRef> neededSpans;
+        int32_t totalRows{};
+        size_t originalItemIndex{};
+        for (int32_t slot = 0; slot < context.activeBatchSize; ++slot)
+        {
+            int32_t const reusedTokens = reuseLength(slot);
+            for (MediaSpanDescriptor const& span : context.mediaSpans[slot])
+            {
+                if (span.artifactKey.modality != modality)
+                {
+                    continue;
+                }
+                ArtifactSpanRef const ref{&span, slot, originalItemIndex++};
+                allSpans.push_back(ref);
+                totalRows = std::max(totalRows, span.embeddingOffset + span.tokenLength);
+                if (mediaRowsBeforeToken(span, reusedTokens) < span.tokenLength)
+                {
+                    neededSpans.push_back(ref);
+                }
+            }
+        }
+
+        if (!context.mediaIdentityComplete || allSpans.empty())
+        {
+            if (!runner.infer(stream))
+            {
+                return false;
+            }
+            output = std::cref(runner.getOutputEmbedding());
+            if (deepstackOutput != nullptr)
+            {
+                *deepstackOutput = runner.getDeepstackFeatures();
+            }
+            return true;
+        }
+        if (neededSpans.empty())
+        {
+            runner.discardPreparedInput();
+            output = std::nullopt;
+            if (deepstackOutput != nullptr)
+            {
+                deepstackOutput->clear();
+            }
+            LOG_INFO("Context reuse skipped the %s encoder: every media span is resident in sequence state.",
+                modality == MediaModality::kVision ? "vision" : "audio");
+            return true;
+        }
+
+        size_t const expectedDeepstack
+            = modality == MediaModality::kVision ? static_cast<size_t>(mDeployment.base.numDeepstackFeatures) : 0U;
+        std::vector<ArtifactSource> sources;
+        std::vector<ArtifactSpanRef> misses;
+        sources.reserve(neededSpans.size());
+        misses.reserve(neededSpans.size());
+        for (ArtifactSpanRef const& ref : neededSpans)
+        {
+            std::optional<MediaArtifactLease> lease = context.mediaArtifactReuseEnabled
+                ? mMediaArtifactCache->acquire(ref.span->artifactKey, stream)
+                : std::nullopt;
+            if (!lease.has_value())
+            {
+                misses.push_back(ref);
+                continue;
+            }
+            std::vector<Tensor const*> features = lease->deepstackFeatures();
+            Coords const& shape = lease->embedding().getShape();
+            bool schemaMatches = shape.getNumDims() == 2 && shape[0] == ref.span->tokenLength
+                && shape[1] == mDeployment.base.hiddenSize && features.size() == expectedDeepstack;
+            schemaMatches = schemaMatches && std::all_of(features.begin(), features.end(), [&](Tensor const* feature) {
+                return feature != nullptr && feature->getShape().getNumDims() == 2
+                    && feature->getShape()[0] == ref.span->tokenLength;
+            });
+            if (!schemaMatches)
+            {
+                misses.push_back(ref);
+                continue;
+            }
+            ArtifactSource source;
+            source.ref = ref;
+            source.lease.emplace(std::move(*lease));
+            source.embedding = &source.lease->embedding();
+            source.deepstack = std::move(features);
+            sources.push_back(std::move(source));
+        }
+
+        bool const selectiveExecution = !sources.empty() || neededSpans.size() != allSpans.size();
+        if (!misses.empty() && selectiveExecution)
+        {
+            LLMGenerationRequest filteredRequest{};
+            filteredRequest.requests.resize(request.requests.size());
+            std::vector<size_t> selectedOriginalIndices;
+            selectedOriginalIndices.reserve(misses.size());
+            for (ArtifactSpanRef const& miss : misses)
+            {
+                ELLM_CHECK(miss.slot >= 0 && static_cast<size_t>(miss.slot) < request.requests.size(),
+                    "Selected media artifact slot is out of range");
+                size_t const itemOrder = static_cast<size_t>(miss.span->itemOrder);
+                if (modality == MediaModality::kVision)
+                {
+                    ELLM_CHECK(itemOrder < request.requests[miss.slot].imageBuffers.size(),
+                        "Selected vision artifact index is out of range");
+                    filteredRequest.requests[miss.slot].imageBuffers.push_back(
+                        request.requests[miss.slot].imageBuffers[itemOrder]);
+                }
+                else
+                {
+                    ELLM_CHECK(itemOrder < request.requests[miss.slot].audioBuffers.size(),
+                        "Selected audio artifact index is out of range");
+                    filteredRequest.requests[miss.slot].audioBuffers.push_back(
+                        request.requests[miss.slot].audioBuffers[itemOrder]);
+                }
+                selectedOriginalIndices.push_back(miss.originalItemIndex);
+            }
+            if (!runner.prepareArtifactSubset(filteredRequest, selectedOriginalIndices, stream))
+            {
+                return false;
+            }
+        }
+
+        Tensor* encoderOutput{};
+        OptionalInputTensors encoderDeepstack;
+        if (!misses.empty())
+        {
+            if (!runner.infer(stream))
+            {
+                return false;
+            }
+            encoderOutput = &runner.getOutputEmbedding();
+            encoderDeepstack = deepstackOutput != nullptr ? runner.getDeepstackFeatures() : OptionalInputTensors{};
+            int32_t encodedRows{};
+            for (ArtifactSpanRef const& miss : misses)
+            {
+                encodedRows += miss.span->tokenLength;
+            }
+            int32_t const expectedRows = selectiveExecution ? encodedRows : totalRows;
+            ELLM_CHECK(encoderOutput->getShape().getNumDims() == 2 && encoderOutput->getShape()[0] == expectedRows
+                    && encoderOutput->getShape()[1] == mDeployment.base.hiddenSize,
+                "Media encoder output does not match the selected artifact layout");
+            ELLM_CHECK(encoderDeepstack.size() == expectedDeepstack,
+                "Media encoder deepstack output count does not match the deployment");
+        }
+
+        auto sliceRows = [](Tensor const& tensor, int32_t offset, int32_t length, std::string const& name) {
+            ELLM_CHECK(tensor.getShape().getNumDims() == 2 && offset >= 0 && length > 0
+                    && tensor.getShape()[0] >= offset + length,
+                "Media artifact slice exceeds encoder output");
+            int64_t const hidden = tensor.getShape()[1];
+            size_t const rowBytes = static_cast<size_t>(hidden) * utils::getTypeSize(tensor.getDataType());
+            auto* data = static_cast<std::byte*>(const_cast<void*>(tensor.rawPointer()))
+                + static_cast<size_t>(offset) * rowBytes;
+            return Tensor(data, {length, hidden}, tensor.getDeviceType(), tensor.getDataType(), name);
+        };
+
+        std::vector<Tensor> missEmbeddingSlices;
+        std::vector<std::vector<Tensor>> missDeepstackSlices;
+        missEmbeddingSlices.reserve(misses.size());
+        missDeepstackSlices.reserve(misses.size());
+        int32_t packedMissOffset{};
+        for (ArtifactSpanRef const& miss : misses)
+        {
+            int32_t const sourceOffset = selectiveExecution ? packedMissOffset : miss.span->embeddingOffset;
+            missEmbeddingSlices.push_back(
+                sliceRows(*encoderOutput, sourceOffset, miss.span->tokenLength, "MediaArtifactCache::source"));
+            missDeepstackSlices.emplace_back();
+            std::vector<Tensor>& featureSlices = missDeepstackSlices.back();
+            featureSlices.reserve(encoderDeepstack.size());
+            std::vector<Tensor const*> featurePointers;
+            featurePointers.reserve(encoderDeepstack.size());
+            for (auto const& feature : encoderDeepstack)
+            {
+                featureSlices.push_back(sliceRows(
+                    feature.get(), sourceOffset, miss.span->tokenLength, "MediaArtifactCache::deepstackSource"));
+                featurePointers.push_back(&featureSlices.back());
+            }
+
+            ArtifactSource source;
+            source.ref = miss;
+            source.embedding = &missEmbeddingSlices.back();
+            source.deepstack = featurePointers;
+            sources.push_back(std::move(source));
+            if (context.mediaArtifactReuseEnabled)
+            {
+                std::optional<MediaArtifactLease> inserted = mMediaArtifactCache->insert(
+                    miss.span->artifactKey, missEmbeddingSlices.back(), featurePointers, stream);
+                if (inserted.has_value())
+                {
+                    context.mediaArtifactLeases.push_back(std::move(*inserted));
+                }
+            }
+            packedMissOffset += miss.span->tokenLength;
+        }
+
+        if (!selectiveExecution)
+        {
+            output = std::cref(*encoderOutput);
+            if (deepstackOutput != nullptr)
+            {
+                *deepstackOutput = encoderDeepstack;
+            }
+            return true;
+        }
+
+        auto assemble = [&](Tensor& destination, auto select, std::string const& name) -> Tensor const& {
+            ELLM_CHECK(!sources.empty(), "Media artifact assembly has no sources");
+            Tensor const& exemplar = select(sources.front());
+            Coords const& shape = exemplar.getShape();
+            ELLM_CHECK(shape.getNumDims() == 2, "Media artifact must be a row-major matrix");
+            int64_t const hidden = shape[1];
+            size_t const rowBytes = static_cast<size_t>(hidden) * utils::getTypeSize(exemplar.getDataType());
+            size_t const requiredBytes = static_cast<size_t>(totalRows) * rowBytes;
+            if (destination.isEmpty() || static_cast<size_t>(destination.getMemoryCapacity()) < requiredBytes
+                || destination.getDataType() != exemplar.getDataType())
+            {
+                destination = Tensor({totalRows, hidden}, DeviceType::kGPU, exemplar.getDataType(), name);
+            }
+            check::check(destination.reshape({totalRows, hidden}), "Media artifact assembly reshape failed");
+            CUDA_CHECK(cudaMemsetAsync(destination.rawPointer(), 0, requiredBytes, stream));
+            auto* destinationBytes = static_cast<std::byte*>(destination.rawPointer());
+            for (ArtifactSource const& source : sources)
+            {
+                Tensor const& sourceTensor = select(source);
+                ELLM_CHECK(sourceTensor.getShape().getNumDims() == 2
+                        && sourceTensor.getShape()[0] == source.ref.span->tokenLength
+                        && sourceTensor.getShape()[1] == hidden && sourceTensor.getDataType() == exemplar.getDataType(),
+                    "Media artifact schema mismatch");
+                CUDA_CHECK(
+                    cudaMemcpyAsync(destinationBytes + static_cast<size_t>(source.ref.span->embeddingOffset) * rowBytes,
+                        sourceTensor.rawPointer(), static_cast<size_t>(source.ref.span->tokenLength) * rowBytes,
+                        cudaMemcpyDeviceToDevice, stream));
+            }
+            return destination;
+        };
+
+        output = std::cref(assemble(
+            assembly, [](ArtifactSource const& source) -> Tensor const& { return *source.embedding; },
+            modality == MediaModality::kVision ? "LLMInferenceRuntime::visionArtifactAssembly"
+                                               : "LLMInferenceRuntime::audioArtifactAssembly"));
+        if (deepstackOutput != nullptr)
+        {
+            deepstackAssembly.resize(expectedDeepstack);
+            deepstackOutput->clear();
+            for (size_t level = 0; level < expectedDeepstack; ++level)
+            {
+                deepstackOutput->push_back(std::cref(assemble(
+                    deepstackAssembly[level],
+                    [level](ArtifactSource const& source) -> Tensor const& { return *source.deepstack[level]; },
+                    "LLMInferenceRuntime::visionDeepstackArtifactAssembly")));
+            }
+        }
+        size_t artifactHits{};
+        for (ArtifactSource& source : sources)
+        {
+            if (source.lease.has_value())
+            {
+                context.mediaArtifactLeases.push_back(std::move(*source.lease));
+                ++artifactHits;
+            }
+        }
+        if (misses.empty())
+        {
+            runner.discardPreparedInput();
+        }
+        LOG_INFO("Resolved %s artifacts with %zu hit(s) and %zu encoder miss(es).",
+            modality == MediaModality::kVision ? "vision" : "audio", artifactHits, misses.size());
+        return true;
+    };
+
+    if (context.hasAudioInput)
+    {
+        ELLM_CHECK(mAudioRunner != nullptr, "Audio input has no audio runner");
+        if (!resolve(MediaModality::kAudio, *mAudioRunner, mAudioArtifactAssembly, mVisionDeepstackArtifactAssembly,
+                context.audioEmbeddings, nullptr))
+        {
+            LOG_ERROR("Audio inference failed. This request cannot be handled.");
+            return false;
+        }
+    }
+    if (context.hasVisionInput)
+    {
+        ELLM_CHECK(mVisionRunner != nullptr, "Vision input has no vision runner");
+        if (!resolve(MediaModality::kVision, *mVisionRunner, mVisionArtifactAssembly, mVisionDeepstackArtifactAssembly,
+                context.visualEmbeddings, &context.deepstackFeatures))
+        {
+            LOG_ERROR("Vision inference failed. This request cannot be handled.");
+            return false;
+        }
+    }
+    return true;
+}
+
+bool LLMInferenceRuntime::runBaseModelPrefill(DecodingInferenceContext& context, bool sampleOutput)
 {
     TIME_STAGE(metrics::StageNames::kLLM_PREFILL, context.stream);
     NVTX_SCOPED_RANGE(nvtx_base_prefill,
@@ -1391,7 +2340,12 @@ bool LLMInferenceRuntime::runBaseModelPrefill(DecodingInferenceContext& context)
 
     // Embedding lookup (text / vision / audio-multimodal) into mPipelineIO->inputsEmbeds;
     // deepstack slots are populated from features or zero-filled depending on the request.
-    mEmbeddingPre->embed(mIdsInput, context.visualEmbeddings, context.audioEmbeddings, *mPipelineIO, context.stream);
+    std::vector<int32_t> const emptyMediaOffsets;
+    bool const useMediaOffsets = context.contextReuseEnabled && context.mediaIdentityComplete
+        && (context.hasVisionInput || context.hasAudioInput);
+    mEmbeddingPre->embed(mIdsInput, context.visualEmbeddings, context.audioEmbeddings, *mPipelineIO, context.stream,
+        useMediaOffsets ? context.visionEmbeddingOffsets : emptyMediaOffsets,
+        useMediaOffsets ? context.audioEmbeddingOffsets : emptyMediaOffsets);
     mEmbeddingPre->prepareDeepstack(mIdsInput, context.deepstackFeatures, *mPipelineIO, context.stream);
     if (mGemma4Ple)
     {
@@ -1414,10 +2368,16 @@ bool LLMInferenceRuntime::runBaseModelPrefill(DecodingInferenceContext& context)
 
     check::check(mBaseExecutor->prepare(kPrefillProfile, prefillDims, mBaseTensorMap, context.stream),
         "Failed to prepare base model for prefill step.");
-    check::check(mBaseExecutor->execute(context.stream), "Failed to execute base model for prefill step.");
+    check::check(
+        mDecodingRuntimeContext->base.execute(context.stream), "Failed to execute base model for prefill step.");
     mSharedResources->cacheManagers[0]->commitSequenceLength(mPipelineIO->contextLengths, context.stream);
 
     applyLogitBias(mLogitBias, mPipelineIO->outputLogits, context, context.stream);
+
+    if (!sampleOutput)
+    {
+        return true;
+    }
 
     // Sampling from the prefill stage logits follows the same policy as vanilla decoding.
     // Speculative decoders reach this code with greedy-compatible context params because
@@ -1491,6 +2451,253 @@ bool LLMInferenceRuntime::runBaseModelPrefill(DecodingInferenceContext& context)
     }
 
     emitTokenCallbacks(context);
+    return true;
+}
+
+bool LLMInferenceRuntime::runBaseModelPrefillWithPeriodicHybridCaptures(DecodingInferenceContext& context)
+{
+    int32_t const interval = context.recurrentCaptureInterval;
+    if (interval == 0)
+    {
+        return runBaseModelPrefill(context);
+    }
+    if (context.activeBatchSize != 1)
+    {
+        LOG_ERROR("Periodic recurrent capture currently requires batch size 1.");
+        return false;
+    }
+    ELLM_CHECK(context.sequenceCacheStates[0].has_value() && context.sequenceCacheStates[0]->hybridCheckpoint,
+        "Periodic recurrent capture requires a hybrid context-cache lease");
+
+    std::vector<int32_t> const completeSuffix = context.tokenIds[0];
+    int32_t const originalComputedLength = context.effectivePrefillLengths[0];
+    int32_t processedLength = context.sequenceCacheStates[0]->lease.reuseTokenLength();
+    int32_t const inputLength = math::cast<int32_t>(context.rawBatchedInputIds[0].size());
+    ELLM_CHECK(processedLength + originalComputedLength == inputLength,
+        "Hybrid periodic capture suffix does not cover the logical input");
+
+    size_t suffixOffset{};
+    int32_t nextBoundary = ((processedLength / interval) + 1) * interval;
+    while (nextBoundary < inputLength)
+    {
+        int32_t const chunkLength = nextBoundary - processedLength;
+        ELLM_CHECK(chunkLength > 0 && suffixOffset + static_cast<size_t>(chunkLength) <= completeSuffix.size(),
+            "Hybrid periodic capture produced an invalid prefill chunk");
+        context.tokenIds[0].assign(completeSuffix.begin() + static_cast<std::ptrdiff_t>(suffixOffset),
+            completeSuffix.begin() + static_cast<std::ptrdiff_t>(suffixOffset + static_cast<size_t>(chunkLength)));
+        context.effectivePrefillLengths[0] = chunkLength;
+        if (!runBaseModelPrefill(context, /*sampleOutput=*/false))
+        {
+            return false;
+        }
+        processedLength = nextBoundary;
+        suffixOffset += static_cast<size_t>(chunkLength);
+        publishContextCacheBoundary(context, 0, PublicationPoint::kPrefillEnd, processedLength);
+        nextBoundary += interval;
+    }
+
+    context.tokenIds[0].assign(
+        completeSuffix.begin() + static_cast<std::ptrdiff_t>(suffixOffset), completeSuffix.end());
+    context.effectivePrefillLengths[0] = inputLength - processedLength;
+    ELLM_CHECK(
+        context.effectivePrefillLengths[0] > 0, "Hybrid periodic capture must leave a non-empty final prefill chunk");
+    if (!runBaseModelPrefill(context))
+    {
+        return false;
+    }
+    int32_t const sampledToken = context.tokenIds[0].back();
+    context.tokenIds[0] = completeSuffix;
+    context.tokenIds[0].push_back(sampledToken);
+    context.effectivePrefillLengths[0] = originalComputedLength;
+    return true;
+}
+
+bool LLMInferenceRuntime::runHybridMtpPrefill(DecodingInferenceContext& context, DecodingStrategy& strategy)
+{
+    ELLM_CHECK(context.activeBatchSize == 1 && context.sequenceCacheStates[0].has_value()
+            && context.sequenceCacheStates[0]->hybridMtp,
+        "Hybrid MTP endpoint prefill requires one combined cache sequence");
+
+    SequenceCacheState& state = *context.sequenceCacheStates[0];
+    int32_t const reuseLength = state.lease.reuseTokenLength();
+    int32_t const inputLength = math::cast<int32_t>(context.rawBatchedInputIds[0].size());
+    int32_t const replayTailLength = context.contextCacheReplayTailLength;
+    int32_t const suffixLenOrig = context.effectivePrefillLengths[0];
+    LOG_DEBUG("Hybrid+MTP prefill: inputLength=%d reuseLength=%d basePrefill=%d", inputLength, reuseLength,
+        inputLength - reuseLength);
+
+    // Cold sequence with a volatile generation-prompt tail: publish the checkpoint at the STABLE boundary
+    // predecessorLength = inputLength - replayTailLength (two-chunk prefill), not at the full inputLength. The server
+    // flags the replay tail (e.g. the reasoning-off <think></think> block) via contextCacheReplayTailLength because a
+    // later turn holds real content there; baking it into the exact-prefix key makes every future lookup miss.
+    // Mirrors baseline runHybridMtpPrefillWithStableEndpoint, but publishes with the successor-drop signature.
+    if (reuseLength == 0 && state.publicationEnabled && replayTailLength > 0 && suffixLenOrig > replayTailLength)
+    {
+        std::vector<int32_t> const completeSuffix = context.tokenIds[0];
+        int32_t const predecessorLength = inputLength - replayTailLength;
+        int32_t const predecessorChunkLength = suffixLenOrig - replayTailLength;
+        auto const replayBegin = completeSuffix.end() - replayTailLength;
+
+        // Chunk 1: base prefill of the predecessor [0, predecessorLength), no sampling. Leaves the recurrent state at
+        // the stable boundary so captureRecurrent snapshots it there.
+        context.tokenIds[0].assign(completeSuffix.begin(), replayBegin);
+        context.effectivePrefillLengths[0] = predecessorChunkLength;
+        if (!runBaseModelPrefill(context, /*sampleOutput=*/false))
+        {
+            return false;
+        }
+        // Non-sampling chunk must sync before MTP repacks the shared pinned token buffer.
+        CUDA_CHECK(cudaStreamSynchronize(context.stream));
+        // Provide the boundary's next token so the predecessor draft prefill covers the boundary slot, then publish.
+        context.tokenIds[0].push_back(*replayBegin);
+        if (!strategy.prepareFirstDecodeStep(context))
+        {
+            return false;
+        }
+        publishHybridMtpContextCacheBoundary(context, 0, PublicationPoint::kPrefillEnd, predecessorLength);
+
+        // Chunk 2: replay the volatile tail [predecessorLength, inputLength) with sampling, then restore bookkeeping.
+        context.speculativeDraftPrefillComplete = false;
+        context.tokenIds[0].assign(replayBegin, completeSuffix.end());
+        context.effectivePrefillLengths[0] = replayTailLength;
+        if (!runBaseModelPrefill(context))
+        {
+            return false;
+        }
+        int32_t const sampledToken = context.tokenIds[0].back();
+        if (!strategy.prepareFirstDecodeStep(context))
+        {
+            return false;
+        }
+        context.tokenIds[0] = completeSuffix;
+        context.tokenIds[0].push_back(sampledToken);
+        context.effectivePrefillLengths[0] = suffixLenOrig;
+        return true;
+    }
+
+    // Hit sequence with a volatile tail: publish at the stable predecessorLength like the cold path, but the reused
+    // checkpoint's boundary draft slot must first be reconstructed (the consume-side fold) into the predecessor chunk's
+    // draft prefill. Two-chunk so the recurrent snapshot + boundary hidden land on the stable boundary.
+    if (reuseLength > 0 && state.publicationEnabled && replayTailLength > 0 && suffixLenOrig > replayTailLength)
+    {
+        ELLM_CHECK(state.lease.recurrentSnapshotSlot().has_value(),
+            "Hybrid MTP cache hit is missing its recurrent snapshot slot");
+        std::vector<int32_t> const completeSuffix = context.tokenIds[0];
+        int32_t const predecessorLength = inputLength - replayTailLength;
+        int32_t const predecessorChunkLength = suffixLenOrig - replayTailLength;
+        auto const replayBegin = completeSuffix.end() - replayTailLength;
+        int32_t const boundaryHiddenDim = mDeployment.specConfig->baseOutputHiddenDim;
+        size_t const rowBytes
+            = static_cast<size_t>(boundaryHiddenDim) * utils::getTypeSize(mPipelineIO->baseHiddenStates.getDataType());
+
+        // Chunk 1: base prefill of the predecessor [reuseLength, predecessorLength), no sampling.
+        context.tokenIds[0].assign(completeSuffix.begin(), replayBegin);
+        context.effectivePrefillLengths[0] = predecessorChunkLength;
+        if (!runBaseModelPrefill(context, /*sampleOutput=*/false))
+        {
+            return false;
+        }
+        CUDA_CHECK(cudaStreamSynchronize(context.stream));
+
+        // Fold the reused checkpoint's boundary hidden into the predecessor draft prefill (shift down one row, restore
+        // boundary hidden at row 0), reconstructing the reused draft slot [reuseLength-1].
+        check::check(mPipelineIO->baseHiddenStates.reshape({1, predecessorChunkLength + 1, boundaryHiddenDim}),
+            "Tensor reshape failed");
+        CUDA_CHECK(cudaMemcpyAsync(mBoundaryFoldScratch.rawPointer(), mPipelineIO->baseHiddenStates.rawPointer(),
+            static_cast<size_t>(predecessorChunkLength) * rowBytes, cudaMemcpyDeviceToDevice, context.stream));
+        CUDA_CHECK(cudaMemcpyAsync(static_cast<std::byte*>(mPipelineIO->baseHiddenStates.rawPointer()) + rowBytes,
+            mBoundaryFoldScratch.rawPointer(), static_cast<size_t>(predecessorChunkLength) * rowBytes,
+            cudaMemcpyDeviceToDevice, context.stream));
+        mHybridSnapshotStorage->restoreBoundaryHidden(
+            *state.lease.recurrentSnapshotSlot(), mPipelineIO->baseHiddenStates, 0, 0, context.stream);
+
+        int32_t const boundaryToken = context.rawBatchedInputIds[0][static_cast<size_t>(reuseLength - 1)];
+        context.tokenIds[0].insert(context.tokenIds[0].begin(), boundaryToken);
+        context.effectivePrefillLengths[0] = predecessorChunkLength + 1;
+        if (!strategy.prepareFirstDecodeStep(context))
+        {
+            return false;
+        }
+        publishHybridMtpContextCacheBoundary(context, 0, PublicationPoint::kPrefillEnd, predecessorLength);
+        context.tokenIds[0].erase(context.tokenIds[0].begin());
+        context.effectivePrefillLengths[0] = predecessorChunkLength;
+
+        // Chunk 2: replay the volatile tail [predecessorLength, inputLength) with sampling, then restore bookkeeping.
+        context.speculativeDraftPrefillComplete = false;
+        context.tokenIds[0].assign(replayBegin, completeSuffix.end());
+        context.effectivePrefillLengths[0] = replayTailLength;
+        if (!runBaseModelPrefill(context))
+        {
+            return false;
+        }
+        int32_t const sampledToken = context.tokenIds[0].back();
+        if (!strategy.prepareFirstDecodeStep(context))
+        {
+            return false;
+        }
+        context.tokenIds[0] = completeSuffix;
+        context.tokenIds[0].push_back(sampledToken);
+        context.effectivePrefillLengths[0] = suffixLenOrig;
+        return true;
+    }
+
+    // Base prefill of the suffix (the full prompt when cold). Reuses base KV [0, reuseLength) and samples the first
+    // output token, appending it to tokenIds.
+    if (!runBaseModelPrefill(context))
+    {
+        return false;
+    }
+
+    if (reuseLength == 0)
+    {
+        // Cold sequence: no reused checkpoint boundary to fold in.
+        if (!strategy.prepareFirstDecodeStep(context))
+        {
+            return false;
+        }
+        publishHybridMtpContextCacheBoundary(context, 0, PublicationPoint::kPrefillEnd, inputLength);
+        return true;
+    }
+
+    // On a hit the restore path reused draft KV only up to reuseLength-1, because that final reused draft slot depends
+    // on the token that followed the checkpoint. The MTP draft prefill does not write its last (query) position's KV,
+    // so that boundary slot cannot be recomputed by a standalone one-token pass (it would write nothing). Instead fold
+    // the boundary into the suffix draft prefill as a *context* position: prepend the checkpoint's saved base boundary
+    // hidden state (base_hidden[reuseLength-1]) and token[reuseLength-1] so the single draft prefill covers
+    // [reuseLength-1, inputLength) and writes a correct, successor-aware boundary KV.
+    ELLM_CHECK(
+        state.lease.recurrentSnapshotSlot().has_value(), "Hybrid MTP cache hit is missing its recurrent snapshot slot");
+    int32_t const boundaryHiddenDim = mDeployment.specConfig->baseOutputHiddenDim;
+    int32_t const suffixLen = context.effectivePrefillLengths[0];
+    size_t const rowBytes
+        = static_cast<size_t>(boundaryHiddenDim) * utils::getTypeSize(mPipelineIO->baseHiddenStates.getDataType());
+
+    // Shift the base suffix hidden states [0, suffixLen) down one row and place the restored boundary hidden state at
+    // row 0, giving the draft [base_hidden[reuseLength-1], base_hidden[reuseLength..inputLength)].
+    check::check(mPipelineIO->baseHiddenStates.reshape({1, suffixLen + 1, boundaryHiddenDim}), "Tensor reshape failed");
+    CUDA_CHECK(cudaMemcpyAsync(mBoundaryFoldScratch.rawPointer(), mPipelineIO->baseHiddenStates.rawPointer(),
+        static_cast<size_t>(suffixLen) * rowBytes, cudaMemcpyDeviceToDevice, context.stream));
+    CUDA_CHECK(cudaMemcpyAsync(static_cast<std::byte*>(mPipelineIO->baseHiddenStates.rawPointer()) + rowBytes,
+        mBoundaryFoldScratch.rawPointer(), static_cast<size_t>(suffixLen) * rowBytes, cudaMemcpyDeviceToDevice,
+        context.stream));
+    mHybridSnapshotStorage->restoreBoundaryHidden(
+        *state.lease.recurrentSnapshotSlot(), mPipelineIO->baseHiddenStates, 0, 0, context.stream);
+
+    // Prepend token[reuseLength-1] to the execution tokens and extend the prefill length by one. runDraftModelPrefill
+    // pairs draft slot k with (baseHiddenStates[k], tokenIds[k+1]); with the shifted hidden states and this prepend,
+    // draft slot reuseLength-1+k consumes (base_hidden[reuseLength-1+k], token[reuseLength+k]) as required.
+    int32_t const boundaryToken = context.rawBatchedInputIds[0][static_cast<size_t>(reuseLength - 1)];
+    context.tokenIds[0].insert(context.tokenIds[0].begin(), boundaryToken);
+    context.effectivePrefillLengths[0] = suffixLen + 1;
+    if (!strategy.prepareFirstDecodeStep(context))
+    {
+        return false;
+    }
+    // Publish while effectivePrefillLengths still reflects the folded prefill (the boundary-hidden capture reads the
+    // last shifted row), then restore the suffix-only execution bookkeeping for the decode loop.
+    publishHybridMtpContextCacheBoundary(context, 0, PublicationPoint::kPrefillEnd, inputLength);
+    context.tokenIds[0].erase(context.tokenIds[0].begin());
+    context.effectivePrefillLengths[0] = suffixLen;
     return true;
 }
 
@@ -1651,9 +2858,211 @@ bool LLMInferenceRuntime::setUpForPrefillExecution(DecodingInferenceContext& con
     check::check(mHostReuseKVCacheLengths.reshape({activeBatchSize}), "Tensor reshape failed");
     int32_t* reuseKVCacheLengthsData = mHostReuseKVCacheLengths.dataPointer<int32_t>();
     std::fill(reuseKVCacheLengthsData, reuseKVCacheLengthsData + activeBatchSize, 0);
+    // Draft (speculative) KV reuse can differ from base reuse: Hybrid+MTP reuses one fewer draft token so the
+    // successor-dependent boundary slot is recomputed. Defaults to the base reuse length for all other paths.
+    check::check(mHostDraftReuseKVCacheLengths.reshape({activeBatchSize}), "Tensor reshape failed");
+    int32_t* draftReuseKVCacheLengthsData = mHostDraftReuseKVCacheLengths.dataPointer<int32_t>();
+    std::fill(draftReuseKVCacheLengthsData, draftReuseKVCacheLengthsData + activeBatchSize, 0);
 
     context.tokenIds.clear();
     context.tokenIds.resize(activeBatchSize);
+
+    if (context.contextReuseEnabled)
+    {
+        BlockKeyExtras commonExtras;
+        if (!context.loraWeightsName.empty())
+        {
+            ELLM_CHECK(mSharedResources->loraManager != nullptr,
+                "Context cache request selected a LoRA adapter without a LoRA manager");
+            commonExtras.adapter = AdapterKey{hashOpaqueIdentity(context.loraWeightsName),
+                mSharedResources->loraManager->getAdapterGeneration(context.loraWeightsName)};
+        }
+        if (!context.contextCacheIsolationKey.empty())
+        {
+            commonExtras.isolationDigest = hashOpaqueIdentity(context.contextCacheIsolationKey);
+        }
+
+        LookupPolicy const lookupPolicy
+            = context.contextCacheLookupEnabled ? LookupPolicy::kUseCache : LookupPolicy::kBypass;
+        KVPageTable& basePageTable = *mSharedResources->kvPageTables[0];
+        bool const specEagle = strategy.kind() == DecodingStrategyKind::kEAGLE;
+        bool const hybridMtp
+            = strategy.kind() == DecodingStrategyKind::kMTP && mDeployment.base.numLinearAttnLayers > 0;
+        bool const hybridCheckpoint = !specEagle && mDeployment.base.numLinearAttnLayers > 0;
+        KVPageTable* draftPageTable = specEagle || hybridMtp ? mSharedResources->kvPageTables[1].get() : nullptr;
+        for (int32_t i = 0; i < activeBatchSize; ++i)
+        {
+            std::vector<int32_t> const& inputIds = batchedInputIds[i];
+            RuntimeCacheAcquireResult acquired;
+            size_t const fullBlockCount = inputIds.size() / static_cast<size_t>(kTOKENS_PER_PAGE);
+            std::vector<BlockKeyExtras> const fullBlockExtras = buildBlockExtras(commonExtras, context.mediaSpans[i],
+                fullBlockCount * static_cast<size_t>(kTOKENS_PER_PAGE), kTOKENS_PER_PAGE);
+            std::vector<BlockHash> const fullBlockHashes
+                = hashFullBlocks(inputIds.data(), inputIds.size(), kTOKENS_PER_PAGE, fullBlockExtras);
+            if (specEagle)
+            {
+                ELLM_CHECK(mDraftEngineSignature.has_value() && draftPageTable != nullptr,
+                    "EAGLE context reuse has no draft identity or page table");
+                acquired = mContextCache->acquireSpec(SpecDecodeMode::kEAGLE, mContextCacheDomain,
+                    *mDraftEngineSignature, fullBlockHashes, math::cast<int32_t>(inputIds.size()), lookupPolicy);
+            }
+            else if (hybridMtp)
+            {
+                ELLM_CHECK(mDraftEngineSignature.has_value() && mRecurrentStateSchema.has_value()
+                        && mHybridSnapshotStorage != nullptr && draftPageTable != nullptr,
+                    "Hybrid MTP context reuse has no draft identity, snapshot schema, or page table");
+                std::vector<int32_t> const candidateLengths
+                    = mContextCache->hybridMtpCandidateLengths(mContextCacheDomain, *mRecurrentStateSchema,
+                        *mDraftEngineSignature, math::cast<int32_t>(inputIds.size()));
+                std::vector<HybridMtpCheckpointCandidate> candidates;
+                candidates.reserve(candidateLengths.size());
+                for (int32_t const length : candidateLengths)
+                {
+                    ELLM_CHECK(length >= 0 && static_cast<size_t>(length) < inputIds.size(),
+                        "Hybrid MTP candidate is not an interior endpoint");
+                    std::vector<BlockKeyExtras> const candidateExtras = buildBlockExtras(
+                        commonExtras, context.mediaSpans[i], static_cast<size_t>(length), kTOKENS_PER_PAGE);
+                    candidates.push_back(HybridMtpCheckpointCandidate{length,
+                        hashExactPrefix(
+                            inputIds.data(), static_cast<size_t>(length), kTOKENS_PER_PAGE, candidateExtras)});
+                }
+                acquired = mContextCache->acquireHybridMtp(mContextCacheDomain, candidates, fullBlockHashes,
+                    math::cast<int32_t>(inputIds.size()), *mRecurrentStateSchema, *mDraftEngineSignature, lookupPolicy);
+            }
+            else if (hybridCheckpoint)
+            {
+                ELLM_CHECK(mRecurrentStateSchema.has_value() && mHybridSnapshotStorage != nullptr,
+                    "Hybrid context reuse has no recurrent snapshot schema");
+                std::vector<int32_t> const candidateLengths = mContextCache->hybridCandidateLengths(
+                    mContextCacheDomain, *mRecurrentStateSchema, math::cast<int32_t>(inputIds.size()));
+                std::vector<HybridCheckpointCandidate> candidates;
+                candidates.reserve(candidateLengths.size());
+                for (int32_t const length : candidateLengths)
+                {
+                    std::vector<BlockKeyExtras> const candidateExtras = buildBlockExtras(
+                        commonExtras, context.mediaSpans[i], static_cast<size_t>(length), kTOKENS_PER_PAGE);
+                    candidates.push_back(HybridCheckpointCandidate{length,
+                        hashExactPrefix(
+                            inputIds.data(), static_cast<size_t>(length), kTOKENS_PER_PAGE, candidateExtras)});
+                }
+                acquired = mContextCache->acquireHybrid(mContextCacheDomain, candidates, fullBlockHashes,
+                    math::cast<int32_t>(inputIds.size()), *mRecurrentStateSchema,
+                    !mDeployment.base.kvLayerConfigs.empty(), lookupPolicy);
+            }
+            else
+            {
+                acquired = mContextCache->acquireVanilla(
+                    mContextCacheDomain, fullBlockHashes, math::cast<int32_t>(inputIds.size()), lookupPolicy);
+            }
+            if (acquired.forcedCold)
+            {
+                LOG_DEBUG("Context cache slot %d retried as cold after cached-prefix capacity pressure (status=%d).", i,
+                    static_cast<int32_t>(acquired.status));
+            }
+            if (acquired.status != AcquireStatus::kAcquired || !acquired.lease.has_value())
+            {
+                LOG_ERROR("Context cache admission failed for slot %d (status=%d).", i,
+                    static_cast<int32_t>(acquired.status));
+                return false;
+            }
+
+            SequenceCacheState state;
+            state.lease = std::move(*acquired.lease);
+            state.domain = mContextCacheDomain;
+            state.blockExtras = commonExtras;
+            state.commitPolicy = context.contextCacheCommitPolicy;
+            state.publicationEnabled = context.contextCachePublicationEnabled;
+            state.hybridCheckpoint = hybridCheckpoint;
+            state.hybridMtp = hybridMtp;
+            state.specEagle = specEagle;
+            state.mediaSpans = context.mediaSpans[i];
+            int32_t const reuseLength = state.lease.reuseTokenLength();
+            // Hybrid+MTP recomputes the successor-dependent boundary draft slot (reuseLength - 1) from the checkpoint's
+            // saved base hidden state, so the reused draft KV stops one token short of the base reuse. EAGLE and cold
+            // sequences keep the draft and base reuse lengths equal.
+            int32_t const draftReuseLength = (hybridMtp && reuseLength > 0) ? reuseLength - 1 : reuseLength;
+            if (specEagle || hybridMtp)
+            {
+                state.draftResidentStateLength = draftReuseLength;
+            }
+            ELLM_CHECK(reuseLength >= 0 && static_cast<size_t>(reuseLength) < inputIds.size(),
+                "Context cache plan did not leave a non-empty prefill suffix");
+            reuseKVCacheLengthsData[i] = reuseLength;
+            draftReuseKVCacheLengthsData[i] = draftReuseLength;
+            context.tokenIds[i].assign(inputIds.begin() + reuseLength, inputIds.end());
+            context.effectivePrefillLengths[i] = math::cast<int32_t>(context.tokenIds[i].size());
+            context.sequenceCacheStates[i].emplace(std::move(state));
+            mContextCache->bindBaseRow(basePageTable, i, context.sequenceCacheStates[i]->lease);
+            if (specEagle || hybridMtp)
+            {
+                mContextCache->bindDraftRow(*draftPageTable, i, context.sequenceCacheStates[i]->lease);
+            }
+            if (hybridCheckpoint)
+            {
+                CacheRequestLease const& lease = context.sequenceCacheStates[i]->lease;
+                if (reuseLength > 0)
+                {
+                    ELLM_CHECK(lease.recurrentSnapshotSlot().has_value(),
+                        "Hybrid context cache hit is missing its recurrent snapshot");
+                    mHybridSnapshotStorage->restoreRecurrent(*lease.recurrentSnapshotSlot(), i, context.stream);
+                    // Hybrid+MTP always keeps the boundary token (reuseLength - 1) in a private partial page so its
+                    // draft KV can be rewritten on restore; reserve one fewer full block so page-aligned checkpoints
+                    // still land the boundary in the partial page. Plain hybrid uses the natural page split.
+                    size_t const partialPageIndex = hybridMtp
+                        ? static_cast<size_t>((reuseLength - 1) / kTOKENS_PER_PAGE)
+                        : static_cast<size_t>(reuseLength / kTOKENS_PER_PAGE);
+                    int32_t const partialTokenCount
+                        = reuseLength - static_cast<int32_t>(partialPageIndex) * kTOKENS_PER_PAGE;
+                    if (partialTokenCount > 0)
+                    {
+                        ELLM_CHECK(
+                            lease.partialKvSnapshotSlot().has_value() && partialPageIndex < lease.basePages().size(),
+                            "Hybrid context cache hit is missing its private partial page");
+                        if (hybridMtp)
+                        {
+                            ELLM_CHECK(partialPageIndex < lease.draftPages().size(),
+                                "Hybrid MTP context cache hit is missing its private draft partial page");
+                            mHybridSnapshotStorage->restorePartialKv(*lease.partialKvSnapshotSlot(),
+                                lease.basePages()[partialPageIndex], lease.draftPages()[partialPageIndex],
+                                partialTokenCount, context.stream);
+                        }
+                        else
+                        {
+                            mHybridSnapshotStorage->restorePartialKv(*lease.partialKvSnapshotSlot(),
+                                lease.basePages()[partialPageIndex], partialTokenCount, context.stream);
+                        }
+                    }
+                }
+                else
+                {
+                    zeroRecurrentStates(i, context.stream);
+                }
+            }
+        }
+
+        int32_t const maxInputLength
+            = *std::max_element(context.effectivePrefillLengths.begin(), context.effectivePrefillLengths.end());
+        if (maxInputLength > mDeployment.base.maxSupportedInputLength)
+        {
+            LOG_ERROR("The context-cache prefill suffix length (%d) exceeds the engine maximum (%d).", maxInputLength,
+                mDeployment.base.maxSupportedInputLength);
+            return false;
+        }
+
+        basePageTable.upload(context.stream);
+        if (draftPageTable != nullptr)
+        {
+            draftPageTable->upload(context.stream);
+        }
+        cacheMgrBase.resetForNewSequences(mHostReuseKVCacheLengths, context.stream);
+        if (needsStrategyKVCache)
+        {
+            // The draft engine reuses one fewer token than the base at a Hybrid+MTP checkpoint boundary; every other
+            // path leaves draft and base reuse equal.
+            strategy.resetForNewSequences(mHostDraftReuseKVCacheLengths, context.stream);
+        }
+        return true;
+    }
 
     for (int32_t i = 0; i < activeBatchSize; ++i)
     {
@@ -1679,18 +3088,13 @@ bool LLMInferenceRuntime::setUpForPrefillExecution(DecodingInferenceContext& con
                 restoreRecurrentStates(i, precachedKVCacheBase, context.stream);
             }
 
-            // Per-layer saved KV tensor shape is [2, numKVHeads, sequenceLength, headDim]; shape[2] == seqLen.
-            check::check(!kvCacheLayersBase.empty(), "System prompt KV cache must have at least one layer.");
-            auto reuseLength = math::cast<size_t>(kvCacheLayersBase[0].getShape()[2]);
-            check::check(reuseLength > 0 && reuseLength < batchedInputIds[i].size(),
-                "The reuse length shall be larger than 0 and not exceed the input length.");
-            // Reuse N-1 tokens from the cached prefix so the Nth token is treated as real input in prefill;
-            // this keeps the draft prefill boundary aligned with the true next-token position.
-            auto const effectiveReuseLength = reuseLength - 1;
-            reuseKVCacheLengthsData[i] = math::cast<int32_t>(effectiveReuseLength);
-
-            context.tokenIds[i].assign(batchedInputIds[i].begin() + effectiveReuseLength, batchedInputIds[i].end());
-            context.effectivePrefillLengths[i] = math::cast<int32_t>(batchedInputIds[i].size() - effectiveReuseLength);
+            // Cached token length comes from the tokenized prompt that was actually captured, not from
+            // any KV-tensor's physical shape (see computeSystemPromptReuse) — this also covers
+            // pure-recurrent models, whose kvCacheLayersBase is empty.
+            auto reuse = computeSystemPromptReuse(precachedKVCacheBase, batchedInputIds[i]);
+            reuseKVCacheLengthsData[i] = reuse.reuseKVCacheLength;
+            context.tokenIds[i] = std::move(reuse.tokenIds);
+            context.effectivePrefillLengths[i] = reuse.effectivePrefillLength;
 
             bool const matchIds = std::equal(precachedKVCacheBase.tokenizedPrompt.begin(),
                 precachedKVCacheBase.tokenizedPrompt.end(), batchedInputIds[i].begin());
@@ -1731,6 +3135,310 @@ bool LLMInferenceRuntime::setUpForPrefillExecution(DecodingInferenceContext& con
     return true;
 }
 
+bool LLMInferenceRuntime::prepareContextCacheForDecode(DecodingInferenceContext& context)
+{
+    if (!context.contextReuseEnabled)
+    {
+        return true;
+    }
+
+    ELLM_CHECK(mContextCache != nullptr, "Context-cache-managed request has no runtime adapter");
+    KVPageTable& basePageTable = *mSharedResources->kvPageTables[0];
+    bool basePageTableDirty = false;
+    bool draftPageTableDirty = false;
+    for (int32_t i = 0; i < context.activeBatchSize; ++i)
+    {
+        ELLM_CHECK(
+            context.sequenceCacheStates[i].has_value(), "Context-cache-managed sequence is missing its active lease");
+        SequenceCacheState& state = *context.sequenceCacheStates[i];
+        int64_t const residentBaseLength = static_cast<int64_t>(context.rawBatchedInputIds[i].size())
+            + static_cast<int64_t>(context.currentGenerateLengths[i]) - 1;
+        ELLM_CHECK(residentBaseLength >= 0, "Context cache base resident length became negative");
+        if (state.hybridMtp)
+        {
+            ELLM_CHECK(mDeployment.specConfig.has_value() && mSharedResources->kvPageTables.size() > 1,
+                "Hybrid MTP context cache growth has no speculative deployment resources");
+            int64_t const baseWorkingLength = residentBaseLength + mDeployment.specConfig->verifySize;
+            int64_t const draftWorkingLength = residentBaseLength + mDeployment.specConfig->draftingStep;
+            int32_t const requiredBasePages
+                = math::cast<int32_t>((baseWorkingLength + kTOKENS_PER_PAGE - 1) / kTOKENS_PER_PAGE);
+            int32_t const requiredDraftPages
+                = math::cast<int32_t>((draftWorkingLength + kTOKENS_PER_PAGE - 1) / kTOKENS_PER_PAGE);
+            size_t const previousBasePages = state.lease.basePages().size();
+            size_t const previousDraftPages = state.lease.draftPages().size();
+            KVPageTable& draftPageTable = *mSharedResources->kvPageTables[1];
+            if (!mContextCache->growHybridMtpToPageCounts(
+                    state.lease, requiredBasePages, requiredDraftPages, basePageTable, draftPageTable, i))
+            {
+                return false;
+            }
+            basePageTableDirty |= state.lease.basePages().size() != previousBasePages;
+            draftPageTableDirty |= state.lease.draftPages().size() != previousDraftPages;
+            continue;
+        }
+        if (state.specEagle)
+        {
+            ELLM_CHECK(mDeployment.specConfig.has_value() && mSharedResources->kvPageTables.size() > 1,
+                "EAGLE context cache growth has no speculative deployment resources");
+            int64_t const baseWorkingLength = residentBaseLength + mDeployment.specConfig->verifySize;
+            int64_t const draftProposalSize = static_cast<int64_t>(mDeployment.specConfig->draftingStep)
+                * static_cast<int64_t>(mDeployment.specConfig->draftingTopK);
+            int64_t const draftWorkingLength = residentBaseLength + draftProposalSize;
+            int32_t const requiredBasePages
+                = math::cast<int32_t>((baseWorkingLength + kTOKENS_PER_PAGE - 1) / kTOKENS_PER_PAGE);
+            int32_t const requiredDraftPages
+                = math::cast<int32_t>((draftWorkingLength + kTOKENS_PER_PAGE - 1) / kTOKENS_PER_PAGE);
+            size_t const previousBasePages = state.lease.basePages().size();
+            size_t const previousDraftPages = state.lease.draftPages().size();
+            KVPageTable& draftPageTable = *mSharedResources->kvPageTables[1];
+            if (!mContextCache->growSpecToPageCounts(
+                    state.lease, requiredBasePages, requiredDraftPages, basePageTable, draftPageTable, i))
+            {
+                return false;
+            }
+            basePageTableDirty |= state.lease.basePages().size() != previousBasePages;
+            draftPageTableDirty |= state.lease.draftPages().size() != previousDraftPages;
+            continue;
+        }
+        if (state.hybridCheckpoint && mDeployment.base.kvLayerConfigs.empty())
+        {
+            continue;
+        }
+        int32_t const requiredPages
+            = math::cast<int32_t>((residentBaseLength + 1 + kTOKENS_PER_PAGE - 1) / kTOKENS_PER_PAGE);
+        size_t const previousPages = state.lease.basePages().size();
+        if (!mContextCache->growBaseToPageCount(state.lease, requiredPages, basePageTable, i))
+        {
+            return false;
+        }
+        basePageTableDirty |= state.lease.basePages().size() != previousPages;
+    }
+    if (basePageTableDirty)
+    {
+        basePageTable.upload(context.stream);
+    }
+    if (draftPageTableDirty)
+    {
+        mSharedResources->kvPageTables[1]->upload(context.stream);
+    }
+    return true;
+}
+
+void LLMInferenceRuntime::publishContextCacheBoundary(
+    DecodingInferenceContext& context, int32_t slot, PublicationPoint point, int32_t residentStateLength)
+{
+    ELLM_CHECK(context.contextReuseEnabled && mContextCache != nullptr,
+        "Context cache publication requires an active runtime adapter");
+    ELLM_CHECK(slot >= 0 && slot < context.activeBatchSize && context.sequenceCacheStates[slot].has_value(),
+        "Context cache publication slot is invalid");
+
+    SequenceCacheState& state = *context.sequenceCacheStates[slot];
+    if (!state.publicationEnabled)
+    {
+        return;
+    }
+    if (state.hybridMtp)
+    {
+        ELLM_CHECK(point == PublicationPoint::kDecodeEnd && state.commitPolicy == CommitPolicy::kPrefillStateOnly,
+            "Hybrid MTP prefill publication requires an explicit stable successor token");
+        return;
+    }
+    if (state.hybridCheckpoint)
+    {
+        publishHybridContextCacheBoundary(context, slot, point, residentStateLength);
+        return;
+    }
+    if (residentStateLength < kTOKENS_PER_PAGE)
+    {
+        return;
+    }
+
+    std::vector<int32_t> const logicalTokens = buildResidentTokenHistory(context, slot, residentStateLength);
+
+    size_t const fullBlockCount = logicalTokens.size() / static_cast<size_t>(kTOKENS_PER_PAGE);
+    std::vector<BlockKeyExtras> const extrasPerBlock = buildBlockExtras(
+        state.blockExtras, state.mediaSpans, fullBlockCount * static_cast<size_t>(kTOKENS_PER_PAGE), kTOKENS_PER_PAGE);
+    std::vector<BlockHash> const fullBlockHashes
+        = hashFullBlocks(logicalTokens.data(), logicalTokens.size(), kTOKENS_PER_PAGE, extrasPerBlock);
+    if (fullBlockHashes.empty())
+    {
+        return;
+    }
+
+    std::optional<int32_t> draftResidentStateLength;
+    if (state.specEagle)
+    {
+        ELLM_CHECK(
+            state.draftResidentStateLength.has_value(), "EAGLE context cache state has no draft resident boundary");
+        draftResidentStateLength = state.draftPublicationEnabled ? *state.draftResidentStateLength : 0;
+        ELLM_CHECK(*draftResidentStateLength <= residentStateLength,
+            "EAGLE draft resident boundary exceeds the base resident boundary");
+    }
+    PublishResult const published = mContextCache->publish(state.lease,
+        PublishRequest{fullBlockHashes, residentStateLength, point, state.commitPolicy, draftResidentStateLength});
+    if (published.lineageComplete)
+    {
+        return;
+    }
+
+    if (state.specEagle)
+    {
+        // The draft pages were conditioned before this physical-base canonicalization. Keep serving this request,
+        // but never splice those pages into a record on a later boundary.
+        state.draftPublicationEnabled = false;
+    }
+
+    bool const exactPublishedBoundary = residentStateLength == published.publishedBaseFullBlockCount * kTOKENS_PER_PAGE;
+    if (!exactPublishedBoundary)
+    {
+        state.publicationEnabled = false;
+        return;
+    }
+
+    mContextCache->rebindBasePrefix(state.lease, published.canonicalBasePages);
+    KVPageTable& basePageTable = *mSharedResources->kvPageTables[0];
+    mContextCache->bindBaseRow(basePageTable, slot, state.lease);
+    basePageTable.upload(context.stream);
+}
+
+void LLMInferenceRuntime::publishHybridMtpContextCacheBoundary(
+    DecodingInferenceContext& context, int32_t slot, PublicationPoint point, int32_t residentStateLength)
+{
+    SequenceCacheState& state = *context.sequenceCacheStates[slot];
+    if (!state.publicationEnabled || residentStateLength <= 0
+        || (point == PublicationPoint::kDecodeEnd && state.commitPolicy == CommitPolicy::kPrefillStateOnly))
+    {
+        return;
+    }
+    ELLM_CHECK(point == PublicationPoint::kPrefillEnd && mHybridSnapshotStorage != nullptr
+            && mRecurrentStateSchema.has_value() && mDraftEngineSignature.has_value(),
+        "Hybrid MTP context cache publication has incomplete endpoint resources");
+    ELLM_CHECK(state.draftResidentStateLength.has_value() && *state.draftResidentStateLength == residentStateLength,
+        "Hybrid MTP endpoint publication requires equal base and draft resident lengths");
+
+    std::vector<int32_t> const logicalTokens = buildResidentTokenHistory(context, slot, residentStateLength);
+    // The successor-dependent boundary token (residentStateLength - 1) is always kept in a private partial page so the
+    // consumer can rewrite its draft KV without touching a shared reused page: reserve one fewer full block and let the
+    // last 1..kTOKENS_PER_PAGE tokens live in the partial snapshot. For page-aligned lengths this makes the final full
+    // page a kTOKENS_PER_PAGE-token partial page.
+    size_t const fullBlockCount = static_cast<size_t>((residentStateLength - 1) / kTOKENS_PER_PAGE);
+    std::vector<BlockKeyExtras> const fullBlockExtras = buildBlockExtras(
+        state.blockExtras, state.mediaSpans, fullBlockCount * static_cast<size_t>(kTOKENS_PER_PAGE), kTOKENS_PER_PAGE);
+    std::vector<BlockHash> const fullBlockHashes = hashFullBlocks(logicalTokens.data(),
+        fullBlockCount * static_cast<size_t>(kTOKENS_PER_PAGE), kTOKENS_PER_PAGE, fullBlockExtras);
+    std::vector<BlockKeyExtras> const exactExtras
+        = buildBlockExtras(state.blockExtras, state.mediaSpans, logicalTokens.size(), kTOKENS_PER_PAGE);
+    BlockHash const exactDigest
+        = hashExactPrefix(logicalTokens.data(), logicalTokens.size(), kTOKENS_PER_PAGE, exactExtras);
+
+    int32_t const partialTokenCount = residentStateLength - static_cast<int32_t>(fullBlockCount) * kTOKENS_PER_PAGE;
+    bool const needsPartialSnapshot = true; // partialTokenCount is always in [1, kTOKENS_PER_PAGE]
+    mContextCache->releaseRestoredHybridSnapshots(state.lease);
+    std::optional<HybridSnapshotReservation> const snapshots
+        = mContextCache->reserveHybridSnapshots(state.lease, needsPartialSnapshot);
+    if (!snapshots.has_value())
+    {
+        LOG_DEBUG(
+            "Skip Hybrid MTP endpoint publication at length %d: snapshot retention pressure.", residentStateLength);
+        return;
+    }
+
+    mHybridSnapshotStorage->captureRecurrent(snapshots->recurrentSnapshotSlot, slot, context.stream);
+    if (needsPartialSnapshot)
+    {
+        ELLM_CHECK(fullBlockCount < state.lease.basePages().size() && fullBlockCount < state.lease.draftPages().size(),
+            "Hybrid MTP endpoint has no live paired partial pages");
+        mHybridSnapshotStorage->capturePartialKv(*snapshots->partialKvSnapshotSlot,
+            state.lease.basePages()[fullBlockCount], state.lease.draftPages()[fullBlockCount], partialTokenCount,
+            context.stream);
+    }
+    // Save the base hidden state at the checkpoint boundary (the last prefill row, i.e. the select-token hidden). A
+    // future consumer recomputes the successor-dependent boundary draft slot from it instead of matching the successor
+    // in the lookup key.
+    int32_t const boundaryHiddenRow = context.effectivePrefillLengths[slot] - 1;
+    ELLM_CHECK(boundaryHiddenRow >= 0, "Hybrid MTP publication has an empty prefill chunk for its boundary hidden");
+    mHybridSnapshotStorage->captureBoundaryHidden(
+        snapshots->recurrentSnapshotSlot, mPipelineIO->baseHiddenStates, slot, boundaryHiddenRow, context.stream);
+    CUDA_CHECK(cudaStreamSynchronize(context.stream));
+
+    HybridMtpPublishRequest const request{fullBlockHashes,
+        HybridMtpCheckpointKey{
+            state.domain, exactDigest, residentStateLength, *mRecurrentStateSchema, *mDraftEngineSignature},
+        point, state.commitPolicy, *snapshots};
+    PublishResult const published = mContextCache->publishHybridMtp(state.lease, request);
+    if (!published.lineageComplete)
+    {
+        // Recurrent and draft snapshots were produced from this request's private base path. Rebinding only the base
+        // pages would splice independently produced state into one checkpoint, so retain the private request state and
+        // skip this and later publication attempts.
+        state.publicationEnabled = false;
+        mContextCache->retireHybridSnapshotReservation(state.lease, *snapshots);
+        return;
+    }
+    mContextCache->retireHybridSnapshotReservation(state.lease, *snapshots);
+}
+
+void LLMInferenceRuntime::publishHybridContextCacheBoundary(
+    DecodingInferenceContext& context, int32_t slot, PublicationPoint point, int32_t residentStateLength)
+{
+    SequenceCacheState& state = *context.sequenceCacheStates[slot];
+    if (!state.publicationEnabled || residentStateLength <= 0
+        || (point == PublicationPoint::kDecodeEnd && state.commitPolicy == CommitPolicy::kPrefillStateOnly))
+    {
+        return;
+    }
+    ELLM_CHECK(mHybridSnapshotStorage != nullptr && mRecurrentStateSchema.has_value(),
+        "Hybrid context cache publication has no snapshot storage");
+
+    std::vector<int32_t> const logicalTokens = buildResidentTokenHistory(context, slot, residentStateLength);
+    size_t const fullBlockCount = logicalTokens.size() / static_cast<size_t>(kTOKENS_PER_PAGE);
+    std::vector<BlockKeyExtras> const fullBlockExtras = buildBlockExtras(
+        state.blockExtras, state.mediaSpans, fullBlockCount * static_cast<size_t>(kTOKENS_PER_PAGE), kTOKENS_PER_PAGE);
+    std::vector<BlockHash> const fullBlockHashes
+        = hashFullBlocks(logicalTokens.data(), logicalTokens.size(), kTOKENS_PER_PAGE, fullBlockExtras);
+    std::vector<BlockKeyExtras> const exactExtras
+        = buildBlockExtras(state.blockExtras, state.mediaSpans, logicalTokens.size(), kTOKENS_PER_PAGE);
+    BlockHash const exactDigest
+        = hashExactPrefix(logicalTokens.data(), logicalTokens.size(), kTOKENS_PER_PAGE, exactExtras);
+
+    bool const hasAttention = !mDeployment.base.kvLayerConfigs.empty();
+    int32_t const partialTokenCount = residentStateLength % kTOKENS_PER_PAGE;
+    bool const needsPartialSnapshot = hasAttention && partialTokenCount > 0;
+    mContextCache->releaseRestoredHybridSnapshots(state.lease);
+    std::optional<HybridSnapshotReservation> const snapshots
+        = mContextCache->reserveHybridSnapshots(state.lease, needsPartialSnapshot);
+    if (!snapshots.has_value())
+    {
+        LOG_DEBUG(
+            "Skip hybrid context cache publication at length %d: snapshot retention pressure.", residentStateLength);
+        return;
+    }
+
+    mHybridSnapshotStorage->captureRecurrent(snapshots->recurrentSnapshotSlot, slot, context.stream);
+    if (needsPartialSnapshot)
+    {
+        ELLM_CHECK(fullBlockCount < state.lease.basePages().size(),
+            "Hybrid context cache publication has no live partial page");
+        mHybridSnapshotStorage->capturePartialKv(*snapshots->partialKvSnapshotSlot,
+            state.lease.basePages()[fullBlockCount], partialTokenCount, context.stream);
+    }
+    CUDA_CHECK(cudaStreamSynchronize(context.stream));
+
+    HybridPublishRequest const request{fullBlockHashes,
+        HybridCheckpointKey{state.domain, exactDigest, residentStateLength, *mRecurrentStateSchema}, point,
+        state.commitPolicy, *snapshots};
+    PublishResult const published = mContextCache->publishHybrid(state.lease, request);
+    if (!published.lineageComplete)
+    {
+        // The recurrent snapshot depends on the request's private base path and cannot be attached to a canonical
+        // prefix from another producer.
+        state.publicationEnabled = false;
+        mContextCache->retireHybridSnapshotReservation(state.lease, *snapshots);
+        return;
+    }
+    mContextCache->retireHybridSnapshotReservation(state.lease, *snapshots);
+}
+
 bool LLMInferenceRuntime::genAndSaveSystemPromptKVCache(DecodingInferenceContext& context, int32_t genAndSaveBatchIdx)
 {
     if (mDeployment.base.useVisionBidirectionalAttention)
@@ -1747,6 +3455,11 @@ bool LLMInferenceRuntime::genAndSaveSystemPromptKVCache(DecodingInferenceContext
     {
         LOG_DEBUG("The systemPrompt is empty. Skip saving system prompt KVCache.");
         return true;
+    }
+    if (mContextCache != nullptr)
+    {
+        LOG_ERROR("Legacy system prompt KV cache cannot be used while production context cache is enabled.");
+        return false;
     }
 
     DecodingStrategy& cacheStrategy = mDecoderRegistry->cachePrimingStrategy();
@@ -1900,6 +3613,24 @@ bool LLMInferenceRuntime::performBatchEvict(DecodingInferenceContext& context, D
 
     int32_t const oldActiveBatch = context.activeBatchSize;
 
+    if (context.contextReuseEnabled)
+    {
+        // Vanilla prefill/decode currently synchronizes for sampled tokens, but keep the ownership boundary explicit:
+        // no lease is published or released until every preceding page write is terminal.
+        CUDA_CHECK(cudaStreamSynchronize(context.stream));
+        for (int32_t i = 0; i < oldActiveBatch; ++i)
+        {
+            if (!context.finishedStates[i])
+            {
+                continue;
+            }
+            int32_t const residentStateLength
+                = math::cast<int32_t>(context.rawBatchedInputIds[i].size()) + context.currentGenerateLengths[i] - 1;
+            publishContextCacheBoundary(context, i, PublicationPoint::kDecodeEnd, residentStateLength);
+            context.sequenceCacheStates[i].reset();
+        }
+    }
+
     // Build batch mapping
     std::vector<int32_t> batchMapping = buildBatchMapping(context.finishedStates);
 
@@ -1943,9 +3674,21 @@ bool LLMInferenceRuntime::performBatchEvict(DecodingInferenceContext& context, D
     CUDA_CHECK(cudaMemcpyAsync(mDeviceBatchMapping.rawPointer(), batchMapping.data(), oldActiveBatch * sizeof(int32_t),
         cudaMemcpyHostToDevice, context.stream));
 
-    // Compact base model caches (KV + Mamba) via the HybridCacheManager single-call API.
-    mSharedResources->cacheManagers[0]->compactBatch(
-        mDeviceBatchMapping, oldActiveBatch, newActiveBatch, context.stream);
+    // Production context reuse keeps KV in global physical pages: compact only slot state and move page-table rows.
+    // The legacy path still compacts identity-mapped KV rows themselves.
+    if (context.contextReuseEnabled)
+    {
+        mSharedResources->cacheManagers[0]->compactBatchSlotState(
+            mDeviceBatchMapping, oldActiveBatch, newActiveBatch, context.stream);
+        KVPageTable& basePageTable = *mSharedResources->kvPageTables[0];
+        basePageTable.compactRows(batchMapping, newActiveBatch);
+        basePageTable.upload(context.stream);
+    }
+    else
+    {
+        mSharedResources->cacheManagers[0]->compactBatch(
+            mDeviceBatchMapping, oldActiveBatch, newActiveBatch, context.stream);
+    }
     mSharedResources->cacheManagers[0]->setActiveBatchSize(newActiveBatch);
 
     // Compact base model's RoPE cache (stored per-batch for MRope on mPipelineIO->mropeCosSin).
@@ -2009,6 +3752,7 @@ bool LLMInferenceRuntime::performBatchEvict(DecodingInferenceContext& context, D
     rt::compactVector(batchMapping, context.systemPrompts);
     rt::compactVector(batchMapping, context.rawBatchedInputIds);
     rt::compactVector(batchMapping, context.effectivePrefillLengths);
+    rt::compactVector(batchMapping, context.sequenceCacheStates);
     rt::compactVector(batchMapping, context.batchIndexMapping);
     rt::compactVector(batchMapping, context.slotStreams);
     rt::compactVector(batchMapping, context.stopStringsPerSlot);

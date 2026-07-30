@@ -338,40 +338,27 @@ def build_runtime_llm_config_dict(model: "CausalLM") -> Dict[str, Any]:
     tp_rank = max(0, getattr(config, "tp_rank", 0))
 
     out: Dict[str, Any] = {
-        "model":
-        config.model_type,
-        "spec_decode_type":
-        _determine_spec_decode_type(config),
-        "engine_role":
-        _determine_engine_role(config),
-        "edgellm_version":
-        _export_tool_version(),
-        "vocab_size":
-        config.vocab_size,
-        "hidden_size":
-        config.hidden_size,
-        "intermediate_size":
-        config.intermediate_size,
-        "num_hidden_layers":
-        config.num_hidden_layers,
-        "num_attention_heads":
-        config.num_attention_heads,
-        "num_key_value_heads":
-        config.num_key_value_heads,
-        "head_dim":
-        config.head_dim,
-        "max_position_embeddings":
-        config.max_position_embeddings,
-        "rope_theta":
-        config.rope_theta,
-        "rope_scaling":
-        rope_scaling,
-        "partial_rotary_factor":
-        config.partial_rotary_factor,
-        "num_deepstack_features":
-        config.num_deepstack_features,
+        "model": config.model_type,
+        "spec_decode_type": _determine_spec_decode_type(config),
+        "engine_role": _determine_engine_role(config),
+        "edgellm_version": _export_tool_version(),
+        "vocab_size": config.vocab_size,
+        "hidden_size": config.hidden_size,
+        "intermediate_size": config.intermediate_size,
+        "num_hidden_layers": config.num_hidden_layers,
+        "num_attention_heads": config.num_attention_heads,
+        "num_key_value_heads": config.num_key_value_heads,
+        "head_dim": config.head_dim,
+        "max_position_embeddings": config.max_position_embeddings,
+        "rope_theta": config.rope_theta,
+        "rope_scaling": rope_scaling,
+        "partial_rotary_factor": config.partial_rotary_factor,
+        "num_deepstack_features": config.num_deepstack_features,
         "use_vision_bidirectional_attention":
         config.use_vision_bidirectional_attention,
+        # Runtime capability checks need the same window encoded in each
+        # AttentionPlugin. -1 is the explicit full-attention sentinel.
+        "sliding_window": config.sliding_window_size,
     }
     if tp_size > 1:
         out["tp_size"] = tp_size

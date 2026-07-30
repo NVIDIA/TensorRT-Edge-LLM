@@ -17,7 +17,9 @@
 import copy
 import json
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Union
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
+
+CONTEXT_REUSE_PROBE = "context reuse probe"
 
 
 class ToolChatTemplateError(ValueError):
@@ -121,6 +123,8 @@ class ToolChatTemplateFormatter:
             str(Path(d)) for d in template_dirs if d and Path(d).is_dir()
         ]
         self._template_owner = template_owner
+        self._replay_tail_lengths: Dict[Tuple[Optional[bool], bool,
+                                              Optional[str]], int] = {}
 
     def _load_template_owner(self) -> Any:
         if self._template_owner is not None:
@@ -199,3 +203,74 @@ class ToolChatTemplateFormatter:
                 "Tool-aware chat template returned non-string prompt. "
                 "Use tokenize=False-compatible tokenizer/processor templates.")
         return prompt
+
+    def _encode_prompt(self, prompt: str) -> List[int]:
+        owner = self._load_template_owner()
+        tokenizer = getattr(owner, "tokenizer", owner)
+        if not hasattr(tokenizer, "encode"):
+            raise ToolChatTemplateError(
+                "Tool-aware chat template owner has no tokenizer encode method."
+            )
+
+        try:
+            token_ids = tokenizer.encode(prompt, add_special_tokens=False)
+        except Exception as exc:
+            raise ToolChatTemplateError(
+                f"Failed to tokenize tool-aware prompt: {exc}") from exc
+        if not isinstance(token_ids, list) or not all(
+                isinstance(token_id, int) for token_id in token_ids):
+            raise ToolChatTemplateError(
+                "Tool-aware prompt tokenizer returned invalid token IDs.")
+        return token_ids
+
+    def format_with_replay_tail(
+        self,
+        messages: Sequence[Dict[str, Any]],
+        *,
+        tools: Optional[Sequence[Dict[str, Any]]] = None,
+        tool_choice: Optional[Union[str, Dict[str, Any]]] = None,
+        enable_thinking: Optional[bool] = None,
+    ) -> Tuple[str, int]:
+        """Format a prompt and find its unstable multi-turn token tail."""
+        prompt = self.format(
+            messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            add_generation_prompt=True,
+            enable_thinking=enable_thinking,
+        )
+
+        cache_key = (enable_thinking, bool(tools), messages[-1].get("role"))
+        if cache_key in self._replay_tail_lengths:
+            return prompt, self._replay_tail_lengths[cache_key]
+
+        probe_messages = list(messages) + [{
+            "role": "assistant",
+            "reasoning_content": CONTEXT_REUSE_PROBE,
+            "content": "",
+        }]
+        committed_prompt = self.format(
+            probe_messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            add_generation_prompt=False,
+            enable_thinking=enable_thinking,
+        )
+        prompt_token_ids = self._encode_prompt(prompt)
+        committed_prompt_token_ids = self._encode_prompt(committed_prompt)
+        common_prefix_length = 0
+        for prompt_token_id, committed_token_id in zip(
+                prompt_token_ids, committed_prompt_token_ids):
+            if prompt_token_id != committed_token_id:
+                break
+            common_prefix_length += 1
+        if common_prefix_length == 0:
+            raise ToolChatTemplateError(
+                "Tool-aware prompt has no stable token prefix for context reuse."
+            )
+
+        # MTP needs one token after the captured predecessor as a stable
+        # successor proof, so replay starts one token before the LCP boundary.
+        replay_tail_length = (len(prompt_token_ids) - common_prefix_length + 1)
+        self._replay_tail_lengths[cache_key] = replay_tail_length
+        return prompt, replay_tail_length

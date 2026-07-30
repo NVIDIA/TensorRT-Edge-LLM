@@ -556,6 +556,7 @@ bool Gemma4ViTRunner::preprocess(rt::LLMGenerationRequest const& request,
     try
     {
         imagePreprocess(request, imageGrids, imageTokenLengths, numImages, !imageOnly, stream);
+        mPreparedArtifactRowCounts = imageTokenLengths;
         if (!imageOnly)
         {
             textPreprocess(request, batchedInputIds, numImages, imageTokenLengths, tokenizer);
@@ -568,6 +569,30 @@ bool Gemma4ViTRunner::preprocess(rt::LLMGenerationRequest const& request,
     }
 
     return true;
+}
+
+bool Gemma4ViTRunner::prepareArtifactSubset(rt::LLMGenerationRequest const& request,
+    [[maybe_unused]] std::vector<size_t> const& originalItemIndices, cudaStream_t stream)
+{
+    std::vector<ImageGrid> imageGrids;
+    std::vector<int64_t> imageTokenLengths;
+    std::vector<int64_t> numImages;
+    try
+    {
+        imagePreprocess(request, imageGrids, imageTokenLengths, numImages, /*doResize=*/true, stream);
+        mPreparedArtifactRowCounts = imageTokenLengths;
+    }
+    catch (std::exception const& e)
+    {
+        LOG_ERROR("Failed to prepare selected vision artifacts: %s", e.what());
+        return false;
+    }
+    return true;
+}
+
+std::vector<int64_t> Gemma4ViTRunner::preparedArtifactRowCounts() const
+{
+    return mPreparedArtifactRowCounts;
 }
 
 bool Gemma4ViTRunner::infer(cudaStream_t stream) noexcept

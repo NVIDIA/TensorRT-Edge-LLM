@@ -130,6 +130,7 @@ class AutoModel:
                         eagle_base: bool = False,
                         reduced_vocab_dir: "str | None" = None,
                         mtp_base: bool = False,
+                        mtp_tree_base: bool = False,
                         mtp_draft: bool = False,
                         tp_size: int = 1,
                         tp_rank: int = 0,
@@ -163,14 +164,17 @@ class AutoModel:
             reduced_vocab_dir:
                             Optional directory containing ``vocab_map.safetensors``.
             mtp_base:       When True, export the standard Qwen3.5 text model as
-                            the MTP base variant.
+                            the tree-verification MTP base variant.
             mtp_draft:      When True, build the dedicated Qwen3.5 dense MTP
-                            draft model from the base checkpoint config.
+                            draft model from the base checkpoint config. Qwen-style
+                            MTP always emits logits for tree verification.
             tp_size:        Tensor-parallel world size.  When >1 the config
                             is reduced to per-rank shapes via
                             :meth:`ModelConfig.for_rank`, and weights
                             are sharded on assignment.  Default 1 = no TP.
             tp_rank:        This rank's index in [0, tp_size).
+            mtp_tree_base:  Deprecated compatibility switch. Qwen-style MTP
+                            always uses DDTree export semantics.
             dflash_base:    When True, export as DFlash base model.
             dflash_tree_base:
                             When True, add DDTree parent/depth metadata inputs
@@ -207,8 +211,13 @@ class AutoModel:
             config.eagle_base = True
         if mtp_base or config.mtp_base:
             config.mtp_base = True
+            config.mtp_tree_base = True
         if gemma4_mtp_base:
             config.gemma4_mtp_base = True
+        if mtp_tree_base or mtp_draft:
+            config.mtp_tree_base = True
+        if config.mtp_tree_base and not mtp_draft:
+            config.mtp_base = True
         if dflash_base:
             config.dflash_base = True
         if dflash_tree_base:
@@ -768,7 +777,7 @@ def _mtp_key_remap(key: str, *, tie_word_embeddings: bool) -> "str | None":
     """
     if key.startswith("mtp."):
         return key[len("mtp."):]
-    if key == "lm_head.weight":
+    if key.startswith("lm_head."):
         return key
     if tie_word_embeddings and key in (
             "model.embed_tokens.weight",

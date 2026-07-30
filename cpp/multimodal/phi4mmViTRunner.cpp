@@ -439,6 +439,7 @@ bool Phi4MMViTRunner::preprocess(rt::LLMGenerationRequest const& request,
     try
     {
         imagePreprocess(request, imageTokenLengths, numImages, mImagesBlockGridHW, !imageOnly, stream);
+        mPreparedArtifactRowCounts = imageTokenLengths;
         if (!imageOnly)
         {
             textPreprocess(request, batchedInputIds, numImages, imageTokenLengths, tokenizer);
@@ -451,6 +452,30 @@ bool Phi4MMViTRunner::preprocess(rt::LLMGenerationRequest const& request,
     }
 
     return true;
+}
+
+bool Phi4MMViTRunner::prepareArtifactSubset(rt::LLMGenerationRequest const& request,
+    [[maybe_unused]] std::vector<size_t> const& originalItemIndices, cudaStream_t stream)
+{
+    std::vector<int64_t> imageTokenLengths;
+    std::vector<int64_t> numImages;
+    mImagesBlockGridHW.clear();
+    try
+    {
+        imagePreprocess(request, imageTokenLengths, numImages, mImagesBlockGridHW, /*doResize=*/true, stream);
+        mPreparedArtifactRowCounts = imageTokenLengths;
+    }
+    catch (std::exception const& e)
+    {
+        LOG_ERROR("Failed to prepare selected vision artifacts: %s", e.what());
+        return false;
+    }
+    return true;
+}
+
+std::vector<int64_t> Phi4MMViTRunner::preparedArtifactRowCounts() const
+{
+    return mPreparedArtifactRowCounts;
 }
 
 bool Phi4MMViTRunner::infer(cudaStream_t stream)

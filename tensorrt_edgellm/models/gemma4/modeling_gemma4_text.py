@@ -29,7 +29,7 @@ from ...config import QUANT_NVFP4, ModelConfig
 from ..default.modeling_default import (MLP, Attention, CausalLM, DecoderLayer,
                                         OnnxSpec, RMSNorm)
 from ..linear import TPMode, make_linear
-from ..ops import (attention_plugin, nvfp4_moe_plugin,
+from ..ops import (KV_PAGE_SIZE, attention_plugin, nvfp4_moe_plugin,
                    nvfp4_moe_plugin_geforce, use_geforce_nvfp4_moe)
 
 __all__ = [
@@ -207,7 +207,10 @@ def _make_gemma4_flat_wrapper(model: nn.Module,
         ]
     else:
         param_names += ["rope_rotary_cos_sin"]
-    param_names += ["context_lengths", "kvcache_start_index", "last_token_ids"]
+    param_names += [
+        "context_lengths", "kvcache_start_index", "kv_page_table",
+        "last_token_ids"
+    ]
     if vision_block_attention:
         param_names += ["vision_block_ids"]
     if eagle_base:
@@ -237,14 +240,16 @@ def _make_gemma4_flat_wrapper(model: nn.Module,
         body = (
             f"    logits, hidden_states, present_key_values = self._model(\n"
             f"        inputs_embeds, {past_kv_tuple}, {rope_arg}, "
-            f"context_lengths, kvcache_start_index, last_token_ids"
+            f"context_lengths, kvcache_start_index, kv_page_table, "
+            f"last_token_ids"
             f"{eagle_kwargs}{vision_kwargs}{ple_kwarg}{rope_kwargs})\n"
             f"    return (logits, hidden_states) + tuple(present_key_values)\n"
         )
     else:
         body = (f"    logits, present_key_values = self._model(\n"
                 f"        inputs_embeds, {past_kv_tuple}, {rope_arg}, "
-                f"context_lengths, kvcache_start_index, last_token_ids"
+                f"context_lengths, kvcache_start_index, kv_page_table, "
+                f"last_token_ids"
                 f"{eagle_kwargs}{vision_kwargs}{ple_kwarg}{rope_kwargs})\n"
                 f"    return (logits,) + tuple(present_key_values)\n")
 
@@ -453,6 +458,7 @@ class Gemma4Attention(Attention):
         rope_rotary_cos_sin: torch.Tensor,
         context_lengths: torch.Tensor,
         kvcache_start_index: torch.Tensor,
+        kv_page_table: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
         attention_pos_id: torch.Tensor | None = None,
         vision_block_ids: torch.Tensor | None = None,
@@ -531,6 +537,7 @@ class Gemma4Attention(Attention):
             context_lengths,
             rope_rotary_cos_sin,
             kvcache_start_index,
+            kv_page_table,
             **kwargs,
         )
         attn_output = attn_output.reshape(batch_size, seq_len,
@@ -863,6 +870,7 @@ class Gemma4DecoderLayer(DecoderLayer):
         rope_rotary_cos_sin: torch.Tensor,
         context_lengths: torch.Tensor,
         kvcache_start_index: torch.Tensor,
+        kv_page_table: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
         attention_pos_id: torch.Tensor | None = None,
         vision_block_ids: torch.Tensor | None = None,
@@ -876,6 +884,7 @@ class Gemma4DecoderLayer(DecoderLayer):
             rope_rotary_cos_sin,
             context_lengths,
             kvcache_start_index,
+            kv_page_table,
             attention_mask=attention_mask,
             attention_pos_id=attention_pos_id,
             vision_block_ids=vision_block_ids,
@@ -1032,6 +1041,7 @@ class Gemma4Transformer(nn.Module):
         rope_rotary_cos_sin: torch.Tensor | None,
         context_lengths: torch.Tensor,
         kvcache_start_index: torch.Tensor,
+        kv_page_table: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
         attention_pos_id: torch.Tensor | None = None,
         vision_block_ids: torch.Tensor | None = None,
@@ -1064,6 +1074,7 @@ class Gemma4Transformer(nn.Module):
                 layer_rope_rotary_cos_sin,
                 context_lengths,
                 kvcache_start_index,
+                kv_page_table,
                 attention_mask=attention_mask,
                 attention_pos_id=attention_pos_id,
                 vision_block_ids=vision_block_ids,
@@ -1149,12 +1160,13 @@ class Gemma4ForCausalLM(CausalLM):
         ]
         kv_dtype = (torch.float8_e4m3fn
                     if config.quant.kv_cache_quant == "fp8" else dtype16)
+        # Paged KV pool binding: [2, num_pages, KV_PAGE_SIZE, num_kv_heads, head_dim].
         past_key_values_list: List[torch.Tensor] = [
             torch.zeros(
-                batch_size,
                 2,
+                1,
+                KV_PAGE_SIZE,
                 num_kv_heads,
-                past_len,
                 layer_head_dim,
                 dtype=kv_dtype,
                 device=device,
@@ -1212,14 +1224,21 @@ class Gemma4ForCausalLM(CausalLM):
         kvcache_start_index = torch.zeros(batch_size,
                                           dtype=torch.int32,
                                           device=device)
+        kv_page_table = torch.zeros(batch_size,
+                                    2,
+                                    1,
+                                    dtype=torch.int32,
+                                    device=device)
         last_token_ids = torch.zeros(batch_size,
                                      1,
                                      dtype=torch.int64,
                                      device=device)
 
-        args = args + (context_lengths, kvcache_start_index, last_token_ids)
+        args = args + (context_lengths, kvcache_start_index, kv_page_table,
+                       last_token_ids)
         input_names = input_names + [
-            "context_lengths", "kvcache_start_index", "last_token_ids"
+            "context_lengths", "kvcache_start_index", "kv_page_table",
+            "last_token_ids"
         ]
         if vision_block_attention:
             vision_block_ids = torch.full((batch_size, seq_len),
@@ -1237,9 +1256,11 @@ class Gemma4ForCausalLM(CausalLM):
         batch = torch.export.Dim("batch", min=1, max=256)
         seq = torch.export.Dim("seq_len", min=1, max=32768)
         pos = torch.export.Dim("max_pos", min=1, max=32768)
-        past = torch.export.Dim("past_len", min=1, max=32768)
         rope_batch = torch.export.Dim("rope_batch", min=1, max=256)
         kv_batch = torch.export.Dim("kv_batch", min=1, max=256)
+        page_batch = torch.export.Dim("page_batch", min=1, max=256)
+        max_pages = torch.export.Dim("max_pages_per_seq", min=1, max=32768)
+        num_pages = torch.export.Dim("num_pages", min=1, max=1048576)
 
         num_selected = torch.export.Dim(
             "num_selected", min=1, max=256) if tree_attention_base else None
@@ -1247,12 +1268,14 @@ class Gemma4ForCausalLM(CausalLM):
         for _ in range(num_ple_inputs):
             all_shapes.append({0: batch, 1: seq})
         for _ in range(Na):
-            all_shapes.append({0: batch, 3: past})
+            all_shapes.append({1:
+                               num_pages})  # past_key_values_i (pool-shaped)
         all_shapes.append({0: rope_batch, 1: pos})
         if config.use_dual_rope:
             all_shapes.append({0: rope_batch, 1: pos})
         all_shapes.append({0: batch})
         all_shapes.append({0: kv_batch})
+        all_shapes.append({0: page_batch, 2: max_pages})  # kv_page_table
         if tree_attention_base:
             all_shapes.append({0: batch, 1: num_selected})
         else:
@@ -1303,6 +1326,7 @@ class Gemma4ForCausalLM(CausalLM):
         rope_rotary_cos_sin: torch.Tensor | None,
         context_lengths: torch.Tensor,
         kvcache_start_index: torch.Tensor,
+        kv_page_table: torch.Tensor,
         last_token_ids: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
         attention_pos_id: torch.Tensor | None = None,
@@ -1319,6 +1343,7 @@ class Gemma4ForCausalLM(CausalLM):
             rope_rotary_cos_sin,
             context_lengths,
             kvcache_start_index,
+            kv_page_table,
             attention_mask=attention_mask,
             attention_pos_id=attention_pos_id,
             vision_block_ids=vision_block_ids,

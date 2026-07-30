@@ -169,6 +169,15 @@ def test_llm_export_source_contains_base_dtype_write():
     )
 
 
+def test_runtime_config_source_contains_sliding_window_capability():
+    src = _load_source()
+    assert re.search(
+        r"['\"]sliding_window['\"]\s*:\s*config\.sliding_window_size",
+        src,
+    ), ("Expected sliding_window metadata write missing from checkpoint_utils.py; "
+        "the runtime cannot safely gate context reuse backends without it.")
+
+
 def test_llm_export_source_contains_hybrid_dtype_write():
     src = _load_source()
     # Presence check only — the right-hand side is now derived at runtime via

@@ -1425,7 +1425,7 @@ TEST_F(EmbeddingLookupTest, DeepstackEmbeddingExplicitImageTokenId)
     copyHostToDevice(featuresTensor, deepstackFeatures);
 
     kernel::assembleDeepstackEmbedding(
-        inputIdsTensor, featuresTensor, vocabSize, outputTensor, stream, imageTokenId, std::ref(indicesTensor));
+        inputIdsTensor, featuresTensor, vocabSize, outputTensor, stream, imageTokenId, std::cref(indicesTensor));
 
     auto const gpuResult = copyDeviceToHost<half>(outputTensor);
 
@@ -1634,8 +1634,9 @@ TEST_F(EmbeddingLookupTest, MultimodalAccuracy)
 
         // Run GPU kernel
         kernel::embeddingLookupMultimodal(inputIdsTensor, embeddingTableTensor, std::nullopt,
-            std::optional{std::ref(multimodalIndicesTensor)}, imageTokenId, std::optional{std::ref(imageEmbedsTensor)},
-            audioTokenId, std::optional{std::ref(audioEmbedsTensor)}, outputTensor, stream);
+            std::optional{std::cref(multimodalIndicesTensor)}, imageTokenId,
+            std::optional{std::cref(imageEmbedsTensor)}, audioTokenId, std::optional{std::cref(audioEmbedsTensor)},
+            outputTensor, stream);
 
         // Get result from GPU
         auto const gpuResult = copyDeviceToHost<half>(outputTensor);
@@ -1733,8 +1734,8 @@ TEST_F(EmbeddingLookupTest, MultimodalOutOfBounds)
 
     // Run GPU kernel
     kernel::embeddingLookupMultimodal(inputIdsTensor, embeddingTableTensor, std::nullopt,
-        std::optional{std::ref(multimodalIndicesTensor)}, imageTokenId, std::optional{std::ref(imageEmbedsTensor)},
-        audioTokenId, std::optional{std::ref(audioEmbedsTensor)}, outputTensor, stream);
+        std::optional{std::cref(multimodalIndicesTensor)}, imageTokenId, std::optional{std::cref(imageEmbedsTensor)},
+        audioTokenId, std::optional{std::cref(audioEmbedsTensor)}, outputTensor, stream);
 
     // Get result from GPU
     auto const gpuResult = copyDeviceToHost<half>(outputTensor);
@@ -1835,8 +1836,8 @@ TEST_F(EmbeddingLookupTest, MultimodalUnevenHiddenSizeError)
     EXPECT_THROW(
         {
             kernel::embeddingLookupMultimodal(inputIdsTensor, embeddingTableTensor, std::nullopt,
-                std::optional{std::ref(multimodalIndicesTensor)}, imageTokenId,
-                std::optional{std::ref(imageEmbedsTensor)}, audioTokenId, std::optional{std::ref(audioEmbedsTensor)},
+                std::optional{std::cref(multimodalIndicesTensor)}, imageTokenId,
+                std::optional{std::cref(imageEmbedsTensor)}, audioTokenId, std::optional{std::cref(audioEmbedsTensor)},
                 outputTensor, stream);
         },
         std::runtime_error)

@@ -142,6 +142,15 @@ inline constexpr char const* kRopeCosSinFull = "rope_rotary_cos_sin_full";
 inline constexpr char const* kKVCacheStartIndex = "kvcache_start_index";
 
 /*!
+ * @brief KV page-table tensor - per-request page indices into the paged two-pool KV cache
+ *
+ * K page ids in row 0, derived V page ids (K + numPages) in row 1.
+ *
+ * Shape: [batch_size, 2, max_pages_per_seq] (INT32)
+ */
+inline constexpr char const* kKVPageTable = "kv_page_table";
+
+/*!
  * @brief Past key-value cache tensor template - use with layer index formatting
  *
  * Template: "past_key_values_{layer_idx}"
@@ -270,10 +279,10 @@ inline constexpr char const* kPresentConvStateTemplate = "present_conv_state";
 inline constexpr char const* kIntermediateConvStateTemplate = "intermediate_conv_state";
 
 /*!
- * @brief Intermediate recurrent state output template for MTP speculative decoding
+ * @brief Compact recurrent replay-buffer output for hybrid speculative decoding
  *
  * Template: "intermediate_recurrent_state_{recurrent_layer_idx}"
- * Shape: [batch_size, seq_len, recurrentNumHeads, recurrentHeadDim, recurrentStateSize] (FLOAT32)
+ * Shape: [batch_size, compact_replay_buffer_elements] (opaque FLOAT32 storage)
  */
 inline constexpr char const* kIntermediateRecurrentStateTemplate = "intermediate_recurrent_state";
 
@@ -324,7 +333,7 @@ inline constexpr char const* kAttentionPosId = "attention_pos_id";
 inline constexpr char const* kSpecVerifyPhaseMarker = "spec_verify_phase_marker";
 
 /*!
- * @brief DDTree parent node ids for hybrid DFlash base verification
+ * @brief DDTree parent node ids for hybrid MTP/DFlash base verification
  *
  * Shape: [batch_size, verify_tree_size] (INT32). Each entry points to the
  * flattened parent node whose hybrid state is used to evaluate the current node.
@@ -332,7 +341,7 @@ inline constexpr char const* kSpecVerifyPhaseMarker = "spec_verify_phase_marker"
 inline constexpr char const* kTreeParentIds = "tree_parent_ids";
 
 /*!
- * @brief DDTree node depths for hybrid DFlash base verification
+ * @brief DDTree node depths for hybrid MTP/DFlash base verification
  *
  * Shape: [batch_size, verify_tree_size] (INT32). Depth is used for positional
  * metadata and for tree-state kernels that need node order information.

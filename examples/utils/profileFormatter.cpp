@@ -188,7 +188,7 @@ std::string getSpecDecodeGenerationJsonKey(char const* strategyName)
 //! Utility function for calculating speculative decoding overall tokens per second (excluding base model prefill)
 float getSpecDecodeOverallTokensPerSecond(metrics::SpecDecodeGenerationMetrics const& specDecodeGenerationMetrics)
 {
-    if (specDecodeGenerationMetrics.totalGeneratedTokens <= 0)
+    if (specDecodeGenerationMetrics.totalAcceptedTokens <= 0)
     {
         return 0.0f;
     }
@@ -208,6 +208,12 @@ float getSpecDecodeOverallTokensPerSecond(metrics::SpecDecodeGenerationMetrics c
         totalTimeMs += constructDraftProposalData->getTotalGpuTimeMs();
     }
 
+    auto draftAcceptData = gTimer.getTimingData(metrics::StageNames::kSPEC_DECODE_DRAFT_ACCEPT);
+    if (draftAcceptData)
+    {
+        totalTimeMs += draftAcceptData->getTotalGpuTimeMs();
+    }
+
     auto baseVerificationData = gTimer.getTimingData(metrics::StageNames::kSPEC_DECODE_BASE_VERIFICATION);
     if (baseVerificationData)
     {
@@ -216,20 +222,20 @@ float getSpecDecodeOverallTokensPerSecond(metrics::SpecDecodeGenerationMetrics c
 
     if (totalTimeMs > 0.0f)
     {
-        return static_cast<float>(specDecodeGenerationMetrics.totalGeneratedTokens) / (totalTimeMs / 1000.0f);
+        return static_cast<float>(specDecodeGenerationMetrics.totalAcceptedTokens) / (totalTimeMs / 1000.0f);
     }
     return 0.0f;
 }
 
-//! Utility function for calculating speculative decoding average acceptance rate
-float getSpecDecodeAverageAcceptanceRate(metrics::SpecDecodeGenerationMetrics const& specDecodeGenerationMetrics)
+//! Utility function for calculating speculative decoding average acceptance length
+float getSpecDecodeAverageAcceptanceLength(metrics::SpecDecodeGenerationMetrics const& specDecodeGenerationMetrics)
 {
-    if (specDecodeGenerationMetrics.totalIterations <= 0)
+    if (specDecodeGenerationMetrics.totalIterations <= 0 || specDecodeGenerationMetrics.totalAcceptedTokens <= 0)
     {
         return 0.0f;
     }
 
-    return static_cast<float>(specDecodeGenerationMetrics.totalGeneratedTokens)
+    return static_cast<float>(specDecodeGenerationMetrics.totalAcceptedTokens)
         / static_cast<float>(specDecodeGenerationMetrics.totalIterations);
 }
 
@@ -333,18 +339,20 @@ void outputSpecDecodeGenerationProfile(std::ostream& output,
         output << "=== " << getSpecDecodeDisplayName(strategyName) << " Generation ===" << std::endl;
         output << "Total Iterations: " << specDecodeGenerationMetrics.totalIterations << std::endl;
         output << "Total Generated Tokens: " << specDecodeGenerationMetrics.totalGeneratedTokens << std::endl;
+        output << "Total Accepted Tokens: " << specDecodeGenerationMetrics.totalAcceptedTokens << std::endl;
         output << "Average Tokens per Run: " << std::fixed << std::setprecision(2)
                << static_cast<float>(specDecodeGenerationMetrics.totalGeneratedTokens)
                 / specDecodeGenerationMetrics.getTotalRuns()
                << std::endl;
-        output << "Average Acceptance Rate: " << std::fixed << std::setprecision(2)
-               << getSpecDecodeAverageAcceptanceRate(specDecodeGenerationMetrics) << std::endl;
+        output << "Average Acceptance Length: " << std::fixed << std::setprecision(2)
+               << getSpecDecodeAverageAcceptanceLength(specDecodeGenerationMetrics) << std::endl;
         output << "Overall Tokens/Second (excluding base prefill): " << std::fixed << std::setprecision(1)
                << getSpecDecodeOverallTokensPerSecond(specDecodeGenerationMetrics) << std::endl;
 
         // Individual speculative decoding stage timing.
         appendStageTimingData(output, metrics::StageNames::kSPEC_DECODE_DRAFT_PREFILL, "Draft Model Prefill");
         appendStageTimingData(output, metrics::StageNames::kSPEC_DECODE_DRAFT_PROPOSAL, "Construct Draft Proposal");
+        appendStageTimingData(output, metrics::StageNames::kSPEC_DECODE_DRAFT_ACCEPT, "Draft Model Accept");
         appendStageTimingData(output, metrics::StageNames::kSPEC_DECODE_BASE_VERIFICATION, "Base Model Verification");
     }
 }
@@ -502,10 +510,13 @@ void addJsonSpecDecodeGenerationSummary(nlohmann::json& summary,
             = {{"total_runs", specDecodeGenerationMetrics.getTotalRuns()},
                 {"total_iterations", specDecodeGenerationMetrics.totalIterations},
                 {"total_generated_tokens", specDecodeGenerationMetrics.totalGeneratedTokens},
+                {"total_accepted_tokens", specDecodeGenerationMetrics.totalAcceptedTokens},
                 {"average_tokens_per_run",
                     static_cast<float>(specDecodeGenerationMetrics.totalGeneratedTokens)
                         / specDecodeGenerationMetrics.getTotalRuns()},
-                {"average_acceptance_rate", getSpecDecodeAverageAcceptanceRate(specDecodeGenerationMetrics)},
+                // Keep the legacy key for downstream consumers while exposing the metric's actual semantics.
+                {"average_acceptance_length", getSpecDecodeAverageAcceptanceLength(specDecodeGenerationMetrics)},
+                {"average_acceptance_rate", getSpecDecodeAverageAcceptanceLength(specDecodeGenerationMetrics)},
                 {"overall_tokens_per_second_excluding_base_prefill",
                     getSpecDecodeOverallTokensPerSecond(specDecodeGenerationMetrics)}};
     }

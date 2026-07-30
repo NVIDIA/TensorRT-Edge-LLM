@@ -102,6 +102,12 @@ public:
     //! if no adapter is active.
     std::string const& getActiveAdapterName() const noexcept;
 
+    //! Monotonic generation local to one adapter name. Re-registering only that name advances it.
+    uint64_t getAdapterGeneration(std::string const& name) const;
+
+    //! Generation of the active adapter, or zero when no adapter is active.
+    uint64_t getActiveAdapterGeneration() const;
+
     //! Return all binding names across all loaded adapters.
     //! Useful for initialising a `TensorMap` with the correct keys.
     std::vector<std::string> getBindingNames() const;
@@ -150,6 +156,9 @@ private:
 
     //! All loaded adapters: adapterName -> WeightMap.
     std::map<std::string, WeightMap> mAdapters{};
+
+    //! Per-name generation used by context-cache identity.
+    std::map<std::string, uint64_t> mAdapterGenerations{};
 
     //! Name of the active adapter (empty when none active).
     std::string mActiveAdapterName{};

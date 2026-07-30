@@ -589,6 +589,16 @@ TEST_F(CompactVectorSlotStreamTest, SizeMismatchThrows)
     EXPECT_THROW(rt::compactVector(mapping, v), std::runtime_error);
 }
 
+TEST(CompactVectorSequenceCacheStateTest, EvictionCompactsRequestOwnership)
+{
+    std::vector<std::optional<rt::SequenceCacheState>> states(3);
+    std::vector<int32_t> mapping{0, -1, 1};
+
+    rt::compactVector(mapping, states);
+
+    EXPECT_EQ(states.size(), 2U);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // LLMGenerationRequest.streamChannels layout check
 // ─────────────────────────────────────────────────────────────────────────────

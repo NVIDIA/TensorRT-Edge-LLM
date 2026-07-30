@@ -55,6 +55,24 @@ except ImportError as e:
     trt = _Dummy()
     torch = _Dummy()
 
+# Tokens per page of the paged-KV pool. Must match kTOKENS_PER_PAGE
+# (cpp/common/pagedKvTypes.h).
+PAGE_SIZE = 128
+
+
+def _pool_geometry(params: "SharedKVTestParams"):
+    """Paged-pool geometry for an identity page table.
+
+    The logical per-slot capacity is padded up to whole pages; every batch
+    slot owns a fixed page range (``mpps`` pages). ``num_pages`` is sized for
+    the max batch so the pool never resizes.
+    Returns (cap_padded, mpps, num_pages).
+    """
+    cap_padded = -(-params.kv_cache_capacity // PAGE_SIZE) * PAGE_SIZE
+    mpps = cap_padded // PAGE_SIZE  # maxPagesPerSeq
+    num_pages = params.max_batch_size * mpps
+    return cap_padded, mpps, num_pages
+
 
 @dataclass
 class SharedKVTestParams:
@@ -171,17 +189,22 @@ def _build_attention_engine(logger,
     q_hidden = p.num_q_heads * p.head_size
     kv_hidden = p.num_kv_heads * p.head_size
 
+    cap_padded, mpps, num_pages = _pool_geometry(p)
+
     q_input = network.add_input("q", trt.float16, (-1, -1, q_hidden))
     k_input = network.add_input("k", trt.float16, (-1, -1, kv_hidden))
     v_input = network.add_input("v", trt.float16, (-1, -1, kv_hidden))
+    # Paged-KV pool binding: [2, numPages, PAGE_SIZE, Hkv, D].
     kv_cache_input = network.add_input(
         "kv_cache", trt.float16,
-        (-1, 2, p.num_kv_heads, p.kv_cache_capacity, p.head_size))
+        (2, -1, PAGE_SIZE, p.num_kv_heads, p.head_size))
     context_lengths = network.add_input("context_lengths", trt.int32, (-1, ))
     rope_cos_sin = network.add_input(
         "rope_cos_sin", trt.float32,
         (1, p.max_position_embeddings, p.head_size))
     kv_cache_indices = network.add_input("kv_cache_indices", trt.int32, (-1, ))
+    kv_page_table = network.add_input("kv_page_table", trt.int32,
+                                      (-1, 2, mpps))
 
     # Plugin creation (V3 API)
     plugin_registry = trt.get_plugin_registry()
@@ -217,7 +240,7 @@ def _build_attention_engine(logger,
 
     plugin_inputs = [
         q_input, k_input, v_input, kv_cache_input, context_lengths,
-        rope_cos_sin, kv_cache_indices
+        rope_cos_sin, kv_cache_indices, kv_page_table
     ]
     plugin_layer = network.add_plugin_v3(plugin_inputs, [], plugin)
 
@@ -237,11 +260,9 @@ def _build_attention_engine(logger,
     profile.set_shape("v", (1, 0, kv_hidden),
                       (p.batch_size, p.seq_len, kv_hidden),
                       (p.max_batch_size, p.max_seq_len, kv_hidden))
-    profile.set_shape(
-        "kv_cache", (1, 2, p.num_kv_heads, p.kv_cache_capacity, p.head_size),
-        (p.batch_size, 2, p.num_kv_heads, p.kv_cache_capacity, p.head_size),
-        (p.max_batch_size, 2, p.num_kv_heads, p.kv_cache_capacity,
-         p.head_size))
+    # The pool never resizes: numPages is fixed per engine (min=opt=max).
+    pool_shape = (2, num_pages, PAGE_SIZE, p.num_kv_heads, p.head_size)
+    profile.set_shape("kv_cache", pool_shape, pool_shape, pool_shape)
     profile.set_shape("context_lengths", (1, ), (p.batch_size, ),
                       (p.max_batch_size, ))
     profile.set_shape("rope_cos_sin",
@@ -250,6 +271,8 @@ def _build_attention_engine(logger,
                       (1, p.max_position_embeddings, p.head_size))
     profile.set_shape("kv_cache_indices", (0, ), (p.batch_size, ),
                       (p.max_batch_size, ))
+    profile.set_shape("kv_page_table", (1, 2, mpps), (p.batch_size, 2, mpps),
+                      (p.max_batch_size, 2, mpps))
     config.add_optimization_profile(profile)
 
     serialized = builder.build_serialized_network(network, config)
@@ -344,13 +367,23 @@ class TestSharedKVAttention:
         d_q = self._to_gpu(donor_q_np)
         d_k = self._to_gpu(donor_k_np)
         d_v = self._to_gpu(donor_v_np)
-        d_kv_cache = torch.zeros(B,
-                                 2,
+        # Paged-KV pool [2, numPages, PAGE_SIZE, Hkv, D]; the donor plugin call
+        # fills it in place under an identity page table.
+        cap_padded, mpps, num_pages = _pool_geometry(p)
+        cap = p.kv_cache_capacity
+        d_kv_cache = torch.zeros(2,
+                                 num_pages,
+                                 PAGE_SIZE,
                                  H_kv,
-                                 p.kv_cache_capacity,
                                  D,
                                  dtype=torch.float16,
                                  device=self.device)
+        # Identity page table [B, 2, mpps]: K row b -> pages [b*mpps, (b+1)*mpps),
+        # V row = K row + num_pages (the pool's V half).
+        k_page_ids = torch.arange(B * mpps,
+                                  dtype=torch.int32,
+                                  device=self.device).reshape(B, mpps)
+        d_page_table = torch.stack((k_page_ids, k_page_ids + num_pages), dim=1)
         d_ctx_len = self._to_gpu(np.full(B, donor_seq_len, dtype=np.int32))
         # Initial prefill: kv_cache_indices has shape [0] (plugin sentinel).
         # Allocate 1 element so TRT gets a non-null address; shape (0,) is set separately.
@@ -370,6 +403,7 @@ class TestSharedKVAttention:
             "context_lengths": d_ctx_len,
             "rope_cos_sin": d_rope,
             "kv_cache_indices": d_cache_idx,
+            "kv_page_table": d_page_table,
             "attention_output": d_attn_out,
             "kv_cache_output": d_kv_cache,  # in-place
         }
@@ -377,10 +411,11 @@ class TestSharedKVAttention:
             "q": (B, donor_seq_len, H_q * D),
             "k": (B, donor_seq_len, H_kv * D),
             "v": (B, donor_seq_len, H_kv * D),
-            "kv_cache": (B, 2, H_kv, p.kv_cache_capacity, D),
+            "kv_cache": (2, num_pages, PAGE_SIZE, H_kv, D),
             "context_lengths": (B, ),
             "rope_cos_sin": (1, p.max_position_embeddings, D),
             "kv_cache_indices": (0, ),
+            "kv_page_table": (B, 2, mpps),
         }
 
         with torch.cuda.stream(stream):
@@ -388,8 +423,17 @@ class TestSharedKVAttention:
                             shapes_donor)
         stream.synchronize()
 
-        # Snapshot donor's populated KV cache
-        kv_cache_after_donor = d_kv_cache.cpu().numpy().copy()
+        # Snapshot donor's populated KV cache, converting the pool back to the
+        # logical per-slot view [B, 2, Hkv, cap, D] for the numpy reference.
+        # Under the identity page table the K half [numPages, PAGE_SIZE, Hkv, D]
+        # is slot-major/token-major, so viewing it as [max_batch, cap_padded,
+        # Hkv, D] gives slot b's token t at [b, t] (NHD); permute to HND.
+        pool_k = d_kv_cache[0].view(p.max_batch_size, cap_padded, H_kv, D)
+        pool_v = d_kv_cache[1].view(p.max_batch_size, cap_padded, H_kv, D)
+        k_logical = pool_k[:B, :cap].permute(0, 2, 1, 3).contiguous()
+        v_logical = pool_v[:B, :cap].permute(0, 2, 1, 3).contiguous()
+        kv_cache_after_donor = torch.stack((k_logical, v_logical),
+                                           dim=1).cpu().numpy().copy()
 
         # --- Step 2: Shared layer reads donor's cache (K/V have seq_len=0) ---
         shared_engine, shared_ctx = _build_attention_engine(
@@ -435,6 +479,7 @@ class TestSharedKVAttention:
             "context_lengths": d_ctx_len_shared,
             "rope_cos_sin": d_rope,
             "kv_cache_indices": d_cache_idx_shared,
+            "kv_page_table": d_page_table,
             "attention_output": d_attn_out_shared,
             "kv_cache_output": d_kv_cache,  # in-place (should NOT be modified)
         }
@@ -442,10 +487,11 @@ class TestSharedKVAttention:
             "q": (B, shared_seq_len, H_q * D),
             "k": (B, 0, H_kv * D),
             "v": (B, 0, H_kv * D),
-            "kv_cache": (B, 2, H_kv, p.kv_cache_capacity, D),
+            "kv_cache": (2, num_pages, PAGE_SIZE, H_kv, D),
             "context_lengths": (B, ),
             "rope_cos_sin": (1, p.max_position_embeddings, D),
             "kv_cache_indices": (B, ),
+            "kv_page_table": (B, 2, mpps),
         }
 
         with torch.cuda.stream(stream):

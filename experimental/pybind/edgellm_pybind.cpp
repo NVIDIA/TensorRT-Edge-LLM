@@ -107,21 +107,23 @@ class PyLLMRuntime
 public:
     //! Vanilla constructor (no speculative decoding).
     PyLLMRuntime(std::string const& engineDir, std::string const& multimodalEngineDir,
-        std::unordered_map<std::string, std::string> const& loraWeightsMap)
+        std::unordered_map<std::string, std::string> const& loraWeightsMap,
+        ContextCacheConfig const& contextCacheConfig)
     {
         mPluginHandle = loadEdgellmPluginLib();
-        mRuntime = std::make_unique<LLMInferenceRuntime>(engineDir, multimodalEngineDir, loraWeightsMap, mStream.get());
+        mRuntime = std::make_unique<LLMInferenceRuntime>(
+            engineDir, multimodalEngineDir, loraWeightsMap, mStream.get(), contextCacheConfig);
     }
 
     //! Eagle speculative decoding constructor.
     PyLLMRuntime(std::string const& engineDir, std::string const& multimodalEngineDir,
         std::unordered_map<std::string, std::string> const& loraWeightsMap, int32_t draftTopK, int32_t draftStep,
-        int32_t verifyTreeSize)
+        int32_t verifyTreeSize, ContextCacheConfig const& contextCacheConfig)
     {
         mPluginHandle = loadEdgellmPluginLib();
         SpecDecodeDraftingConfig draftingConfig{draftTopK, draftStep, verifyTreeSize};
         mRuntime = std::make_unique<LLMInferenceRuntime>(
-            engineDir, multimodalEngineDir, loraWeightsMap, draftingConfig, mStream.get());
+            engineDir, multimodalEngineDir, loraWeightsMap, draftingConfig, mStream.get(), contextCacheConfig);
     }
 
     LLMGenerationResponse handleRequest(LLMGenerationRequest const& request)
@@ -286,21 +288,23 @@ PYBIND11_MODULE(_edgellm_runtime, m)
     py::class_<metrics::LLMPrefillMetrics>(m, "LLMPrefillMetrics")
         .def_readonly("reused_tokens", &metrics::LLMPrefillMetrics::reusedTokens)
         .def_readonly("computed_tokens", &metrics::LLMPrefillMetrics::computedTokens)
-        .def("get_total_runs", &metrics::LLMPrefillMetrics::getTotalRuns);
+        .def("get_total_runs", [](metrics::LLMPrefillMetrics const& metrics) { return metrics.getTotalRuns(); });
 
     py::class_<metrics::LLMGenerationMetrics>(m, "LLMGenerationMetrics")
         .def_readonly("generated_tokens", &metrics::LLMGenerationMetrics::generatedTokens)
-        .def("get_total_runs", &metrics::LLMGenerationMetrics::getTotalRuns);
+        .def("get_total_runs", [](metrics::LLMGenerationMetrics const& metrics) { return metrics.getTotalRuns(); });
 
     py::class_<metrics::SpecDecodeGenerationMetrics>(m, "SpecDecodeGenerationMetrics")
         .def_readonly("total_iterations", &metrics::SpecDecodeGenerationMetrics::totalIterations)
         .def_readonly("total_generated_tokens", &metrics::SpecDecodeGenerationMetrics::totalGeneratedTokens)
-        .def("get_total_runs", &metrics::SpecDecodeGenerationMetrics::getTotalRuns);
+        .def_readonly("total_accepted_tokens", &metrics::SpecDecodeGenerationMetrics::totalAcceptedTokens)
+        .def("get_total_runs",
+            [](metrics::SpecDecodeGenerationMetrics const& metrics) { return metrics.getTotalRuns(); });
 
     py::class_<metrics::MultimodalMetrics>(m, "MultimodalMetrics")
         .def_readonly("total_images", &metrics::MultimodalMetrics::totalImages)
         .def_readonly("total_image_tokens", &metrics::MultimodalMetrics::totalImageTokens)
-        .def("get_total_runs", &metrics::MultimodalMetrics::getTotalRuns);
+        .def("get_total_runs", [](metrics::MultimodalMetrics const& metrics) { return metrics.getTotalRuns(); });
 
     // ========================================================================
     // Image utilities
@@ -389,6 +393,19 @@ PYBIND11_MODULE(_edgellm_runtime, m)
         .def_readonly("logprob", &LogprobEntry::logprob)
         .def_property_readonly("piece", [](LogprobEntry const& e) { return py::bytes(e.piece); });
 
+    py::enum_<CommitPolicy>(m, "ContextCacheCommitPolicy")
+        .value("INCLUDING_GENERATED_TOKENS", CommitPolicy::kIncludingGeneratedTokens)
+        .value("PREFILL_STATE_ONLY", CommitPolicy::kPrefillStateOnly);
+
+    py::class_<ContextCacheConfig>(m, "ContextCacheConfig")
+        .def(py::init<>())
+        .def_readwrite("enabled", &ContextCacheConfig::enabled)
+        .def_readwrite("max_records", &ContextCacheConfig::maxRecords)
+        .def_readwrite("recurrent_snapshot_pool_bytes", &ContextCacheConfig::recurrentSnapshotPoolBytes)
+        .def_readwrite("partial_kv_snapshot_pool_bytes", &ContextCacheConfig::partialKvSnapshotPoolBytes)
+        .def_readwrite("media_artifact_pool_bytes", &ContextCacheConfig::mediaArtifactPoolBytes)
+        .def_readwrite("max_media_artifacts", &ContextCacheConfig::maxMediaArtifacts);
+
     py::class_<LLMGenerationRequest::FormattedRequest>(m, "FormattedRequest")
         .def(py::init<>())
         .def_readwrite("formatted_system_prompt", &LLMGenerationRequest::FormattedRequest::formattedSystemPrompt)
@@ -460,6 +477,11 @@ PYBIND11_MODULE(_edgellm_runtime, m)
         .def_readwrite("add_generation_prompt", &LLMGenerationRequest::addGenerationPrompt)
         .def_readwrite("enable_thinking", &LLMGenerationRequest::enableThinking)
         .def_readwrite("disable_spec_decode", &LLMGenerationRequest::disableSpecDecode)
+        .def_readwrite("disable_context_reuse", &LLMGenerationRequest::disableContextReuse)
+        .def_readwrite("context_cache_isolation_key", &LLMGenerationRequest::contextCacheIsolationKey)
+        .def_readwrite("context_cache_commit_policy", &LLMGenerationRequest::contextCacheCommitPolicy)
+        .def_readwrite("recurrent_capture_interval", &LLMGenerationRequest::recurrentCaptureInterval)
+        .def_readwrite("context_cache_replay_tail_length", &LLMGenerationRequest::contextCacheReplayTailLength)
         .def_readwrite("stream_channels", &LLMGenerationRequest::streamChannels)
         .def_readwrite("num_logprobs", &LLMGenerationRequest::numLogprobs);
 
@@ -475,15 +497,16 @@ PYBIND11_MODULE(_edgellm_runtime, m)
     // ========================================================================
     py::class_<PyLLMRuntime>(m, "LLMRuntime",
         "Unified LLM inference runtime. Supports both vanilla decoding and Eagle speculative decoding.")
-        .def(py::init<std::string const&, std::string const&, std::unordered_map<std::string, std::string> const&>(),
+        .def(py::init<std::string const&, std::string const&, std::unordered_map<std::string, std::string> const&,
+                 ContextCacheConfig const&>(),
             py::arg("engine_dir"), py::arg("multimodal_engine_dir") = "",
             py::arg("lora_weights_map") = std::unordered_map<std::string, std::string>{},
-            "Construct for vanilla (non-speculative) decoding")
+            py::arg("context_cache_config") = ContextCacheConfig{}, "Construct for vanilla (non-speculative) decoding")
         .def(py::init<std::string const&, std::string const&, std::unordered_map<std::string, std::string> const&,
-                 int32_t, int32_t, int32_t>(),
+                 int32_t, int32_t, int32_t, ContextCacheConfig const&>(),
             py::arg("engine_dir"), py::arg("multimodal_engine_dir"), py::arg("lora_weights_map"),
             py::arg("draft_top_k"), py::arg("draft_step"), py::arg("verify_tree_size"),
-            "Construct for Eagle speculative decoding")
+            py::arg("context_cache_config") = ContextCacheConfig{}, "Construct for Eagle speculative decoding")
         .def("handle_request", &PyLLMRuntime::handleRequest, py::arg("request"),
             py::call_guard<py::gil_scoped_release>(), "Process a generation request and return the response")
         .def("capture_decoding_cuda_graph", &PyLLMRuntime::captureDecodingCudaGraph,
@@ -513,6 +536,7 @@ PYBIND11_MODULE(_edgellm_runtime, m)
         .def_readwrite("max_batch_size", &builder::LLMBuilderConfig::maxBatchSize)
         .def_readwrite("max_lora_rank", &builder::LLMBuilderConfig::maxLoraRank)
         .def_readwrite("max_kv_cache_capacity", &builder::LLMBuilderConfig::maxKVCacheCapacity)
+        .def_readwrite("max_kv_pool_pages", &builder::LLMBuilderConfig::maxKVPoolPages)
         .def_readwrite("max_verify_tree_size", &builder::LLMBuilderConfig::maxVerifyTreeSize)
         .def_readwrite("max_draft_tree_size", &builder::LLMBuilderConfig::maxDraftTreeSize)
         .def("__repr__", &builder::LLMBuilderConfig::toString);

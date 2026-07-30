@@ -41,3 +41,11 @@ tests:
   - tests/defs/test_checkpoint_export.py::test_checkpoint_eagle_export[Qwen3-1.7B-NVFP4-nvfp4-eagle-eagle3-nvfp4]
   # EAGLE3 VLM - pre-quantized base + pre-quantized draft (skip quantization in CI)
   - tests/defs/test_checkpoint_export.py::test_checkpoint_eagle_export[Qwen3-VL-4B-Instruct-NVFP4-nvfp4-eagle-eagle3-nvfp4]
+  # Paged-KV export-graph assertions (kv_page_table binding + paged-pool
+  # past_key_values_i shape contract). Exports a tiny synthetic default-arch
+  # model on CPU; lives here (not l0_python_ut) because it needs the full
+  # export toolchain (torch/onnx), which the bare unit-test jobs don't install.
+  - tests/python-unittests/test_export_kv_page_table.py::test_kv_page_table_graph_input_shape
+  - tests/python-unittests/test_export_kv_page_table.py::test_attention_plugin_nodes_have_required_inputs
+  - tests/python-unittests/test_export_kv_page_table.py::test_kv_cache_graph_input_is_pool_shaped
+  - tests/python-unittests/test_export_kv_page_table.py::test_attention_plugin_call_sites_pass_kv_page_table

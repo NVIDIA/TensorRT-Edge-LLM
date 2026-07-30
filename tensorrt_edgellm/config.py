@@ -572,9 +572,8 @@ class ModelConfig:
     # ------------------------------------------ MTP config
     mtp_num_hidden_layers: Optional[int] = None
     mtp_use_dedicated_embeddings: bool = False
-    # When True, the standard CausalLM is exported as the MTP base model variant
-    # with tree-attention inputs (attention_mask, attention_pos_id) and
-    # an extra hidden_states output.
+    # When True, the standard CausalLM is exported as the MTP base model variant with tree-attention inputs
+    # (attention_mask, attention_pos_id), DDTree metadata, and an extra hidden_states output.
     mtp_base: bool = False
     # ------------------------------------------ Gemma4 MTP config
     root_model_type: str = ""
@@ -593,6 +592,9 @@ class ModelConfig:
     centroid_intermediate_top_k: int = 0
     sparse_logits_enabled: bool = False
     kv_sharing_map: List[dict] = field(default_factory=list)
+    # Internal Qwen-style MTP tree-export marker. All MTP base/draft exports set this; the field remains in serialized
+    # configs so model construction can select DDTree metadata and raw-logits behavior.
+    mtp_tree_base: bool = False
     # ------------------------------------------ EAGLE3 draft config
     draft_vocab_size: Optional[int] = None
     target_hidden_size: Optional[int] = None
@@ -989,6 +991,7 @@ class ModelConfig:
             num_centroids=int(llm_dict.get("num_centroids", 0) or 0),
             centroid_intermediate_top_k=int(
                 llm_dict.get("centroid_intermediate_top_k", 0) or 0),
+            mtp_tree_base=bool(llm_dict.get("mtp_tree_base", False)),
             dflash_base=bool(llm_dict.get("dflash_base", False)),
             dflash_tree_base=bool(llm_dict.get("dflash_tree_base", False)),
             num_deepstack_features=_parse_num_deepstack_features(
@@ -1103,7 +1106,23 @@ def make_mtp_draft_config(base_config: ModelConfig) -> ModelConfig:
                               layer_overrides=draft_overrides,
                               is_mixed_precision=False)
     else:
-        draft_quant = QuantConfig()
+        # The MTP compute block may be unquantized while reusing a separately
+        # quantized base-model lm_head.  Keep the draft body FP16, but preserve
+        # the shared head's checkpoint layout so its packed weight and scales
+        # can be loaded correctly.
+        lm_head_quant = module_quant_type("lm_head", base_config)
+        if lm_head_quant == QUANT_FP16:
+            draft_quant = QuantConfig()
+        else:
+            group_size = (16 if lm_head_quant == QUANT_NVFP4 else
+                          base_config.quant.group_size)
+            draft_quant = QuantConfig(
+                group_size=group_size,
+                gptq_zero_point_offset=(
+                    base_config.quant.gptq_zero_point_offset),
+                layer_overrides={"lm_head": lm_head_quant},
+                is_mixed_precision=True,
+            )
 
     return replace(
         base_config,

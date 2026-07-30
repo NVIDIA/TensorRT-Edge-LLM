@@ -20,13 +20,16 @@ Forward-pass conventions
 ``CausalLM.forward``:
 
     inputs_embeds        [batch, seq_len, hidden_size]            float16/bfloat16
-    past_key_values      tuple of [batch, 2, num_kv_heads, past_len, head_dim] per attn-layer
+    past_key_values      tuple of [2, num_pages, KV_PAGE_SIZE, num_kv_heads, head_dim] per
+                         attn-layer — the paged KV pool (in-place aliased; num_pages is a
+                         fixed value per engine build, see llmBuilder.cpp setupKVCacheProfiles)
     rope_rotary_cos_sin  [batch, max_pos, rotary_dim]  float32
     context_lengths      [batch]                        int32
     kvcache_start_index  [batch]                        int32
+    kv_page_table        [batch, 2, max_pages_per_seq]  int32
     ──────────────────────────────────────────────────────────────────────
     -> logits             [batch, seq_len, vocab_size]              float32
-    -> present_key_values tuple of [batch, 2, num_kv_heads, past_len+seq_len, head_dim] per attn-layer
+    -> present_key_values tuple of the same pool tensors as past_key_values (aliased, no growth)
 
 Checkpoint key correspondence
 ------------------------------
@@ -45,7 +48,7 @@ import torch.nn.functional as F
 
 from ...config import ModelConfig
 from ..linear import FP16Linear, TPMode, make_linear
-from ..ops import attention_plugin
+from ..ops import KV_PAGE_SIZE, attention_plugin
 
 __all__ = [
     "OnnxSpec",
@@ -109,11 +112,11 @@ def _make_flat_wrapper(model: nn.Module,
     """
     has_hidden_output = eagle_base or emit_hidden_states
 
-    param_names: List[str] = (["inputs_embeds"] +
-                              [f"past_key_values_{i}" for i in range(Na)] + [
-                                  "rope_rotary_cos_sin", "context_lengths",
-                                  "kvcache_start_index", "last_token_ids"
-                              ] + [f"deepstack_embeds_{i}" for i in range(Nd)])
+    param_names: List[str] = (
+        ["inputs_embeds"] + [f"past_key_values_{i}" for i in range(Na)] + [
+            "rope_rotary_cos_sin", "context_lengths", "kvcache_start_index",
+            "kv_page_table", "last_token_ids"
+        ] + [f"deepstack_embeds_{i}" for i in range(Nd)])
     if eagle_base:
         param_names += ["attention_pos_id", "attention_mask"]
 
@@ -130,7 +133,8 @@ def _make_flat_wrapper(model: nn.Module,
         body = (
             f"    logits, hidden_states, present_key_values = self._model(\n"
             f"        inputs_embeds, {past_kv_tuple}, rope_rotary_cos_sin, "
-            f"context_lengths, kvcache_start_index, last_token_ids"
+            f"context_lengths, kvcache_start_index, kv_page_table, "
+            f"last_token_ids"
             f"{ds_kwarg}{eagle_kwargs})\n"
             f"    return (logits, hidden_states) + tuple(present_key_values)\n"
         )
@@ -138,7 +142,8 @@ def _make_flat_wrapper(model: nn.Module,
         body = (
             f"    logits, present_key_values = self._model(\n"
             f"        inputs_embeds, {past_kv_tuple}, rope_rotary_cos_sin, "
-            f"context_lengths, kvcache_start_index, last_token_ids"
+            f"context_lengths, kvcache_start_index, kv_page_table, "
+            f"last_token_ids"
             f"{ds_kwarg})\n"
             f"    return (logits,) + tuple(present_key_values)\n")
 
@@ -264,6 +269,7 @@ class Attention(nn.Module):
         rope_rotary_cos_sin: torch.Tensor,
         context_lengths: torch.Tensor,
         kvcache_start_index: torch.Tensor,
+        kv_page_table: torch.Tensor,
         attention_mask: "torch.Tensor | None" = None,
         attention_pos_id: "torch.Tensor | None" = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -313,6 +319,7 @@ class Attention(nn.Module):
             context_lengths,
             rope_rotary_cos_sin,
             kvcache_start_index,
+            kv_page_table,
             **kwargs,
         )
         # AttentionPlugin returns [batch, seq_len, num_heads, head_dim]; reshape for o_proj.
@@ -386,6 +393,7 @@ class DecoderLayer(nn.Module):
         rope_rotary_cos_sin: torch.Tensor,
         context_lengths: torch.Tensor,
         kvcache_start_index: torch.Tensor,
+        kv_page_table: torch.Tensor,
         attention_mask: "torch.Tensor | None" = None,
         attention_pos_id: "torch.Tensor | None" = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -396,6 +404,7 @@ class DecoderLayer(nn.Module):
             rope_rotary_cos_sin,
             context_lengths,
             kvcache_start_index,
+            kv_page_table,
             attention_mask=attention_mask,
             attention_pos_id=attention_pos_id,
         )
@@ -444,6 +453,7 @@ class Transformer(nn.Module):
         rope_rotary_cos_sin: torch.Tensor,
         context_lengths: torch.Tensor,
         kvcache_start_index: torch.Tensor,
+        kv_page_table: torch.Tensor,
         deepstack_embeds: Tuple[torch.Tensor, ...] = (),
         attention_mask: "torch.Tensor | None" = None,
         attention_pos_id: "torch.Tensor | None" = None,
@@ -466,6 +476,7 @@ class Transformer(nn.Module):
                 rope_rotary_cos_sin,
                 context_lengths,
                 kvcache_start_index,
+                kv_page_table,
                 attention_mask=attention_mask,
                 attention_pos_id=attention_pos_id,
             )
@@ -591,11 +602,14 @@ class CausalLM(nn.Module):
                                     device=device)
         kv_dtype = (torch.float8_e4m3fn
                     if config.quant.kv_cache_quant == "fp8" else dtype16)
+        # Paged KV pool binding: [2, num_pages, KV_PAGE_SIZE, num_kv_heads, head_dim].
+        # num_pages is a dummy placeholder for export; the builder sets the real fixed
+        # value (see llmBuilder.cpp setupKVCacheProfiles).
         past_key_values_list: List[torch.Tensor] = [
-            torch.zeros(batch_size,
-                        2,
+            torch.zeros(2,
+                        1,
+                        KV_PAGE_SIZE,
                         config.num_key_value_heads,
-                        past_len,
                         config.head_dim,
                         dtype=kv_dtype,
                         device=device) for _ in range(Na)
@@ -612,6 +626,11 @@ class CausalLM(nn.Module):
         kvcache_start_index = torch.zeros(batch_size,
                                           dtype=torch.int32,
                                           device=device)
+        kv_page_table = torch.zeros(batch_size,
+                                    2,
+                                    1,
+                                    dtype=torch.int32,
+                                    device=device)
         last_token_ids = torch.zeros(batch_size,
                                      1,
                                      dtype=torch.int64,
@@ -626,14 +645,14 @@ class CausalLM(nn.Module):
         ]
 
         args = (inputs_embeds, *past_key_values_list, rope_rotary_cos_sin,
-                context_lengths, kvcache_start_index, last_token_ids,
-                *deepstack_embeds_list)
+                context_lengths, kvcache_start_index, kv_page_table,
+                last_token_ids, *deepstack_embeds_list)
 
-        input_names = (["inputs_embeds"] +
-                       [f"past_key_values_{i}" for i in range(Na)] + [
-                           "rope_rotary_cos_sin", "context_lengths",
-                           "kvcache_start_index", "last_token_ids"
-                       ] + [f"deepstack_embeds_{i}" for i in range(Nd)])
+        input_names = (
+            ["inputs_embeds"] + [f"past_key_values_{i}" for i in range(Na)] + [
+                "rope_rotary_cos_sin", "context_lengths",
+                "kvcache_start_index", "kv_page_table", "last_token_ids"
+            ] + [f"deepstack_embeds_{i}" for i in range(Nd)])
         output_names = (["logits"] +
                         [f"present_key_values_{i}" for i in range(Na)])
         if self.emit_hidden_states and not eagle_base:
@@ -643,18 +662,22 @@ class CausalLM(nn.Module):
         batch = torch.export.Dim("batch", min=1, max=256)
         seq = torch.export.Dim("seq_len", min=1, max=32768)
         pos = torch.export.Dim("max_pos", min=1, max=32768)
-        past = torch.export.Dim("past_len", min=1, max=32768)
         rope_batch = torch.export.Dim("rope_batch", min=1, max=256)
         kv_batch = torch.export.Dim("kv_batch", min=1, max=256)
+        page_batch = torch.export.Dim("page_batch", min=1, max=256)
+        max_pages = torch.export.Dim("max_pages_per_seq", min=1, max=32768)
+        num_pages = torch.export.Dim("num_pages", min=1, max=1048576)
 
         num_selected = torch.export.Dim("num_selected", min=1,
                                         max=256) if eagle_base else None
         all_shapes: list = [{0: batch, 1: seq}]  # inputs_embeds
         for _ in range(Na):
-            all_shapes.append({0: batch, 3: past})  # past_key_values_i
+            all_shapes.append({1:
+                               num_pages})  # past_key_values_i (pool-shaped)
         all_shapes.append({0: rope_batch, 1: pos})  # rope_rotary_cos_sin
         all_shapes.append({0: batch})  # context_lengths
         all_shapes.append({0: kv_batch})  # kvcache_start_index
+        all_shapes.append({0: page_batch, 2: max_pages})  # kv_page_table
         if eagle_base:
             all_shapes.append({0: batch, 1: num_selected})  # last_token_ids
         else:
@@ -713,6 +736,7 @@ class CausalLM(nn.Module):
         rope_rotary_cos_sin: torch.Tensor,
         context_lengths: torch.Tensor,
         kvcache_start_index: torch.Tensor,
+        kv_page_table: torch.Tensor,
         last_token_ids: torch.Tensor,
         deepstack_embeds: Tuple[torch.Tensor, ...] = (),
         attention_mask: "torch.Tensor | None" = None,
@@ -729,6 +753,7 @@ class CausalLM(nn.Module):
             rope_rotary_cos_sin,
             context_lengths,
             kvcache_start_index,
+            kv_page_table,
             deepstack_embeds,
             attention_mask=attention_mask,
             attention_pos_id=attention_pos_id,

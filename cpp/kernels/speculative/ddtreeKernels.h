@@ -31,13 +31,13 @@ namespace kernel
 //! Maximum node count supported by the DDTree builder.
 constexpr int32_t kDDTreeMaxVerifySize{128};
 
-//! Maximum DFlash candidateTopK supported by the current DDTree top-k kernel.
+//! Maximum candidateTopK supported by the current DDTree top-k kernel.
 constexpr int32_t kDDTreeMaxCandidateTopK{8};
 
 //! Tensor inputs consumed by ddtreeBuild().
 struct DDTreeBuildInputs
 {
-    rt::Tensor const& draftLogits;  //!< [batch, dflashBlockSize, vocabSize] draft logits.
+    rt::Tensor const& draftLogits;  //!< [batch, proposalDepthSize, vocabSize] draft logits.
     rt::Tensor const& rootTokenIds; //!< [batch] last accepted token ids.
     rt::Tensor const& baseLengths;  //!< [batch] committed base lengths before verification.
 
@@ -67,7 +67,7 @@ struct DDTreeBuildParams
 {
     DDTreeBuildInputs inputs;   //!< Required input tensors.
     DDTreeBuildOutputs outputs; //!< Required output tensors.
-    int32_t candidateTopK;      //!< Per-depth candidateTopK from DFlash draftingTopK.
+    int32_t candidateTopK;      //!< Per-depth candidateTopK from speculative draftingTopK.
     void* workspace;            //!< Temporary workspace from getDDTreeBuildWorkspaceSize().
     size_t workspaceSize;       //!< Workspace size in bytes.
     cudaStream_t stream;        //!< CUDA stream for kernel launches.
@@ -75,15 +75,15 @@ struct DDTreeBuildParams
 
 //! Returns temporary workspace size required by ddtreeBuild().
 //!
-//! The workspace stores candidate token ids and log probabilities for DFlash candidateTopK selection.
+//! The workspace stores candidate token ids and log probabilities for candidateTopK selection.
 size_t getDDTreeBuildWorkspaceSize(
-    int32_t batchSize, int32_t dflashBlockSize, int32_t verifySize, int32_t vocabSize, int32_t candidateTopK);
+    int32_t batchSize, int32_t proposalDepthSize, int32_t verifySize, int32_t vocabSize, int32_t candidateTopK);
 
-//! Build a prefix-closed DDTree from one DFlash draft logits pass.
+//! Build a prefix-closed DDTree from per-depth speculative draft logits.
 //!
 //! The tree is flattened in score-prioritized order. Node 0 is the committed
 //! root token. For each proposal depth, the builder first takes the top
-//! `candidateTopK` tokens from the corresponding DFlash draft-logits row, then
+//! `candidateTopK` tokens from the corresponding draft-logits row, then
 //! repeatedly appends the highest-scoring available child whose parent is
 //! already in the tree. This keeps the verify tree prefix-closed: every emitted
 //! node can trace a valid path back to the root.
@@ -100,10 +100,10 @@ size_t getDDTreeBuildWorkspaceSize(
 //! tokens on its own root-to-node path.
 //!
 //! Inputs:
-//!     draftLogits [GPU, Float]: [batch, dflashBlockSize, vocabSize].
+//!     draftLogits [GPU, Float]: [batch, proposalDepthSize, vocabSize].
 //!     rootTokenIds [GPU, Int32]: last accepted token for each batch, [batch].
 //!     baseLengths [GPU, Int32]: committed base length before verify, [batch].
-//!     candidateTopK: DFlash DDTree candidateTopK, wired from draftingTopK.
+//!     candidateTopK: DDTree candidate fanout, wired from draftingTopK.
 //!     draftVocabMappingTable: optional reduced-to-full draft vocab mapping, [vocabSize].
 //!     workspace: temporary storage with size from getDDTreeBuildWorkspaceSize().
 //!

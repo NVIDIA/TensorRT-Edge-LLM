@@ -82,6 +82,10 @@ public:
     //! \return True if inference succeeded, false otherwise
     bool infer(cudaStream_t stream) noexcept override;
 
+    bool prepareArtifactSubset(rt::LLMGenerationRequest const& request, std::vector<size_t> const& originalItemIndices,
+        cudaStream_t stream) override;
+    std::vector<int64_t> preparedArtifactRowCounts() const override;
+
     //! \brief Validate and load configuration from JSON file
     //! \param[in] engineDir Path to engine directory
     //! \return True if configuration is valid and loaded successfully, false otherwise
@@ -125,6 +129,7 @@ private:
         std::vector<int64_t>& numImages, bool doResize, cudaStream_t stream);
 
     InternViTConfig mConfig;                         //!< InternViT configuration
+    std::vector<int64_t> mPreparedArtifactRowCounts; //!< Output rows grouped by source image buffer.
     rt::Tensor mVitInput{};                          //!< Vision encoder input tensor
     rt::Tensor mImageMean{};                         //!< Image mean tensor
     rt::Tensor mImageStd{};                          //!< Image standard deviation tensor

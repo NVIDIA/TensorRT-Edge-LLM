@@ -36,8 +36,16 @@ EmbeddingPreprocessor::EmbeddingPreprocessor(EmbeddingData const& embedding, LLM
 }
 
 void EmbeddingPreprocessor::embed(Tensor const& tokenIds, OptionalInputTensor visionEmbeds,
-    OptionalInputTensor audioEmbeds, PipelineIO& io, cudaStream_t stream)
+    OptionalInputTensor audioEmbeds, PipelineIO& io, cudaStream_t stream,
+    std::vector<int32_t> const& visionIndexOffsets, std::vector<int32_t> const& audioIndexOffsets)
 {
+    // Deepstack assembly consults this tensor after embed(). Clear the previous request before deciding whether the
+    // current path needs explicit multimodal indices.
+    if (!mMultimodalIndices.isEmpty())
+    {
+        check::check(mMultimodalIndices.reshape({0}), "Multimodal index reset failed");
+    }
+
     // Use the explicit-token-id multimodal path when audio is present, or for
     // image-only inference on audio-capable model families (Nemotron-Omni /
     // Qwen3-Omni) — these keep <image> in-stream and identify themselves via
@@ -57,8 +65,8 @@ void EmbeddingPreprocessor::embed(Tensor const& tokenIds, OptionalInputTensor vi
             = (mConfig.audioTokenId >= 0) ? std::optional{mConfig.audioTokenId} : std::nullopt;
         std::optional<int32_t> imageTokenOpt
             = (mConfig.imageTokenId >= 0) ? std::optional{mConfig.imageTokenId} : std::nullopt;
-        Tensor multimodalIndicesCPU
-            = generateMultimodalIndices(inputIdsCPU, audioTokenOpt, imageTokenOpt, mConfig.vocabSize);
+        Tensor multimodalIndicesCPU = generateMultimodalIndices(
+            inputIdsCPU, audioTokenOpt, imageTokenOpt, mConfig.vocabSize, audioIndexOffsets, visionIndexOffsets);
 
         auto const indicesShape = multimodalIndicesCPU.getShape();
         size_t const indicesSizeBytes = indicesShape.volume() * sizeof(int32_t);
@@ -67,7 +75,7 @@ void EmbeddingPreprocessor::embed(Tensor const& tokenIds, OptionalInputTensor vi
             cudaMemcpyHostToDevice));
 
         kernel::embeddingLookupMultimodal(tokenIds, mEmbedding.table, mEmbedding.scalesAsOptional(),
-            std::optional{std::ref(mMultimodalIndices)}, imageTokenOpt, visionEmbeds, audioTokenOpt, audioEmbeds,
+            std::optional{std::cref(mMultimodalIndices)}, imageTokenOpt, visionEmbeds, audioTokenOpt, audioEmbeds,
             io.inputsEmbeds, stream);
     }
     else if (visionEmbeds.has_value())
@@ -102,7 +110,7 @@ OptionalInputTensors EmbeddingPreprocessor::assembleDeepstack(
     OptionalInputTensor deepstackMultimodalIndices{std::nullopt};
     if (mMultimodalIndices.getShape().volume() > 0)
     {
-        deepstackMultimodalIndices = std::ref(mMultimodalIndices);
+        deepstackMultimodalIndices = std::cref(mMultimodalIndices);
     }
 
     for (int32_t idx = 0; idx < static_cast<int32_t>(features.size()); ++idx)
@@ -115,7 +123,7 @@ OptionalInputTensors EmbeddingPreprocessor::assembleDeepstack(
         kernel::assembleDeepstackEmbedding(tokenIds, featureTensor, mConfig.vocabSize, io.deepstackEmbeds[idx], stream,
             mConfig.imageTokenId, deepstackMultimodalIndices);
 
-        deepstackEmbeds.push_back(std::ref(io.deepstackEmbeds[idx]));
+        deepstackEmbeds.push_back(std::cref(io.deepstackEmbeds[idx]));
     }
 
     return deepstackEmbeds;

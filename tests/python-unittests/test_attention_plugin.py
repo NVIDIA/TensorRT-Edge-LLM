@@ -23,6 +23,12 @@ tree (speculative) attention, shared-KV (donor-cache) layers, and the Q
 pre-scaling convention for non-standard softmax scales. Sliding-window
 attention is covered in test_sliding_window_attention_plugin.py.
 
+The plugin's KV-cache ABI is paged: a pool binding [2, numPages, PAGE_SIZE,
+Hkv, D] plus an int32 page table [batch, 2, maxPagesPerSeq]. The tests (and
+the torch reference) keep working in the logical per-slot layout
+[batch, 2, Hkv, cap, D]; AttentionPluginRunner converts between the two under
+an identity page table.
+
 Run:
     python3 -m pytest tests/python-unittests/test_attention_plugin.py -v
 """
@@ -46,6 +52,10 @@ pytestmark = pytest.mark.skipif(
     reason=f"TensorRT/torch CUDA not available: {IMPORT_ERROR}")
 
 DEV = "cuda"
+
+# Tokens per page of the paged-KV pool. Must match kTOKENS_PER_PAGE
+# (cpp/common/pagedKvTypes.h).
+PAGE_SIZE = 128
 
 
 @dataclass
@@ -293,6 +303,13 @@ def _fp8_prefill_supported() -> bool:
 class AttentionPluginRunner:
     """Builds + runs the AttentionPlugin for a given AttentionParams config.
 
+    The plugin's kv_cache binding is a paged POOL [2, numPages, PAGE_SIZE,
+    Hkv, D] plus an int32 page table [batch, 2, maxPagesPerSeq], but the tests
+    keep working in the LOGICAL per-slot layout [batch, 2, Hkv, cap, D]:
+    ``run`` scatters the logical cache into the pool under an identity page
+    table (slot b owns pages [b*mpps, (b+1)*mpps)), executes, and gathers the
+    pool back into the logical tensor in place.
+
     ``allow_empty_kv`` lowers the K/V profile minimum to sequence length 0 so
     the same engine also accepts shared-KV calls (K/V with S=0, Gemma4
     KV-sharing layers); the plugin deduces shared-KV per enqueue from the
@@ -309,36 +326,47 @@ class AttentionPluginRunner:
         self.allow_empty_kv = allow_empty_kv
         self.attention_scale = attention_scale
         self.kv_dtype = trt.fp8 if p.enable_fp8_kv_cache else trt.float16
+        # Paged-pool geometry: capacity padded up to whole pages, one fixed
+        # page range per batch slot (identity page table).
+        self.cap_padded = -(-p.kv_cache_capacity // PAGE_SIZE) * PAGE_SIZE
+        self.mpps = self.cap_padded // PAGE_SIZE  # maxPagesPerSeq
+        self.num_pages = p.max_batch_size * self.mpps
+        self._pool = None
+        self._page_table = None
         self.runner = PluginRunner()
         self._build()
 
     def _build(self):
         p = self.p
         qh, kvh = p.q_hidden, p.kv_hidden
-        cap, D, Hkv = p.kv_cache_capacity, p.head_size, p.num_kv_heads
+        D, Hkv = p.head_size, p.num_kv_heads
         mb, ms, mpe = p.max_batch_size, p.max_seq_len, p.max_position_embeddings
 
         input_specs = [
             ("q", trt.float16, (-1, -1, qh)),
             ("k", trt.float16, (-1, -1, kvh)),
             ("v", trt.float16, (-1, -1, kvh)),
-            ("kv_cache", self.kv_dtype, (-1, 2, Hkv, cap, D)),
+            ("kv_cache", self.kv_dtype, (2, -1, PAGE_SIZE, Hkv, D)),
             ("context_lengths", trt.int32, (-1, )),
             ("rope_cos_sin", trt.float32, (1, mpe, D)),
             ("kv_cache_indices", trt.int32, (-1, )),
+            ("kv_page_table", trt.int32, (-1, 2, self.mpps)),
         ]
         kv_min_seq = 0 if self.allow_empty_kv else 1
+        # The pool never resizes: numPages is fixed per engine (min=opt=max).
+        pool_shape = (2, self.num_pages, PAGE_SIZE, Hkv, D)
         profiles = {
             "q": ((1, 1, qh), (p.batch_size, p.seq_len, qh), (mb, ms, qh)),
             "k": ((1, kv_min_seq, kvh), (p.batch_size, p.seq_len, kvh),
                   (mb, ms, kvh)),
             "v": ((1, kv_min_seq, kvh), (p.batch_size, p.seq_len, kvh),
                   (mb, ms, kvh)),
-            "kv_cache": ((1, 2, Hkv, cap, D), (p.batch_size, 2, Hkv, cap, D),
-                         (mb, 2, Hkv, cap, D)),
+            "kv_cache": (pool_shape, pool_shape, pool_shape),
             "context_lengths": ((1, ), (p.batch_size, ), (mb, )),
             "rope_cos_sin": ((1, mpe, D), (1, mpe, D), (1, mpe, D)),
             "kv_cache_indices": ((1, ), (p.batch_size, ), (mb, )),
+            "kv_page_table": ((1, 2, self.mpps), (p.batch_size, 2, self.mpps),
+                              (mb, 2, self.mpps)),
         }
         if self.tree:
             input_specs += [
@@ -372,6 +400,36 @@ class AttentionPluginRunner:
             profiles=profiles,
         )
 
+    def _pool_views(self, kv_dtype):
+        """The (lazily allocated) pool plus its K/V halves viewed logically.
+
+        Under the identity page table the K half [numPages, PAGE_SIZE, Hkv, D]
+        is exactly slot-major/token-major, so viewing it as [max_batch,
+        cap_padded, Hkv, D] gives slot b's token t at [b, t] (NHD); same for
+        the V half. Tokens [cap:cap_padded] are padding and stay zero.
+        """
+        p = self.p
+        if self._pool is None:
+            self._pool = torch.zeros(
+                (2, self.num_pages, PAGE_SIZE, p.num_kv_heads, p.head_size),
+                dtype=kv_dtype,
+                device=DEV)
+        view_shape = (p.max_batch_size, self.cap_padded, p.num_kv_heads,
+                      p.head_size)
+        return (self._pool, self._pool[0].view(view_shape),
+                self._pool[1].view(view_shape))
+
+    def _identity_page_table(self, batch):
+        """int32 [batch, 2, mpps]: K row b -> pages [b*mpps, (b+1)*mpps),
+        V row = K row + numPages (the V half of the pool)."""
+        if self._page_table is None or self._page_table.shape[0] != batch:
+            k_ids = torch.arange(batch * self.mpps,
+                                 dtype=torch.int32,
+                                 device=DEV).reshape(batch, self.mpps)
+            self._page_table = torch.stack((k_ids, k_ids + self.num_pages),
+                                           dim=1)
+        return self._page_table
+
     def run(self,
             q,
             k,
@@ -385,11 +443,23 @@ class AttentionPluginRunner:
             input_shapes=None):
         """Execute; returns (attn_output fp16, kv_cache after update).
 
+        ``kv_cache`` is the LOGICAL cache [batch, 2, Hkv, cap, D]: it is
+        scattered into the paged pool before the enqueue and the pool is
+        gathered back into it (in place) afterwards, so callers never see the
+        pool layout.
+
         ``input_shapes`` optionally overrides runtime input shapes (see
         PluginRunner.execute); used to bind K/V with sequence length 0 for
-        shared-KV calls.
+        shared-KV calls. kv_page_table always binds its full runtime shape
+        (taken from the tensor itself).
         """
         p = self.p
+        batch, cap = kv_cache.shape[0], p.kv_cache_capacity
+        pool, pool_k, pool_v = self._pool_views(kv_cache.dtype)
+        # Scatter logical [batch, 2, Hkv, cap, D] (HND) into the pool's
+        # slot-major NHD view (identity page table).
+        pool_k[:batch, :cap] = kv_cache[:, 0].permute(0, 2, 1, 3)
+        pool_v[:batch, :cap] = kv_cache[:, 1].permute(0, 2, 1, 3)
         attn_out = torch.empty((q.shape[0], q.shape[1], p.q_hidden),
                                dtype=torch.float16,
                                device=DEV)
@@ -397,17 +467,21 @@ class AttentionPluginRunner:
             "q": q,
             "k": k,
             "v": v,
-            "kv_cache": kv_cache,
+            "kv_cache": pool,
             "context_lengths": context_lengths,
             "rope_cos_sin": rope_cos_sin,
             "kv_cache_indices": cache_indices,
+            "kv_page_table": self._identity_page_table(batch),
             "attention_output": attn_out,
-            "kv_cache_output": kv_cache,  # aliased in-place
+            "kv_cache_output": pool,  # aliased in-place to the pool binding
         }
         if self.tree:
             tensors["tree_mask"] = tree_mask
             tensors["position_ids"] = position_ids
         self.runner.execute(tensors, input_shapes)
+        # Gather the (possibly updated) pool back into the logical cache.
+        kv_cache[:, 0] = pool_k[:batch, :cap].permute(0, 2, 1, 3)
+        kv_cache[:, 1] = pool_v[:batch, :cap].permute(0, 2, 1, 3)
         return attn_out, kv_cache
 
 

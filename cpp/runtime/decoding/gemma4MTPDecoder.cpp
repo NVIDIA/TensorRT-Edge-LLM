@@ -522,7 +522,7 @@ bool Gemma4MTPDecoder::runBaseVerification(DecodingInferenceContext& context)
         = mRuntime.base.executor.prepare(kDecodeProfile, verifyDims, mRuntime.base.tensorMap, context.stream);
     if (verifySuccess)
     {
-        verifySuccess = mRuntime.base.executor.execute(context.stream);
+        verifySuccess = mRuntime.base.execute(context.stream);
     }
     if (!verifySuccess)
     {

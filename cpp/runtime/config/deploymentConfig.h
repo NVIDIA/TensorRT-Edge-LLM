@@ -37,8 +37,8 @@ namespace rt
  */
 struct SpecDecodeDraftingConfig
 {
-    //! Tokens to select from one predecessor during draft expansion. For
-    //! DFlash, this is candidateTopK: 1 is a linear tree and >1 enables branching DDTree.
+    //! Tokens to select from one predecessor during draft expansion. For Qwen-style MTP this is always the
+    //! verification-tree candidate fanout; draftingTopK = 1 produces a degenerate chain-shaped tree.
     int32_t draftingTopK{0};
     int32_t draftingStep{0}; //!< Number of drafting steps with draft model
     int32_t verifySize{0};   //!< Number of proposal tokens for base model verification
@@ -77,8 +77,8 @@ struct SpecDecodeConfig
     int32_t maxDraftProposalSize{}; //!< Max seq_len the draft engine accepts for proposal generation
 
     // --- User-supplied drafting parameters ---
-    //! Tokens to select from one predecessor during draft expansion. For
-    //! DFlash, this is candidateTopK: 1 is a linear tree and >1 enables branching DDTree.
+    //! Tokens to select from one predecessor during draft expansion. For Qwen-style MTP this is always the
+    //! verification-tree candidate fanout; draftingTopK = 1 produces a degenerate chain-shaped tree.
     int32_t draftingTopK{};
     int32_t draftingStep{}; //!< Number of drafting steps with draft model
     int32_t verifySize{};   //!< Number of proposal tokens for base model verification
@@ -129,8 +129,13 @@ struct DeploymentConfig
 //!   capacities with the user-supplied drafting parameters, and validates them
 //!   against the engines' capacities:
 //!     - `specConfig->verifySize <= specConfig->maxVerifySize`
-//!     - non-DFlash: `specConfig->draftingStep * specConfig->draftingTopK <= specConfig->maxDraftProposalSize`
-//!     - MTP requires `draftingTopK == 1` and `verifySize == draftingStep + 1`
+//!     - proposal size: Qwen-style MTP requires `draftingStep <= maxDraftProposalSize`; other non-DFlash modes require
+//!       `draftingStep * draftingTopK <= maxDraftProposalSize`
+//!     - MTP: always uses tree verification, with `draftingTopK == 1` represented as a degenerate chain-shaped tree;
+//!       requires `draftingStep + 1 <= 9` (EAGLE utility kernel depth limit),
+//!       `draftingTopK < verifySize`, `draftingTopK <= 8`, and `verifySize <= 128`
+//!       (tree-build kernel limits); the fanout-one tree has exactly `draftingStep + 1` nodes, so that remains its
+//!       required `verifySize` (unfillable nodes for branching trees become padding)
 //!     - DFlash: `draftingStep == 1`, `dflashBlockSize <= maxDraftProposalSize`, and
 //!       `draftingTopK` is candidateTopK: 1 uses the linear-tree fast path while >1 uses branching DDTree.
 //!   Throws with named-fields message on violation.

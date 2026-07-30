@@ -21,6 +21,7 @@
 #include "common/tensor.h"
 #include "runtime/audioUtils.h"
 #include "runtime/imageUtils.h"
+#include "runtime/state/contextCache/contextCacheTypes.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -89,6 +90,21 @@ struct LogprobEntry
     std::string piece; //!< Raw token bytes; empty until filled at assembly time
 };
 
+//! Runtime policy for the unified production context cache. Engine-build pool sizes remain authoritative.
+struct ContextCacheConfig
+{
+    bool enabled{false};
+    int32_t maxRecords{1024};
+    //! Device byte budget for complete recurrent+conv snapshot slots. Zero disables hybrid retention.
+    int64_t recurrentSnapshotPoolBytes{0};
+    //! Device byte budget for partial attention-KV snapshot slots. Zero disables partial hybrid retention.
+    int64_t partialKvSnapshotPoolBytes{0};
+    //! Device byte limit for immutable ViT/audio encoder artifacts. Zero disables artifact retention.
+    int64_t mediaArtifactPoolBytes{512LL * 1024 * 1024};
+    //! Maximum retained media artifacts. Zero disables artifact retention.
+    int32_t maxMediaArtifacts{1024};
+};
+
 /*! \brief LLM Generation Request structure
  */
 struct LLMGenerationRequest
@@ -142,6 +158,16 @@ struct LLMGenerationRequest
     bool enableThinking{false};
     // Always disable speculative decoding for this request even if Eagle Draft engine is loaded.
     bool disableSpecDecode{false};
+    //! Disable production context reuse for this request without changing the selected decoder.
+    bool disableContextReuse{false};
+    //! Optional tenant/application isolation namespace. Equal empty strings share the default partition.
+    std::string contextCacheIsolationKey;
+    //! Whether decode-end generated state may be retained. Prefill publication remains allowed for both policies.
+    CommitPolicy contextCacheCommitPolicy{CommitPolicy::kIncludingGeneratedTokens};
+    //! Optional periodic hybrid checkpoint interval in tokens. Zero captures only stable request boundaries.
+    int32_t recurrentCaptureInterval{0};
+    //! Tokens to replay after the stable context-cache predecessor, including its MTP successor token.
+    int32_t contextCacheReplayTailLength{0};
 
     //! Number of top log-probabilities to return per generated token (0 = disabled, max = kMaxLogprobsK).
     //! Logprobs are computed as log(softmax(logits)) and returned in LLMGenerationResponse::logprobs.
@@ -342,13 +368,14 @@ EmbeddingData loadEmbeddingTable(std::filesystem::path const& embeddingPath, cud
  * Uses the smallest remaining KV budget across all active sequences so the shared
  * generation limit cannot overrun any batch item.
  *
- * @param effectivePrefillLengths Effective prefill lengths for each active sequence
+ * @param residentPrefillLengths Full logical prompt lengths resident in KV for each active sequence. A reused
+ * prefix remains part of this length even though it was not recomputed by the current prefill.
  * @param requestedMaxGenerateLength User-requested max generation length
  * @param kvCacheCapacity Total KV-cache capacity available to the runtime
  * @param kvCacheReserveLength Extra KV reserve required by the runtime mode
  * @return Clamped max generation length, never below 0
  */
-int32_t clampMaxGenerateLengthForKVCapacity(std::vector<int32_t> const& effectivePrefillLengths,
+int32_t clampMaxGenerateLengthForKVCapacity(std::vector<int32_t> const& residentPrefillLengths,
     int32_t requestedMaxGenerateLength, int32_t kvCacheCapacity, int32_t kvCacheReserveLength);
 
 /*!
@@ -361,10 +388,13 @@ int32_t clampMaxGenerateLengthForKVCapacity(std::vector<int32_t> const& effectiv
  * @param audioTokenId Special token ID for audio, or std::nullopt if no audio
  * @param imageTokenId Special token ID for image, or std::nullopt if no image
  * @param vocabSize Vocabulary size (tokens >= vocabSize are treated as image tokens)
+ * @param audioIndexOffsets Optional absolute first audio-artifact row for each packed batch suffix
+ * @param imageIndexOffsets Optional absolute first vision-artifact row for each packed batch suffix
  * @return multimodalIndices tensor on CPU [batchSize, seqLen]
  */
 rt::Tensor generateMultimodalIndices(rt::Tensor const& inputIds, std::optional<int32_t> audioTokenId,
-    std::optional<int32_t> imageTokenId, int32_t vocabSize);
+    std::optional<int32_t> imageTokenId, int32_t vocabSize, std::vector<int32_t> const& audioIndexOffsets = {},
+    std::vector<int32_t> const& imageIndexOffsets = {});
 
 /*! \brief Build Gemma4 block IDs from host token IDs.
  *

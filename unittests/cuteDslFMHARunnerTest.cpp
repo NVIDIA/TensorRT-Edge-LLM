@@ -215,10 +215,10 @@ void runLlmAccuracyCase(int32_t batchSize, int32_t seqLen, int32_t numQHeads, in
     uniformFloatInitialization(cosSinCacheHost, -1.0f, 1.0f);
     copyHostToDevice(cosSinCache, cosSinCacheHost);
 
-    kernel::launchApplyRopeWriteKVSplitQKV(
-        cosSinCache, kvCacheEndLens, qCute, kCute, vCute, kvCacheCute, 1.0f, 1.0f, stream);
-    kernel::launchApplyRopeWriteKV(
-        cosSinCache, std::nullopt, qReference, kReference, vReference, kvCacheReference, 1.0f, 1.0f, stream, true);
+    kernel::launchApplyRopeWriteKVSplitQKV(cosSinCache, kvCacheEndLens, qCute, kCute, vCute, kvCacheCute, 1.0f, 1.0f,
+        stream, /*pageTable=*/nullptr, /*maxPagesPerSeq=*/0);
+    kernel::launchApplyRopeWriteKV(cosSinCache, std::nullopt, qReference, kReference, vReference, kvCacheReference,
+        1.0f, 1.0f, stream, true, /*pageTable=*/nullptr, /*maxPagesPerSeq=*/0);
     CUDA_CHECK(cudaStreamSynchronize(stream));
     CUDA_CHECK(cudaGetLastError());
 

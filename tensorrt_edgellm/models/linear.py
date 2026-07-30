@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -744,7 +744,10 @@ def make_linear(
     # NVFP4 routes through the new composition design.
     tp_mode = TPMode(tp_mode)
     if quant_type == QUANT_NVFP4:
-        method = NVFP4LinearMethod(group_size=config.quant.group_size)
+        # NVFP4's checkpoint and ONNX layouts always use 16-value blocks.
+        # A mixed-precision config's dominant algorithm may have a different
+        # (or no) group size, so the model-wide value is not authoritative.
+        method = NVFP4LinearMethod()
         if config.tp_size == 1:
             return ReplicatedLinear(in_features, out_features, bias,
                                     torch.float16, config.mapping, method)

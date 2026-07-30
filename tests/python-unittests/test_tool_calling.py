@@ -126,6 +126,152 @@ def test_parses_tool_calls(tmp_path):
     assert json.loads(parsed.tool_calls[0].arguments) == {"city": "Paris"}
 
 
+def test_qwen_xml_parser_restores_json_schema_types(tmp_path):
+    tools = [{
+        "type": "function",
+        "function": {
+            "name": "submit_job",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "count": {
+                        "type": "integer"
+                    },
+                    "ratio": {
+                        "type": "number"
+                    },
+                    "enabled": {
+                        "type": "boolean"
+                    },
+                    "label": {
+                        "type": "string"
+                    },
+                    "ids": {
+                        "type": "array",
+                        "items": {
+                            "type": "integer"
+                        },
+                    },
+                    "options": {
+                        "type": "object",
+                        "properties": {
+                            "retries": {
+                                "type": "integer"
+                            },
+                            "code": {
+                                "type": "string"
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    }]
+    config = validate_tool_request([{
+        "role": "user",
+        "content": "Submit"
+    }], tools, "auto")
+    text = (
+        "<tool_call><function=submit_job>"
+        "<parameter=count>3</parameter>"
+        "<parameter=ratio>0.5</parameter>"
+        "<parameter=enabled>true</parameter>"
+        "<parameter=label>007</parameter>"
+        "<parameter=ids>[\"1\", 2]</parameter>"
+        "<parameter=options>{\"retries\": \"4\", \"code\": \"009\"}</parameter>"
+        "</function></tool_call>")
+
+    parsed = parse_assistant_output(text, config, str(tmp_path))
+
+    assert json.loads(parsed.tool_calls[0].arguments) == {
+        "count": 3,
+        "ratio": 0.5,
+        "enabled": True,
+        "label": "007",
+        "ids": [1, 2],
+        "options": {
+            "retries": 4,
+            "code": "009"
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "schema,xml_value,expected",
+    [
+        ({
+            "type": ["integer", "null"]
+        }, "5", 5),
+        ({
+            "type": ["integer", "null"]
+        }, "null", None),
+        ({
+            "type": ["string", "null"]
+        }, "007", "007"),
+        ({
+            "type": ["string", "null"]
+        }, "None", "None"),
+        ({
+            "type": ["string", "null"]
+        }, "NULL", "NULL"),
+        ({
+            "type": ["array", "null"],
+            "items": {
+                "type": "integer"
+            },
+        }, '["1", 2]', [1, 2]),
+        ({
+            "type": ["object", "null"],
+            "properties": {
+                "retries": {
+                    "type": "integer"
+                },
+                "code": {
+                    "type": "string"
+                },
+            },
+        }, '{"retries": "4", "code": "009"}', {
+            "retries": 4,
+            "code": "009"
+        }),
+        ({
+            "type": ["integer", "number", "null"]
+        }, "5", "5"),
+        ({
+            "type": ["boolean", "string", "null"]
+        }, "true", "true"),
+        ({
+            "type": ["integer", 7, "null"]
+        }, "5", "5"),
+    ],
+)
+def test_qwen_xml_parser_handles_schema_unions(tmp_path, schema, xml_value,
+                                               expected):
+    tools = [{
+        "type": "function",
+        "function": {
+            "name": "submit_value",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "value": schema
+                },
+            },
+        },
+    }]
+    config = validate_tool_request([{
+        "role": "user",
+        "content": "Submit"
+    }], tools, "auto")
+    text = ("<tool_call><function=submit_value>"
+            f"<parameter=value>{xml_value}</parameter>"
+            "</function></tool_call>")
+
+    parsed = parse_assistant_output(text, config, str(tmp_path))
+
+    assert json.loads(parsed.tool_calls[0].arguments) == {"value": expected}
+
+
 def test_filters_forced_tool(tmp_path):
     text = "<tool_call>{\"name\":\"other\",\"arguments\":{}}</tool_call>"
     parsed = parse_assistant_output(

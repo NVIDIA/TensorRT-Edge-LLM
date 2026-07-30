@@ -340,6 +340,7 @@ bool InternViTRunner::preprocess(rt::LLMGenerationRequest const& request,
     try
     {
         imagePreprocess(request, imageTokenLengths, numImages, !imageOnly, stream);
+        mPreparedArtifactRowCounts = imageTokenLengths;
         if (!imageOnly)
         {
             textPreprocess(request, batchedInputIds, numImages, imageTokenLengths, tokenizer);
@@ -352,6 +353,29 @@ bool InternViTRunner::preprocess(rt::LLMGenerationRequest const& request,
     }
 
     return true;
+}
+
+bool InternViTRunner::prepareArtifactSubset(rt::LLMGenerationRequest const& request,
+    [[maybe_unused]] std::vector<size_t> const& originalItemIndices, cudaStream_t stream)
+{
+    std::vector<int64_t> imageTokenLengths;
+    std::vector<int64_t> numImages;
+    try
+    {
+        imagePreprocess(request, imageTokenLengths, numImages, /*doResize=*/true, stream);
+        mPreparedArtifactRowCounts = imageTokenLengths;
+    }
+    catch (std::exception const& e)
+    {
+        LOG_ERROR("Failed to prepare selected vision artifacts: %s", e.what());
+        return false;
+    }
+    return true;
+}
+
+std::vector<int64_t> InternViTRunner::preparedArtifactRowCounts() const
+{
+    return mPreparedArtifactRowCounts;
 }
 
 bool InternViTRunner::infer(cudaStream_t stream) noexcept

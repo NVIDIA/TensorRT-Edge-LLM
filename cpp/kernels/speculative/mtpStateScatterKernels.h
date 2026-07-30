@@ -29,7 +29,7 @@ namespace kernel
 struct MtpLayerInfo
 {
     void* recurrentDst; //!< Main recurrent state pool [batchSize, recElements] FP32
-    void* recurrentSrc; //!< Intermediate recurrent state buffer [batchSize, verifyTreeSize, recElements] FP32
+    void* recurrentSrc; //!< Producer-specific intermediate recurrent buffer (GDN uses compact replay storage)
     void* convDst;      //!< Main conv state pool [batchSize, convElements] FP16
     void* convSrc;      //!< Intermediate conv state buffer [batchSize, verifyTreeSize, convElements] FP16
 };

@@ -16,13 +16,17 @@
  */
 
 #include "common/cudaUtils.h"
+#include "common/pagedKvTypes.h"
 #include "kernels/common/vectorizedTypes.cuh"
 #include "kernels/speculative/eagleUtilKernels.h"
+#include "runtime/state/kvPageTable.h"
 #include "testUtils.h"
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
+#include <numeric>
 #include <vector>
 
 using namespace trt_edgellm;
@@ -72,6 +76,68 @@ TEST(EagleKernels, PrepareEaglePrefillInputs)
         for (int32_t b = 0; b < batchSize; b++)
         {
             EXPECT_EQ(actualSelectIndices[b], expectedSelectIndices[b]);
+        }
+    }
+}
+
+TEST(EagleKernels, ConvertLogitsToFloat)
+{
+    cudaStream_t stream = nullptr;
+    std::vector<float> const expected = {-3.5F, -0.25F, 0.0F, 1.5F, 17.0F};
+    std::vector<half> input(expected.size());
+    std::transform(expected.begin(), expected.end(), input.begin(), [](float value) { return __float2half(value); });
+
+    rt::Tensor inputDevice({1, static_cast<int64_t>(input.size())}, rt::DeviceType::kGPU, DataType::kHALF);
+    rt::Tensor outputDevice({1, static_cast<int64_t>(input.size())}, rt::DeviceType::kGPU, DataType::kFLOAT);
+    copyHostToDevice<half>(inputDevice, input);
+
+    convertLogitsToFloat(inputDevice, outputDevice, stream);
+
+    auto const actual = copyDeviceToHost<float>(outputDevice);
+    EXPECT_EQ(actual, expected);
+}
+
+TEST(EagleKernels, ConstructGreedyDraftChain)
+{
+    cudaStream_t stream = nullptr;
+    constexpr int32_t batchSize{2};
+    constexpr int32_t chainLength{6};
+    std::vector<int32_t> ids(batchSize * chainLength);
+    std::vector<int32_t> parents(batchSize * chainLength);
+    for (int32_t batch = 0; batch < batchSize; ++batch)
+    {
+        for (int32_t index = 0; index < chainLength; ++index)
+        {
+            ids[batch * chainLength + index] = batch * 100 + index;
+            parents[batch * chainLength + index] = index - 1;
+        }
+    }
+
+    rt::Tensor idsDevice({batchSize, chainLength}, rt::DeviceType::kGPU, DataType::kINT32);
+    rt::Tensor parentsDevice({batchSize, chainLength}, rt::DeviceType::kGPU, DataType::kINT32);
+    rt::Tensor indicesDevice({batchSize, chainLength}, rt::DeviceType::kGPU, DataType::kINT32);
+    rt::Tensor outputIdsDevice({batchSize, chainLength}, rt::DeviceType::kGPU, DataType::kINT32);
+    rt::Tensor maskDevice({batchSize, chainLength, chainLength}, rt::DeviceType::kGPU, DataType::kINT8);
+    copyHostToDevice<int32_t>(idsDevice, ids);
+    copyHostToDevice<int32_t>(parentsDevice, parents);
+    std::vector<int32_t> indices(batchSize * chainLength);
+    for (int32_t batch = 0; batch < batchSize; ++batch)
+    {
+        std::iota(indices.begin() + batch * chainLength, indices.begin() + (batch + 1) * chainLength, 0);
+    }
+    copyHostToDevice<int32_t>(indicesDevice, indices);
+    constructVerificationDraftTree(idsDevice, parentsDevice, indicesDevice, outputIdsDevice, maskDevice, stream);
+
+    EXPECT_EQ(copyDeviceToHost<int32_t>(outputIdsDevice), ids);
+    auto const mask = copyDeviceToHost<int8_t>(maskDevice);
+    for (int32_t batch = 0; batch < batchSize; ++batch)
+    {
+        for (int32_t row = 0; row < chainLength; ++row)
+        {
+            for (int32_t column = 0; column < chainLength; ++column)
+            {
+                EXPECT_EQ(mask[(batch * chainLength + row) * chainLength + column], column <= row ? 1 : 0);
+            }
         }
     }
 }
@@ -339,12 +405,12 @@ TEST(EagleKernels, AssembleInitialDraftTreeInput)
                 int32_t wrongValue = wrongOffset * 100 + 0 * 10 + wrongOffset; // Batch 0's data
 
                 EXPECT_EQ(actual, expected)
-                    << "Batch 1, position " << i << " CRITICAL MISMATCH"
-                    << "\n  Expected: " << expected << " (from correct offset " << (1 * fullTableLength + i + 1) << ")"
+                    << "Batch 1, position " << i << " CRITICAL MISMATCH" << "\n  Expected: " << expected
+                    << " (from correct offset " << (1 * fullTableLength + i + 1) << ")"
                     << "\n  If kernel used WRONG formula (21), would get: " << wrongValue << " (from wrong offset "
-                    << wrongOffset << ")"
-                    << "\n  Actual: " << actual << "\n  This verifies kernel uses fullTableLength=" << fullTableLength
-                    << ", NOT hardcoded formula " << (1 + draftTopK + draftTopK * draftTopK);
+                    << wrongOffset << ")" << "\n  Actual: " << actual
+                    << "\n  This verifies kernel uses fullTableLength=" << fullTableLength << ", NOT hardcoded formula "
+                    << (1 + draftTopK + draftTopK * draftTopK);
             }
             EXPECT_EQ(actualTreeLength[1], expectedTreeLength);
 
@@ -1055,7 +1121,9 @@ TEST(EagleKernels, EagleBaseCommitKVCacheHeterogeneousLayers)
     for (int32_t L = 0; L < numLayers; ++L)
     {
         int32_t const numKVHeads = numKVHeadsPerLayer[L];
-        rt::Tensor layerCache({maxBatchSize, 2, numKVHeads, maxSeqLen, headDim}, rt::DeviceType::kGPU, DataType::kHALF);
+        // Two-pool NHD layout [2, maxBatch, maxSeqLen, numKVHeads, headDim] (K-half then V-half
+        // split outermost, token-major within a slot) — matches the cache manager + the commit kernel.
+        rt::Tensor layerCache({2, maxBatchSize, maxSeqLen, numKVHeads, headDim}, rt::DeviceType::kGPU, DataType::kHALF);
         std::vector<half> hostInit(static_cast<size_t>(maxBatchSize) * 2 * numKVHeads * maxSeqLen * headDim);
         for (int32_t kv = 0; kv < 2; ++kv)
         {
@@ -1064,7 +1132,9 @@ TEST(EagleKernels, EagleBaseCommitKVCacheHeterogeneousLayers)
                 for (int32_t p = 0; p < maxSeqLen; ++p)
                 {
                     half const v = __float2half(kvAt(L, kv, h, p));
-                    int64_t const base = ((kv * numKVHeads + h) * static_cast<int64_t>(maxSeqLen) + p) * headDim;
+                    // NHD: V-half = kv*(maxBatch*maxSeqLen*H*D); slot b=0; token p stride = H*D; head h stride = D.
+                    int64_t const base = static_cast<int64_t>(kv) * maxBatchSize * maxSeqLen * numKVHeads * headDim
+                        + (static_cast<int64_t>(p) * numKVHeads + h) * headDim;
                     for (int32_t d = 0; d < headDim; ++d)
                     {
                         hostInit[base + d] = v;
@@ -1073,7 +1143,7 @@ TEST(EagleKernels, EagleBaseCommitKVCacheHeterogeneousLayers)
             }
         }
         copyHostToDevice<half>(layerCache, hostInit);
-        hostInfos[L] = KVLayerInfo{layerCache.rawPointer(), numKVHeads, maxSeqLen};
+        hostInfos[L] = KVLayerInfo{layerCache.rawPointer(), numKVHeads, maxSeqLen, maxBatchSize};
         kvCachePerLayer.push_back(std::move(layerCache));
     }
     rt::Tensor deviceInfos = uploadLayerInfos(hostInfos, stream);
@@ -1104,12 +1174,15 @@ TEST(EagleKernels, EagleBaseCommitKVCacheHeterogeneousLayers)
         {
             for (int32_t h = 0; h < numKVHeads; ++h)
             {
-                int64_t const headBase = ((kv * numKVHeads + h) * static_cast<int64_t>(maxSeqLen)) * headDim;
+                // NHD: (kv,h) base at token 0 (b=0); token p stride = numKVHeads*headDim.
+                int64_t const headBase = static_cast<int64_t>(kv) * maxBatchSize * maxSeqLen * numKVHeads * headDim
+                    + static_cast<int64_t>(h) * headDim;
+                int64_t const tokenStride = static_cast<int64_t>(numKVHeads) * headDim;
 
                 // Position 0 (root) is untouched.
                 {
                     float const expected = kvAt(L, kv, h, pastKv);
-                    float const actual = __half2float(host[headBase + pastKv * headDim]);
+                    float const actual = __half2float(host[headBase + pastKv * tokenStride]);
                     EXPECT_TRUE(isclose(actual, expected, 1e-3f, 1e-3f))
                         << "L=" << L << " kv=" << kv << " h=" << h << " pos=root: expected " << expected << " got "
                         << actual;
@@ -1121,12 +1194,326 @@ TEST(EagleKernels, EagleBaseCommitKVCacheHeterogeneousLayers)
                     int32_t const dstPos = pastKv + i;
                     int32_t const srcPos = pastKv + acceptedSrc[i];
                     float const expected = kvAt(L, kv, h, srcPos);
-                    float const actual = __half2float(host[headBase + dstPos * headDim]);
+                    float const actual = __half2float(host[headBase + dstPos * tokenStride]);
                     EXPECT_TRUE(isclose(actual, expected, 1e-3f, 1e-3f))
                         << "L=" << L << " kv=" << kv << " h=" << h << " dstPos=" << dstPos << " (src=" << srcPos
                         << "): expected " << expected << " got " << actual;
                 }
             }
+        }
+    }
+}
+
+// ============================================================================
+// Test 8d: eagleBaseCommitKVCache with an identity page table
+// Description: paged-KV addition. `eagleBaseCommitKVCache` gains optional
+// (pageTable, maxPagesPerSeq) parameters that resolve the committed token's absolute position
+// through the page table's K/V rows instead of the identity-contiguous NHD stride. Under a
+// static identity table (KVPageTable::setIdentity), the two addressing paths must be
+// byte-identical: run the SAME commit on two independently-seeded-but-equal buffers, once with
+// pageTable == nullptr and once with an identity KVPageTable, and diff the results.
+// ============================================================================
+TEST(EagleKernels, EagleBaseCommitKVCacheIdentityPageTableMatchesContiguous)
+{
+    cudaStream_t stream = nullptr;
+
+    int32_t const headDim = 64;
+    int32_t const numKVHeads = 2;
+    int32_t const maxBatchSize = 2;
+    int32_t const maxSeqLen = 256; // capPadded; 2 pages of 128 tokens per slot.
+    int32_t const numLayers = 1;
+    int32_t const maxKVHeads = numKVHeads;
+    int32_t const activeBatchSize = 2;
+    int32_t const maxDepth = 4;
+    int32_t const maxPagesPerSeq = maxSeqLen / rt::kTOKENS_PER_PAGE;
+
+    // Slot 0: pastKv=100 (still page 0), accept [0, 3, 5] -> writes land at pos 101, 102 (page 0).
+    // Slot 1: pastKv=126, accept [0, 5, 9] -> writes land at pos 131, 135, straddling the page-1
+    // boundary (page 0 has tokens [0,128), page 1 has [128,256)), which is the case most likely to
+    // expose an addressing bug in the paged path.
+    std::vector<int32_t> const inputAcceptedIndices = {0, 3, 5, -1, 0, 5, 9, -1};
+    std::vector<int32_t> const inputAcceptLengths = {3, 3};
+    std::vector<int32_t> const inputKvCacheLengths = {100, 126};
+
+    auto kvAt = [&](int32_t kv, int32_t b, int32_t h, int32_t pos) {
+        return static_cast<float>(kv * 10000 + b * 1000 + h * 100 + pos % 97);
+    };
+
+    auto buildLayerCache = [&]() {
+        rt::Tensor layerCache({2, maxBatchSize, maxSeqLen, numKVHeads, headDim}, rt::DeviceType::kGPU, DataType::kHALF);
+        std::vector<half> hostInit(static_cast<size_t>(2) * maxBatchSize * maxSeqLen * numKVHeads * headDim);
+        for (int32_t kv = 0; kv < 2; ++kv)
+        {
+            for (int32_t b = 0; b < maxBatchSize; ++b)
+            {
+                for (int32_t h = 0; h < numKVHeads; ++h)
+                {
+                    for (int32_t p = 0; p < maxSeqLen; ++p)
+                    {
+                        half const v = __float2half(kvAt(kv, b, h, p));
+                        int64_t const base = static_cast<int64_t>(kv) * maxBatchSize * maxSeqLen * numKVHeads * headDim
+                            + static_cast<int64_t>(b) * maxSeqLen * numKVHeads * headDim
+                            + (static_cast<int64_t>(p) * numKVHeads + h) * headDim;
+                        for (int32_t d = 0; d < headDim; ++d)
+                        {
+                            hostInit[base + d] = v;
+                        }
+                    }
+                }
+            }
+        }
+        copyHostToDevice<half>(layerCache, hostInit);
+        return layerCache;
+    };
+
+    rt::Tensor contiguousCache = buildLayerCache();
+    rt::Tensor pagedCache = buildLayerCache();
+
+    std::vector<KVLayerInfo> hostInfosContig{
+        KVLayerInfo{contiguousCache.rawPointer(), numKVHeads, maxSeqLen, maxBatchSize}};
+    std::vector<KVLayerInfo> hostInfosPaged{KVLayerInfo{pagedCache.rawPointer(), numKVHeads, maxSeqLen, maxBatchSize}};
+    rt::Tensor deviceInfosContig = uploadLayerInfos(hostInfosContig, stream);
+    rt::Tensor deviceInfosPaged = uploadLayerInfos(hostInfosPaged, stream);
+
+    auto acceptedIndicesDevice = rt::Tensor({activeBatchSize, maxDepth}, rt::DeviceType::kGPU, DataType::kINT32);
+    auto acceptLengthsDevice = rt::Tensor({activeBatchSize}, rt::DeviceType::kGPU, DataType::kINT32);
+    auto kvCacheLengthsDevice = rt::Tensor({activeBatchSize}, rt::DeviceType::kGPU, DataType::kINT32);
+    copyHostToDevice<int32_t>(acceptedIndicesDevice, inputAcceptedIndices);
+    copyHostToDevice<int32_t>(acceptLengthsDevice, inputAcceptLengths);
+    copyHostToDevice<int32_t>(kvCacheLengthsDevice, inputKvCacheLengths);
+
+    // Identity page table: numPages = maxBatch * maxPagesPerSeq (one layer's own [2, maxBatch,
+    // maxSeqLen, H, D] buffer, treated as a flat [2*numPages, 128, H, D] pool, matches this exactly).
+    rt::KVPageTable pageTable(maxBatchSize, maxPagesPerSeq, maxBatchSize * maxPagesPerSeq);
+    pageTable.setIdentity();
+    pageTable.upload(stream);
+
+    eagleBaseCommitKVCache(acceptedIndicesDevice, acceptLengthsDevice, kvCacheLengthsDevice,
+        static_cast<KVLayerInfo const*>(deviceInfosContig.rawPointer()), numLayers, headDim, maxKVHeads,
+        activeBatchSize, maxDepth, DataType::kHALF, stream);
+    eagleBaseCommitKVCache(acceptedIndicesDevice, acceptLengthsDevice, kvCacheLengthsDevice,
+        static_cast<KVLayerInfo const*>(deviceInfosPaged.rawPointer()), numLayers, headDim, maxKVHeads, activeBatchSize,
+        maxDepth, DataType::kHALF, stream, pageTable.kernelView().dataPointer<int32_t>(), maxPagesPerSeq);
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+
+    auto const contigHost = copyDeviceToHost<half>(contiguousCache);
+    auto const pagedHost = copyDeviceToHost<half>(pagedCache);
+    ASSERT_EQ(contigHost.size(), pagedHost.size());
+    for (size_t i = 0; i < contigHost.size(); ++i)
+    {
+        ASSERT_EQ(__half_as_ushort(contigHost[i]), __half_as_ushort(pagedHost[i]))
+            << "byte mismatch at flat idx " << i << ": contiguous=" << __half2float(contigHost[i])
+            << " paged=" << __half2float(pagedHost[i]);
+    }
+}
+
+// ============================================================================
+// Test 8e: eagleBaseCommitKVCache with a non-identity (scrambled) page table
+// Description: Review item B5 requires coverage beyond the identity-matches-contiguous check:
+// a real permutation must route each slot's accepted-KV writes/reads through the physical pages
+// the table actually names, not through the position the OLD nullptr/identity-only call site would
+// have used. This test swaps slot 0 and slot 1's physical K/V pages (a full derangement -- neither
+// slot maps to its own identity range) and additionally straddles a page boundary on slot 0, so it
+// covers both "non-identity table" and "commit spanning a page boundary" in one kernel-level test.
+// It also asserts the position an identity/nullptr call would have (wrongly) written to is left
+// untouched, which is the exact regression `eagleDecoder.cpp` passing `nullptr` would reintroduce.
+// ============================================================================
+TEST(EagleKernels, EagleBaseCommitKVCacheNonIdentityPageTableRemapsPhysicalPages)
+{
+    cudaStream_t stream = nullptr;
+
+    int32_t const headDim = 64;
+    int32_t const numKVHeads = 1;
+    int32_t const maxBatchSize = 2;
+    int32_t const maxSeqLen = 256; // capPadded; 2 pages of 128 tokens per slot.
+    int32_t const numLayers = 1;
+    int32_t const maxKVHeads = numKVHeads;
+    int32_t const activeBatchSize = 2;
+    int32_t const maxDepth = 4;
+    int32_t const maxPagesPerSeq = maxSeqLen / rt::kTOKENS_PER_PAGE; // 2
+    int32_t const numPages = maxBatchSize * maxPagesPerSeq;          // 4 physical K pages (0..3)
+
+    // Slot 0: pastKv=126, accept [0, 5, 9] -> logical writes at pos 127 (page 0) and 128 (page 1),
+    // straddling slot 0's own page boundary.
+    // Slot 1: pastKv=10, accept [0, 3, 5] -> logical writes at pos 11, 12 (both page 0).
+    std::vector<int32_t> const inputAcceptedIndices = {0, 5, 9, -1, 0, 3, 5, -1};
+    std::vector<int32_t> const inputAcceptLengths = {3, 3};
+    std::vector<int32_t> const inputKvCacheLengths = {126, 10};
+
+    // Value encodes the RAW (physical, pre-remap) buffer coordinates it was seeded at.
+    auto kvAt = [&](int32_t kv, int32_t b, int32_t h, int32_t pos) {
+        return static_cast<float>(kv * 10000 + b * 1000 + h * 100 + pos % 97);
+    };
+
+    rt::Tensor layerCache({2, maxBatchSize, maxSeqLen, numKVHeads, headDim}, rt::DeviceType::kGPU, DataType::kHALF);
+    std::vector<half> hostInit(static_cast<size_t>(2) * maxBatchSize * maxSeqLen * numKVHeads * headDim);
+    auto rawIndex = [&](int32_t kv, int32_t b, int32_t h, int32_t pos) {
+        return static_cast<int64_t>(kv) * maxBatchSize * maxSeqLen * numKVHeads * headDim
+            + static_cast<int64_t>(b) * maxSeqLen * numKVHeads * headDim
+            + (static_cast<int64_t>(pos) * numKVHeads + h) * headDim;
+    };
+    for (int32_t kv = 0; kv < 2; ++kv)
+    {
+        for (int32_t b = 0; b < maxBatchSize; ++b)
+        {
+            for (int32_t p = 0; p < maxSeqLen; ++p)
+            {
+                half const v = __float2half(kvAt(kv, b, 0, p));
+                int64_t const base = rawIndex(kv, b, 0, p);
+                for (int32_t d = 0; d < headDim; ++d)
+                {
+                    hostInit[base + d] = v;
+                }
+            }
+        }
+    }
+    copyHostToDevice<half>(layerCache, hostInit);
+
+    std::vector<KVLayerInfo> hostInfos{KVLayerInfo{layerCache.rawPointer(), numKVHeads, maxSeqLen, maxBatchSize}};
+    rt::Tensor deviceInfos = uploadLayerInfos(hostInfos, stream);
+
+    auto acceptedIndicesDevice = rt::Tensor({activeBatchSize, maxDepth}, rt::DeviceType::kGPU, DataType::kINT32);
+    auto acceptLengthsDevice = rt::Tensor({activeBatchSize}, rt::DeviceType::kGPU, DataType::kINT32);
+    auto kvCacheLengthsDevice = rt::Tensor({activeBatchSize}, rt::DeviceType::kGPU, DataType::kINT32);
+    copyHostToDevice<int32_t>(acceptedIndicesDevice, inputAcceptedIndices);
+    copyHostToDevice<int32_t>(acceptLengthsDevice, inputAcceptLengths);
+    copyHostToDevice<int32_t>(kvCacheLengthsDevice, inputKvCacheLengths);
+
+    // Full swap: slot 0's logical pages [0,1] land on physical pages [2,3] (slot 1's identity
+    // range); slot 1's logical pages [0,1] land on physical pages [0,1] (slot 0's identity range).
+    // Neither slot maps to its own identity range, and no physical page is targeted twice.
+    rt::KVPageTable pageTable(maxBatchSize, maxPagesPerSeq, numPages);
+    std::vector<int32_t> const slot0Pages = {2, 3};
+    std::vector<int32_t> const slot1Pages = {0, 1};
+    pageTable.setRow(0, slot0Pages.data(), maxPagesPerSeq);
+    pageTable.setRow(1, slot1Pages.data(), maxPagesPerSeq);
+    pageTable.upload(stream);
+
+    eagleBaseCommitKVCache(acceptedIndicesDevice, acceptLengthsDevice, kvCacheLengthsDevice,
+        static_cast<KVLayerInfo const*>(deviceInfos.rawPointer()), numLayers, headDim, maxKVHeads, activeBatchSize,
+        maxDepth, DataType::kHALF, stream, pageTable.kernelView().dataPointer<int32_t>(), maxPagesPerSeq);
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+
+    auto const host = copyDeviceToHost<half>(layerCache);
+    auto valueAt = [&](int32_t kv, int32_t b, int32_t pos) { return __half2float(host[rawIndex(kv, b, 0, pos)]); };
+
+    for (int32_t kv = 0; kv < 2; ++kv)
+    {
+        // Slot 0 (logical) -> physical batch 1: dst logical pos 127 <- src logical pos 131;
+        // dst logical pos 128 <- src logical pos 135. Both land in raw batch-1 coordinates
+        // since slot 0's pages [0,1] alias physical pages [2,3] == raw batch 1's own pages.
+        EXPECT_TRUE(isclose(valueAt(kv, 1, 127), kvAt(kv, 1, 0, 131), 1e-3f, 1e-3f))
+            << "kv=" << kv << " slot0->phys pos127 (page-boundary straddle) mismatch";
+        EXPECT_TRUE(isclose(valueAt(kv, 1, 128), kvAt(kv, 1, 0, 135), 1e-3f, 1e-3f))
+            << "kv=" << kv << " slot0->phys pos128 (page-boundary straddle) mismatch";
+
+        // Slot 1 (logical) -> physical batch 0: dst logical pos 11 <- src logical pos 13;
+        // dst logical pos 12 <- src logical pos 15.
+        EXPECT_TRUE(isclose(valueAt(kv, 0, 11), kvAt(kv, 0, 0, 13), 1e-3f, 1e-3f))
+            << "kv=" << kv << " slot1->phys pos11 mismatch";
+        EXPECT_TRUE(isclose(valueAt(kv, 0, 12), kvAt(kv, 0, 0, 15), 1e-3f, 1e-3f))
+            << "kv=" << kv << " slot1->phys pos12 mismatch";
+
+        // Regression guard: an identity/nullptr addressing bug would have written slot 0's commit
+        // into raw batch 0 (its own identity range) instead of raw batch 1. Position 127 there must
+        // therefore be left completely untouched by this non-identity commit.
+        EXPECT_TRUE(isclose(valueAt(kv, 0, 127), kvAt(kv, 0, 0, 127), 1e-3f, 1e-3f))
+            << "kv=" << kv << " raw batch0 pos127 was wrongly touched (identity-addressing regression)";
+    }
+}
+
+// ============================================================================
+// Test 8f: eagleBaseCommitKVCache accept/rollback with accepted and rejected tree nodes
+// Description: Review item B5 required coverage for accept/rollback across a speculative tree:
+// positions beyond `acceptLength` represent rejected tree nodes and must be left completely
+// untouched (rollback), while positions within `acceptLength` must be compacted from their
+// accepted source position. Batch 0 partially accepts (some tree nodes rejected); batch 1 rejects
+// everything past the root (full rollback, `acceptLength == 1`, no writes at all).
+// ============================================================================
+TEST(EagleKernels, EagleBaseCommitKVCacheAcceptRollbackTreeNodes)
+{
+    cudaStream_t stream = nullptr;
+
+    int32_t const headDim = 64;
+    int32_t const numKVHeads = 1;
+    int32_t const maxBatchSize = 2;
+    int32_t const maxSeqLen = 64;
+    int32_t const numLayers = 1;
+    int32_t const maxKVHeads = numKVHeads;
+    int32_t const activeBatchSize = 2;
+    int32_t const maxDepth = 5;
+
+    // Batch 0: pastKv=20, tree nodes drafted at i=1..4; accept path keeps i=1,2 (accepted from
+    // source offsets 2 and 5) and rejects tree nodes at i=3,4 (never written -> rollback).
+    // Batch 1: pastKv=30, acceptLength=1 (root only) -> full rollback, no writes for i=1..4 at all.
+    std::vector<int32_t> const inputAcceptedIndices = {0, 2, 5, -1, -1, 0, -1, -1, -1, -1};
+    std::vector<int32_t> const inputAcceptLengths = {3, 1};
+    std::vector<int32_t> const inputKvCacheLengths = {20, 30};
+
+    auto kvAt = [&](int32_t kv, int32_t b, int32_t h, int32_t pos) {
+        return static_cast<float>(kv * 10000 + b * 1000 + h * 100 + pos % 97);
+    };
+
+    rt::Tensor layerCache({2, maxBatchSize, maxSeqLen, numKVHeads, headDim}, rt::DeviceType::kGPU, DataType::kHALF);
+    std::vector<half> hostInit(static_cast<size_t>(2) * maxBatchSize * maxSeqLen * numKVHeads * headDim);
+    auto rawIndex = [&](int32_t kv, int32_t b, int32_t h, int32_t pos) {
+        return static_cast<int64_t>(kv) * maxBatchSize * maxSeqLen * numKVHeads * headDim
+            + static_cast<int64_t>(b) * maxSeqLen * numKVHeads * headDim
+            + (static_cast<int64_t>(pos) * numKVHeads + h) * headDim;
+    };
+    for (int32_t kv = 0; kv < 2; ++kv)
+    {
+        for (int32_t b = 0; b < maxBatchSize; ++b)
+        {
+            for (int32_t p = 0; p < maxSeqLen; ++p)
+            {
+                half const v = __float2half(kvAt(kv, b, 0, p));
+                int64_t const base = rawIndex(kv, b, 0, p);
+                for (int32_t d = 0; d < headDim; ++d)
+                {
+                    hostInit[base + d] = v;
+                }
+            }
+        }
+    }
+    copyHostToDevice<half>(layerCache, hostInit);
+
+    std::vector<KVLayerInfo> hostInfos{KVLayerInfo{layerCache.rawPointer(), numKVHeads, maxSeqLen, maxBatchSize}};
+    rt::Tensor deviceInfos = uploadLayerInfos(hostInfos, stream);
+
+    auto acceptedIndicesDevice = rt::Tensor({activeBatchSize, maxDepth}, rt::DeviceType::kGPU, DataType::kINT32);
+    auto acceptLengthsDevice = rt::Tensor({activeBatchSize}, rt::DeviceType::kGPU, DataType::kINT32);
+    auto kvCacheLengthsDevice = rt::Tensor({activeBatchSize}, rt::DeviceType::kGPU, DataType::kINT32);
+    copyHostToDevice<int32_t>(acceptedIndicesDevice, inputAcceptedIndices);
+    copyHostToDevice<int32_t>(acceptLengthsDevice, inputAcceptLengths);
+    copyHostToDevice<int32_t>(kvCacheLengthsDevice, inputKvCacheLengths);
+
+    eagleBaseCommitKVCache(acceptedIndicesDevice, acceptLengthsDevice, kvCacheLengthsDevice,
+        static_cast<KVLayerInfo const*>(deviceInfos.rawPointer()), numLayers, headDim, maxKVHeads, activeBatchSize,
+        maxDepth, DataType::kHALF, stream);
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+
+    auto const host = copyDeviceToHost<half>(layerCache);
+    auto valueAt = [&](int32_t kv, int32_t b, int32_t pos) { return __half2float(host[rawIndex(kv, b, 0, pos)]); };
+
+    for (int32_t kv = 0; kv < 2; ++kv)
+    {
+        // Batch 0: accepted tree nodes moved into the compacted positions.
+        EXPECT_TRUE(isclose(valueAt(kv, 0, 21), kvAt(kv, 0, 0, 22), 1e-3f, 1e-3f))
+            << "kv=" << kv << " batch0 accepted pos21 mismatch";
+        EXPECT_TRUE(isclose(valueAt(kv, 0, 22), kvAt(kv, 0, 0, 25), 1e-3f, 1e-3f))
+            << "kv=" << kv << " batch0 accepted pos22 mismatch";
+        // Batch 0: rejected tree nodes (i=3,4) must be untouched (rollback).
+        EXPECT_TRUE(isclose(valueAt(kv, 0, 23), kvAt(kv, 0, 0, 23), 1e-3f, 1e-3f))
+            << "kv=" << kv << " batch0 rejected pos23 was wrongly written";
+        EXPECT_TRUE(isclose(valueAt(kv, 0, 24), kvAt(kv, 0, 0, 24), 1e-3f, 1e-3f))
+            << "kv=" << kv << " batch0 rejected pos24 was wrongly written";
+
+        // Batch 1: full rollback (acceptLength=1) -- every speculative tree position untouched.
+        for (int32_t pos = 31; pos <= 34; ++pos)
+        {
+            EXPECT_TRUE(isclose(valueAt(kv, 1, pos), kvAt(kv, 1, 0, pos), 1e-3f, 1e-3f))
+                << "kv=" << kv << " batch1 pos" << pos << " was wrongly written under full rollback";
         }
     }
 }
@@ -1732,8 +2119,9 @@ TEST(EagleKernels, BenchmarkCommitKVCacheLegacyVsBatched)
     std::vector<KVLayerInfo> hostInfos(numLayers);
     for (int32_t L = 0; L < numLayers; ++L)
     {
-        rt::Tensor layer({maxBatchSize, 2, numKVHeads, maxSeqLen, headDim}, rt::DeviceType::kGPU, DataType::kFP8);
-        hostInfos[L] = KVLayerInfo{layer.rawPointer(), numKVHeads, maxSeqLen};
+        // NHD two-pool [2, maxBatch, maxSeqLen, H, D] — the layout the batched kernel addresses.
+        rt::Tensor layer({2, maxBatchSize, maxSeqLen, numKVHeads, headDim}, rt::DeviceType::kGPU, DataType::kFP8);
+        hostInfos[L] = KVLayerInfo{layer.rawPointer(), numKVHeads, maxSeqLen, maxBatchSize};
         perLayerCache.push_back(std::move(layer));
     }
     rt::Tensor deviceInfos = uploadLayerInfos(hostInfos, stream);

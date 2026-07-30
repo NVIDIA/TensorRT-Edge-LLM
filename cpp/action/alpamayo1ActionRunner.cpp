@@ -134,10 +134,19 @@ bool Alpamayo1ActionRunner::preprocess(LLMGenerationRequest const& request,
     return true;
 }
 
-Alpamayo1ActionRunner::Alpamayo1ActionRunner(
-    std::string const& engineDir, cudaStream_t stream, KVCacheManager::Config const& kvCacheConfig)
+Alpamayo1ActionRunner::Alpamayo1ActionRunner(std::string const& engineDir, cudaStream_t stream,
+    KVCacheManager::Config const& kvCacheConfig, bool basePageTableIsIdentity)
     : mStream(stream)
 {
+    // Identity-only opt-out: getSeparateKVCacheForDecoderLayer() reads physical slot
+    // row `b` directly and has no page-table-aware gather. Fail construction now, at model-load
+    // time, rather than silently mis-reading unrelated physical pages once non-identity base-cache
+    // reuse exists.
+    ELLM_CHECK(basePageTableIsIdentity,
+        "Alpamayo1ActionRunner requires the base KV cache to use an identity page table: action KV "
+        "consumption reads physical slot rows directly and is not page-table-aware. Refusing to load "
+        "the action expert for a base cache manager with non-identity paging enabled.");
+
     LOG_DEBUG("Loading action runner from %s", engineDir.c_str());
 
     std::string actionEnginePath = engineDir + "/action.engine";
@@ -195,24 +204,46 @@ std::pair<rt::Tensor&, rt::Tensor&> Alpamayo1ActionRunner::getSeparateKVCacheFor
     cudaStream_t stream, HybridCacheManager& kvcache, int32_t decoderLayerIdx, int32_t activeBatchSize)
 {
     KVCacheManager::Config const& config = kvcache.getKVCacheManager().getConfig();
-    int64_t const blockElems = mConfig.numKVHeads * config.maxSequenceLength * mConfig.headDim;
+    int32_t const H = mConfig.numKVHeads;
+    int32_t const S = static_cast<int32_t>(config.maxSequenceLength);
+    int32_t const D = mConfig.headDim;
+    // The KVCacheManager pads the per-slot token capacity to a multiple of the paged-KV page size
+    // (kTOKENS_PER_PAGE); use its own accessor rather than recomputing the padding locally.
+    int32_t const capPadded = kvcache.getKVCacheManager().maxCapPadded();
     size_t const elemSize = rt::utils::getTypeSize(config.kvCacheType);
-    size_t const blockBytes = static_cast<size_t>(blockElems) * elemSize;
-    // Combined layout [maxBatchSize, 2, numKVHeads, maxSequenceLength, headDim]: per batch, K then V.
-    size_t const combinedBatchStride = 2ULL * blockBytes;
 
-    rt::Tensor& combined = kvcache.getCombinedKVCache(decoderLayerIdx);
-    char const* src = static_cast<char const*>(combined.rawPointer());
+    // Source = the manager's two-pool NHD pool, K-half and V-half each [maxBatch, capPadded, H, D]:
+    //   Within a slot it is token-major: (b, t, h, d) -> b*capPadded*H*D + t*H*D + h*D + d.
+    // Dest mK/mVCacheLayers = the engine's head-major layout [maxBatch, H, S, D]:
+    //   (b, h, t, d) -> (b*H + h)*S*D + t*D + d.
+    // This is a token-major -> head-major transpose, so copy each (b, h) head as S strided rows
+    // of D elements: source row pitch = H*D (NHD token stride), dest row pitch = D (contiguous).
+    // K-half/V-half base pointers come from getSeparateKVCache() rather than a fixed
+    // maxBatch*capPadded*H*D offset from a single combined pointer, so this stays correct if the
+    // pool has retention pages beyond the active-capacity floor (see KVCacheManager::numPages()).
+    size_t const srcSlotStride = static_cast<size_t>(capPadded) * H * D * elemSize; // per request, within a half
+    size_t const srcRowPitch = static_cast<size_t>(H) * D * elemSize;               // NHD token stride
+    size_t const dstRowPitch = static_cast<size_t>(D) * elemSize;
+    size_t const rowBytes = static_cast<size_t>(D) * elemSize;
+    size_t const headBlockBytes = static_cast<size_t>(S) * D * elemSize; // dest per-(b,h) block
+
+    auto [kSrcView, vSrcView] = kvcache.getSeparateKVCache(decoderLayerIdx);
+    char const* kSrc = static_cast<char const*>(kSrcView.rawPointer());
+    char const* vSrc = static_cast<char const*>(vSrcView.rawPointer());
     char* dstK = static_cast<char*>(mKCacheLayers[decoderLayerIdx].rawPointer());
     char* dstV = static_cast<char*>(mVCacheLayers[decoderLayerIdx].rawPointer());
 
     for (int32_t b = 0; b < activeBatchSize; ++b)
     {
-        CUDA_CHECK(cudaMemcpyAsync(dstK + static_cast<size_t>(b) * blockBytes,
-            src + static_cast<size_t>(b) * combinedBatchStride, blockBytes, cudaMemcpyDeviceToDevice, stream));
-        CUDA_CHECK(cudaMemcpyAsync(dstV + static_cast<size_t>(b) * blockBytes,
-            src + static_cast<size_t>(b) * combinedBatchStride + blockBytes, blockBytes, cudaMemcpyDeviceToDevice,
-            stream));
+        for (int32_t h = 0; h < H; ++h)
+        {
+            size_t const srcHeadOff = static_cast<size_t>(b) * srcSlotStride + static_cast<size_t>(h) * D * elemSize;
+            size_t const dstHeadOff = (static_cast<size_t>(b) * H + h) * headBlockBytes;
+            CUDA_CHECK(cudaMemcpy2DAsync(dstK + dstHeadOff, dstRowPitch, kSrc + srcHeadOff, srcRowPitch, rowBytes,
+                static_cast<size_t>(S), cudaMemcpyDeviceToDevice, stream));
+            CUDA_CHECK(cudaMemcpy2DAsync(dstV + dstHeadOff, dstRowPitch, vSrc + srcHeadOff, srcRowPitch, rowBytes,
+                static_cast<size_t>(S), cudaMemcpyDeviceToDevice, stream));
+        }
     }
     return {mKCacheLayers[decoderLayerIdx], mVCacheLayers[decoderLayerIdx]};
 }

@@ -30,9 +30,6 @@ namespace trt_edgellm
 namespace rt
 {
 
-// TODO(follow-up): Simplify MTPDecoder to deliver the simplest chain-based
-// speculative drafting + verification. AR + tree-based proposal logic should
-// live exclusively in EagleDecoder.
 class MTPDecoder final : public DecodingStrategy
 {
 public:
@@ -55,6 +52,7 @@ public:
     }
 
     bool decodeStep(DecodingInferenceContext& context) override;
+    bool prepareFirstDecodeStep(DecodingInferenceContext& context) override;
     bool captureCudaGraphs(cudaStream_t stream) override;
 
     int64_t getRequiredContextMemorySize() const noexcept override;
@@ -73,8 +71,11 @@ public:
 private:
     bool runDraftModelPrefill(DecodingInferenceContext& context);
     bool constructDraftProposal(DecodingInferenceContext& context);
+    bool buildTreeVerifyInputs(int32_t activeBatchSize, cudaStream_t stream);
     bool runBaseModelVerification(DecodingInferenceContext& context);
     bool runDraftModelAcceptToken(DecodingInferenceContext& context);
+    void reshapeDraftLogits(rt::Coords const& shape);
+    void convertDraftLogits(cudaStream_t stream);
 
     DecodingRuntimeContext& mRuntime;
     HybridCacheManager& mDraftCacheManager;
@@ -100,6 +101,17 @@ private:
     Tensor mAcceptLength;
     Tensor mHostAcceptLengths;
     Tensor mHostAcceptedTokenIds;
+
+    //! The chain drafter keeps one full logits row per proposal depth and the greedy tree builder grows a
+    //! prefix-closed, score-prioritized verify tree from them. draftingTopK=1 produces a chain-shaped tree.
+    bool mConvertDraftLogits{false}; //!< Draft engine emits FP16 logits that need the common FP32 contract
+    Tensor mDraftOutputLogits;       //!< MTP engine output [maxBatch, draftVocab] FP16
+    Tensor mStackedDraftLogits;      //!< [maxBatch, draftingStep+1, draftVocab] per-depth chain logits
+    Tensor mTreeTokenIds;            //!< [maxBatch, verifySize] flattened tree token ids
+    Tensor mTreeNodeScores;          //!< [maxBatch, verifySize] prefix log-prob scores
+    Tensor mValidCounts;             //!< [maxBatch] valid node counts
+    Tensor mVerifyTreeMask;          //!< [maxBatch, verifySize, verifySize] unpacked accept mask
+    Tensor mTreeBuildWorkspace;      //!< ddtreeBuild temporary workspace
 
     hash_utils::HashMap<SystemPromptCacheKey, SystemPromptKVCache> mSystemPromptKVCacheDraft;
 };

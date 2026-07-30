@@ -84,7 +84,7 @@ protected:
             vocabMappingTableTensor = rt::Tensor({static_cast<int64_t>(vocabMappingTableData.size())},
                 rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "vocabMappingTable");
             copyHostToDevice(vocabMappingTableTensor, vocabMappingTableData);
-            vocabMappingTable = std::ref(vocabMappingTableTensor);
+            vocabMappingTable = std::cref(vocabMappingTableTensor);
         }
 
         // Execute kernel with timing

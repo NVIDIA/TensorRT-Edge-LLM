@@ -374,6 +374,7 @@ bool NemotronOmniViTRunner::preprocess(rt::LLMGenerationRequest const& request,
     try
     {
         imagePreprocess(request, imageTokenLengths, numImages, stream);
+        mPreparedArtifactRowCounts = imageTokenLengths;
         if (!imageOnly)
         {
             textPreprocess(request, batchedInputIds, numImages, imageTokenLengths, tokenizer);
@@ -386,6 +387,29 @@ bool NemotronOmniViTRunner::preprocess(rt::LLMGenerationRequest const& request,
     }
 
     return true;
+}
+
+bool NemotronOmniViTRunner::prepareArtifactSubset(rt::LLMGenerationRequest const& request,
+    [[maybe_unused]] std::vector<size_t> const& originalItemIndices, cudaStream_t stream)
+{
+    std::vector<int64_t> imageTokenLengths;
+    std::vector<int64_t> numImages;
+    try
+    {
+        imagePreprocess(request, imageTokenLengths, numImages, stream);
+        mPreparedArtifactRowCounts = imageTokenLengths;
+    }
+    catch (std::exception const& e)
+    {
+        LOG_ERROR("Failed to prepare selected vision artifacts: %s", e.what());
+        return false;
+    }
+    return true;
+}
+
+std::vector<int64_t> NemotronOmniViTRunner::preparedArtifactRowCounts() const
+{
+    return mPreparedArtifactRowCounts;
 }
 
 bool NemotronOmniViTRunner::infer(cudaStream_t stream) noexcept
