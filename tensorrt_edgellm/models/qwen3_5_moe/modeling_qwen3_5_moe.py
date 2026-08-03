@@ -76,11 +76,6 @@ class Qwen3_5SparseMoeBlock(Qwen3SparseMoeBlock):
             1,
             module_name=f"{prefix}.shared_expert_gate")
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        routed = super().forward(hidden_states)
-        shared = self.shared_expert(hidden_states)
-        shared_gate = torch.sigmoid(self.shared_expert_gate(hidden_states))
-        return routed + shared * shared_gate
 
 
 class Qwen3_5MoeDecoderLayer(Qwen3_5DecoderLayer):
