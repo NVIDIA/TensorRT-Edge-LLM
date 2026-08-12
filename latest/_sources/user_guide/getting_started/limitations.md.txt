@@ -2,6 +2,10 @@
 
 This page documents the known limitations and issues for each release version of TensorRT Edge-LLM.
 
+## 0.10.0
+
+- `Int4GroupwiseGemmPluginV2` may cause accuracy degradation. For ONNX export, use `--int4-gemm-plugin-version 1` to select the V1 plugin as a fallback.
+
 ## 0.9.0
 
 - Some FP8 ViT configurations may produce NaN outputs for specific models. If this occurs, use FP16 ViT for the visual encoder.

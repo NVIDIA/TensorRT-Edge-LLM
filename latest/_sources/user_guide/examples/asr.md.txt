@@ -50,7 +50,7 @@ cd /path/to/TensorRT-Edge-LLM
 ./build/examples/multimodal/audio_build \
   --onnxDir $WORKSPACE_DIR/$MODEL_NAME/onnx/audio \
   --engineDir $WORKSPACE_DIR/$MODEL_NAME/engines/audio \
-  --minTimeSteps 1000 \
+  --minTimeSteps 100 \
   --maxTimeSteps 3000
 ```
 

@@ -1,6 +1,8 @@
 CUDA Utils
 ==========
 
-.. doxygenfile:: common/cudaUtils.h
+.. doxygenclass:: trt_edgellm::CudaDeviceGuard
    :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
 

@@ -1,0 +1,18 @@
+Multi Device Plugin Resources
+=============================
+
+.. doxygenclass:: trt_edgellm::rt::PluginAllReducePathResources
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::rt::RuntimeCollectiveResources
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::rt::MultiDevicePluginResources
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

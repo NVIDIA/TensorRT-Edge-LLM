@@ -11,15 +11,22 @@ All Reduce Plugin
    :members:
    :undoc-members:
 
-.. doxygenfunction:: trt_edgellm::plugins::registerNcclCommForAllReducePlugin
+.. doxygenstruct:: trt_edgellm::plugins::NcclAllReducePathRegistration
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::plugins::AllReducePathRegistrations
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::plugins::registerNcclAllReducePath
    :project: TensorRT Edge-LLM
 
-.. doxygenfunction:: trt_edgellm::plugins::getNcclRegistrationForDevice
+.. doxygenfunction:: trt_edgellm::plugins::unregisterNcclAllReducePath
    :project: TensorRT Edge-LLM
 
-.. doxygenfunction:: trt_edgellm::plugins::getNcclCommForDevice
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::plugins::getNcclAllReduceFunc
+.. doxygenfunction:: trt_edgellm::plugins::snapshotAllReducePathRegistrationsForDevice
    :project: TensorRT Edge-LLM
 

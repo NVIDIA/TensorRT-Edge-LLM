@@ -1,0 +1,27 @@
+Reuse Plan
+==========
+
+.. doxygenstruct:: trt_edgellm::rt::HybridCheckpointCandidate
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::SpecReplayDependency
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::ReusePlan
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::makeVanillaReusePlan
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::makeHybridReusePlan
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::makeSpecReusePlan
+   :project: TensorRT Edge-LLM
+

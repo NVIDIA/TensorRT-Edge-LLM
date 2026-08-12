@@ -18,7 +18,13 @@ Sampling
 .. doxygenfunction:: trt_edgellm::topKtopPSamplingFromLogits
    :project: TensorRT Edge-LLM
 
+.. doxygenfunction:: trt_edgellm::topKLogitsToDenseProbabilities
+   :project: TensorRT Edge-LLM
+
 .. doxygenfunction:: trt_edgellm::selectAllTopK
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::selectArgmaxAndComputeEntropy
    :project: TensorRT Edge-LLM
 
 .. doxygenfunction:: trt_edgellm::getExtractTopKLogprobsWorkspaceSize

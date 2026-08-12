@@ -4,6 +4,12 @@ Dflash Runtime Kernels
 .. doxygenfunction:: trt_edgellm::kernel::launchDFlashTargetKVCacheUpdate
    :project: TensorRT Edge-LLM
 
+.. doxygenfunction:: trt_edgellm::kernel::checkDFlashPageTableIdentity
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::checkDFlashRopeCapacity
+   :project: TensorRT Edge-LLM
+
 .. doxygenfunction:: trt_edgellm::kernel::launchDFlashPrepareProposalInputs
    :project: TensorRT Edge-LLM
 

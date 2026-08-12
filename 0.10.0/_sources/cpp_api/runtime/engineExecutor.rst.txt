@@ -1,0 +1,13 @@
+Engine Executor
+===============
+
+.. doxygenclass:: trt_edgellm::rt::EngineExecutor
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::EngineExecutor::BindingSnapshot
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

@@ -1,0 +1,24 @@
+Ddtree Kernels
+==============
+
+.. doxygenstruct:: trt_edgellm::kernel::DDTreeBuildInputs
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::kernel::DDTreeBuildOutputs
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::kernel::DDTreeBuildParams
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::kernel::getDDTreeBuildWorkspaceSize
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::ddtreeBuild
+   :project: TensorRT Edge-LLM
+

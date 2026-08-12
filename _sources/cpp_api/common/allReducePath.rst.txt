@@ -1,0 +1,6 @@
+All Reduce Path
+===============
+
+.. doxygenfile:: common/allReducePath.h
+   :project: TensorRT Edge-LLM
+

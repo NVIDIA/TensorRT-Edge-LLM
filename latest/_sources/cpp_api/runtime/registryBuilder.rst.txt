@@ -13,3 +13,6 @@ Registry Builder
 .. doxygenfunction:: trt_edgellm::rt::buildRegistryForGemma4MTPDraft
    :project: TensorRT Edge-LLM
 
+.. doxygenfunction:: trt_edgellm::rt::buildRegistryForDSparkDraft
+   :project: TensorRT Edge-LLM
+

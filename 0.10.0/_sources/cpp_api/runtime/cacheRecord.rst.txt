@@ -1,0 +1,38 @@
+Cache Record
+============
+
+.. doxygenclass:: trt_edgellm::rt::CacheRecordStore
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::CacheRecordKey
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::HybridCheckpointKey
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: std::hash< trt_edgellm::rt::CacheRecordKey >
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: std::hash< trt_edgellm::rt::HybridCheckpointKey >
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::CacheRecord
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::RecordInsertResult
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

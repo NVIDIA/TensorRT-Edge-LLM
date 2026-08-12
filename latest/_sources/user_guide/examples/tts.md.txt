@@ -2,7 +2,19 @@
 
 This guide covers the full pipeline for running Qwen3-TTS: export on x86 host, engine build on device, and inference.
 
-**Supported models:** [Qwen3-TTS-12Hz-0.6B-CustomVoice](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice) and [Qwen3-TTS-12Hz-1.7B-CustomVoice](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice).
+The [supported model list](../getting_started/supported-models.md#speech-generation)
+contains the validated CustomVoice, VoiceDesign, and Base checkpoints. They
+share the Talker, CodePredictor, and Code2Wav pipeline; the runtime selects the
+prompt contract from `tts_model_type` in the engine configuration.
+
+## Precision & Quantization
+
+| Component | Precision | Notes |
+|---|---|---|
+| Talker | FP16 | Quantized Talker checkpoints are not supported for Qwen3-TTS yet |
+| CodePredictor | FP16, **FP8** | Quantize with `tensorrt-edgellm-quantize ... --cp_quantization fp8`; `down_proj`, LM heads, and KV-cache BMM remain FP16 |
+| Code2Wav | FP16 | |
+| Clone encoders (Base) | FP16 build from FP32 ONNX | x-vector cosine 1.0 / codes 100% vs reference at FP16 |
 
 > **Note:** Unlike Qwen3-Omni, Qwen3-TTS has no Thinker or visual encoder. The text embedding is self-contained in the Talker and exported as `text_embedding.safetensors`.
 
@@ -16,18 +28,18 @@ Qwen3-TTS has three components: Talker, CodePredictor, and Code2Wav. Export all 
 
 ```bash
 export WORKSPACE_DIR=$HOME/tensorrt-edgellm-workspace
-export TTS_MODEL=Qwen3-TTS-12Hz-1.7B-CustomVoice
-export ONNX_OUTPUT_DIR=$WORKSPACE_DIR/$TTS_MODEL/onnx
+export MODEL_ID=Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
+export MODEL_ROOT=$WORKSPACE_DIR/Qwen3-TTS-12Hz-1.7B-CustomVoice
 
 tensorrt-edgellm-export \
-    Qwen/$TTS_MODEL \
-    $ONNX_OUTPUT_DIR
+    "$MODEL_ID" \
+    "$MODEL_ROOT/onnx"
 ```
 
 ### Expected Export Output
 
 ```
-$ONNX_OUTPUT_DIR/
+$MODEL_ROOT/onnx/
 ├── llm/
 │   ├── model.onnx + model.onnx.data       # Talker ONNX
 │   ├── config.json                        # model_type: qwen3_tts_talker
@@ -51,7 +63,8 @@ $ONNX_OUTPUT_DIR/
 ### Transfer to Device
 
 ```bash
-scp -r $ONNX_OUTPUT_DIR <user>@<device>:~/tensorrt-edgellm-workspace/$TTS_MODEL/
+scp -r "$MODEL_ROOT/onnx" \
+    <user>@<device>:~/tensorrt-edgellm-workspace/Qwen3-TTS-12Hz-1.7B-CustomVoice/
 ```
 
 ---
@@ -63,9 +76,9 @@ Three engine builds are required. Run these on the edge device.
 ```bash
 cd /path/to/TensorRT-Edge-LLM
 export WORKSPACE_DIR=$HOME/tensorrt-edgellm-workspace
-export TTS_MODEL=Qwen3-TTS-12Hz-1.7B-CustomVoice
-export ONNX=$WORKSPACE_DIR/$TTS_MODEL/onnx
-export ENG=$WORKSPACE_DIR/$TTS_MODEL/engines
+export MODEL_ROOT=$WORKSPACE_DIR/Qwen3-TTS-12Hz-1.7B-CustomVoice
+export ONNX=$MODEL_ROOT/onnx
+export ENG=$MODEL_ROOT/engines
 
 # 1. Build Talker LLM engine
 ./build/examples/llm/llm_build \
@@ -133,14 +146,123 @@ Each request specifies a `messages` array and an optional per-request `speaker`.
 | `repetition_penalty` | 1.05 | Penalize repeated codec tokens |
 | `max_audio_length` | 4096 | Max codec frames per request |
 | `speaker` | config default | Top-level speaker fallback |
+| `language` | `"auto"` | Top-level language fallback (see below) |
+
+### Language Conditioning (CustomVoice)
+
+CustomVoice checkpoints support explicit language conditioning: pass a `language` key
+(top-level default and/or per-request override, same convention as `speaker`) and the
+Talker prefill switches to the language-conditioned layout used by the PyTorch reference.
+
+```json
+{
+    "speaker": "vivian",
+    "language": "chinese",
+    "requests": [
+        {"messages": [{"role": "assistant", "content": "今天天气真不错。"}]},
+        {"language": "english", "messages": [{"role": "assistant", "content": "The weather is nice today."}]}
+    ]
+}
+```
+
+**Supported language names** (from the checkpoint's `codec_language_id` map): `chinese`,
+`english`, `german`, `italian`, `portuguese`, `spanish`, `japanese`, `korean`, `french`,
+`russian`, `beijing_dialect`, `sichuan_dialect`. Names are matched case-insensitively.
+
+Behavior notes:
+
+- Omitting `language` (or setting `"auto"`) keeps the historical no-language prefill —
+  output is byte-identical to engines/runtimes without language support.
+- Unknown language names log a warning and fall back to `auto`.
+- Dialect speakers (`eric` → `sichuan_dialect`, `dylan` → `beijing_dialect`) automatically
+  activate their dialect conditioning when `language` is `auto` or `chinese`, matching the
+  PyTorch reference behavior.
+- Engines exported before language support (config.json without `codec_language_id`) ignore
+  the field with a warning. Re-export with a CustomVoice checkpoint to pick up the map.
+
+### Instruction Control
+
+CustomVoice and VoiceDesign checkpoints accept a natural-language style instruction via the
+`instruct` key (top-level default and/or per-request override):
+
+```json
+{
+    "speaker": "ryan",
+    "requests": [
+        {"instruct": "Speak in a whisper, very softly",
+         "messages": [{"role": "assistant", "content": "The weather is sunny and warm."}]}
+    ]
+}
+```
+
+The instruction is wrapped as a user turn, projected through `text_projection`, and prepended
+to the Talker prefill, matching the PyTorch reference. Omitting `instruct` keeps the exact
+historical prefill.
+
+### VoiceDesign
+
+VoiceDesign checkpoints (`tts_model_type: voice_design`) design the entire voice from the
+instruction — there are no preset speakers and the prefill carries no speaker row. Export and
+build work the same as CustomVoice; requests use `instruct` (+ optional `language`) and any
+`speaker` field is ignored.
+
+### Voice Clone (Base checkpoints)
+
+Base checkpoints (`tts_model_type: base`) clone a voice from reference audio. The reference
+encoders (ECAPA speaker encoder and the Mimi speech-tokenizer encoder) run **on device as
+TensorRT engines** — export emits them automatically for Base checkpoints under
+`clone_encoders/`:
+
+```
+onnx/clone_encoders/
+├── speaker_encoder.onnx           # 24kHz wav (dynamic) -> x-vector; mel front-end folded in
+└── speech_tokenizer_encoder.onnx  # 24kHz wav (static 40s bucket) -> RVQ codes [T, 16]
+```
+
+Build them alongside the other engines:
+
+```bash
+trtexec --onnx=$ONNX/clone_encoders/speaker_encoder.onnx --fp16 \
+    --minShapes=wav:1x24000 --optShapes=wav:1x240000 --maxShapes=wav:1x960000 \
+    --saveEngine=$ENG/clone_encoders/speaker_encoder.engine
+trtexec --onnx=$ONNX/clone_encoders/speech_tokenizer_encoder.onnx --fp16 \
+    --saveEngine=$ENG/clone_encoders/speech_tokenizer_encoder.engine
+```
+
+Pass `--cloneEncoderDir=$ENG/clone_encoders` to `qwen3_tts_inference` and reference audio
+directly in requests (`ref_audio` / `ref_text`, top-level default and/or per-request):
+
+```json
+{
+    "requests": [
+        {"ref_audio": "/path/to/reference.wav",
+         "messages": [{"role": "assistant", "content": "Cloned timbre only (x-vector mode)."}]},
+        {"ref_audio": "/path/to/reference.wav",
+         "ref_text": "exact transcript of the reference audio",
+         "messages": [{"role": "assistant", "content": "Cloned timbre and prosody (ICL mode)."}]}
+    ]
+}
+```
+
+Any wav/mp3/flac sample rate is accepted (decoded and resampled to 24kHz internally).
+Omitting `ref_text` clones timbre alone from the x-vector; providing it additionally
+conditions in-context on the reference (transcript, codec codes) pair for closer prosody
+matching. References longer than 40 s are truncated for the codec encoder.
+
+### Sub-talker Sampling
+
+The CodePredictor (sub-talker) sampling is independent from the Talker and can be tuned via
+`subtalker_temperature` / `subtalker_top_k` / `subtalker_top_p`. Unset values fall back to
+the reference implementation's hardcoded `code_predictor.generate` defaults
+(temperature 1.0 / top-k 50 / top-p 0.8); they do not inherit the `talker_*` values.
 
 ### Run
 
 ```bash
 cd /path/to/TensorRT-Edge-LLM
 export WORKSPACE_DIR=$HOME/tensorrt-edgellm-workspace
-export TTS_MODEL=Qwen3-TTS-12Hz-1.7B-CustomVoice
-export ENG=$WORKSPACE_DIR/$TTS_MODEL/engines
+export MODEL_ROOT=$WORKSPACE_DIR/Qwen3-TTS-12Hz-1.7B-CustomVoice
+export ENG=$MODEL_ROOT/engines
 
 ./build/examples/omni/qwen3_tts_inference \
     --talkerEngineDir   $ENG/talker \
@@ -171,13 +293,25 @@ Generated `.wav` files are named `audio_req{N}.wav` (one per request). The outpu
 }
 ```
 
-### Streaming Mode
+### Streaming Mode (audio output)
 
-Pass `--streaming --chunkFrames=<N>` to vocode RVQ codes inline as Talker generates
+Pass `--streaming --chunkFrames=<N>` to vocode RVQ codes inline as the Talker generates
 them, rather than waiting for the full sequence. Each request receives its own
-`onChunkReady` callback inside the runtime; the CLI synchronously vocodes the chunk
-via Code2Wav and appends the PCM to a per-request WAV buffer. The final WAV file is
-written when the request finishes, identical to the non-streaming path.
+`onChunkReady` callback inside the runtime (`bs >= 1` supported, per-batch independent);
+the CLI synchronously vocodes each chunk via Code2Wav and appends the PCM to a
+per-request WAV buffer.
+
+Streaming behavior:
+
+- **RVQ codes are bit-exact** vs the non-streaming path for every chunk size — streaming
+  is purely an emission-layer change; WER is unchanged.
+- **Waveforms may differ slightly at chunk boundaries**: each chunk is vocoded
+  independently and Code2Wav resets its context per call, so a small amount of boundary
+  context is lost. Acceptable for streaming playback; use non-streaming for offline
+  comparison against reference audio.
+- Time-to-first-codec-token is invariant to `chunkFrames`; time-to-first-playable-audio
+  grows with it (one chunk must accumulate before the first Code2Wav call, ≈ `N / 12.5` s
+  of audio content plus vocode time).
 
 ```bash
 ./build/examples/omni/qwen3_tts_inference \
@@ -185,43 +319,20 @@ written when the request finishes, identical to the non-streaming path.
     --code2wavEngineDir $ENG/code2wav \
     --tokenizerDir      $ENG/talker \
     --inputFile         input.json \
-    --outputAudioDir    ./audio_output \
-    --streaming --chunkFrames=10
+    --outputAudioDir    out/ \
+    --streaming --chunkFrames=25
 ```
 
-**RVQ codes are bit-exact** vs the non-streaming path for the same input and seed —
-streaming is purely an emission-layer change. Chunk-boundary PCM samples lose a small
-amount of Code2Wav context (chunks are vocoded independently with no left-context
-overlap), so the WAV is **not** byte-identical across chunk sizes; perceptual quality
-and WER are unaffected for typical chunk sizes (≥ 10 frames).
+Works with every checkpoint family and voice-control feature above (speaker / language /
+instruct / VoiceDesign / clone). Text input is consumed whole per request; streaming
+*text* input (feeding a request's text incrementally) is not supported yet.
 
-**Choosing `chunkFrames`:** trades off TTFPA (time-to-first-playable-audio) vs vocoder
-overhead. Smaller chunks ship audio sooner but call Code2Wav more often.
-
-| `chunkFrames` | TTFPA (TTS 1.7B, single prompt) | Vocoder calls per 200 frames |
-|---------------|--------------------------------|------------------------------|
-| 1             | ~80 ms                         | 200 |
-| 10            | ~190 ms                        | 20  |
-| 50            | ~695 ms                        | 4   |
-
-`--streaming` enables per-batch independent callbacks when the input JSON bundles
-multiple requests into a Talker group (`batch_size > 1`); each request finishes and
-emits its final WAV independently.
-
-**Latency reporting:** with `--streaming`, the CLI logs `TTFC` (time-to-first-codec
-token) and `TTFPA` per request using CUDA events:
-
-```
-[stream req 0] chunks=22 frames=215 samples=412800 TTFC=19.3ms TTFPA=189.9ms
-```
-
-For `batch_size == 1` runs, `timeToFirstAudioCodeMs` and `timeToFirstPlayableAudioMs`
-are also populated in the profile JSON when `--profileOutputFile` is set.
-
----
-
-## Notes
-
-- `--code2wavEngineDir` is optional: auto-detected as `parent(talkerEngineDir)/code2wav` if not set.
-- RVQ code files (`.safetensors`) are saved alongside audio when `--outputAudioDir` is set and can be used to re-synthesize audio without re-running the TTS model.
-- `--streaming` requires an explicit `--chunkFrames=N` (no default — pick based on your latency/throughput target).
+> **Not the same as Qwen3-Omni streaming.** Both paths share the Talker/CodePredictor
+> engine framework and chunk accumulator, but they
+> expose different streaming concepts with different configuration surfaces:
+>
+> | | Qwen3-TTS (`qwen3_tts_inference`) | Qwen3-Omni (`llm_inference`) |
+> |---|---|---|
+> | What streams | audio output only (chunked vocoding of a fixed text) | the full Thinker→Talker pipeline (speech synthesis starts while the Thinker is still generating text) |
+> | Enabled via | CLI: `--streaming --chunkFrames=<N>` | input JSON: `"streaming": {"enable": true, "codec_chunk_frames": <N>, "talker_prefill_threshold": <M>}` |
+> | Chunk knob | `--chunkFrames` | `codec_chunk_frames` |

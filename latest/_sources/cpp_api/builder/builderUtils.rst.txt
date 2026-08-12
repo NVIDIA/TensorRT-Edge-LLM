@@ -1,6 +1,9 @@
 Builder Utils
 =============
 
+.. doxygenfunction:: trt_edgellm::builder::applyCompileWorkarounds
+   :project: TensorRT Edge-LLM
+
 .. doxygenfunction:: trt_edgellm::builder::createDims
    :project: TensorRT Edge-LLM
 

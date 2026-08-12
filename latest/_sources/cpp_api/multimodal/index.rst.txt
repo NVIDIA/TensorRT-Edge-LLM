@@ -8,7 +8,9 @@ API documentation for the multimodal module.
 
    audioRunner
    audioUtils
+   cloneEncoderRunner
    code2WavRunner
+   cosmos3EdgeViTRunner
    gemma4AudioRunner
    gemma4UnifiedAudioRunner
    gemma4UnifiedVisionRunner

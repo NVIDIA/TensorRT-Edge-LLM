@@ -1,0 +1,54 @@
+Dspark Kernels
+==============
+
+.. doxygenfunction:: trt_edgellm::kernel::dsparkMarkovPartialCount
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::dsparkBuildVerifyTokens
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::dsparkGreedyAccept
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::dsparkFillProposalLengths
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::dsparkComputeConfidenceAndProposalLengths
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::dsparkComputeConfidenceAndSPSProposalLengths
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::dsparkComputeConfidenceScores
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::dsparkLogitsToProbabilities
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::dsparkFillUniforms
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::dsparkVanillaMarkovSample
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::dsparkBuildMarkovLogits
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::dsparkSampleProbabilityRows
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::dsparkStoreDraftStepProbabilities
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::dsparkNormalizeTopKRows
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::dsparkSampleTopKRowsAndStore
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::dsparkSparseTopKAccept
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::dsparkProbabilisticAccept
+   :project: TensorRT Edge-LLM
+

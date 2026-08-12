@@ -8,7 +8,7 @@ quantization, ONNX export, engine build, and inference.
 
 | Model | Backbone | HF checkpoint | Recipes |
 |-------|----------|---------------|---------|
-| Qwen3-Omni-30B-A3B-Instruct | MoE (128 experts) | [`Qwen/Qwen3-Omni-30B-A3B-Instruct`](https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Instruct) | NVFP4 Thinker + Talker |
+| Qwen3-Omni-30B-A3B-Instruct | MoE (128 experts) | [`Qwen/Qwen3-Omni-30B-A3B-Instruct`](https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Instruct) | NVFP4 or INT4 AWQ Thinker + Talker; optional FP8 visual / audio encoder |
 
 Omni uses a six-engine layout:
 
@@ -23,7 +23,7 @@ Omni uses a six-engine layout:
 
 ---
 
-## Part 1: Quantize (NVFP4 Thinker + Talker)
+## Part 1: Quantize (Thinker + Talker)
 
 First set the shell variables used throughout the remaining parts:
 
@@ -38,30 +38,42 @@ export ONNX=$WORKSPACE_DIR/$OMNI_MODEL/onnx
 export ENG=$WORKSPACE_DIR/$OMNI_MODEL/engines
 ```
 
-Thinker and Talker text-MoE backbones are jointly post-training quantized
-to NVFP4 in a single ModelOpt pass. Calibration uses a multimodal dataset
-(LibriSpeech audio + MMMU images + cnn_dailymail text) chained through the
-FP16 Thinker so the Talker sees realistic `hidden_projection` /
-`text_projection` inputs. The visual encoder, audio encoder, code2wav
-vocoder, talker projections, and code-predictor head stay in FP16.
+The `llm` subcommand auto-detects Qwen3-Omni from `config.json` and
+dispatches to the joint Thinker+Talker driver. Thinker and Talker text-MoE
+backbones are jointly post-training quantized in a single ModelOpt pass.
+Calibration uses a multimodal dataset (LibriSpeech audio + MMMU images +
+cnn_dailymail text) chained through the FP16 Thinker so the Talker sees
+realistic `hidden_projection` / `text_projection` inputs. Visual encoder,
+audio encoder, code2wav vocoder, talker projections, and code-predictor
+head stay in FP16 by default.
 
 ```bash
 export QUANT_ROOT=$WORKSPACE_DIR/$OMNI_MODEL/nvfp4
 
-tensorrt-edgellm-quantize qwen3-omni \
+# NVFP4 backbone (default)
+tensorrt-edgellm-quantize llm \
     --model_dir   $HF_ROOT \
     --output_dir  $QUANT_ROOT \
-    --talker_num_audio 150 \
-    --talker_num_image 150 \
-    --talker_num_text  200
+    --quantization nvfp4
+
+# INT4 AWQ backbone
+tensorrt-edgellm-quantize llm \
+    --model_dir   $HF_ROOT \
+    --output_dir  $QUANT_ROOT \
+    --quantization int4_awq
 ```
 
-**Output:**
+**Output** — a single self-contained HF root (same layout as `$HF_ROOT`),
+consumable by `tensorrt-edgellm-export` in one shot:
 
 ```
 $QUANT_ROOT/
-├── thinker/        # standalone HF NVFP4 ckpt, model_type=qwen3_omni_moe_text
-└── talker/         # standalone HF NVFP4 ckpt, model_type=qwen3_omni_moe_talker
+├── config.json                     # model_type = qwen3_omni_moe
+├── model-00001-of-000xx.safetensors  # quantized thinker + talker text + FP16 vision / audio / code2wav / code_predictor / talker sidecars
+├── model.safetensors.index.json
+├── hf_quant_config.json
+├── modelopt_state.pt               # optional (for PyTorch QDQ verification)
+├── tokenizer + chat_template + preprocessor files
 ```
 
 ### Optional: CodePredictor FP8
@@ -76,11 +88,20 @@ per-channel weight + per-tensor static activation scales; `down_proj`, the
 on the CP's `silu(gate)*up` intermediate ([-39.5, 72.4]) drops top-1 codec
 agreement below 80%.
 
-The CP FP8 pass runs against the original HF root (independent of the
-NVFP4 Thinker / Talker checkpoints from Part 1 — CP is excluded from the
-NVFP4 pass, so this command is what quantizes it). Part 3's engine build
-consumes NVFP4 Thinker + Talker from `$QUANT_ROOT/{thinker,talker}` and
-CP FP8 from `$QUANT_ROOT/cp_fp8` side by side.
+The flag composes with the backbone quantization from Part 1 — one
+checkpoint, one export:
+
+```bash
+tensorrt-edgellm-quantize llm \
+    --model_dir   $HF_ROOT \
+    --output_dir  $QUANT_ROOT \
+    --quantization nvfp4 \
+    --cp_quantization fp8
+```
+
+To reuse an existing backbone-quantized checkpoint instead, run a CP-only
+pass against the original HF root and export just the `code_predictor`
+component from it (all other components come from the existing checkpoint):
 
 ```bash
 tensorrt-edgellm-quantize llm \
@@ -88,16 +109,10 @@ tensorrt-edgellm-quantize llm \
     --output_dir $QUANT_ROOT/cp_fp8 \
     --cp_quantization fp8 \
     --text_dataset cnn_dailymail
-```
 
-Then export the `code_predictor` component from the CP-quantized checkpoint;
-the Thinker / Talker / audio / visual / code2wav components come from the
-original HF root unchanged:
-
-```bash
 tensorrt-edgellm-export \
     --components code_predictor \
-    $QUANT_ROOT/cp_fp8 $ONNX/multimodal
+    $QUANT_ROOT/cp_fp8 $ONNX
 ```
 
 
@@ -106,63 +121,52 @@ tensorrt-edgellm-export \
 ## Part 2: Export ONNX
 
 `tensorrt-edgellm-export` exports every component the input checkpoint
-supports. By default it runs every stage; pass `--components` to restrict
-the run to a subset (useful when iterating on a single component).
+supports in a single command. By default it runs every stage; pass
+`--components` to restrict to a subset (useful when iterating on one).
 
 ### CLI reference (Omni-relevant flags)
 
 | Flag | Description |
 |------|-------------|
 | `--components LIST` | Comma-separated allow-list (`thinker,talker,code_predictor,visual,audio,code2wav,action`). Default: export every component the checkpoint supports. |
-| `--talker-sidecar-from PATH` | Path to a full HF root checkpoint. When set, the Talker stage extracts `hidden_projection.safetensors` and `text_projection.safetensors` from that root after exporting the LLM. Required because the standalone NVFP4 Talker checkpoint ships only the LLM backbone + codec embedding. |
 | `--fp8-embedding` | Write `embedding.safetensors` in FP8 E4M3 (Thinker only). |
 | `--reduced-vocab-dir DIR` | Use `vocab_map.safetensors` to shrink the LM head vocabulary. |
 | `--skip-llm`, `--skip-visual`, `--skip-audio`, `--skip-code2wav` | Negative filters: skip these components entirely (applied on top of `--components`). |
 
-### Export commands (three exports)
+### Export command
 
-The NVFP4 quantizer writes Thinker and Talker as standalone checkpoints
-(separate `config.json` per submodel). Visual / audio / code2wav /
-code_predictor remain in the original HF root.
+`$QUANT_ROOT` is a complete HF root (Thinker, Talker, projections, visual
+encoder, audio encoder, code2wav, code_predictor all consolidated), so
+one export invocation covers every component. The exporter reads
+`config.json`, dispatches per-component to the LLM / audio / visual /
+code2wav sub-exporters, and lays them out under `$ONNX` according to the
+Qwen3-Omni layout override.
 
 ```bash
 mkdir -p $ONNX
-
-# Thinker: NVFP4 standalone Thinker checkpoint -> ONNX
-tensorrt-edgellm-export $QUANT_ROOT/thinker $ONNX/thinker
-
-# Talker: NVFP4 standalone Talker checkpoint -> ONNX + projection weights
-tensorrt-edgellm-export \
-    --talker-sidecar-from $HF_ROOT \
-    $QUANT_ROOT/talker $ONNX/talker
-
-# Visual + audio + code2wav + code_predictor: all from the HF root
-tensorrt-edgellm-export \
-    --components visual,audio,code2wav,code_predictor \
-    $HF_ROOT $ONNX/multimodal
+tensorrt-edgellm-export $QUANT_ROOT $ONNX
 ```
 
 ### Expected layout
 
 ```
 $ONNX/
-├── thinker/llm/                          # Thinker MoE ONNX
+├── llm/thinker/                          # Thinker MoE ONNX
 │   ├── model.onnx + model.onnx.data
 │   ├── config.json                       # model: qwen3_omni_moe_text
 │   ├── embedding.safetensors
 │   ├── processed_chat_template.json
 │   └── tokenizer files
-├── talker/llm/                           # Talker MoE ONNX + sidecars
+├── llm/talker/                           # Talker MoE ONNX + sidecars
 │   ├── model.onnx + model.onnx.data
 │   ├── config.json                       # model: qwen3_omni_moe_talker
 │   ├── embedding.safetensors             # codec embedding
-│   ├── hidden_projection.safetensors     # extracted from HF root
-│   └── text_projection.safetensors       # extracted from HF root
-└── multimodal/
-    ├── audio/                            # audio encoder
-    ├── visual/                           # visual ViT
-    ├── code2wav/                         # codec → PCM
-    └── code_predictor/                   # codec head
+│   ├── hidden_projection.safetensors
+│   └── text_projection.safetensors
+├── llm/code_predictor/                   # codec head
+├── audio/audio_encoder/                  # audio encoder
+├── audio/code2wav/                       # codec → PCM
+└── vision/                               # visual ViT
 ```
 
 ---
@@ -174,12 +178,12 @@ Six engines total; `llm_build` covers Thinker / Talker / CodePredictor,
 the visual encoder.
 
 ```bash
-export THINKER_ONNX=$ONNX/thinker/llm
-export TALKER_ONNX=$ONNX/talker/llm
-export CP_ONNX=$ONNX/multimodal/code_predictor
-export AUDIO_ONNX=$ONNX/multimodal/audio
-export CODE2WAV_ONNX=$ONNX/multimodal/code2wav
-export VISUAL_ONNX=$ONNX/multimodal/visual
+export THINKER_ONNX=$ONNX/llm/thinker
+export TALKER_ONNX=$ONNX/llm/talker
+export CP_ONNX=$ONNX/llm/code_predictor
+export AUDIO_ONNX=$ONNX/audio/audio_encoder
+export CODE2WAV_ONNX=$ONNX/audio/code2wav
+export VISUAL_ONNX=$ONNX/vision
 ```
 
 ### Build commands
@@ -308,6 +312,24 @@ The runtime detects model_type from the engine config.
 Thinker token generation so the first audio chunk is emitted before the
 Thinker text is fully complete, significantly reducing time-to-first-audio.
 
+Streaming can also be configured per request via a top-level `streaming`
+block in the input JSON (preferred — scenarios stay self-describing; the
+CLI flag remains for ad-hoc runs and takes precedence for `enable`):
+
+```json
+"streaming": {
+  "enable": true,
+  "codec_chunk_frames": 10,
+  "talker_prefill_threshold": 4
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enable` | false | Enable Thinker-Talker streaming for this request |
+| `codec_chunk_frames` | 10 | Vocode every N Talker frames (0 = disable inline vocoding). Smaller chunks ship audio sooner but call Code2Wav more often; chunks are vocoded without left-context overlap, so very small values can degrade chunk-boundary PCM |
+| `talker_prefill_threshold` | 4 | Start Talker prefill after this many Thinker assistant tokens |
+
 ### Input file extra parameters (audio output)
 
 | Parameter            | Default        | Description |
@@ -340,8 +362,8 @@ Thinker text is fully complete, significantly reducing time-to-first-audio.
 
 ## Notes
 
-- **Calibration quality:** the default `--talker_num_{audio,image,text}`
-  values were tuned for English TTS. Reducing `--talker_num_text` below 100
+- **Calibration quality:** `--num_samples` (default 512) is split roughly
+  evenly across audio / image / text modalities. Dropping below ~128 total
   or removing modalities (audio/image) can regress both OmniBench and TTS
   WER.
 - **Talker is the critical path:** the Talker MoE is heavier per step than

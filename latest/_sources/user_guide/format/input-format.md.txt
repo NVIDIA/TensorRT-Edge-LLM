@@ -15,6 +15,8 @@ This guide describes the input JSON format for the LLM inference tool. The forma
     "num_logprobs": 0,
     "apply_chat_template": true,
     "enable_thinking": false,
+    "context_cache_lookup_policy": "use_cache",
+    "context_cache_commit_policy": "including_generated_tokens",
     "available_lora_weights": {},
     "requests": [
         {
@@ -25,7 +27,6 @@ This guide describes the input JSON format for the LLM inference tool. The forma
                 }
             ],
             "lora_name": "optional_lora_name",
-            "save_system_prompt_kv_cache": false,
             "disable_spec_decode": false,
             "logit_bias": {"456": 5.0},
             "num_logprobs": 0,
@@ -51,13 +52,20 @@ This guide describes the input JSON format for the LLM inference tool. The forma
 - **`apply_chat_template`** (default: true): Apply chat template formatting
 - **`add_generation_prompt`** (default: true): Add generation prompt token sequence
 - **`enable_thinking`** (default: false): Enable thinking mode (Qwen3+)
+- **`context_cache_lookup_policy`** (default: `"use_cache"`): Use
+  `"bypass"` to skip lookup and publication for this invocation when the
+  runtime was started with `--enableContextReuse`.
+- **`context_cache_commit_policy`** (default: `"including_generated_tokens"`):
+  Select `"prefill_state_only"` to publish only the input prefix. See
+  [KV Cache Reuse](../features/kv-cache-reuse.md).
 - **`num_logprobs`** (default: 0): Number of top log-probabilities to return per generated token. `0` disables logprobs. Maximum value is 50; values outside `[0, 50]` are rejected at input parsing. The cap applies to the per-token K of each individual request — it is **not** a cumulative budget across requests or batches: a batch simply computes at the maximum K its requests asked for, and every request in that batch receives that K. Each candidate carries `token_id`, `token` (decoded string), `bytes` (raw token bytes) and `logprob`, following OpenAI API semantics (`log(softmax(logits))`). The top-level value is the default for all requests; a request may raise it. Supported for both vanilla and EAGLE speculative decoding.
 - **`available_lora_weights`** (default: {}): Map of LoRA adapter names to file paths
 
 ### Request Fields
 - **`messages`** (required): Array of conversation messages
 - **`lora_name`** (optional): LoRA adapter name from `available_lora_weights`
-- **`save_system_prompt_kv_cache`** (optional): Cache system prompt KV for reuse
+- **`save_system_prompt_kv_cache`** (optional): Legacy compatibility field for
+  exact system-prompt caching. New deployments should use KV cache reuse.
 - **`disable_spec_decode`** (optional, default: false): Disable EAGLE speculative decoding for this request even if draft engine is loaded
 - **`logit_bias`** (optional): Request-specific sparse logit-bias map. When set, it overrides the top-level `logit_bias` default for this request.
 - **`num_logprobs`** (optional): Overrides the top-level `num_logprobs` default for this request. Applied batch-uniformly (like `disable_spec_decode`): the batch computes at the maximum value requested by any request in it.
@@ -69,9 +77,13 @@ This guide describes the input JSON format for the LLM inference tool. The forma
 
 **Content Array Format:**
 - Text: `{"type": "text", "text": "..."}`
-- Image: `{"type": "image", "image": "/path/to/image.jpg"}`
+- Image: `{"type": "image", "image": "/path/to/image.jpg"}`. Optional `"do_resize"` (default `true`): set to `false` when the image is already resized to the model's target size — the vision runner then consumes it as-is instead of resizing internally (see [Pre-resized image input](#pre-resized-image-input-do_resize-false)).
 - Audio: `{"type": "audio", "audio": "/path/to/clip.wav"}` (raw `.wav` / `.mp3` / `.flac` decoded in C++ via vendored miniaudio + in-tree mel extractor. Feature-extractor family — `whisper` / `parakeet` — is auto-derived from the engine's `audio/config.json`, mirroring HF / vLLM where FE is pinned by the model. The HTTP server in `experimental.server` accepts the same audio formats via `input_audio` / `audio_url` and routes through the same C++ mel path.)
-- Video: `{"type": "video", "video": "/path/to/video.mp4"}` *(Note: Video support is a placeholder for future releases and is not available for now)*
+- The C++ `llm_inference` CLI does not accept video content. The
+  [OpenAI-compatible server](../examples/experimental-server.md#video-input)
+  accepts `video`, `video_url`, or an explicit frame list for supported Qwen
+  and InternVL model families. The Cosmos3 policy runtime has a separate
+  observation/action contract; see the [Cosmos3 VLA guide](../examples/vla/cosmos3.md).
 
 ## Examples
 
@@ -127,6 +139,26 @@ This guide describes the input JSON format for the LLM inference tool. The forma
 }
 ```
 
+### Pre-resized Image Input (`do_resize: false`)
+
+By default the vision runner resizes every input image to the model's target size. If your pipeline already produces frames at the target size (e.g. a camera/robotics pipeline that resizes once upstream), set `"do_resize": false` on the content item to skip the runtime's internal resize:
+
+```json
+{"type": "image", "image": "/path/to/pre_resized.png", "do_resize": false}
+```
+
+The same field is available on the video content item, on the Python `ImageData` binding (`image.do_resize = False`), and on the C++ struct (`rt::imageUtils::ImageData::doResize`).
+
+**Contract for pre-resized inputs:**
+
+- Supply raw **uint8 RGB** pixels. Do **not** rescale or normalize the pixel values yourself — mean/std normalization always runs inside the runtime.
+- Dimensions must exactly match the model's resize target. The per-model target formulas are exposed as stateless C++ functions in `cpp/multimodal/imageUtils.h`. For example, for the Qwen family:
+
+  ```cpp
+  auto [targetHeight, targetWidth] = rt::imageUtils::qwenSmartResize(
+      origHeight, origWidth, patchSize, mergeSize, minImageTokensPerImage, maxImageTokensPerImage);
+  ```
+
 ### LoRA Adapters
 
 ```json
@@ -146,22 +178,6 @@ This guide describes the input JSON format for the LLM inference tool. The forma
 ```
 
 **Note:** All requests in the same batch must use the same LoRA adapter.
-
-### System Prompt KV Cache
-
-```json
-{
-    "requests": [
-        {
-            "messages": [
-                {"role": "system", "content": "Long system prompt..."},
-                {"role": "user", "content": "Question?"}
-            ],
-            "save_system_prompt_kv_cache": true
-        }
-    ]
-}
-```
 
 ### Raw Format (No Chat Template)
 
@@ -251,7 +267,7 @@ Return the top-5 most likely tokens (with log-probabilities) at each generation 
 
 The output JSON will contain a `logprobs` field alongside `output_text`:
 
-```json
+```text
 "logprobs": [
     [
         {"token_id": 3681, "token": " Paris", "bytes": [32, 80, 97, 114, 105, 115], "logprob": -0.041},

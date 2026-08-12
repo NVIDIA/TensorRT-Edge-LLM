@@ -38,3 +38,21 @@ Image Util Kernels
 .. doxygenfunction:: trt_edgellm::kernel::initFastPosEmbedQwenViT
    :project: TensorRT Edge-LLM
 
+.. doxygenfunction:: trt_edgellm::kernel::resizeImage
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::copyImageToDeviceAndResize
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::allocateResizeScratch
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::transposeToPatchNemotronViT
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::addPosEmbedNemotronViT
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::evsScoresNemotronViT
+   :project: TensorRT Edge-LLM
+

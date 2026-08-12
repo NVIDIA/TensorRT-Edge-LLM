@@ -173,6 +173,42 @@ graph LR
 
 ---
 
+### DiffusionGemma Block Diffusion
+
+DiffusionGemma uses `decoding_strategy: block_diffusion` in the deployment
+config and runs a single unified `dllm.engine` rather than the autoregressive
+one-token decode loop. The exported runtime config must identify the model as
+`diffusion_gemma_text`, set `diffusion_unified_conditioning: true`, and include
+a `diffusion_config` section with the canvas length, denoising-step budget,
+temperature schedule, entropy policy, and stability window.
+
+Runtime generation still begins with a normal prompt prefill to populate KV
+cache. Each `BlockDiffusionDecoder::decodeStep()` then initializes a denoise
+canvas, runs up to the request's effective denoise-step budget over the whole
+canvas, updates the sampled canvas with entropy-bound acceptance, and tracks
+argmax stability and accepted prefix lengths on GPU. The denoise loop does not
+copy prefix state back to the host between rounds. The final denoise round
+force-accepts the argmax canvas, then the runtime copies the final canvas and
+prefix lengths at the existing output synchronization point. The accepted
+prefix is compacted, and a causal commit pass updates KV cache and appends
+generated tokens.
+
+Requests may override only the denoising-step budget by setting either
+`diffusion_config.max_denoising_steps` or the legacy top-level
+`diffusion_max_denoising_steps` in the `llm_inference` JSON file. A missing
+value, or a value of `0`, uses the runtime default of 16 denoise steps capped by
+the engine config. An explicit positive override is clamped to the engine's
+`diffusion_config.max_denoising_steps` value, so an engine exported with a 48
+step budget can still run shorter vLLM-style 16-step requests by default while
+allowing longer explicit validation runs. See
+`tests/test_cases/llm_diffusion_gemma.json` for a minimal request file.
+
+`llm_inference` attempts decoding CUDA graph capture for DiffusionGemma the same
+way it does for other decoders. If graph capture fails, the runtime logs a
+warning and falls back to normal engine execution.
+
+---
+
 ### EAGLE Speculative Decoding (With Draft Model)
 
 When constructed with a `SpecDecodeDraftingConfig`, the runtime uses EAGLE tree-based speculative decoding for accelerated generation:

@@ -8,12 +8,10 @@ Skip this step when you already have a supported pre-quantized HuggingFace check
 
 ## Setup
 
-Install `requirements.txt` and the `tools` extra from the Installation Guide before running the quantization CLI.
+Complete [Installation](../getting_started/installation.md) with the `tools`
+extra, then verify the command:
 
 ```bash
-export EDGE_LLM_PATH=/path/to/TensorRT-Edge-LLM
-cd $EDGE_LLM_PATH
-export PYTHONPATH=$EDGE_LLM_PATH:$PYTHONPATH
 tensorrt-edgellm-quantize --help
 ```
 

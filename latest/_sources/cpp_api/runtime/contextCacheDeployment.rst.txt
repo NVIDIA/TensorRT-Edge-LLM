@@ -1,0 +1,6 @@
+Context Cache Deployment
+========================
+
+.. doxygenfunction:: trt_edgellm::rt::validateContextCacheDeployment
+   :project: TensorRT Edge-LLM
+

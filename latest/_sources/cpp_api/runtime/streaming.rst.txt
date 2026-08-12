@@ -6,6 +6,11 @@ Streaming
    :members:
    :undoc-members:
 
+.. doxygenclass:: trt_edgellm::rt::AudioStreamChannel
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
 .. doxygenclass:: trt_edgellm::rt::StreamChannelFinalizer
    :project: TensorRT Edge-LLM
    :members:
@@ -17,6 +22,11 @@ Streaming
    :undoc-members:
 
 .. doxygenstruct:: trt_edgellm::rt::StopMatchOutcome
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::AudioChunk
    :project: TensorRT Edge-LLM
    :members:
    :undoc-members:
@@ -45,5 +55,8 @@ Streaming
    :project: TensorRT Edge-LLM
 
 .. doxygenfunction:: trt_edgellm::rt::emitChunks
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::emitTokenCallbacks
    :project: TensorRT Edge-LLM
 

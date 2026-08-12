@@ -1,0 +1,6 @@
+Nvfp4 Moe Layout
+================
+
+.. doxygenfile:: kernels/weightsTransform/nvfp4/moe/common/nvfp4MoeLayout.h
+   :project: TensorRT Edge-LLM
+

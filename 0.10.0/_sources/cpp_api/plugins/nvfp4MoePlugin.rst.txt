@@ -1,0 +1,13 @@
+Nvfp4 Moe Plugin
+================
+
+.. doxygenclass:: trt_edgellm::plugins::Nvfp4MoePlugin
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::plugins::Nvfp4MoePluginCreator
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

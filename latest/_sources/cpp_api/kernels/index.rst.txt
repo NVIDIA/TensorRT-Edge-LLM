@@ -8,43 +8,59 @@ API documentation for the kernels module.
 
    NvFP4MoEUtils
    applyRopeWriteKV
+   argmaxKernel
+   attentionScaleUtils
    audioFbankKernels
    batchEvictKernels
    buildLayout
    causalConv1d
+   checkpointSourceBatch
    common
-   contextFMHARunner
    conversion
    cuteDslF16MoeRunner
-   cuteDslFFPARunner
    cuteDslFMHARunner
+   cuteDslFMHAV2Runner
+   cuteDslFmhaParams
    cuteDslGDNRunner
    cuteDslGemmNvFp4Runner
    cuteDslGemmRunner
+   cuteDslModuleLoader
    cuteDslNvfp4MoeRunner
    cuteDslNvfp4MoeSm110Runner
    cuteDslSSDRunner
+   cuteDslTensorDescriptors
    ddtreeKernels
    decoderXQARunner
    dequant
    dequantize
    dflashRuntimeKernels
+   dsparkKernels
    eagleAcceptKernels
    eagleUtilKernels
    embeddingKernels
    f16MoeSupportKernels
-   fmhaParams_v2
+   fp16LayoutConvert
+   fp16MoeAssemble
    fp4Quantize
    gdnKernelUtils
+   gdnTreeChunkKernels
    gemma4AudioAttention
    gemma4MTPRuntimeKernels
+   gptqActivationPermutation
+   gptqMarlinRepack
    imageUtilKernels
    initializeCosSinCache
+   int4CuteDslRepack
    int4GroupwiseGemm
+   int4MoeScaleRepack
+   int4PluginV1Repack
+   int4QkvScaleConcat
+   int4SourceAccessors
    kernel
    kernel_selector
    kvCacheUtilsKernels
    marlin
+   marlinRepackIndex
    marlin_dtypes
    marlin_mma
    marlin_template
@@ -56,8 +72,15 @@ API documentation for the kernels module.
    moeSigmoidGroupTopkKernels
    moeTopkSoftmaxKernels
    mtpStateScatterKernels
+   nvfp4MoeLayout
+   nvfp4MoeNormalize
+   nvfp4MoePluginGeforceTransform
+   nvfp4MoePluginTransform
+   nvfp4MoeScaleTransform
    nvfp4MoeTypes
+   nvfp4MoeWeightTransform
    nvfp4_dequant
+   nvfp4_scale
    nvfp4_tensor
    scaleConvert
    selectiveStateUpdate

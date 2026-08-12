@@ -1,0 +1,6 @@
+Moe Sigmoid Group Topk Kernels
+==============================
+
+.. doxygenfunction:: trt_edgellm::kernel::moeSigmoidGroupTopk
+   :project: TensorRT Edge-LLM
+

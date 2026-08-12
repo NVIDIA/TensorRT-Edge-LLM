@@ -4,6 +4,12 @@ Moe Marlin Indices Kernels
 .. doxygenfunction:: trt_edgellm::kernel::launchBuildMarlinIndicesKernel
    :project: TensorRT Edge-LLM
 
+.. doxygenfunction:: trt_edgellm::kernel::launchBuildDenseMarlinIndicesKernel
+   :project: TensorRT Edge-LLM
+
 .. doxygenfunction:: trt_edgellm::kernel::launchAggregateSlotOutputsKernel
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchAggregateSlotOutputsBf16Kernel
    :project: TensorRT Edge-LLM
 

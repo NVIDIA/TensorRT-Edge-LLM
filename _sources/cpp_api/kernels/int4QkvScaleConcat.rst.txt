@@ -1,0 +1,6 @@
+Int4 Qkv Scale Concat
+=====================
+
+.. doxygenfunction:: trt_edgellm::kernel::launchGptqInt4QkvScaleConcat
+   :project: TensorRT Edge-LLM
+

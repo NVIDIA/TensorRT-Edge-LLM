@@ -7,3 +7,6 @@ Selective State Update
 .. doxygenfunction:: mamba_ssm::invokeSelectiveStateUpdatePrefill
    :project: TensorRT Edge-LLM
 
+.. doxygenfunction:: mamba_ssm::invokeMambaReplayReconstruct
+   :project: TensorRT Edge-LLM
+

@@ -26,6 +26,15 @@ Pipeline Io
 .. doxygenfunction:: trt_edgellm::rt::buildTensorMap
    :project: TensorRT Edge-LLM
 
+.. doxygenfunction:: trt_edgellm::rt::buildTensorMapForDiffusionBackbone
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::bindDiffusionUnifiedBackboneTensors
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::bindDiffusionUnifiedBackboneSelfConditioningTensors
+   :project: TensorRT Edge-LLM
+
 .. doxygenfunction:: trt_edgellm::rt::buildTensorMapForSpecDecodeDraft
    :project: TensorRT Edge-LLM
 

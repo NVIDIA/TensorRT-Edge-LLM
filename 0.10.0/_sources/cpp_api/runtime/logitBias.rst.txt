@@ -1,0 +1,26 @@
+Logit Bias
+==========
+
+.. doxygenstruct:: trt_edgellm::rt::LogitBias
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::allocateLogitBias
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::setLogitBiasVocabMap
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::hasLogitBias
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::shouldRejectLogitBiasWithSpecDecode
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::prepareLogitBias
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::applyLogitBias
+   :project: TensorRT Edge-LLM
+

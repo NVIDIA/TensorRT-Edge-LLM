@@ -1,0 +1,1229 @@
+
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Cache Record &#8212; TensorRT Edge-LLM</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=03e43079" />
+    <link rel="stylesheet" type="text/css" href="../../_static/styles/nvidia-sphinx-theme.css?v=933278ad" />
+    <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../../_static/autodoc_pydantic.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/togglebutton.css?v=9c3e77be" />
+    <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=e02be394" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+
+
+
+    <script src="../../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../../_static/copybutton.js?v=65e89d2a"></script>
+    <script>let toggleHintShow = 'Click to show';</script>
+    <script>let toggleHintHide = 'Click to hide';</script>
+    <script>let toggleOpenOnPrint = 'true';</script>
+    <script src="../../_static/togglebutton.js?v=b8b12719"></script>
+    <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'cpp_api/runtime/cacheRecord';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.20.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = './_static/switcher.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.10.0';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner =
+            false;
+        </script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+
+    <link rel="icon" href="../../_static/favicon.png"/>
+
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="Checkpoint Reader" href="checkpointReader.html" />
+    <link rel="prev" title="Block Index" href="blockIndex.html" />
+
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.10.0" />
+  
+    
+    <script src="../../_static/searchtools.js"></script>
+    <script src="../../_static/language_data.js"></script>
+    <script src="../../searchindex.js"></script>
+  
+
+
+  </head>
+
+  <body data-default-mode="">
+
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../../_static/nvidia-logo-horiz-rgb-blk-for-screen.svg" class="logo__image only-light" alt="TensorRT Edge-LLM - Home"/>
+    <img src="../../_static/nvidia-logo-horiz-rgb-wht-for-screen.svg" class="logo__image only-dark pst-js-only" alt="TensorRT Edge-LLM - Home"/>
+  
+  
+    <p class="title logo__title">TensorRT Edge-LLM</p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+
+
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-2"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-2"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-2"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-2">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../../_static/nvidia-logo-horiz-rgb-blk-for-screen.svg" class="logo__image only-light" alt="TensorRT Edge-LLM - Home"/>
+    <img src="../../_static/nvidia-logo-horiz-rgb-wht-for-screen.svg" class="logo__image only-dark pst-js-only" alt="TensorRT Edge-LLM - Home"/>
+  
+  
+    <p class="title logo__title">TensorRT Edge-LLM</p>
+  
+</a>
+
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+
+
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-3"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-3"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-3"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-3">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+
+
+
+<nav class="bd-docs-nav bd-links"
+     aria-label="Table of Contents">
+  <p class="bd-links__title" role="heading" aria-level="1">Table of Contents</p>
+  <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../overview.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/support-matrix.html">Official Support Matrix</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/supported-models.html">Supported Models</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/quick-start-guide.html">Quick Start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/direct-engine-builder.html">Experimental ONNX-less Engine Build</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/limitations.html">Limitations and Known Issues</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Examples</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/index.html">Examples</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/speculative-decoding.html">Speculative Decoding</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/phi4.html">Phi-4-Multimodal</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/asr.html">ASR (Automatic Speech Recognition)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/tts.html">TTS (Text-to-Speech)</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../../user_guide/examples/vla/index.html">Vision-Language-Action</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../../user_guide/examples/vla/alpamayo.html">Alpamayo-R1-10B (Vision-Language-Action)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../user_guide/examples/vla/cosmos3.html">Cosmos3-Edge</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/omni.html">Omni (Audio + Vision + Speech I/O)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/experimental-server.html">Experimental High-Level Python API and Server</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/nemo-evaluator.html">Evaluate with NeMo Evaluator</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Features</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/lora.html">LoRA (Low-Rank Adaptation)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/quantization.html">Quantization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/reduce-vocab.html">Vocabulary Reduction</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/FP8KV.html">FP8 KV Cache</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/fp8-embedding.html">FP8 Embedding</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/streaming.html">Streaming Output</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/kv-cache-reuse.html">KV Cache Reuse</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Input &amp; Chat Format</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/format/input-format.html">Input JSON Format</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/format/chat-template-format.html">Chat Template Format</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Performance</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/performance/performance-benchmarks.html">Performance Benchmarks</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Software Design</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/checkpoint-export.html">Checkpoint Exporter Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/onnxless-builder.html">Experimental ONNX-less Builder Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/quantization-design.html">Quantization Package Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/engine-builder.html">Engine Builder</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/cpp-runtime-overview.html">C++ Runtime Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/llm-inference-runtime.html">LLM Inference Runtime</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/llm-streaming.html">LLM Streaming — Design</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Models</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/models/cosmos3.html">Cosmos3-Edge Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/models/nemotron3_5_asr.html">Nemotron-3.5-ASR</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Customization</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/customization-guide.html">Customization Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/calibration-datasets.html">Calibration Dataset Customization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/tensorrt-plugins.html">TensorRT Plugins Guide</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Testing</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/code-coverage.html">Code Coverage with SonarQube</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/few-layer-validation.html">Few-Layer Numeric Validation</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">APIs</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../python_api.html">Python API Reference</a></li>
+<li class="toctree-l1 current active has-children"><a class="reference internal" href="../../cpp_api.html">C++ API Reference</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
+<li class="toctree-l2 has-children"><a class="reference internal" href="../action/index.html">Action Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../action/actionModelTypes.html">Action Model Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../action/actionUtils.html">Action Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../action/alpamayo1ActionRunner.html">Alpamayo1 Action Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html">Alpamayo1 Runner Utils</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../builder/index.html">Builder Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../builder/actionBuilder.html">Action Builder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../builder/audioBuilder.html">Audio Builder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../builder/builderUtils.html">Builder Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../builder/llmBuilder.html">LLM Builder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../builder/visualBuilder.html">Visual Builder</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../common/index.html">Common Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../common/allReducePath.html">All Reduce Path</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/bindingNames.html">Binding Names</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/checkMacros.html">Check Macros</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/cudaMacros.html">CUDA Macros</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/cudaUtils.html">CUDA Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/fileUtils.html">File Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/hashUtils.html">Hash Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/inputLimits.html">Input Limits</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/logger.html">Logger</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/mathUtils.html">Math Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/mmapReader.html">MMAP Reader</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/pagedKvTypes.html">Paged KV Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/ropeUtils.html">Rope Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/safetensorsUtils.html">Safetensors Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/stringUtils.html">String Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/tensor.html">Tensor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/trtUtils.html">TRT Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/utf8.html">Utf8</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/version.html">Version</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../kernels/index.html">Kernels Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/NvFP4MoEUtils.html">Nv Fp4 Mo E Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/applyRopeWriteKV.html">Apply Rope Write KV</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/argmaxKernel.html">Argmax Kernel</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/attentionScaleUtils.html">Attention Scale Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/audioFbankKernels.html">Audio Fbank Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/batchEvictKernels.html">Batch Evict Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/buildLayout.html">Build Layout</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/causalConv1d.html">Causal Conv1d</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/checkpointSourceBatch.html">Checkpoint Source Batch</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/common.html">Common</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/conversion.html">Conversion</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslF16MoeRunner.html">Cute Dsl F16 Moe Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslFMHARunner.html">Cute Dsl FMHA Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslFMHAV2Runner.html">Cute Dsl Fmhav2 Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslFmhaParams.html">Cute Dsl FMHA Params</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGDNRunner.html">Cute Dsl Gdn Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGemmNvFp4Runner.html">Cute Dsl GEMM Nv Fp4 Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGemmRunner.html">Cute Dsl GEMM Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslModuleLoader.html">Cute Dsl Module Loader</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslNvfp4MoeRunner.html">Cute Dsl Nvfp4 Moe Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslNvfp4MoeSm110Runner.html">Cute Dsl Nvfp4 Moe Sm110 Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslSSDRunner.html">Cute Dsl Ssd Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslTensorDescriptors.html">Cute Dsl Tensor Descriptors</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/ddtreeKernels.html">Ddtree Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/decoderXQARunner.html">Decoder XQA Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/dequant.html">Dequant</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/dequantize.html">Dequantize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/dflashRuntimeKernels.html">Dflash Runtime Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/dsparkKernels.html">Dspark Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/eagleAcceptKernels.html">EAGLE Accept Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/eagleUtilKernels.html">EAGLE Util Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/embeddingKernels.html">Embedding Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/f16MoeSupportKernels.html">F16 Moe Support Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/fp16LayoutConvert.html">Fp16 Layout Convert</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/fp16MoeAssemble.html">Fp16 Moe Assemble</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/fp4Quantize.html">Fp4 Quantize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/gdnKernelUtils.html">Gdn Kernel Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/gdnTreeChunkKernels.html">Gdn Tree Chunk Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/gemma4AudioAttention.html">Gemma4 Audio Attention</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/gemma4MTPRuntimeKernels.html">Gemma4 Mtp Runtime Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/gptqActivationPermutation.html">Gptq Activation Permutation</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/gptqMarlinRepack.html">Gptq Marlin Repack</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/imageUtilKernels.html">Image Util Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/initializeCosSinCache.html">Initialize Cos Sin Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/int4CuteDslRepack.html">Int4 Cute Dsl Repack</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/int4GroupwiseGemm.html">Int4 Groupwise GEMM</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/int4MoeScaleRepack.html">Int4 Moe Scale Repack</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/int4PluginV1Repack.html">Int4 Plugin V1 Repack</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/int4QkvScaleConcat.html">Int4 Qkv Scale Concat</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/int4SourceAccessors.html">Int4 Source Accessors</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/kernel.html">Kernel</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/kernel_selector.html">Kernel Selector</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/kvCacheUtilsKernels.html">KV Cache Utils Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/marlin.html">Marlin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/marlinRepackIndex.html">Marlin Repack Index</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/marlin_dtypes.html">Marlin Dtypes</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/marlin_mma.html">Marlin Mma</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/marlin_template.html">Marlin Template</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moeActivationKernels.html">Moe Activation Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moeAlignSumKernels.html">Moe Align Sum Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moeMarlin.html">Moe Marlin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moeMarlinIndicesKernels.html">Moe Marlin Indices Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moePerExpertScaleKernels.html">Moe Per Expert Scale Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moeSigmoidGroupTopkKernels.html">Moe Sigmoid Group Topk Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moeTopkSoftmaxKernels.html">Moe Topk Softmax Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/mtpStateScatterKernels.html">Mtp State Scatter Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoeLayout.html">Nvfp4 Moe Layout</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoeNormalize.html">Nvfp4 Moe Normalize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoePluginGeforceTransform.html">Nvfp4 Moe Plugin Geforce Transform</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoePluginTransform.html">Nvfp4 Moe Plugin Transform</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoeScaleTransform.html">Nvfp4 Moe Scale Transform</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoeTypes.html">Nvfp4 Moe Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoeWeightTransform.html">Nvfp4 Moe Weight Transform</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4_dequant.html">Nvfp4 Dequant</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4_scale.html">Nvfp4 Scale</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4_tensor.html">Nvfp4 Tensor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/scaleConvert.html">Scale Convert</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/selectiveStateUpdate.html">Selective State Update</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/speculativeKernelsUtils.html">Speculative Kernels Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/ssdVarlenMetadata.html">Ssd Varlen Metadata</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/talkerMLPKernels.html">Talker Mlp Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/utilKernels.html">Util Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/vectorizedTypes.html">Vectorized Types</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../multimodal/index.html">Multimodal Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/audioRunner.html">Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/audioUtils.html">Audio Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/cloneEncoderRunner.html">Clone Encoder Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/code2WavRunner.html">Code2 Wav Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/cosmos3EdgeViTRunner.html">Cosmos3 Edge ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4AudioRunner.html">Gemma4 Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4UnifiedAudioRunner.html">Gemma4 Unified Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4UnifiedVisionRunner.html">Gemma4 Unified Vision Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4ViTRunner.html">Gemma4 ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/imageUtils.html">Image Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/internViTRunner.html">Intern ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/modelTypes.html">Model Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/multimodalRunner.html">Multimodal Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/nemotronOmniAudioRunner.html">Nemotron Omni Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/nemotronOmniViTRunner.html">Nemotron Omni ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/phi4mmViTRunner.html">Phi4mm ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwen25vlViTRunner.html">Qwen25vl ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwen3omniViTRunner.html">Qwen3omni ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwen3vlViTRunner.html">Qwen3vl ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwenViTRunner.html">Qwen ViT Runner</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../plugins/index.html">Plugins Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/allReducePlugin.html">All Reduce Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/attentionPlugin.html">Attention Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/causalConv1dPlugin.html">Causal Conv1d Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/cuteDslInt4Gemm.html">Cute Dsl Int4 GEMM</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/cuteDslInt4Gemv.html">Cute Dsl Int4 Gemv</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/dflashTargetKVCacheUpdatePlugin.html">Dflash Target KV Cache Update Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/fp16MoePlugin.html">Fp16 Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/fusedNvfp4GemmAllReducePlugin.html">Fused Nvfp4 GEMM All Reduce Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/gatedDeltaNetPlugin.html">Gated Delta Net Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/gemma4AudioAttentionPlugin.html">Gemma4 Audio Attention Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/int4GroupwiseGemmPlugin.html">Int4 Groupwise GEMM Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/int4GroupwiseGemmPluginV2.html">Int4 Groupwise GEMM Plugin V2</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/int4MoePlugin.html">Int4 Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/mambaPlugin.html">Mamba Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4A16GemmPlugin.html">Nvfp4 A16 GEMM Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4A16MoePlugin.html">Nvfp4 A16 Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4MoePlugin.html">Nvfp4 Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4MoePluginGeforce.html">Nvfp4 Moe Plugin Geforce</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/pluginUtils.html">Plugin Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/vitAttentionPlugin.html">VIT Attention Plugin</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../profiling/index.html">Profiling Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../profiling/layerProfiler.html">Layer Profiler</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../profiling/metrics.html">Metrics</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../profiling/nvtx_wrapper.html">Nvtx Wrapper</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../profiling/timer.html">Timer</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 current active has-children"><a class="reference internal" href="index.html">Runtime Module</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
+<li class="toctree-l3"><a class="reference internal" href="audioLoader.html">Audio Loader</a></li>
+<li class="toctree-l3"><a class="reference internal" href="audioUtils.html">Audio Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="blockDiffusionDecoder.html">Block Diffusion Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="blockHash.html">Block Hash</a></li>
+<li class="toctree-l3"><a class="reference internal" href="blockIndex.html">Block Index</a></li>
+<li class="toctree-l3 current active"><a class="current reference internal" href="#">Cache Record</a></li>
+<li class="toctree-l3"><a class="reference internal" href="checkpointReader.html">Checkpoint Reader</a></li>
+<li class="toctree-l3"><a class="reference internal" href="checkpointWeightAssemble.html">Checkpoint Weight Assemble</a></li>
+<li class="toctree-l3"><a class="reference internal" href="collectiveGroup.html">Collective Group</a></li>
+<li class="toctree-l3"><a class="reference internal" href="contextCacheConfig.html">Context Cache Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="contextCacheCoordinator.html">Context Cache Coordinator</a></li>
+<li class="toctree-l3"><a class="reference internal" href="contextCacheDeployment.html">Context Cache Deployment</a></li>
+<li class="toctree-l3"><a class="reference internal" href="contextCacheManager.html">Context Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="contextCacheMetrics.html">Context Cache Metrics</a></li>
+<li class="toctree-l3"><a class="reference internal" href="contextCacheRequest.html">Context Cache Request</a></li>
+<li class="toctree-l3"><a class="reference internal" href="contextCacheTypes.html">Context Cache Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="decoderRegistry.html">Decoder Registry</a></li>
+<li class="toctree-l3"><a class="reference internal" href="decoderUtils.html">Decoder Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="decodingInferenceContext.html">Decoding Inference Context</a></li>
+<li class="toctree-l3"><a class="reference internal" href="decodingStrategy.html">Decoding Strategy</a></li>
+<li class="toctree-l3"><a class="reference internal" href="deepstackBinding.html">Deepstack Binding</a></li>
+<li class="toctree-l3"><a class="reference internal" href="deploymentConfig.html">Deployment Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dflashDecodeUtils.html">Dflash Decode Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dflashDecoder.html">Dflash Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dsparkDecoder.html">Dspark Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="eagleDecoder.html">EAGLE Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="embeddingPreprocessor.html">Embedding Preprocessor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="engineExecutor.html">Engine Executor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="evictionPlanner.html">Eviction Planner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="externalWeightManager.html">External Weight Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="gemma4EmbeddingPreprocessor.html">Gemma4 Embedding Preprocessor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="gemma4MTPDecoder.html">Gemma4 Mtp Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="hybridCacheManager.html">Hybrid Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="hybridSnapshotStorage.html">Hybrid Snapshot Storage</a></li>
+<li class="toctree-l3"><a class="reference internal" href="imageUtils.html">Image Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="inferenceDims.html">Inference Dims</a></li>
+<li class="toctree-l3"><a class="reference internal" href="inferencePhase.html">Inference Phase</a></li>
+<li class="toctree-l3"><a class="reference internal" href="kvCacheManager.html">KV Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="kvPageTable.html">KV Page Table</a></li>
+<li class="toctree-l3"><a class="reference internal" href="layerDebugger.html">Layer Debugger</a></li>
+<li class="toctree-l3"><a class="reference internal" href="llmEngineConfig.html">LLM Engine Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="llmInferenceRuntime.html">LLM Inference Runtime</a></li>
+<li class="toctree-l3"><a class="reference internal" href="llmRuntimeUtils.html">LLM Runtime Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="logitBias.html">Logit Bias</a></li>
+<li class="toctree-l3"><a class="reference internal" href="loraManager.html">Lora Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="mambaCacheManager.html">Mamba Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="melSpectrogram.html">Mel Spectrogram</a></li>
+<li class="toctree-l3"><a class="reference internal" href="mtpDecoder.html">Mtp Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="multiDevicePluginCommRegistry.html">Multi Device Plugin Comm Registry</a></li>
+<li class="toctree-l3"><a class="reference internal" href="multiDevicePluginResourceFactory.html">Multi Device Plugin Resource Factory</a></li>
+<li class="toctree-l3"><a class="reference internal" href="multiDevicePluginResources.html">Multi Device Plugin Resources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="ncclCollectiveBackend.html">Nccl Collective Backend</a></li>
+<li class="toctree-l3"><a class="reference internal" href="parallelConfig.html">Parallel Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="pipelineIO.html">Pipeline Io</a></li>
+<li class="toctree-l3"><a class="reference internal" href="qwen3OmniTTSRuntime.html">Qwen3 Omni Tts Runtime</a></li>
+<li class="toctree-l3"><a class="reference internal" href="registryBuilder.html">Registry Builder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="resourcePools.html">Resource Pools</a></li>
+<li class="toctree-l3"><a class="reference internal" href="reusePlan.html">Reuse Plan</a></li>
+<li class="toctree-l3"><a class="reference internal" href="ropeCache.html">Rope Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="sharedResources.html">Shared Resources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="stepPreparer.html">Step Preparer</a></li>
+<li class="toctree-l3"><a class="reference internal" href="streaming.html">Streaming</a></li>
+<li class="toctree-l3"><a class="reference internal" href="systemPromptKVCache.html">System Prompt KV Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="tensorMap.html">Tensor Map</a></li>
+<li class="toctree-l3"><a class="reference internal" href="tensorParallelNcclResources.html">Tensor Parallel Nccl Resources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="tensorParallelPluginResources.html">Tensor Parallel Plugin Resources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="tensorRegistry.html">Tensor Registry</a></li>
+<li class="toctree-l3"><a class="reference internal" href="vanillaDecoder.html">Vanilla Decoder</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../sampler/index.html">Sampler Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../sampler/diffusionGemmaSampling.html">Diffusion Gemma Sampling</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../sampler/sampling.html">Sampling</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../tokenizer/index.html">Tokenizer Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../tokenizer/preTokenizer.html">Pre Tokenizer</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../tokenizer/tokenEncoder.html">Token Encoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../tokenizer/tokenizer.html">Tokenizer</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../tokenizer/tokenizerUtils.html">Tokenizer Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../tokenizer/unicodeData.html">Unicode Data</a></li>
+</ul>
+</details></li>
+</ul>
+</details></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Quick Links</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference external" href="https://github.com/NVIDIA/TensorRT-Edge-LLM/releases">Releases</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/NVIDIA/TensorRT-Edge-LLM">GitHub</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/NVIDIA/TensorRT-Edge-LLM/issues?q=is%3Aissue%20state%3Aopen%20label%3ARoadmap">Roadmap</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+  </div>
+
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="../../cpp_api.html" class="nav-link">C++ API Reference</a></li>
+    
+    
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Runtime Module</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Cache Record</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="cache-record">
+<h1>Cache Record<a class="headerlink" href="#cache-record" title="Link to this heading">#</a></h1>
+<dl class="cpp class">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt16CacheRecordStoreE">
+<span id="_CPPv3N11trt_edgellm2rt16CacheRecordStoreE"></span><span id="_CPPv2N11trt_edgellm2rt16CacheRecordStoreE"></span><span id="trt_edgellm::rt::CacheRecordStore"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1CacheRecordStore"></span><span class="k"><span class="pre">class</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">CacheRecordStore</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt16CacheRecordStoreE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Owns complete cache records and their exact-key and record-level LRU indexes.</p>
+<p>The store owns host metadata but does not modify <a class="reference internal" href="resourcePools.html#classtrt__edgellm_1_1rt_1_1ResourcePools"><span class="std std-ref">ResourcePools</span></a> references or base/draft lookup indices; those cross-component updates belong to <a class="reference internal" href="contextCacheManager.html#classtrt__edgellm_1_1rt_1_1ContextCacheManager"><span class="std std-ref">ContextCacheManager</span></a>. Insertion updates the record map, exact-key index, and LRU as one transaction. An exact duplicate reuses the existing record and promotes it to MRU. </p>
+<div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-functions">Public Functions</p>
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt16CacheRecordStore16CacheRecordStoreE7int32_t">
+<span id="_CPPv3N11trt_edgellm2rt16CacheRecordStore16CacheRecordStoreE7int32_t"></span><span id="_CPPv2N11trt_edgellm2rt16CacheRecordStore16CacheRecordStoreE7int32_t"></span><span id="trt_edgellm::rt::CacheRecordStore::CacheRecordStore__int32_t"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1CacheRecordStore_1a0b4fba1633492da155adaef1c5226b49"></span><span class="k"><span class="pre">explicit</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">CacheRecordStore</span></span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">maxRecords</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt16CacheRecordStore16CacheRecordStoreE7int32_t" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt16CacheRecordStore16CacheRecordStoreERK16CacheRecordStore">
+<span id="_CPPv3N11trt_edgellm2rt16CacheRecordStore16CacheRecordStoreERK16CacheRecordStore"></span><span id="_CPPv2N11trt_edgellm2rt16CacheRecordStore16CacheRecordStoreERK16CacheRecordStore"></span><span id="trt_edgellm::rt::CacheRecordStore::CacheRecordStore__CacheRecordStoreCR"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1CacheRecordStore_1ae85d9f41b083744dacefb3452b50b31c"></span><span class="sig-name descname"><span class="n"><span class="pre">CacheRecordStore</span></span></span><span class="sig-paren">(</span><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt16CacheRecordStore16CacheRecordStoreERK16CacheRecordStore" title="trt_edgellm::rt::CacheRecordStore::CacheRecordStore"><span class="n"><span class="pre">CacheRecordStore</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="p"><span class="pre">&amp;</span></span></em><span class="sig-paren">)</span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="k"><span class="pre">delete</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt16CacheRecordStore16CacheRecordStoreERK16CacheRecordStore" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt16CacheRecordStoreaSERK16CacheRecordStore">
+<span id="_CPPv3N11trt_edgellm2rt16CacheRecordStoreaSERK16CacheRecordStore"></span><span id="_CPPv2N11trt_edgellm2rt16CacheRecordStoreaSERK16CacheRecordStore"></span><span id="trt_edgellm::rt::CacheRecordStore::assign-operator__CacheRecordStoreCR"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1CacheRecordStore_1aaac91b41e82b75d14abc6bc24283139b"></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt16CacheRecordStoreE" title="trt_edgellm::rt::CacheRecordStore"><span class="n"><span class="pre">CacheRecordStore</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="k"><span class="pre">operator</span></span><span class="o"><span class="pre">=</span></span></span><span class="sig-paren">(</span><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt16CacheRecordStoreE" title="trt_edgellm::rt::CacheRecordStore"><span class="n"><span class="pre">CacheRecordStore</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="p"><span class="pre">&amp;</span></span></em><span class="sig-paren">)</span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="k"><span class="pre">delete</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt16CacheRecordStoreaSERK16CacheRecordStore" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt16CacheRecordStore16CacheRecordStoreERR16CacheRecordStore">
+<span id="_CPPv3N11trt_edgellm2rt16CacheRecordStore16CacheRecordStoreERR16CacheRecordStore"></span><span id="_CPPv2N11trt_edgellm2rt16CacheRecordStore16CacheRecordStoreERR16CacheRecordStore"></span><span id="trt_edgellm::rt::CacheRecordStore::CacheRecordStore__CacheRecordStoreRR"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1CacheRecordStore_1a07de2da0465ce23b8affec13ab8d4a5a"></span><span class="sig-name descname"><span class="n"><span class="pre">CacheRecordStore</span></span></span><span class="sig-paren">(</span><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt16CacheRecordStore16CacheRecordStoreERR16CacheRecordStore" title="trt_edgellm::rt::CacheRecordStore::CacheRecordStore"><span class="n"><span class="pre">CacheRecordStore</span></span></a><span class="p"><span class="pre">&amp;</span></span><span class="p"><span class="pre">&amp;</span></span></em><span class="sig-paren">)</span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="k"><span class="pre">delete</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt16CacheRecordStore16CacheRecordStoreERR16CacheRecordStore" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt16CacheRecordStoreaSERR16CacheRecordStore">
+<span id="_CPPv3N11trt_edgellm2rt16CacheRecordStoreaSERR16CacheRecordStore"></span><span id="_CPPv2N11trt_edgellm2rt16CacheRecordStoreaSERR16CacheRecordStore"></span><span id="trt_edgellm::rt::CacheRecordStore::assign-operator__CacheRecordStoreRR"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1CacheRecordStore_1a79177a83d8d606ef6f38b0ce8afa6fd3"></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt16CacheRecordStoreE" title="trt_edgellm::rt::CacheRecordStore"><span class="n"><span class="pre">CacheRecordStore</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="k"><span class="pre">operator</span></span><span class="o"><span class="pre">=</span></span></span><span class="sig-paren">(</span><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt16CacheRecordStoreE" title="trt_edgellm::rt::CacheRecordStore"><span class="n"><span class="pre">CacheRecordStore</span></span></a><span class="p"><span class="pre">&amp;</span></span><span class="p"><span class="pre">&amp;</span></span></em><span class="sig-paren">)</span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="k"><span class="pre">delete</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt16CacheRecordStoreaSERR16CacheRecordStore" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt16CacheRecordStore6insertE11CacheRecord">
+<span id="_CPPv3N11trt_edgellm2rt16CacheRecordStore6insertE11CacheRecord"></span><span id="_CPPv2N11trt_edgellm2rt16CacheRecordStore6insertE11CacheRecord"></span><span id="trt_edgellm::rt::CacheRecordStore::insert__CacheRecord"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1CacheRecordStore_1ab68e7618f46209b81e005fba6067f133"></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt18RecordInsertResultE" title="trt_edgellm::rt::RecordInsertResult"><span class="n"><span class="pre">RecordInsertResult</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">insert</span></span></span><span class="sig-paren">(</span><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt11CacheRecordE" title="trt_edgellm::rt::CacheRecord"><span class="n"><span class="pre">CacheRecord</span></span></a><span class="w"> </span><span class="n sig-param"><span class="pre">record</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt16CacheRecordStore6insertE11CacheRecord" title="Link to this definition">#</a><br /></dt>
+<dd><p>Insert with the strong exception guarantee. An exact duplicate is touched, not replaced. This store does not enforce maxRecords; the manager may hold one transient extra during atomic publication. </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm2rt16CacheRecordStore4findERK14CacheRecordKey">
+<span id="_CPPv3NK11trt_edgellm2rt16CacheRecordStore4findERK14CacheRecordKey"></span><span id="_CPPv2NK11trt_edgellm2rt16CacheRecordStore4findERK14CacheRecordKey"></span><span id="trt_edgellm::rt::CacheRecordStore::find__CacheRecordKeyCRC"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1CacheRecordStore_1a24036dccde86872e6620e55e49a5749d"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">optional</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">RecordId</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">find</span></span></span><span class="sig-paren">(</span><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt14CacheRecordKeyE" title="trt_edgellm::rt::CacheRecordKey"><span class="n"><span class="pre">CacheRecordKey</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">key</span></span></em><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm2rt16CacheRecordStore4findERK14CacheRecordKey" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm2rt16CacheRecordStore10findHybridERK19HybridCheckpointKey">
+<span id="_CPPv3NK11trt_edgellm2rt16CacheRecordStore10findHybridERK19HybridCheckpointKey"></span><span id="_CPPv2NK11trt_edgellm2rt16CacheRecordStore10findHybridERK19HybridCheckpointKey"></span><span id="trt_edgellm::rt::CacheRecordStore::findHybrid__HybridCheckpointKeyCRC"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1CacheRecordStore_1a7d5cffcaa3a8d7613b71e51835dd9625"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">optional</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">RecordId</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">findHybrid</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt19HybridCheckpointKeyE" title="trt_edgellm::rt::HybridCheckpointKey"><span class="n"><span class="pre">HybridCheckpointKey</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">key</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm2rt16CacheRecordStore10findHybridERK19HybridCheckpointKey" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm2rt16CacheRecordStore22hybridCandidateLengthsE7int32_t">
+<span id="_CPPv3NK11trt_edgellm2rt16CacheRecordStore22hybridCandidateLengthsE7int32_t"></span><span id="_CPPv2NK11trt_edgellm2rt16CacheRecordStore22hybridCandidateLengthsE7int32_t"></span><span id="trt_edgellm::rt::CacheRecordStore::hybridCandidateLengths__int32_tC"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1CacheRecordStore_1af7cf1605fcce12cb81e7c8415c1552d6"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">int32_t</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">hybridCandidateLengths</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">inputTokenCount</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm2rt16CacheRecordStore22hybridCandidateLengthsE7int32_t" title="Link to this definition">#</a><br /></dt>
+<dd><p>Ready checkpoint lengths in descending order, excluding exact-input and longer endpoints. </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm2rt16CacheRecordStore3getE8RecordId">
+<span id="_CPPv3NK11trt_edgellm2rt16CacheRecordStore3getE8RecordId"></span><span id="_CPPv2NK11trt_edgellm2rt16CacheRecordStore3getE8RecordId"></span><span id="trt_edgellm::rt::CacheRecordStore::get__RecordIdC"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1CacheRecordStore_1a6e1d7e2c46ea3f3dc21b2f4b82dd9caa"></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt11CacheRecordE" title="trt_edgellm::rt::CacheRecord"><span class="n"><span class="pre">CacheRecord</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="n"><span class="pre">get</span></span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">RecordId</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">id</span></span></em><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm2rt16CacheRecordStore3getE8RecordId" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm2rt16CacheRecordStore8containsE8RecordId">
+<span id="_CPPv3NK11trt_edgellm2rt16CacheRecordStore8containsE8RecordId"></span><span id="_CPPv2NK11trt_edgellm2rt16CacheRecordStore8containsE8RecordId"></span><span id="trt_edgellm::rt::CacheRecordStore::contains__RecordIdC"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1CacheRecordStore_1afa04e45d5d61508deadeaf432c33bba5"></span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">contains</span></span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">RecordId</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">id</span></span></em><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm2rt16CacheRecordStore8containsE8RecordId" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt16CacheRecordStore13setDraftStateE8RecordIdNSt6vectorI6PageIdEE">
+<span id="_CPPv3N11trt_edgellm2rt16CacheRecordStore13setDraftStateE8RecordIdNSt6vectorI6PageIdEE"></span><span id="_CPPv2N11trt_edgellm2rt16CacheRecordStore13setDraftStateE8RecordIdNSt6vectorI6PageIdEE"></span><span id="trt_edgellm::rt::CacheRecordStore::setDraftState__RecordId.std::vector:PageId:"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1CacheRecordStore_1a26402abef0b96c4bc73293440b86bcae"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">setDraftState</span></span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">RecordId</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">id</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">PageId</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">draftPagePath</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt16CacheRecordStore13setDraftStateE8RecordIdNSt6vectorI6PageIdEE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Attach coherent draft state to a base-only record without changing base identity or record ownership. </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt16CacheRecordStore5touchE8RecordId">
+<span id="_CPPv3N11trt_edgellm2rt16CacheRecordStore5touchE8RecordId"></span><span id="_CPPv2N11trt_edgellm2rt16CacheRecordStore5touchE8RecordId"></span><span id="trt_edgellm::rt::CacheRecordStore::touch__RecordId"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1CacheRecordStore_1afcfe5200601e33f872cc97dcc9aa9c4b"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">touch</span></span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">RecordId</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">id</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt16CacheRecordStore5touchE8RecordId" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt16CacheRecordStore5eraseE8RecordId">
+<span id="_CPPv3N11trt_edgellm2rt16CacheRecordStore5eraseE8RecordId"></span><span id="_CPPv2N11trt_edgellm2rt16CacheRecordStore5eraseE8RecordId"></span><span id="trt_edgellm::rt::CacheRecordStore::erase__RecordId"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1CacheRecordStore_1af93112423675a55c9495faffc061237a"></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt11CacheRecordE" title="trt_edgellm::rt::CacheRecord"><span class="n"><span class="pre">CacheRecord</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">erase</span></span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">RecordId</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">id</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt16CacheRecordStore5eraseE8RecordId" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm2rt16CacheRecordStore8lruToMruEv">
+<span id="_CPPv3NK11trt_edgellm2rt16CacheRecordStore8lruToMruEv"></span><span id="_CPPv2NK11trt_edgellm2rt16CacheRecordStore8lruToMruEv"></span><span id="trt_edgellm::rt::CacheRecordStore::lruToMruC"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1CacheRecordStore_1af67514b1c008cd4eb4aabeb890f473c9"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">RecordId</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">lruToMru</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm2rt16CacheRecordStore8lruToMruEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm2rt16CacheRecordStore4sizeEv">
+<span id="_CPPv3NK11trt_edgellm2rt16CacheRecordStore4sizeEv"></span><span id="_CPPv2NK11trt_edgellm2rt16CacheRecordStore4sizeEv"></span><span id="trt_edgellm::rt::CacheRecordStore::sizeC"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1CacheRecordStore_1a213397399d0d15096638ddf24181bed7"></span><span class="n"><span class="pre">size_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">size</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm2rt16CacheRecordStore4sizeEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm2rt16CacheRecordStore10maxRecordsEv">
+<span id="_CPPv3NK11trt_edgellm2rt16CacheRecordStore10maxRecordsEv"></span><span id="_CPPv2NK11trt_edgellm2rt16CacheRecordStore10maxRecordsEv"></span><span id="trt_edgellm::rt::CacheRecordStore::maxRecordsC"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1CacheRecordStore_1a23d09fdac1ed45dd2530f2bf2edb834d"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">maxRecords</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm2rt16CacheRecordStore10maxRecordsEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+</div>
+</dd></dl>
+
+<dl class="cpp struct">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt14CacheRecordKeyE">
+<span id="_CPPv3N11trt_edgellm2rt14CacheRecordKeyE"></span><span id="_CPPv2N11trt_edgellm2rt14CacheRecordKeyE"></span><span id="trt_edgellm::rt::CacheRecordKey"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1CacheRecordKey"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">CacheRecordKey</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt14CacheRecordKeyE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Exact lookup identity for one published sequence-state checkpoint.</p>
+<p>The terminal chained hash plus full-block count identifies one logical endpoint in this runtime-local cache. </p>
+<div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-members">Public Members</p>
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt14CacheRecordKey12terminalHashE">
+<span id="_CPPv3N11trt_edgellm2rt14CacheRecordKey12terminalHashE"></span><span id="_CPPv2N11trt_edgellm2rt14CacheRecordKey12terminalHashE"></span><span id="trt_edgellm::rt::CacheRecordKey::terminalHash__BlockHash"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1CacheRecordKey_1ab4eb70d105faea457e181f3a519d344a"></span><span class="n"><span class="pre">BlockHash</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">terminalHash</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt14CacheRecordKey12terminalHashE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt14CacheRecordKey14fullBlockCountE">
+<span id="_CPPv3N11trt_edgellm2rt14CacheRecordKey14fullBlockCountE"></span><span id="_CPPv2N11trt_edgellm2rt14CacheRecordKey14fullBlockCountE"></span><span id="trt_edgellm::rt::CacheRecordKey::fullBlockCount__int32_t"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1CacheRecordKey_1a95a8a1c66e0af31525e33962a6d2de5e"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">fullBlockCount</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt14CacheRecordKey14fullBlockCountE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+</div>
+</dd></dl>
+
+<dl class="cpp struct">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt19HybridCheckpointKeyE">
+<span id="_CPPv3N11trt_edgellm2rt19HybridCheckpointKeyE"></span><span id="_CPPv2N11trt_edgellm2rt19HybridCheckpointKeyE"></span><span id="trt_edgellm::rt::HybridCheckpointKey"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1HybridCheckpointKey"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">HybridCheckpointKey</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt19HybridCheckpointKeyE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Exact identity of an atomic recurrent checkpoint. </p>
+<div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-members">Public Members</p>
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt19HybridCheckpointKey17exactPrefixDigestE">
+<span id="_CPPv3N11trt_edgellm2rt19HybridCheckpointKey17exactPrefixDigestE"></span><span id="_CPPv2N11trt_edgellm2rt19HybridCheckpointKey17exactPrefixDigestE"></span><span id="trt_edgellm::rt::HybridCheckpointKey::exactPrefixDigest__BlockHash"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1HybridCheckpointKey_1a9bec31ed6b5fbac84dcc4c2c1fa5efa4"></span><span class="n"><span class="pre">BlockHash</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">exactPrefixDigest</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt19HybridCheckpointKey17exactPrefixDigestE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt19HybridCheckpointKey11exactLengthE">
+<span id="_CPPv3N11trt_edgellm2rt19HybridCheckpointKey11exactLengthE"></span><span id="_CPPv2N11trt_edgellm2rt19HybridCheckpointKey11exactLengthE"></span><span id="trt_edgellm::rt::HybridCheckpointKey::exactLength__int32_t"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1HybridCheckpointKey_1aae54c7cf20c2b1dc8e669f2882696b72"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">exactLength</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt19HybridCheckpointKey11exactLengthE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+</div>
+</dd></dl>
+
+<dl class="cpp struct">
+<dt class="sig sig-object cpp" id="_CPPv4IENSt4hashIN11trt_edgellm2rt14CacheRecordKeyEEE">
+<span id="_CPPv3IENSt4hashIN11trt_edgellm2rt14CacheRecordKeyEEE"></span><span id="_CPPv2IENSt4hashIN11trt_edgellm2rt14CacheRecordKeyEEE"></span><span class="k"><span class="pre">template</span></span><span class="p"><span class="pre">&lt;</span></span><span class="p"><span class="pre">&gt;</span></span><br /><span class="target" id="structstd_1_1hash_3_01trt__edgellm_1_1rt_1_1CacheRecordKey_01_4"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">hash</span></span></span><span class="p"><span class="pre">&lt;</span></span><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt14CacheRecordKeyE" title="trt_edgellm::rt::CacheRecordKey"><span class="n"><span class="pre">CacheRecordKey</span></span></a><span class="p"><span class="pre">&gt;</span></span><a class="headerlink" href="#_CPPv4IENSt4hashIN11trt_edgellm2rt14CacheRecordKeyEEE" title="Link to this definition">#</a><br /></dt>
+<dd><div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-functions">Public Functions</p>
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NKSt4hashIN11trt_edgellm2rt14CacheRecordKeyEEclERKN11trt_edgellm2rt14CacheRecordKeyE">
+<span id="_CPPv3NKSt4hashIN11trt_edgellm2rt14CacheRecordKeyEEclERKN11trt_edgellm2rt14CacheRecordKeyE"></span><span id="_CPPv2NKSt4hashIN11trt_edgellm2rt14CacheRecordKeyEEclERKN11trt_edgellm2rt14CacheRecordKeyE"></span><span id="std::hash:trt_edgellm::rt::CacheRecordKey:::call-operator__trt_edgellm::rt::CacheRecordKeyCRC"></span><span class="target" id="structstd_1_1hash_3_01trt__edgellm_1_1rt_1_1CacheRecordKey_01_4_1a645e882c9fb31ee1a32728112cb68418"></span><span class="k"><span class="pre">inline</span></span><span class="w"> </span><span class="n"><span class="pre">size_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="k"><span class="pre">operator</span></span><span class="o"><span class="pre">()</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt14CacheRecordKeyE" title="trt_edgellm::rt::CacheRecordKey"><span class="n"><span class="pre">CacheRecordKey</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">key</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4NKSt4hashIN11trt_edgellm2rt14CacheRecordKeyEEclERKN11trt_edgellm2rt14CacheRecordKeyE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+</div>
+</dd></dl>
+
+<dl class="cpp struct">
+<dt class="sig sig-object cpp" id="_CPPv4IENSt4hashIN11trt_edgellm2rt19HybridCheckpointKeyEEE">
+<span id="_CPPv3IENSt4hashIN11trt_edgellm2rt19HybridCheckpointKeyEEE"></span><span id="_CPPv2IENSt4hashIN11trt_edgellm2rt19HybridCheckpointKeyEEE"></span><span class="k"><span class="pre">template</span></span><span class="p"><span class="pre">&lt;</span></span><span class="p"><span class="pre">&gt;</span></span><br /><span class="target" id="structstd_1_1hash_3_01trt__edgellm_1_1rt_1_1HybridCheckpointKey_01_4"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">hash</span></span></span><span class="p"><span class="pre">&lt;</span></span><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt19HybridCheckpointKeyE" title="trt_edgellm::rt::HybridCheckpointKey"><span class="n"><span class="pre">HybridCheckpointKey</span></span></a><span class="p"><span class="pre">&gt;</span></span><a class="headerlink" href="#_CPPv4IENSt4hashIN11trt_edgellm2rt19HybridCheckpointKeyEEE" title="Link to this definition">#</a><br /></dt>
+<dd><div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-functions">Public Functions</p>
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NKSt4hashIN11trt_edgellm2rt19HybridCheckpointKeyEEclERKN11trt_edgellm2rt19HybridCheckpointKeyE">
+<span id="_CPPv3NKSt4hashIN11trt_edgellm2rt19HybridCheckpointKeyEEclERKN11trt_edgellm2rt19HybridCheckpointKeyE"></span><span id="_CPPv2NKSt4hashIN11trt_edgellm2rt19HybridCheckpointKeyEEclERKN11trt_edgellm2rt19HybridCheckpointKeyE"></span><span id="std::hash:trt_edgellm::rt::HybridCheckpointKey:::call-operator__trt_edgellm::rt::HybridCheckpointKeyCRC"></span><span class="target" id="structstd_1_1hash_3_01trt__edgellm_1_1rt_1_1HybridCheckpointKey_01_4_1a9ad5ef43aa08f497b38a9735ecce9c1b"></span><span class="k"><span class="pre">inline</span></span><span class="w"> </span><span class="n"><span class="pre">size_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="k"><span class="pre">operator</span></span><span class="o"><span class="pre">()</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt19HybridCheckpointKeyE" title="trt_edgellm::rt::HybridCheckpointKey"><span class="n"><span class="pre">HybridCheckpointKey</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">key</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4NKSt4hashIN11trt_edgellm2rt19HybridCheckpointKeyEEclERKN11trt_edgellm2rt19HybridCheckpointKeyE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+</div>
+</dd></dl>
+
+<dl class="cpp struct">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt11CacheRecordE">
+<span id="_CPPv3N11trt_edgellm2rt11CacheRecordE"></span><span id="_CPPv2N11trt_edgellm2rt11CacheRecordE"></span><span id="trt_edgellm::rt::CacheRecord"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1CacheRecord"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">CacheRecord</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt11CacheRecordE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Complete reusable state retained at one publication endpoint.</p>
+<p>A record stores a full base path, an optional equally long coherent draft path, and any recurrent or partial-page snapshots. <a class="reference internal" href="contextCacheManager.html#classtrt__edgellm_1_1rt_1_1ContextCacheManager"><span class="std std-ref">ContextCacheManager</span></a> gives each listed resource one cache reference, so evicting a branch releases only that record’s ownership while shared ancestors remain resident through other records. </p>
+<div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-functions">Public Functions</p>
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm2rt11CacheRecord9resourcesEv">
+<span id="_CPPv3NK11trt_edgellm2rt11CacheRecord9resourcesEv"></span><span id="_CPPv2NK11trt_edgellm2rt11CacheRecord9resourcesEv"></span><span id="trt_edgellm::rt::CacheRecord::resourcesC"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1CacheRecord_1aaf58048c281b89bb61aa0206fe541e5b"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><a class="reference internal" href="contextCacheTypes.html#_CPPv4N11trt_edgellm2rt10ResourceIdE" title="trt_edgellm::rt::ResourceId"><span class="n"><span class="pre">ResourceId</span></span></a><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">resources</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm2rt11CacheRecord9resourcesEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm2rt11CacheRecord9hybridKeyEv">
+<span id="_CPPv3NK11trt_edgellm2rt11CacheRecord9hybridKeyEv"></span><span id="_CPPv2NK11trt_edgellm2rt11CacheRecord9hybridKeyEv"></span><span id="trt_edgellm::rt::CacheRecord::hybridKeyC"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1CacheRecord_1a597f1123c347b25ac8dbf29327142dd6"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">optional</span></span><span class="p"><span class="pre">&lt;</span></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt19HybridCheckpointKeyE" title="trt_edgellm::rt::HybridCheckpointKey"><span class="n"><span class="pre">HybridCheckpointKey</span></span></a><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">hybridKey</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm2rt11CacheRecord9hybridKeyEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+</div>
+<div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-members">Public Members</p>
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt11CacheRecord2idE">
+<span id="_CPPv3N11trt_edgellm2rt11CacheRecord2idE"></span><span id="_CPPv2N11trt_edgellm2rt11CacheRecord2idE"></span><span id="trt_edgellm::rt::CacheRecord::id__RecordId"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1CacheRecord_1a7fa94e923749dbbcefc868c653ad45c6"></span><span class="n"><span class="pre">RecordId</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">id</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt11CacheRecord2idE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt11CacheRecord3keyE">
+<span id="_CPPv3N11trt_edgellm2rt11CacheRecord3keyE"></span><span id="_CPPv2N11trt_edgellm2rt11CacheRecord3keyE"></span><span id="trt_edgellm::rt::CacheRecord::key__CacheRecordKey"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1CacheRecord_1a0882f2cf5d770d6cff5b9424c1b02b99"></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt14CacheRecordKeyE" title="trt_edgellm::rt::CacheRecordKey"><span class="n"><span class="pre">CacheRecordKey</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">key</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt11CacheRecord3keyE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt11CacheRecord18logicalBlockHashesE">
+<span id="_CPPv3N11trt_edgellm2rt11CacheRecord18logicalBlockHashesE"></span><span id="_CPPv2N11trt_edgellm2rt11CacheRecord18logicalBlockHashesE"></span><span id="trt_edgellm::rt::CacheRecord::logicalBlockHashes__std::vector:BlockHash:"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1CacheRecord_1ac06024f11d0ddc951183bde45e687349"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">BlockHash</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">logicalBlockHashes</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt11CacheRecord18logicalBlockHashesE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt11CacheRecord12basePagePathE">
+<span id="_CPPv3N11trt_edgellm2rt11CacheRecord12basePagePathE"></span><span id="_CPPv2N11trt_edgellm2rt11CacheRecord12basePagePathE"></span><span id="trt_edgellm::rt::CacheRecord::basePagePath__std::vector:PageId:"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1CacheRecord_1a6fda7b0cdd408e765f536f843e8b08f3"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">PageId</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">basePagePath</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt11CacheRecord12basePagePathE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt11CacheRecord13draftPagePathE">
+<span id="_CPPv3N11trt_edgellm2rt11CacheRecord13draftPagePathE"></span><span id="_CPPv2N11trt_edgellm2rt11CacheRecord13draftPagePathE"></span><span id="trt_edgellm::rt::CacheRecord::draftPagePath__std::vector:PageId:"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1CacheRecord_1a3f6d0d6a080d71215437c494b89652d8"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">PageId</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">draftPagePath</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt11CacheRecord13draftPagePathE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt11CacheRecord21recurrentSnapshotSlotE">
+<span id="_CPPv3N11trt_edgellm2rt11CacheRecord21recurrentSnapshotSlotE"></span><span id="_CPPv2N11trt_edgellm2rt11CacheRecord21recurrentSnapshotSlotE"></span><span id="trt_edgellm::rt::CacheRecord::recurrentSnapshotSlot__std::optional:int32_t:"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1CacheRecord_1acce3f7f887dfee07841824b09d242744"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">optional</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">int32_t</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">recurrentSnapshotSlot</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt11CacheRecord21recurrentSnapshotSlotE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt11CacheRecord21partialKvSnapshotSlotE">
+<span id="_CPPv3N11trt_edgellm2rt11CacheRecord21partialKvSnapshotSlotE"></span><span id="_CPPv2N11trt_edgellm2rt11CacheRecord21partialKvSnapshotSlotE"></span><span id="trt_edgellm::rt::CacheRecord::partialKvSnapshotSlot__std::optional:int32_t:"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1CacheRecord_1ac4b8178359d0166c725ad8c93d1e46b8"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">optional</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">int32_t</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">partialKvSnapshotSlot</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt11CacheRecord21partialKvSnapshotSlotE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt11CacheRecord21exactCheckpointLengthE">
+<span id="_CPPv3N11trt_edgellm2rt11CacheRecord21exactCheckpointLengthE"></span><span id="_CPPv2N11trt_edgellm2rt11CacheRecord21exactCheckpointLengthE"></span><span id="trt_edgellm::rt::CacheRecord::exactCheckpointLength__std::optional:int32_t:"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1CacheRecord_1a73d5048bc19152ed7b43db5804b9db82"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">optional</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">int32_t</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">exactCheckpointLength</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt11CacheRecord21exactCheckpointLengthE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+</div>
+</dd></dl>
+
+<dl class="cpp struct">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt18RecordInsertResultE">
+<span id="_CPPv3N11trt_edgellm2rt18RecordInsertResultE"></span><span id="_CPPv2N11trt_edgellm2rt18RecordInsertResultE"></span><span id="trt_edgellm::rt::RecordInsertResult"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1RecordInsertResult"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">RecordInsertResult</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt18RecordInsertResultE" title="Link to this definition">#</a><br /></dt>
+<dd><div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-members">Public Members</p>
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt18RecordInsertResult2idE">
+<span id="_CPPv3N11trt_edgellm2rt18RecordInsertResult2idE"></span><span id="_CPPv2N11trt_edgellm2rt18RecordInsertResult2idE"></span><span id="trt_edgellm::rt::RecordInsertResult::id__RecordId"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1RecordInsertResult_1a0cf4ceebf783835154a70afe359014af"></span><span class="n"><span class="pre">RecordId</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">id</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt18RecordInsertResult2idE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt18RecordInsertResult8insertedE">
+<span id="_CPPv3N11trt_edgellm2rt18RecordInsertResult8insertedE"></span><span id="_CPPv2N11trt_edgellm2rt18RecordInsertResult8insertedE"></span><span id="trt_edgellm::rt::RecordInsertResult::inserted__b"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1RecordInsertResult_1a0b65b4438b2a15c6476fed24e50b4511"></span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">inserted</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt18RecordInsertResult8insertedE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+</div>
+</dd></dl>
+
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="blockIndex.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Block Index</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="checkpointReader.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Checkpoint Reader</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+
+
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt16CacheRecordStoreE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::rt::CacheRecordStore</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt16CacheRecordStore16CacheRecordStoreE7int32_t"><code class="docutils literal notranslate"><span class="pre">CacheRecordStore()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt16CacheRecordStore16CacheRecordStoreERK16CacheRecordStore"><code class="docutils literal notranslate"><span class="pre">CacheRecordStore()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt16CacheRecordStoreaSERK16CacheRecordStore"><code class="docutils literal notranslate"><span class="pre">operator=()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt16CacheRecordStore16CacheRecordStoreERR16CacheRecordStore"><code class="docutils literal notranslate"><span class="pre">CacheRecordStore()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt16CacheRecordStoreaSERR16CacheRecordStore"><code class="docutils literal notranslate"><span class="pre">operator=()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt16CacheRecordStore6insertE11CacheRecord"><code class="docutils literal notranslate"><span class="pre">insert()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt16CacheRecordStore4findERK14CacheRecordKey"><code class="docutils literal notranslate"><span class="pre">find()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt16CacheRecordStore10findHybridERK19HybridCheckpointKey"><code class="docutils literal notranslate"><span class="pre">findHybrid()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt16CacheRecordStore22hybridCandidateLengthsE7int32_t"><code class="docutils literal notranslate"><span class="pre">hybridCandidateLengths()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt16CacheRecordStore3getE8RecordId"><code class="docutils literal notranslate"><span class="pre">get()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt16CacheRecordStore8containsE8RecordId"><code class="docutils literal notranslate"><span class="pre">contains()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt16CacheRecordStore13setDraftStateE8RecordIdNSt6vectorI6PageIdEE"><code class="docutils literal notranslate"><span class="pre">setDraftState()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt16CacheRecordStore5touchE8RecordId"><code class="docutils literal notranslate"><span class="pre">touch()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt16CacheRecordStore5eraseE8RecordId"><code class="docutils literal notranslate"><span class="pre">erase()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt16CacheRecordStore8lruToMruEv"><code class="docutils literal notranslate"><span class="pre">lruToMru()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt16CacheRecordStore4sizeEv"><code class="docutils literal notranslate"><span class="pre">size()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt16CacheRecordStore10maxRecordsEv"><code class="docutils literal notranslate"><span class="pre">maxRecords()</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt14CacheRecordKeyE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::rt::CacheRecordKey</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt14CacheRecordKey12terminalHashE"><code class="docutils literal notranslate"><span class="pre">terminalHash</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt14CacheRecordKey14fullBlockCountE"><code class="docutils literal notranslate"><span class="pre">fullBlockCount</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt19HybridCheckpointKeyE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::rt::HybridCheckpointKey</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt19HybridCheckpointKey17exactPrefixDigestE"><code class="docutils literal notranslate"><span class="pre">exactPrefixDigest</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt19HybridCheckpointKey11exactLengthE"><code class="docutils literal notranslate"><span class="pre">exactLength</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4IENSt4hashIN11trt_edgellm2rt14CacheRecordKeyEEE"><code class="docutils literal notranslate"><span class="pre">std::hash&lt;</span> <span class="pre">trt_edgellm::rt::CacheRecordKey</span> <span class="pre">&gt;</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NKSt4hashIN11trt_edgellm2rt14CacheRecordKeyEEclERKN11trt_edgellm2rt14CacheRecordKeyE"><code class="docutils literal notranslate"><span class="pre">operator()()</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4IENSt4hashIN11trt_edgellm2rt19HybridCheckpointKeyEEE"><code class="docutils literal notranslate"><span class="pre">std::hash&lt;</span> <span class="pre">trt_edgellm::rt::HybridCheckpointKey</span> <span class="pre">&gt;</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NKSt4hashIN11trt_edgellm2rt19HybridCheckpointKeyEEclERKN11trt_edgellm2rt19HybridCheckpointKeyE"><code class="docutils literal notranslate"><span class="pre">operator()()</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt11CacheRecordE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::rt::CacheRecord</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt11CacheRecord9resourcesEv"><code class="docutils literal notranslate"><span class="pre">resources()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt11CacheRecord9hybridKeyEv"><code class="docutils literal notranslate"><span class="pre">hybridKey()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt11CacheRecord2idE"><code class="docutils literal notranslate"><span class="pre">id</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt11CacheRecord3keyE"><code class="docutils literal notranslate"><span class="pre">key</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt11CacheRecord18logicalBlockHashesE"><code class="docutils literal notranslate"><span class="pre">logicalBlockHashes</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt11CacheRecord12basePagePathE"><code class="docutils literal notranslate"><span class="pre">basePagePath</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt11CacheRecord13draftPagePathE"><code class="docutils literal notranslate"><span class="pre">draftPagePath</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt11CacheRecord21recurrentSnapshotSlotE"><code class="docutils literal notranslate"><span class="pre">recurrentSnapshotSlot</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt11CacheRecord21partialKvSnapshotSlotE"><code class="docutils literal notranslate"><span class="pre">partialKvSnapshotSlot</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt11CacheRecord21exactCheckpointLengthE"><code class="docutils literal notranslate"><span class="pre">exactCheckpointLength</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt18RecordInsertResultE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::rt::RecordInsertResult</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt18RecordInsertResult2idE"><code class="docutils literal notranslate"><span class="pre">id</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt18RecordInsertResult8insertedE"><code class="docutils literal notranslate"><span class="pre">inserted</span></code></a></li>
+</ul>
+</li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+<a class="footer-brand logo" href="https://www.nvidia.com">
+  <img src="../../_static/nvidia-logo-horiz-rgb-1c-blk-for-screen.svg" class="logo__image only-light" alt="NVIDIA"/>
+  <img src="../../_static/nvidia-logo-horiz-rgb-1c-wht-for-screen.svg" class="logo__image only-dark" alt="NVIDIA"/>
+</a></div>
+      
+        <div class="footer-item">
+
+<div class="footer-links">
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/about-nvidia/privacy-policy/">Privacy Policy</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/about-nvidia/privacy-center/">Your Privacy Choices</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/about-nvidia/terms-of-service/">Terms of Service</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/about-nvidia/accessibility/">Accessibility</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/about-nvidia/company-policies/">Corporate Policies</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/product-security/">Product Security</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/contact/">Contact</a>
+  
+  
+  
+</div>
+</div>
+      
+        <div class="footer-item">
+
+
+
+
+  <p class="copyright">
+    
+      Copyright © 2025, Nvidia.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+<div class="extra_footer">
+  
+  <p>Last updated on August 12, 2026.</p>
+  
+  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/71dd1ba">71dd1ba</a>.</p>
+  
+</div></div>
+      
+    </div>
+  
+  
+  
+</div>
+
+  </footer>
+  </body>
+</html>

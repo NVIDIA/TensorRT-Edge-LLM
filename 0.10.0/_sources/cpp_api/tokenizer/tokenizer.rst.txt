@@ -1,0 +1,34 @@
+Tokenizer
+=========
+
+.. doxygenclass:: trt_edgellm::tokenizer::Tokenizer
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::tokenizer::ChatTemplateRole
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::tokenizer::ChatTemplateContentType
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::tokenizer::ChatTemplateConfig
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::tokenizer::textPartition
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::tokenizer::emitDelta
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::tokenizer::emitDeltaFlush
+   :project: TensorRT Edge-LLM
+

@@ -1,0 +1,6 @@
+Tensor Parallel Nccl Resources
+==============================
+
+.. doxygenfunction:: trt_edgellm::rt::createTensorParallelNcclResources
+   :project: TensorRT Edge-LLM
+

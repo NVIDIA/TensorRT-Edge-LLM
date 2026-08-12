@@ -36,6 +36,11 @@ LLM Runtime Utils
    :members:
    :undoc-members:
 
+.. doxygenstruct:: trt_edgellm::rt::YarnParams
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
 .. doxygenstruct:: trt_edgellm::rt::RopeConfig
    :project: TensorRT Edge-LLM
    :members:

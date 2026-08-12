@@ -4,9 +4,6 @@ Util Kernels
 .. doxygenfunction:: trt_edgellm::kernel::calCuQCuKVSeqLensAndKVEndIdxs
    :project: TensorRT Edge-LLM
 
-.. doxygenfunction:: trt_edgellm::kernel::launchBuildVisionPackedMask
-   :project: TensorRT Edge-LLM
-
 .. doxygenfunction:: trt_edgellm::kernel::launchBuildVisionBlockRanges
    :project: TensorRT Edge-LLM
 

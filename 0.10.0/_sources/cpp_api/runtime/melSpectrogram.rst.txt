@@ -1,0 +1,6 @@
+Mel Spectrogram
+===============
+
+.. doxygenfunction:: trt_edgellm::rt::audio::makeExtractorByName
+   :project: TensorRT Edge-LLM
+

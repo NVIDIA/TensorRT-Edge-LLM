@@ -6,6 +6,7 @@ API documentation for the common module.
 .. toctree::
    :maxdepth: 1
 
+   allReducePath
    bindingNames
    checkMacros
    cudaMacros
@@ -16,6 +17,7 @@ API documentation for the common module.
    logger
    mathUtils
    mmapReader
+   pagedKvTypes
    ropeUtils
    safetensorsUtils
    stringUtils

@@ -7,6 +7,9 @@ Decoder Utils
 .. doxygenfunction:: trt_edgellm::rt::decoder_utils::appendAcceptedTokens
    :project: TensorRT Edge-LLM
 
+.. doxygenfunction:: trt_edgellm::rt::decoder_utils::clampAcceptLengthsToRemainingGeneration
+   :project: TensorRT Edge-LLM
+
 .. doxygenfunction:: trt_edgellm::rt::decoder_utils::enqueueLogprobsD2H
    :project: TensorRT Edge-LLM
 

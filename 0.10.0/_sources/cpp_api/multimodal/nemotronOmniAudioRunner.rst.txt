@@ -1,0 +1,11 @@
+Nemotron Omni Audio Runner
+==========================
+
+.. doxygenstruct:: trt_edgellm::rt::NemotronOmniAudioConfig
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::produceClipMel
+   :project: TensorRT Edge-LLM
+

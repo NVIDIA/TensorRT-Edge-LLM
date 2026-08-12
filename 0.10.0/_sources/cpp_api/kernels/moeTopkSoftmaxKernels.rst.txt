@@ -1,0 +1,9 @@
+Moe Topk Softmax Kernels
+========================
+
+.. doxygenfunction:: trt_edgellm::kernel::getMoeTopkSoftmaxWorkspaceSize
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::moeTopkSoftmax
+   :project: TensorRT Edge-LLM
+

@@ -1,0 +1,13 @@
+Tensor Parallel Plugin Resources
+================================
+
+.. doxygenclass:: trt_edgellm::rt::TensorParallelPluginResources
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::TensorParallelPluginResourcesConfig
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

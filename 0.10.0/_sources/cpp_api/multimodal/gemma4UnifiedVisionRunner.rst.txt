@@ -1,0 +1,13 @@
+Gemma4 Unified Vision Runner
+============================
+
+.. doxygenclass:: trt_edgellm::rt::Gemma4UnifiedVisionRunner
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::Gemma4UnifiedVisionConfig
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

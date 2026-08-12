@@ -1,0 +1,18 @@
+Int4 Source Accessors
+=====================
+
+.. doxygenstruct:: trt_edgellm::kernel::ModelOptInt4Accessor
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::kernel::GptqInt4Accessor
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::kernel::AwqInt4Accessor
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

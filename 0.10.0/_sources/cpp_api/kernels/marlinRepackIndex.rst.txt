@@ -1,0 +1,6 @@
+Marlin Repack Index
+===================
+
+.. doxygenfile:: kernels/weightsTransform/int4/moe/gptqMarlin/marlinRepackIndex.cuh
+   :project: TensorRT Edge-LLM
+

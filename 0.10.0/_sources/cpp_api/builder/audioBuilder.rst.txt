@@ -1,0 +1,13 @@
+Audio Builder
+=============
+
+.. doxygenclass:: trt_edgellm::builder::AudioBuilder
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::builder::AudioBuilderConfig
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

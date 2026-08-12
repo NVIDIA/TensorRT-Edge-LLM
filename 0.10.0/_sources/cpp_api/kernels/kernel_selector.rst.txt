@@ -1,0 +1,6 @@
+Kernel Selector
+===============
+
+.. doxygenfile:: kernels/moe/moe_marlin/marlin_moe_wna16/kernel_selector.h
+   :project: TensorRT Edge-LLM
+

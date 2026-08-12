@@ -69,6 +69,10 @@ Supported checkpoint formats are parsed through `QuantConfig` and implemented in
 | INT8 SmoothQuant | Preserve activation/weight scale metadata needed by quantized linear layers. |
 | Mixed precision | Apply per-layer overrides from checkpoint metadata. |
 
+Set `EDGELLM_NVFP4_MOE_TARGET=sm12x` when exporting NVFP4 MoE checkpoints for
+SM120 or SM121. Use `--externalize-weights nvfp4_moe` when the engine build
+needs lower host-memory usage.
+
 For the quantization package design, see [Quantization Package Design](quantization-design.md). For usage from FP16/BF16 source checkpoints, see [Quantization](../../user_guide/features/quantization.md).
 
 ## Model and Component Dispatch

@@ -1,0 +1,43 @@
+Context Cache Coordinator
+=========================
+
+.. doxygenclass:: trt_edgellm::rt::ContextCacheCoordinator
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::rt::ContextCacheCoordinator::RequestHandle
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::ContextCachePhysicalResources
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::ContextCacheSequenceAdmission
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::ContextCacheBatchAdmission
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::ContextCacheSequenceAdvance
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::ContextCacheCoordinator::AdmissionResult
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::ContextCacheCoordinator::BeginRequestResult
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

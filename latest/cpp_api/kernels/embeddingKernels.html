@@ -28,8 +28,8 @@
   </noscript>
   
   <!-- Loaded before other Sphinx assets -->
-  <link href="../../_static/styles/theme.css?digest=a95f357e85573c9b56d5" rel="stylesheet" />
-<link href="../../_static/styles/pydata-sphinx-theme.css?digest=a95f357e85573c9b56d5" rel="stylesheet" />
+  <link href="../../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
 
     <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=03e43079" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/nvidia-sphinx-theme.css?v=933278ad" />
@@ -39,16 +39,16 @@
     <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=e02be394" />
   
   <!-- So that users can add custom icons -->
-  <script defer src="../../_static/scripts/fontawesome.js?digest=a95f357e85573c9b56d5"></script>
+  <script defer src="../../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
   <!-- Pre-loaded scripts that we'll load fully later -->
-  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=a95f357e85573c9b56d5" />
-<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=a95f357e85573c9b56d5" />
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
 
 
     <script src="../../_static/documentation_options.js?v=5929fcd5"></script>
-    <script src="../../_static/doctools.js?v=9bcbadda"></script>
-    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
     <script src="../../_static/copybutton.js?v=65e89d2a"></script>
     <script>let toggleHintShow = 'Click to show';</script>
@@ -56,12 +56,11 @@
     <script>let toggleOpenOnPrint = 'true';</script>
     <script src="../../_static/togglebutton.js?v=b8b12719"></script>
     <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
-    <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'cpp_api/kernels/embeddingKernels';</script>
     <script>
-        DOCUMENTATION_OPTIONS.theme_version = '0.19.0';
+        DOCUMENTATION_OPTIONS.theme_version = '0.20.0';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = './_static/switcher.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.9.1';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.10.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner =
             false;
         </script>
@@ -77,7 +76,7 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.9.1" />
+  <meta name="docsearch:version" content="0.10.0" />
   
     
     <script src="../../_static/searchtools.js"></script>
@@ -348,22 +347,28 @@
   <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../overview.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/support-matrix.html">Official Support Matrix</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/supported-models.html">Supported Models</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/installation.html">Installation</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/quick-start-guide.html">Quick Start Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/quick-start-guide.html">Quick Start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/direct-engine-builder.html">Experimental ONNX-less Engine Build</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/limitations.html">Limitations and Known Issues</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Examples</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/index.html">Examples</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/vlm.html">VLM (Vision-Language Model) Inference</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/speculative-decoding.html">Speculative Decoding</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/phi4.html">Phi-4-Multimodal</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/asr.html">ASR (Automatic Speech Recognition)</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/moe.html">MoE (Mixture of Experts)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/tts.html">TTS (Text-to-Speech)</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/vla.html">Alpamayo-R1-10B (Vision-Language-Action)</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../../user_guide/examples/vla/index.html">Vision-Language-Action</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../../user_guide/examples/vla/alpamayo.html">Alpamayo-R1-10B (Vision-Language-Action)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../user_guide/examples/vla/cosmos3.html">Cosmos3-Edge</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/omni.html">Omni (Audio + Vision + Speech I/O)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/experimental-server.html">Experimental High-Level Python API and Server</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/nemo-evaluator.html">Evaluate with NeMo Evaluator</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Features</span></p>
 <ul class="nav bd-sidenav">
@@ -373,7 +378,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/FP8KV.html">FP8 KV Cache</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/fp8-embedding.html">FP8 Embedding</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/streaming.html">Streaming Output</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/system-prompt-cache.html">System Prompt Cache</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/kv-cache-reuse.html">KV Cache Reuse</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Input &amp; Chat Format</span></p>
 <ul class="nav bd-sidenav">
@@ -387,11 +392,17 @@
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Software Design</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/checkpoint-export.html">Checkpoint Exporter Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/onnxless-builder.html">Experimental ONNX-less Builder Design</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/quantization-design.html">Quantization Package Design</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/engine-builder.html">Engine Builder</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/cpp-runtime-overview.html">C++ Runtime Overview</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/llm-inference-runtime.html">LLM Inference Runtime</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/llm-streaming.html">LLM Streaming — Design</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Models</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/models/cosmos3.html">Cosmos3-Edge Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/models/nemotron3_5_asr.html">Nemotron-3.5-ASR</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Customization</span></p>
 <ul class="nav bd-sidenav">
@@ -424,6 +435,7 @@
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../common/index.html">Common Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../common/allReducePath.html">All Reduce Path</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/bindingNames.html">Binding Names</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/checkMacros.html">Check Macros</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/cudaMacros.html">CUDA Macros</a></li>
@@ -434,6 +446,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../common/logger.html">Logger</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/mathUtils.html">Math Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/mmapReader.html">MMAP Reader</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/pagedKvTypes.html">Paged KV Types</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/ropeUtils.html">Rope Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/safetensorsUtils.html">Safetensors Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/stringUtils.html">String Utils</a></li>
@@ -446,43 +459,59 @@
 <li class="toctree-l2 current active has-children"><a class="reference internal" href="index.html">Kernels Module</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
 <li class="toctree-l3"><a class="reference internal" href="NvFP4MoEUtils.html">Nv Fp4 Mo E Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="applyRopeWriteKV.html">Apply Rope Write KV</a></li>
+<li class="toctree-l3"><a class="reference internal" href="argmaxKernel.html">Argmax Kernel</a></li>
+<li class="toctree-l3"><a class="reference internal" href="attentionScaleUtils.html">Attention Scale Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="audioFbankKernels.html">Audio Fbank Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="batchEvictKernels.html">Batch Evict Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="buildLayout.html">Build Layout</a></li>
 <li class="toctree-l3"><a class="reference internal" href="causalConv1d.html">Causal Conv1d</a></li>
+<li class="toctree-l3"><a class="reference internal" href="checkpointSourceBatch.html">Checkpoint Source Batch</a></li>
 <li class="toctree-l3"><a class="reference internal" href="common.html">Common</a></li>
-<li class="toctree-l3"><a class="reference internal" href="contextFMHARunner.html">Context FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="conversion.html">Conversion</a></li>
 <li class="toctree-l3"><a class="reference internal" href="cuteDslF16MoeRunner.html">Cute Dsl F16 Moe Runner</a></li>
-<li class="toctree-l3"><a class="reference internal" href="cuteDslFFPARunner.html">Cute Dsl Ffpa Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="cuteDslFMHARunner.html">Cute Dsl FMHA Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="cuteDslFMHAV2Runner.html">Cute Dsl Fmhav2 Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="cuteDslFmhaParams.html">Cute Dsl FMHA Params</a></li>
 <li class="toctree-l3"><a class="reference internal" href="cuteDslGDNRunner.html">Cute Dsl Gdn Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="cuteDslGemmNvFp4Runner.html">Cute Dsl GEMM Nv Fp4 Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="cuteDslGemmRunner.html">Cute Dsl GEMM Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="cuteDslModuleLoader.html">Cute Dsl Module Loader</a></li>
 <li class="toctree-l3"><a class="reference internal" href="cuteDslNvfp4MoeRunner.html">Cute Dsl Nvfp4 Moe Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="cuteDslNvfp4MoeSm110Runner.html">Cute Dsl Nvfp4 Moe Sm110 Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="cuteDslSSDRunner.html">Cute Dsl Ssd Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="cuteDslTensorDescriptors.html">Cute Dsl Tensor Descriptors</a></li>
 <li class="toctree-l3"><a class="reference internal" href="ddtreeKernels.html">Ddtree Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="decoderXQARunner.html">Decoder XQA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="dequant.html">Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="dequantize.html">Dequantize</a></li>
 <li class="toctree-l3"><a class="reference internal" href="dflashRuntimeKernels.html">Dflash Runtime Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dsparkKernels.html">Dspark Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="eagleAcceptKernels.html">EAGLE Accept Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="eagleUtilKernels.html">EAGLE Util Kernels</a></li>
 <li class="toctree-l3 current active"><a class="current reference internal" href="#">Embedding Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="f16MoeSupportKernels.html">F16 Moe Support Kernels</a></li>
-<li class="toctree-l3"><a class="reference internal" href="fmhaParams_v2.html">FMHA Params V2</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fp16LayoutConvert.html">Fp16 Layout Convert</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fp16MoeAssemble.html">Fp16 Moe Assemble</a></li>
 <li class="toctree-l3"><a class="reference internal" href="fp4Quantize.html">Fp4 Quantize</a></li>
 <li class="toctree-l3"><a class="reference internal" href="gdnKernelUtils.html">Gdn Kernel Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="gdnTreeChunkKernels.html">Gdn Tree Chunk Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="gemma4AudioAttention.html">Gemma4 Audio Attention</a></li>
 <li class="toctree-l3"><a class="reference internal" href="gemma4MTPRuntimeKernels.html">Gemma4 Mtp Runtime Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="gptqActivationPermutation.html">Gptq Activation Permutation</a></li>
+<li class="toctree-l3"><a class="reference internal" href="gptqMarlinRepack.html">Gptq Marlin Repack</a></li>
 <li class="toctree-l3"><a class="reference internal" href="imageUtilKernels.html">Image Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="initializeCosSinCache.html">Initialize Cos Sin Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="int4CuteDslRepack.html">Int4 Cute Dsl Repack</a></li>
 <li class="toctree-l3"><a class="reference internal" href="int4GroupwiseGemm.html">Int4 Groupwise GEMM</a></li>
+<li class="toctree-l3"><a class="reference internal" href="int4MoeScaleRepack.html">Int4 Moe Scale Repack</a></li>
+<li class="toctree-l3"><a class="reference internal" href="int4PluginV1Repack.html">Int4 Plugin V1 Repack</a></li>
+<li class="toctree-l3"><a class="reference internal" href="int4QkvScaleConcat.html">Int4 Qkv Scale Concat</a></li>
+<li class="toctree-l3"><a class="reference internal" href="int4SourceAccessors.html">Int4 Source Accessors</a></li>
 <li class="toctree-l3"><a class="reference internal" href="kernel.html">Kernel</a></li>
 <li class="toctree-l3"><a class="reference internal" href="kernel_selector.html">Kernel Selector</a></li>
 <li class="toctree-l3"><a class="reference internal" href="kvCacheUtilsKernels.html">KV Cache Utils Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="marlin.html">Marlin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="marlinRepackIndex.html">Marlin Repack Index</a></li>
 <li class="toctree-l3"><a class="reference internal" href="marlin_dtypes.html">Marlin Dtypes</a></li>
 <li class="toctree-l3"><a class="reference internal" href="marlin_mma.html">Marlin Mma</a></li>
 <li class="toctree-l3"><a class="reference internal" href="marlin_template.html">Marlin Template</a></li>
@@ -494,8 +523,15 @@
 <li class="toctree-l3"><a class="reference internal" href="moeSigmoidGroupTopkKernels.html">Moe Sigmoid Group Topk Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="moeTopkSoftmaxKernels.html">Moe Topk Softmax Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="mtpStateScatterKernels.html">Mtp State Scatter Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="nvfp4MoeLayout.html">Nvfp4 Moe Layout</a></li>
+<li class="toctree-l3"><a class="reference internal" href="nvfp4MoeNormalize.html">Nvfp4 Moe Normalize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="nvfp4MoePluginGeforceTransform.html">Nvfp4 Moe Plugin Geforce Transform</a></li>
+<li class="toctree-l3"><a class="reference internal" href="nvfp4MoePluginTransform.html">Nvfp4 Moe Plugin Transform</a></li>
+<li class="toctree-l3"><a class="reference internal" href="nvfp4MoeScaleTransform.html">Nvfp4 Moe Scale Transform</a></li>
 <li class="toctree-l3"><a class="reference internal" href="nvfp4MoeTypes.html">Nvfp4 Moe Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="nvfp4MoeWeightTransform.html">Nvfp4 Moe Weight Transform</a></li>
 <li class="toctree-l3"><a class="reference internal" href="nvfp4_dequant.html">Nvfp4 Dequant</a></li>
+<li class="toctree-l3"><a class="reference internal" href="nvfp4_scale.html">Nvfp4 Scale</a></li>
 <li class="toctree-l3"><a class="reference internal" href="nvfp4_tensor.html">Nvfp4 Tensor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="scaleConvert.html">Scale Convert</a></li>
 <li class="toctree-l3"><a class="reference internal" href="selectiveStateUpdate.html">Selective State Update</a></li>
@@ -509,7 +545,9 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../multimodal/index.html">Multimodal Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/audioRunner.html">Audio Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/audioUtils.html">Audio Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/cloneEncoderRunner.html">Clone Encoder Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/code2WavRunner.html">Code2 Wav Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/cosmos3EdgeViTRunner.html">Cosmos3 Edge ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4AudioRunner.html">Gemma4 Audio Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4UnifiedAudioRunner.html">Gemma4 Unified Audio Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4UnifiedVisionRunner.html">Gemma4 Unified Vision Runner</a></li>
@@ -531,14 +569,19 @@
 <li class="toctree-l3"><a class="reference internal" href="../plugins/allReducePlugin.html">All Reduce Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/attentionPlugin.html">Attention Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/causalConv1dPlugin.html">Causal Conv1d Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/cuteDslInt4Gemm.html">Cute Dsl Int4 GEMM</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/cuteDslInt4Gemv.html">Cute Dsl Int4 Gemv</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/dflashTargetKVCacheUpdatePlugin.html">Dflash Target KV Cache Update Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/fp16MoePlugin.html">Fp16 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/fusedNvfp4GemmAllReducePlugin.html">Fused Nvfp4 GEMM All Reduce Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/gatedDeltaNetPlugin.html">Gated Delta Net Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/gemma4AudioAttentionPlugin.html">Gemma4 Audio Attention Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/int4GroupwiseGemmPlugin.html">Int4 Groupwise GEMM Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/int4GroupwiseGemmPluginV2.html">Int4 Groupwise GEMM Plugin V2</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/int4MoePlugin.html">Int4 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/mambaPlugin.html">Mamba Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4A16GemmPlugin.html">Nvfp4 A16 GEMM Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4A16MoePlugin.html">Nvfp4 A16 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4MoePlugin.html">Nvfp4 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4MoePluginGeforce.html">Nvfp4 Moe Plugin Geforce</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/pluginUtils.html">Plugin Utils</a></li>
@@ -555,6 +598,20 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../runtime/index.html">Runtime Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/audioLoader.html">Audio Loader</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/audioUtils.html">Audio Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/blockDiffusionDecoder.html">Block Diffusion Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/blockHash.html">Block Hash</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/blockIndex.html">Block Index</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/cacheRecord.html">Cache Record</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/checkpointReader.html">Checkpoint Reader</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/checkpointWeightAssemble.html">Checkpoint Weight Assemble</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/collectiveGroup.html">Collective Group</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/contextCacheConfig.html">Context Cache Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/contextCacheCoordinator.html">Context Cache Coordinator</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/contextCacheDeployment.html">Context Cache Deployment</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/contextCacheManager.html">Context Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/contextCacheMetrics.html">Context Cache Metrics</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/contextCacheRequest.html">Context Cache Request</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/contextCacheTypes.html">Context Cache Types</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/decoderRegistry.html">Decoder Registry</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/decoderUtils.html">Decoder Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/decodingInferenceContext.html">Decoding Inference Context</a></li>
@@ -563,17 +620,21 @@
 <li class="toctree-l3"><a class="reference internal" href="../runtime/deploymentConfig.html">Deployment Config</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/dflashDecodeUtils.html">Dflash Decode Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/dflashDecoder.html">Dflash Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/dsparkDecoder.html">Dspark Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/eagleDecoder.html">EAGLE Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/embeddingPreprocessor.html">Embedding Preprocessor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/engineExecutor.html">Engine Executor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/evictionPlanner.html">Eviction Planner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/externalWeightManager.html">External Weight Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/gemma4EmbeddingPreprocessor.html">Gemma4 Embedding Preprocessor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/gemma4MTPDecoder.html">Gemma4 Mtp Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/hybridCacheManager.html">Hybrid Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/hybridSnapshotStorage.html">Hybrid Snapshot Storage</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/imageUtils.html">Image Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/inferenceDims.html">Inference Dims</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/inferencePhase.html">Inference Phase</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/kvCacheManager.html">KV Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/kvPageTable.html">KV Page Table</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/layerDebugger.html">Layer Debugger</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/llmEngineConfig.html">LLM Engine Config</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/llmInferenceRuntime.html">LLM Inference Runtime</a></li>
@@ -583,20 +644,30 @@
 <li class="toctree-l3"><a class="reference internal" href="../runtime/mambaCacheManager.html">Mamba Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/melSpectrogram.html">Mel Spectrogram</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/mtpDecoder.html">Mtp Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/multiDevicePluginCommRegistry.html">Multi Device Plugin Comm Registry</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/multiDevicePluginResourceFactory.html">Multi Device Plugin Resource Factory</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/multiDevicePluginResources.html">Multi Device Plugin Resources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/ncclCollectiveBackend.html">Nccl Collective Backend</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/parallelConfig.html">Parallel Config</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/pipelineIO.html">Pipeline Io</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/qwen3OmniTTSRuntime.html">Qwen3 Omni Tts Runtime</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/registryBuilder.html">Registry Builder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/resourcePools.html">Resource Pools</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/reusePlan.html">Reuse Plan</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/ropeCache.html">Rope Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/sharedResources.html">Shared Resources</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/stepPreparer.html">Step Preparer</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/streaming.html">Streaming</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/systemPromptKVCache.html">System Prompt KV Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/tensorMap.html">Tensor Map</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/tensorParallelNcclResources.html">Tensor Parallel Nccl Resources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/tensorParallelPluginResources.html">Tensor Parallel Plugin Resources</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/tensorRegistry.html">Tensor Registry</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/vanillaDecoder.html">Vanilla Decoder</a></li>
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../sampler/index.html">Sampler Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../sampler/diffusionGemmaSampling.html">Diffusion Gemma Sampling</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../sampler/sampling.html">Sampling</a></li>
 </ul>
 </details></li>
@@ -676,99 +747,56 @@
   <section id="embedding-kernels">
 <h1>Embedding Kernels<a class="headerlink" href="#embedding-kernels" title="Link to this heading">#</a></h1>
 <dl class="cpp function">
-<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm6kernel15embeddingLookupERKN2rt6TensorERKN2rt6TensorEN2rt19OptionalInputTensorERN2rt6TensorE12cudaStream_t">
-<span id="_CPPv3N11trt_edgellm6kernel15embeddingLookupERKN2rt6TensorERKN2rt6TensorEN2rt19OptionalInputTensorERN2rt6TensorE12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm6kernel15embeddingLookupERKN2rt6TensorERKN2rt6TensorEN2rt19OptionalInputTensorERN2rt6TensorE12cudaStream_t"></span><span id="trt_edgellm::kernel::embeddingLookup__rt::TensorCR.rt::TensorCR.rt::OptionalInputTensor.rt::TensorR.cudaStream_t"></span><span class="target" id="embeddingKernels_8cu_1a3b350d49899574ae5c11575181933772"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="speculativeKernelsUtils.html#_CPPv4N11trt_edgellm6kernelE" title="trt_edgellm::kernel"><span class="n"><span class="pre">kernel</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">embeddingLookup</span></span></span><span class="sig-paren">(</span>
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm6kernel25generateMultimodalIndicesERKN2rt6TensorERN2rt6TensorENSt8optionalI7int32_tEENSt8optionalI7int32_tEE12cudaStream_t">
+<span id="_CPPv3N11trt_edgellm6kernel25generateMultimodalIndicesERKN2rt6TensorERN2rt6TensorENSt8optionalI7int32_tEENSt8optionalI7int32_tEE12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm6kernel25generateMultimodalIndicesERKN2rt6TensorERN2rt6TensorENSt8optionalI7int32_tEENSt8optionalI7int32_tEE12cudaStream_t"></span><span id="trt_edgellm::kernel::generateMultimodalIndices__rt::TensorCR.rt::TensorR.std::optional:int32_t:.std::optional:int32_t:.cudaStream_t"></span><span class="target" id="namespacetrt__edgellm_1_1kernel_1ae510647eee5d61d0020219ab18f2fd0d"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="marlinRepackIndex.html#_CPPv4N11trt_edgellm6kernelE" title="trt_edgellm::kernel"><span class="n"><span class="pre">kernel</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">generateMultimodalIndices</span></span></span><span class="sig-paren">(</span>
 
 <dl>
 <dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">inputIds</span></span></em>,</dd>
-<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">embeddingTable</span></span></em>,</dd>
-<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">OptionalInputTensor</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">scales</span></span></em>,</dd>
-<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">output</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">multimodalIndices</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">optional</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">int32_t</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">imageTokenId</span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">nullopt</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">optional</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">int32_t</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">audioTokenId</span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">nullopt</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="k"><span class="pre">nullptr</span></span></em></dd>
 </dl>
 
-<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm6kernel15embeddingLookupERKN2rt6TensorERKN2rt6TensorEN2rt19OptionalInputTensorERN2rt6TensorE12cudaStream_t" title="Link to this definition">#</a><br /></dt>
-<dd><p>Unified embedding lookup kernel (supports FP16 and FP8 tables) </p>
-<p>Automatically dispatches to FP16 or FP8 implementation based on the embedding table’s datatype. For FP8 tables, scales must be provided for per-group dequantization.</p>
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm6kernel25generateMultimodalIndicesERKN2rt6TensorERN2rt6TensorENSt8optionalI7int32_tEENSt8optionalI7int32_tEE12cudaStream_t" title="Link to this definition">#</a><br /></dt>
+<dd><p>Generate per-position multimodal indices on-device from GPU token IDs. </p>
+<p>For each position holding an image/audio placeholder token, writes the running count of that modality’s placeholders seen so far (the row of imageEmbeds/audioEmbeds to insert); other positions get 0. Counters are global across the whole [batchSize, seqLen] range in batch-major order, matching the host <code class="docutils literal notranslate"><span class="pre">generateMultimodalIndices</span></code> reference. Runs entirely on <code class="docutils literal notranslate"><span class="pre">stream</span></code> — no host round-trip, so no D2H/H2D copy is needed to feed <code class="docutils literal notranslate"><span class="pre">embeddingLookup</span></code>/<code class="docutils literal notranslate"><span class="pre">assembleDeepstackEmbedding</span></code>.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>inputIds</strong> – <strong>[in]</strong> Input token IDs with shape [batchSize, seqLen] </p></li>
-<li><p><strong>embeddingTable</strong> – <strong>[in]</strong> Embedding table with shape [vocabSize, hiddenSize] (FP16 or FP8) </p></li>
-<li><p><strong>scales</strong> – <strong>[in]</strong> FP32 per-group scales with shape [vocabSize, hiddenSize / blockSize] Required when embeddingTable is FP8, std::nullopt for FP16 </p></li>
-<li><p><strong>output</strong> – <strong>[out]</strong> Hidden states with shape [batchSize, seqLen, hiddenSize] </p></li>
+<li><p><strong>inputIds</strong> – <strong>[in]</strong> GPU token IDs [batchSize, seqLen] (INT32) </p></li>
+<li><p><strong>multimodalIndices</strong> – <strong>[out]</strong> GPU indices [batchSize, seqLen] (INT32), same element count as inputIds </p></li>
+<li><p><strong>imageTokenId</strong> – <strong>[in]</strong> Image placeholder token id, or std::nullopt if no image </p></li>
+<li><p><strong>audioTokenId</strong> – <strong>[in]</strong> Audio placeholder token id, or std::nullopt if no audio </p></li>
 <li><p><strong>stream</strong> – <strong>[in]</strong> CUDA stream for execution </p></li>
 </ul>
-</dd>
-<dt class="field-even">Throws<span class="colon">:</span></dt>
-<dd class="field-even"><p><span><span class="cpp-expr sig sig-inline cpp"><span class="n">std</span><span class="p">::</span><span class="n">runtime_error</span></span></span> – if tensor shapes or data types are invalid, or FP8 is not supported </p>
 </dd>
 </dl>
 </dd></dl>
 
 <dl class="cpp function">
-<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm6kernel33embeddingLookupWithImageInsertionERKN2rt6TensorERKN2rt6TensorEN2rt19OptionalInputTensorERKN2rt6TensorERN2rt6TensorE12cudaStream_t">
-<span id="_CPPv3N11trt_edgellm6kernel33embeddingLookupWithImageInsertionERKN2rt6TensorERKN2rt6TensorEN2rt19OptionalInputTensorERKN2rt6TensorERN2rt6TensorE12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm6kernel33embeddingLookupWithImageInsertionERKN2rt6TensorERKN2rt6TensorEN2rt19OptionalInputTensorERKN2rt6TensorERN2rt6TensorE12cudaStream_t"></span><span id="trt_edgellm::kernel::embeddingLookupWithImageInsertion__rt::TensorCR.rt::TensorCR.rt::OptionalInputTensor.rt::TensorCR.rt::TensorR.cudaStream_t"></span><span class="target" id="embeddingKernels_8cu_1a52c54da02e417fa0ff7d94ccc77e5ecb"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="speculativeKernelsUtils.html#_CPPv4N11trt_edgellm6kernelE" title="trt_edgellm::kernel"><span class="n"><span class="pre">kernel</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">embeddingLookupWithImageInsertion</span></span></span><span class="sig-paren">(</span>
-
-<dl>
-<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">inputIds</span></span></em>,</dd>
-<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">embeddingTable</span></span></em>,</dd>
-<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">OptionalInputTensor</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">scales</span></span></em>,</dd>
-<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">imageEmbeds</span></span></em>,</dd>
-<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">output</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em>,</dd>
-</dl>
-
-<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm6kernel33embeddingLookupWithImageInsertionERKN2rt6TensorERKN2rt6TensorEN2rt19OptionalInputTensorERKN2rt6TensorERN2rt6TensorE12cudaStream_t" title="Link to this definition">#</a><br /></dt>
-<dd><p>Unified embedding lookup with image embedding insertion (supports FP16 and FP8 tables) </p>
-<p>For legacy multimodal models (Qwen2-VL, InternVL) where tokenId &gt; vocabSize indicates image tokens. Automatically dispatches to FP16 or FP8 implementation based on the embedding table’s datatype. Text tokens use the embedding table, image tokens use FP16 imageEmbeds.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>inputIds</strong> – <strong>[in]</strong> Input token IDs with shape [batchSize, seqLen] </p></li>
-<li><p><strong>embeddingTable</strong> – <strong>[in]</strong> Embedding table with shape [vocabSize, hiddenSize] (FP16 or FP8) </p></li>
-<li><p><strong>scales</strong> – <strong>[in]</strong> FP32 per-group scales with shape [vocabSize, hiddenSize / blockSize] Required when embeddingTable is FP8, std::nullopt for FP16 </p></li>
-<li><p><strong>imageEmbeds</strong> – <strong>[in]</strong> Image embeddings with shape [imageTokenLen, hiddenSize], dtype FP16 </p></li>
-<li><p><strong>output</strong> – <strong>[out]</strong> Hidden states with shape [batchSize, seqLen, hiddenSize] </p></li>
-<li><p><strong>stream</strong> – <strong>[in]</strong> CUDA stream for execution </p></li>
-</ul>
-</dd>
-<dt class="field-even">Throws<span class="colon">:</span></dt>
-<dd class="field-even"><p><span><span class="cpp-expr sig sig-inline cpp"><span class="n">std</span><span class="p">::</span><span class="n">runtime_error</span></span></span> – if tensor shapes, data types are invalid, or FP8 is not supported </p>
-</dd>
-</dl>
-</dd></dl>
-
-<dl class="cpp function">
-<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm6kernel26assembleDeepstackEmbeddingERKN2rt6TensorERKN2rt6TensorE7int32_tRN2rt6TensorE12cudaStream_t7int32_tN2rt19OptionalInputTensorE">
-<span id="_CPPv3N11trt_edgellm6kernel26assembleDeepstackEmbeddingERKN2rt6TensorERKN2rt6TensorE7int32_tRN2rt6TensorE12cudaStream_t7int32_tN2rt19OptionalInputTensorE"></span><span id="_CPPv2N11trt_edgellm6kernel26assembleDeepstackEmbeddingERKN2rt6TensorERKN2rt6TensorE7int32_tRN2rt6TensorE12cudaStream_t7int32_tN2rt19OptionalInputTensorE"></span><span id="trt_edgellm::kernel::assembleDeepstackEmbedding__rt::TensorCR.rt::TensorCR.int32_t.rt::TensorR.cudaStream_t.int32_t.rt::OptionalInputTensor"></span><span class="target" id="embeddingKernels_8cu_1a031079b66a5cbab8b27371e23f71fbee"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="speculativeKernelsUtils.html#_CPPv4N11trt_edgellm6kernelE" title="trt_edgellm::kernel"><span class="n"><span class="pre">kernel</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">assembleDeepstackEmbedding</span></span></span><span class="sig-paren">(</span>
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm6kernel26assembleDeepstackEmbeddingERKN2rt6TensorERKN2rt6TensorERN2rt6TensorE12cudaStream_t7int32_tN2rt19OptionalInputTensorE">
+<span id="_CPPv3N11trt_edgellm6kernel26assembleDeepstackEmbeddingERKN2rt6TensorERKN2rt6TensorERN2rt6TensorE12cudaStream_t7int32_tN2rt19OptionalInputTensorE"></span><span id="_CPPv2N11trt_edgellm6kernel26assembleDeepstackEmbeddingERKN2rt6TensorERKN2rt6TensorERN2rt6TensorE12cudaStream_t7int32_tN2rt19OptionalInputTensorE"></span><span id="trt_edgellm::kernel::assembleDeepstackEmbedding__rt::TensorCR.rt::TensorCR.rt::TensorR.cudaStream_t.int32_t.rt::OptionalInputTensor"></span><span class="target" id="namespacetrt__edgellm_1_1kernel_1a013c0f1a1b7b4f5e80b7ae5cec2a1625"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="marlinRepackIndex.html#_CPPv4N11trt_edgellm6kernelE" title="trt_edgellm::kernel"><span class="n"><span class="pre">kernel</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">assembleDeepstackEmbedding</span></span></span><span class="sig-paren">(</span>
 
 <dl>
 <dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">inputIds</span></span></em>,</dd>
 <dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">deepstackFeatures</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">vocabSize</span></span></em>,</dd>
 <dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">deepstackEmbeds</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">imageTokenId</span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="m"><span class="pre">0</span></span></em>,</dd>
-<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">OptionalInputTensor</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">multimodalIndices</span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">nullopt</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">OptionalInputTensor</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">multimodalIndices</span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">nullopt</span></span></em></dd>
 </dl>
 
-<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm6kernel26assembleDeepstackEmbeddingERKN2rt6TensorERKN2rt6TensorE7int32_tRN2rt6TensorE12cudaStream_t7int32_tN2rt19OptionalInputTensorE" title="Link to this definition">#</a><br /></dt>
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm6kernel26assembleDeepstackEmbeddingERKN2rt6TensorERKN2rt6TensorERN2rt6TensorE12cudaStream_t7int32_tN2rt19OptionalInputTensorE" title="Link to this definition">#</a><br /></dt>
 <dd><p>Assemble deepstack embeddings by extracting image token embeddings from deepstack features. </p>
-<p>This function processes input token IDs and selectively extracts embeddings for image tokens from the provided deepstack features. Image tokens are identified in two ways:<ul class="simple">
-<li><p>Legacy: token IDs &gt;= vocabSize (Qwen2.5-VL where image tokens start at vocabSize)</p></li>
-<li><p>Explicit: token ID == imageTokenId (Qwen3-Omni where image tokens are within vocab)</p></li>
-</ul>
-</p>
-<p>When multimodalIndices is provided, it is used to index into deepstackFeatures (required for Qwen3-Omni where all image tokens share the same ID). Otherwise falls back to tokenId - vocabSize.</p>
+<p>This function processes input token IDs and selectively extracts embeddings for image tokens from the provided deepstack features. Image tokens are identified by the explicit imageTokenId, and multimodalIndices selects the deepstack feature row for each image position.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>inputIds</strong> – <strong>[in]</strong> Input token IDs with shape [batchSize, seqLen] </p></li>
 <li><p><strong>deepstackFeatures</strong> – <strong>[in]</strong> Deepstack image features with shape [numImageTokens, hiddenSize] </p></li>
-<li><p><strong>vocabSize</strong> – <strong>[in]</strong> Vocabulary size (legacy threshold for image token detection) </p></li>
-<li><p><strong>imageTokenId</strong> – <strong>[in]</strong> Explicit image token ID (0 = not set, use legacy &gt;= vocabSize detection) </p></li>
-<li><p><strong>multimodalIndices</strong> – <strong>[in]</strong> Pre-computed indices for image embeddings [batchSize, seqLen], or std::nullopt to use legacy tokenId - vocabSize indexing </p></li>
+<li><p><strong>imageTokenId</strong> – <strong>[in]</strong> Image token ID; positions with this id receive a deepstack feature row </p></li>
+<li><p><strong>multimodalIndices</strong> – <strong>[in]</strong> Pre-computed indices for image embeddings [batchSize, seqLen] </p></li>
 <li><p><strong>deepstackEmbeds</strong> – <strong>[out]</strong> Output embeddings with shape [batchSize, seqLen, hiddenSize] </p></li>
 <li><p><strong>stream</strong> – <strong>[in]</strong> CUDA stream for execution </p></li>
 </ul>
@@ -780,71 +808,53 @@
 </dd></dl>
 
 <dl class="cpp function">
-<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm6kernel25embeddingLookupMultimodalERKN2rt6TensorERKN2rt6TensorEN2rt19OptionalInputTensorEN2rt19OptionalInputTensorENSt8optionalI7int32_tEEN2rt19OptionalInputTensorENSt8optionalI7int32_tEEN2rt19OptionalInputTensorERN2rt6TensorE12cudaStream_t">
-<span id="_CPPv3N11trt_edgellm6kernel25embeddingLookupMultimodalERKN2rt6TensorERKN2rt6TensorEN2rt19OptionalInputTensorEN2rt19OptionalInputTensorENSt8optionalI7int32_tEEN2rt19OptionalInputTensorENSt8optionalI7int32_tEEN2rt19OptionalInputTensorERN2rt6TensorE12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm6kernel25embeddingLookupMultimodalERKN2rt6TensorERKN2rt6TensorEN2rt19OptionalInputTensorEN2rt19OptionalInputTensorENSt8optionalI7int32_tEEN2rt19OptionalInputTensorENSt8optionalI7int32_tEEN2rt19OptionalInputTensorERN2rt6TensorE12cudaStream_t"></span><span id="trt_edgellm::kernel::embeddingLookupMultimodal__rt::TensorCR.rt::TensorCR.rt::OptionalInputTensor.rt::OptionalInputTensor.std::optional:int32_t:.rt::OptionalInputTensor.std::optional:int32_t:.rt::OptionalInputTensor.rt::TensorR.cudaStream_t"></span><span class="target" id="embeddingKernels_8cu_1a6e33a1ca6d1c2038d425003458a2e262"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="speculativeKernelsUtils.html#_CPPv4N11trt_edgellm6kernelE" title="trt_edgellm::kernel"><span class="n"><span class="pre">kernel</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">embeddingLookupMultimodal</span></span></span><span class="sig-paren">(</span>
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm6kernel15embeddingLookupERKN2rt6TensorERKN2rt6TensorEN2rt19OptionalInputTensorERN2rt6TensorE12cudaStream_tN2rt19OptionalInputTensorENSt8optionalI7int32_tEEN2rt19OptionalInputTensorENSt8optionalI7int32_tEEN2rt19OptionalInputTensorE">
+<span id="_CPPv3N11trt_edgellm6kernel15embeddingLookupERKN2rt6TensorERKN2rt6TensorEN2rt19OptionalInputTensorERN2rt6TensorE12cudaStream_tN2rt19OptionalInputTensorENSt8optionalI7int32_tEEN2rt19OptionalInputTensorENSt8optionalI7int32_tEEN2rt19OptionalInputTensorE"></span><span id="_CPPv2N11trt_edgellm6kernel15embeddingLookupERKN2rt6TensorERKN2rt6TensorEN2rt19OptionalInputTensorERN2rt6TensorE12cudaStream_tN2rt19OptionalInputTensorENSt8optionalI7int32_tEEN2rt19OptionalInputTensorENSt8optionalI7int32_tEEN2rt19OptionalInputTensorE"></span><span id="trt_edgellm::kernel::embeddingLookup__rt::TensorCR.rt::TensorCR.rt::OptionalInputTensor.rt::TensorR.cudaStream_t.rt::OptionalInputTensor.std::optional:int32_t:.rt::OptionalInputTensor.std::optional:int32_t:.rt::OptionalInputTensor"></span><span class="target" id="namespacetrt__edgellm_1_1kernel_1a28a63a410ea1492da404f9b4dee1aad8"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="marlinRepackIndex.html#_CPPv4N11trt_edgellm6kernelE" title="trt_edgellm::kernel"><span class="n"><span class="pre">kernel</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">embeddingLookup</span></span></span><span class="sig-paren">(</span>
 
 <dl>
 <dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">inputIds</span></span></em>,</dd>
 <dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">embeddingTable</span></span></em>,</dd>
 <dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">OptionalInputTensor</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">scales</span></span></em>,</dd>
-<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">OptionalInputTensor</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">multimodalIndices</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">optional</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">int32_t</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">imageTokenId</span></span></em>,</dd>
-<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">OptionalInputTensor</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">imageEmbeds</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">optional</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">int32_t</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">audioTokenId</span></span></em>,</dd>
-<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">OptionalInputTensor</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">audioEmbeds</span></span></em>,</dd>
 <dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">output</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">OptionalInputTensor</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">multimodalIndices</span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">nullopt</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">optional</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">int32_t</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">imageTokenId</span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">nullopt</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">OptionalInputTensor</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">imageEmbeds</span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">nullopt</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">optional</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">int32_t</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">audioTokenId</span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">nullopt</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">OptionalInputTensor</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">audioEmbeds</span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">nullopt</span></span></em></dd>
 </dl>
 
-<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm6kernel25embeddingLookupMultimodalERKN2rt6TensorERKN2rt6TensorEN2rt19OptionalInputTensorEN2rt19OptionalInputTensorENSt8optionalI7int32_tEEN2rt19OptionalInputTensorENSt8optionalI7int32_tEEN2rt19OptionalInputTensorERN2rt6TensorE12cudaStream_t" title="Link to this definition">#</a><br /></dt>
-<dd><p>Unified embedding lookup with optional image and audio embeddings (supports FP16 and FP8 tables) </p>
-<p>Automatically dispatches to FP16 or FP8 implementation based on the embedding table’s datatype. This kernel handles up to three types of tokens:<ul class="simple">
-<li><p>Normal text tokens (0 &lt;= tokenId &lt; vocabSize): lookup from embeddingTable</p></li>
-<li><p>Image tokens (tokenId == imageTokenId): lookup from imageEmbeds using multimodalIndices (optional)</p></li>
-<li><p>Audio tokens (tokenId == audioTokenId): lookup from audioEmbeds using multimodalIndices (optional)</p></li>
-</ul>
-</p>
-<p>The multimodalIndices provides pre-computed indices into audioEmbeds/imageEmbeds for each position. For text tokens, the multimodalIndices value is not used. To indicate the presence of a modality, both token ID and the corresponding embedding tensor must be provided.</p>
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm6kernel15embeddingLookupERKN2rt6TensorERKN2rt6TensorEN2rt19OptionalInputTensorERN2rt6TensorE12cudaStream_tN2rt19OptionalInputTensorENSt8optionalI7int32_tEEN2rt19OptionalInputTensorENSt8optionalI7int32_tEEN2rt19OptionalInputTensorE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Embedding lookup for all modalities (supports FP16 and FP8 tables). </p>
+<p>Produces input embeddings for a batch of token ids. Text tokens are looked up from the embedding table. When image and/or audio embeddings are supplied (prefill), positions whose token id equals imageTokenId / audioTokenId are filled from imageEmbeds / audioEmbeds, selected by multimodalIndices; with no image/audio inputs (decode) it performs a pure text lookup. Automatically dispatches to the FP16 or FP8 implementation based on the embedding table’s datatype; FP8 tables require scales for per-group dequantization.</p>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p>audioTokenId and imageTokenId are allowed to be smaller than vocabSize, as in the case of Qwen3. </p>
-</div>
-<div class="admonition note">
-<p class="admonition-title">Note</p>
-<p>Embeddings should contain data in the order specified by multimodalIndices </p>
-</div>
-<div class="admonition note">
-<p class="admonition-title">Note</p>
-<p>When a modality is not needed, pass std::nullopt for both its tokenId and embeds </p>
-</div>
-<div class="admonition note">
-<p class="admonition-title">Note</p>
-<p>multimodalIndices can be std::nullopt only when both imageEmbeds and audioEmbeds are std::nullopt </p>
+<p>imageTokenId and audioTokenId must differ when both are provided. </p>
 </div>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>inputIds</strong> – <strong>[in]</strong> Input token IDs with shape [batchSize, seqLen] </p></li>
 <li><p><strong>embeddingTable</strong> – <strong>[in]</strong> Text embedding table with shape [vocabSize, hiddenSize] (FP16 or FP8) </p></li>
-<li><p><strong>scales</strong> – <strong>[in]</strong> FP32 per-group scales with shape [vocabSize, hiddenSize / blockSize] Required when embeddingTable is FP8, std::nullopt for FP16 </p></li>
-<li><p><strong>multimodalIndices</strong> – <strong>[in]</strong> Pre-computed indices for audio/image embeddings [batchSize, seqLen], can be std::nullopt if no image/audio inputs are provided </p></li>
-<li><p><strong>imageTokenId</strong> – <strong>[in]</strong> Special token ID for image (e.g., 151655 in Qwen3), or std::nullopt if no image </p></li>
-<li><p><strong>imageEmbeds</strong> – <strong>[in]</strong> Image embeddings with shape [totalImageTokens, hiddenSize], or std::nullopt if no image </p></li>
-<li><p><strong>audioTokenId</strong> – <strong>[in]</strong> Special token ID for audio (e.g., 151675 in Qwen3), or std::nullopt if no audio </p></li>
-<li><p><strong>audioEmbeds</strong> – <strong>[in]</strong> Audio embeddings with shape [totalAudioTokens, hiddenSize], or std::nullopt if no audio </p></li>
+<li><p><strong>scales</strong> – <strong>[in]</strong> FP32 per-group scales with shape [vocabSize, hiddenSize / blockSize]; required when embeddingTable is FP8, std::nullopt for FP16 </p></li>
 <li><p><strong>output</strong> – <strong>[out]</strong> Hidden states with shape [batchSize, seqLen, hiddenSize] </p></li>
-<li><p><strong>stream</strong> – <strong>[in]</strong> CUDA stream for execution</p></li>
+<li><p><strong>stream</strong> – <strong>[in]</strong> CUDA stream for execution </p></li>
+<li><p><strong>multimodalIndices</strong> – <strong>[in]</strong> Per-position indices into imageEmbeds/audioEmbeds [batchSize, seqLen]; required when image or audio inputs are provided, std::nullopt otherwise </p></li>
+<li><p><strong>imageTokenId</strong> – <strong>[in]</strong> Token ID marking image positions, or std::nullopt if no image input </p></li>
+<li><p><strong>imageEmbeds</strong> – <strong>[in]</strong> Image embeddings [totalImageTokens, hiddenSize] (FP16), or std::nullopt </p></li>
+<li><p><strong>audioTokenId</strong> – <strong>[in]</strong> Token ID marking audio positions, or std::nullopt if no audio input </p></li>
+<li><p><strong>audioEmbeds</strong> – <strong>[in]</strong> Audio embeddings [totalAudioTokens, hiddenSize] (FP16), or std::nullopt </p></li>
 </ul>
 </dd>
 <dt class="field-even">Throws<span class="colon">:</span></dt>
-<dd class="field-even"><p><span><span class="cpp-expr sig sig-inline cpp"><span class="n">std</span><span class="p">::</span><span class="n">runtime_error</span></span></span> – if tensor shapes, data types are invalid, or FP8 is not supported </p>
+<dd class="field-even"><p><span><span class="cpp-expr sig sig-inline cpp"><span class="n">std</span><span class="p">::</span><span class="n">runtime_error</span></span></span> – if tensor shapes or data types are invalid, or FP8 is not supported </p>
 </dd>
 </dl>
 </dd></dl>
 
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm6kernel15gemma4PleGatherERKN2rt6TensorERKN2rt6TensorERN2rt6TensorE7int32_t7int32_t7int32_t7int32_t12cudaStream_t">
-<span id="_CPPv3N11trt_edgellm6kernel15gemma4PleGatherERKN2rt6TensorERKN2rt6TensorERN2rt6TensorE7int32_t7int32_t7int32_t7int32_t12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm6kernel15gemma4PleGatherERKN2rt6TensorERKN2rt6TensorERN2rt6TensorE7int32_t7int32_t7int32_t7int32_t12cudaStream_t"></span><span id="trt_edgellm::kernel::gemma4PleGather__rt::TensorCR.rt::TensorCR.rt::TensorR.int32_t.int32_t.int32_t.int32_t.cudaStream_t"></span><span class="target" id="embeddingKernels_8cu_1aafed7de5edb76271a950495dfec57f3c"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="speculativeKernelsUtils.html#_CPPv4N11trt_edgellm6kernelE" title="trt_edgellm::kernel"><span class="n"><span class="pre">kernel</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">gemma4PleGather</span></span></span><span class="sig-paren">(</span>
+<span id="_CPPv3N11trt_edgellm6kernel15gemma4PleGatherERKN2rt6TensorERKN2rt6TensorERN2rt6TensorE7int32_t7int32_t7int32_t7int32_t12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm6kernel15gemma4PleGatherERKN2rt6TensorERKN2rt6TensorERN2rt6TensorE7int32_t7int32_t7int32_t7int32_t12cudaStream_t"></span><span id="trt_edgellm::kernel::gemma4PleGather__rt::TensorCR.rt::TensorCR.rt::TensorR.int32_t.int32_t.int32_t.int32_t.cudaStream_t"></span><span class="target" id="namespacetrt__edgellm_1_1kernel_1aafed7de5edb76271a950495dfec57f3c"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="marlinRepackIndex.html#_CPPv4N11trt_edgellm6kernelE" title="trt_edgellm::kernel"><span class="n"><span class="pre">kernel</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">gemma4PleGather</span></span></span><span class="sig-paren">(</span>
 
 <dl>
 <dd><em class="sig-param"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">inputIds</span></span></em>,</dd>
@@ -854,7 +864,7 @@
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">pleHiddenSize</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">imageTokenId</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">audioTokenId</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em></dd>
 </dl>
 
 <span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm6kernel15gemma4PleGatherERKN2rt6TensorERKN2rt6TensorERN2rt6TensorE7int32_t7int32_t7int32_t7int32_t12cudaStream_t" title="Link to this definition">#</a><br /></dt>
@@ -926,10 +936,9 @@
   </div>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm6kernel15embeddingLookupERKN2rt6TensorERKN2rt6TensorEN2rt19OptionalInputTensorERN2rt6TensorE12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">embeddingLookup()</span></code></a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm6kernel33embeddingLookupWithImageInsertionERKN2rt6TensorERKN2rt6TensorEN2rt19OptionalInputTensorERKN2rt6TensorERN2rt6TensorE12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">embeddingLookupWithImageInsertion()</span></code></a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm6kernel26assembleDeepstackEmbeddingERKN2rt6TensorERKN2rt6TensorE7int32_tRN2rt6TensorE12cudaStream_t7int32_tN2rt19OptionalInputTensorE"><code class="docutils literal notranslate"><span class="pre">assembleDeepstackEmbedding()</span></code></a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm6kernel25embeddingLookupMultimodalERKN2rt6TensorERKN2rt6TensorEN2rt19OptionalInputTensorEN2rt19OptionalInputTensorENSt8optionalI7int32_tEEN2rt19OptionalInputTensorENSt8optionalI7int32_tEEN2rt19OptionalInputTensorERN2rt6TensorE12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">embeddingLookupMultimodal()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm6kernel25generateMultimodalIndicesERKN2rt6TensorERN2rt6TensorENSt8optionalI7int32_tEENSt8optionalI7int32_tEE12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">generateMultimodalIndices()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm6kernel26assembleDeepstackEmbeddingERKN2rt6TensorERKN2rt6TensorERN2rt6TensorE12cudaStream_t7int32_tN2rt19OptionalInputTensorE"><code class="docutils literal notranslate"><span class="pre">assembleDeepstackEmbedding()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm6kernel15embeddingLookupERKN2rt6TensorERKN2rt6TensorEN2rt19OptionalInputTensorERN2rt6TensorE12cudaStream_tN2rt19OptionalInputTensorENSt8optionalI7int32_tEEN2rt19OptionalInputTensorENSt8optionalI7int32_tEEN2rt19OptionalInputTensorE"><code class="docutils literal notranslate"><span class="pre">embeddingLookup()</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm6kernel15gemma4PleGatherERKN2rt6TensorERKN2rt6TensorERN2rt6TensorE7int32_t7int32_t7int32_t7int32_t12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">gemma4PleGather()</span></code></a></li>
 </ul>
   </nav></div>
@@ -949,8 +958,8 @@
   
 
   <!-- Scripts loaded after <body> so the DOM is not blocked -->
-  <script defer src="../../_static/scripts/bootstrap.js?digest=a95f357e85573c9b56d5"></script>
-<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=a95f357e85573c9b56d5"></script>
+  <script defer src="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
 
 
   <footer class="bd-footer">
@@ -1022,9 +1031,9 @@
         <div class="footer-item">
 <div class="extra_footer">
   
-  <p>Last updated on July 22, 2026.</p>
+  <p>Last updated on August 12, 2026.</p>
   
-  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/f98267f">f98267f</a>.</p>
+  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/71dd1ba">71dd1ba</a>.</p>
   
 </div></div>
       

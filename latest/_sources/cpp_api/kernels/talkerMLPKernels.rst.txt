@@ -1,6 +1,11 @@
 Talker Mlp Kernels
 ==================
 
+.. doxygenstruct:: trt_edgellm::kernel::PrefillRowDesc
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
 .. doxygenfunction:: trt_edgellm::kernel::invokeTalkerMLP
    :project: TensorRT Edge-LLM
 
@@ -16,9 +21,21 @@ Talker Mlp Kernels
 .. doxygenfunction:: trt_edgellm::kernel::invokeAssistantPreamble
    :project: TensorRT Edge-LLM
 
+.. doxygenfunction:: trt_edgellm::kernel::invokePrefillRowAssemble
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::invokeSumCodecEmbeddings
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::invokeCastFp32ToFp16
+   :project: TensorRT Edge-LLM
+
 .. doxygenfunction:: trt_edgellm::kernel::invokeResidualConnection
    :project: TensorRT Edge-LLM
 
 .. doxygenfunction:: trt_edgellm::kernel::invokeTalkerLogitAdjust
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::invokeSpeakerCodecSum
    :project: TensorRT Edge-LLM
 

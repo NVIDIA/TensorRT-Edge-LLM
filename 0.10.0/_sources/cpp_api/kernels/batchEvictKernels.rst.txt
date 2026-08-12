@@ -1,0 +1,17 @@
+Batch Evict Kernels
+===================
+
+.. doxygenstruct:: trt_edgellm::kernel::KVLayerInfo
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::kernel::compactKVCacheSingleLayer
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::compactTensorBatch
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::compactKVCacheBatched
+   :project: TensorRT Edge-LLM
+

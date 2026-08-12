@@ -1,0 +1,40 @@
+Block Hash
+==========
+
+.. doxygenstruct:: trt_edgellm::rt::Hash128
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::AdapterKey
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::MediaSpanKey
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::BlockKeyExtras
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: std::hash< trt_edgellm::rt::Hash128 >
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::hashOpaqueIdentity
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::hashBlock
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::hashFullBlocks
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::hashExactPrefix
+   :project: TensorRT Edge-LLM
+

@@ -1,0 +1,1426 @@
+
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Context Cache Manager &#8212; TensorRT Edge-LLM</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=03e43079" />
+    <link rel="stylesheet" type="text/css" href="../../_static/styles/nvidia-sphinx-theme.css?v=933278ad" />
+    <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../../_static/autodoc_pydantic.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/togglebutton.css?v=9c3e77be" />
+    <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=e02be394" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+
+
+
+    <script src="../../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../../_static/copybutton.js?v=65e89d2a"></script>
+    <script>let toggleHintShow = 'Click to show';</script>
+    <script>let toggleHintHide = 'Click to hide';</script>
+    <script>let toggleOpenOnPrint = 'true';</script>
+    <script src="../../_static/togglebutton.js?v=b8b12719"></script>
+    <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'cpp_api/runtime/contextCacheManager';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.20.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = './_static/switcher.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.10.0';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner =
+            false;
+        </script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+
+    <link rel="icon" href="../../_static/favicon.png"/>
+
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="Context Cache Metrics" href="contextCacheMetrics.html" />
+    <link rel="prev" title="Context Cache Deployment" href="contextCacheDeployment.html" />
+
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.10.0" />
+  
+    
+    <script src="../../_static/searchtools.js"></script>
+    <script src="../../_static/language_data.js"></script>
+    <script src="../../searchindex.js"></script>
+  
+
+
+  </head>
+
+  <body data-default-mode="">
+
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../../_static/nvidia-logo-horiz-rgb-blk-for-screen.svg" class="logo__image only-light" alt="TensorRT Edge-LLM - Home"/>
+    <img src="../../_static/nvidia-logo-horiz-rgb-wht-for-screen.svg" class="logo__image only-dark pst-js-only" alt="TensorRT Edge-LLM - Home"/>
+  
+  
+    <p class="title logo__title">TensorRT Edge-LLM</p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+
+
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-2"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-2"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-2"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-2">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../../_static/nvidia-logo-horiz-rgb-blk-for-screen.svg" class="logo__image only-light" alt="TensorRT Edge-LLM - Home"/>
+    <img src="../../_static/nvidia-logo-horiz-rgb-wht-for-screen.svg" class="logo__image only-dark pst-js-only" alt="TensorRT Edge-LLM - Home"/>
+  
+  
+    <p class="title logo__title">TensorRT Edge-LLM</p>
+  
+</a>
+
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+
+
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-3"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-3"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-3"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-3">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+
+
+
+<nav class="bd-docs-nav bd-links"
+     aria-label="Table of Contents">
+  <p class="bd-links__title" role="heading" aria-level="1">Table of Contents</p>
+  <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../overview.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/support-matrix.html">Official Support Matrix</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/supported-models.html">Supported Models</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/quick-start-guide.html">Quick Start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/direct-engine-builder.html">Experimental ONNX-less Engine Build</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/limitations.html">Limitations and Known Issues</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Examples</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/index.html">Examples</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/speculative-decoding.html">Speculative Decoding</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/phi4.html">Phi-4-Multimodal</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/asr.html">ASR (Automatic Speech Recognition)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/tts.html">TTS (Text-to-Speech)</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../../user_guide/examples/vla/index.html">Vision-Language-Action</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../../user_guide/examples/vla/alpamayo.html">Alpamayo-R1-10B (Vision-Language-Action)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../user_guide/examples/vla/cosmos3.html">Cosmos3-Edge</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/omni.html">Omni (Audio + Vision + Speech I/O)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/experimental-server.html">Experimental High-Level Python API and Server</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/nemo-evaluator.html">Evaluate with NeMo Evaluator</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Features</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/lora.html">LoRA (Low-Rank Adaptation)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/quantization.html">Quantization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/reduce-vocab.html">Vocabulary Reduction</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/FP8KV.html">FP8 KV Cache</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/fp8-embedding.html">FP8 Embedding</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/streaming.html">Streaming Output</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/kv-cache-reuse.html">KV Cache Reuse</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Input &amp; Chat Format</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/format/input-format.html">Input JSON Format</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/format/chat-template-format.html">Chat Template Format</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Performance</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/performance/performance-benchmarks.html">Performance Benchmarks</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Software Design</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/checkpoint-export.html">Checkpoint Exporter Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/onnxless-builder.html">Experimental ONNX-less Builder Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/quantization-design.html">Quantization Package Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/engine-builder.html">Engine Builder</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/cpp-runtime-overview.html">C++ Runtime Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/llm-inference-runtime.html">LLM Inference Runtime</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/llm-streaming.html">LLM Streaming — Design</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Models</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/models/cosmos3.html">Cosmos3-Edge Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/models/nemotron3_5_asr.html">Nemotron-3.5-ASR</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Customization</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/customization-guide.html">Customization Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/calibration-datasets.html">Calibration Dataset Customization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/tensorrt-plugins.html">TensorRT Plugins Guide</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Testing</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/code-coverage.html">Code Coverage with SonarQube</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/few-layer-validation.html">Few-Layer Numeric Validation</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">APIs</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../python_api.html">Python API Reference</a></li>
+<li class="toctree-l1 current active has-children"><a class="reference internal" href="../../cpp_api.html">C++ API Reference</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
+<li class="toctree-l2 has-children"><a class="reference internal" href="../action/index.html">Action Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../action/actionModelTypes.html">Action Model Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../action/actionUtils.html">Action Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../action/alpamayo1ActionRunner.html">Alpamayo1 Action Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html">Alpamayo1 Runner Utils</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../builder/index.html">Builder Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../builder/actionBuilder.html">Action Builder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../builder/audioBuilder.html">Audio Builder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../builder/builderUtils.html">Builder Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../builder/llmBuilder.html">LLM Builder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../builder/visualBuilder.html">Visual Builder</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../common/index.html">Common Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../common/allReducePath.html">All Reduce Path</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/bindingNames.html">Binding Names</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/checkMacros.html">Check Macros</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/cudaMacros.html">CUDA Macros</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/cudaUtils.html">CUDA Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/fileUtils.html">File Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/hashUtils.html">Hash Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/inputLimits.html">Input Limits</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/logger.html">Logger</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/mathUtils.html">Math Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/mmapReader.html">MMAP Reader</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/pagedKvTypes.html">Paged KV Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/ropeUtils.html">Rope Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/safetensorsUtils.html">Safetensors Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/stringUtils.html">String Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/tensor.html">Tensor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/trtUtils.html">TRT Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/utf8.html">Utf8</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/version.html">Version</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../kernels/index.html">Kernels Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/NvFP4MoEUtils.html">Nv Fp4 Mo E Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/applyRopeWriteKV.html">Apply Rope Write KV</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/argmaxKernel.html">Argmax Kernel</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/attentionScaleUtils.html">Attention Scale Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/audioFbankKernels.html">Audio Fbank Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/batchEvictKernels.html">Batch Evict Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/buildLayout.html">Build Layout</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/causalConv1d.html">Causal Conv1d</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/checkpointSourceBatch.html">Checkpoint Source Batch</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/common.html">Common</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/conversion.html">Conversion</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslF16MoeRunner.html">Cute Dsl F16 Moe Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslFMHARunner.html">Cute Dsl FMHA Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslFMHAV2Runner.html">Cute Dsl Fmhav2 Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslFmhaParams.html">Cute Dsl FMHA Params</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGDNRunner.html">Cute Dsl Gdn Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGemmNvFp4Runner.html">Cute Dsl GEMM Nv Fp4 Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGemmRunner.html">Cute Dsl GEMM Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslModuleLoader.html">Cute Dsl Module Loader</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslNvfp4MoeRunner.html">Cute Dsl Nvfp4 Moe Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslNvfp4MoeSm110Runner.html">Cute Dsl Nvfp4 Moe Sm110 Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslSSDRunner.html">Cute Dsl Ssd Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslTensorDescriptors.html">Cute Dsl Tensor Descriptors</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/ddtreeKernels.html">Ddtree Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/decoderXQARunner.html">Decoder XQA Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/dequant.html">Dequant</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/dequantize.html">Dequantize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/dflashRuntimeKernels.html">Dflash Runtime Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/dsparkKernels.html">Dspark Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/eagleAcceptKernels.html">EAGLE Accept Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/eagleUtilKernels.html">EAGLE Util Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/embeddingKernels.html">Embedding Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/f16MoeSupportKernels.html">F16 Moe Support Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/fp16LayoutConvert.html">Fp16 Layout Convert</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/fp16MoeAssemble.html">Fp16 Moe Assemble</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/fp4Quantize.html">Fp4 Quantize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/gdnKernelUtils.html">Gdn Kernel Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/gdnTreeChunkKernels.html">Gdn Tree Chunk Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/gemma4AudioAttention.html">Gemma4 Audio Attention</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/gemma4MTPRuntimeKernels.html">Gemma4 Mtp Runtime Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/gptqActivationPermutation.html">Gptq Activation Permutation</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/gptqMarlinRepack.html">Gptq Marlin Repack</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/imageUtilKernels.html">Image Util Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/initializeCosSinCache.html">Initialize Cos Sin Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/int4CuteDslRepack.html">Int4 Cute Dsl Repack</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/int4GroupwiseGemm.html">Int4 Groupwise GEMM</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/int4MoeScaleRepack.html">Int4 Moe Scale Repack</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/int4PluginV1Repack.html">Int4 Plugin V1 Repack</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/int4QkvScaleConcat.html">Int4 Qkv Scale Concat</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/int4SourceAccessors.html">Int4 Source Accessors</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/kernel.html">Kernel</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/kernel_selector.html">Kernel Selector</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/kvCacheUtilsKernels.html">KV Cache Utils Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/marlin.html">Marlin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/marlinRepackIndex.html">Marlin Repack Index</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/marlin_dtypes.html">Marlin Dtypes</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/marlin_mma.html">Marlin Mma</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/marlin_template.html">Marlin Template</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moeActivationKernels.html">Moe Activation Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moeAlignSumKernels.html">Moe Align Sum Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moeMarlin.html">Moe Marlin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moeMarlinIndicesKernels.html">Moe Marlin Indices Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moePerExpertScaleKernels.html">Moe Per Expert Scale Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moeSigmoidGroupTopkKernels.html">Moe Sigmoid Group Topk Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moeTopkSoftmaxKernels.html">Moe Topk Softmax Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/mtpStateScatterKernels.html">Mtp State Scatter Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoeLayout.html">Nvfp4 Moe Layout</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoeNormalize.html">Nvfp4 Moe Normalize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoePluginGeforceTransform.html">Nvfp4 Moe Plugin Geforce Transform</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoePluginTransform.html">Nvfp4 Moe Plugin Transform</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoeScaleTransform.html">Nvfp4 Moe Scale Transform</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoeTypes.html">Nvfp4 Moe Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoeWeightTransform.html">Nvfp4 Moe Weight Transform</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4_dequant.html">Nvfp4 Dequant</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4_scale.html">Nvfp4 Scale</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4_tensor.html">Nvfp4 Tensor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/scaleConvert.html">Scale Convert</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/selectiveStateUpdate.html">Selective State Update</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/speculativeKernelsUtils.html">Speculative Kernels Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/ssdVarlenMetadata.html">Ssd Varlen Metadata</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/talkerMLPKernels.html">Talker Mlp Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/utilKernels.html">Util Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/vectorizedTypes.html">Vectorized Types</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../multimodal/index.html">Multimodal Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/audioRunner.html">Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/audioUtils.html">Audio Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/cloneEncoderRunner.html">Clone Encoder Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/code2WavRunner.html">Code2 Wav Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/cosmos3EdgeViTRunner.html">Cosmos3 Edge ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4AudioRunner.html">Gemma4 Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4UnifiedAudioRunner.html">Gemma4 Unified Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4UnifiedVisionRunner.html">Gemma4 Unified Vision Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4ViTRunner.html">Gemma4 ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/imageUtils.html">Image Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/internViTRunner.html">Intern ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/modelTypes.html">Model Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/multimodalRunner.html">Multimodal Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/nemotronOmniAudioRunner.html">Nemotron Omni Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/nemotronOmniViTRunner.html">Nemotron Omni ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/phi4mmViTRunner.html">Phi4mm ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwen25vlViTRunner.html">Qwen25vl ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwen3omniViTRunner.html">Qwen3omni ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwen3vlViTRunner.html">Qwen3vl ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwenViTRunner.html">Qwen ViT Runner</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../plugins/index.html">Plugins Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/allReducePlugin.html">All Reduce Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/attentionPlugin.html">Attention Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/causalConv1dPlugin.html">Causal Conv1d Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/cuteDslInt4Gemm.html">Cute Dsl Int4 GEMM</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/cuteDslInt4Gemv.html">Cute Dsl Int4 Gemv</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/dflashTargetKVCacheUpdatePlugin.html">Dflash Target KV Cache Update Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/fp16MoePlugin.html">Fp16 Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/fusedNvfp4GemmAllReducePlugin.html">Fused Nvfp4 GEMM All Reduce Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/gatedDeltaNetPlugin.html">Gated Delta Net Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/gemma4AudioAttentionPlugin.html">Gemma4 Audio Attention Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/int4GroupwiseGemmPlugin.html">Int4 Groupwise GEMM Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/int4GroupwiseGemmPluginV2.html">Int4 Groupwise GEMM Plugin V2</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/int4MoePlugin.html">Int4 Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/mambaPlugin.html">Mamba Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4A16GemmPlugin.html">Nvfp4 A16 GEMM Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4A16MoePlugin.html">Nvfp4 A16 Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4MoePlugin.html">Nvfp4 Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4MoePluginGeforce.html">Nvfp4 Moe Plugin Geforce</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/pluginUtils.html">Plugin Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/vitAttentionPlugin.html">VIT Attention Plugin</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../profiling/index.html">Profiling Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../profiling/layerProfiler.html">Layer Profiler</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../profiling/metrics.html">Metrics</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../profiling/nvtx_wrapper.html">Nvtx Wrapper</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../profiling/timer.html">Timer</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 current active has-children"><a class="reference internal" href="index.html">Runtime Module</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
+<li class="toctree-l3"><a class="reference internal" href="audioLoader.html">Audio Loader</a></li>
+<li class="toctree-l3"><a class="reference internal" href="audioUtils.html">Audio Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="blockDiffusionDecoder.html">Block Diffusion Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="blockHash.html">Block Hash</a></li>
+<li class="toctree-l3"><a class="reference internal" href="blockIndex.html">Block Index</a></li>
+<li class="toctree-l3"><a class="reference internal" href="cacheRecord.html">Cache Record</a></li>
+<li class="toctree-l3"><a class="reference internal" href="checkpointReader.html">Checkpoint Reader</a></li>
+<li class="toctree-l3"><a class="reference internal" href="checkpointWeightAssemble.html">Checkpoint Weight Assemble</a></li>
+<li class="toctree-l3"><a class="reference internal" href="collectiveGroup.html">Collective Group</a></li>
+<li class="toctree-l3"><a class="reference internal" href="contextCacheConfig.html">Context Cache Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="contextCacheCoordinator.html">Context Cache Coordinator</a></li>
+<li class="toctree-l3"><a class="reference internal" href="contextCacheDeployment.html">Context Cache Deployment</a></li>
+<li class="toctree-l3 current active"><a class="current reference internal" href="#">Context Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="contextCacheMetrics.html">Context Cache Metrics</a></li>
+<li class="toctree-l3"><a class="reference internal" href="contextCacheRequest.html">Context Cache Request</a></li>
+<li class="toctree-l3"><a class="reference internal" href="contextCacheTypes.html">Context Cache Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="decoderRegistry.html">Decoder Registry</a></li>
+<li class="toctree-l3"><a class="reference internal" href="decoderUtils.html">Decoder Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="decodingInferenceContext.html">Decoding Inference Context</a></li>
+<li class="toctree-l3"><a class="reference internal" href="decodingStrategy.html">Decoding Strategy</a></li>
+<li class="toctree-l3"><a class="reference internal" href="deepstackBinding.html">Deepstack Binding</a></li>
+<li class="toctree-l3"><a class="reference internal" href="deploymentConfig.html">Deployment Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dflashDecodeUtils.html">Dflash Decode Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dflashDecoder.html">Dflash Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dsparkDecoder.html">Dspark Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="eagleDecoder.html">EAGLE Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="embeddingPreprocessor.html">Embedding Preprocessor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="engineExecutor.html">Engine Executor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="evictionPlanner.html">Eviction Planner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="externalWeightManager.html">External Weight Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="gemma4EmbeddingPreprocessor.html">Gemma4 Embedding Preprocessor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="gemma4MTPDecoder.html">Gemma4 Mtp Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="hybridCacheManager.html">Hybrid Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="hybridSnapshotStorage.html">Hybrid Snapshot Storage</a></li>
+<li class="toctree-l3"><a class="reference internal" href="imageUtils.html">Image Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="inferenceDims.html">Inference Dims</a></li>
+<li class="toctree-l3"><a class="reference internal" href="inferencePhase.html">Inference Phase</a></li>
+<li class="toctree-l3"><a class="reference internal" href="kvCacheManager.html">KV Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="kvPageTable.html">KV Page Table</a></li>
+<li class="toctree-l3"><a class="reference internal" href="layerDebugger.html">Layer Debugger</a></li>
+<li class="toctree-l3"><a class="reference internal" href="llmEngineConfig.html">LLM Engine Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="llmInferenceRuntime.html">LLM Inference Runtime</a></li>
+<li class="toctree-l3"><a class="reference internal" href="llmRuntimeUtils.html">LLM Runtime Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="logitBias.html">Logit Bias</a></li>
+<li class="toctree-l3"><a class="reference internal" href="loraManager.html">Lora Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="mambaCacheManager.html">Mamba Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="melSpectrogram.html">Mel Spectrogram</a></li>
+<li class="toctree-l3"><a class="reference internal" href="mtpDecoder.html">Mtp Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="multiDevicePluginCommRegistry.html">Multi Device Plugin Comm Registry</a></li>
+<li class="toctree-l3"><a class="reference internal" href="multiDevicePluginResourceFactory.html">Multi Device Plugin Resource Factory</a></li>
+<li class="toctree-l3"><a class="reference internal" href="multiDevicePluginResources.html">Multi Device Plugin Resources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="ncclCollectiveBackend.html">Nccl Collective Backend</a></li>
+<li class="toctree-l3"><a class="reference internal" href="parallelConfig.html">Parallel Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="pipelineIO.html">Pipeline Io</a></li>
+<li class="toctree-l3"><a class="reference internal" href="qwen3OmniTTSRuntime.html">Qwen3 Omni Tts Runtime</a></li>
+<li class="toctree-l3"><a class="reference internal" href="registryBuilder.html">Registry Builder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="resourcePools.html">Resource Pools</a></li>
+<li class="toctree-l3"><a class="reference internal" href="reusePlan.html">Reuse Plan</a></li>
+<li class="toctree-l3"><a class="reference internal" href="ropeCache.html">Rope Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="sharedResources.html">Shared Resources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="stepPreparer.html">Step Preparer</a></li>
+<li class="toctree-l3"><a class="reference internal" href="streaming.html">Streaming</a></li>
+<li class="toctree-l3"><a class="reference internal" href="systemPromptKVCache.html">System Prompt KV Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="tensorMap.html">Tensor Map</a></li>
+<li class="toctree-l3"><a class="reference internal" href="tensorParallelNcclResources.html">Tensor Parallel Nccl Resources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="tensorParallelPluginResources.html">Tensor Parallel Plugin Resources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="tensorRegistry.html">Tensor Registry</a></li>
+<li class="toctree-l3"><a class="reference internal" href="vanillaDecoder.html">Vanilla Decoder</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../sampler/index.html">Sampler Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../sampler/diffusionGemmaSampling.html">Diffusion Gemma Sampling</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../sampler/sampling.html">Sampling</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../tokenizer/index.html">Tokenizer Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../tokenizer/preTokenizer.html">Pre Tokenizer</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../tokenizer/tokenEncoder.html">Token Encoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../tokenizer/tokenizer.html">Tokenizer</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../tokenizer/tokenizerUtils.html">Tokenizer Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../tokenizer/unicodeData.html">Unicode Data</a></li>
+</ul>
+</details></li>
+</ul>
+</details></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Quick Links</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference external" href="https://github.com/NVIDIA/TensorRT-Edge-LLM/releases">Releases</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/NVIDIA/TensorRT-Edge-LLM">GitHub</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/NVIDIA/TensorRT-Edge-LLM/issues?q=is%3Aissue%20state%3Aopen%20label%3ARoadmap">Roadmap</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+  </div>
+
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="../../cpp_api.html" class="nav-link">C++ API Reference</a></li>
+    
+    
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Runtime Module</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Context Cache Manager</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="context-cache-manager">
+<h1>Context Cache Manager<a class="headerlink" href="#context-cache-manager" title="Link to this heading">#</a></h1>
+<dl class="cpp class">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt17CacheRequestLeaseE">
+<span id="_CPPv3N11trt_edgellm2rt17CacheRequestLeaseE"></span><span id="_CPPv2N11trt_edgellm2rt17CacheRequestLeaseE"></span><span id="trt_edgellm::rt::CacheRequestLease"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1CacheRequestLease"></span><span class="k"><span class="pre">class</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">CacheRequestLease</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt17CacheRequestLeaseE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Move-only ownership of one request’s active context-cache references and page bindings.</p>
+<p><a class="reference internal" href="#classtrt__edgellm_1_1rt_1_1ContextCacheManager"><span class="std std-ref">ContextCacheManager</span></a> provides no internal synchronization. Callers must serialize all manager and lease access under one single-writer execution contract. A lease must be released or destroyed before its manager is destroyed. Destruction releases every active reference; publication separately adds cache ownership for reusable state. Moving a lease transfers its active-reference cleanup responsibility. </p>
+<div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-functions">Public Functions</p>
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt17CacheRequestLease17CacheRequestLeaseEv">
+<span id="_CPPv3N11trt_edgellm2rt17CacheRequestLease17CacheRequestLeaseEv"></span><span id="_CPPv2N11trt_edgellm2rt17CacheRequestLease17CacheRequestLeaseEv"></span><span id="trt_edgellm::rt::CacheRequestLease::CacheRequestLease"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1CacheRequestLease_1a6093323979c8e4b0bb4387928cf434fc"></span><span class="sig-name descname"><span class="n"><span class="pre">CacheRequestLease</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="k"><span class="pre">default</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt17CacheRequestLease17CacheRequestLeaseEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt17CacheRequestLeaseD0Ev">
+<span id="_CPPv3N11trt_edgellm2rt17CacheRequestLeaseD0Ev"></span><span id="_CPPv2N11trt_edgellm2rt17CacheRequestLeaseD0Ev"></span><span id="trt_edgellm::rt::CacheRequestLease::~CacheRequestLease"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1CacheRequestLease_1ad48d92e0201423cf1df8b17c8b42b1f9"></span><span class="sig-name descname"><span class="n"><span class="pre">~CacheRequestLease</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt17CacheRequestLeaseD0Ev" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt17CacheRequestLease17CacheRequestLeaseERR17CacheRequestLease">
+<span id="_CPPv3N11trt_edgellm2rt17CacheRequestLease17CacheRequestLeaseERR17CacheRequestLease"></span><span id="_CPPv2N11trt_edgellm2rt17CacheRequestLease17CacheRequestLeaseERR17CacheRequestLease"></span><span id="trt_edgellm::rt::CacheRequestLease::CacheRequestLease__CacheRequestLeaseRR"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1CacheRequestLease_1ae1ba7a19566009193998ef3dd6211ac5"></span><span class="sig-name descname"><span class="n"><span class="pre">CacheRequestLease</span></span></span><span class="sig-paren">(</span><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt17CacheRequestLease17CacheRequestLeaseERR17CacheRequestLease" title="trt_edgellm::rt::CacheRequestLease::CacheRequestLease"><span class="n"><span class="pre">CacheRequestLease</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">other</span></span></em><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt17CacheRequestLease17CacheRequestLeaseERR17CacheRequestLease" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt17CacheRequestLeaseaSERR17CacheRequestLease">
+<span id="_CPPv3N11trt_edgellm2rt17CacheRequestLeaseaSERR17CacheRequestLease"></span><span id="_CPPv2N11trt_edgellm2rt17CacheRequestLeaseaSERR17CacheRequestLease"></span><span id="trt_edgellm::rt::CacheRequestLease::assign-operator__CacheRequestLeaseRR"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1CacheRequestLease_1ab8412ec6f64eb866a6e0f6e9e7d4358b"></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt17CacheRequestLeaseE" title="trt_edgellm::rt::CacheRequestLease"><span class="n"><span class="pre">CacheRequestLease</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="k"><span class="pre">operator</span></span><span class="o"><span class="pre">=</span></span></span><span class="sig-paren">(</span><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt17CacheRequestLeaseE" title="trt_edgellm::rt::CacheRequestLease"><span class="n"><span class="pre">CacheRequestLease</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">other</span></span></em><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt17CacheRequestLeaseaSERR17CacheRequestLease" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt17CacheRequestLease17CacheRequestLeaseERK17CacheRequestLease">
+<span id="_CPPv3N11trt_edgellm2rt17CacheRequestLease17CacheRequestLeaseERK17CacheRequestLease"></span><span id="_CPPv2N11trt_edgellm2rt17CacheRequestLease17CacheRequestLeaseERK17CacheRequestLease"></span><span id="trt_edgellm::rt::CacheRequestLease::CacheRequestLease__CacheRequestLeaseCR"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1CacheRequestLease_1a08377796167f45587a1828c22104263b"></span><span class="sig-name descname"><span class="n"><span class="pre">CacheRequestLease</span></span></span><span class="sig-paren">(</span><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt17CacheRequestLease17CacheRequestLeaseERK17CacheRequestLease" title="trt_edgellm::rt::CacheRequestLease::CacheRequestLease"><span class="n"><span class="pre">CacheRequestLease</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="p"><span class="pre">&amp;</span></span></em><span class="sig-paren">)</span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="k"><span class="pre">delete</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt17CacheRequestLease17CacheRequestLeaseERK17CacheRequestLease" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt17CacheRequestLeaseaSERK17CacheRequestLease">
+<span id="_CPPv3N11trt_edgellm2rt17CacheRequestLeaseaSERK17CacheRequestLease"></span><span id="_CPPv2N11trt_edgellm2rt17CacheRequestLeaseaSERK17CacheRequestLease"></span><span id="trt_edgellm::rt::CacheRequestLease::assign-operator__CacheRequestLeaseCR"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1CacheRequestLease_1af6aa6f68df708940185c25f3ce89c694"></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt17CacheRequestLeaseE" title="trt_edgellm::rt::CacheRequestLease"><span class="n"><span class="pre">CacheRequestLease</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="k"><span class="pre">operator</span></span><span class="o"><span class="pre">=</span></span></span><span class="sig-paren">(</span><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt17CacheRequestLeaseE" title="trt_edgellm::rt::CacheRequestLease"><span class="n"><span class="pre">CacheRequestLease</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="p"><span class="pre">&amp;</span></span></em><span class="sig-paren">)</span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="k"><span class="pre">delete</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt17CacheRequestLeaseaSERK17CacheRequestLease" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm2rt17CacheRequestLease9basePagesEv">
+<span id="_CPPv3NK11trt_edgellm2rt17CacheRequestLease9basePagesEv"></span><span id="_CPPv2NK11trt_edgellm2rt17CacheRequestLease9basePagesEv"></span><span id="trt_edgellm::rt::CacheRequestLease::basePagesC"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1CacheRequestLease_1a84981d98641fed589ed00a08a0641db9"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">PageId</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="n"><span class="pre">basePages</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm2rt17CacheRequestLease9basePagesEv" title="Link to this definition">#</a><br /></dt>
+<dd><p>Ordered host binding list of base-model logical K-page IDs; the adapter expands it to a kernel [K, V] row. </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm2rt17CacheRequestLease10draftPagesEv">
+<span id="_CPPv3NK11trt_edgellm2rt17CacheRequestLease10draftPagesEv"></span><span id="_CPPv2NK11trt_edgellm2rt17CacheRequestLease10draftPagesEv"></span><span id="trt_edgellm::rt::CacheRequestLease::draftPagesC"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1CacheRequestLease_1ae623de0e3a13638d69eb5116828019c8"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">PageId</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="n"><span class="pre">draftPages</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm2rt17CacheRequestLease10draftPagesEv" title="Link to this definition">#</a><br /></dt>
+<dd><p>Ordered host binding list of EAGLE draft logical K-page IDs; empty for a vanilla lease. </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm2rt17CacheRequestLease21recurrentSnapshotSlotEv">
+<span id="_CPPv3NK11trt_edgellm2rt17CacheRequestLease21recurrentSnapshotSlotEv"></span><span id="_CPPv2NK11trt_edgellm2rt17CacheRequestLease21recurrentSnapshotSlotEv"></span><span id="trt_edgellm::rt::CacheRequestLease::recurrentSnapshotSlotC"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1CacheRequestLease_1a22792133335c9b05fd076994fce368b5"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">optional</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">int32_t</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">recurrentSnapshotSlot</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm2rt17CacheRequestLease21recurrentSnapshotSlotEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm2rt17CacheRequestLease21partialKvSnapshotSlotEv">
+<span id="_CPPv3NK11trt_edgellm2rt17CacheRequestLease21partialKvSnapshotSlotEv"></span><span id="_CPPv2NK11trt_edgellm2rt17CacheRequestLease21partialKvSnapshotSlotEv"></span><span id="trt_edgellm::rt::CacheRequestLease::partialKvSnapshotSlotC"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1CacheRequestLease_1a7f35038983206bba8d9192b57b093a66"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">optional</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">int32_t</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">partialKvSnapshotSlot</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm2rt17CacheRequestLease21partialKvSnapshotSlotEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm2rt17CacheRequestLease5validEv">
+<span id="_CPPv3NK11trt_edgellm2rt17CacheRequestLease5validEv"></span><span id="_CPPv2NK11trt_edgellm2rt17CacheRequestLease5validEv"></span><span id="trt_edgellm::rt::CacheRequestLease::validC"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1CacheRequestLease_1a33c1a3fac88cf42be9239ac3787f4528"></span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">valid</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm2rt17CacheRequestLease5validEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt17CacheRequestLease7releaseEv">
+<span id="_CPPv3N11trt_edgellm2rt17CacheRequestLease7releaseEv"></span><span id="_CPPv2N11trt_edgellm2rt17CacheRequestLease7releaseEv"></span><span id="trt_edgellm::rt::CacheRequestLease::release"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1CacheRequestLease_1aed4efd54d16e5679d0fad331af42b7c8"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">release</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt17CacheRequestLease7releaseEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+</div>
+</dd></dl>
+
+<dl class="cpp class">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt19ContextCacheManagerE">
+<span id="_CPPv3N11trt_edgellm2rt19ContextCacheManagerE"></span><span id="_CPPv2N11trt_edgellm2rt19ContextCacheManagerE"></span><span id="trt_edgellm::rt::ContextCacheManager"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1ContextCacheManager"></span><span class="k"><span class="pre">class</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ContextCacheManager</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt19ContextCacheManagerE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Host orchestrator for the complete context-cache lifecycle under an externally serialized single-writer contract.</p>
+<p>The manager owns neither a worker thread nor a task queue and is not thread-safe. All manager and lease access that could overlap a mutation must be externally serialized, and no lease may outlive its manager. <a class="reference internal" href="#classtrt__edgellm_1_1rt_1_1ContextCacheManager_1a5c050096c8848a405cda46f11111cf45"><span class="std std-ref">publish()</span></a> is the final host commit for a producer whose state is already ready; it neither inspects nor waits on CUDA events. A publication must contain at least one resident full block.</p>
+<p>The lifecycle is acquire -&gt; model execution -&gt; publish or release. Each acquire method plans and pins the selected hit as one serialized manager operation before eviction and request-private allocation. Publication atomically adds cache ownership, canonical base-block mappings, and one complete record. <a class="reference internal" href="resourcePools.html#classtrt__edgellm_1_1rt_1_1ResourcePools"><span class="std std-ref">ResourcePools</span></a> owns capacity/refcounts, <a class="reference internal" href="blockIndex.html#classtrt__edgellm_1_1rt_1_1BaseBlockIndex"><span class="std std-ref">BaseBlockIndex</span></a> owns canonical base lookup, <a class="reference internal" href="blockIndex.html#classtrt__edgellm_1_1rt_1_1DraftPathIndex"><span class="std std-ref">DraftPathIndex</span></a> owns coherent EAGLE-path lookup, <a class="reference internal" href="cacheRecord.html#classtrt__edgellm_1_1rt_1_1CacheRecordStore"><span class="std std-ref">CacheRecordStore</span></a> owns endpoints/LRU, and <a class="reference internal" href="evictionPlanner.html#classtrt__edgellm_1_1rt_1_1EvictionPlanner"><span class="std std-ref">EvictionPlanner</span></a> selects record victims without mutation. </p>
+<div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-functions">Public Functions</p>
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt19ContextCacheManager19ContextCacheManagerE7int32_t14ResourceDemand7int32_t">
+<span id="_CPPv3N11trt_edgellm2rt19ContextCacheManager19ContextCacheManagerE7int32_t14ResourceDemand7int32_t"></span><span id="_CPPv2N11trt_edgellm2rt19ContextCacheManager19ContextCacheManagerE7int32_t14ResourceDemand7int32_t"></span><span id="trt_edgellm::rt::ContextCacheManager::ContextCacheManager__int32_t.ResourceDemand.int32_t"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1ContextCacheManager_1a872de10386c4b4965c0537201c592fee"></span><span class="sig-name descname"><span class="n"><span class="pre">ContextCacheManager</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">pageSize</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="contextCacheTypes.html#_CPPv4N11trt_edgellm2rt14ResourceDemandE" title="trt_edgellm::rt::ResourceDemand"><span class="n"><span class="pre">ResourceDemand</span></span></a><span class="w"> </span><span class="n sig-param"><span class="pre">capacities</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">maxRecords</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt19ContextCacheManager19ContextCacheManagerE7int32_t14ResourceDemand7int32_t" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt19ContextCacheManager14acquireVanillaERKNSt6vectorI9BlockHashEE7int32_t24ContextCacheLookupPolicy">
+<span id="_CPPv3N11trt_edgellm2rt19ContextCacheManager14acquireVanillaERKNSt6vectorI9BlockHashEE7int32_t24ContextCacheLookupPolicy"></span><span id="_CPPv2N11trt_edgellm2rt19ContextCacheManager14acquireVanillaERKNSt6vectorI9BlockHashEE7int32_t24ContextCacheLookupPolicy"></span><span id="trt_edgellm::rt::ContextCacheManager::acquireVanilla__std::vector:BlockHash:CR.int32_t.ContextCacheLookupPolicy"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1ContextCacheManager_1a8c2c699ae9b2d63401414a91f7bd4de6"></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt13AcquireResultE" title="trt_edgellm::rt::AcquireResult"><span class="n"><span class="pre">AcquireResult</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">acquireVanilla</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">BlockHash</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">inputFullBlockHashes</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">inputTokenCount</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">ContextCacheLookupPolicy</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">lookupPolicy</span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="n"><span class="pre">ContextCacheLookupPolicy</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">kUseCache</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt19ContextCacheManager14acquireVanillaERKNSt6vectorI9BlockHashEE7int32_t24ContextCacheLookupPolicy" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt19ContextCacheManager13acquireHybridERKNSt6vectorI25HybridCheckpointCandidateEERKNSt6vectorI9BlockHashEE7int32_tb24ContextCacheLookupPolicy">
+<span id="_CPPv3N11trt_edgellm2rt19ContextCacheManager13acquireHybridERKNSt6vectorI25HybridCheckpointCandidateEERKNSt6vectorI9BlockHashEE7int32_tb24ContextCacheLookupPolicy"></span><span id="_CPPv2N11trt_edgellm2rt19ContextCacheManager13acquireHybridERKNSt6vectorI25HybridCheckpointCandidateEERKNSt6vectorI9BlockHashEE7int32_tb24ContextCacheLookupPolicy"></span><span id="trt_edgellm::rt::ContextCacheManager::acquireHybrid__std::vector:HybridCheckpointCandidate:CR.std::vector:BlockHash:CR.int32_t.b.ContextCacheLookupPolicy"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1ContextCacheManager_1a78ffc28bd0d8c1963fc7ca7236e75e21"></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt13AcquireResultE" title="trt_edgellm::rt::AcquireResult"><span class="n"><span class="pre">AcquireResult</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">acquireHybrid</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><a class="reference internal" href="reusePlan.html#_CPPv4N11trt_edgellm2rt25HybridCheckpointCandidateE" title="trt_edgellm::rt::HybridCheckpointCandidate"><span class="n"><span class="pre">HybridCheckpointCandidate</span></span></a><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">candidates</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">BlockHash</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">inputFullBlockHashes</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">inputTokenCount</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">hasAttention</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">ContextCacheLookupPolicy</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">lookupPolicy</span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="n"><span class="pre">ContextCacheLookupPolicy</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">kUseCache</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt19ContextCacheManager13acquireHybridERKNSt6vectorI25HybridCheckpointCandidateEERKNSt6vectorI9BlockHashEE7int32_tb24ContextCacheLookupPolicy" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm2rt19ContextCacheManager22hybridCandidateLengthsE7int32_t">
+<span id="_CPPv3NK11trt_edgellm2rt19ContextCacheManager22hybridCandidateLengthsE7int32_t"></span><span id="_CPPv2NK11trt_edgellm2rt19ContextCacheManager22hybridCandidateLengthsE7int32_t"></span><span id="trt_edgellm::rt::ContextCacheManager::hybridCandidateLengths__int32_tC"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1ContextCacheManager_1a608f15aca0a06bbf46de40fe592e3042"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">int32_t</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">hybridCandidateLengths</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">inputTokenCount</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm2rt19ContextCacheManager22hybridCandidateLengthsE7int32_t" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt19ContextCacheManager11acquireSpecERKNSt6vectorI9BlockHashEE7int32_t24ContextCacheLookupPolicy">
+<span id="_CPPv3N11trt_edgellm2rt19ContextCacheManager11acquireSpecERKNSt6vectorI9BlockHashEE7int32_t24ContextCacheLookupPolicy"></span><span id="_CPPv2N11trt_edgellm2rt19ContextCacheManager11acquireSpecERKNSt6vectorI9BlockHashEE7int32_t24ContextCacheLookupPolicy"></span><span id="trt_edgellm::rt::ContextCacheManager::acquireSpec__std::vector:BlockHash:CR.int32_t.ContextCacheLookupPolicy"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1ContextCacheManager_1a4f134c28c072cd211f6ca2c4ee8c5b25"></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt13AcquireResultE" title="trt_edgellm::rt::AcquireResult"><span class="n"><span class="pre">AcquireResult</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">acquireSpec</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">BlockHash</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">inputFullBlockHashes</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">inputTokenCount</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">ContextCacheLookupPolicy</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">lookupPolicy</span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="n"><span class="pre">ContextCacheLookupPolicy</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">kUseCache</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt19ContextCacheManager11acquireSpecERKNSt6vectorI9BlockHashEE7int32_t24ContextCacheLookupPolicy" title="Link to this definition">#</a><br /></dt>
+<dd><p>The caller must first select greedy, non-hybrid EAGLE on a supported full-attention or full-allocation SWA deployment; the manager cannot infer sampling policy or model topology. </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt19ContextCacheManager13growBasePagesER17CacheRequestLease7int32_t">
+<span id="_CPPv3N11trt_edgellm2rt19ContextCacheManager13growBasePagesER17CacheRequestLease7int32_t"></span><span id="_CPPv2N11trt_edgellm2rt19ContextCacheManager13growBasePagesER17CacheRequestLease7int32_t"></span><span id="trt_edgellm::rt::ContextCacheManager::growBasePages__CacheRequestLeaseR.int32_t"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1ContextCacheManager_1a5d5da6f3e96558ec5f343110a9b4f6da"></span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">growBasePages</span></span></span><span class="sig-paren">(</span><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt17CacheRequestLeaseE" title="trt_edgellm::rt::CacheRequestLease"><span class="n"><span class="pre">CacheRequestLease</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">lease</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">count</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt19ContextCacheManager13growBasePagesER17CacheRequestLease7int32_t" title="Link to this definition">#</a><br /></dt>
+<dd><p>Atomically append private base pages; false leaves the lease and cache metadata unchanged. </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt19ContextCacheManager13growSpecPagesER17CacheRequestLease7int32_t7int32_t">
+<span id="_CPPv3N11trt_edgellm2rt19ContextCacheManager13growSpecPagesER17CacheRequestLease7int32_t7int32_t"></span><span id="_CPPv2N11trt_edgellm2rt19ContextCacheManager13growSpecPagesER17CacheRequestLease7int32_t7int32_t"></span><span id="trt_edgellm::rt::ContextCacheManager::growSpecPages__CacheRequestLeaseR.int32_t.int32_t"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1ContextCacheManager_1af0d0704982ba457a56f5f02093d12f5a"></span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">growSpecPages</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt17CacheRequestLeaseE" title="trt_edgellm::rt::CacheRequestLease"><span class="n"><span class="pre">CacheRequestLease</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">lease</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">baseCount</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">draftCount</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt19ContextCacheManager13growSpecPagesER17CacheRequestLease7int32_t7int32_t" title="Link to this definition">#</a><br /></dt>
+<dd><p>Atomically append EAGLE base and draft pages; false leaves the lease and cache metadata unchanged. </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt19ContextCacheManager22reserveHybridSnapshotsER17CacheRequestLeaseb">
+<span id="_CPPv3N11trt_edgellm2rt19ContextCacheManager22reserveHybridSnapshotsER17CacheRequestLeaseb"></span><span id="_CPPv2N11trt_edgellm2rt19ContextCacheManager22reserveHybridSnapshotsER17CacheRequestLeaseb"></span><span id="trt_edgellm::rt::ContextCacheManager::reserveHybridSnapshots__CacheRequestLeaseR.b"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1ContextCacheManager_1a98fe15088cfce4ea40e90384f530504b"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">optional</span></span><span class="p"><span class="pre">&lt;</span></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt25HybridSnapshotReservationE" title="trt_edgellm::rt::HybridSnapshotReservation"><span class="n"><span class="pre">HybridSnapshotReservation</span></span></a><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">reserveHybridSnapshots</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt17CacheRequestLeaseE" title="trt_edgellm::rt::CacheRequestLease"><span class="n"><span class="pre">CacheRequestLease</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">lease</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">needsPartialKvSnapshot</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt19ContextCacheManager22reserveHybridSnapshotsER17CacheRequestLeaseb" title="Link to this definition">#</a><br /></dt>
+<dd><p>Reserve unpublished hybrid snapshot storage. Failure is retention pressure and leaves the lease unchanged. </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt19ContextCacheManager30releaseRestoredHybridSnapshotsER17CacheRequestLease">
+<span id="_CPPv3N11trt_edgellm2rt19ContextCacheManager30releaseRestoredHybridSnapshotsER17CacheRequestLease"></span><span id="_CPPv2N11trt_edgellm2rt19ContextCacheManager30releaseRestoredHybridSnapshotsER17CacheRequestLease"></span><span id="trt_edgellm::rt::ContextCacheManager::releaseRestoredHybridSnapshots__CacheRequestLeaseR"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1ContextCacheManager_1ad28b632dec91c39bbc08f8ec78ff66f5"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">releaseRestoredHybridSnapshots</span></span></span><span class="sig-paren">(</span><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt17CacheRequestLeaseE" title="trt_edgellm::rt::CacheRequestLease"><span class="n"><span class="pre">CacheRequestLease</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">lease</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt19ContextCacheManager30releaseRestoredHybridSnapshotsER17CacheRequestLease" title="Link to this definition">#</a><br /></dt>
+<dd><p>Release hit-snapshot active pins after the stream-ordered restore has completed. </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt19ContextCacheManager31retireHybridSnapshotReservationER17CacheRequestLeaseRK25HybridSnapshotReservation">
+<span id="_CPPv3N11trt_edgellm2rt19ContextCacheManager31retireHybridSnapshotReservationER17CacheRequestLeaseRK25HybridSnapshotReservation"></span><span id="_CPPv2N11trt_edgellm2rt19ContextCacheManager31retireHybridSnapshotReservationER17CacheRequestLeaseRK25HybridSnapshotReservation"></span><span id="trt_edgellm::rt::ContextCacheManager::retireHybridSnapshotReservation__CacheRequestLeaseR.HybridSnapshotReservationCR"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1ContextCacheManager_1a3cf90791092643ab2969d9d65706fa9c"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">retireHybridSnapshotReservation</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt17CacheRequestLeaseE" title="trt_edgellm::rt::CacheRequestLease"><span class="n"><span class="pre">CacheRequestLease</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">lease</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt25HybridSnapshotReservationE" title="trt_edgellm::rt::HybridSnapshotReservation"><span class="n"><span class="pre">HybridSnapshotReservation</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">reservation</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt19ContextCacheManager31retireHybridSnapshotReservationER17CacheRequestLeaseRK25HybridSnapshotReservation" title="Link to this definition">#</a><br /></dt>
+<dd><p>Release producer ownership after capture is terminal and publication has committed. </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt19ContextCacheManager7publishER17CacheRequestLeaseRK14PublishRequest">
+<span id="_CPPv3N11trt_edgellm2rt19ContextCacheManager7publishER17CacheRequestLeaseRK14PublishRequest"></span><span id="_CPPv2N11trt_edgellm2rt19ContextCacheManager7publishER17CacheRequestLeaseRK14PublishRequest"></span><span id="trt_edgellm::rt::ContextCacheManager::publish__CacheRequestLeaseR.PublishRequestCR"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1ContextCacheManager_1a5c050096c8848a405cda46f11111cf45"></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt13PublishResultE" title="trt_edgellm::rt::PublishResult"><span class="n"><span class="pre">PublishResult</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">publish</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt17CacheRequestLeaseE" title="trt_edgellm::rt::CacheRequestLease"><span class="n"><span class="pre">CacheRequestLease</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">lease</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt14PublishRequestE" title="trt_edgellm::rt::PublishRequest"><span class="n"><span class="pre">PublishRequest</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">request</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt19ContextCacheManager7publishER17CacheRequestLeaseRK14PublishRequest" title="Link to this definition">#</a><br /></dt>
+<dd><p>Commit ready full blocks after validating that the acquired prefix still describes this producer. EAGLE publication retains base and draft state through one common materialized boundary. </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt19ContextCacheManager13publishHybridER17CacheRequestLeaseRK20HybridPublishRequest">
+<span id="_CPPv3N11trt_edgellm2rt19ContextCacheManager13publishHybridER17CacheRequestLeaseRK20HybridPublishRequest"></span><span id="_CPPv2N11trt_edgellm2rt19ContextCacheManager13publishHybridER17CacheRequestLeaseRK20HybridPublishRequest"></span><span id="trt_edgellm::rt::ContextCacheManager::publishHybrid__CacheRequestLeaseR.HybridPublishRequestCR"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1ContextCacheManager_1acde244ee04c8eb04016d62a3cbd20ec3"></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt13PublishResultE" title="trt_edgellm::rt::PublishResult"><span class="n"><span class="pre">PublishResult</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">publishHybrid</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt17CacheRequestLeaseE" title="trt_edgellm::rt::CacheRequestLease"><span class="n"><span class="pre">CacheRequestLease</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">lease</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt20HybridPublishRequestE" title="trt_edgellm::rt::HybridPublishRequest"><span class="n"><span class="pre">HybridPublishRequest</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">request</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt19ContextCacheManager13publishHybridER17CacheRequestLeaseRK20HybridPublishRequest" title="Link to this definition">#</a><br /></dt>
+<dd><p>Commit one already-captured exact hybrid checkpoint. The caller must make snapshot writes terminal first. </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm2rt19ContextCacheManager5poolsEv">
+<span id="_CPPv3NK11trt_edgellm2rt19ContextCacheManager5poolsEv"></span><span id="_CPPv2NK11trt_edgellm2rt19ContextCacheManager5poolsEv"></span><span id="trt_edgellm::rt::ContextCacheManager::poolsC"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1ContextCacheManager_1abf4253741b732692aab24ad38a0c463a"></span><a class="reference internal" href="resourcePools.html#_CPPv4N11trt_edgellm2rt13ResourcePoolsE" title="trt_edgellm::rt::ResourcePools"><span class="n"><span class="pre">ResourcePools</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="n"><span class="pre">pools</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm2rt19ContextCacheManager5poolsEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm2rt19ContextCacheManager9baseIndexEv">
+<span id="_CPPv3NK11trt_edgellm2rt19ContextCacheManager9baseIndexEv"></span><span id="_CPPv2NK11trt_edgellm2rt19ContextCacheManager9baseIndexEv"></span><span id="trt_edgellm::rt::ContextCacheManager::baseIndexC"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1ContextCacheManager_1ae2521c4b909fe92edc9e89f4e35f042c"></span><a class="reference internal" href="blockIndex.html#_CPPv4N11trt_edgellm2rt14BaseBlockIndexE" title="trt_edgellm::rt::BaseBlockIndex"><span class="n"><span class="pre">BaseBlockIndex</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="n"><span class="pre">baseIndex</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm2rt19ContextCacheManager9baseIndexEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm2rt19ContextCacheManager10draftIndexEv">
+<span id="_CPPv3NK11trt_edgellm2rt19ContextCacheManager10draftIndexEv"></span><span id="_CPPv2NK11trt_edgellm2rt19ContextCacheManager10draftIndexEv"></span><span id="trt_edgellm::rt::ContextCacheManager::draftIndexC"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1ContextCacheManager_1a3fd36c774e10c662cc76fbbc2bc74b96"></span><a class="reference internal" href="blockIndex.html#_CPPv4N11trt_edgellm2rt14DraftPathIndexE" title="trt_edgellm::rt::DraftPathIndex"><span class="n"><span class="pre">DraftPathIndex</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="n"><span class="pre">draftIndex</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm2rt19ContextCacheManager10draftIndexEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm2rt19ContextCacheManager7recordsEv">
+<span id="_CPPv3NK11trt_edgellm2rt19ContextCacheManager7recordsEv"></span><span id="_CPPv2NK11trt_edgellm2rt19ContextCacheManager7recordsEv"></span><span id="trt_edgellm::rt::ContextCacheManager::recordsC"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1ContextCacheManager_1a541b80fd41f34012475697c64e3e36e1"></span><a class="reference internal" href="cacheRecord.html#_CPPv4N11trt_edgellm2rt16CacheRecordStoreE" title="trt_edgellm::rt::CacheRecordStore"><span class="n"><span class="pre">CacheRecordStore</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="n"><span class="pre">records</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm2rt19ContextCacheManager7recordsEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm2rt19ContextCacheManager7metricsEv">
+<span id="_CPPv3NK11trt_edgellm2rt19ContextCacheManager7metricsEv"></span><span id="_CPPv2NK11trt_edgellm2rt19ContextCacheManager7metricsEv"></span><span id="trt_edgellm::rt::ContextCacheManager::metricsC"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1ContextCacheManager_1ab81eea80d99ee32e64c1f7b3b040b175"></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt26ContextCacheManagerMetricsE" title="trt_edgellm::rt::ContextCacheManagerMetrics"><span class="n"><span class="pre">ContextCacheManagerMetrics</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="n"><span class="pre">metrics</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm2rt19ContextCacheManager7metricsEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+</div>
+<dl class="cpp struct">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt19ContextCacheManager19PreparedPublicationE">
+<span id="_CPPv3N11trt_edgellm2rt19ContextCacheManager19PreparedPublicationE"></span><span id="_CPPv2N11trt_edgellm2rt19ContextCacheManager19PreparedPublicationE"></span><span id="trt_edgellm::rt::ContextCacheManager::PreparedPublication"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1ContextCacheManager_1_1PreparedPublication"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">PreparedPublication</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt19ContextCacheManager19PreparedPublicationE" title="Link to this definition">#</a><br /></dt>
+<dd><div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-members">Public Members</p>
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt19ContextCacheManager19PreparedPublication6recordE">
+<span id="_CPPv3N11trt_edgellm2rt19ContextCacheManager19PreparedPublication6recordE"></span><span id="_CPPv2N11trt_edgellm2rt19ContextCacheManager19PreparedPublication6recordE"></span><span id="trt_edgellm::rt::ContextCacheManager::PreparedPublication::record__CacheRecord"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1ContextCacheManager_1_1PreparedPublication_1ae8ced2ea32d31d22210875aab0aa7a26"></span><a class="reference internal" href="cacheRecord.html#_CPPv4N11trt_edgellm2rt11CacheRecordE" title="trt_edgellm::rt::CacheRecord"><span class="n"><span class="pre">CacheRecord</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">record</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt19ContextCacheManager19PreparedPublication6recordE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt19ContextCacheManager19PreparedPublication18canonicalBasePagesE">
+<span id="_CPPv3N11trt_edgellm2rt19ContextCacheManager19PreparedPublication18canonicalBasePagesE"></span><span id="_CPPv2N11trt_edgellm2rt19ContextCacheManager19PreparedPublication18canonicalBasePagesE"></span><span id="trt_edgellm::rt::ContextCacheManager::PreparedPublication::canonicalBasePages__std::vector:PageId:"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1ContextCacheManager_1_1PreparedPublication_1a78d9b8634d29d375e50e2431bb43c9cc"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">PageId</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">canonicalBasePages</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt19ContextCacheManager19PreparedPublication18canonicalBasePagesE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt19ContextCacheManager19PreparedPublication19missingBaseMappingsE">
+<span id="_CPPv3N11trt_edgellm2rt19ContextCacheManager19PreparedPublication19missingBaseMappingsE"></span><span id="_CPPv2N11trt_edgellm2rt19ContextCacheManager19PreparedPublication19missingBaseMappingsE"></span><span id="trt_edgellm::rt::ContextCacheManager::PreparedPublication::missingBaseMappings__std::vector:MissingBaseMapping:"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1ContextCacheManager_1_1PreparedPublication_1aa3d986dda5473a6697ff7921dc3ed3f7"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">MissingBaseMapping</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">missingBaseMappings</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt19ContextCacheManager19PreparedPublication19missingBaseMappingsE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt19ContextCacheManager19PreparedPublication14cacheResourcesE">
+<span id="_CPPv3N11trt_edgellm2rt19ContextCacheManager19PreparedPublication14cacheResourcesE"></span><span id="_CPPv2N11trt_edgellm2rt19ContextCacheManager19PreparedPublication14cacheResourcesE"></span><span id="trt_edgellm::rt::ContextCacheManager::PreparedPublication::cacheResources__std::vector:ResourceId:"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1ContextCacheManager_1_1PreparedPublication_1a7f7d8208d9594449bbd60d0514ebce53"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><a class="reference internal" href="contextCacheTypes.html#_CPPv4N11trt_edgellm2rt10ResourceIdE" title="trt_edgellm::rt::ResourceId"><span class="n"><span class="pre">ResourceId</span></span></a><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">cacheResources</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt19ContextCacheManager19PreparedPublication14cacheResourcesE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt19ContextCacheManager19PreparedPublication17recordLimitVictimE">
+<span id="_CPPv3N11trt_edgellm2rt19ContextCacheManager19PreparedPublication17recordLimitVictimE"></span><span id="_CPPv2N11trt_edgellm2rt19ContextCacheManager19PreparedPublication17recordLimitVictimE"></span><span id="trt_edgellm::rt::ContextCacheManager::PreparedPublication::recordLimitVictim__std::optional:RecordId:"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1ContextCacheManager_1_1PreparedPublication_1ae183acdddeafec44bcf67d02b3246840"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">optional</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">RecordId</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">recordLimitVictim</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt19ContextCacheManager19PreparedPublication17recordLimitVictimE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt19ContextCacheManager19PreparedPublication27publishedBaseFullBlockCountE">
+<span id="_CPPv3N11trt_edgellm2rt19ContextCacheManager19PreparedPublication27publishedBaseFullBlockCountE"></span><span id="_CPPv2N11trt_edgellm2rt19ContextCacheManager19PreparedPublication27publishedBaseFullBlockCountE"></span><span id="trt_edgellm::rt::ContextCacheManager::PreparedPublication::publishedBaseFullBlockCount__int32_t"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1ContextCacheManager_1_1PreparedPublication_1abbcba1455b1c066823968a0b9b54b770"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">publishedBaseFullBlockCount</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt19ContextCacheManager19PreparedPublication27publishedBaseFullBlockCountE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+</div>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="cpp struct">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt13AcquireResultE">
+<span id="_CPPv3N11trt_edgellm2rt13AcquireResultE"></span><span id="_CPPv2N11trt_edgellm2rt13AcquireResultE"></span><span id="trt_edgellm::rt::AcquireResult"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1AcquireResult"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">AcquireResult</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt13AcquireResultE" title="Link to this definition">#</a><br /></dt>
+<dd><p>A plan is built and consumed under the manager’s single-writer contract, so it cannot become stale between planning and acquisition. </p>
+<div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-members">Public Members</p>
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt13AcquireResult5leaseE">
+<span id="_CPPv3N11trt_edgellm2rt13AcquireResult5leaseE"></span><span id="_CPPv2N11trt_edgellm2rt13AcquireResult5leaseE"></span><span id="trt_edgellm::rt::AcquireResult::lease__std::optional:CacheRequestLease:"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1AcquireResult_1ae0b396c49d1a9b6970ad6966e86820fa"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">optional</span></span><span class="p"><span class="pre">&lt;</span></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt17CacheRequestLeaseE" title="trt_edgellm::rt::CacheRequestLease"><span class="n"><span class="pre">CacheRequestLease</span></span></a><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">lease</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt13AcquireResult5leaseE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt13AcquireResult6statusE">
+<span id="_CPPv3N11trt_edgellm2rt13AcquireResult6statusE"></span><span id="_CPPv2N11trt_edgellm2rt13AcquireResult6statusE"></span><span id="trt_edgellm::rt::AcquireResult::status__AcquireStatus"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1AcquireResult_1ad12b97ce86feab40c1fb03a0d1ff402f"></span><span class="n"><span class="pre">AcquireStatus</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">status</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="n"><span class="pre">AcquireStatus</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">kAcquired</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt13AcquireResult6statusE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt13AcquireResult4planE">
+<span id="_CPPv3N11trt_edgellm2rt13AcquireResult4planE"></span><span id="_CPPv2N11trt_edgellm2rt13AcquireResult4planE"></span><span id="trt_edgellm::rt::AcquireResult::plan__ReusePlan"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1AcquireResult_1a9c7a28e4a7eb515829613f37ec8e0b94"></span><a class="reference internal" href="reusePlan.html#_CPPv4N11trt_edgellm2rt9ReusePlanE" title="trt_edgellm::rt::ReusePlan"><span class="n"><span class="pre">ReusePlan</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">plan</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt13AcquireResult4planE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+</div>
+</dd></dl>
+
+<dl class="cpp struct">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt14PublishRequestE">
+<span id="_CPPv3N11trt_edgellm2rt14PublishRequestE"></span><span id="_CPPv2N11trt_edgellm2rt14PublishRequestE"></span><span id="trt_edgellm::rt::PublishRequest"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PublishRequest"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">PublishRequest</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt14PublishRequestE" title="Link to this definition">#</a><br /></dt>
+<dd><div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-members">Public Members</p>
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt14PublishRequest15fullBlockHashesE">
+<span id="_CPPv3N11trt_edgellm2rt14PublishRequest15fullBlockHashesE"></span><span id="_CPPv2N11trt_edgellm2rt14PublishRequest15fullBlockHashesE"></span><span id="trt_edgellm::rt::PublishRequest::fullBlockHashes__std::vector:BlockHash:"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PublishRequest_1ab25844e73b5ef83535308676eb1f771e"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">BlockHash</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">fullBlockHashes</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt14PublishRequest15fullBlockHashesE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt14PublishRequest19residentStateLengthE">
+<span id="_CPPv3N11trt_edgellm2rt14PublishRequest19residentStateLengthE"></span><span id="_CPPv2N11trt_edgellm2rt14PublishRequest19residentStateLengthE"></span><span id="trt_edgellm::rt::PublishRequest::residentStateLength__int32_t"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PublishRequest_1af41a4f4daa2bca5f787251b8e930b770"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">residentStateLength</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt14PublishRequest19residentStateLengthE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Greatest logical prefix ready for publication. For speculative leases, both base and draft state must be materialized through this boundary. </p>
+</dd></dl>
+
+</div>
+</dd></dl>
+
+<dl class="cpp struct">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt13PublishResultE">
+<span id="_CPPv3N11trt_edgellm2rt13PublishResultE"></span><span id="_CPPv2N11trt_edgellm2rt13PublishResultE"></span><span id="trt_edgellm::rt::PublishResult"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PublishResult"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">PublishResult</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt13PublishResultE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Detailed publication outcome describing the record path selected at commit time. </p>
+<div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-members">Public Members</p>
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt13PublishResult6statusE">
+<span id="_CPPv3N11trt_edgellm2rt13PublishResult6statusE"></span><span id="_CPPv2N11trt_edgellm2rt13PublishResult6statusE"></span><span id="trt_edgellm::rt::PublishResult::status__PublishStatus"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PublishResult_1a94bd8c99c1e87c58978c616a7b68b998"></span><span class="n"><span class="pre">PublishStatus</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">status</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="n"><span class="pre">PublishStatus</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">kPublished</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt13PublishResult6statusE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt13PublishResult6recordE">
+<span id="_CPPv3N11trt_edgellm2rt13PublishResult6recordE"></span><span id="_CPPv2N11trt_edgellm2rt13PublishResult6recordE"></span><span id="trt_edgellm::rt::PublishResult::record__std::optional:RecordId:"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PublishResult_1afbd3c564bf28d09e79ccd399e6c59e94"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">optional</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">RecordId</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">record</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt13PublishResult6recordE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt13PublishResult18canonicalBasePagesE">
+<span id="_CPPv3N11trt_edgellm2rt13PublishResult18canonicalBasePagesE"></span><span id="_CPPv2N11trt_edgellm2rt13PublishResult18canonicalBasePagesE"></span><span id="trt_edgellm::rt::PublishResult::canonicalBasePages__std::vector:PageId:"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PublishResult_1af80689a3960202c0fa393012716e9169"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">PageId</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">canonicalBasePages</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt13PublishResult18canonicalBasePagesE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Canonical base pages owned by the published record. This is never an active-row update recipe. </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt13PublishResult27publishedBaseFullBlockCountE">
+<span id="_CPPv3N11trt_edgellm2rt13PublishResult27publishedBaseFullBlockCountE"></span><span id="_CPPv2N11trt_edgellm2rt13PublishResult27publishedBaseFullBlockCountE"></span><span id="trt_edgellm::rt::PublishResult::publishedBaseFullBlockCount__int32_t"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PublishResult_1ad34e2e9ad74a58e087e7412ea07495fe"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">publishedBaseFullBlockCount</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt13PublishResult27publishedBaseFullBlockCountE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Published boundary represented by canonicalBasePages; later producer pages remain unpublished. </p>
+</dd></dl>
+
+</div>
+</dd></dl>
+
+<dl class="cpp struct">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt25HybridSnapshotReservationE">
+<span id="_CPPv3N11trt_edgellm2rt25HybridSnapshotReservationE"></span><span id="_CPPv2N11trt_edgellm2rt25HybridSnapshotReservationE"></span><span id="trt_edgellm::rt::HybridSnapshotReservation"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1HybridSnapshotReservation"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">HybridSnapshotReservation</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt25HybridSnapshotReservationE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Request-private snapshot slots reserved before the runtime enqueues a hybrid capture. </p>
+<div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-members">Public Members</p>
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt25HybridSnapshotReservation21recurrentSnapshotSlotE">
+<span id="_CPPv3N11trt_edgellm2rt25HybridSnapshotReservation21recurrentSnapshotSlotE"></span><span id="_CPPv2N11trt_edgellm2rt25HybridSnapshotReservation21recurrentSnapshotSlotE"></span><span id="trt_edgellm::rt::HybridSnapshotReservation::recurrentSnapshotSlot__int32_t"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1HybridSnapshotReservation_1a6b4e341bb8e85499598ac400eea8ee0c"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">recurrentSnapshotSlot</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt25HybridSnapshotReservation21recurrentSnapshotSlotE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt25HybridSnapshotReservation21partialKvSnapshotSlotE">
+<span id="_CPPv3N11trt_edgellm2rt25HybridSnapshotReservation21partialKvSnapshotSlotE"></span><span id="_CPPv2N11trt_edgellm2rt25HybridSnapshotReservation21partialKvSnapshotSlotE"></span><span id="trt_edgellm::rt::HybridSnapshotReservation::partialKvSnapshotSlot__std::optional:int32_t:"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1HybridSnapshotReservation_1a4cc914a0a5a15a9754ef105545bd94b0"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">optional</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">int32_t</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">partialKvSnapshotSlot</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt25HybridSnapshotReservation21partialKvSnapshotSlotE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+</div>
+</dd></dl>
+
+<dl class="cpp struct">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt20HybridPublishRequestE">
+<span id="_CPPv3N11trt_edgellm2rt20HybridPublishRequestE"></span><span id="_CPPv2N11trt_edgellm2rt20HybridPublishRequestE"></span><span id="trt_edgellm::rt::HybridPublishRequest"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1HybridPublishRequest"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">HybridPublishRequest</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt20HybridPublishRequestE" title="Link to this definition">#</a><br /></dt>
+<dd><div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-members">Public Members</p>
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt20HybridPublishRequest15fullBlockHashesE">
+<span id="_CPPv3N11trt_edgellm2rt20HybridPublishRequest15fullBlockHashesE"></span><span id="_CPPv2N11trt_edgellm2rt20HybridPublishRequest15fullBlockHashesE"></span><span id="trt_edgellm::rt::HybridPublishRequest::fullBlockHashes__std::vector:BlockHash:"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1HybridPublishRequest_1a57249590856a9583db83e25ba69b8e31"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">BlockHash</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">fullBlockHashes</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt20HybridPublishRequest15fullBlockHashesE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt20HybridPublishRequest10checkpointE">
+<span id="_CPPv3N11trt_edgellm2rt20HybridPublishRequest10checkpointE"></span><span id="_CPPv2N11trt_edgellm2rt20HybridPublishRequest10checkpointE"></span><span id="trt_edgellm::rt::HybridPublishRequest::checkpoint__HybridCheckpointKey"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1HybridPublishRequest_1ae070dc7c81fc66e7db36fbe32a87008f"></span><a class="reference internal" href="cacheRecord.html#_CPPv4N11trt_edgellm2rt19HybridCheckpointKeyE" title="trt_edgellm::rt::HybridCheckpointKey"><span class="n"><span class="pre">HybridCheckpointKey</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">checkpoint</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt20HybridPublishRequest10checkpointE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt20HybridPublishRequest9snapshotsE">
+<span id="_CPPv3N11trt_edgellm2rt20HybridPublishRequest9snapshotsE"></span><span id="_CPPv2N11trt_edgellm2rt20HybridPublishRequest9snapshotsE"></span><span id="trt_edgellm::rt::HybridPublishRequest::snapshots__HybridSnapshotReservation"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1HybridPublishRequest_1a713d8b540d4118d9e7282fef88ca0d5a"></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt25HybridSnapshotReservationE" title="trt_edgellm::rt::HybridSnapshotReservation"><span class="n"><span class="pre">HybridSnapshotReservation</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">snapshots</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt20HybridPublishRequest9snapshotsE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+</div>
+</dd></dl>
+
+<dl class="cpp struct">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt26ContextCacheManagerMetricsE">
+<span id="_CPPv3N11trt_edgellm2rt26ContextCacheManagerMetricsE"></span><span id="_CPPv2N11trt_edgellm2rt26ContextCacheManagerMetricsE"></span><span id="trt_edgellm::rt::ContextCacheManagerMetrics"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1ContextCacheManagerMetrics"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ContextCacheManagerMetrics</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt26ContextCacheManagerMetricsE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Cumulative outcomes of record eviction. Reclaimed counts include only resources returned to a free list at the eviction point; resources still pinned by an active request are not counted. </p>
+<div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-members">Public Members</p>
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt26ContextCacheManagerMetrics14evictedRecordsE">
+<span id="_CPPv3N11trt_edgellm2rt26ContextCacheManagerMetrics14evictedRecordsE"></span><span id="_CPPv2N11trt_edgellm2rt26ContextCacheManagerMetrics14evictedRecordsE"></span><span id="trt_edgellm::rt::ContextCacheManagerMetrics::evictedRecords__uint64_t"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1ContextCacheManagerMetrics_1aa21520a1c3af8343dd9a137138683548"></span><span class="n"><span class="pre">uint64_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">evictedRecords</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt26ContextCacheManagerMetrics14evictedRecordsE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt26ContextCacheManagerMetrics20reclaimedBaseKvPagesE">
+<span id="_CPPv3N11trt_edgellm2rt26ContextCacheManagerMetrics20reclaimedBaseKvPagesE"></span><span id="_CPPv2N11trt_edgellm2rt26ContextCacheManagerMetrics20reclaimedBaseKvPagesE"></span><span id="trt_edgellm::rt::ContextCacheManagerMetrics::reclaimedBaseKvPages__uint64_t"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1ContextCacheManagerMetrics_1ab8a2b7198e26a30ad351ee93120b9996"></span><span class="n"><span class="pre">uint64_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">reclaimedBaseKvPages</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt26ContextCacheManagerMetrics20reclaimedBaseKvPagesE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt26ContextCacheManagerMetrics21reclaimedDraftKvPagesE">
+<span id="_CPPv3N11trt_edgellm2rt26ContextCacheManagerMetrics21reclaimedDraftKvPagesE"></span><span id="_CPPv2N11trt_edgellm2rt26ContextCacheManagerMetrics21reclaimedDraftKvPagesE"></span><span id="trt_edgellm::rt::ContextCacheManagerMetrics::reclaimedDraftKvPages__uint64_t"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1ContextCacheManagerMetrics_1a69b212eea6a245aeb582da5254542ce6"></span><span class="n"><span class="pre">uint64_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">reclaimedDraftKvPages</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt26ContextCacheManagerMetrics21reclaimedDraftKvPagesE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt26ContextCacheManagerMetrics27reclaimedRecurrentSnapshotsE">
+<span id="_CPPv3N11trt_edgellm2rt26ContextCacheManagerMetrics27reclaimedRecurrentSnapshotsE"></span><span id="_CPPv2N11trt_edgellm2rt26ContextCacheManagerMetrics27reclaimedRecurrentSnapshotsE"></span><span id="trt_edgellm::rt::ContextCacheManagerMetrics::reclaimedRecurrentSnapshots__uint64_t"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1ContextCacheManagerMetrics_1a058f1db44f80cc01cd575dd56f0817db"></span><span class="n"><span class="pre">uint64_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">reclaimedRecurrentSnapshots</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt26ContextCacheManagerMetrics27reclaimedRecurrentSnapshotsE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt26ContextCacheManagerMetrics27reclaimedPartialKvSnapshotsE">
+<span id="_CPPv3N11trt_edgellm2rt26ContextCacheManagerMetrics27reclaimedPartialKvSnapshotsE"></span><span id="_CPPv2N11trt_edgellm2rt26ContextCacheManagerMetrics27reclaimedPartialKvSnapshotsE"></span><span id="trt_edgellm::rt::ContextCacheManagerMetrics::reclaimedPartialKvSnapshots__uint64_t"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1ContextCacheManagerMetrics_1a45b379b89b7eed6e00dec8e1c1deaea2"></span><span class="n"><span class="pre">uint64_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">reclaimedPartialKvSnapshots</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt26ContextCacheManagerMetrics27reclaimedPartialKvSnapshotsE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+</div>
+</dd></dl>
+
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="contextCacheDeployment.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Context Cache Deployment</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="contextCacheMetrics.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Context Cache Metrics</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+
+
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt17CacheRequestLeaseE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::rt::CacheRequestLease</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt17CacheRequestLease17CacheRequestLeaseEv"><code class="docutils literal notranslate"><span class="pre">CacheRequestLease()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt17CacheRequestLeaseD0Ev"><code class="docutils literal notranslate"><span class="pre">~CacheRequestLease()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt17CacheRequestLease17CacheRequestLeaseERR17CacheRequestLease"><code class="docutils literal notranslate"><span class="pre">CacheRequestLease()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt17CacheRequestLeaseaSERR17CacheRequestLease"><code class="docutils literal notranslate"><span class="pre">operator=()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt17CacheRequestLease17CacheRequestLeaseERK17CacheRequestLease"><code class="docutils literal notranslate"><span class="pre">CacheRequestLease()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt17CacheRequestLeaseaSERK17CacheRequestLease"><code class="docutils literal notranslate"><span class="pre">operator=()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt17CacheRequestLease9basePagesEv"><code class="docutils literal notranslate"><span class="pre">basePages()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt17CacheRequestLease10draftPagesEv"><code class="docutils literal notranslate"><span class="pre">draftPages()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt17CacheRequestLease21recurrentSnapshotSlotEv"><code class="docutils literal notranslate"><span class="pre">recurrentSnapshotSlot()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt17CacheRequestLease21partialKvSnapshotSlotEv"><code class="docutils literal notranslate"><span class="pre">partialKvSnapshotSlot()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt17CacheRequestLease5validEv"><code class="docutils literal notranslate"><span class="pre">valid()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt17CacheRequestLease7releaseEv"><code class="docutils literal notranslate"><span class="pre">release()</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt19ContextCacheManagerE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::rt::ContextCacheManager</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt19ContextCacheManager19ContextCacheManagerE7int32_t14ResourceDemand7int32_t"><code class="docutils literal notranslate"><span class="pre">ContextCacheManager()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt19ContextCacheManager14acquireVanillaERKNSt6vectorI9BlockHashEE7int32_t24ContextCacheLookupPolicy"><code class="docutils literal notranslate"><span class="pre">acquireVanilla()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt19ContextCacheManager13acquireHybridERKNSt6vectorI25HybridCheckpointCandidateEERKNSt6vectorI9BlockHashEE7int32_tb24ContextCacheLookupPolicy"><code class="docutils literal notranslate"><span class="pre">acquireHybrid()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt19ContextCacheManager22hybridCandidateLengthsE7int32_t"><code class="docutils literal notranslate"><span class="pre">hybridCandidateLengths()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt19ContextCacheManager11acquireSpecERKNSt6vectorI9BlockHashEE7int32_t24ContextCacheLookupPolicy"><code class="docutils literal notranslate"><span class="pre">acquireSpec()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt19ContextCacheManager13growBasePagesER17CacheRequestLease7int32_t"><code class="docutils literal notranslate"><span class="pre">growBasePages()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt19ContextCacheManager13growSpecPagesER17CacheRequestLease7int32_t7int32_t"><code class="docutils literal notranslate"><span class="pre">growSpecPages()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt19ContextCacheManager22reserveHybridSnapshotsER17CacheRequestLeaseb"><code class="docutils literal notranslate"><span class="pre">reserveHybridSnapshots()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt19ContextCacheManager30releaseRestoredHybridSnapshotsER17CacheRequestLease"><code class="docutils literal notranslate"><span class="pre">releaseRestoredHybridSnapshots()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt19ContextCacheManager31retireHybridSnapshotReservationER17CacheRequestLeaseRK25HybridSnapshotReservation"><code class="docutils literal notranslate"><span class="pre">retireHybridSnapshotReservation()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt19ContextCacheManager7publishER17CacheRequestLeaseRK14PublishRequest"><code class="docutils literal notranslate"><span class="pre">publish()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt19ContextCacheManager13publishHybridER17CacheRequestLeaseRK20HybridPublishRequest"><code class="docutils literal notranslate"><span class="pre">publishHybrid()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt19ContextCacheManager5poolsEv"><code class="docutils literal notranslate"><span class="pre">pools()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt19ContextCacheManager9baseIndexEv"><code class="docutils literal notranslate"><span class="pre">baseIndex()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt19ContextCacheManager10draftIndexEv"><code class="docutils literal notranslate"><span class="pre">draftIndex()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt19ContextCacheManager7recordsEv"><code class="docutils literal notranslate"><span class="pre">records()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt19ContextCacheManager7metricsEv"><code class="docutils literal notranslate"><span class="pre">metrics()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt19ContextCacheManager19PreparedPublicationE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::rt::ContextCacheManager::PreparedPublication</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt19ContextCacheManager19PreparedPublication6recordE"><code class="docutils literal notranslate"><span class="pre">record</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt19ContextCacheManager19PreparedPublication18canonicalBasePagesE"><code class="docutils literal notranslate"><span class="pre">canonicalBasePages</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt19ContextCacheManager19PreparedPublication19missingBaseMappingsE"><code class="docutils literal notranslate"><span class="pre">missingBaseMappings</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt19ContextCacheManager19PreparedPublication14cacheResourcesE"><code class="docutils literal notranslate"><span class="pre">cacheResources</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt19ContextCacheManager19PreparedPublication17recordLimitVictimE"><code class="docutils literal notranslate"><span class="pre">recordLimitVictim</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt19ContextCacheManager19PreparedPublication27publishedBaseFullBlockCountE"><code class="docutils literal notranslate"><span class="pre">publishedBaseFullBlockCount</span></code></a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt13AcquireResultE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::rt::AcquireResult</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt13AcquireResult5leaseE"><code class="docutils literal notranslate"><span class="pre">lease</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt13AcquireResult6statusE"><code class="docutils literal notranslate"><span class="pre">status</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt13AcquireResult4planE"><code class="docutils literal notranslate"><span class="pre">plan</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt14PublishRequestE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::rt::PublishRequest</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt14PublishRequest15fullBlockHashesE"><code class="docutils literal notranslate"><span class="pre">fullBlockHashes</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt14PublishRequest19residentStateLengthE"><code class="docutils literal notranslate"><span class="pre">residentStateLength</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt13PublishResultE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::rt::PublishResult</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt13PublishResult6statusE"><code class="docutils literal notranslate"><span class="pre">status</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt13PublishResult6recordE"><code class="docutils literal notranslate"><span class="pre">record</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt13PublishResult18canonicalBasePagesE"><code class="docutils literal notranslate"><span class="pre">canonicalBasePages</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt13PublishResult27publishedBaseFullBlockCountE"><code class="docutils literal notranslate"><span class="pre">publishedBaseFullBlockCount</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt25HybridSnapshotReservationE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::rt::HybridSnapshotReservation</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt25HybridSnapshotReservation21recurrentSnapshotSlotE"><code class="docutils literal notranslate"><span class="pre">recurrentSnapshotSlot</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt25HybridSnapshotReservation21partialKvSnapshotSlotE"><code class="docutils literal notranslate"><span class="pre">partialKvSnapshotSlot</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt20HybridPublishRequestE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::rt::HybridPublishRequest</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt20HybridPublishRequest15fullBlockHashesE"><code class="docutils literal notranslate"><span class="pre">fullBlockHashes</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt20HybridPublishRequest10checkpointE"><code class="docutils literal notranslate"><span class="pre">checkpoint</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt20HybridPublishRequest9snapshotsE"><code class="docutils literal notranslate"><span class="pre">snapshots</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt26ContextCacheManagerMetricsE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::rt::ContextCacheManagerMetrics</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt26ContextCacheManagerMetrics14evictedRecordsE"><code class="docutils literal notranslate"><span class="pre">evictedRecords</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt26ContextCacheManagerMetrics20reclaimedBaseKvPagesE"><code class="docutils literal notranslate"><span class="pre">reclaimedBaseKvPages</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt26ContextCacheManagerMetrics21reclaimedDraftKvPagesE"><code class="docutils literal notranslate"><span class="pre">reclaimedDraftKvPages</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt26ContextCacheManagerMetrics27reclaimedRecurrentSnapshotsE"><code class="docutils literal notranslate"><span class="pre">reclaimedRecurrentSnapshots</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt26ContextCacheManagerMetrics27reclaimedPartialKvSnapshotsE"><code class="docutils literal notranslate"><span class="pre">reclaimedPartialKvSnapshots</span></code></a></li>
+</ul>
+</li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+<a class="footer-brand logo" href="https://www.nvidia.com">
+  <img src="../../_static/nvidia-logo-horiz-rgb-1c-blk-for-screen.svg" class="logo__image only-light" alt="NVIDIA"/>
+  <img src="../../_static/nvidia-logo-horiz-rgb-1c-wht-for-screen.svg" class="logo__image only-dark" alt="NVIDIA"/>
+</a></div>
+      
+        <div class="footer-item">
+
+<div class="footer-links">
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/about-nvidia/privacy-policy/">Privacy Policy</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/about-nvidia/privacy-center/">Your Privacy Choices</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/about-nvidia/terms-of-service/">Terms of Service</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/about-nvidia/accessibility/">Accessibility</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/about-nvidia/company-policies/">Corporate Policies</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/product-security/">Product Security</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/contact/">Contact</a>
+  
+  
+  
+</div>
+</div>
+      
+        <div class="footer-item">
+
+
+
+
+  <p class="copyright">
+    
+      Copyright © 2025, Nvidia.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+<div class="extra_footer">
+  
+  <p>Last updated on August 12, 2026.</p>
+  
+  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/71dd1ba">71dd1ba</a>.</p>
+  
+</div></div>
+      
+    </div>
+  
+  
+  
+</div>
+
+  </footer>
+  </body>
+</html>

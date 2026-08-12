@@ -6,3 +6,8 @@ System Prompt KV Cache
    :members:
    :undoc-members:
 
+.. doxygenstruct:: trt_edgellm::SystemPromptReuseResult
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

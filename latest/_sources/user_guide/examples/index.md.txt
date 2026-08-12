@@ -17,16 +17,31 @@ limitations under the License.
 
 # Examples
 
-End-to-end workflows demonstrating TensorRT Edge-LLM capabilities across different use cases.
+Choose the workflow by its input and output contract. The
+[Supported Models](../getting_started/supported-models.md) page maps each model
+family to these contracts.
 
-## Available Examples
+## Text Output
 
-- **[VLM (Vision-Language Model)](vlm.md)** - Complete workflow for vision-language models with image understanding capabilities
-- **[Speculative Decoding](speculative-decoding.md)** - EAGLE3, MTP, and DFlash speculative decoding for faster inference
-- **[Phi-4 Multimodal](phi4.md)** - Phi-4-Multimodal deployment with LoRA merge
-- **[ASR (Automatic Speech Recognition)](asr.md)** - Speech-to-text with Qwen3-ASR models, including optional FP8 / NVFP4 quantization recipes
-- **[MoE (Mixture of Experts)](moe.md)** - Mixture of Experts model deployment
-- **[TTS (Text-to-Speech)](tts.md)** - Text-to-speech synthesis workflows
-- **[Alpamayo-R1-10B (VLA)](vla.md)** - Vision-language-action workflow with image, text, trajectory history, and action prediction
-- **[Omni (Audio + Vision + Speech I/O)](omni.md)** - End-to-end Qwen3-Omni multimodal pipeline with NVFP4 quantization
-- **[Experimental High-Level Python API and Server](experimental-server.md)** - vLLM-style API and OpenAI-compatible server with spec-decode support
+- [Text generation](../getting_started/quick-start-guide.md): one shared workflow
+  for dense LLM, MoE, VLM, and Omni text output; Phi-4 Multimodal adds the
+  model-specific [vision-LoRA merge](phi4.md)
+- [Speculative Decoding](speculative-decoding.md): MTP, EAGLE3, DFlash, and
+  DSpark acceleration
+- [ASR](asr.md): audio to transcript text with Qwen3-ASR
+- [Nemotron-3.5-ASR](../../developer_guide/models/nemotron3_5_asr.md): audio to transcript text with a model-specific RNN-T runtime
+
+## Speech Output
+
+- [Qwen3-TTS](tts.md): text, style, language, or reference speech to 24 kHz speech
+- [Qwen3-Omni](omni.md): text, images, or audio to text and optional 24 kHz speech
+
+## Action Output
+
+- [Vision-Language-Action](vla/index.md): Alpamayo trajectory generation and
+  Cosmos3 policy action generation
+
+## Serving and Evaluation
+
+- [Experimental Python API and Server](experimental-server.md): Python and OpenAI-compatible interfaces
+- [NeMo Evaluator](nemo-evaluator.md): evaluate a local OpenAI-compatible server

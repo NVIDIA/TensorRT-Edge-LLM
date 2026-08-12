@@ -1,6 +1,22 @@
 Safetensors Utils
 =================
 
+.. doxygenstruct:: trt_edgellm::rt::safetensors::TensorMetadata
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::safetensors::FileMetadata
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::safetensors::dataTypeFromString
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::safetensors::parseMetadata
+   :project: TensorRT Edge-LLM
+
 .. doxygenfunction:: trt_edgellm::rt::safetensors::saveSafetensors
    :project: TensorRT Edge-LLM
 

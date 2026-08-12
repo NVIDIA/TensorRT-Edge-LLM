@@ -1,0 +1,13 @@
+Int4 Groupwise GEMM Plugin V2
+=============================
+
+.. doxygenclass:: trt_edgellm::plugins::Int4GroupwiseGemmPluginV2
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::plugins::Int4GroupwiseGemmPluginV2Creator
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

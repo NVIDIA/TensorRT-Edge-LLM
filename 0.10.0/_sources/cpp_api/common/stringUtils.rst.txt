@@ -1,0 +1,6 @@
+String Utils
+============
+
+.. doxygenfunction:: trt_edgellm::format::fmtstr
+   :project: TensorRT Edge-LLM
+

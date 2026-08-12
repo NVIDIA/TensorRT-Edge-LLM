@@ -1,0 +1,18 @@
+Context Cache Types
+===================
+
+.. doxygenstruct:: trt_edgellm::rt::ResourceId
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::ResourceDemand
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: std::hash< trt_edgellm::rt::ResourceId >
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

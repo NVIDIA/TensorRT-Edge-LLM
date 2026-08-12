@@ -1,0 +1,15 @@
+Gdn Tree Chunk Kernels
+======================
+
+.. doxygenfunction:: trt_edgellm::kernel::gdnTreeChunkVerifyEnabled
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::gdnTreeBuildAncestorMasks
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::gdnTreeVerifyChunk
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::gdnTreeReplayCommitBatched
+   :project: TensorRT Edge-LLM
+

@@ -1,0 +1,28 @@
+Cute Dsl FMHA Params
+====================
+
+.. doxygenstruct:: trt_edgellm::LlmFmhaParams
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::LlmFmhaPagedParams
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::VitFmhaParams
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::FmhaV2LlmParams
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::FmhaV2VitParams
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

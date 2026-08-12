@@ -1,0 +1,29 @@
+Timer
+=====
+
+.. doxygenclass:: trt_edgellm::timer::TimerSession
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::timer::Timer
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::timer::TimerPair
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::timer::StageTimingData
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::getProfilingEnabled
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::setProfilingEnabled
+   :project: TensorRT Edge-LLM
+

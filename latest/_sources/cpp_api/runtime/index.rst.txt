@@ -8,6 +8,20 @@ API documentation for the runtime module.
 
    audioLoader
    audioUtils
+   blockDiffusionDecoder
+   blockHash
+   blockIndex
+   cacheRecord
+   checkpointReader
+   checkpointWeightAssemble
+   collectiveGroup
+   contextCacheConfig
+   contextCacheCoordinator
+   contextCacheDeployment
+   contextCacheManager
+   contextCacheMetrics
+   contextCacheRequest
+   contextCacheTypes
    decoderRegistry
    decoderUtils
    decodingInferenceContext
@@ -16,17 +30,21 @@ API documentation for the runtime module.
    deploymentConfig
    dflashDecodeUtils
    dflashDecoder
+   dsparkDecoder
    eagleDecoder
    embeddingPreprocessor
    engineExecutor
+   evictionPlanner
    externalWeightManager
    gemma4EmbeddingPreprocessor
    gemma4MTPDecoder
    hybridCacheManager
+   hybridSnapshotStorage
    imageUtils
    inferenceDims
    inferencePhase
    kvCacheManager
+   kvPageTable
    layerDebugger
    llmEngineConfig
    llmInferenceRuntime
@@ -36,14 +54,23 @@ API documentation for the runtime module.
    mambaCacheManager
    melSpectrogram
    mtpDecoder
+   multiDevicePluginCommRegistry
+   multiDevicePluginResourceFactory
+   multiDevicePluginResources
+   ncclCollectiveBackend
+   parallelConfig
    pipelineIO
    qwen3OmniTTSRuntime
    registryBuilder
+   resourcePools
+   reusePlan
    ropeCache
    sharedResources
    stepPreparer
    streaming
    systemPromptKVCache
    tensorMap
+   tensorParallelNcclResources
+   tensorParallelPluginResources
    tensorRegistry
    vanillaDecoder
