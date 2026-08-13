@@ -64,7 +64,7 @@ from typing import List, Tuple
 import torch
 import torch.nn as nn
 
-from ...config import QUANT_FP16, QUANT_NVFP4, ModelConfig
+from ...config import QUANT_FP16, QUANT_NVFP4, QUANT_NVFP4_A16, ModelConfig
 from ..default.modeling_default import (MLP, Attention, OnnxSpec, RMSNorm,
                                         _make_flat_wrapper)
 from ..linear import FP16Linear, make_linear
@@ -223,7 +223,8 @@ class Qwen3SparseMoeBlock(nn.Module):
         self.hidden_size = config.hidden_size
         self.group_size = config.quant.group_size
         self.zero_point_offset = config.quant.gptq_zero_point_offset
-        self._use_nvfp4_moe = config.quant.quant_type == QUANT_NVFP4
+        self._use_nvfp4_moe = config.quant.quant_type in (QUANT_NVFP4,
+                                                          QUANT_NVFP4_A16)
         self._use_fp16_moe = config.quant.quant_type == QUANT_FP16
         # All paths compute the same SwiGLU expert FFN; the integer is just
         # each plugin's own enum for it. Int4MoePlugin names the elementwise
