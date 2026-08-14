@@ -13,17 +13,11 @@
 # License for the specific language governing permissions and limitations under
 # the License.
 
-set(INTERNVLA_N1_CPP_SRCS action/internvlaN1Scheduler.cpp
-                          action/internvlaN1Kernels.cu
-                          action/internvlaN1System1Runner.cpp)
-
-add_library(internvlaN1Experimental STATIC ${INTERNVLA_N1_CPP_SRCS})
-
-# A static library only needs the core headers to compile; the executables do
-# the linking. This keeps it independent of a core rebuild.
+add_executable(internvla_n1_system1_inference internvla_n1_system1_inference.cpp)
 target_include_directories(
-  internvlaN1Experimental
-  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
-  PRIVATE ${CMAKE_SOURCE_DIR}/cpp ${COMMON_INCLUDE_DIRS}
-          ${ONNX_PARSER_INCLUDE_DIR})
-set_property(TARGET internvlaN1Experimental PROPERTY POSITION_INDEPENDENT_CODE ON)
+  internvla_n1_system1_inference
+  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../cpp ${CMAKE_SOURCE_DIR}/cpp
+          ${COMMON_INCLUDE_DIRS} ${ONNX_PARSER_INCLUDE_DIR})
+target_link_libraries(
+  internvla_n1_system1_inference PRIVATE internvlaN1Experimental edgellmCore
+                                         commonLibraryExt)
