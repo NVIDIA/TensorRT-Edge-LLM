@@ -505,6 +505,7 @@ def export_internvla_n1_system1_onnx(
     predict_step_nums: int = 32,
     zlen: int = 36,
     num_frames: int = 2,
+    action_dim: int = 3,
     dtype: torch.dtype = torch.bfloat16,
 ) -> dict:
     """Export the InternVLA-N1 System-1 pair to ONNX.
@@ -518,7 +519,7 @@ def export_internvla_n1_system1_onnx(
     latents are duplicated.
     """
     from ..models.internvla_n1.modeling_internvla_n1_action import (
-        build_internvla_n1_traj_dit, TrajDitConfig)
+        build_internvla_n1_traj_dit_step, TrajDitConfig)
     from ..models.internvla_n1.modeling_internvla_n1_memory import (
         build_internvla_n1_memory, MemoryConfig)
 
@@ -531,10 +532,14 @@ def export_internvla_n1_system1_onnx(
     paths = {}
 
     logger.info("[System1] Building trajectory expert ...")
-    dit = build_internvla_n1_traj_dit(weights, dit_cfg, dtype).float().eval()
+    # The exported step includes action_encoder / pos_encoding / action_decoder,
+    # so the engine takes and returns waypoints rather than 384-wide features.
+    # That leaves the runtime with control flow only -- duplicate for guidance,
+    # blend, Euler update -- instead of two GEMMs and a positional encoding.
+    dit = build_internvla_n1_traj_dit_step(weights, dit_cfg, dtype).float().eval()
     batch = 2 * num_sample_trajs
     dit_args = (
-        torch.zeros(batch, predict_step_nums, dit_cfg.in_channels),
+        torch.zeros(batch, predict_step_nums, action_dim),
         torch.ones(batch, dtype=torch.int64),
         torch.zeros(batch, zlen, dit_cfg.latent_dim),
     )
@@ -542,9 +547,9 @@ def export_internvla_n1_system1_onnx(
     with torch.inference_mode():
         torch.onnx.export(
             dit, dit_args, paths["traj_dit"],
-            input_names=["x", "timestep", "z_latents"],
+            input_names=["latents", "timestep", "z_latents"],
             output_names=["output"], opset_version=19,
-            dynamic_axes={"x": {0: "batch"}, "timestep": {0: "batch"},
+            dynamic_axes={"latents": {0: "batch"}, "timestep": {0: "batch"},
                           "z_latents": {0: "batch", 1: "zlen"},
                           "output": {0: "batch"}},
             do_constant_folding=True, export_params=True, dynamo=False)
@@ -567,6 +572,7 @@ def export_internvla_n1_system1_onnx(
         "latent_dim": dit_cfg.latent_dim,
         "dim": dit_cfg.dim,
         "num_query": mem_cfg.num_query,
+        "action_dim": action_dim,
         "image_size": mem_cfg.image_size,
     }
     with open(os.path.join(out_dir, "config.json"), "w") as f:

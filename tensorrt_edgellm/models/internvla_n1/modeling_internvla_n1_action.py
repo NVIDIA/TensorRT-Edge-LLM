@@ -311,6 +311,89 @@ class InternVLAN1TrajDit(nn.Module):
         return self.norm_out(hidden_states, temb)
 
 
+class SinusoidalPositionalEncoding(nn.Module):
+    """Waypoint-index encoding, sine half first.
+
+    Parameter-free. The ordering is sin-then-cos, the opposite of the timestep
+    embedding above -- both orderings appear in this model and swapping either
+    is silent.
+    """
+
+    def __init__(self, embedding_dim: int) -> None:
+        super().__init__()
+        self.embedding_dim = embedding_dim
+
+    def forward(self, positions: torch.Tensor) -> torch.Tensor:
+        half = self.embedding_dim // 2
+        exponent = -torch.arange(half, dtype=torch.float32,
+                                 device=positions.device) * (
+            math.log(10000.0) / half)
+        freqs = positions.float().unsqueeze(-1) * exponent.exp()
+        return torch.cat([torch.sin(freqs), torch.cos(freqs)], dim=-1)
+
+
+class InternVLAN1TrajDitStep(nn.Module):
+    """One denoising step end to end, in trajectory space.
+
+    Wraps the expert with the projections that surround it, so the engine takes
+    and returns waypoints ``[batch, waypoints, 3]`` instead of 384-wide features.
+    Everything folded in here is a fixed linear map or a parameter-free encoding;
+    leaving them outside would force the runtime to carry two GEMMs and reproduce
+    the positional encoding, for no benefit.
+
+    The sampler loop, the classifier-free-guidance blend and the Euler update
+    stay outside -- they are control flow, not compute.
+    """
+
+    def __init__(self, cfg: Optional[TrajDitConfig] = None,
+                 action_dim: int = 3) -> None:
+        super().__init__()
+        cfg = cfg or TrajDitConfig()
+        self.config = cfg
+        self.action_encoder = nn.Linear(action_dim, cfg.dim, bias=True)
+        self.pos_encoding = SinusoidalPositionalEncoding(cfg.dim)
+        self.traj_dit = InternVLAN1TrajDit(cfg)
+        self.action_decoder = nn.Linear(cfg.dim, action_dim, bias=True)
+
+    def forward(self, latents: torch.Tensor, timestep: torch.Tensor,
+                z_latents: torch.Tensor) -> torch.Tensor:
+        positions = torch.arange(latents.shape[1], device=latents.device)
+        positions = positions.reshape(1, -1).expand(latents.shape[0], -1)
+        feats = self.action_encoder(latents) + self.pos_encoding(positions).to(
+            latents.dtype)
+        return self.action_decoder(self.traj_dit(feats, timestep, z_latents))
+
+
+#: Checkpoint prefixes for the projections folded into :class:`InternVLAN1TrajDitStep`.
+STEP_PREFIXES = {
+    "action_encoder": "model.action_encoder.",
+    "action_decoder": "model.action_decoder.",
+}
+
+
+def build_internvla_n1_traj_dit_step(weights: dict,
+                                     cfg: Optional[TrajDitConfig] = None,
+                                     dtype: torch.dtype = torch.bfloat16
+                                     ) -> InternVLAN1TrajDitStep:
+    """Build the full denoising step and load it, refusing a partial load."""
+    model = InternVLAN1TrajDitStep(cfg).to(dtype).eval()
+    report = load_traj_dit_weights(model.traj_dit, weights)
+    if report["missing"] or report["unexpected"]:
+        raise ValueError(
+            "InternVLA-N1 traj_dit did not load cleanly: "
+            f"missing={report['missing'][:5]} "
+            f"unexpected={report['unexpected'][:5]}")
+    for attr, prefix in STEP_PREFIXES.items():
+        module = getattr(model, attr)
+        for suffix in ("weight", "bias"):
+            key = prefix + suffix
+            if key not in weights:
+                raise ValueError(f"InternVLA-N1: checkpoint is missing {key}")
+            param = getattr(module, suffix)
+            param.data.copy_(weights[key].to(param.dtype))
+    return model
+
+
 #: Checkpoint prefix for the trajectory expert. The doubled ``model`` is the
 #: reference wrapper (``NextDiTCrossAttn.model``), not a typo.
 TRAJ_DIT_PREFIX = "model.traj_dit.model."
@@ -376,6 +459,8 @@ def build_internvla_n1_traj_dit(weights: dict,
 
 __all__ = [
     "InternVLAN1TrajDit",
+    "InternVLAN1TrajDitStep",
+    "build_internvla_n1_traj_dit_step",
     "TrajDitConfig",
     "build_internvla_n1_traj_dit",
     "load_traj_dit_weights",
