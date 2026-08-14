@@ -85,13 +85,20 @@ class InternVLAN1LanguageModel(CausalLM):
         )
 
     def onnx_export_spec(self) -> OnnxSpec:
-        """Trace with a real sequence, and rename the emitted tensor.
+        """Trace with a real sequence.
 
         The default dummy sequence is one token (``_SEQ_LEN``), which would make
         the ``[-n_query:]`` slice below a no-op at trace time and risks it being
         specialized away. Raising the constant around the parent call keeps every
         derived dummy (rope table, context lengths, last-token ids) consistent,
         which rebuilding ``spec.args`` by hand would not.
+
+        The emitted tensor keeps the name ``hidden_states``. Renaming it to
+        ``z_latents`` reads better but breaks the runtime: ``engineExecutor``
+        requires every engine I/O tensor to be registry-bound, and the registry
+        knows ``binding_names::kOutputHiddenStates``. The role is unchanged --
+        this is still the tensor the next stage consumes -- so the name stays and
+        the contents are what differ.
         """
         saved = modeling_default._SEQ_LEN
         modeling_default._SEQ_LEN = max(saved, self.n_query + 1)
@@ -99,10 +106,6 @@ class InternVLAN1LanguageModel(CausalLM):
             spec = super().onnx_export_spec()
         finally:
             modeling_default._SEQ_LEN = saved
-        spec.output_names = [
-            "z_latents" if name == "hidden_states" else name
-            for name in spec.output_names
-        ]
         return spec
 
     def forward(self, *args, **kwargs) -> Tuple:
