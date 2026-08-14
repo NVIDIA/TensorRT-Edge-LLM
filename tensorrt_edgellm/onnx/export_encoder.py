@@ -45,6 +45,7 @@ decoders exported via the standard LLM pipeline.
 from __future__ import annotations
 
 import importlib
+import json
 import logging
 import os
 from typing import TYPE_CHECKING
@@ -490,6 +491,90 @@ def export_audio_onnx(
 
     _run_dynamo_export(audio_model, args, output_path, input_names,
                        output_names, dynamic_shapes)
+
+
+# ---------------------------------------------------------------------------
+# System-1 export (InternVLA-N1)
+# ---------------------------------------------------------------------------
+
+
+def export_internvla_n1_system1_onnx(
+    out_dir: str,
+    weights: dict,
+    num_sample_trajs: int = 32,
+    predict_step_nums: int = 32,
+    zlen: int = 36,
+    num_frames: int = 2,
+    dtype: torch.dtype = torch.bfloat16,
+) -> dict:
+    """Export the InternVLA-N1 System-1 pair to ONNX.
+
+    Two graphs, not one: the memory block runs once per observation window while
+    the trajectory expert runs once per denoising step, so fusing them would
+    re-encode the frames ten times per trajectory.
+
+    ``x`` is sized ``2 * num_sample_trajs`` because the reference sampler runs
+    classifier-free guidance -- the conditioning is ``[null, real]`` and the
+    latents are duplicated.
+    """
+    from ..models.internvla_n1.modeling_internvla_n1_action import (
+        build_internvla_n1_traj_dit, TrajDitConfig)
+    from ..models.internvla_n1.modeling_internvla_n1_memory import (
+        build_internvla_n1_memory, MemoryConfig)
+
+    os.makedirs(out_dir, exist_ok=True)
+    # nn.Transformer{Encoder,Decoder} take PyTorch's fused MHA path, and
+    # aten::_transformer_encoder_layer_fwd has no ONNX symbolic.
+    torch.backends.mha.set_fastpath_enabled(False)
+
+    dit_cfg, mem_cfg = TrajDitConfig(), MemoryConfig()
+    paths = {}
+
+    logger.info("[System1] Building trajectory expert ...")
+    dit = build_internvla_n1_traj_dit(weights, dit_cfg, dtype).float().eval()
+    batch = 2 * num_sample_trajs
+    dit_args = (
+        torch.zeros(batch, predict_step_nums, dit_cfg.in_channels),
+        torch.ones(batch, dtype=torch.int64),
+        torch.zeros(batch, zlen, dit_cfg.latent_dim),
+    )
+    paths["traj_dit"] = os.path.join(out_dir, "traj_dit.onnx")
+    with torch.inference_mode():
+        torch.onnx.export(
+            dit, dit_args, paths["traj_dit"],
+            input_names=["x", "timestep", "z_latents"],
+            output_names=["output"], opset_version=19,
+            dynamic_axes={"x": {0: "batch"}, "timestep": {0: "batch"},
+                          "z_latents": {0: "batch", 1: "zlen"},
+                          "output": {0: "batch"}},
+            do_constant_folding=True, export_params=True, dynamo=False)
+
+    logger.info("[System1] Building memory block ...")
+    mem = build_internvla_n1_memory(weights, mem_cfg, dtype).float().eval()
+    mem_args = (torch.zeros(num_frames, 3, mem_cfg.image_size, mem_cfg.image_size),)
+    paths["memory"] = os.path.join(out_dir, "memory.onnx")
+    with torch.inference_mode():
+        torch.onnx.export(
+            mem, mem_args, paths["memory"], input_names=["images"],
+            output_names=["memory_tokens"], opset_version=19,
+            dynamic_axes={"images": {0: "frames"}},
+            do_constant_folding=True, export_params=True, dynamo=False)
+
+    cfg_out = {
+        "model_type": "internvla_n1_system1",
+        "num_sample_trajs": num_sample_trajs,
+        "predict_step_nums": predict_step_nums,
+        "latent_dim": dit_cfg.latent_dim,
+        "dim": dit_cfg.dim,
+        "num_query": mem_cfg.num_query,
+        "image_size": mem_cfg.image_size,
+    }
+    with open(os.path.join(out_dir, "config.json"), "w") as f:
+        json.dump(cfg_out, f, indent=2)
+    for name, path in paths.items():
+        logger.info("[System1] %s -> %s (%.1f MB)", name, path,
+                    os.path.getsize(path) / 1e6)
+    return paths
 
 
 # ---------------------------------------------------------------------------
