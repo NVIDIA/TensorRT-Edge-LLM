@@ -59,6 +59,18 @@ public:
         float guidanceScale{1.0F};     //!< Classifier-free guidance weight.
     };
 
+    //! \brief Create a stream at the greatest priority the device offers.
+    //!
+    //! System 1 produces the control output. If its rate collapses under a competing load the
+    //! trajectories arrive too late to steer with, so it is the workload that must not be
+    //! starved -- unlike System 2, which is allowed to take longer.
+    //!
+    //! Measured on Thor against a competing trajectory loop: 94.0 ms per trajectory at equal
+    //! priority against 73.3 ms with this stream, while the competing loop was unaffected
+    //! within noise. Alone it is 48.2 ms, so priority recovers roughly half of what contention
+    //! costs. It cannot recover all of it -- CUDA preempts between kernels, not inside one.
+    static cudaStream_t makeControlStream();
+
     //! \param engineDir Directory holding memory_bf16.engine and traj_dit_bf16.engine.
     InternVLAN1System1Runner(std::string const& engineDir, Config const& config, cudaStream_t stream);
     ~InternVLAN1System1Runner() noexcept = default;
