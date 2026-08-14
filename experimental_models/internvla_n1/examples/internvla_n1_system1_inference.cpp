@@ -94,8 +94,17 @@ int main(int argc, char** argv)
     config.guidanceScale = std::stof(argOf(argc, argv, "--guidance", "1.0"));
     int64_t const condLen = std::stoll(argOf(argc, argv, "--condLen", "36"));
 
+    // System 1 is the control output, so give it the priority stream unless asked not to.
+    bool const controlStream = std::stoi(argOf(argc, argv, "--controlStream", "0")) != 0;
     cudaStream_t stream{};
-    cudaStreamCreate(&stream);
+    if (controlStream)
+    {
+        stream = InternVLAN1System1Runner::makeControlStream();
+    }
+    else
+    {
+        cudaStreamCreate(&stream);
+    }
     InternVLAN1System1Runner runner(engineDir, config, stream);
 
     auto const condHost = readFloats(condPath);

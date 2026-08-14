@@ -65,10 +65,17 @@ public:
     //! trajectories arrive too late to steer with, so it is the workload that must not be
     //! starved -- unlike System 2, which is allowed to take longer.
     //!
-    //! Measured on Thor against a competing trajectory loop: 94.0 ms per trajectory at equal
-    //! priority against 73.3 ms with this stream, while the competing loop was unaffected
-    //! within noise. Alone it is 48.2 ms, so priority recovers roughly half of what contention
-    //! costs. It cannot recover all of it -- CUDA preempts between kernels, not inside one.
+    //! **Only effective when System 2 shares this process.** Stream priorities order streams
+    //! within one CUDA context; across processes the GPU time-slices between contexts and the
+    //! priority is invisible. Measured on Thor both ways, against a competing load:
+    //!
+    //!   same process    94.0 ms per trajectory at equal priority, 73.3 ms with this stream
+    //!   separate process 121 ms either way -- no effect at all
+    //!
+    //! Alone it is 48.2 ms. So in-process priority recovers roughly half of what contention
+    //! costs, and no arrangement recovers all of it: CUDA preempts between kernels, not inside
+    //! one. If System 2 runs as its own process, this stream buys nothing and the integration
+    //! is what needs fixing, not the priority.
     static cudaStream_t makeControlStream();
 
     //! \param engineDir Directory holding memory_bf16.engine and traj_dit_bf16.engine.
