@@ -24,18 +24,21 @@ the System-1 diffusion head -- token output is not used for navigation at all.
 Those hidden states go through the final norm and a two-layer projector
 (``cond_projector``) to become ``z_latents``.
 
-Both steps are folded into the graph here, so the engine emits ``z_latents``
-directly and the runtime does not have to carry projector weights or re-derive
-the norm ordering. ``emit_hidden_states`` supplies the *pre-norm* residual (see
-:class:`Transformer`), which is why the norm is applied explicitly below.
-"""
-from typing import Tuple
+The engine emits the **full-sequence, model-width hidden states** and the norm and
+projector run on the host. Folding them into the graph was tried and reverted:
+the runtime sizes its hidden-states buffer ``{batch, maxInputLen, hiddenSize}``
+and reshapes it per request, so a graph emitting ``[batch, n_query, 768]``
+violates that contract. It does not fail loudly -- ``getBaseModelHiddenStates``
+returns a plausible ``[1, 45, 3584]`` buffer either way -- which is exactly why
+the contract has to be respected rather than worked around.
 
-import torch.nn as nn
+``emit_hidden_states`` supplies the *pre-norm* residual (see
+:class:`Transformer`), so a consumer applies ``model.norm`` and then
+``cond_projector`` itself. Those weights are exported alongside the engine.
+"""
 
 from ..default import modeling_default
 from ..default.modeling_default import CausalLM, OnnxSpec
-from ..linear import make_linear
 
 #: ``LatentEmbSize`` in the reference implementation. InternVLA-N1 checkpoints do
 #: not record it in ``config.json``, so it is a constant here and is validated
@@ -65,24 +68,10 @@ class InternVLAN1LanguageModel(CausalLM):
         latent_dim = int(getattr(config, "latent_dim", 0)
                          or DEFAULT_LATENT_DIM)
         self.latent_dim = latent_dim
-        # Built with ``make_linear`` rather than ``nn.Linear`` so the projector
-        # picks up the backbone's dtype and quantization policy; a raw
-        # ``nn.Linear`` lands in fp32 and the forward dies on Half-vs-Float.
-        # ``module_name`` routes it through ``config.module_quant_type``, which
-        # keeps the bridge in fp16 unless a layer override says otherwise.
-        self.model.cond_projector = nn.Sequential(
-            make_linear(config,
-                        config.hidden_size,
-                        latent_dim,
-                        bias=True,
-                        module_name="cond_projector.0"),
-            nn.GELU(approximate="tanh"),
-            make_linear(config,
-                        latent_dim,
-                        latent_dim,
-                        bias=True,
-                        module_name="cond_projector.2"),
-        )
+        # cond_projector is deliberately *not* a module here. It runs on the host,
+        # so putting it in the graph would only change the engine's output shape
+        # and break the runtime's hidden-states contract. Its weights ship as a
+        # sidecar next to the engine.
 
     def onnx_export_spec(self) -> OnnxSpec:
         """Trace with a real sequence.
@@ -108,16 +97,8 @@ class InternVLAN1LanguageModel(CausalLM):
             modeling_default._SEQ_LEN = saved
         return spec
 
-    def forward(self, *args, **kwargs) -> Tuple:
-        logits, hidden_states, present_key_values = super().forward(
-            *args, **kwargs)
-        # ``hidden_states`` is the full-sequence pre-norm residual. The bridge
-        # reads only the trailing trajectory-query positions, so slice before
-        # projecting -- it keeps the output at [batch, n_query, latent_dim]
-        # instead of the whole sequence.
-        traj = hidden_states[:, -self.n_query:, :]
-        z_latents = self.model.cond_projector(self.model.norm(traj))
-        return logits, z_latents, present_key_values
+    # No forward override: the parent already returns the full-sequence hidden states
+    # when emit_hidden_states is set, and that is precisely what the runtime expects.
 
 
 __all__ = ["InternVLAN1LanguageModel", "DEFAULT_LATENT_DIM"]

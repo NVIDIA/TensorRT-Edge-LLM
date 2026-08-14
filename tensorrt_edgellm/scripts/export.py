@@ -928,6 +928,37 @@ def _cosmos3_edge_llm_key_remap(key: str) -> "Optional[str]":
     return key
 
 
+def _write_internvla_bridge_sidecar(model_dir: str, llm_out_dir: str) -> None:
+    """Copy the System-2 -> System-1 bridge weights next to the engine.
+
+    The projector runs on the host, not in the graph -- an engine emitting the
+    projected tensor would break the runtime's hidden-states contract, which
+    sizes its buffer to the model width. So the weights have to travel with the
+    engine instead, or a consumer has nothing to project with.
+
+    Only the bridge tensors are copied; they are small and never quantized.
+    """
+    import glob
+
+    from safetensors import safe_open
+    from safetensors.torch import save_file
+
+    wanted = ("cond_projector", "latent_queries")
+    bridge = {}
+    for shard in sorted(glob.glob(os.path.join(model_dir, "*.safetensors"))):
+        with safe_open(shard, framework="pt") as handle:
+            for key in handle.keys():
+                if any(w in key for w in wanted):
+                    bridge[key] = handle.get_tensor(key)
+    if not bridge:
+        logger.warning("[LLM] InternVLA-N1 bridge weights not found in %s; the engine's hidden "
+                       "states cannot be projected without them", model_dir)
+        return
+    out = os.path.join(llm_out_dir, "bridge.safetensors")
+    save_file(bridge, out)
+    logger.info("[LLM] Wrote %s (%d tensors)", out, len(bridge))
+
+
 def _export_llm(model_dir: str,
                 llm_out_dir: str,
                 model_type: str = "",
@@ -1113,6 +1144,8 @@ def _export_llm(model_dir: str,
     # (Qwen-VL / Nemotron-Omni).  Naming conventions vary across checkpoints
     # — see :func:`_patch_multimodal_token_ids` for the fallback chain.
     _patch_multimodal_token_ids(model_dir, llm_out_dir, model_type)
+    if model_type == "internvla_n1":
+        _write_internvla_bridge_sidecar(model_dir, llm_out_dir)
 
     # Standalone Talker checkpoints route through ``_export_llm`` (not the
     # qwen3_tts ``_export_talker``) because their model_type isn't in the
