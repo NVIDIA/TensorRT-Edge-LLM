@@ -23,6 +23,7 @@
 
 #include "common/tensor.h"
 
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -103,6 +104,28 @@ int main(int argc, char** argv)
         = toDevice(noiseHost, {config.numSampleTrajs, config.predictStepNums, config.actionDim}, "noise");
 
     rt::Tensor& traj = runner.sampleTrajectory(cond, noise, stream);
+
+    int const iters = std::stoi(argOf(argc, argv, "--iters", "0"));
+    if (iters > 0)
+    {
+        // Warm up separately: the first call pays for lazy kernel selection and would otherwise
+        // land inside the average.
+        for (int i = 0; i < 3; ++i)
+        {
+            runner.sampleTrajectory(cond, noise, stream);
+        }
+        cudaStreamSynchronize(stream);
+        auto const start = std::chrono::steady_clock::now();
+        for (int i = 0; i < iters; ++i)
+        {
+            runner.sampleTrajectory(cond, noise, stream);
+        }
+        cudaStreamSynchronize(stream);
+        auto const elapsed = std::chrono::steady_clock::now() - start;
+        double const ms = std::chrono::duration<double, std::milli>(elapsed).count() / static_cast<double>(iters);
+        std::printf("trajectory: %.2f ms  (%.1f Hz, %d steps x %d samples, mean of %d)\n", ms, 1000.0 / ms,
+            config.numInferenceSteps, config.numSampleTrajs, iters);
+    }
 
     std::vector<float> out(static_cast<size_t>(traj.getShape().volume()));
     cudaMemcpy(out.data(), traj.rawPointer(), out.size() * sizeof(float), cudaMemcpyDeviceToHost);
