@@ -126,11 +126,16 @@ Jetson Thor, idle GPU, batch 1, measured with `llm_bench`.
 
 ### System 2
 
-| Variant | prefill (1024 tokens) | decode (pastKV 1024) | LLM engine |
+| Variant | prefill (1024 tokens) | decode (pastKV 1024) | weights |
 |---|---|---|---|
-| FP16 | 150.80 ± 1.78 ms | 63.97 ± 5.79 ms | 14.15 GB |
-| FP8 | 90.17 ± 0.48 ms | 33.03 ± 0.30 ms | 7.62 GB |
-| NVFP4 | 72.83 ± 0.42 ms | 23.33 ± 0.90 ms | 4.77 GB |
+| PyTorch fp16 | 328.93 ms | 99.35 ms | ~15 GB |
+| TensorRT FP16 | 150.80 ± 1.78 ms | 63.97 ± 5.79 ms | 14.15 GB |
+| TensorRT FP8 | 90.17 ± 0.48 ms | 33.03 ± 0.30 ms | 7.62 GB |
+| TensorRT NVFP4 | 72.83 ± 0.42 ms | 23.33 ± 0.90 ms | 4.77 GB |
+
+Against PyTorch that is 2.2x/1.6x for FP16, 3.6x/3.0x for FP8 and 4.5x/4.3x for NVFP4. The
+PyTorch row runs the same decoder over the same input length and past-KV length as `llm_bench`,
+so the rows are comparable; it is not the model's end-to-end agent latency.
 
 FP8 is the recommended scheme: 1.86x smaller than FP16 and roughly 1.7x/1.9x faster, with the
 navigation bridge measured at 0.9919 in the source recipe. NVFP4 is smaller and faster still
@@ -159,6 +164,3 @@ Fidelity against the PyTorch reference, same weights: memory block cosine 0.9999
 denoising step 0.99996, and the full C++ loop reproduces the Python loop at cosine 1.00000000
 (max abs diff 4.5e-07).
 
-A PyTorch row for the System-2 table is deliberately absent. The available figure — 1631 ms —
-is a full multi-image VLN step, not a synthetic prefill plus decode, and putting it in the same
-table would compare two different measurements.
