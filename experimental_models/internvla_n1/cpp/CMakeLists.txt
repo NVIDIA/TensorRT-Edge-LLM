@@ -13,9 +13,14 @@
 # License for the specific language governing permissions and limitations under
 # the License.
 
-# Experimental models. Each subdirectory is a self-contained model that links
-# the core edgellm libraries (edgellmCore, edgellmBuilder, edgellmKernels, ...).
+set(INTERNVLA_N1_CPP_SRCS action/internvlaN1Scheduler.cpp)
 
-add_subdirectory(cosmos3)
-add_subdirectory(internvla_n1)
-add_subdirectory(nemotron3_5_asr)
+add_library(internvlaN1Experimental STATIC ${INTERNVLA_N1_CPP_SRCS})
+
+# A static library only needs the core headers to compile; the executables do
+# the linking. This keeps it independent of a core rebuild.
+target_include_directories(
+  internvlaN1Experimental
+  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
+  PRIVATE ${CMAKE_SOURCE_DIR}/cpp ${COMMON_INCLUDE_DIRS})
+set_property(TARGET internvlaN1Experimental PROPERTY POSITION_INDEPENDENT_CODE ON)
