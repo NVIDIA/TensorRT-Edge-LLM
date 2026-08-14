@@ -13,9 +13,14 @@
 # License for the specific language governing permissions and limitations under
 # the License.
 
-# Experimental models. Each subdirectory is a self-contained model that links
-# the core edgellm libraries (edgellmCore, edgellmBuilder, edgellmKernels, ...).
+message(STATUS "Configuring experimental model: internvla_n1")
 
-add_subdirectory(cosmos3)
-add_subdirectory(internvla_n1)
-add_subdirectory(nemotron3_5_asr)
+# InternVLA-N1-DualVLN System 1: the flow-matching trajectory expert and the
+# memory block. System 2 is a stock Qwen2.5-VL and is served by the core
+# runtime; only the System-1 loop and its scheduler live here.
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/cpp/CMakeLists.txt)
+  add_subdirectory(cpp)
+endif()
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/examples/CMakeLists.txt)
+  add_subdirectory(examples)
+endif()
