@@ -90,6 +90,8 @@ _VISUAL_REGISTRY: dict[str, str] = {
     "qwen3_5": "qwen3_5",
     "qwen3_5_moe": "qwen3_5",
     "qwen2_5_vl": "qwen2_5_vl",
+    # InternVLA-N1 System 2 is a stock Qwen2.5-VL, tower included.
+    "internvla_n1": "qwen2_5_vl",
     "internvl_chat": "internvl3",
     "internvl": "internvl3_5",
     "phi4mm": "phi4mm",
@@ -189,7 +191,7 @@ def _get_visual_config(model_type: str, config: dict) -> dict:
     """Extract visual encoder sub-config from the full model config."""
     if model_type in ("qwen3_vl", "qwen3_omni", "qwen3_omni_moe",
                       "qwen3_omni_next", "qwen3_5", "qwen3_5_moe",
-                      "qwen2_5_vl"):
+                      "qwen2_5_vl", "internvla_n1"):
         # Qwen3-Omni (dense + MoE) / Qwen3-Next Omni store vision_config nested under
         # thinker_config; other Qwen VL variants keep it at the root.
         return (config.get("vision_config")
