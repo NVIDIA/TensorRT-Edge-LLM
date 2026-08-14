@@ -61,6 +61,14 @@ public:
     //! \brief Model timestep for step `stepIdx`, in [0, kNumTrainTimesteps].
     float timestepAt(int32_t stepIdx) const;
 
+    //! \brief The timestep as the engine takes it -- an integer.
+    //!
+    //! Rounded, not truncated, and computed in double. The reference truncates a float64
+    //! timestep, where `0.7 * 1000` lands just above 700; the same expression in float lands
+    //! just below, so truncating a float32 sigma yields 699 and shifts one step of the
+    //! schedule. The trajectories still look reasonable, which is what makes it worth pinning.
+    int64_t timestepIndexAt(int32_t stepIdx) const;
+
     //! \brief Noise level at step `stepIdx`. `sigmaAt(numInferenceSteps())` is the terminal 0.
     float sigmaAt(int32_t stepIdx) const;
 

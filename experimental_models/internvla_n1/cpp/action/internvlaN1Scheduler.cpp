@@ -17,6 +17,7 @@
 
 #include "action/internvlaN1Scheduler.h"
 
+#include <cmath>
 #include <stdexcept>
 #include <string>
 
@@ -54,6 +55,12 @@ float InternVLAN1Scheduler::timestepAt(int32_t stepIdx) const
             + std::to_string(mNumSteps) + ")");
     }
     return mTimesteps[static_cast<size_t>(stepIdx)];
+}
+
+int64_t InternVLAN1Scheduler::timestepIndexAt(int32_t stepIdx) const
+{
+    double const sigma = 1.0 - static_cast<double>(stepIdx) / static_cast<double>(mNumSteps);
+    return static_cast<int64_t>(std::llround(sigma * static_cast<double>(kNumTrainTimesteps)));
 }
 
 float InternVLAN1Scheduler::sigmaAt(int32_t stepIdx) const
