@@ -197,8 +197,20 @@ rt::Tensor& InternVLAN1System1Runner::sampleTrajectory(
     condDims.d[0] = doubled;
     condDims.d[1] = condShape[1];
     condDims.d[2] = condShape[2];
-    ELLM_CHECK(mDitContext->setInputShape(kZLatents, condDims),
-        "InternVLAN1System1Runner::sampleTrajectory: failed to set the z_latents shape");
+    // Every dynamic input needs its shape, not just z_latents: an engine built with a dynamic
+    // batch leaves latents and timestep unresolved too, and enqueue fails rather than
+    // defaulting to the profile's optimum.
+    Dims latentDims{};
+    latentDims.nbDims = 3;
+    latentDims.d[0] = doubled;
+    latentDims.d[1] = mConfig.predictStepNums;
+    latentDims.d[2] = mConfig.actionDim;
+    Dims timestepDims{};
+    timestepDims.nbDims = 1;
+    timestepDims.d[0] = doubled;
+    ELLM_CHECK(mDitContext->setInputShape(kZLatents, condDims) && mDitContext->setInputShape(kLatents, latentDims)
+            && mDitContext->setInputShape(kTimestep, timestepDims),
+        "InternVLAN1System1Runner::sampleTrajectory: failed to set the expert input shapes");
     ELLM_CHECK(mDitContext->setTensorAddress(kZLatents, mDoubledCond.rawPointer())
             && mDitContext->setTensorAddress(kLatents, mDoubledLatents.rawPointer())
             && mDitContext->setTensorAddress(kTimestep, mTimesteps.rawPointer())
