@@ -42,6 +42,8 @@ from .models.cosmos3_reasoner.modeling_cosmos3_reasoner_text import \
     Cosmos3ReasonerCausalLM
 from .models.diffusion_gemma import DiffusionGemmaBackbone
 from .models.gemma4.modeling_gemma4_text import Gemma4ForCausalLM
+from .models.internvla_n1.modeling_internvla_n1_text import \
+    InternVLAN1LanguageModel
 from .models.nemotron_h.modeling_nemotron_h import NemotronHCausalLM
 from .models.qwen3_5.modeling_qwen3_5_text import Qwen3_5CausalLM
 from .models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeCausalLM
@@ -90,6 +92,8 @@ register_model("qwen3_5_moe_text", Qwen3_5MoeCausalLM,
                standard_attention_scale)
 register_model("qwen3_5_moe", Qwen3_5MoeCausalLM, standard_attention_scale)
 register_model("qwen3_moe", Qwen3MoeCausalLM, standard_attention_scale)
+register_model("internvla_n1", InternVLAN1LanguageModel,
+               standard_attention_scale)
 register_model("NemotronH_Nano_VL_V2", NemotronHCausalLM,
                standard_attention_scale)
 register_model("NemotronH_Nano_Omni_Reasoning_V3", NemotronHCausalLM,
