@@ -15,7 +15,8 @@
 
 set(INTERNVLA_N1_CPP_SRCS action/internvlaN1Scheduler.cpp
                           action/internvlaN1Kernels.cu
-                          action/internvlaN1System1Runner.cpp)
+                          action/internvlaN1System1Runner.cpp
+                          runtime/internvlaN1DualSystem.cpp)
 
 add_library(internvlaN1Experimental STATIC ${INTERNVLA_N1_CPP_SRCS})
 
