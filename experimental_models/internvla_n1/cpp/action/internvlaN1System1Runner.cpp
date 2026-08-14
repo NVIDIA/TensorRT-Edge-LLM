@@ -201,6 +201,14 @@ rt::Tensor& InternVLAN1System1Runner::sampleTrajectory(
             static_cast<float const*>(mLatents.rawPointer()), perBatch, stream);
 
         // The timestep is one scalar broadcast across the batch; the engine takes it per-row.
+        //
+        // This copies from host and synchronizes, once per step. Two cheaper shapes were tried
+        // and both broke: binding an offset into a pre-uploaded schedule silently reuses step 0
+        // (TensorRT resolves the address once), and a device-to-device copy into the bound
+        // buffer fails with an invalid argument. The synchronize is not decoration -- the host
+        // vector dies at the end of this iteration, and an async copy outliving its source is a
+        // use-after-free. Cost is measured: 46.4 ms for the whole loop, so it is not the
+        // bottleneck.
         std::vector<int64_t> timestepRow(static_cast<size_t>(doubled), mScheduler.timestepIndexAt(step));
         CUDA_CHECK(cudaMemcpyAsync(mTimesteps.rawPointer(), timestepRow.data(), timestepRow.size() * sizeof(int64_t),
             cudaMemcpyHostToDevice, stream));

@@ -100,7 +100,9 @@ void InternVLAN1DualSystemDriver::requestReplan(int64_t observationIndex)
 void InternVLAN1DualSystemDriver::waitIdle()
 {
     std::unique_lock<std::mutex> lock(mMutex);
-    mIdle.wait(lock, [this] { return !mBusy && mPending < 0; });
+    // mStop is part of the predicate: once the planner thread has exited, nothing will ever
+    // notify mIdle again, and a waiter without this clause would block forever.
+    mIdle.wait(lock, [this] { return mStop || (!mBusy && mPending < 0); });
 }
 
 void InternVLAN1DualSystemDriver::stop() noexcept
@@ -114,6 +116,7 @@ void InternVLAN1DualSystemDriver::stop() noexcept
         mStop = true;
     }
     mWake.notify_all();
+    mIdle.notify_all();
     if (mThread.joinable())
     {
         mThread.join();
