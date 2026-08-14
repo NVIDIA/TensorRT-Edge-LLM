@@ -92,6 +92,26 @@ assertion rather than converting silently.
 before this block, and the block does not normalize again. Feeding raw pixels produces
 plausible-looking but wrong tokens.
 
+## The two systems run at different rates
+
+System 2 plans in roughly 646 ms; System 1 produces a trajectory in 46 ms. The head is meant
+to keep running on the newest plan available rather than waiting for a fresh one, so the
+runtime puts the planner on its own thread (`InternVLAN1DualSystemDriver`) and hands plans over
+through shared state that publishes atomically.
+
+The planner is injected, not owned: what a plan *is* -- which frames, which prompt, which
+engine -- belongs to the deployment. What the runtime guarantees is that a slow planner cannot
+stall the trajectory loop.
+
+Two consequences worth stating plainly:
+
+- **Running on a stale plan is normal, not a failure.** `stalenessAt()` reports how many
+  observations old the current plan is, so a caller can bound it.
+- **The gain is latency hiding, not parallel throughput.** Measured on this device, two
+  concurrent trajectory loops take 104 ms each against 47 ms alone -- the GPU has no headroom
+  to overlap them. The separate context pool exists so the two systems cannot corrupt each
+  other's scratch, which is a correctness property; it does not buy speed.
+
 ## Measured
 
 Jetson Thor, idle GPU.
@@ -102,6 +122,10 @@ Jetson Thor, idle GPU.
 | same loop in Python | 61.8 ms |
 | PyTorch reference | 175.4 ms |
 | memory engine / trajectory engine | 109 MB / 72 MB |
+
+With a planner 14x slower than the trajectory loop running concurrently, the loop's worst
+single tick grew by under 8 % and replan requests coalesced 15 into 5 -- a request arriving
+while one is in flight replaces the pending one rather than queueing behind it.
 
 Fidelity against the PyTorch reference, same weights: memory block cosine 0.99993, one
 denoising step 0.99996, and the full C++ loop reproduces the Python loop at cosine 1.00000000

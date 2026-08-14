@@ -74,5 +74,89 @@ bool InternVLAN1DualSystemState::shouldReplan(int64_t observationIndex, int64_t 
     return observationIndex % cadence == 0;
 }
 
+InternVLAN1DualSystemDriver::InternVLAN1DualSystemDriver(InternVLAN1DualSystemState& state, Planner planner)
+    : mState(state)
+    , mPlanner(std::move(planner))
+{
+    mThread = std::thread(&InternVLAN1DualSystemDriver::run, this);
+}
+
+InternVLAN1DualSystemDriver::~InternVLAN1DualSystemDriver() noexcept
+{
+    stop();
+}
+
+void InternVLAN1DualSystemDriver::requestReplan(int64_t observationIndex)
+{
+    {
+        std::lock_guard<std::mutex> const guard(mMutex);
+        // Replace rather than queue: a pending request for an older observation is already
+        // obsolete once a newer one arrives.
+        mPending = observationIndex;
+    }
+    mWake.notify_one();
+}
+
+void InternVLAN1DualSystemDriver::waitIdle()
+{
+    std::unique_lock<std::mutex> lock(mMutex);
+    mIdle.wait(lock, [this] { return !mBusy && mPending < 0; });
+}
+
+void InternVLAN1DualSystemDriver::stop() noexcept
+{
+    {
+        std::lock_guard<std::mutex> const guard(mMutex);
+        if (mStop)
+        {
+            return;
+        }
+        mStop = true;
+    }
+    mWake.notify_all();
+    if (mThread.joinable())
+    {
+        mThread.join();
+    }
+}
+
+int64_t InternVLAN1DualSystemDriver::plansCompleted() const noexcept
+{
+    std::lock_guard<std::mutex> const guard(mMutex);
+    return mCompleted;
+}
+
+void InternVLAN1DualSystemDriver::run()
+{
+    while (true)
+    {
+        int64_t observationIndex = -1;
+        {
+            std::unique_lock<std::mutex> lock(mMutex);
+            mWake.wait(lock, [this] { return mStop || mPending >= 0; });
+            if (mStop)
+            {
+                return;
+            }
+            observationIndex = mPending;
+            mPending = -1;
+            mBusy = true;
+        }
+
+        // The planner runs unlocked. Holding the mutex across it would make a slow plan block
+        // requestReplan, which is exactly the stall this class exists to prevent.
+        InternVLAN1DualSystemState::Plan plan = mPlanner(observationIndex);
+        plan.observationIndex = observationIndex;
+        mState.publish(std::move(plan));
+
+        {
+            std::lock_guard<std::mutex> const guard(mMutex);
+            mBusy = false;
+            ++mCompleted;
+        }
+        mIdle.notify_all();
+    }
+}
+
 } // namespace internvla_n1
 } // namespace trt_edgellm

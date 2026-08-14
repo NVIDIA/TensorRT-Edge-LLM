@@ -17,8 +17,11 @@
 
 #pragma once
 
+#include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 namespace trt_edgellm
@@ -99,6 +102,59 @@ private:
     mutable std::mutex mMutex;
     Plan mPlan;
     bool mHasPlan{false};
+};
+
+//! \brief Runs System 2 on its own thread so System 1 never waits for it.
+//!
+//! This is the half of the asynchronous contract that is not just synchronization. The
+//! reference implementation puts the planner on a Python thread inside the agent; keeping it
+//! there would make the runtime depend on the agent, so it lives here instead.
+//!
+//! The planner is injected rather than owned. What "plan" means -- which frames, which prompt,
+//! which engine -- is the caller's, and hard-coding it here would tie this to one deployment.
+//! What the runtime owes is the threading, the wake-up, and the guarantee that a slow planner
+//! cannot stall the trajectory loop.
+//!
+//! Replan requests coalesce. If a request arrives while one is in flight, the newer observation
+//! index replaces the pending one rather than queueing behind it -- a backlog of plans is a
+//! backlog of stale plans.
+class InternVLAN1DualSystemDriver
+{
+public:
+    //! Computes a plan for an observation. Runs on the planner thread, never on the caller's.
+    using Planner = std::function<InternVLAN1DualSystemState::Plan(int64_t observationIndex)>;
+
+    InternVLAN1DualSystemDriver(InternVLAN1DualSystemState& state, Planner planner);
+    ~InternVLAN1DualSystemDriver() noexcept;
+
+    InternVLAN1DualSystemDriver(InternVLAN1DualSystemDriver const&) = delete;
+    InternVLAN1DualSystemDriver& operator=(InternVLAN1DualSystemDriver const&) = delete;
+
+    //! \brief Ask for a plan at \p observationIndex. Returns immediately.
+    void requestReplan(int64_t observationIndex);
+
+    //! \brief Block until no plan is in flight. For tests and for shutdown, not the hot loop.
+    void waitIdle();
+
+    //! \brief Stop the planner thread. Idempotent; also called by the destructor.
+    void stop() noexcept;
+
+    //! \brief Plans completed so far.
+    int64_t plansCompleted() const noexcept;
+
+private:
+    void run();
+
+    InternVLAN1DualSystemState& mState;
+    Planner mPlanner;
+    std::thread mThread;
+    mutable std::mutex mMutex;
+    std::condition_variable mWake;
+    std::condition_variable mIdle;
+    int64_t mPending{-1};
+    bool mBusy{false};
+    bool mStop{false};
+    int64_t mCompleted{0};
 };
 
 } // namespace internvla_n1
