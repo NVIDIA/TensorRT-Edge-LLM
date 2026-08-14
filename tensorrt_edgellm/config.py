@@ -669,6 +669,15 @@ class ModelConfig:
     #   Used by Qwen3-Omni Talker → CodePredictor: HF reads
     #   ``hidden_states[0][-1]`` which resolves to the post-norm tensor.
     accept_hidden_layer: int = -1
+    # --------------------------------------------- InternVLA-N1 System-2 bridge
+    # InternVLA-N1-DualVLN appends ``n_query`` learned trajectory queries to the
+    # prompt; the hidden states at those positions, projected to ``latent_dim``,
+    # are the only thing the System-1 diffusion head receives from System 2.
+    # ``InternVLAN1LanguageModel`` slices those positions and applies the
+    # projector inside the graph, so the engine emits ``z_latents`` instead of
+    # raw hidden states.  Default ``0`` leaves every other model untouched.
+    n_query: int = 0
+    latent_dim: int = 0
     # -------------------------------------------------- quantization config
     quant: QuantConfig = field(default_factory=QuantConfig)
     # ------------------------------------------ mamba / hybrid config
@@ -1219,6 +1228,9 @@ class ModelConfig:
                 llm_dict, model_type, root_config=root),
             accept_hidden_layer=_parse_accept_hidden_layer(llm_dict,
                                                            root_config=root),
+            # InternVLA-N1 keeps these at the config root, not under a sub-config.
+            n_query=int(root.get("n_query") or 0),
+            latent_dim=int(root.get("latent_dim") or 0),
             draft_vocab_size=draft_vocab_size,
             target_hidden_size=target_hidden_size,
             is_eagle3_draft_flag=is_eagle3_draft_flag,
