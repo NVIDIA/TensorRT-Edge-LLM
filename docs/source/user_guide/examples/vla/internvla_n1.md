@@ -113,6 +113,13 @@ Two consequences worth stating plainly:
 
 - **Running on a stale plan is normal, not a failure.** `stalenessAt()` reports how many
   observations old the current plan is, so a caller can bound it.
+- **Give System 1 a high-priority stream.** It produces the control output, so it is the
+  workload that must not be starved; System 2 is allowed to take longer.
+  `InternVLAN1System1Runner::makeControlStream()` creates one at the device's greatest
+  priority. Measured against a competing loop: 94.0 ms per trajectory at equal priority against
+  73.3 ms with it, and the competing loop was unaffected within noise. Alone it is 48.2 ms, so
+  priority recovers about half of what contention costs -- CUDA preempts between kernels, not
+  inside one, so the rest is not recoverable this way.
 - **The gain is latency hiding, not parallel throughput.** With System 2 running, the
   trajectory loop drops from 20.7 Hz to 8.2 Hz -- the two contend for the GPU rather than
   overlapping. Asynchrony is still what you want: without it the head stalls completely for the

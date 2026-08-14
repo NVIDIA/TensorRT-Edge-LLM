@@ -28,6 +28,7 @@
 #include <cstring>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace trt_edgellm;
@@ -104,6 +105,71 @@ int main(int argc, char** argv)
         = toDevice(noiseHost, {config.numSampleTrajs, config.predictStepNums, config.actionDim}, "noise");
 
     rt::Tensor& traj = runner.sampleTrajectory(cond, noise, stream);
+
+    int const concurrent = std::stoi(argOf(argc, argv, "--concurrent", "0"));
+    if (concurrent > 1)
+    {
+        // Same total work as N separate processes, but in one process on N streams. Without
+        // MPS, separate processes get separate CUDA contexts and the GPU time-slices between
+        // them; streams inside one context are the only arrangement that can genuinely
+        // overlap. This measures whether that distinction buys anything here.
+        int const iters = std::stoi(argOf(argc, argv, "--iters", "10"));
+        bool const prioritize = std::stoi(argOf(argc, argv, "--prioritize", "0")) != 0;
+        std::vector<std::thread> workers;
+        std::vector<double> perWorker(static_cast<size_t>(concurrent), 0.0);
+        auto const start = std::chrono::steady_clock::now();
+        for (int w = 0; w < concurrent; ++w)
+        {
+            workers.emplace_back([&, w] {
+                cudaStream_t own{};
+                if (prioritize && w == 0)
+                {
+                    // System 1 drives control: if its rate collapses under a competing load the
+                    // trajectories arrive too late to steer with. A high-priority stream lets
+                    // its kernels jump the queue at kernel boundaries, which is the only lever
+                    // CUDA offers short of partitioning SMs.
+                    int least = 0;
+                    int greatest = 0;
+                    cudaDeviceGetStreamPriorityRange(&least, &greatest);
+                    cudaStreamCreateWithPriority(&own, cudaStreamNonBlocking, greatest);
+                }
+                else
+                {
+                    cudaStreamCreate(&own);
+                }
+                InternVLAN1System1Runner local(engineDir, config, own);
+                rt::Tensor const c = toDevice(condHost, {2, condLen, 768}, "cond");
+                rt::Tensor const n
+                    = toDevice(noiseHost, {config.numSampleTrajs, config.predictStepNums, config.actionDim}, "noise");
+                local.sampleTrajectory(c, n, own);
+                cudaStreamSynchronize(own);
+                auto const t0 = std::chrono::steady_clock::now();
+                for (int i = 0; i < iters; ++i)
+                {
+                    local.sampleTrajectory(c, n, own);
+                }
+                cudaStreamSynchronize(own);
+                perWorker[static_cast<size_t>(w)]
+                    = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count()
+                    / static_cast<double>(iters);
+                cudaStreamDestroy(own);
+            });
+        }
+        for (auto& t : workers)
+        {
+            t.join();
+        }
+        double const wall = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        for (int w = 0; w < concurrent; ++w)
+        {
+            std::printf("  stream %d%s: %.2f ms/trajectory\n", w, (prioritize && w == 0) ? " (high priority)" : "",
+                perWorker[static_cast<size_t>(w)]);
+        }
+        std::printf("in-process x%d: %.1f trajectories/s aggregate (wall %.0f ms)\n", concurrent,
+            1000.0 * concurrent * iters / wall, wall);
+        cudaStreamDestroy(stream);
+        return 0;
+    }
 
     int const iters = std::stoi(argOf(argc, argv, "--iters", "0"));
     if (iters > 0)

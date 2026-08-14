@@ -54,6 +54,16 @@ std::vector<int64_t> shapeOf(rt::Tensor const& tensor)
 }
 } // namespace
 
+cudaStream_t InternVLAN1System1Runner::makeControlStream()
+{
+    int least = 0;
+    int greatest = 0;
+    CUDA_CHECK(cudaDeviceGetStreamPriorityRange(&least, &greatest));
+    cudaStream_t stream{};
+    CUDA_CHECK(cudaStreamCreateWithPriority(&stream, cudaStreamNonBlocking, greatest));
+    return stream;
+}
+
 InternVLAN1System1Runner::InternVLAN1System1Runner(
     std::string const& engineDir, Config const& config, cudaStream_t stream)
     : mConfig(config)
