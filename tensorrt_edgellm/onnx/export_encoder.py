@@ -519,7 +519,7 @@ def export_internvla_n1_system1_onnx(
     latents are duplicated.
     """
     from ..models.internvla_n1.modeling_internvla_n1_action import (
-        build_internvla_n1_traj_dit_step, TrajDitConfig)
+        build_internvla_n1_traj_dit_step, TrajDitConfig, TRAJ_DIT_PREFIX)
     from ..models.internvla_n1.modeling_internvla_n1_memory import (
         build_internvla_n1_memory, MemoryConfig)
 
@@ -530,6 +530,14 @@ def export_internvla_n1_system1_onnx(
 
     dit_cfg, mem_cfg = TrajDitConfig(), MemoryConfig()
     paths = {}
+
+    # A System-2-only InternVLA checkpoint is a legitimate thing -- quantizing the planner
+    # produces exactly that -- so say so rather than failing inside the weight loader.
+    if not any(k.startswith(TRAJ_DIT_PREFIX) for k in weights):
+        raise ValueError(
+            "This checkpoint carries no System-1 weights (no '" + TRAJ_DIT_PREFIX + "*'), so "
+            "there is nothing to export for the action component. Pass --skip-action, or "
+            "--components thinker,visual, and export System 1 from the full checkpoint.")
 
     logger.info("[System1] Building trajectory expert ...")
     # The exported step includes action_encoder / pos_encoding / action_decoder,
