@@ -13,7 +13,8 @@
 # License for the specific language governing permissions and limitations under
 # the License.
 
-set(INTERNVLA_N1_CPP_SRCS action/internvlaN1Scheduler.cpp)
+set(INTERNVLA_N1_CPP_SRCS action/internvlaN1Scheduler.cpp
+                          action/internvlaN1Kernels.cu)
 
 add_library(internvlaN1Experimental STATIC ${INTERNVLA_N1_CPP_SRCS})
 
