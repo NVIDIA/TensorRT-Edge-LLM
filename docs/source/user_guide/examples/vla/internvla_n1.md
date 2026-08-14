@@ -81,6 +81,12 @@ fusion of the gate/up projections at batch 1 on sm_110, and an engine built with
 workaround emits fluent gibberish. Export `__LUNOWUD=-peep:fc_h_fusion=off` before `llm_build`.
 FP8 dodges the same bug because its Q/DQ nodes break the fusion pattern.
 
+**NVFP4 needs a second build flag on TRT 10.13.** The CASK epilogue fusion miscompiles NVFP4
+at batch 1, and the resulting engine is both wrong and *faster* -- 62.3 ms against 72.8 ms for
+the correct one, because a miscompiled kernel does less work. A number that good from an
+unpatched build is the symptom, not a win. Add `-cask_fusion:max_num_epilogues=1` to
+`__LUNOWUD`, or build with `--maxBatchSize 2`, which sidesteps it at no cost.
+
 **System 1 stays BF16.** Quantizing it was measured: FP8 costs about six times the waypoint
 deviation to save 0.7 % of deployed weights and 1.7 % of a planning step, because System 2
 dominates both.
@@ -107,26 +113,52 @@ Two consequences worth stating plainly:
 
 - **Running on a stale plan is normal, not a failure.** `stalenessAt()` reports how many
   observations old the current plan is, so a caller can bound it.
-- **The gain is latency hiding, not parallel throughput.** Measured on this device, two
-  concurrent trajectory loops take 104 ms each against 47 ms alone -- the GPU has no headroom
-  to overlap them. The separate context pool exists so the two systems cannot corrupt each
-  other's scratch, which is a correctness property; it does not buy speed.
+- **The gain is latency hiding, not parallel throughput.** With System 2 running, the
+  trajectory loop drops from 20.7 Hz to 8.2 Hz -- the two contend for the GPU rather than
+  overlapping. Asynchrony is still what you want: without it the head stalls completely for the
+  ~646 ms System 2 takes, and 8.2 Hz throughout beats zero followed by a burst. The separate
+  context pool is a correctness property -- the two cannot corrupt each other's scratch -- not
+  a speed one.
 
 ## Measured
 
-Jetson Thor, idle GPU.
+Jetson Thor, idle GPU, batch 1, measured with `llm_bench`.
+
+### System 2
+
+| Variant | prefill (1024 tokens) | decode (pastKV 1024) | LLM engine |
+|---|---|---|---|
+| FP16 | 150.80 ± 1.78 ms | 63.97 ± 5.79 ms | 14.15 GB |
+| FP8 | 90.17 ± 0.48 ms | 33.03 ± 0.30 ms | 7.62 GB |
+| NVFP4 | 72.83 ± 0.42 ms | 23.33 ± 0.90 ms | 4.77 GB |
+
+FP8 is the recommended scheme: 1.86x smaller than FP16 and roughly 1.7x/1.9x faster, with the
+navigation bridge measured at 0.9919 in the source recipe. NVFP4 is smaller and faster still
+but its bridge falls to 0.931, below the 0.99 gate, so it is not recommended for navigation
+despite the numbers above.
+
+The FP16 engine carries one extra output — the bridge — that the FP8 and NVFP4 engines here do
+not, since those were quantized from an already-repackaged checkpoint. The difference is one
+tensor and does not move these figures, but the rows are not byte-identical graphs.
+
+### System 1
 
 | | |
 |---|---|
-| trajectory loop, 10 steps x 32 samples | 46.4 ms (21.5 Hz) |
-| same loop in Python | 61.8 ms |
+| trajectory loop, 10 steps x 32 samples | 48.3 ms (20.7 Hz) |
+| the same loop with System 2 running | 121.6 ms (8.2 Hz) |
+| the same loop in Python | 61.8 ms |
 | PyTorch reference | 175.4 ms |
 | memory engine / trajectory engine | 109 MB / 72 MB |
 
 With a planner 14x slower than the trajectory loop running concurrently, the loop's worst
-single tick grew by under 8 % and replan requests coalesced 15 into 5 -- a request arriving
+single tick grew by under 8 % and replan requests coalesced 15 into 5 — a request arriving
 while one is in flight replaces the pending one rather than queueing behind it.
 
 Fidelity against the PyTorch reference, same weights: memory block cosine 0.99993, one
 denoising step 0.99996, and the full C++ loop reproduces the Python loop at cosine 1.00000000
 (max abs diff 4.5e-07).
+
+A PyTorch row for the System-2 table is deliberately absent. The available figure — 1631 ms —
+is a full multi-image VLN step, not a synthetic prefill plus decode, and putting it in the same
+table would compare two different measurements.
