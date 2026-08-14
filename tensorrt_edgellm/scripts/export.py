@@ -112,6 +112,7 @@ _VLM_MODEL_TYPES = frozenset([
     "qwen3_5",
     "qwen3_5_moe",
     "qwen2_5_vl",
+    "internvla_n1",
     "internvl",
     "internvl_chat",
     "phi4mm",
@@ -1708,6 +1709,9 @@ def _export_visual(model_dir: str, visual_out_dir: str, weights: dict,
     # - ``qwen3_omni`` → ``qwen3_omni_vision_encoder`` (bare "qwen3_omni"
     #   maps to AUDIO_ENCODER in C++, so visualBuilder rejects it)
     _VISUAL_MODEL_TYPE_MAP = {
+        # InternVLA-N1's tower is a stock Qwen2.5-VL one, so the C++
+        # Qwen25VLViTRunner serves it unchanged.
+        "internvla_n1": "qwen2_5_vl",
         "internvl": "internvl",
         "internvl_chat": "internvl",
         "qwen3_5_moe": "qwen3_5",
@@ -1742,9 +1746,9 @@ def _export_visual(model_dir: str, visual_out_dir: str, weights: dict,
         vis_cfg_out["vision_config"] = dict(vis_cfg_out["vision_config"])
         vis_cfg_out["vision_config"][
             "model_type"] = "qwen3_omni_vision_encoder"
-    if model_type in ("qwen2_5_vl", "qwen3_vl", "qwen3_omni", "qwen3_omni_moe",
-                      "qwen3_omni_next", "qwen3_5", "qwen3_5_moe",
-                      "cosmos3_edge"):
+    if model_type in ("qwen2_5_vl", "internvla_n1", "qwen3_vl", "qwen3_omni",
+                      "qwen3_omni_moe", "qwen3_omni_next", "qwen3_5",
+                      "qwen3_5_moe", "cosmos3_edge"):
         # C++ QwenViTRunner reads these token IDs and rope_theta from config.json.
         # For Qwen3-VL the token IDs are at the root level, but vocab_size and
         # rope_theta live inside text_config.  Fall back to text_config for any
