@@ -159,6 +159,7 @@ _CODE2WAV_MODEL_TYPES = frozenset([
 
 _ACTION_MODEL_TYPES = frozenset([
     "alpamayo_r1",
+    "internvla_n1",
 ])
 # Which LLM-family components each model ships.  Default (unlisted model types)
 # is ``{"thinker"}``.  Add a new Talker/CP-bearing model by listing it here; no
@@ -3430,8 +3431,25 @@ def _build_action_config(root_cfg: dict, weights: dict):
 def _export_action(model_dir: str, action_out_dir: str, weights: dict,
                    config: dict, max_kv_cache_capacity: int,
                    dtype: "torch.dtype") -> None:
-    """Export Alpamayo action expert to ONNX."""
+    """Export the action/System-1 component to ONNX."""
     os.makedirs(action_out_dir, exist_ok=True)
+
+    if config.get("model_type") == "internvla_n1":
+        # InternVLA-N1 ships two System-1 graphs rather than one expert: the
+        # memory block runs once per observation window, the trajectory expert
+        # once per denoising step.
+        from ..onnx.export_encoder import export_internvla_n1_system1_onnx
+        logger.info("[Action] Exporting InternVLA-N1 System 1 to %s",
+                    action_out_dir)
+        try:
+            export_internvla_n1_system1_onnx(action_out_dir, weights,
+                                             dtype=dtype)
+        except (OSError, ValueError, RuntimeError) as exc:
+            logger.exception("[Action] System-1 export failed")
+            raise SystemExit(1) from exc
+        logger.info("[Action] Done: %s", action_out_dir)
+        return
+
     output_path = os.path.join(action_out_dir, "model.onnx")
 
     logger.info("[Action] Building ActionConfig from checkpoint ...")
@@ -4360,8 +4378,20 @@ def main() -> None:
         if not os.path.isdir(p_sub):
             continue
         onnx = os.path.join(p_sub, "model.onnx")
-        mb = os.path.getsize(onnx) / 1e6 if os.path.exists(onnx) else 0
-        print(f"  {component:15s}: {onnx}  ({mb:.1f} MB)")
+        if os.path.exists(onnx):
+            print(f"  {component:15s}: {onnx}  "
+                  f"({os.path.getsize(onnx) / 1e6:.1f} MB)")
+        else:
+            # A component may ship several graphs instead of one model.onnx --
+            # InternVLA-N1's System 1 is a memory block plus a trajectory
+            # expert. Report what is there rather than a 0.0 MB path that is not.
+            found = sorted(f for f in os.listdir(p_sub) if f.endswith(".onnx"))
+            for name in found:
+                path = os.path.join(p_sub, name)
+                print(f"  {component:15s}: {path}  "
+                      f"({os.path.getsize(path) / 1e6:.1f} MB)")
+            if not found:
+                print(f"  {component:15s}: {p_sub}  (no .onnx produced)")
         for sidecar in _SIDECARS:
             sc_path = os.path.join(p_sub, sidecar)
             if os.path.exists(sc_path):
