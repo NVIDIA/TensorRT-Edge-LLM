@@ -24,8 +24,21 @@
 //!
 //! The bridge between them runs here on the host: the engine emits model-width hidden states, and
 //! the final norm plus cond_projector turn the trajectory-query rows into z_latents. It is four
-//! rows of arithmetic, so a plain host loop costs nothing next to a 646 ms plan and keeps the step
+//! rows of arithmetic, so a plain host loop costs nothing next to a 623 ms plan and keeps the step
 //! easy to check against the reference.
+//!
+//! \warning The conditioning this produces is **not** the model's real bridge signal, so treat the
+//! trajectories as a plumbing demonstration rather than navigation output. The reference appends
+//! `latent_queries` -- four learned embeddings -- to the prompt and reads the hidden states at
+//! those positions. `handleRequest` takes messages and performs the embedding lookup internally,
+//! so there is no way to inject them through that API, and this example falls back to the last
+//! four prompt-token positions instead. Measured against the reference on the same prompt, that
+//! substitution gives cosine 0.5877 and rel-L2 0.96: a different signal, not a degraded one.
+//!
+//! Fixing it needs an entry point that accepts `inputs_embeds` -- the engine's actual input --
+//! rather than text, which is a runtime API change and deliberately not made here. What this
+//! example does establish is the plumbing: both engines in one process, the planner on its own
+//! thread, the priority stream, and an atomic handoff that never blocks the control loop.
 
 #include "action/internvlaN1System1Runner.h"
 #include "runtime/internvlaN1DualSystem.h"
