@@ -454,6 +454,18 @@ def convert_cubin_cpp_np(cubin_file_name: str):
     return cpp_array, cubin_size
 
 
+def init_cubin_gen_worker(worker_cubin_dir: str, worker_nvcc_bin: str,
+                          worker_clean_cubin: bool):
+    # Workers under a start method that re-imports this module (spawn/forkserver)
+    # never execute the `if __name__ == "__main__":` block, so the module-scope
+    # defaults for these globals would otherwise be used instead of the values
+    # resolved from CLI args. Set them explicitly in each worker process.
+    global cubin_dir, nvcc_bin, clean_cubin
+    cubin_dir = worker_cubin_dir
+    nvcc_bin = worker_nvcc_bin
+    clean_cubin = worker_clean_cubin
+
+
 def run_cubin_gen(arch_micro_file_list: CompileArchMacrosAndFile):
     nvcc_command, xxd_command, cubin_file_name = build_commands(
         build_func_name_prefix, arch_micro_file_list.arch,
@@ -833,7 +845,10 @@ if __name__ == "__main__":
 
     cpu_count = os.cpu_count()
     thread_count = cpu_count // 2 if cpu_count >= 2 else cpu_count
-    with multiprocessing.Pool(processes=thread_count) as pool:
+    with multiprocessing.Pool(
+            processes=thread_count,
+            initializer=init_cubin_gen_worker,
+            initargs=(cubin_dir, nvcc_bin, clean_cubin)) as pool:
         name_size_list = pool.map(run_cubin_gen, arch_macro_lists)
     header_file_contents = generate_header_file_contents(
         arch_macro_lists, name_size_list)
