@@ -24,6 +24,8 @@
 #include "common/tensor.h"
 #include "common/trtUtils.h"
 
+#include <cuda_fp16.h>
+
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -107,11 +109,38 @@ int main(int argc, char** argv)
     }
     std::printf("], prefill length %d\n", prefillLen);
 
-    std::vector<float> host(static_cast<size_t>(hidden->getShape().volume()));
-    cudaMemcpy(host.data(), hidden->rawPointer(), host.size() * sizeof(float), cudaMemcpyDeviceToHost);
+    // Read the buffer's own dtype rather than assuming one. The runtime allocates these
+    // hidden states as __half; copying them out as float silently reads twice the bytes and
+    // produces a plausible-looking array that is half zeros and half nonsense.
+    auto const dtype = hidden->getDataType();
+    if (dtype != nvinfer1::DataType::kHALF && dtype != nvinfer1::DataType::kFLOAT)
+    {
+        std::fprintf(stderr, "unsupported hidden-states dtype\n");
+        return 1;
+    }
+    size_t const count = static_cast<size_t>(hidden->getShape().volume());
+    size_t const elemSize = (dtype == nvinfer1::DataType::kHALF) ? sizeof(__half) : sizeof(float);
+    std::vector<char> raw(count * elemSize);
+    cudaMemcpy(raw.data(), hidden->rawPointer(), raw.size(), cudaMemcpyDeviceToHost);
+
+    // Always write float32, so consumers do not have to care which precision the engine used.
+    std::vector<float> host(count);
+    if (dtype == nvinfer1::DataType::kHALF)
+    {
+        auto const* halves = reinterpret_cast<__half const*>(raw.data());
+        for (size_t i = 0; i < count; ++i)
+        {
+            host[i] = __half2float(halves[i]);
+        }
+    }
+    else
+    {
+        std::memcpy(host.data(), raw.data(), raw.size());
+    }
     std::ofstream sink(outPath, std::ios::binary);
     sink.write(reinterpret_cast<char const*>(host.data()), static_cast<std::streamsize>(host.size() * sizeof(float)));
-    std::printf("wrote %s (%zu floats)\n", outPath.c_str(), host.size());
+    std::printf("wrote %s (%zu floats, engine dtype %s)\n", outPath.c_str(), host.size(),
+        dtype == nvinfer1::DataType::kHALF ? "fp16" : "fp32");
     cudaStreamDestroy(stream);
     return 0;
 }
