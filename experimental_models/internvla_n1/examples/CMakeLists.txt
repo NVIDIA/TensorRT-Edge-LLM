@@ -30,3 +30,13 @@ target_include_directories(
           ${COMMON_INCLUDE_DIRS} ${ONNX_PARSER_INCLUDE_DIR})
 target_link_libraries(internvla_n1_dump_bridge PRIVATE edgellmCore
                                                        commonLibraryExt)
+
+add_executable(internvla_n1_dual_system_inference
+               internvla_n1_dual_system_inference.cpp)
+target_include_directories(
+  internvla_n1_dual_system_inference
+  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../cpp ${CMAKE_SOURCE_DIR}/cpp
+          ${COMMON_INCLUDE_DIRS} ${ONNX_PARSER_INCLUDE_DIR})
+target_link_libraries(
+  internvla_n1_dual_system_inference PRIVATE internvlaN1Experimental
+                                             edgellmCore commonLibraryExt)
