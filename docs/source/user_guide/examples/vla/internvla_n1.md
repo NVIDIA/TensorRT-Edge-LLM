@@ -108,17 +108,12 @@ refresh every 4 ticks, none of the 40 ticks stalled.
 
 ## Notes
 
-**FP16 on Jetson Thor needs no flag on this release.** TensorRT 10.13 miscompiles Myelin's
-horizontal fusion of the gate/up projections at batch 1 on sm_110, but `llm_build` already
-applies the `fc_h_fusion=off` workaround on TRT >= 10.13; a build log line
-`Using __LUNOWUD=... -peep:fc_h_fusion=off` confirms it. FP8 was never affected because its
-Q/DQ nodes break the fusion pattern.
-
-**NVFP4 needs a second build flag on TRT 10.13.** The CASK epilogue fusion miscompiles NVFP4
+**NVFP4 needs a build flag on TRT 10.13.** The CASK epilogue fusion miscompiles NVFP4
 at batch 1, and the resulting engine is both wrong and *faster* -- 62.3 ms against 72.8 ms for
 the correct one, because a miscompiled kernel does less work. A number that good from an
-unpatched build is the symptom, not a win. Add `-cask_fusion:max_num_epilogues=1` to
-`__LUNOWUD`, or build with `--maxBatchSize 2`, which sidesteps it at no cost.
+unpatched build is the symptom, not a win. Export `__LUNOWUD=-cask_fusion:max_num_epilogues=1`
+before `llm_build`, or build with `--maxBatchSize 2`, which sidesteps it at no cost. FP8 and
+FP16 are unaffected and need nothing.
 
 **System 1 stays BF16.** Quantizing it was measured: FP8 costs about six times the waypoint
 deviation to save 0.7 % of deployed weights and 1.7 % of a planning step, because System 2
