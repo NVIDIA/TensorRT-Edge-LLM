@@ -127,7 +127,7 @@ int main(int argc, char** argv)
             "usage: %s --llmEngineDir DIR --actionEngineDir DIR\n"
             "          --frames frames.bin --noise noise.bin\n"
             "          [--ticks 40] [--cadence 4] [--numFrames 2] [--prompt TEXT] [--output traj.bin]\n"
-            "          [--numTrajs 32] [--steps 10] [--guidance 1.5]\n",
+            "          [--numTrajs 32] [--steps 10] [--guidance 1.0]\n",
             argv[0]);
         return 2;
     }
@@ -162,10 +162,11 @@ int main(int argc, char** argv)
     internvla_n1::InternVLAN1System1Runner::Config config;
     config.numSampleTrajs = std::stoi(argOf(argc, argv, "--numTrajs", "32"));
     config.numInferenceSteps = std::stoi(argOf(argc, argv, "--steps", "10"));
-    // The Config default is the reference generate_traj default (1.0); deployment runs 1.5.
-    // Left at 1.0 by accident this is invisible -- the trajectories stay plausible and only a
-    // comparison against the reference shows the drift.
-    config.guidanceScale = std::stof(argOf(argc, argv, "--guidance", "1.5"));
+    // 1.0 is what InternNav deploys: every generate_traj call site (realworld agent, policy,
+    // habitat evaluator) leaves guidance_scale at its default. At 1.0 the CFG blend reduces to
+    // the conditioned branch, so the value must match the reference exactly for trajectories to
+    // be comparable -- a mismatch here is invisible until a reference comparison.
+    config.guidanceScale = std::stof(argOf(argc, argv, "--guidance", "1.0"));
     internvla_n1::InternVLAN1System1Runner s1(actionDir, config, s1Stream);
 
     std::printf("[3/4] encoding the observation window\n");

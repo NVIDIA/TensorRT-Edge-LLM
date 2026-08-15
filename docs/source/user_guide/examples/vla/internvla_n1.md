@@ -81,7 +81,7 @@ guidance: the conditioning is `[null, real]` and the latents are duplicated.
 ```bash
 internvla_n1_system1_inference --engineDir engines/action \
     --conditioning cond.bin --noise noise.bin --output trajectory.bin \
-    --numTrajs 32 --steps 10 --guidance 1.5
+    --numTrajs 32 --steps 10 --guidance 1.0
 ```
 
 Tensors are read and written as raw float32 so a run can be reproduced and compared exactly.
@@ -95,6 +95,11 @@ internvla_n1_dual_system_inference \
     --llmEngineDir engines/llm --actionEngineDir engines/action \
     --frames frames.bin --noise noise.bin --ticks 40 --cadence 4
 ```
+
+Guidance defaults to 1.0 in both examples — the value InternNav deploys with; every
+`generate_traj` call site in the reference leaves `guidance_scale` at its default. At 1.0 the
+classifier-free blend reduces to the conditioned branch, so the null half of the conditioning
+costs compute but does not change the output.
 
 One process is not incidental: CUDA orders streams within a context, so System 1's priority
 stream only outranks the planner when the two share one. Measured on Thor with the FP16
