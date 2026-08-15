@@ -14,9 +14,13 @@
 # limitations under the License.
 """InternVLA-N1-DualVLN: a Qwen2.5-VL planner (System 2) driving a diffusion
 trajectory head (System 1), bridged by ``z_latents``."""
-from .modeling_internvla_n1_action import (InternVLAN1TrajDit, TrajDitConfig,
-                                           build_internvla_n1_traj_dit)
-from .modeling_internvla_n1_memory import (InternVLAN1MemoryBlock, MemoryConfig,
+from .modeling_internvla_n1_action import (InternVLAN1TrajDit,
+                                           InternVLAN1TrajDitStep,
+                                           TrajDitConfig,
+                                           build_internvla_n1_traj_dit,
+                                           build_internvla_n1_traj_dit_step)
+from .modeling_internvla_n1_memory import (InternVLAN1MemoryBlock,
+                                           MemoryConfig,
                                            build_internvla_n1_memory)
 from .modeling_internvla_n1_text import (DEFAULT_LATENT_DIM,
                                          InternVLAN1LanguageModel)
@@ -27,6 +31,8 @@ __all__ = [
     "InternVLAN1TrajDit",
     "TrajDitConfig",
     "build_internvla_n1_traj_dit",
+    "InternVLAN1TrajDitStep",
+    "build_internvla_n1_traj_dit_step",
     "InternVLAN1MemoryBlock",
     "MemoryConfig",
     "build_internvla_n1_memory",

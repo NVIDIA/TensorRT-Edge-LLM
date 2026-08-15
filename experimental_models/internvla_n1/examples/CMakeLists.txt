@@ -13,7 +13,8 @@
 # License for the specific language governing permissions and limitations under
 # the License.
 
-add_executable(internvla_n1_system1_inference internvla_n1_system1_inference.cpp)
+add_executable(internvla_n1_system1_inference
+               internvla_n1_system1_inference.cpp)
 target_include_directories(
   internvla_n1_system1_inference
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../cpp ${CMAKE_SOURCE_DIR}/cpp
@@ -27,4 +28,5 @@ target_include_directories(
   internvla_n1_dump_bridge
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../cpp ${CMAKE_SOURCE_DIR}/cpp
           ${COMMON_INCLUDE_DIRS} ${ONNX_PARSER_INCLUDE_DIR})
-target_link_libraries(internvla_n1_dump_bridge PRIVATE edgellmCore commonLibraryExt)
+target_link_libraries(internvla_n1_dump_bridge PRIVATE edgellmCore
+                                                       commonLibraryExt)

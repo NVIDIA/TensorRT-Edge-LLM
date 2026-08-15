@@ -68,7 +68,7 @@ class MemoryConfig:
     depth: int = DEFAULT_DEPTH
     num_heads: int = DEFAULT_NUM_HEADS
     mlp_ratio: float = DEFAULT_MLP_RATIO
-    num_pos_tokens: int = 1370          # 37 * 37 patches + cls
+    num_pos_tokens: int = 1370  # 37 * 37 patches + cls
     memory_hidden: int = 384
     memory_heads: int = 6
     memory_layers: int = 3
@@ -80,9 +80,12 @@ class MemoryConfig:
 
 
 class PatchEmbed(nn.Module):
+
     def __init__(self, cfg: MemoryConfig) -> None:
         super().__init__()
-        self.proj = nn.Conv2d(3, cfg.embed_dim, kernel_size=cfg.patch_size,
+        self.proj = nn.Conv2d(3,
+                              cfg.embed_dim,
+                              kernel_size=cfg.patch_size,
                               stride=cfg.patch_size)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -108,6 +111,7 @@ class Attention(nn.Module):
 
 
 class LayerScale(nn.Module):
+
     def __init__(self, dim: int) -> None:
         super().__init__()
         self.gamma = nn.Parameter(torch.ones(dim))
@@ -117,6 +121,7 @@ class LayerScale(nn.Module):
 
 
 class Mlp(nn.Module):
+
     def __init__(self, cfg: MemoryConfig) -> None:
         super().__init__()
         hidden = int(cfg.embed_dim * cfg.mlp_ratio)
@@ -128,6 +133,7 @@ class Mlp(nn.Module):
 
 
 class Block(nn.Module):
+
     def __init__(self, cfg: MemoryConfig) -> None:
         super().__init__()
         self.norm1 = nn.LayerNorm(cfg.embed_dim, eps=1e-6)
@@ -178,7 +184,8 @@ class Dinov2VisionTower(nn.Module):
         h0 = h // self.patch_size + INTERPOLATE_OFFSET
         sqrt_n = math.sqrt(n)
         patch_pos = F.interpolate(
-            patch_pos.reshape(1, int(sqrt_n), int(sqrt_n), dim).permute(0, 3, 1, 2),
+            patch_pos.reshape(1, int(sqrt_n), int(sqrt_n),
+                              dim).permute(0, 3, 1, 2),
             scale_factor=(float(w0) / sqrt_n, float(h0) / sqrt_n),
             mode="bicubic",
             antialias=False,
@@ -193,7 +200,7 @@ class Dinov2VisionTower(nn.Module):
         x = x + self.interpolate_pos_encoding(x, w, h)
         for blk in self.blocks:
             x = blk(x)
-        return self.norm(x)[:, 1:]          # drop the class token
+        return self.norm(x)[:, 1:]  # drop the class token
 
 
 class MemoryEncoder(nn.Module):
@@ -205,7 +212,8 @@ class MemoryEncoder(nn.Module):
                                            nhead=cfg.memory_heads,
                                            batch_first=True,
                                            dropout=0.1)
-        self.encoder = nn.TransformerEncoder(layer, num_layers=cfg.memory_layers)
+        self.encoder = nn.TransformerEncoder(layer,
+                                             num_layers=cfg.memory_layers)
         self.memory_pos = nn.Parameter(
             torch.zeros(cfg.memory_max_len, cfg.memory_hidden))
 
@@ -226,7 +234,8 @@ class QFormer(nn.Module):
         layer = nn.TransformerDecoderLayer(d_model=cfg.qformer_hidden,
                                            nhead=cfg.qformer_heads,
                                            batch_first=True)
-        self.decoder = nn.TransformerDecoder(layer, num_layers=cfg.qformer_layers)
+        self.decoder = nn.TransformerDecoder(layer,
+                                             num_layers=cfg.qformer_layers)
         # Present in the checkpoint, never called by the reference forward.
         self.visual_proj = nn.Linear(cfg.qformer_hidden, cfg.qformer_hidden)
 
@@ -253,8 +262,8 @@ class InternVLAN1MemoryBlock(nn.Module):
         self.rgb_resampler = QFormer(cfg)
 
     def forward(self, images: torch.Tensor) -> torch.Tensor:
-        feat = self.rgb_model(images).unflatten(0, (1, -1))   # [1, T, Np, C]
-        flat = feat.flatten(1, 2)                             # [1, T*Np, C]
+        feat = self.rgb_model(images).unflatten(0, (1, -1))  # [1, T, Np, C]
+        flat = feat.flatten(1, 2)  # [1, T*Np, C]
         encoded = self.memory_encoder(flat)
         return self.rgb_resampler(torch.cat([flat, encoded], dim=-1))
 
@@ -306,10 +315,10 @@ def load_memory_weights(model: InternVLAN1MemoryBlock, weights: dict) -> dict:
     }
 
 
-def build_internvla_n1_memory(weights: dict,
-                              cfg: Optional[MemoryConfig] = None,
-                              dtype: torch.dtype = torch.bfloat16
-                              ) -> InternVLAN1MemoryBlock:
+def build_internvla_n1_memory(
+        weights: dict,
+        cfg: Optional[MemoryConfig] = None,
+        dtype: torch.dtype = torch.bfloat16) -> InternVLAN1MemoryBlock:
     """Build the memory block and load it, refusing a partial load."""
     model = InternVLAN1MemoryBlock(cfg).to(dtype).eval()
     report = load_memory_weights(model, weights)

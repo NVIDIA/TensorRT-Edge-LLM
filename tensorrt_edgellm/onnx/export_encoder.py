@@ -519,9 +519,9 @@ def export_internvla_n1_system1_onnx(
     latents are duplicated.
     """
     from ..models.internvla_n1.modeling_internvla_n1_action import (
-        build_internvla_n1_traj_dit_step, TrajDitConfig, TRAJ_DIT_PREFIX)
+        TRAJ_DIT_PREFIX, TrajDitConfig, build_internvla_n1_traj_dit_step)
     from ..models.internvla_n1.modeling_internvla_n1_memory import (
-        build_internvla_n1_memory, MemoryConfig)
+        MemoryConfig, build_internvla_n1_memory)
 
     os.makedirs(out_dir, exist_ok=True)
     # nn.Transformer{Encoder,Decoder} take PyTorch's fused MHA path, and
@@ -535,16 +535,19 @@ def export_internvla_n1_system1_onnx(
     # produces exactly that -- so say so rather than failing inside the weight loader.
     if not any(k.startswith(TRAJ_DIT_PREFIX) for k in weights):
         raise ValueError(
-            "This checkpoint carries no System-1 weights (no '" + TRAJ_DIT_PREFIX + "*'), so "
+            "This checkpoint carries no System-1 weights (no '" +
+            TRAJ_DIT_PREFIX + "*'), so "
             "there is nothing to export for the action component. Pass --skip-action, or "
-            "--components thinker,visual, and export System 1 from the full checkpoint.")
+            "--components thinker,visual, and export System 1 from the full checkpoint."
+        )
 
     logger.info("[System1] Building trajectory expert ...")
     # The exported step includes action_encoder / pos_encoding / action_decoder,
     # so the engine takes and returns waypoints rather than 384-wide features.
     # That leaves the runtime with control flow only -- duplicate for guidance,
     # blend, Euler update -- instead of two GEMMs and a positional encoding.
-    dit = build_internvla_n1_traj_dit_step(weights, dit_cfg, dtype).float().eval()
+    dit = build_internvla_n1_traj_dit_step(weights, dit_cfg,
+                                           dtype).float().eval()
     batch = 2 * num_sample_trajs
     dit_args = (
         torch.zeros(batch, predict_step_nums, action_dim),
@@ -553,25 +556,49 @@ def export_internvla_n1_system1_onnx(
     )
     paths["traj_dit"] = os.path.join(out_dir, "traj_dit.onnx")
     with torch.inference_mode():
-        torch.onnx.export(
-            dit, dit_args, paths["traj_dit"],
-            input_names=["latents", "timestep", "z_latents"],
-            output_names=["output"], opset_version=19,
-            dynamic_axes={"latents": {0: "batch"}, "timestep": {0: "batch"},
-                          "z_latents": {0: "batch", 1: "zlen"},
-                          "output": {0: "batch"}},
-            do_constant_folding=True, export_params=True, dynamo=False)
+        torch.onnx.export(dit,
+                          dit_args,
+                          paths["traj_dit"],
+                          input_names=["latents", "timestep", "z_latents"],
+                          output_names=["output"],
+                          opset_version=19,
+                          dynamic_axes={
+                              "latents": {
+                                  0: "batch"
+                              },
+                              "timestep": {
+                                  0: "batch"
+                              },
+                              "z_latents": {
+                                  0: "batch",
+                                  1: "zlen"
+                              },
+                              "output": {
+                                  0: "batch"
+                              }
+                          },
+                          do_constant_folding=True,
+                          export_params=True,
+                          dynamo=False)
 
     logger.info("[System1] Building memory block ...")
     mem = build_internvla_n1_memory(weights, mem_cfg, dtype).float().eval()
-    mem_args = (torch.zeros(num_frames, 3, mem_cfg.image_size, mem_cfg.image_size),)
+    mem_args = (torch.zeros(num_frames, 3, mem_cfg.image_size,
+                            mem_cfg.image_size), )
     paths["memory"] = os.path.join(out_dir, "memory.onnx")
     with torch.inference_mode():
-        torch.onnx.export(
-            mem, mem_args, paths["memory"], input_names=["images"],
-            output_names=["memory_tokens"], opset_version=19,
-            dynamic_axes={"images": {0: "frames"}},
-            do_constant_folding=True, export_params=True, dynamo=False)
+        torch.onnx.export(mem,
+                          mem_args,
+                          paths["memory"],
+                          input_names=["images"],
+                          output_names=["memory_tokens"],
+                          opset_version=19,
+                          dynamic_axes={"images": {
+                              0: "frames"
+                          }},
+                          do_constant_folding=True,
+                          export_params=True,
+                          dynamo=False)
 
     cfg_out = {
         "model_type": "internvla_n1_system1",

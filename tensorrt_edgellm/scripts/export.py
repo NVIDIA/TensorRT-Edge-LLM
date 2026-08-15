@@ -951,8 +951,9 @@ def _write_internvla_bridge_sidecar(model_dir: str, llm_out_dir: str) -> None:
                 if any(w in key for w in wanted):
                     bridge[key] = handle.get_tensor(key)
     if not bridge:
-        logger.warning("[LLM] InternVLA-N1 bridge weights not found in %s; the engine's hidden "
-                       "states cannot be projected without them", model_dir)
+        logger.warning(
+            "[LLM] InternVLA-N1 bridge weights not found in %s; the engine's hidden "
+            "states cannot be projected without them", model_dir)
         return
     out = os.path.join(llm_out_dir, "bridge.safetensors")
     save_file(bridge, out)
@@ -3475,7 +3476,8 @@ def _export_action(model_dir: str, action_out_dir: str, weights: dict,
         logger.info("[Action] Exporting InternVLA-N1 System 1 to %s",
                     action_out_dir)
         try:
-            export_internvla_n1_system1_onnx(action_out_dir, weights,
+            export_internvla_n1_system1_onnx(action_out_dir,
+                                             weights,
                                              dtype=dtype)
         except (OSError, ValueError, RuntimeError) as exc:
             logger.exception("[Action] System-1 export failed")

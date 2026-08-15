@@ -65,8 +65,8 @@ class InternVLAN1LanguageModel(CausalLM):
                 f"{n_query!r}. Without it there is no way to know which "
                 "positions carry the trajectory queries.")
         self.n_query = n_query
-        latent_dim = int(getattr(config, "latent_dim", 0)
-                         or DEFAULT_LATENT_DIM)
+        latent_dim = int(
+            getattr(config, "latent_dim", 0) or DEFAULT_LATENT_DIM)
         self.latent_dim = latent_dim
         # cond_projector is deliberately *not* a module here. It runs on the host,
         # so putting it in the graph would only change the engine's output shape
