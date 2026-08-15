@@ -78,7 +78,7 @@ public:
     //! is what needs fixing, not the priority.
     static cudaStream_t makeControlStream();
 
-    //! \param engineDir Directory holding memory_bf16.engine and traj_dit_bf16.engine.
+    //! \param engineDir Directory holding memory.engine and traj_dit.engine.
     InternVLAN1System1Runner(std::string const& engineDir, Config const& config, cudaStream_t stream);
     ~InternVLAN1System1Runner() noexcept = default;
 

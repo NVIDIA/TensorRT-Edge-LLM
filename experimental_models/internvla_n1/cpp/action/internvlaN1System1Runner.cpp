@@ -34,8 +34,8 @@ namespace internvla_n1
 
 namespace
 {
-constexpr char const* kMemoryEngine = "memory_bf16.engine";
-constexpr char const* kDitEngine = "traj_dit_bf16.engine";
+constexpr char const* kMemoryEngine = "memory.engine";
+constexpr char const* kDitEngine = "traj_dit.engine";
 constexpr char const* kImages = "images";
 constexpr char const* kMemoryTokens = "memory_tokens";
 constexpr char const* kLatents = "latents";
