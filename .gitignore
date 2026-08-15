@@ -33,7 +33,3 @@ CLAUDE.local.md
 .claude/settings.local.json
 .claude/projects
 .claude/scheduled_tasks.lock
-
-# Local build/experiment artifacts and the project venv
-tmp/
-.venv/
