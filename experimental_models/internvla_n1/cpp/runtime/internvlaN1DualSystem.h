@@ -149,8 +149,8 @@ private:
     Planner mPlanner;
     std::thread mThread;
     mutable std::mutex mMutex;
-    std::condition_variable mWake;
-    std::condition_variable mIdle;
+    std::condition_variable mWakeCv;
+    std::condition_variable mIdleCv;
     int64_t mPending{-1};
     bool mBusy{false};
     bool mStop{false};
