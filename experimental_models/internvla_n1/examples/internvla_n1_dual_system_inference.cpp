@@ -336,6 +336,12 @@ int main(int argc, char** argv)
         "      first plan in %.0f ms\n", std::chrono::duration<double, std::milli>(Clock::now() - planStart).count());
 
     std::printf("      running %d System-1 ticks, replanning every %ld\n", ticks, static_cast<long>(cadence));
+    // Conditioning changes only when a new plan lands -- once every `cadence` ticks at most --
+    // so upload it then rather than every tick. Re-uploading each tick costs a host-side copy of
+    // the plan, a fresh device allocation and a transfer, all to move bytes that did not change.
+    rt::Tensor cond;
+    int64_t uploadedPlan = -1;
+    int32_t uploads = 0;
     int32_t stalled = 0;
     int32_t ran = 0;
     double worstTick = 0.0;
@@ -347,13 +353,28 @@ int main(int argc, char** argv)
         {
             driver.requestReplan(tick);
         }
-        internvla_n1::InternVLAN1DualSystemState::Plan plan;
-        if (state.latest(plan))
+        // Ask for the index first: it is a scalar under the lock, where latest() copies the whole
+        // conditioning vector. Only fetch the plan itself when it is one we have not uploaded.
+        int64_t const staleness = state.stalenessAt(tick);
+        bool const havePlan = staleness >= 0;
+        if (havePlan && tick - staleness != uploadedPlan)
         {
-            rt::Tensor cond(rt::Coords(std::vector<int64_t>{2, plan.condLen, plan.latentDim}), rt::DeviceType::kGPU,
-                nvinfer1::DataType::kFLOAT, "cond");
-            cudaMemcpy(cond.rawPointer(), plan.conditioning.data(), plan.conditioning.size() * sizeof(float),
-                cudaMemcpyHostToDevice);
+            internvla_n1::InternVLAN1DualSystemState::Plan plan;
+            if (state.latest(plan))
+            {
+                if (cond.isEmpty())
+                {
+                    cond = rt::Tensor(rt::Coords(std::vector<int64_t>{2, plan.condLen, plan.latentDim}),
+                        rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "cond");
+                }
+                cudaMemcpyAsync(cond.rawPointer(), plan.conditioning.data(), plan.conditioning.size() * sizeof(float),
+                    cudaMemcpyHostToDevice, s1Stream);
+                uploadedPlan = plan.observationIndex;
+                ++uploads;
+            }
+        }
+        if (!cond.isEmpty())
+        {
             s1.sampleTrajectory(cond, noise, s1Stream);
             ++ran;
         }
@@ -361,6 +382,7 @@ int main(int argc, char** argv)
         {
             ++stalled; // no plan yet -- the head has nothing to steer with
         }
+
         worstTick = std::max(worstTick, std::chrono::duration<double, std::milli>(Clock::now() - tickStart).count());
     }
     double const total = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
@@ -371,6 +393,7 @@ int main(int argc, char** argv)
     std::printf("  mean tick               : %.2f ms (%.1f Hz)\n", total / ticks, 1000.0 * ticks / total);
     std::printf("  worst tick              : %.2f ms\n", worstTick);
     std::printf("  plans completed         : %d\n", planCount.load());
+    std::printf("  conditioning uploads    : %d (one per plan, not per tick)\n", uploads);
     std::printf("  final staleness         : %ld observations\n", static_cast<long>(state.stalenessAt(ticks - 1)));
 
     cudaStreamDestroy(s1Stream);
