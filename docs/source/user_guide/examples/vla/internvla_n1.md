@@ -112,8 +112,7 @@ refresh every 4 ticks, none of the 40 ticks stalled.
 at batch 1, and the resulting engine is both wrong and *faster* -- 62.3 ms against 72.8 ms for
 the correct one, because a miscompiled kernel does less work. A number that good from an
 unpatched build is the symptom, not a win. Export `__LUNOWUD=-cask_fusion:max_num_epilogues=1`
-before `llm_build`, or build with `--maxBatchSize 2`, which sidesteps it at no cost. FP8 and
-FP16 are unaffected and need nothing.
+before `llm_build`, or build with `--maxBatchSize 2`, which sidesteps it at no cost.
 
 **System 1 stays BF16.** Quantizing it was measured: FP8 costs about six times the waypoint
 deviation to save 0.7 % of deployed weights and 1.7 % of a planning step, because System 2
