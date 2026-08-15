@@ -52,11 +52,11 @@ System 1 builds with `trtexec`, since its two graphs do not share the single-`mo
 layout `action_build` expects:
 
 ```bash
-trtexec --onnx=onnx/action/traj_dit.onnx --saveEngine=engines/action/traj_dit_bf16.engine --bf16 \
+trtexec --onnx=onnx/action/traj_dit.onnx --saveEngine=engines/action/traj_dit.engine --bf16 \
         --minShapes=latents:64x32x3,timestep:64,z_latents:64x4x768  \
         --optShapes=latents:64x32x3,timestep:64,z_latents:64x36x768 \
         --maxShapes=latents:64x32x3,timestep:64,z_latents:64x64x768
-trtexec --onnx=onnx/action/memory.onnx --saveEngine=engines/action/memory_bf16.engine --bf16 \
+trtexec --onnx=onnx/action/memory.onnx --saveEngine=engines/action/memory.engine --bf16 \
         --minShapes=images:1x3x224x224 --optShapes=images:2x3x224x224 --maxShapes=images:8x3x224x224
 ```
 

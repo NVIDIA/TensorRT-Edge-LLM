@@ -1934,6 +1934,25 @@ bool LLMBuilder::copyEmbeddingFile()
         return false;
     }
 
+    // Optional host-side weight sidecar. A model whose export emits weights the runtime applies
+    // outside the graph -- InternVLA-N1's System-2 bridge is the current case -- has nowhere to
+    // put them otherwise, and a consumer holding only the engine cannot reconstruct them. Copied
+    // when present and ignored when absent, so the builder needs no per-model knowledge.
+    std::string const bridgePath = (mOnnxDir / "bridge.safetensors").string();
+    if (std::filesystem::exists(bridgePath))
+    {
+        std::string const targetBridgePath = (mEngineDir / "bridge.safetensors").string();
+        if (file_io::copyFile(bridgePath, targetBridgePath))
+        {
+            LOG_INFO("Copied bridge.safetensors to %s", targetBridgePath.c_str());
+        }
+        else
+        {
+            LOG_ERROR("Failed to copy bridge.safetensors from %s to %s", bridgePath.c_str(), targetBridgePath.c_str());
+            return false;
+        }
+    }
+
     if (mModelConfig.value("ple_enabled", false))
     {
         std::string const plePath = (mOnnxDir / binding_names::kPleEmbeddingFileName).string();
