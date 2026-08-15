@@ -307,6 +307,10 @@ int main(int argc, char** argv)
             request.temperature = 1.0F;
             request.topP = 1.0F;
             request.topK = 1;
+            // Also without a default initializer. The bridge needs the prefill, not the text, so
+            // one token is enough and anything larger only spends time generating what is thrown
+            // away.
+            request.maxGenerateLength = 1;
 
             rt::LLMGenerationResponse response;
             internvla_n1::InternVLAN1DualSystemState::Plan plan;
