@@ -118,6 +118,7 @@ def timestep_embedding(timesteps: torch.Tensor, dim: int) -> torch.Tensor:
 
 
 class TimestepEmbedder(nn.Module):
+
     def __init__(self, in_channels: int, time_embed_dim: int) -> None:
         super().__init__()
         self.linear_1 = nn.Linear(in_channels, time_embed_dim, bias=True)
@@ -191,7 +192,8 @@ class RMSNormZero(nn.Module):
     def forward(self, x: torch.Tensor, emb: torch.Tensor):
         emb = self.linear(F.silu(emb))
         scale_msa, gate_msa, scale_mlp, gate_mlp = emb.chunk(4, dim=1)
-        return self.norm(x) * (1 + scale_msa[:, None]), gate_msa, scale_mlp, gate_mlp
+        return self.norm(x) * (
+            1 + scale_msa[:, None]), gate_msa, scale_mlp, gate_mlp
 
 
 class LayerNormContinuous(nn.Module):
@@ -203,7 +205,8 @@ class LayerNormContinuous(nn.Module):
         self.norm = nn.LayerNorm(cfg.dim, eps=1e-6, elementwise_affine=False)
         self.linear_2 = nn.Linear(cfg.dim, out_dim, bias=True)
 
-    def forward(self, x: torch.Tensor, conditioning: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor,
+                conditioning: torch.Tensor) -> torch.Tensor:
         scale = self.linear_1(F.silu(conditioning).to(x.dtype))
         return self.linear_2(self.norm(x) * (1 + scale)[:, None, :])
 
@@ -230,8 +233,8 @@ class Attention(nn.Module):
         # applied before the head split.
         self.norm_q = nn.LayerNorm(inner, eps=1e-5)
         self.norm_k = nn.LayerNorm(kv_inner, eps=1e-5)
-        self.to_out = nn.ModuleList(
-            [nn.Linear(inner, cfg.dim, bias=False)]) if with_out_proj else None
+        self.to_out = nn.ModuleList([nn.Linear(inner, cfg.dim, bias=False)
+                                     ]) if with_out_proj else None
 
     def forward(self, hidden_states: torch.Tensor,
                 encoder_hidden_states: torch.Tensor) -> torch.Tensor:
@@ -240,16 +243,19 @@ class Attention(nn.Module):
         key = self.norm_k(self.to_k(encoder_hidden_states))
         value = self.to_v(encoder_hidden_states)
 
-        query = query.view(batch, -1, self.heads, self.head_dim).transpose(1, 2)
+        query = query.view(batch, -1, self.heads,
+                           self.head_dim).transpose(1, 2)
         key = key.view(batch, -1, self.heads, self.head_dim).transpose(1, 2)
-        value = value.view(batch, -1, self.heads, self.head_dim).transpose(1, 2)
+        value = value.view(batch, -1, self.heads,
+                           self.head_dim).transpose(1, 2)
 
         # Masks are all-ones in this model, so SDPA runs unmasked.
         out = F.scaled_dot_product_attention(query, key, value)
-        return out.transpose(1, 2)          # [B, S, H, D], not flattened
+        return out.transpose(1, 2)  # [B, S, H, D], not flattened
 
 
 class TrajDitBlock(nn.Module):
+
     def __init__(self, cfg: TrajDitConfig) -> None:
         super().__init__()
         self.gate = nn.Parameter(torch.zeros(cfg.num_attention_heads))
@@ -269,7 +275,8 @@ class TrajDitBlock(nn.Module):
         normed, gate_msa, scale_mlp, gate_mlp = self.norm1(hidden_states, temb)
 
         self_out = self.attn1(normed, normed)
-        cross_out = self.attn2(normed, self.norm1_context(encoder_hidden_states))
+        cross_out = self.attn2(normed,
+                               self.norm1_context(encoder_hidden_states))
         cross_out = cross_out * self.gate.tanh().view(1, 1, -1, 1)
 
         mixed = (self_out + cross_out).flatten(-2)
@@ -325,9 +332,9 @@ class SinusoidalPositionalEncoding(nn.Module):
 
     def forward(self, positions: torch.Tensor) -> torch.Tensor:
         half = self.embedding_dim // 2
-        exponent = -torch.arange(half, dtype=torch.float32,
-                                 device=positions.device) * (
-            math.log(10000.0) / half)
+        exponent = -torch.arange(
+            half, dtype=torch.float32, device=positions.device) * (
+                math.log(10000.0) / half)
         freqs = positions.float().unsqueeze(-1) * exponent.exp()
         return torch.cat([torch.sin(freqs), torch.cos(freqs)], dim=-1)
 
@@ -345,7 +352,8 @@ class InternVLAN1TrajDitStep(nn.Module):
     stay outside -- they are control flow, not compute.
     """
 
-    def __init__(self, cfg: Optional[TrajDitConfig] = None,
+    def __init__(self,
+                 cfg: Optional[TrajDitConfig] = None,
                  action_dim: int = 3) -> None:
         super().__init__()
         cfg = cfg or TrajDitConfig()
@@ -371,18 +379,17 @@ STEP_PREFIXES = {
 }
 
 
-def build_internvla_n1_traj_dit_step(weights: dict,
-                                     cfg: Optional[TrajDitConfig] = None,
-                                     dtype: torch.dtype = torch.bfloat16
-                                     ) -> InternVLAN1TrajDitStep:
+def build_internvla_n1_traj_dit_step(
+        weights: dict,
+        cfg: Optional[TrajDitConfig] = None,
+        dtype: torch.dtype = torch.bfloat16) -> InternVLAN1TrajDitStep:
     """Build the full denoising step and load it, refusing a partial load."""
     model = InternVLAN1TrajDitStep(cfg).to(dtype).eval()
     report = load_traj_dit_weights(model.traj_dit, weights)
     if report["missing"] or report["unexpected"]:
-        raise ValueError(
-            "InternVLA-N1 traj_dit did not load cleanly: "
-            f"missing={report['missing'][:5]} "
-            f"unexpected={report['unexpected'][:5]}")
+        raise ValueError("InternVLA-N1 traj_dit did not load cleanly: "
+                         f"missing={report['missing'][:5]} "
+                         f"unexpected={report['unexpected'][:5]}")
     for attr, prefix in STEP_PREFIXES.items():
         module = getattr(model, attr)
         for suffix in ("weight", "bias"):
@@ -440,10 +447,10 @@ def load_traj_dit_weights(model: InternVLAN1TrajDit, weights: dict) -> dict:
     }
 
 
-def build_internvla_n1_traj_dit(weights: dict,
-                                cfg: Optional[TrajDitConfig] = None,
-                                dtype: torch.dtype = torch.bfloat16
-                                ) -> InternVLAN1TrajDit:
+def build_internvla_n1_traj_dit(
+        weights: dict,
+        cfg: Optional[TrajDitConfig] = None,
+        dtype: torch.dtype = torch.bfloat16) -> InternVLAN1TrajDit:
     """Build the trajectory expert and load it, refusing a partial load."""
     model = InternVLAN1TrajDit(cfg).to(dtype).eval()
     report = load_traj_dit_weights(model, weights)

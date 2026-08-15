@@ -34,3 +34,4 @@ CLAUDE.local.md
 .claude/projects
 .claude/scheduled_tasks.lock
 tmp/
+.venv/
