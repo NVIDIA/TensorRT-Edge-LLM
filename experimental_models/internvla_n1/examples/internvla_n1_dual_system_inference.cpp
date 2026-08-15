@@ -120,12 +120,14 @@ int main(int argc, char** argv)
     std::string const actionDir = argOf(argc, argv, "--actionEngineDir");
     std::string const framesPath = argOf(argc, argv, "--frames");
     std::string const noisePath = argOf(argc, argv, "--noise");
+    std::string const outputPath = argOf(argc, argv, "--output");
     if (llmDir.empty() || actionDir.empty() || framesPath.empty() || noisePath.empty())
     {
         std::fprintf(stderr,
             "usage: %s --llmEngineDir DIR --actionEngineDir DIR\n"
             "          --frames frames.bin --noise noise.bin\n"
-            "          [--ticks 40] [--cadence 4] [--numFrames 2] [--prompt TEXT]\n",
+            "          [--ticks 40] [--cadence 4] [--numFrames 2] [--prompt TEXT] [--output traj.bin]\n"
+            "          [--numTrajs 32] [--steps 10] [--guidance 1.5]\n",
             argv[0]);
         return 2;
     }
@@ -158,6 +160,12 @@ int main(int argc, char** argv)
 
     std::printf("[2/4] loading System 1\n");
     internvla_n1::InternVLAN1System1Runner::Config config;
+    config.numSampleTrajs = std::stoi(argOf(argc, argv, "--numTrajs", "32"));
+    config.numInferenceSteps = std::stoi(argOf(argc, argv, "--steps", "10"));
+    // The Config default is the reference generate_traj default (1.0); deployment runs 1.5.
+    // Left at 1.0 by accident this is invisible -- the trajectories stay plausible and only a
+    // comparison against the reference shows the drift.
+    config.guidanceScale = std::stof(argOf(argc, argv, "--guidance", "1.5"));
     internvla_n1::InternVLAN1System1Runner s1(actionDir, config, s1Stream);
 
     std::printf("[3/4] encoding the observation window\n");
@@ -282,8 +290,18 @@ int main(int argc, char** argv)
         }
         if (!cond.isEmpty())
         {
-            s1.sampleTrajectory(cond, noise, s1Stream);
+            rt::Tensor& traj = s1.sampleTrajectory(cond, noise, s1Stream);
             ++ran;
+            // Write the final tick's trajectory so a run can be compared against the reference.
+            if (!outputPath.empty() && tick == ticks - 1)
+            {
+                cudaStreamSynchronize(s1Stream);
+                auto const host = toHostFloat(traj);
+                std::ofstream out(outputPath, std::ios::binary);
+                out.write(reinterpret_cast<char const*>(host.data()),
+                    static_cast<std::streamsize>(host.size() * sizeof(float)));
+                std::printf("      wrote %s (%zu floats)\n", outputPath.c_str(), host.size());
+            }
         }
         else
         {
