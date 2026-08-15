@@ -27,18 +27,13 @@
 //! rows of arithmetic, so a plain host loop costs nothing next to a 623 ms plan and keeps the step
 //! easy to check against the reference.
 //!
-//! \warning The conditioning this produces is **not** the model's real bridge signal, so treat the
-//! trajectories as a plumbing demonstration rather than navigation output. The reference appends
-//! `latent_queries` -- four learned embeddings -- to the prompt and reads the hidden states at
-//! those positions. `handleRequest` takes messages and performs the embedding lookup internally,
-//! so there is no way to inject them through that API, and this example falls back to the last
-//! four prompt-token positions instead. Measured against the reference on the same prompt, that
-//! substitution gives cosine 0.5877 and rel-L2 0.96: a different signal, not a degraded one.
-//!
-//! Fixing it needs an entry point that accepts `inputs_embeds` -- the engine's actual input --
-//! rather than text, which is a runtime API change and deliberately not made here. What this
-//! example does establish is the plumbing: both engines in one process, the planner on its own
-//! thread, the priority stream, and an atomic handoff that never blocks the control loop.
+//! The latent queries travel as real tokens. The export writes the four learned embeddings into
+//! the embedding table's trailing padding rows and registers `<|latent_q0..3|>` as special
+//! tokens, so a prompt ending with them puts the queries into the sequence through the runtime's
+//! ordinary lookup -- the route Alpamayo uses for its trajectory tokens. The engine's graph folds
+//! the final norm and cond_projector, so the hidden-states buffer's first
+//! `n_query * latent_dim` elements *are* the z_latents; the rest of the buffer is the runtime's
+//! model-width copy convention and is ignored.
 
 #include "action/internvlaN1System1Runner.h"
 #include "runtime/internvlaN1DualSystem.h"
@@ -69,9 +64,7 @@ namespace
 
 //! Any index but 0; the runtime parks the input embeddings at 0.
 constexpr int32_t kBridgeLayer = 1;
-constexpr int32_t kHiddenSize = 3584;
 constexpr int32_t kLatentDim = 768;
-constexpr float kNormEps = 1e-6F;
 
 std::string argOf(int argc, char** argv, char const* flag, std::string const& fallback = "")
 {
@@ -84,14 +77,6 @@ std::string argOf(int argc, char** argv, char const* flag, std::string const& fa
     }
     return fallback;
 }
-
-//! Host-side copy of the bridge weights, in the order the projection applies them.
-struct Bridge
-{
-    std::vector<float> normWeight; //!< [hidden]
-    std::vector<float> w0, b0;     //!< [latent, hidden], [latent]
-    std::vector<float> w2, b2;     //!< [latent, latent], [latent]
-};
 
 std::vector<float> toHostFloat(rt::Tensor const& t)
 {
@@ -109,103 +94,6 @@ std::vector<float> toHostFloat(rt::Tensor const& t)
     else
     {
         cudaMemcpy(out.data(), t.rawPointer(), out.size() * sizeof(float), cudaMemcpyDefault);
-    }
-    return out;
-}
-
-//! Load cond_projector, latent_queries and the final norm weight from sidecar files.
-bool loadBridge(std::string const& bridgePath, std::string const& normPath, Bridge& bridge, cudaStream_t stream)
-{
-    std::vector<rt::Tensor> tensors;
-    if (!rt::safetensors::loadSafetensors(bridgePath, tensors, stream))
-    {
-        std::fprintf(stderr, "cannot read %s\n", bridgePath.c_str());
-        return false;
-    }
-    for (auto const& t : tensors)
-    {
-        std::string const& name = t.getName();
-        if (name.find("cond_projector.0.weight") != std::string::npos)
-        {
-            bridge.w0 = toHostFloat(t);
-        }
-        else if (name.find("cond_projector.0.bias") != std::string::npos)
-        {
-            bridge.b0 = toHostFloat(t);
-        }
-        else if (name.find("cond_projector.2.weight") != std::string::npos)
-        {
-            bridge.w2 = toHostFloat(t);
-        }
-        else if (name.find("cond_projector.2.bias") != std::string::npos)
-        {
-            bridge.b2 = toHostFloat(t);
-        }
-    }
-    std::ifstream norm(normPath, std::ios::binary | std::ios::ate);
-    if (!norm)
-    {
-        std::fprintf(stderr, "cannot read %s\n", normPath.c_str());
-        return false;
-    }
-    bridge.normWeight.resize(static_cast<size_t>(norm.tellg()) / sizeof(float));
-    norm.seekg(0);
-    norm.read(reinterpret_cast<char*>(bridge.normWeight.data()),
-        static_cast<std::streamsize>(bridge.normWeight.size() * sizeof(float)));
-    return !bridge.w0.empty() && !bridge.w2.empty() && !bridge.normWeight.empty();
-}
-
-//! Pre-norm hidden states -> z_latents. RMSNorm, linear, tanh-GELU, linear.
-std::vector<float> projectBridge(std::vector<float> const& rows, int32_t numQuery, Bridge const& bridge)
-{
-    std::vector<float> normed(rows.size());
-    for (int32_t q = 0; q < numQuery; ++q)
-    {
-        float const* src = rows.data() + static_cast<size_t>(q) * kHiddenSize;
-        double sum = 0.0;
-        for (int32_t i = 0; i < kHiddenSize; ++i)
-        {
-            sum += static_cast<double>(src[i]) * src[i];
-        }
-        float const scale = 1.0F / std::sqrt(static_cast<float>(sum / kHiddenSize) + kNormEps);
-        for (int32_t i = 0; i < kHiddenSize; ++i)
-        {
-            normed[static_cast<size_t>(q) * kHiddenSize + i] = src[i] * scale * bridge.normWeight[i];
-        }
-    }
-
-    std::vector<float> mid(static_cast<size_t>(numQuery) * kLatentDim);
-    for (int32_t q = 0; q < numQuery; ++q)
-    {
-        for (int32_t o = 0; o < kLatentDim; ++o)
-        {
-            float acc = bridge.b0.empty() ? 0.0F : bridge.b0[static_cast<size_t>(o)];
-            float const* w = bridge.w0.data() + static_cast<size_t>(o) * kHiddenSize;
-            float const* x = normed.data() + static_cast<size_t>(q) * kHiddenSize;
-            for (int32_t i = 0; i < kHiddenSize; ++i)
-            {
-                acc += w[i] * x[i];
-            }
-            // GELU, tanh approximation -- the reference uses approximate="tanh".
-            float const c = 0.7978845608F * (acc + 0.044715F * acc * acc * acc);
-            mid[static_cast<size_t>(q) * kLatentDim + o] = 0.5F * acc * (1.0F + std::tanh(c));
-        }
-    }
-
-    std::vector<float> out(static_cast<size_t>(numQuery) * kLatentDim);
-    for (int32_t q = 0; q < numQuery; ++q)
-    {
-        for (int32_t o = 0; o < kLatentDim; ++o)
-        {
-            float acc = bridge.b2.empty() ? 0.0F : bridge.b2[static_cast<size_t>(o)];
-            float const* w = bridge.w2.data() + static_cast<size_t>(o) * kLatentDim;
-            float const* x = mid.data() + static_cast<size_t>(q) * kLatentDim;
-            for (int32_t i = 0; i < kLatentDim; ++i)
-            {
-                acc += w[i] * x[i];
-            }
-            out[static_cast<size_t>(q) * kLatentDim + o] = acc;
-        }
     }
     return out;
 }
@@ -230,16 +118,13 @@ int main(int argc, char** argv)
 {
     std::string const llmDir = argOf(argc, argv, "--llmEngineDir");
     std::string const actionDir = argOf(argc, argv, "--actionEngineDir");
-    std::string const bridgePath = argOf(argc, argv, "--bridge");
-    std::string const normPath = argOf(argc, argv, "--normWeight");
     std::string const framesPath = argOf(argc, argv, "--frames");
     std::string const noisePath = argOf(argc, argv, "--noise");
-    if (llmDir.empty() || actionDir.empty() || bridgePath.empty() || normPath.empty() || framesPath.empty()
-        || noisePath.empty())
+    if (llmDir.empty() || actionDir.empty() || framesPath.empty() || noisePath.empty())
     {
         std::fprintf(stderr,
-            "usage: %s --llmEngineDir DIR --actionEngineDir DIR --bridge bridge.safetensors\n"
-            "          --normWeight norm.bin --frames frames.bin --noise noise.bin\n"
+            "usage: %s --llmEngineDir DIR --actionEngineDir DIR\n"
+            "          --frames frames.bin --noise noise.bin\n"
             "          [--ticks 40] [--cadence 4] [--numFrames 2] [--prompt TEXT]\n",
             argv[0]);
         return 2;
@@ -247,9 +132,17 @@ int main(int argc, char** argv)
     int32_t const ticks = std::stoi(argOf(argc, argv, "--ticks", "40"));
     int64_t const cadence = std::stoll(argOf(argc, argv, "--cadence", "4"));
     int32_t const numFrames = std::stoi(argOf(argc, argv, "--numFrames", "2"));
-    std::string const prompt = argOf(argc, argv, "--prompt",
+    std::string const userText = argOf(argc, argv, "--prompt",
         "You are an autonomous navigation assistant. Your task is to go to the kitchen. "
         "Where should you go next to stay on track?");
+    // The queries must sit where the model was trained to find them: after the assistant
+    // generation prompt. handleRequest's template always closes the user turn first, so the
+    // ChatML is assembled here and the template is turned off for this request.
+    std::string const prompt = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
+                               "<|im_start|>user\n"
+        + userText
+        + "<|im_end|>\n<|im_start|>assistant\n"
+          "<|latent_q0|><|latent_q1|><|latent_q2|><|latent_q3|>";
 
     auto const pluginHandles = loadEdgellmPluginLib();
 
@@ -266,12 +159,6 @@ int main(int argc, char** argv)
     std::printf("[2/4] loading System 1\n");
     internvla_n1::InternVLAN1System1Runner::Config config;
     internvla_n1::InternVLAN1System1Runner s1(actionDir, config, s1Stream);
-
-    Bridge bridge;
-    if (!loadBridge(bridgePath, normPath, bridge, s1Stream))
-    {
-        return 1;
-    }
 
     std::printf("[3/4] encoding the observation window\n");
     auto const frameHost = readFloats(framesPath);
@@ -301,6 +188,7 @@ int main(int argc, char** argv)
             message.contents.push_back({"text", prompt});
             request.requests[0].messages.push_back(message);
             request.acceptHiddenLayer = kBridgeLayer;
+            request.applyChatTemplate = false;
             // temperature, topP and topK have no default initializers in the struct. Leaving
             // them uninitialized makes the sampler compute a workspace from garbage; the
             // symptom is a size_t underflow reported as an 18-exabyte allocation.
@@ -323,10 +211,12 @@ int main(int argc, char** argv)
             {
                 return plan;
             }
-            auto const all = toHostFloat(*hidden);
+            // The graph already applied the norm and cond_projector, so the first
+            // numQuery * latent_dim elements of the buffer are the z_latents. The buffer's
+            // reported shape is the runtime's model-width convention; only the prefix is real.
             int32_t const numQuery = 4;
-            std::vector<float> rows(all.end() - static_cast<int64_t>(numQuery) * kHiddenSize, all.end());
-            auto const z = projectBridge(rows, numQuery, bridge);
+            auto const all = toHostFloat(*hidden);
+            std::vector<float> const z(all.begin(), all.begin() + static_cast<int64_t>(numQuery) * kLatentDim);
 
             // Conditioning is [null; memory ⧺ z_latents]; the null row is what classifier-free
             // guidance blends against.

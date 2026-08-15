@@ -57,9 +57,16 @@ int main(int argc, char** argv)
 {
     std::string const engineDir = argOf(argc, argv, "--engineDir");
     std::string const outPath = argOf(argc, argv, "--output", "bridge.bin");
-    std::string const prompt = argOf(argc, argv, "--prompt",
+    std::string const userText = argOf(argc, argv, "--prompt",
         "You are an autonomous navigation assistant. Your task is to go to the kitchen. "
         "Where should you go next to stay on track?");
+    // Same assembly as internvla_n1_dual_system_inference: the latent-query tokens must sit after
+    // the assistant generation prompt, so the ChatML is built here and the template turned off.
+    std::string const prompt = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
+                               "<|im_start|>user\n"
+        + userText
+        + "<|im_end|>\n<|im_start|>assistant\n"
+          "<|latent_q0|><|latent_q1|><|latent_q2|><|latent_q3|>";
     if (engineDir.empty())
     {
         std::fprintf(stderr, "usage: %s --engineDir DIR [--output bridge.bin] [--prompt TEXT]\n", argv[0]);
@@ -83,6 +90,13 @@ int main(int argc, char** argv)
     request.requests[0].messages.push_back(message);
     // Distinct from the input-embeds slot; see kBridgeLayer.
     request.acceptHiddenLayer = kBridgeLayer;
+    request.applyChatTemplate = false;
+    // None of these have default initializers; uninitialized topK in particular makes the sampler
+    // size its workspace from stack garbage.
+    request.temperature = 1.0F;
+    request.topP = 1.0F;
+    request.topK = 1;
+    request.maxGenerateLength = 1;
 
     rt::LLMGenerationResponse response;
     // The last argument is what registers the hidden states at all. Left at its default the
