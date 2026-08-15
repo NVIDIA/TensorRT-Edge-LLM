@@ -11,6 +11,19 @@ normalized and projected. That projection is folded into the LLM graph, so the e
 `z_latents` directly and nothing downstream has to carry projector weights or reproduce the
 norm ordering.
 
+The trajectory queries themselves are four learned embeddings, and they travel as real tokens:
+the export writes them into the embedding table's trailing padding rows and registers
+`<|latent_q0|>`..`<|latent_q3|>` as special tokens (the IDs are recorded in the engine's
+`config.json` under `latent_query_token_ids`). A prompt that ends with those four tokens puts
+the queries into the sequence through the runtime's ordinary embedding lookup — the same route
+Alpamayo uses for its trajectory tokens — so no runtime API change is involved. They belong
+*after* the assistant generation prompt, which is where the model was trained to find them.
+
+One convention consumers must know: the runtime copies its hidden-states buffer at model width
+regardless of the engine's actual output shape, so `getBaseModelHiddenStates` reports
+`[1, seq, hidden]` while only the first `n_query * latent_dim` elements are the `z_latents`.
+Read that prefix and ignore the reported shape.
+
 The planner's *text* output is not what drives navigation. A checkpoint can produce fluent
 replies and still be useless here; `z_latents` is the signal that matters.
 
@@ -74,12 +87,27 @@ internvla_n1_system1_inference --engineDir engines/action \
 Tensors are read and written as raw float32 so a run can be reproduced and compared exactly.
 The noise is supplied rather than drawn internally for the same reason.
 
+Both systems together, asynchronously, in one process — System 2 planning on a background
+thread while System 1 keeps sampling from the newest plan:
+
+```bash
+internvla_n1_dual_system_inference \
+    --llmEngineDir engines/llm --actionEngineDir engines/action \
+    --frames frames.bin --noise noise.bin --ticks 40 --cadence 4
+```
+
+One process is not incidental: CUDA orders streams within a context, so System 1's priority
+stream only outranks the planner when the two share one. Measured on Thor with the FP16
+System 2, the first plan lands in ~150 ms and the trajectory loop holds 14.4 Hz with a plan
+refresh every 4 ticks, none of the 40 ticks stalled.
+
 ## Notes
 
-**FP16 on Jetson Thor needs a build flag.** TensorRT 10.13 miscompiles Myelin's horizontal
-fusion of the gate/up projections at batch 1 on sm_110, and an engine built without the
-workaround emits fluent gibberish. Export `__LUNOWUD=-peep:fc_h_fusion=off` before `llm_build`.
-FP8 dodges the same bug because its Q/DQ nodes break the fusion pattern.
+**FP16 on Jetson Thor needs no flag on this release.** TensorRT 10.13 miscompiles Myelin's
+horizontal fusion of the gate/up projections at batch 1 on sm_110, but `llm_build` already
+applies the `fc_h_fusion=off` workaround on TRT >= 10.13; a build log line
+`Using __LUNOWUD=... -peep:fc_h_fusion=off` confirms it. FP8 was never affected because its
+Q/DQ nodes break the fusion pattern.
 
 **NVFP4 needs a second build flag on TRT 10.13.** The CASK epilogue fusion miscompiles NVFP4
 at batch 1, and the resulting engine is both wrong and *faster* -- 62.3 ms against 72.8 ms for
