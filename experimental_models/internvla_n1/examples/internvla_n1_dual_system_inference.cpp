@@ -46,7 +46,6 @@
 #include <cuda_fp16.h>
 
 #include <algorithm>
-#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -237,7 +236,6 @@ int main(int argc, char** argv)
             float* real = plan.conditioning.data() + static_cast<size_t>(condLen) * kLatentDim;
             std::copy(memoryHost.begin(), memoryHost.end(), real);
             std::copy(z.begin(), z.end(), real + static_cast<size_t>(numMemory) * kLatentDim);
-            planCount.fetch_add(1);
             return plan;
         });
 
@@ -318,7 +316,7 @@ int main(int argc, char** argv)
     std::printf("  System-1 ticks run      : %d (%d before the first plan landed)\n", ran, stalled);
     std::printf("  mean tick               : %.2f ms (%.1f Hz)\n", total / ticks, 1000.0 * ticks / total);
     std::printf("  worst tick              : %.2f ms\n", worstTick);
-    std::printf("  plans completed         : %d\n", planCount.load());
+    std::printf("  plans completed         : %ld\n", static_cast<long>(driver.plansCompleted()));
     std::printf("  conditioning uploads    : %d (one per plan, not per tick)\n", uploads);
     std::printf("  final staleness         : %ld observations\n", static_cast<long>(state.stalenessAt(ticks - 1)));
 
