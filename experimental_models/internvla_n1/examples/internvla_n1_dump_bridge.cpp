@@ -39,6 +39,11 @@ namespace
 //! Any index other than 0 works. Zero is where the runtime parks the post-multimodal input
 //! embeddings, and the engine hidden states would silently overwrite them.
 constexpr int32_t kBridgeLayer = 1;
+//! The engine folds the norm and cond_projector, so the buffer's first
+//! kNumQuery * kLatentDim elements are the z_latents; the rest is the runtime's model-width
+//! copy convention and is not part of the signal.
+constexpr int32_t kNumQuery = 4;
+constexpr int32_t kLatentDim = 768;
 
 std::string argOf(int argc, char** argv, char const* flag, std::string const& fallback = "")
 {
@@ -151,9 +156,17 @@ int main(int argc, char** argv)
     {
         std::memcpy(host.data(), raw.data(), raw.size());
     }
+    // Write only the valid prefix. Dumping the whole buffer hands the consumer the garbage
+    // tail and makes every downstream script re-implement the trim.
+    size_t const zCount = static_cast<size_t>(kNumQuery) * kLatentDim;
+    if (host.size() < zCount)
+    {
+        std::fprintf(stderr, "buffer smaller than n_query * latent_dim\n");
+        return 1;
+    }
     std::ofstream sink(outPath, std::ios::binary);
-    sink.write(reinterpret_cast<char const*>(host.data()), static_cast<std::streamsize>(host.size() * sizeof(float)));
-    std::printf("wrote %s (%zu floats, engine dtype %s)\n", outPath.c_str(), host.size(),
+    sink.write(reinterpret_cast<char const*>(host.data()), static_cast<std::streamsize>(zCount * sizeof(float)));
+    std::printf("wrote %s (z_latents [%d, %d] as float32, engine dtype %s)\n", outPath.c_str(), kNumQuery, kLatentDim,
         dtype == nvinfer1::DataType::kHALF ? "fp16" : "fp32");
     cudaStreamDestroy(stream);
     return 0;
