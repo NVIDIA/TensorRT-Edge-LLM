@@ -199,7 +199,6 @@ These rows report synthetic `llm_bench` prefill and decode measurements at the b
 | Jetson AGX Thor | Qwen3.5-9B-LLM | LLM | Vanilla | NVFP4 | 8 | 2,048 | 1,414.5 | 1,447.8 | 2,048 | 260.0 |
 | Jetson AGX Thor | Qwen3.6-35B-A3B | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 195.0 | 10,501.2 | 2,048 | 84.1 |
 | Jetson AGX Thor | Qwen3.6-35B-A3B | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 1,212.8 | 1,688.7 | 2,048 | 257.6 |
-
 | DGX Spark (GB10) | NVIDIA-Nemotron-3-Nano-30B-A3B | LLM | Vanilla | NVFP4 | 1 | 2,048 | 312.3 | 6,557.2 | 2,048 | 69.4 |
 | DGX Spark (GB10) | NVIDIA-Nemotron-3-Nano-30B-A3B | LLM | Vanilla | NVFP4 | 8 | 2,048 | 2,162.2 | 947.2 | 2,048 | 248.0 |
 | DGX Spark (GB10) | NVIDIA-Nemotron-3-Nano-4B | LLM | Vanilla | NVFP4 | 1 | 2,048 | 671.8 | 3,048.4 | 2,048 | 56.8 |

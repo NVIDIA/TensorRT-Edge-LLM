@@ -101,13 +101,11 @@ Supported checkpoint IDs are listed below. See the
 - [Qwen/Qwen3-VL-4B-Instruct](https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct), [Qwen/Qwen3-VL-4B-Thinking](https://huggingface.co/Qwen/Qwen3-VL-4B-Thinking)
 - [Qwen/Qwen3-VL-8B-Instruct](https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct), [Qwen/Qwen3-VL-8B-Thinking](https://huggingface.co/Qwen/Qwen3-VL-8B-Thinking)
 - [nvidia/Cosmos-Reason2-2B](https://huggingface.co/nvidia/Cosmos-Reason2-2B), [nvidia/Cosmos-Reason2-8B](https://huggingface.co/nvidia/Cosmos-Reason2-8B)
-- [nvidia/Cosmos-Reason2-2B-FP8](https://huggingface.co/nvidia/Cosmos-Reason2-2B-FP8), [nvidia/Cosmos-Reason2-2B-NVFP4](https://huggingface.co/nvidia/Cosmos-Reason2-2B-NVFP4)
-- [nvidia/Cosmos-Reason2-8B-FP8](https://huggingface.co/nvidia/Cosmos-Reason2-8B-FP8), [nvidia/Cosmos-Reason2-8B-NVFP4](https://huggingface.co/nvidia/Cosmos-Reason2-8B-NVFP4)
 
 </details>
 
 <details>
-<summary><b>Qwen3.5 / Qwen3.6</b></summary>
+<summary><b>Qwen3.5 / Qwen3.6 / Qwen3.8</b></summary>
 
 - [Qwen/Qwen3.5-0.8B](https://huggingface.co/Qwen/Qwen3.5-0.8B), [Qwen/Qwen3.5-0.8B-Base](https://huggingface.co/Qwen/Qwen3.5-0.8B-Base)
 - [Qwen/Qwen3.5-2B](https://huggingface.co/Qwen/Qwen3.5-2B), [Qwen/Qwen3.5-2B-Base](https://huggingface.co/Qwen/Qwen3.5-2B-Base)
@@ -115,6 +113,7 @@ Supported checkpoint IDs are listed below. See the
 - [Qwen/Qwen3.5-9B](https://huggingface.co/Qwen/Qwen3.5-9B), [Qwen/Qwen3.5-9B-Base](https://huggingface.co/Qwen/Qwen3.5-9B-Base)
 - [Qwen/Qwen3.5-27B](https://huggingface.co/Qwen/Qwen3.5-27B)
 - [Qwen/Qwen3.6-27B](https://huggingface.co/Qwen/Qwen3.6-27B)
+- [Qwen/Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B)
 - [Qwen/Qwen3.5-35B-A3B-GPTQ-Int4](https://huggingface.co/Qwen/Qwen3.5-35B-A3B-GPTQ-Int4), [nvidia/Qwen3.6-35B-A3B-NVFP4](https://huggingface.co/nvidia/Qwen3.6-35B-A3B-NVFP4)
 
 </details>
