@@ -1320,7 +1320,8 @@ def repack_nvfp4_gated_moe_experts(
             :data:`NVFP4_MOE_INTERMEDIATE_SIZE_ALIGNMENT` for ``"concat"``.
     """
     from ..models.linear import \
-        is_nvfp4_linear  # local import to avoid circular dep
+        NVFP4A16MarlinLinear  # local import to avoid circular dep
+    from ..models.linear import is_nvfp4_linear
 
     if fc1_layout == "interleave":
         build_fc1_dense = _interleave_gated_moe_fc1
@@ -1364,8 +1365,11 @@ def repack_nvfp4_gated_moe_experts(
         gate = expert.gate_proj
         up = expert.up_proj
         down = expert.down_proj
-        if not (is_nvfp4_linear(gate) and is_nvfp4_linear(up)
-                and is_nvfp4_linear(down)):
+
+        def _is_nvfp4(m):
+            return is_nvfp4_linear(m) or isinstance(m, NVFP4A16MarlinLinear)
+
+        if not (_is_nvfp4(gate) and _is_nvfp4(up) and _is_nvfp4(down)):
             raise TypeError("Gated NVFP4 MoE experts must use NVFP4 quant")
 
         gate_dense = decode_modelopt_nvfp4(gate.weight, gate.weight_scale,
