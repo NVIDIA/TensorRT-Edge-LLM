@@ -45,13 +45,20 @@ struct StreamingPrefillBuffers
     Tensor inputEmbeds;        //!< Prefill-time layer-0 input embeddings.
     Tensor engineHiddenStates; //!< Prefill-time engine hidden_states output.
 
-    //! Allocate on first call (sized to the worst case `{maxBatch, maxSeq, hiddenSize}`),
-    //! reshape to the current request's `{batch, prefillLen, hiddenSize}`, and copy
-    //! from the live PipelineIO buffers on `stream`. Subsequent calls reuse the same
-    //! allocation. Must be invoked after prefill and before the first decode step on
-    //! the same stream so the copies precede any overwrite of `outputHiddenStates`.
+    //! Allocate on first call (sized to the worst case `{maxBatch, maxSeq, dim}`),
+    //! reshape to the current request's `{batch, prefillLen, dim}`, and copy from the
+    //! live PipelineIO buffers on `stream`. Subsequent calls reuse the same allocation.
+    //! Must be invoked after prefill and before the first decode step on the same
+    //! stream so the copies precede any overwrite of `outputHiddenStates`.
+    //!
+    //! The two tensors are sized independently: input embeddings are always model
+    //! width, but a model may project its hidden states before emitting them, in
+    //! which case `outputHiddenSize` is the narrower emitted width. Copying the
+    //! model width out of a narrower engine output would read past the valid data
+    //! and hand the consumer a plausible-looking buffer whose tail is garbage.
     void populateFromPrefill(Tensor const& liveInputEmbeds, Tensor const& liveEngineHiddenStates, int32_t batch,
-        int32_t prefillLen, int32_t hiddenSize, int32_t maxBatch, int32_t maxSeq, cudaStream_t stream);
+        int32_t prefillLen, int32_t hiddenSize, int32_t outputHiddenSize, int32_t maxBatch, int32_t maxSeq,
+        cudaStream_t stream);
 };
 
 //! All tensors flowing through the inference pipeline.
