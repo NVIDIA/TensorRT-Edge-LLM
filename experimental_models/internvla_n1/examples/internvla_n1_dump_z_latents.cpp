@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Dump the System-2 bridge tensor for one prompt, so the same prompt can be compared across
+//! Dump System 2's z_latents for one prompt, so the same prompt can be compared across
 //! precisions. Exists because the engine's KV cache is paged: driving it from Python means
 //! reimplementing the page table, while the runtime already does that correctly.
 
