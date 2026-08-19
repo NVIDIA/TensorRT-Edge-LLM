@@ -21,7 +21,7 @@ internvla_n1/
     action/    # System-1 runner: memory + traj_dit engines, flow-matching sampler, CFG
     runtime/   # dual-system state + driver: atomic plan handoff, background planner thread
   examples/    # internvla_n1_system1_inference, internvla_n1_dual_system_inference,
-               # internvla_n1_dump_bridge
+               # internvla_n1_dump_z_latents
 ```
 
 System 1 ships **two** graphs rather than one: the memory block runs once per observation window while the trajectory expert runs once per denoising step, so a fused graph would re-encode the frames on every step. Neither fits `action_build`'s one-graph shape, so both are built with `trtexec`.
@@ -75,7 +75,7 @@ Guidance defaults to 1.0 — the value every `generate_traj` call site in Intern
 
 Two conventions consumers must know:
 
-- The runtime copies its hidden-states buffer at model width regardless of the engine's actual output shape, so `getBaseModelHiddenStates` reports `[1, seq, hidden]` while only the first `n_query * latent_dim` elements are the `z_latents`. Read that prefix and ignore the reported shape (`internvla_n1_dump_bridge` dumps it for verification).
+- The engine emits `z_latents` at `latent_dim` rather than model width, so the export writes `output_hidden_size` into the engine's `config.json` and the runtime sizes its hidden-states buffer from that. `getBaseModelHiddenStates` then reports the real width. Without the key the runtime would fall back to model width and copy past the engine's output; `internvla_n1_dump_z_latents` is the quickest way to confirm a fresh export (a shape of `[1, seq, 768]` and a cosine near 1.0 against the reference).
 - One process for the dual-system loop is not incidental: CUDA orders streams within a context, so System 1's priority stream only outranks the planner when the two share one.
 
 See `docs/source/user_guide/examples/vla/internvla_n1.md` for the architecture, measured latency/fidelity, and the platform build notes.
