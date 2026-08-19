@@ -999,6 +999,18 @@ def _finalize_internvla_llm_artifacts(model_dir: str,
     with open(cfg_path) as handle:
         cfg = json.load(handle)
     cfg["latent_query_token_ids"] = token_ids
+    # The graph folds the final norm and cond_projector, so `hidden_states` comes
+    # out at the bridge width rather than the model width. The runtime sizes and
+    # copies that buffer from this key; without it, it would move model-width
+    # bytes out of a narrower output and hand the consumer a buffer whose tail is
+    # whatever happened to be next in memory.
+    # The bridge width is latent_dim, not the latent queries' own width -- the
+    # queries enter at model width and cond_projector narrows them on the way out.
+    from ..models.internvla_n1.modeling_internvla_n1_text import \
+        DEFAULT_LATENT_DIM
+
+    cfg["output_hidden_size"] = int(
+        cfg.get("latent_dim") or DEFAULT_LATENT_DIM)
     with open(cfg_path, "w") as handle:
         json.dump(cfg, handle, indent=2)
 

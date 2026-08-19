@@ -63,7 +63,16 @@ struct Gemma4MTPKVSharingEntry
 struct LLMEngineConfig
 {
     // --- Core model dimensions ---
-    int32_t hiddenSize{};                //!< Model hidden dimension
+    int32_t hiddenSize{}; //!< Model hidden dimension
+
+    //! Width of the engine's `hidden_states` output, when it differs from
+    //! `hiddenSize`. A model may project the hidden states before emitting them --
+    //! InternVLA-N1 folds its norm + cond_projector into the graph and emits a
+    //! 768-wide bridge tensor -- and the runtime must then allocate and copy that
+    //! width rather than the model width. Parsed from the optional
+    //! `output_hidden_size` key; defaults to `hiddenSize`, so every model that
+    //! emits hidden states at model width is unaffected.
+    int32_t outputHiddenSize{};
     int32_t outputVocabSize{};           //!< Actual output vocab (reduced if vocab reduction active)
     int32_t numAttentionLayers{};        //!< Number of attention layers needing KV cache
     int32_t numKVHeads{};                //!< Number of key-value heads
