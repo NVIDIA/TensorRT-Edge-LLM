@@ -93,9 +93,19 @@ classifier-free blend reduces to the conditioned branch, so the null half of the
 costs compute but does not change the output.
 
 One process is not incidental: CUDA orders streams within a context, so System 1's priority
-stream only outranks the planner when the two share one. Measured on Thor with the FP16
-System 2, the first plan lands in ~150 ms and the trajectory loop holds 14.4 Hz with a plan
-refresh every 4 ticks, none of the 40 ticks stalled.
+stream only outranks the planner when the two share one. Measured on Thor at `--ticks 40 --cadence 4`,
+none of the ticks stalled:
+
+| System 2 | First plan | Control rate |
+|---|---|---|
+| PyTorch bf16 | 160 ms | 208.1 ms (4.8 Hz) |
+| TensorRT FP16 | 144 ms | 66.8 ms (15.0 Hz) |
+| TensorRT FP8 | 118 ms | 61.3 ms (16.3 Hz) |
+| TensorRT NVFP4 | 100 ms | 55.4 ms (18.0 Hz) |
+
+Quantizing System 2 raises the control rate even though System 1 is BF16 in every row: the
+trajectory head costs ~52 ms whichever planner shares the GPU, and what changes is how much the
+planner crowds it.
 
 ## Driving the resident server from Python
 
@@ -265,25 +275,29 @@ Jetson Thor, idle GPU, batch 1, measured with `llm_bench`.
 
 ### System 2
 
-| Variant | prefill (1024 tokens) | decode (pastKV 1024) | weights |
+| Variant | prefill (1024 tokens) | decode (pastKV 1024) | engine |
 |---|---|---|---|
-| PyTorch fp16 | 328.93 ms | 99.35 ms | ~15 GB |
-| TensorRT FP16 | 150.80 ± 1.78 ms | 63.97 ± 5.79 ms | 14.15 GB |
-| TensorRT FP8 | 90.17 ± 0.48 ms | 33.03 ± 0.30 ms | 7.62 GB |
-| TensorRT NVFP4 | 72.83 ± 0.42 ms | 23.33 ± 0.90 ms | 4.77 GB |
+| PyTorch bf16 | 328.93 ms | 99.35 ms | ~15 GB |
+| TensorRT FP16 | 155.5 ms | 59.0 ms | 13.18 GB |
+| TensorRT FP8 | 90.6 ms | 32.8 ms | 7.10 GB |
+| TensorRT NVFP4 | 75.4 ms | 20.3 ms | 4.45 GB |
 
-Against PyTorch that is 2.2x/1.6x for FP16, 3.6x/3.0x for FP8 and 4.5x/4.3x for NVFP4. The
+Against PyTorch that is 2.1x/1.7x for FP16, 3.6x/3.0x for FP8 and 4.4x/4.9x for NVFP4. The
 PyTorch row runs the same decoder over the same input length and past-KV length as `llm_bench`,
-so the rows are comparable; it is not the model's end-to-end agent latency.
+so the rows are comparable; it is not the model's end-to-end agent latency. Run-to-run drift
+across sittings is about 4%, the same order as the gap between repeated measurements of one
+engine — do not read a winner out of a few milliseconds.
 
-FP8 is the recommended scheme: 1.86x smaller than FP16 and roughly 1.7x/1.9x faster, with the
-navigation bridge measured at 0.9919 in the source recipe. NVFP4 is smaller and faster still
-but its bridge falls to 0.931, below the 0.99 gate, so it is not recommended for navigation
-despite the numbers above.
+**NVFP4 is the recommendation, and the offline metrics do not show why.** An earlier revision of
+this page recommended FP8 and ruled NVFP4 out because its bridge cosine (0.962) sits below a 0.99
+gate. Closed-loop success rate over 199 R2R val_unseen episodes contradicts that: NVFP4 reaches
+67.8% against PyTorch's 69.8% (McNemar p = 0.572), while FP16 — highest on every cosine — scores
+*lowest* of the three at 66.8%. Neither z-cosine nor trajectory cosine predicts navigation
+success for this model. Use cosine to catch a broken export (0.25 means broken) and accept on SR.
 
-The FP16 engine carries one extra output — the bridge — that the FP8 and NVFP4 engines here do
-not, since those were quantized from an already-repackaged checkpoint. The difference is one
-tensor and does not move these figures, but the rows are not byte-identical graphs.
+`llm_bench` measures System 2 only: it links `edgellmCore` and cannot reach
+`InternVLAN1System1Runner`, so System-1 and end-to-end numbers come from
+`internvla_n1_dual_system_inference` instead.
 
 ### System 1
 
