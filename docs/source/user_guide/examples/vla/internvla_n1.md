@@ -97,6 +97,118 @@ stream only outranks the planner when the two share one. Measured on Thor with t
 System 2, the first plan lands in ~150 ms and the trajectory loop holds 14.4 Hz with a plan
 refresh every 4 ticks, none of the 40 ticks stalled.
 
+## Driving the resident server from Python
+
+`internvla_n1_dual_system_server` is the same runtime behind a stdin/stdout protocol instead of
+one canned run, for a client that steps a simulator or a robot: `internvla_n1_dual_system_inference`
+encodes one observation window at startup and ticks, while an agent needs to feed a *new* window
+every step. It speaks one JSON object per line, with tensors as raw bytes immediately behind the
+header rather than inline in the JSON — see the file's own doc comment for the exact field names.
+
+```bash
+internvla_n1_dual_system_server --llmEngineDir engines/llm --actionEngineDir engines/action
+```
+
+A minimal client:
+
+```python
+import json, subprocess
+
+class Client:
+    def __init__(self, llm_dir, action_dir, plugin_path, visual_dir=None):
+        argv = ["internvla_n1_dual_system_server",
+                "--llmEngineDir", llm_dir, "--actionEngineDir", action_dir]
+        if visual_dir:
+            argv += ["--multimodalEngineDir", visual_dir]
+        self.p = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                  bufsize=0, env={"EDGELLM_PLUGIN_PATH": plugin_path})
+        self._read("ready")
+
+    def _read(self, want):
+        while True:
+            line = self.p.stdout.readline().decode().strip()
+            if not line.startswith("{"):
+                continue
+            obj = json.loads(line)
+            if want in obj or "error" in obj:
+                if "error" in obj:
+                    raise RuntimeError(obj["error"])
+                return obj
+
+    def call(self, header, want, blob=b""):
+        self.p.stdin.write((json.dumps(header) + "\n").encode() + blob)
+        self.p.stdin.flush()
+        out = self._read(want)
+        n = out.get(want) if want.endswith("_bytes") else None
+        if n:
+            buf = b""
+            while len(buf) < n:
+                buf += self.p.stdout.read(n - len(buf))
+            out["_payload"] = buf
+        return out
+```
+
+One planning step. `raw_text` is the already-templated prompt with the four `<|latent_qN|>`
+tokens appended — re-templating it server-side would double the control tokens:
+
+```python
+prompt = ("<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n"
+          + instruction + "<|im_end|>\n<|im_start|>assistant\n")
+latent_tokens = "".join(f"<|latent_q{i}|>" for i in range(4))
+
+c = Client(llm_dir, action_dir, plugin_path)
+
+# First plan of an episode: nothing to steer on yet, so wait for it.
+c.call({"request": "replan", "raw_text": prompt + latent_tokens, "wait": True}, "queued")
+
+out = c.call({"request": "trajectory", "images_bytes": len(frames_bytes),
+              "noise_bytes": len(noise_bytes), "num_frames": 2},
+             "trajectory_bytes", blob=frames_bytes + noise_bytes)
+trajectories = np.frombuffer(out["_payload"], dtype=np.float32).reshape(32, 32, 3)
+print("plan is", out["staleness"], "observations old")
+
+# Subsequent replans: fire and forget, System 1 keeps running on the last plan.
+c.call({"request": "replan", "raw_text": prompt + latent_tokens, "wait": False}, "queued")
+```
+
+### Where `frames.bin` / `noise.bin` come from
+
+The `Run` examples above pass raw `numpy.ndarray.tofile()` dumps — `[frames, 3, 224, 224]` and
+`[num_trajs, 32, 3]` float32, nothing else in the file. Nothing in this repo generates them;
+either draw them for a latency check, or build them from real frames for an actual decision.
+
+**Random, latency/plumbing check only** — the trajectories that come out are meaningless, only
+the timing and "did it crash" are real:
+
+```python
+import numpy as np
+np.random.default_rng(0).standard_normal((2, 3, 224, 224)).astype(np.float32).tofile("frames.bin")
+np.random.default_rng(1).standard_normal((32, 32, 3)).astype(np.float32).tofile("noise.bin")
+```
+
+**Real frames, for an actual decision.** Must already be normalized with the ResNet statistics
+— the memory block does not normalize again, and feeding `[0, 255]` pixels gives plausible-looking
+but wrong tokens with no error:
+
+```python
+from PIL import Image
+
+MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+STD  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+
+def frame_to_chw(path):
+    img = np.asarray(Image.open(path).resize((224, 224))).astype(np.float32) / 255.0
+    return ((img - MEAN) / STD).transpose(2, 0, 1)   # HWC -> CHW
+
+frames = np.stack([frame_to_chw("goal.png"), frame_to_chw("current.png")])
+frames.astype(np.float32).tofile("frames.bin")
+```
+
+This is the pattern the InternNav habitat-sim harness used to produce the closed-loop SR numbers
+in this PR: a thin Python client swaps `model.generate` / `generate_latents` / `generate_traj`
+for calls into this server, since habitat-sim has no C++ binding and the evaluator has to stay
+Python.
+
 ## Notes
 
 **NVFP4 needs a build flag on TRT 10.13.** The CASK epilogue fusion miscompiles NVFP4
