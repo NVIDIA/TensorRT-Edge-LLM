@@ -68,10 +68,20 @@ trtexec --onnx="$ONNX_DIR/action/memory.onnx" --saveEngine="$ENGINE_DIR/action/m
     --ticks 40 --cadence 4 --output traj.bin
 ```
 
-`--cadence` is what makes the measurement realistic. Replanning every 4 ticks put the mean
-System-1 tick at 55.5 ms against 50.2 ms with replanning effectively off and 48.1 ms for the
-trajectory head measured on its own -- the gap is System 2 competing for the GPU, which is
-what a deployed agent actually pays.
+`--cadence` is what makes the measurement realistic. Replanning every 4 ticks puts the mean
+System-1 tick at 55.9 ms against 50.2 ms with replanning effectively off -- the gap is System 2
+competing for the GPU, which is what a deployed agent actually pays. Measured on Jetson Thor
+with a 7B planner, System 1 in BF16 and 32 trajectories over 10 denoising steps:
+
+| System 2 | First plan | Control rate | Engine |
+|---|---|---|---|
+| FP16 | 144 ms | 68.7 ms (14.6 Hz) | 13.2 GB |
+| FP8 | 116 ms | 61.3 ms (16.3 Hz) | 7.1 GB |
+| NVFP4 | 106 ms | 55.9 ms (17.9 Hz) | 4.5 GB |
+
+Quantizing System 2 raises the control rate even though System 1 is untouched, because the
+planner stops crowding it: the trajectory head alone runs at 48 ms regardless of which
+planner it shares the GPU with.
 
 Guidance defaults to 1.0 — the value every `generate_traj` call site in InternNav deploys
 with. Frames must already be normalized with the ResNet statistics; the memory block does not
