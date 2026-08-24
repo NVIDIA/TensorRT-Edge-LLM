@@ -78,17 +78,8 @@ guidance: the conditioning is `[null, real]` and the latents are duplicated.
 
 ## Run
 
-```bash
-internvla_n1_system1_inference --engineDir engines/action \
-    --conditioning cond.bin --noise noise.bin --output trajectory.bin \
-    --numTrajs 32 --steps 10 --guidance 1.0
-```
-
-Tensors are read and written as raw float32 so a run can be reproduced and compared exactly.
-The noise is supplied rather than drawn internally for the same reason.
-
-Both systems together, asynchronously, in one process — System 2 planning on a background
-thread while System 1 keeps sampling from the newest plan:
+Both systems asynchronously in one process — System 2 planning on a background thread while
+System 1 keeps sampling from the newest plan:
 
 ```bash
 internvla_n1_dual_system_inference \
