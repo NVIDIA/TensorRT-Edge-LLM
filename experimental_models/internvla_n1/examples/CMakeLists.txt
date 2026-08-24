@@ -13,24 +13,6 @@
 # License for the specific language governing permissions and limitations under
 # the License.
 
-add_executable(internvla_n1_system1_inference
-               internvla_n1_system1_inference.cpp)
-target_include_directories(
-  internvla_n1_system1_inference
-  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../cpp ${CMAKE_SOURCE_DIR}/cpp
-          ${COMMON_INCLUDE_DIRS} ${ONNX_PARSER_INCLUDE_DIR})
-target_link_libraries(
-  internvla_n1_system1_inference PRIVATE internvlaN1Experimental edgellmCore
-                                         commonLibraryExt)
-
-add_executable(internvla_n1_dump_z_latents internvla_n1_dump_z_latents.cpp)
-target_include_directories(
-  internvla_n1_dump_z_latents
-  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../cpp ${CMAKE_SOURCE_DIR}/cpp
-          ${COMMON_INCLUDE_DIRS} ${ONNX_PARSER_INCLUDE_DIR})
-target_link_libraries(internvla_n1_dump_z_latents PRIVATE edgellmCore
-                                                          commonLibraryExt)
-
 add_executable(internvla_n1_dual_system_inference
                internvla_n1_dual_system_inference.cpp)
 target_include_directories(
@@ -41,10 +23,12 @@ target_link_libraries(
   internvla_n1_dual_system_inference PRIVATE internvlaN1Experimental
                                              edgellmCore commonLibraryExt)
 
-add_executable(internvla_n1_s2_server internvla_n1_s2_server.cpp)
+add_executable(internvla_n1_dual_system_server
+               internvla_n1_dual_system_server.cpp)
 target_include_directories(
-  internvla_n1_s2_server
+  internvla_n1_dual_system_server
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../cpp ${CMAKE_SOURCE_DIR}/cpp
           ${COMMON_INCLUDE_DIRS} ${ONNX_PARSER_INCLUDE_DIR})
-target_link_libraries(internvla_n1_s2_server PRIVATE edgellmCore
-                                                     commonLibraryExt)
+target_link_libraries(
+  internvla_n1_dual_system_server PRIVATE internvlaN1Experimental edgellmCore
+                                          commonLibraryExt)
