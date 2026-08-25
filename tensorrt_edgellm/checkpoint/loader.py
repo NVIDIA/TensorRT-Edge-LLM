@@ -281,14 +281,37 @@ def _detect_key_prefix(keys: list) -> Tuple[str, str]:
 def _resolve_shard(model_dir: str, shard: str) -> str:
     """Return the absolute shard path, asserting it stays inside model_dir."""
     base = pathlib.Path(model_dir).resolve()
-    resolved = (base / shard).resolve()
+    shard_path = pathlib.Path(shard)
+    if shard_path.is_absolute():
+        raise ValueError(
+            f"Shard path {shard!r} in checkpoint index escapes model_dir "
+            f"{model_dir!r}. This may indicate a malformed checkpoint.")
+
+    candidate = pathlib.Path(os.path.abspath(base / shard_path))
     try:
-        resolved.relative_to(base)
+        candidate.relative_to(base)
     except ValueError:
         raise ValueError(
             f"Shard path {shard!r} in checkpoint index escapes model_dir "
             f"{model_dir!r}. This may indicate a malformed checkpoint.")
-    return str(resolved)
+
+    resolved = candidate.resolve()
+    allowed_roots = [base]
+    if base.parent.name == "snapshots":
+        allowed_roots.append(base.parent.parent / "blobs")
+
+    for root in allowed_roots:
+        try:
+            resolved.relative_to(root)
+            break
+        except ValueError:
+            continue
+    else:
+        raise ValueError(
+            f"Shard path {shard!r} in checkpoint index escapes model_dir "
+            f"{model_dir!r}. This may indicate a malformed checkpoint.")
+
+    return str(candidate)
 
 
 def _build_shard_map(model_dir: str) -> Dict[str, str]:

@@ -32,13 +32,22 @@ except ImportError as exc:  # pragma: no cover
 
 
 def test_resolve_shard_basename(tmp_path):
-    result = _resolve_shard(str(tmp_path), "model.safetensors")
-    assert result == str(tmp_path / "model.safetensors")
+    shard = tmp_path / "model.safetensors"
+    shard.touch()
+
+    result = _resolve_shard(str(tmp_path), shard.name)
+
+    assert result == str(shard)
 
 
 def test_resolve_shard_subdir_allowed(tmp_path):
+    shard = tmp_path / "subfolder" / "model.safetensors"
+    shard.parent.mkdir()
+    shard.touch()
+
     result = _resolve_shard(str(tmp_path), "subfolder/model.safetensors")
-    assert result == str(tmp_path / "subfolder" / "model.safetensors")
+
+    assert result == str(shard)
 
 
 def test_resolve_shard_traversal_rejected(tmp_path):
@@ -59,3 +68,35 @@ def test_resolve_shard_absolute_path_rejected(tmp_path):
 def test_resolve_shard_returns_str(tmp_path):
     result = _resolve_shard(str(tmp_path), "weights.bin")
     assert isinstance(result, str)
+
+
+@pytest.mark.parametrize(
+    "shard_name",
+    ["model-00001-of-00002.safetensors", "pytorch_model-00001-of-00002.bin"])
+def test_resolve_shard_hugging_face_cache_symlink(tmp_path, shard_name):
+    repository = tmp_path / "models--org--model"
+    snapshot = repository / "snapshots" / "revision"
+    blobs = repository / "blobs"
+    snapshot.mkdir(parents=True)
+    blobs.mkdir()
+
+    blob = blobs / "abcdef123456"
+    blob.touch()
+    shard = snapshot / shard_name
+    shard.symlink_to(os.path.join("..", "..", "blobs", blob.name))
+
+    result = _resolve_shard(str(snapshot), shard_name)
+
+    assert result == str(shard)
+
+
+def test_resolve_shard_external_symlink_rejected(tmp_path):
+    snapshot = tmp_path / "models--org--model" / "snapshots" / "revision"
+    snapshot.mkdir(parents=True)
+    external = tmp_path / "external.safetensors"
+    external.touch()
+    shard = snapshot / "model.safetensors"
+    shard.symlink_to(external)
+
+    with pytest.raises(ValueError, match="escapes model_dir"):
+        _resolve_shard(str(snapshot), shard.name)
