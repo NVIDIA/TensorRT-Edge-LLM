@@ -1,0 +1,13 @@
+Rms Norm Plugin
+===============
+
+.. doxygenclass:: trt_edgellm::plugins::RmsNormPlugin
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::plugins::RmsNormPluginCreator
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

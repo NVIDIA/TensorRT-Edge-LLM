@@ -1,0 +1,6 @@
+Dequant
+=======
+
+.. doxygenfunction:: MARLIN_NAMESPACE_NAME::dequant
+   :project: TensorRT Edge-LLM
+

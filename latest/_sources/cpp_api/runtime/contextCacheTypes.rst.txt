@@ -1,6 +1,11 @@
 Context Cache Types
 ===================
 
+.. doxygenstruct:: trt_edgellm::rt::SpecReuseContract
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
 .. doxygenstruct:: trt_edgellm::rt::ResourceId
    :project: TensorRT Edge-LLM
    :members:

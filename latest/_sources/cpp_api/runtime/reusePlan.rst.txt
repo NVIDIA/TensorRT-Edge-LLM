@@ -22,6 +22,6 @@ Reuse Plan
 .. doxygenfunction:: trt_edgellm::rt::makeHybridReusePlan
    :project: TensorRT Edge-LLM
 
-.. doxygenfunction:: trt_edgellm::rt::makeSpecReusePlan
+.. doxygenfunction:: trt_edgellm::rt::makeHybridMtpReusePlan
    :project: TensorRT Edge-LLM
 

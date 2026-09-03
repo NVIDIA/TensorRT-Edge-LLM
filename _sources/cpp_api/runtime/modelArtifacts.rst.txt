@@ -1,0 +1,8 @@
+Model Artifacts
+===============
+
+.. doxygenstruct:: trt_edgellm::rt::ModelArtifacts
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

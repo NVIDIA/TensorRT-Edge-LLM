@@ -15,12 +15,12 @@ Logit Bias
 .. doxygenfunction:: trt_edgellm::rt::hasLogitBias
    :project: TensorRT Edge-LLM
 
-.. doxygenfunction:: trt_edgellm::rt::shouldRejectLogitBiasWithSpecDecode
-   :project: TensorRT Edge-LLM
-
 .. doxygenfunction:: trt_edgellm::rt::prepareLogitBias
    :project: TensorRT Edge-LLM
 
 .. doxygenfunction:: trt_edgellm::rt::applyLogitBias
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::applyLogitBiasRepeatedRows
    :project: TensorRT Edge-LLM
 

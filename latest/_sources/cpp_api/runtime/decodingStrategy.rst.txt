@@ -6,6 +6,11 @@ Decoding Strategy
    :members:
    :undoc-members:
 
+.. doxygenstruct:: trt_edgellm::rt::DecodingStrategyCapabilities
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
 .. doxygenstruct:: trt_edgellm::rt::SamplingBuffers
    :project: TensorRT Edge-LLM
    :members:

@@ -1,6 +1,11 @@
 Context Cache Deployment
 ========================
 
+.. doxygenstruct:: trt_edgellm::rt::ContextCacheDeploymentProfile
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
 .. doxygenfunction:: trt_edgellm::rt::validateContextCacheDeployment
    :project: TensorRT Edge-LLM
 

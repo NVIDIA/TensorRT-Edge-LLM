@@ -1,0 +1,12 @@
+Gdn Kernel Utils
+================
+
+.. doxygenfunction:: trt_edgellm::launchGdnCalCuSeqLens
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::launchGdnL2NormQK
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::launchGdnStateTranspose
+   :project: TensorRT Edge-LLM
+

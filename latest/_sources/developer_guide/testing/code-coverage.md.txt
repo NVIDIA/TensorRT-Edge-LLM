@@ -80,7 +80,7 @@ The key CMake options for coverage are:
 Build only the unit test target to keep compile times short:
 
 ```bash
-cmake --build build_coverage --target unitTest -j$(nproc)
+cmake --build build_coverage --target unitTests -j$(nproc)
 ```
 
 The build produces `.gcno` files alongside every object file. These contain the
@@ -98,17 +98,20 @@ find build_coverage -name '*.gcda' -delete
 ### 4. Run Tests
 
 ```bash
-./build_coverage/unitTest \
-    --gtest_output="xml:build_coverage/test_results.xml"
+ctest --test-dir build_coverage --output-on-failure --parallel $(nproc) \
+    --output-junit build_coverage/test_results.xml
 ```
 
-Running the instrumented binary produces `.gcda` files that record how many
-times each basic block was executed.
+Running the instrumented binaries produces `.gcda` files that record how many
+times each basic block was executed. Every group writes into the same `.gcda`
+set, so the report is the union of all of them.
 
-You can run a subset of tests with `--gtest_filter`:
+To narrow the run, either invoke one group directly or set `GTEST_FILTER`, which
+ctest passes through to each executable:
 
 ```bash
-./build_coverage/unitTest --gtest_filter="LoggerTest.*"
+./build_coverage/unittests/unitTestCommon --gtest_filter="LoggerTest.*"
+GTEST_FILTER="LoggerTest.*" ctest --test-dir build_coverage
 ```
 
 ### 5. Generate Reports

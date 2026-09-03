@@ -1,9 +1,23 @@
 Dflash Decode Utils
 ===================
 
+.. doxygenstruct:: trt_edgellm::rt::dflash_utils::CachedBlockDraftRuntimeConfig
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::dflash_utils::proposalAttentionPolicyName
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::dflash_utils::blockDraftTreePolicyName
+   :project: TensorRT Edge-LLM
+
 .. doxygenfunction:: trt_edgellm::rt::dflash_utils::runtimeBlockSize
    :project: TensorRT Edge-LLM
 
 .. doxygenfunction:: trt_edgellm::rt::dflash_utils::shouldUseDDTree
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::dflash_utils::makeCachedBlockDraftRuntimeConfig
    :project: TensorRT Edge-LLM
 

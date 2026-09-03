@@ -1,0 +1,12 @@
+Moe Align Sum Kernels
+=====================
+
+.. doxygenfunction:: trt_edgellm::kernel::launchCountSlotsPerExpertKernel
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchComputePaddedOffsetsKernel
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchBuildSlotListsKernel
+   :project: TensorRT Edge-LLM
+

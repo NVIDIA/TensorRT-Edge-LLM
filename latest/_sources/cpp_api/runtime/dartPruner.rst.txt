@@ -1,0 +1,8 @@
+Dart Pruner
+===========
+
+.. doxygenclass:: trt_edgellm::rt::DartPruner
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

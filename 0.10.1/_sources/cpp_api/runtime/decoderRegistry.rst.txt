@@ -1,0 +1,16 @@
+Decoder Registry
+================
+
+.. doxygenclass:: trt_edgellm::rt::DecoderRegistry
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::DecoderRegistryInit
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::shouldSelectDefaultDecoder
+   :project: TensorRT Edge-LLM
+

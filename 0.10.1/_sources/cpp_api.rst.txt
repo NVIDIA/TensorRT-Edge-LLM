@@ -1,0 +1,18 @@
+C++ API Reference
+==================
+
+This section provides documentation for the TensorRT Edge-LLM C++ API.
+
+.. toctree::
+   :maxdepth: 2
+
+   cpp_api/action/index
+   cpp_api/builder/index
+   cpp_api/common/index
+   cpp_api/kernels/index
+   cpp_api/multimodal/index
+   cpp_api/plugins/index
+   cpp_api/profiling/index
+   cpp_api/runtime/index
+   cpp_api/sampler/index
+   cpp_api/tokenizer/index

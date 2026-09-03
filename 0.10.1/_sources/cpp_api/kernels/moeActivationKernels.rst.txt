@@ -1,0 +1,6 @@
+Moe Activation Kernels
+======================
+
+.. doxygenfunction:: trt_edgellm::kernel::moeActivation
+   :project: TensorRT Edge-LLM
+

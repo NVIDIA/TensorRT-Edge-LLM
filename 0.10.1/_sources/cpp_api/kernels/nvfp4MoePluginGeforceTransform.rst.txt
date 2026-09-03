@@ -1,0 +1,6 @@
+Nvfp4 Moe Plugin Geforce Transform
+==================================
+
+.. doxygenfile:: kernels/weightsTransform/nvfp4/moe/sm120/nvfp4MoePluginGeforceTransform.h
+   :project: TensorRT Edge-LLM
+

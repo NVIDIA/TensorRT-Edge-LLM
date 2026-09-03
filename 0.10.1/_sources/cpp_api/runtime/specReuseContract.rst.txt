@@ -1,0 +1,9 @@
+Spec Reuse Contract
+===================
+
+.. doxygenfunction:: trt_edgellm::rt::resolveSpecReuseContract
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::replayPages
+   :project: TensorRT Edge-LLM
+

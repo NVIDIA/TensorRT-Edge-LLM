@@ -4,6 +4,15 @@ Fp16 Layout Convert
 .. doxygenfunction:: trt_edgellm::kernel::launchCopyBytes
    :project: TensorRT Edge-LLM
 
+.. doxygenfunction:: trt_edgellm::kernel::launchCopy2DBytes
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchBf16SliceToFp16
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchFp32SliceToFp16
+   :project: TensorRT Edge-LLM
+
 .. doxygenfunction:: trt_edgellm::kernel::launchBf16ToFp16
    :project: TensorRT Edge-LLM
 

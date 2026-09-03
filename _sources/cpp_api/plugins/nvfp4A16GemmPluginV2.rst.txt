@@ -1,0 +1,13 @@
+Nvfp4 A16 GEMM Plugin V2
+========================
+
+.. doxygenclass:: trt_edgellm::plugins::Nvfp4A16GemmPluginV2
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::plugins::Nvfp4A16GemmPluginV2Creator
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

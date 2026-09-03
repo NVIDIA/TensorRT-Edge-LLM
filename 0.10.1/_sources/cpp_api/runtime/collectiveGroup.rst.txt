@@ -1,0 +1,8 @@
+Collective Group
+================
+
+.. doxygenclass:: trt_edgellm::rt::CollectiveGroup
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

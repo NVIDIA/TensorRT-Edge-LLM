@@ -1,0 +1,6 @@
+Cute Dsl Rms Norm Runner
+========================
+
+.. doxygenfile:: kernels/rmsNorm/cuteDslRmsNormRunner.h
+   :project: TensorRT Edge-LLM
+

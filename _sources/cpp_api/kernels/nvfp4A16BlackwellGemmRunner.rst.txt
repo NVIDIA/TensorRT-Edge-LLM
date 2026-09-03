@@ -1,0 +1,13 @@
+Nvfp4 A16 Blackwell GEMM Runner
+===============================
+
+.. doxygenclass:: trt_edgellm::kernels::Nvfp4A16BlackwellGemmRunner
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::kernels::Nvfp4A16BlackwellGemmParams
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

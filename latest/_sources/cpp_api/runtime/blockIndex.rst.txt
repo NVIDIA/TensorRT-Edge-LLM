@@ -6,7 +6,12 @@ Block Index
    :members:
    :undoc-members:
 
-.. doxygenclass:: trt_edgellm::rt::DraftPathIndex
+.. doxygenclass:: trt_edgellm::rt::SpecPagedStateIndex
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::rt::SpecStateIndex
    :project: TensorRT Edge-LLM
    :members:
    :undoc-members:
@@ -21,7 +26,7 @@ Block Index
    :members:
    :undoc-members:
 
-.. doxygenstruct:: trt_edgellm::rt::DraftPathMatch
+.. doxygenstruct:: trt_edgellm::rt::SpecPagedStateMatch
    :project: TensorRT Edge-LLM
    :members:
    :undoc-members:

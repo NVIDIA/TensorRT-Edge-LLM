@@ -43,6 +43,9 @@ Dspark Kernels
 .. doxygenfunction:: trt_edgellm::kernel::dsparkNormalizeTopKRows
    :project: TensorRT Edge-LLM
 
+.. doxygenfunction:: trt_edgellm::kernel::dsparkStoreDraftStepTop1
+   :project: TensorRT Edge-LLM
+
 .. doxygenfunction:: trt_edgellm::kernel::dsparkSampleTopKRowsAndStore
    :project: TensorRT Edge-LLM
 

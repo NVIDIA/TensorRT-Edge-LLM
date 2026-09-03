@@ -1,0 +1,6 @@
+Nvfp4 Moe Scale Transform
+=========================
+
+.. doxygenfunction:: trt_edgellm::kernel::launchNvfp4MoeScaleNormalizeSourceBatchPadded
+   :project: TensorRT Edge-LLM
+

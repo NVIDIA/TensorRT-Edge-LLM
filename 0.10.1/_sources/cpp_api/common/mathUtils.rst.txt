@@ -1,0 +1,13 @@
+Math Utils
+==========
+
+.. doxygenclass:: trt_edgellm::math::OverflowError
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::math::UnderflowError
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

@@ -22,6 +22,7 @@ API documentation for the runtime module.
    contextCacheMetrics
    contextCacheRequest
    contextCacheTypes
+   dartPruner
    decoderRegistry
    decoderUtils
    decodingInferenceContext
@@ -33,6 +34,7 @@ API documentation for the runtime module.
    dsparkDecoder
    eagleDecoder
    embeddingPreprocessor
+   encoderEmbeddingCache
    engineExecutor
    evictionPlanner
    externalWeightManager
@@ -48,11 +50,13 @@ API documentation for the runtime module.
    layerDebugger
    llmEngineConfig
    llmInferenceRuntime
+   llmRankRuntime
    llmRuntimeUtils
    logitBias
    loraManager
    mambaCacheManager
    melSpectrogram
+   modelArtifacts
    mtpDecoder
    multiDevicePluginCommRegistry
    multiDevicePluginResourceFactory
@@ -65,7 +69,11 @@ API documentation for the runtime module.
    resourcePools
    reusePlan
    ropeCache
+   runtimeCoordinator
    sharedResources
+   specCommonStateTracker
+   specReuseContract
+   specStatePlan
    stepPreparer
    streaming
    systemPromptKVCache
@@ -74,3 +82,4 @@ API documentation for the runtime module.
    tensorParallelPluginResources
    tensorRegistry
    vanillaDecoder
+   visualTokenPruner

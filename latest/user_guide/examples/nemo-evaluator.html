@@ -28,8 +28,8 @@
   </noscript>
   
   <!-- Loaded before other Sphinx assets -->
-  <link href="../../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
-<link href="../../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+  <link href="../../_static/styles/theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
 
     <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=03e43079" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/nvidia-sphinx-theme.css?v=933278ad" />
@@ -39,10 +39,10 @@
     <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=e02be394" />
   
   <!-- So that users can add custom icons -->
-  <script defer src="../../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <script defer src="../../_static/scripts/fontawesome.js?digest=cb8930eaaf36d9849b67"></script>
   <!-- Pre-loaded scripts that we'll load fully later -->
-  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
-<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67" />
 
 
 
@@ -58,9 +58,9 @@
     <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'user_guide/examples/nemo-evaluator';</script>
     <script>
-        DOCUMENTATION_OPTIONS.theme_version = '0.20.0';
+        DOCUMENTATION_OPTIONS.theme_version = '0.21.0';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = './_static/switcher.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.10.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.10.1';
         DOCUMENTATION_OPTIONS.show_version_warning_banner =
             false;
         </script>
@@ -71,12 +71,12 @@
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
     <link rel="next" title="LoRA (Low-Rank Adaptation)" href="../features/lora.html" />
-    <link rel="prev" title="Experimental High-Level Python API and Server" href="experimental-server.html" />
+    <link rel="prev" title="Experimental Python API and Server" href="experimental-server.html" />
 
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.10.0" />
+  <meta name="docsearch:version" content="0.10.1" />
   
     
     <script src="../../_static/searchtools.js"></script>
@@ -367,17 +367,19 @@
 </ul>
 </details></li>
 <li class="toctree-l1"><a class="reference internal" href="omni.html">Omni (Audio + Vision + Speech I/O)</a></li>
-<li class="toctree-l1"><a class="reference internal" href="experimental-server.html">Experimental High-Level Python API and Server</a></li>
+<li class="toctree-l1"><a class="reference internal" href="experimental-server.html">Experimental Python API and Server</a></li>
 <li class="toctree-l1 current active"><a class="current reference internal" href="#">Evaluate with NeMo Evaluator</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Features</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../features/lora.html">LoRA (Low-Rank Adaptation)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../features/quantization.html">Quantization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../features/multi-device.html">Multi-Device Inference</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../features/reduce-vocab.html">Vocabulary Reduction</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../features/FP8KV.html">FP8 KV Cache</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../features/fp8-embedding.html">FP8 Embedding</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../features/streaming.html">Streaming Output</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../features/visual-token-pruning.html">Visual-Token Pruning (DART)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../features/kv-cache-reuse.html">KV Cache Reuse</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Input &amp; Chat Format</span></p>
@@ -398,6 +400,8 @@
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/cpp-runtime-overview.html">C++ Runtime Overview</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/llm-inference-runtime.html">LLM Inference Runtime</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/llm-streaming.html">LLM Streaming — Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/memory-monitoring.html">Memory monitoring</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/openai-server.html">HTTP Inference Server Architecture</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Models</span></p>
 <ul class="nav bd-sidenav">
@@ -412,6 +416,7 @@
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Testing</span></p>
 <ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/runtime-unit-tests.html">Unit-Testing the Runtime with a Substitute Engine</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/code-coverage.html">Code Coverage with SonarQube</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/few-layer-validation.html">Few-Layer Numeric Validation</a></li>
 </ul>
@@ -420,6 +425,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../../python_api.html">Python API Reference</a></li>
 <li class="toctree-l1 has-children"><a class="reference internal" href="../../cpp_api.html">C++ API Reference</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/action/index.html">Action Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/action/actionKvBatch.html">Action KV Batch</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/action/actionModelTypes.html">Action Model Types</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/action/actionUtils.html">Action Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/action/alpamayo1ActionRunner.html">Alpamayo1 Action Runner</a></li>
@@ -447,6 +453,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/mathUtils.html">Math Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/mmapReader.html">MMAP Reader</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/pagedKvTypes.html">Paged KV Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/parallelArtifactNames.html">Parallel Artifact Names</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/ropeUtils.html">Rope Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/safetensorsUtils.html">Safetensors Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/stringUtils.html">String Utils</a></li>
@@ -478,9 +485,13 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslModuleLoader.html">Cute Dsl Module Loader</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslNvfp4MoeRunner.html">Cute Dsl Nvfp4 Moe Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslNvfp4MoeSm110Runner.html">Cute Dsl Nvfp4 Moe Sm110 Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslRmsNormRunner.html">Cute Dsl Rms Norm Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslSSDRunner.html">Cute Dsl Ssd Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslTensorDescriptors.html">Cute Dsl Tensor Descriptors</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dartGatherKernels.html">Dart Gather Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dartSelectorKernels.html">Dart Selector Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/ddtreeKernels.html">Ddtree Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/decoderXQAJitCompiler.html">Decoder XQA Jit Compiler</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/decoderXQARunner.html">Decoder XQA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dequant.html">Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dequantize.html">Dequantize</a></li>
@@ -523,6 +534,10 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeSigmoidGroupTopkKernels.html">Moe Sigmoid Group Topk Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeTopkSoftmaxKernels.html">Moe Topk Softmax Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/mtpStateScatterKernels.html">Mtp State Scatter Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4A16BlackwellGemmRunner.html">Nvfp4 A16 Blackwell GEMM Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4A16BlackwellGemvJitCompiler.html">Nvfp4 A16 Blackwell Gemv Jit Compiler</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4A16BlackwellGemvJitRunner.html">Nvfp4 A16 Blackwell Gemv Jit Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4A16BlackwellSupport.html">Nvfp4 A16 Blackwell Support</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4MoeLayout.html">Nvfp4 Moe Layout</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4MoeNormalize.html">Nvfp4 Moe Normalize</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4MoePluginGeforceTransform.html">Nvfp4 Moe Plugin Geforce Transform</a></li>
@@ -533,6 +548,9 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4_dequant.html">Nvfp4 Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4_scale.html">Nvfp4 Scale</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4_tensor.html">Nvfp4 Tensor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/pluginJitCompileCache.html">Plugin Jit Compile Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/pluginJitCompiler.html">Plugin Jit Compiler</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/pluginJitEmbeddedSources.html">Plugin Jit Embedded Sources</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/scaleConvert.html">Scale Convert</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/selectiveStateUpdate.html">Selective State Update</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/speculativeKernelsUtils.html">Speculative Kernels Utils</a></li>
@@ -540,6 +558,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/talkerMLPKernels.html">Talker Mlp Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/utilKernels.html">Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/vectorizedTypes.html">Vectorized Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/xqaKernelTypes.html">XQA Kernel Types</a></li>
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/multimodal/index.html">Multimodal Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
@@ -580,11 +599,15 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/int4GroupwiseGemmPluginV2.html">Int4 Groupwise GEMM Plugin V2</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/int4MoePlugin.html">Int4 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/mambaPlugin.html">Mamba Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/nvfp4A16BlackwellDispatchPolicy.html">Nvfp4 A16 Blackwell Dispatch Policy</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/nvfp4A16GemmPlugin.html">Nvfp4 A16 GEMM Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/nvfp4A16GemmPluginV2.html">Nvfp4 A16 GEMM Plugin V2</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/nvfp4A16MoePlugin.html">Nvfp4 A16 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/nvfp4MoePlugin.html">Nvfp4 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/nvfp4MoePluginGeforce.html">Nvfp4 Moe Plugin Geforce</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/pluginUtils.html">Plugin Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/qkvConcatPlugin.html">Qkv Concat Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/rmsNormPlugin.html">Rms Norm Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/vitAttentionPlugin.html">VIT Attention Plugin</a></li>
 </ul>
 </details></li>
@@ -612,6 +635,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/contextCacheMetrics.html">Context Cache Metrics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/contextCacheRequest.html">Context Cache Request</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/contextCacheTypes.html">Context Cache Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/dartPruner.html">Dart Pruner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/decoderRegistry.html">Decoder Registry</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/decoderUtils.html">Decoder Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/decodingInferenceContext.html">Decoding Inference Context</a></li>
@@ -623,6 +647,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/dsparkDecoder.html">Dspark Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/eagleDecoder.html">EAGLE Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/embeddingPreprocessor.html">Embedding Preprocessor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/encoderEmbeddingCache.html">Encoder Embedding Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/engineExecutor.html">Engine Executor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/evictionPlanner.html">Eviction Planner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/externalWeightManager.html">External Weight Manager</a></li>
@@ -638,11 +663,13 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/layerDebugger.html">Layer Debugger</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmEngineConfig.html">LLM Engine Config</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmInferenceRuntime.html">LLM Inference Runtime</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmRankRuntime.html">LLM Rank Runtime</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmRuntimeUtils.html">LLM Runtime Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/logitBias.html">Logit Bias</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/loraManager.html">Lora Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/mambaCacheManager.html">Mamba Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/melSpectrogram.html">Mel Spectrogram</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/modelArtifacts.html">Model Artifacts</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/mtpDecoder.html">Mtp Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/multiDevicePluginCommRegistry.html">Multi Device Plugin Comm Registry</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/multiDevicePluginResourceFactory.html">Multi Device Plugin Resource Factory</a></li>
@@ -655,7 +682,11 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/resourcePools.html">Resource Pools</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/reusePlan.html">Reuse Plan</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/ropeCache.html">Rope Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/runtimeCoordinator.html">Runtime Coordinator</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/sharedResources.html">Shared Resources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/specCommonStateTracker.html">Spec Common State Tracker</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/specReuseContract.html">Spec Reuse Contract</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/specStatePlan.html">Spec State Plan</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/stepPreparer.html">Step Preparer</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/streaming.html">Streaming</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/systemPromptKVCache.html">System Prompt KV Cache</a></li>
@@ -664,6 +695,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/tensorParallelPluginResources.html">Tensor Parallel Plugin Resources</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/tensorRegistry.html">Tensor Registry</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/vanillaDecoder.html">Vanilla Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/visualTokenPruner.html">Visual Token Pruner</a></li>
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/sampler/index.html">Sampler Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
@@ -740,12 +772,12 @@
                   
   <section class="tex2jax_ignore mathjax_ignore" id="evaluate-with-nemo-evaluator">
 <h1>Evaluate with NeMo Evaluator<a class="headerlink" href="#evaluate-with-nemo-evaluator" title="Link to this heading">#</a></h1>
-<p>NeMo Evaluator can measure the accuracy of a TensorRT Edge-LLM engine through the experimental OpenAI-compatible
-server. Export and build the engine before starting this workflow.</p>
+<p>NeMo Evaluator can measure a supported checkpoint through the experimental OpenAI-compatible server. The server
+builds or reuses its complete runtime bundle before evaluation.</p>
 <section id="install-dependencies">
 <h2>Install Dependencies<a class="headerlink" href="#install-dependencies" title="Link to this heading">#</a></h2>
 <p>From the TensorRT Edge-LLM repository:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span><span class="s2">&quot;.[server]&quot;</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span><span class="s2">".[server]"</span>
 pip<span class="w"> </span>install<span class="w"> </span>-r<span class="w"> </span>requirements-nemo-evaluator.txt
 </pre></div>
 </div>
@@ -755,8 +787,8 @@ See the <a class="reference internal" href="experimental-server.html"><span clas
 <section id="evaluate-a-running-server">
 <h2>Evaluate a Running Server<a class="headerlink" href="#evaluate-a-running-server" title="Link to this heading">#</a></h2>
 <p>Start the server in one terminal:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>experimental.server<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--model<span class="w"> </span>/path/to/llm_engine<span class="w"> </span><span class="se">\</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>tensorrt-edgellm-serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>Qwen/Qwen2.5-0.5B-Instruct<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
 </pre></div>
 </div>
@@ -767,7 +799,7 @@ See the <a class="reference internal" href="experimental-server.html"><span clas
 <span class="w">  </span>--model_url<span class="w"> </span>http://127.0.0.1:8000/v1/chat/completions<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model_type<span class="w"> </span>chat<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--output_dir<span class="w"> </span>nemo-results<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--overrides<span class="w"> </span><span class="s2">&quot;config.params.limit_samples=250,config.params.parallelism=1,config.params.max_new_tokens=6144&quot;</span>
+<span class="w">  </span>--overrides<span class="w"> </span><span class="s2">"config.params.limit_samples=250,config.params.parallelism=1,config.params.max_new_tokens=6144"</span>
 </pre></div>
 </div>
 <p>The helper script provides the same workflow with shorter options and prints a concise metric summary. Its default
@@ -784,9 +816,10 @@ URL is <code class="docutils literal notranslate"><span class="pre">http://127.0
 </section>
 <section id="start-the-server-automatically">
 <h2>Start the Server Automatically<a class="headerlink" href="#start-the-server-automatically" title="Link to this heading">#</a></h2>
-<p>For a one-command local run, pass a pre-built engine instead of a URL:</p>
+<p>For a one-command local run, pass a Hugging Face model ID or local checkpoint instead of a URL:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>scripts/run_nemo_eval.py<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--engine-dir<span class="w"> </span>/path/to/llm_engine<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model<span class="w"> </span>Qwen/Qwen2.5-0.5B-Instruct<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--cache-dir<span class="w"> </span>/data/edgellm-cache<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--eval-type<span class="w"> </span>mmlu<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--limit-samples<span class="w"> </span><span class="m">250</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--output-dir<span class="w"> </span>nemo-results
@@ -794,17 +827,16 @@ URL is <code class="docutils literal notranslate"><span class="pre">http://127.0
 </div>
 <p>The helper starts the server with the current Python environment, waits for <code class="docutils literal notranslate"><span class="pre">/health</span></code>, runs the evaluation, and stops
 the server. Server output is written to <code class="docutils literal notranslate"><span class="pre">nemo-results/edgellm_server.log</span></code>.</p>
-<p>Use the server options only with <code class="docutils literal notranslate"><span class="pre">--engine-dir</span></code>. For example, concurrent evaluator requests can be micro-batched:</p>
+<p>Use the server build-profile options only with <code class="docutils literal notranslate"><span class="pre">--model</span></code>:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>scripts/run_nemo_eval.py<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--engine-dir<span class="w"> </span>/path/to/llm_engine<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model<span class="w"> </span>/path/to/checkpoint<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--max-batch-size<span class="w"> </span><span class="m">2</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--enable-batching<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--max-queue-batch-size<span class="w"> </span><span class="m">2</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--parallelism<span class="w"> </span><span class="m">2</span>
+<span class="w">  </span>--max-input-len<span class="w"> </span><span class="m">2048</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--max-kv-cache-capacity<span class="w"> </span><span class="m">8192</span>
 </pre></div>
 </div>
-<p>Visual and speculative-decoding engines can be supplied with <code class="docutils literal notranslate"><span class="pre">--visual-engine-dir</span></code> and
-<code class="docutils literal notranslate"><span class="pre">--spec-decode-engine-dir</span></code>, respectively.</p>
+<p>Multimodal components are built from the checkpoint as part of the same bundle. Pass the same JSON accepted by the
+server’s <code class="docutils literal notranslate"><span class="pre">--speculative-config</span></code> option to evaluate a speculative-decoding configuration.</p>
 </section>
 <section id="optional-named-cases">
 <h2>Optional Named Cases<a class="headerlink" href="#optional-named-cases" title="Link to this heading">#</a></h2>
@@ -812,7 +844,7 @@ the server. Server output is written to <code class="docutils literal notranslat
 CI or repeated runs. The repository cases are in <code class="docutils literal notranslate"><span class="pre">tests/nemo_eval/cases.yml</span></code> and use model-based names:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>scripts/run_nemo_eval.py<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--case<span class="w"> </span>Qwen2.5-0.5B-Instruct<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--engine-dir<span class="w"> </span>/path/to/llm_engine
+<span class="w">  </span>--model<span class="w"> </span>Qwen/Qwen2.5-0.5B-Instruct
 </pre></div>
 </div>
 <p>Pass <code class="docutils literal notranslate"><span class="pre">--config</span> <span class="pre">/path/to/cases.yml</span></code> with <code class="docutils literal notranslate"><span class="pre">--case</span></code> to use a different case file. Values from the selected case override
@@ -828,7 +860,7 @@ the command-line defaults.</p>
 </div>
 <p>Additional NeMo Evaluator settings can be supplied as comma-separated overrides:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>scripts/run_nemo_eval.py<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--extra-overrides<span class="w"> </span><span class="s2">&quot;config.params.limit_samples=100,config.params.temperature=0.0&quot;</span>
+<span class="w">  </span>--extra-overrides<span class="w"> </span><span class="s2">"config.params.limit_samples=100,config.params.temperature=0.0"</span>
 </pre></div>
 </div>
 <p>The helper currently supports NeMo Evaluator’s <code class="docutils literal notranslate"><span class="pre">chat</span></code> model type because the experimental server exposes
@@ -852,7 +884,7 @@ the command-line defaults.</p>
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Experimental High-Level Python API and Server</p>
+        <p class="prev-next-title">Experimental Python API and Server</p>
       </div>
     </a>
     <a class="right-next"
@@ -908,8 +940,8 @@ the command-line defaults.</p>
   
 
   <!-- Scripts loaded after <body> so the DOM is not blocked -->
-  <script defer src="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
-<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+  <script defer src="../../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67"></script>
 
 
   <footer class="bd-footer">
@@ -981,9 +1013,9 @@ the command-line defaults.</p>
         <div class="footer-item">
 <div class="extra_footer">
   
-  <p>Last updated on August 18, 2026.</p>
+  <p>Last updated on September 03, 2026.</p>
   
-  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/bb29145">bb29145</a>.</p>
+  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/e8b29522938901f6df19ebeedd4b69bc8edbcd97">e8b2952</a>.</p>
   
 </div></div>
       

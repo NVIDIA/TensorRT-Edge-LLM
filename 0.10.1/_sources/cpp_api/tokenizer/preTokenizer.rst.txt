@@ -1,0 +1,18 @@
+Pre Tokenizer
+=============
+
+.. doxygenclass:: trt_edgellm::tokenizer::PreTokenizer
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::tokenizer::RegexSplit
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::tokenizer::Sequence
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

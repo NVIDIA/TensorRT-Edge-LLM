@@ -28,8 +28,8 @@
   </noscript>
   
   <!-- Loaded before other Sphinx assets -->
-  <link href="../../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
-<link href="../../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+  <link href="../../_static/styles/theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
 
     <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=03e43079" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/nvidia-sphinx-theme.css?v=933278ad" />
@@ -39,10 +39,10 @@
     <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=e02be394" />
   
   <!-- So that users can add custom icons -->
-  <script defer src="../../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <script defer src="../../_static/scripts/fontawesome.js?digest=cb8930eaaf36d9849b67"></script>
   <!-- Pre-loaded scripts that we'll load fully later -->
-  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
-<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67" />
 
 
 
@@ -58,9 +58,9 @@
     <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'user_guide/format/input-format';</script>
     <script>
-        DOCUMENTATION_OPTIONS.theme_version = '0.20.0';
+        DOCUMENTATION_OPTIONS.theme_version = '0.21.0';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = './_static/switcher.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.10.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.10.1';
         DOCUMENTATION_OPTIONS.show_version_warning_banner =
             false;
         </script>
@@ -76,7 +76,7 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.10.0" />
+  <meta name="docsearch:version" content="0.10.1" />
   
     
     <script src="../../_static/searchtools.js"></script>
@@ -367,17 +367,19 @@
 </ul>
 </details></li>
 <li class="toctree-l1"><a class="reference internal" href="../examples/omni.html">Omni (Audio + Vision + Speech I/O)</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../examples/experimental-server.html">Experimental High-Level Python API and Server</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../examples/experimental-server.html">Experimental Python API and Server</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../examples/nemo-evaluator.html">Evaluate with NeMo Evaluator</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Features</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../features/lora.html">LoRA (Low-Rank Adaptation)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../features/quantization.html">Quantization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../features/multi-device.html">Multi-Device Inference</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../features/reduce-vocab.html">Vocabulary Reduction</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../features/FP8KV.html">FP8 KV Cache</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../features/fp8-embedding.html">FP8 Embedding</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../features/streaming.html">Streaming Output</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../features/visual-token-pruning.html">Visual-Token Pruning (DART)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../features/kv-cache-reuse.html">KV Cache Reuse</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Input &amp; Chat Format</span></p>
@@ -398,6 +400,8 @@
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/cpp-runtime-overview.html">C++ Runtime Overview</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/llm-inference-runtime.html">LLM Inference Runtime</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/llm-streaming.html">LLM Streaming — Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/memory-monitoring.html">Memory monitoring</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/openai-server.html">HTTP Inference Server Architecture</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Models</span></p>
 <ul class="nav bd-sidenav">
@@ -412,6 +416,7 @@
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Testing</span></p>
 <ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/runtime-unit-tests.html">Unit-Testing the Runtime with a Substitute Engine</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/code-coverage.html">Code Coverage with SonarQube</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/few-layer-validation.html">Few-Layer Numeric Validation</a></li>
 </ul>
@@ -420,6 +425,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../../python_api.html">Python API Reference</a></li>
 <li class="toctree-l1 has-children"><a class="reference internal" href="../../cpp_api.html">C++ API Reference</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/action/index.html">Action Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/action/actionKvBatch.html">Action KV Batch</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/action/actionModelTypes.html">Action Model Types</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/action/actionUtils.html">Action Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/action/alpamayo1ActionRunner.html">Alpamayo1 Action Runner</a></li>
@@ -447,6 +453,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/mathUtils.html">Math Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/mmapReader.html">MMAP Reader</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/pagedKvTypes.html">Paged KV Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/parallelArtifactNames.html">Parallel Artifact Names</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/ropeUtils.html">Rope Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/safetensorsUtils.html">Safetensors Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/stringUtils.html">String Utils</a></li>
@@ -478,9 +485,13 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslModuleLoader.html">Cute Dsl Module Loader</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslNvfp4MoeRunner.html">Cute Dsl Nvfp4 Moe Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslNvfp4MoeSm110Runner.html">Cute Dsl Nvfp4 Moe Sm110 Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslRmsNormRunner.html">Cute Dsl Rms Norm Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslSSDRunner.html">Cute Dsl Ssd Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslTensorDescriptors.html">Cute Dsl Tensor Descriptors</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dartGatherKernels.html">Dart Gather Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dartSelectorKernels.html">Dart Selector Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/ddtreeKernels.html">Ddtree Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/decoderXQAJitCompiler.html">Decoder XQA Jit Compiler</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/decoderXQARunner.html">Decoder XQA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dequant.html">Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dequantize.html">Dequantize</a></li>
@@ -523,6 +534,10 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeSigmoidGroupTopkKernels.html">Moe Sigmoid Group Topk Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeTopkSoftmaxKernels.html">Moe Topk Softmax Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/mtpStateScatterKernels.html">Mtp State Scatter Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4A16BlackwellGemmRunner.html">Nvfp4 A16 Blackwell GEMM Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4A16BlackwellGemvJitCompiler.html">Nvfp4 A16 Blackwell Gemv Jit Compiler</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4A16BlackwellGemvJitRunner.html">Nvfp4 A16 Blackwell Gemv Jit Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4A16BlackwellSupport.html">Nvfp4 A16 Blackwell Support</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4MoeLayout.html">Nvfp4 Moe Layout</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4MoeNormalize.html">Nvfp4 Moe Normalize</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4MoePluginGeforceTransform.html">Nvfp4 Moe Plugin Geforce Transform</a></li>
@@ -533,6 +548,9 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4_dequant.html">Nvfp4 Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4_scale.html">Nvfp4 Scale</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4_tensor.html">Nvfp4 Tensor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/pluginJitCompileCache.html">Plugin Jit Compile Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/pluginJitCompiler.html">Plugin Jit Compiler</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/pluginJitEmbeddedSources.html">Plugin Jit Embedded Sources</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/scaleConvert.html">Scale Convert</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/selectiveStateUpdate.html">Selective State Update</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/speculativeKernelsUtils.html">Speculative Kernels Utils</a></li>
@@ -540,6 +558,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/talkerMLPKernels.html">Talker Mlp Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/utilKernels.html">Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/vectorizedTypes.html">Vectorized Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/xqaKernelTypes.html">XQA Kernel Types</a></li>
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/multimodal/index.html">Multimodal Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
@@ -580,11 +599,15 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/int4GroupwiseGemmPluginV2.html">Int4 Groupwise GEMM Plugin V2</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/int4MoePlugin.html">Int4 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/mambaPlugin.html">Mamba Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/nvfp4A16BlackwellDispatchPolicy.html">Nvfp4 A16 Blackwell Dispatch Policy</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/nvfp4A16GemmPlugin.html">Nvfp4 A16 GEMM Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/nvfp4A16GemmPluginV2.html">Nvfp4 A16 GEMM Plugin V2</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/nvfp4A16MoePlugin.html">Nvfp4 A16 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/nvfp4MoePlugin.html">Nvfp4 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/nvfp4MoePluginGeforce.html">Nvfp4 Moe Plugin Geforce</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/pluginUtils.html">Plugin Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/qkvConcatPlugin.html">Qkv Concat Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/rmsNormPlugin.html">Rms Norm Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/vitAttentionPlugin.html">VIT Attention Plugin</a></li>
 </ul>
 </details></li>
@@ -612,6 +635,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/contextCacheMetrics.html">Context Cache Metrics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/contextCacheRequest.html">Context Cache Request</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/contextCacheTypes.html">Context Cache Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/dartPruner.html">Dart Pruner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/decoderRegistry.html">Decoder Registry</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/decoderUtils.html">Decoder Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/decodingInferenceContext.html">Decoding Inference Context</a></li>
@@ -623,6 +647,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/dsparkDecoder.html">Dspark Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/eagleDecoder.html">EAGLE Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/embeddingPreprocessor.html">Embedding Preprocessor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/encoderEmbeddingCache.html">Encoder Embedding Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/engineExecutor.html">Engine Executor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/evictionPlanner.html">Eviction Planner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/externalWeightManager.html">External Weight Manager</a></li>
@@ -638,11 +663,13 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/layerDebugger.html">Layer Debugger</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmEngineConfig.html">LLM Engine Config</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmInferenceRuntime.html">LLM Inference Runtime</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmRankRuntime.html">LLM Rank Runtime</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmRuntimeUtils.html">LLM Runtime Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/logitBias.html">Logit Bias</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/loraManager.html">Lora Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/mambaCacheManager.html">Mamba Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/melSpectrogram.html">Mel Spectrogram</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/modelArtifacts.html">Model Artifacts</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/mtpDecoder.html">Mtp Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/multiDevicePluginCommRegistry.html">Multi Device Plugin Comm Registry</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/multiDevicePluginResourceFactory.html">Multi Device Plugin Resource Factory</a></li>
@@ -655,7 +682,11 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/resourcePools.html">Resource Pools</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/reusePlan.html">Reuse Plan</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/ropeCache.html">Rope Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/runtimeCoordinator.html">Runtime Coordinator</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/sharedResources.html">Shared Resources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/specCommonStateTracker.html">Spec Common State Tracker</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/specReuseContract.html">Spec Reuse Contract</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/specStatePlan.html">Spec State Plan</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/stepPreparer.html">Step Preparer</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/streaming.html">Streaming</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/systemPromptKVCache.html">System Prompt KV Cache</a></li>
@@ -664,6 +695,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/tensorParallelPluginResources.html">Tensor Parallel Plugin Resources</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/tensorRegistry.html">Tensor Registry</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/vanillaDecoder.html">Vanilla Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/visualTokenPruner.html">Visual Token Pruner</a></li>
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/sampler/index.html">Sampler Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
@@ -744,31 +776,31 @@
 <section id="basic-structure">
 <h2>Basic Structure<a class="headerlink" href="#basic-structure" title="Link to this heading">#</a></h2>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">    </span><span class="nt">&quot;batch_size&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;temperature&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">1.0</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;top_p&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.8</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;top_k&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">50</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;logit_bias&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;123&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">-100.0</span><span class="p">},</span>
-<span class="w">    </span><span class="nt">&quot;max_generate_length&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">256</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;num_logprobs&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;apply_chat_template&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;enable_thinking&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;context_cache_lookup_policy&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;use_cache&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;context_cache_commit_policy&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;including_generated_tokens&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;available_lora_weights&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{},</span>
-<span class="w">    </span><span class="nt">&quot;requests&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="nt">"batch_size"</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"temperature"</span><span class="p">:</span><span class="w"> </span><span class="mf">1.0</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"top_p"</span><span class="p">:</span><span class="w"> </span><span class="mf">0.8</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"top_k"</span><span class="p">:</span><span class="w"> </span><span class="mi">50</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"logit_bias"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"123"</span><span class="p">:</span><span class="w"> </span><span class="mf">-100.0</span><span class="p">},</span>
+<span class="w">    </span><span class="nt">"max_generate_length"</span><span class="p">:</span><span class="w"> </span><span class="mi">256</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"num_logprobs"</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"apply_chat_template"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"enable_thinking"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"context_cache_lookup_policy"</span><span class="p">:</span><span class="w"> </span><span class="s2">"use_cache"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"context_cache_commit_policy"</span><span class="p">:</span><span class="w"> </span><span class="s2">"including_generated_tokens"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"available_lora_weights"</span><span class="p">:</span><span class="w"> </span><span class="p">{},</span>
+<span class="w">    </span><span class="nt">"requests"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
 <span class="w">        </span><span class="p">{</span>
-<span class="w">            </span><span class="nt">&quot;messages&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">            </span><span class="nt">"messages"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
 <span class="w">                </span><span class="p">{</span>
-<span class="w">                    </span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;user&quot;</span><span class="p">,</span>
-<span class="w">                    </span><span class="nt">&quot;content&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Your message here&quot;</span>
+<span class="w">                    </span><span class="nt">"role"</span><span class="p">:</span><span class="w"> </span><span class="s2">"user"</span><span class="p">,</span>
+<span class="w">                    </span><span class="nt">"content"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Your message here"</span>
 <span class="w">                </span><span class="p">}</span>
 <span class="w">            </span><span class="p">],</span>
-<span class="w">            </span><span class="nt">&quot;lora_name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;optional_lora_name&quot;</span><span class="p">,</span>
-<span class="w">            </span><span class="nt">&quot;disable_spec_decode&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
-<span class="w">            </span><span class="nt">&quot;logit_bias&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;456&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">5.0</span><span class="p">},</span>
-<span class="w">            </span><span class="nt">&quot;num_logprobs&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
-<span class="w">            </span><span class="nt">&quot;stop&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;optional_stop_string&quot;</span><span class="p">]</span>
+<span class="w">            </span><span class="nt">"lora_name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"optional_lora_name"</span><span class="p">,</span>
+<span class="w">            </span><span class="nt">"disable_spec_decode"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
+<span class="w">            </span><span class="nt">"logit_bias"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"456"</span><span class="p">:</span><span class="w"> </span><span class="mf">5.0</span><span class="p">},</span>
+<span class="w">            </span><span class="nt">"num_logprobs"</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<span class="w">            </span><span class="nt">"stop"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"optional_stop_string"</span><span class="p">]</span>
 <span class="w">        </span><span class="p">}</span>
 <span class="w">    </span><span class="p">]</span>
 <span class="p">}</span>
@@ -830,10 +862,12 @@ exact system-prompt caching. New deployments should use KV cache reuse.</p></li>
 <li><p>Image: <code class="docutils literal notranslate"><span class="pre">{&quot;type&quot;:</span> <span class="pre">&quot;image&quot;,</span> <span class="pre">&quot;image&quot;:</span> <span class="pre">&quot;/path/to/image.jpg&quot;}</span></code>. Optional <code class="docutils literal notranslate"><span class="pre">&quot;do_resize&quot;</span></code> (default <code class="docutils literal notranslate"><span class="pre">true</span></code>): set to <code class="docutils literal notranslate"><span class="pre">false</span></code> when the image is already resized to the model’s target size — the vision runner then consumes it as-is instead of resizing internally (see <a class="reference internal" href="#pre-resized-image-input-do-resize-false">Pre-resized image input</a>).</p></li>
 <li><p>Audio: <code class="docutils literal notranslate"><span class="pre">{&quot;type&quot;:</span> <span class="pre">&quot;audio&quot;,</span> <span class="pre">&quot;audio&quot;:</span> <span class="pre">&quot;/path/to/clip.wav&quot;}</span></code> (raw <code class="docutils literal notranslate"><span class="pre">.wav</span></code> / <code class="docutils literal notranslate"><span class="pre">.mp3</span></code> / <code class="docutils literal notranslate"><span class="pre">.flac</span></code> decoded in C++ via vendored miniaudio + in-tree mel extractor. Feature-extractor family — <code class="docutils literal notranslate"><span class="pre">whisper</span></code> / <code class="docutils literal notranslate"><span class="pre">parakeet</span></code> — is auto-derived from the engine’s <code class="docutils literal notranslate"><span class="pre">audio/config.json</span></code>, mirroring HF / vLLM where FE is pinned by the model. The HTTP server in <code class="docutils literal notranslate"><span class="pre">experimental.server</span></code> accepts the same audio formats via <code class="docutils literal notranslate"><span class="pre">input_audio</span></code> / <code class="docutils literal notranslate"><span class="pre">audio_url</span></code> and routes through the same C++ mel path.)</p></li>
 <li><p>The C++ <code class="docutils literal notranslate"><span class="pre">llm_inference</span></code> CLI does not accept video content. The
-<a class="reference internal" href="../examples/experimental-server.html#video-input"><span class="std std-ref">OpenAI-compatible server</span></a>
+<a class="reference internal" href="../examples/experimental-server.html#image-video-and-audio-input"><span class="std std-ref">OpenAI-compatible server</span></a>
 accepts <code class="docutils literal notranslate"><span class="pre">video</span></code>, <code class="docutils literal notranslate"><span class="pre">video_url</span></code>, or an explicit frame list for supported Qwen
-and InternVL model families. The Cosmos3 policy runtime has a separate
-observation/action contract; see the <a class="reference internal" href="../examples/vla/cosmos3.html"><span class="std std-doc">Cosmos3 VLA guide</span></a>.</p></li>
+and InternVL model families and Nemotron Omni. Nemotron Omni accepts exactly
+one video and no images per request. The Cosmos3 policy runtime has a
+separate observation/action contract; see the
+<a class="reference internal" href="../examples/vla/cosmos3.html"><span class="std std-doc">Cosmos3 VLA guide</span></a>.</p></li>
 </ul>
 </section>
 </section>
@@ -842,12 +876,12 @@ observation/action contract; see the <a class="reference internal" href="../exam
 <section id="basic-text-input">
 <h3>Basic Text Input<a class="headerlink" href="#basic-text-input" title="Link to this heading">#</a></h3>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">    </span><span class="nt">&quot;batch_size&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;max_generate_length&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">256</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;requests&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="nt">"batch_size"</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"max_generate_length"</span><span class="p">:</span><span class="w"> </span><span class="mi">256</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"requests"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
 <span class="w">        </span><span class="p">{</span>
-<span class="w">            </span><span class="nt">&quot;messages&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
-<span class="w">                </span><span class="p">{</span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;user&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;content&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;What is machine learning?&quot;</span><span class="p">}</span>
+<span class="w">            </span><span class="nt">"messages"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">                </span><span class="p">{</span><span class="nt">"role"</span><span class="p">:</span><span class="w"> </span><span class="s2">"user"</span><span class="p">,</span><span class="w"> </span><span class="nt">"content"</span><span class="p">:</span><span class="w"> </span><span class="s2">"What is machine learning?"</span><span class="p">}</span>
 <span class="w">            </span><span class="p">]</span>
 <span class="w">        </span><span class="p">}</span>
 <span class="w">    </span><span class="p">]</span>
@@ -858,12 +892,12 @@ observation/action contract; see the <a class="reference internal" href="../exam
 <section id="multi-turn-conversation">
 <h3>Multi-Turn Conversation<a class="headerlink" href="#multi-turn-conversation" title="Link to this heading">#</a></h3>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">    </span><span class="nt">&quot;requests&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="nt">"requests"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
 <span class="w">        </span><span class="p">{</span>
-<span class="w">            </span><span class="nt">&quot;messages&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
-<span class="w">                </span><span class="p">{</span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;user&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;content&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;What is the capital of France?&quot;</span><span class="p">},</span>
-<span class="w">                </span><span class="p">{</span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;assistant&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;content&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;The capital of France is Paris.&quot;</span><span class="p">},</span>
-<span class="w">                </span><span class="p">{</span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;user&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;content&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;What is the population?&quot;</span><span class="p">}</span>
+<span class="w">            </span><span class="nt">"messages"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">                </span><span class="p">{</span><span class="nt">"role"</span><span class="p">:</span><span class="w"> </span><span class="s2">"user"</span><span class="p">,</span><span class="w"> </span><span class="nt">"content"</span><span class="p">:</span><span class="w"> </span><span class="s2">"What is the capital of France?"</span><span class="p">},</span>
+<span class="w">                </span><span class="p">{</span><span class="nt">"role"</span><span class="p">:</span><span class="w"> </span><span class="s2">"assistant"</span><span class="p">,</span><span class="w"> </span><span class="nt">"content"</span><span class="p">:</span><span class="w"> </span><span class="s2">"The capital of France is Paris."</span><span class="p">},</span>
+<span class="w">                </span><span class="p">{</span><span class="nt">"role"</span><span class="p">:</span><span class="w"> </span><span class="s2">"user"</span><span class="p">,</span><span class="w"> </span><span class="nt">"content"</span><span class="p">:</span><span class="w"> </span><span class="s2">"What is the population?"</span><span class="p">}</span>
 <span class="w">            </span><span class="p">]</span>
 <span class="w">        </span><span class="p">}</span>
 <span class="w">    </span><span class="p">]</span>
@@ -874,14 +908,14 @@ observation/action contract; see the <a class="reference internal" href="../exam
 <section id="multimodal-input-vision-language-models">
 <h3>Multimodal Input (Vision-Language Models)<a class="headerlink" href="#multimodal-input-vision-language-models" title="Link to this heading">#</a></h3>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">    </span><span class="nt">&quot;requests&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="nt">"requests"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
 <span class="w">        </span><span class="p">{</span>
-<span class="w">            </span><span class="nt">&quot;messages&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">            </span><span class="nt">"messages"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
 <span class="w">                </span><span class="p">{</span>
-<span class="w">                    </span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;user&quot;</span><span class="p">,</span>
-<span class="w">                    </span><span class="nt">&quot;content&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
-<span class="w">                        </span><span class="p">{</span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;image&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;image&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/path/to/image.jpg&quot;</span><span class="p">},</span>
-<span class="w">                        </span><span class="p">{</span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;text&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;text&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Describe this image.&quot;</span><span class="p">}</span>
+<span class="w">                    </span><span class="nt">"role"</span><span class="p">:</span><span class="w"> </span><span class="s2">"user"</span><span class="p">,</span>
+<span class="w">                    </span><span class="nt">"content"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">                        </span><span class="p">{</span><span class="nt">"type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"image"</span><span class="p">,</span><span class="w"> </span><span class="nt">"image"</span><span class="p">:</span><span class="w"> </span><span class="s2">"/path/to/image.jpg"</span><span class="p">},</span>
+<span class="w">                        </span><span class="p">{</span><span class="nt">"type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"text"</span><span class="p">,</span><span class="w"> </span><span class="nt">"text"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Describe this image."</span><span class="p">}</span>
 <span class="w">                    </span><span class="p">]</span>
 <span class="w">                </span><span class="p">}</span>
 <span class="w">            </span><span class="p">]</span>
@@ -894,14 +928,14 @@ observation/action contract; see the <a class="reference internal" href="../exam
 <section id="pre-resized-image-input-do-resize-false">
 <h3>Pre-resized Image Input (<code class="docutils literal notranslate"><span class="pre">do_resize:</span> <span class="pre">false</span></code>)<a class="headerlink" href="#pre-resized-image-input-do-resize-false" title="Link to this heading">#</a></h3>
 <p>By default the vision runner resizes every input image to the model’s target size. If your pipeline already produces frames at the target size (e.g. a camera/robotics pipeline that resizes once upstream), set <code class="docutils literal notranslate"><span class="pre">&quot;do_resize&quot;:</span> <span class="pre">false</span></code> on the content item to skip the runtime’s internal resize:</p>
-<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;image&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;image&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/path/to/pre_resized.png&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;do_resize&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">}</span>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span><span class="nt">"type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"image"</span><span class="p">,</span><span class="w"> </span><span class="nt">"image"</span><span class="p">:</span><span class="w"> </span><span class="s2">"/path/to/pre_resized.png"</span><span class="p">,</span><span class="w"> </span><span class="nt">"do_resize"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">}</span>
 </pre></div>
 </div>
 <p>The same field is available on the video content item, on the Python <code class="docutils literal notranslate"><span class="pre">ImageData</span></code> binding (<code class="docutils literal notranslate"><span class="pre">image.do_resize</span> <span class="pre">=</span> <span class="pre">False</span></code>), and on the C++ struct (<code class="docutils literal notranslate"><span class="pre">rt::imageUtils::ImageData::doResize</span></code>).</p>
 <p><strong>Contract for pre-resized inputs:</strong></p>
 <ul>
 <li><p>Supply raw <strong>uint8 RGB</strong> pixels. Do <strong>not</strong> rescale or normalize the pixel values yourself — mean/std normalization always runs inside the runtime.</p></li>
-<li><p>Dimensions must exactly match the model’s resize target. The per-model target formulas are exposed as stateless C++ functions in <code class="docutils literal notranslate"><span class="pre">cpp/multimodal/imageUtils.h</span></code>. For example, for the Qwen family:</p>
+<li><p>Dimensions must exactly match the model’s resize target. The per-model target formulas are exposed as stateless C++ functions in <code class="docutils literal notranslate"><span class="pre">cpp/multimodal/common/imageUtils.h</span></code>. For example, for the Qwen family:</p>
 <div class="highlight-cpp notranslate"><div class="highlight"><pre><span></span><span class="k">auto</span><span class="w"> </span><span class="p">[</span><span class="n">targetHeight</span><span class="p">,</span><span class="w"> </span><span class="n">targetWidth</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">rt</span><span class="o">::</span><span class="n">imageUtils</span><span class="o">::</span><span class="n">qwenSmartResize</span><span class="p">(</span>
 <span class="w">    </span><span class="n">origHeight</span><span class="p">,</span><span class="w"> </span><span class="n">origWidth</span><span class="p">,</span><span class="w"> </span><span class="n">patchSize</span><span class="p">,</span><span class="w"> </span><span class="n">mergeSize</span><span class="p">,</span><span class="w"> </span><span class="n">minImageTokensPerImage</span><span class="p">,</span><span class="w"> </span><span class="n">maxImageTokensPerImage</span><span class="p">);</span>
 </pre></div>
@@ -912,15 +946,15 @@ observation/action contract; see the <a class="reference internal" href="../exam
 <section id="lora-adapters">
 <h3>LoRA Adapters<a class="headerlink" href="#lora-adapters" title="Link to this heading">#</a></h3>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">    </span><span class="nt">&quot;available_lora_weights&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nt">&quot;french&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/path/to/french_adapter.safetensors&quot;</span>
+<span class="w">    </span><span class="nt">"available_lora_weights"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nt">"french"</span><span class="p">:</span><span class="w"> </span><span class="s2">"/path/to/french_adapter.safetensors"</span>
 <span class="w">    </span><span class="p">},</span>
-<span class="w">    </span><span class="nt">&quot;requests&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="nt">"requests"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
 <span class="w">        </span><span class="p">{</span>
-<span class="w">            </span><span class="nt">&quot;messages&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
-<span class="w">                </span><span class="p">{</span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;user&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;content&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Translate to French.&quot;</span><span class="p">}</span>
+<span class="w">            </span><span class="nt">"messages"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">                </span><span class="p">{</span><span class="nt">"role"</span><span class="p">:</span><span class="w"> </span><span class="s2">"user"</span><span class="p">,</span><span class="w"> </span><span class="nt">"content"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Translate to French."</span><span class="p">}</span>
 <span class="w">            </span><span class="p">],</span>
-<span class="w">            </span><span class="nt">&quot;lora_name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;french&quot;</span>
+<span class="w">            </span><span class="nt">"lora_name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"french"</span>
 <span class="w">        </span><span class="p">}</span>
 <span class="w">    </span><span class="p">]</span>
 <span class="p">}</span>
@@ -931,11 +965,11 @@ observation/action contract; see the <a class="reference internal" href="../exam
 <section id="raw-format-no-chat-template">
 <h3>Raw Format (No Chat Template)<a class="headerlink" href="#raw-format-no-chat-template" title="Link to this heading">#</a></h3>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">    </span><span class="nt">&quot;apply_chat_template&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;requests&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="nt">"apply_chat_template"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"requests"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
 <span class="w">        </span><span class="p">{</span>
-<span class="w">            </span><span class="nt">&quot;messages&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
-<span class="w">                </span><span class="p">{</span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;user&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;content&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Raw text without special tokens&quot;</span><span class="p">}</span>
+<span class="w">            </span><span class="nt">"messages"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">                </span><span class="p">{</span><span class="nt">"role"</span><span class="p">:</span><span class="w"> </span><span class="s2">"user"</span><span class="p">,</span><span class="w"> </span><span class="nt">"content"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Raw text without special tokens"</span><span class="p">}</span>
 <span class="w">            </span><span class="p">]</span>
 <span class="w">        </span><span class="p">}</span>
 <span class="w">    </span><span class="p">]</span>
@@ -947,12 +981,12 @@ observation/action contract; see the <a class="reference internal" href="../exam
 <h3>Disable Speculative Decoding<a class="headerlink" href="#disable-speculative-decoding" title="Link to this heading">#</a></h3>
 <p>When using EAGLE speculative decoding, you can disable it for specific requests:</p>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">    </span><span class="nt">&quot;requests&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="nt">"requests"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
 <span class="w">        </span><span class="p">{</span>
-<span class="w">            </span><span class="nt">&quot;messages&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
-<span class="w">                </span><span class="p">{</span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;user&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;content&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Your question here&quot;</span><span class="p">}</span>
+<span class="w">            </span><span class="nt">"messages"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">                </span><span class="p">{</span><span class="nt">"role"</span><span class="p">:</span><span class="w"> </span><span class="s2">"user"</span><span class="p">,</span><span class="w"> </span><span class="nt">"content"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Your question here"</span><span class="p">}</span>
 <span class="w">            </span><span class="p">],</span>
-<span class="w">            </span><span class="nt">&quot;disable_spec_decode&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span>
+<span class="w">            </span><span class="nt">"disable_spec_decode"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span>
 <span class="w">        </span><span class="p">}</span>
 <span class="w">    </span><span class="p">]</span>
 <span class="p">}</span>
@@ -971,35 +1005,42 @@ observation/action contract; see the <a class="reference internal" href="../exam
 <p><code class="docutils literal notranslate"><span class="pre">logit_bias</span></code> accepts a sparse map of tokenizer token IDs to additive logit bias values. Positive values make a token more likely, and negative values make it less likely. Bias values must be finite and in <code class="docutils literal notranslate"><span class="pre">[-100.0,</span> <span class="pre">100.0]</span></code>; each map may contain up to 1024 token IDs.</p>
 <p>Top-level <code class="docutils literal notranslate"><span class="pre">logit_bias</span></code> applies to every request by default. A request-level <code class="docutils literal notranslate"><span class="pre">logit_bias</span></code> overrides the top-level default for that request.</p>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">    </span><span class="nt">&quot;logit_bias&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;123&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">-100.0</span><span class="p">},</span>
-<span class="w">    </span><span class="nt">&quot;requests&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="nt">"logit_bias"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"123"</span><span class="p">:</span><span class="w"> </span><span class="mf">-100.0</span><span class="p">},</span>
+<span class="w">    </span><span class="nt">"requests"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
 <span class="w">        </span><span class="p">{</span>
-<span class="w">            </span><span class="nt">&quot;messages&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
-<span class="w">                </span><span class="p">{</span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;user&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;content&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Avoid token 123 by default.&quot;</span><span class="p">}</span>
+<span class="w">            </span><span class="nt">"messages"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">                </span><span class="p">{</span><span class="nt">"role"</span><span class="p">:</span><span class="w"> </span><span class="s2">"user"</span><span class="p">,</span><span class="w"> </span><span class="nt">"content"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Avoid token 123 by default."</span><span class="p">}</span>
 <span class="w">            </span><span class="p">]</span>
 <span class="w">        </span><span class="p">},</span>
 <span class="w">        </span><span class="p">{</span>
-<span class="w">            </span><span class="nt">&quot;messages&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
-<span class="w">                </span><span class="p">{</span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;user&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;content&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Prefer token 456 for this request.&quot;</span><span class="p">}</span>
+<span class="w">            </span><span class="nt">"messages"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">                </span><span class="p">{</span><span class="nt">"role"</span><span class="p">:</span><span class="w"> </span><span class="s2">"user"</span><span class="p">,</span><span class="w"> </span><span class="nt">"content"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Prefer token 456 for this request."</span><span class="p">}</span>
 <span class="w">            </span><span class="p">],</span>
-<span class="w">            </span><span class="nt">&quot;logit_bias&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;456&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">5.0</span><span class="p">}</span>
+<span class="w">            </span><span class="nt">"logit_bias"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"456"</span><span class="p">:</span><span class="w"> </span><span class="mf">5.0</span><span class="p">}</span>
 <span class="w">        </span><span class="p">}</span>
 <span class="w">    </span><span class="p">]</span>
 <span class="p">}</span>
 </pre></div>
 </div>
-<p><strong>Speculative decoding limitation:</strong> Requests with a non-empty <code class="docutils literal notranslate"><span class="pre">logit_bias</span></code> map are rejected while speculative decoding is active. Set <code class="docutils literal notranslate"><span class="pre">disable_spec_decode:</span> <span class="pre">true</span></code> to explicitly use vanilla decoding for that batch before sending logit bias.</p>
+<p><code class="docutils literal notranslate"><span class="pre">logit_bias</span></code> remains active during speculative decoding. The runtime applies
+the request’s map to every verification row and to fallback sampling for EAGLE,
+MTP, DFlash, JetSpec, and DSpark. <code class="docutils literal notranslate"><span class="pre">disable_spec_decode:</span> <span class="pre">true</span></code> may still be used
+to force vanilla decoding for comparison, but it is not required for logit
+bias.</p>
+<p>Token IDs use the full tokenizer vocabulary. With a reduced-vocabulary engine,
+a token omitted from the engine vocabulary cannot be restored by positive
+bias; the runtime ignores that entry and logs a warning.</p>
 </section>
 <section id="top-n-log-probabilities">
 <h3>Top-N Log-Probabilities<a class="headerlink" href="#top-n-log-probabilities" title="Link to this heading">#</a></h3>
 <p>Return the top-5 most likely tokens (with log-probabilities) at each generation step:</p>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">    </span><span class="nt">&quot;num_logprobs&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;max_generate_length&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">64</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;requests&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="nt">"num_logprobs"</span><span class="p">:</span><span class="w"> </span><span class="mi">5</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"max_generate_length"</span><span class="p">:</span><span class="w"> </span><span class="mi">64</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"requests"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
 <span class="w">        </span><span class="p">{</span>
-<span class="w">            </span><span class="nt">&quot;messages&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
-<span class="w">                </span><span class="p">{</span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;user&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;content&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;The capital of France is&quot;</span><span class="p">}</span>
+<span class="w">            </span><span class="nt">"messages"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">                </span><span class="p">{</span><span class="nt">"role"</span><span class="p">:</span><span class="w"> </span><span class="s2">"user"</span><span class="p">,</span><span class="w"> </span><span class="nt">"content"</span><span class="p">:</span><span class="w"> </span><span class="s2">"The capital of France is"</span><span class="p">}</span>
 <span class="w">            </span><span class="p">]</span>
 <span class="w">        </span><span class="p">}</span>
 <span class="w">    </span><span class="p">]</span>
@@ -1008,13 +1049,13 @@ observation/action contract; see the <a class="reference internal" href="../exam
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">num_logprobs</span></code> may also be set per request to override the top-level default (see Request Fields).</p>
 <p>The output JSON will contain a <code class="docutils literal notranslate"><span class="pre">logprobs</span></code> field alongside <code class="docutils literal notranslate"><span class="pre">output_text</span></code>:</p>
-<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>&quot;logprobs&quot;: [
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>"logprobs": [
     [
-        {&quot;token_id&quot;: 3681, &quot;token&quot;: &quot; Paris&quot;, &quot;bytes&quot;: [32, 80, 97, 114, 105, 115], &quot;logprob&quot;: -0.041},
-        {&quot;token_id&quot;: 8098, &quot;token&quot;: &quot; paris&quot;, &quot;bytes&quot;: [32, 112, 97, 114, 105, 115], &quot;logprob&quot;: -3.812},
-        {&quot;token_id&quot;:  627, &quot;token&quot;: &quot;.&quot;,       &quot;bytes&quot;: [46],                        &quot;logprob&quot;: -4.201},
-        {&quot;token_id&quot;: 4892, &quot;token&quot;: &quot; PARIS&quot;, &quot;bytes&quot;: [32, 80, 65, 82, 73, 83],     &quot;logprob&quot;: -5.103},
-        {&quot;token_id&quot;: 3085, &quot;token&quot;: &quot; France&quot;,&quot;bytes&quot;: [32, 70, 114, 97, 110, 99, 101], &quot;logprob&quot;: -5.447}
+        {"token_id": 3681, "token": " Paris", "bytes": [32, 80, 97, 114, 105, 115], "logprob": -0.041},
+        {"token_id": 8098, "token": " paris", "bytes": [32, 112, 97, 114, 105, 115], "logprob": -3.812},
+        {"token_id":  627, "token": ".",       "bytes": [46],                        "logprob": -4.201},
+        {"token_id": 4892, "token": " PARIS", "bytes": [32, 80, 65, 82, 73, 83],     "logprob": -5.103},
+        {"token_id": 3085, "token": " France","bytes": [32, 70, 114, 97, 110, 99, 101], "logprob": -5.447}
     ],
     ...
 ]
@@ -1032,12 +1073,12 @@ observation/action contract; see the <a class="reference internal" href="../exam
 <h3>Stop Strings<a class="headerlink" href="#stop-strings" title="Link to this heading">#</a></h3>
 <p>Generation halts as soon as any of the specified substrings appears in the decoded output; the stop string itself is excluded from the returned text. Accepts a single string or an array. Each request carries its own independent list — requests in the same batch may stop on different strings or none at all.</p>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">    </span><span class="nt">&quot;requests&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="nt">"requests"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
 <span class="w">        </span><span class="p">{</span>
-<span class="w">            </span><span class="nt">&quot;messages&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
-<span class="w">                </span><span class="p">{</span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;user&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;content&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Write a short answer ending before &#39;###&#39;.&quot;</span><span class="p">}</span>
+<span class="w">            </span><span class="nt">"messages"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">                </span><span class="p">{</span><span class="nt">"role"</span><span class="p">:</span><span class="w"> </span><span class="s2">"user"</span><span class="p">,</span><span class="w"> </span><span class="nt">"content"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Write a short answer ending before '###'."</span><span class="p">}</span>
 <span class="w">            </span><span class="p">],</span>
-<span class="w">            </span><span class="nt">&quot;stop&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;###&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;\n\nUser:&quot;</span><span class="p">]</span>
+<span class="w">            </span><span class="nt">"stop"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"###"</span><span class="p">,</span><span class="w"> </span><span class="s2">"\n\nUser:"</span><span class="p">]</span>
 <span class="w">        </span><span class="p">}</span>
 <span class="w">    </span><span class="p">]</span>
 <span class="p">}</span>
@@ -1051,7 +1092,6 @@ observation/action contract; see the <a class="reference internal" href="../exam
 <ul class="simple">
 <li><p>System prompt: Uses provided system message, or model default from chat template</p></li>
 <li><p>LoRA: All requests in same batch must use same adapter</p></li>
-<li><p>Logit bias: Supported through vanilla decoding; active speculative decoding must be explicitly disabled first.</p></li>
 <li><p>Paths: Use absolute or relative paths for images/videos</p></li>
 <li><p>Format: Follows OpenAI chat completion API structure</p></li>
 </ul>
@@ -1147,8 +1187,8 @@ observation/action contract; see the <a class="reference internal" href="../exam
   
 
   <!-- Scripts loaded after <body> so the DOM is not blocked -->
-  <script defer src="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
-<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+  <script defer src="../../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67"></script>
 
 
   <footer class="bd-footer">
@@ -1220,9 +1260,9 @@ observation/action contract; see the <a class="reference internal" href="../exam
         <div class="footer-item">
 <div class="extra_footer">
   
-  <p>Last updated on August 18, 2026.</p>
+  <p>Last updated on September 03, 2026.</p>
   
-  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/bb29145">bb29145</a>.</p>
+  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/e8b29522938901f6df19ebeedd4b69bc8edbcd97">e8b2952</a>.</p>
   
 </div></div>
       

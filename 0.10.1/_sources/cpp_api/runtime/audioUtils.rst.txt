@@ -1,0 +1,6 @@
+Audio Utils
+===========
+
+.. doxygenfile:: runtime/audioUtils.h
+   :project: TensorRT Edge-LLM
+

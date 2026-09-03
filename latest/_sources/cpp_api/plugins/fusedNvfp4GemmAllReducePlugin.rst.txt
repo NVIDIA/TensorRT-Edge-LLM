@@ -11,3 +11,9 @@ Fused Nvfp4 GEMM All Reduce Plugin
    :members:
    :undoc-members:
 
+.. doxygenfunction:: trt_edgellm::plugins::edgellmRegisterFusedNvfp4WeightResource
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::plugins::edgellmUnregisterFusedNvfp4WeightResource
+   :project: TensorRT Edge-LLM
+

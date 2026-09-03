@@ -1,0 +1,8 @@
+LLM Rank Runtime
+================
+
+.. doxygenclass:: trt_edgellm::rt::LLMRankRuntime
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

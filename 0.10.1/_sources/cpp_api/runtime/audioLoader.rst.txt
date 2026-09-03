@@ -1,0 +1,11 @@
+Audio Loader
+============
+
+.. doxygenstruct:: trt_edgellm::rt::audio::AudioPCM
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::audio::loadAudioFile
+   :project: TensorRT Edge-LLM
+

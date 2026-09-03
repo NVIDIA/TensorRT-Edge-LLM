@@ -28,8 +28,8 @@
   </noscript>
   
   <!-- Loaded before other Sphinx assets -->
-  <link href="../../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
-<link href="../../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+  <link href="../../_static/styles/theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
 
     <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=03e43079" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/nvidia-sphinx-theme.css?v=933278ad" />
@@ -39,10 +39,10 @@
     <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=e02be394" />
   
   <!-- So that users can add custom icons -->
-  <script defer src="../../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <script defer src="../../_static/scripts/fontawesome.js?digest=cb8930eaaf36d9849b67"></script>
   <!-- Pre-loaded scripts that we'll load fully later -->
-  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
-<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67" />
 
 
 
@@ -57,6 +57,8 @@
     <script src="../../_static/togglebutton.js?v=b8b12719"></script>
     <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
     <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.12.1/dist/mermaid.esm.min.mjs";
+
+
 
 
 
@@ -414,9 +416,9 @@ window.addEventListener("load", load);
 window.runMermaid = runMermaid;</script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'developer_guide/software-design/llm-inference-runtime';</script>
     <script>
-        DOCUMENTATION_OPTIONS.theme_version = '0.20.0';
+        DOCUMENTATION_OPTIONS.theme_version = '0.21.0';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = './_static/switcher.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.10.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.10.1';
         DOCUMENTATION_OPTIONS.show_version_warning_banner =
             false;
         </script>
@@ -432,7 +434,7 @@ window.runMermaid = runMermaid;</script>
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.10.0" />
+  <meta name="docsearch:version" content="0.10.1" />
   
     
     <script src="../../_static/searchtools.js"></script>
@@ -723,17 +725,19 @@ window.runMermaid = runMermaid;</script>
 </ul>
 </details></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/omni.html">Omni (Audio + Vision + Speech I/O)</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/experimental-server.html">Experimental High-Level Python API and Server</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/experimental-server.html">Experimental Python API and Server</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/nemo-evaluator.html">Evaluate with NeMo Evaluator</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Features</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/lora.html">LoRA (Low-Rank Adaptation)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/quantization.html">Quantization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/multi-device.html">Multi-Device Inference</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/reduce-vocab.html">Vocabulary Reduction</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/FP8KV.html">FP8 KV Cache</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/fp8-embedding.html">FP8 Embedding</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/streaming.html">Streaming Output</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/visual-token-pruning.html">Visual-Token Pruning (DART)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/kv-cache-reuse.html">KV Cache Reuse</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Input &amp; Chat Format</span></p>
@@ -754,6 +758,8 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l1"><a class="reference internal" href="cpp-runtime-overview.html">C++ Runtime Overview</a></li>
 <li class="toctree-l1 current active"><a class="current reference internal" href="#">LLM Inference Runtime</a></li>
 <li class="toctree-l1"><a class="reference internal" href="llm-streaming.html">LLM Streaming — Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="memory-monitoring.html">Memory monitoring</a></li>
+<li class="toctree-l1"><a class="reference internal" href="openai-server.html">HTTP Inference Server Architecture</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Models</span></p>
 <ul class="nav bd-sidenav">
@@ -768,6 +774,7 @@ window.runMermaid = runMermaid;</script>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Testing</span></p>
 <ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../testing/runtime-unit-tests.html">Unit-Testing the Runtime with a Substitute Engine</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../testing/code-coverage.html">Code Coverage with SonarQube</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../testing/few-layer-validation.html">Few-Layer Numeric Validation</a></li>
 </ul>
@@ -776,6 +783,7 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l1"><a class="reference internal" href="../../python_api.html">Python API Reference</a></li>
 <li class="toctree-l1 has-children"><a class="reference internal" href="../../cpp_api.html">C++ API Reference</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/action/index.html">Action Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/action/actionKvBatch.html">Action KV Batch</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/action/actionModelTypes.html">Action Model Types</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/action/actionUtils.html">Action Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/action/alpamayo1ActionRunner.html">Alpamayo1 Action Runner</a></li>
@@ -803,6 +811,7 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/mathUtils.html">Math Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/mmapReader.html">MMAP Reader</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/pagedKvTypes.html">Paged KV Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/parallelArtifactNames.html">Parallel Artifact Names</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/ropeUtils.html">Rope Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/safetensorsUtils.html">Safetensors Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/stringUtils.html">String Utils</a></li>
@@ -834,9 +843,13 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslModuleLoader.html">Cute Dsl Module Loader</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslNvfp4MoeRunner.html">Cute Dsl Nvfp4 Moe Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslNvfp4MoeSm110Runner.html">Cute Dsl Nvfp4 Moe Sm110 Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslRmsNormRunner.html">Cute Dsl Rms Norm Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslSSDRunner.html">Cute Dsl Ssd Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslTensorDescriptors.html">Cute Dsl Tensor Descriptors</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dartGatherKernels.html">Dart Gather Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dartSelectorKernels.html">Dart Selector Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/ddtreeKernels.html">Ddtree Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/decoderXQAJitCompiler.html">Decoder XQA Jit Compiler</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/decoderXQARunner.html">Decoder XQA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dequant.html">Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dequantize.html">Dequantize</a></li>
@@ -879,6 +892,10 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeSigmoidGroupTopkKernels.html">Moe Sigmoid Group Topk Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeTopkSoftmaxKernels.html">Moe Topk Softmax Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/mtpStateScatterKernels.html">Mtp State Scatter Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4A16BlackwellGemmRunner.html">Nvfp4 A16 Blackwell GEMM Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4A16BlackwellGemvJitCompiler.html">Nvfp4 A16 Blackwell Gemv Jit Compiler</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4A16BlackwellGemvJitRunner.html">Nvfp4 A16 Blackwell Gemv Jit Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4A16BlackwellSupport.html">Nvfp4 A16 Blackwell Support</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4MoeLayout.html">Nvfp4 Moe Layout</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4MoeNormalize.html">Nvfp4 Moe Normalize</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4MoePluginGeforceTransform.html">Nvfp4 Moe Plugin Geforce Transform</a></li>
@@ -889,6 +906,9 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4_dequant.html">Nvfp4 Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4_scale.html">Nvfp4 Scale</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4_tensor.html">Nvfp4 Tensor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/pluginJitCompileCache.html">Plugin Jit Compile Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/pluginJitCompiler.html">Plugin Jit Compiler</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/pluginJitEmbeddedSources.html">Plugin Jit Embedded Sources</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/scaleConvert.html">Scale Convert</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/selectiveStateUpdate.html">Selective State Update</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/speculativeKernelsUtils.html">Speculative Kernels Utils</a></li>
@@ -896,6 +916,7 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/talkerMLPKernels.html">Talker Mlp Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/utilKernels.html">Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/vectorizedTypes.html">Vectorized Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/xqaKernelTypes.html">XQA Kernel Types</a></li>
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/multimodal/index.html">Multimodal Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
@@ -936,11 +957,15 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/int4GroupwiseGemmPluginV2.html">Int4 Groupwise GEMM Plugin V2</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/int4MoePlugin.html">Int4 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/mambaPlugin.html">Mamba Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/nvfp4A16BlackwellDispatchPolicy.html">Nvfp4 A16 Blackwell Dispatch Policy</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/nvfp4A16GemmPlugin.html">Nvfp4 A16 GEMM Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/nvfp4A16GemmPluginV2.html">Nvfp4 A16 GEMM Plugin V2</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/nvfp4A16MoePlugin.html">Nvfp4 A16 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/nvfp4MoePlugin.html">Nvfp4 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/nvfp4MoePluginGeforce.html">Nvfp4 Moe Plugin Geforce</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/pluginUtils.html">Plugin Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/qkvConcatPlugin.html">Qkv Concat Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/rmsNormPlugin.html">Rms Norm Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/vitAttentionPlugin.html">VIT Attention Plugin</a></li>
 </ul>
 </details></li>
@@ -968,6 +993,7 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/contextCacheMetrics.html">Context Cache Metrics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/contextCacheRequest.html">Context Cache Request</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/contextCacheTypes.html">Context Cache Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/dartPruner.html">Dart Pruner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/decoderRegistry.html">Decoder Registry</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/decoderUtils.html">Decoder Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/decodingInferenceContext.html">Decoding Inference Context</a></li>
@@ -979,6 +1005,7 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/dsparkDecoder.html">Dspark Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/eagleDecoder.html">EAGLE Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/embeddingPreprocessor.html">Embedding Preprocessor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/encoderEmbeddingCache.html">Encoder Embedding Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/engineExecutor.html">Engine Executor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/evictionPlanner.html">Eviction Planner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/externalWeightManager.html">External Weight Manager</a></li>
@@ -994,11 +1021,13 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/layerDebugger.html">Layer Debugger</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmEngineConfig.html">LLM Engine Config</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmInferenceRuntime.html">LLM Inference Runtime</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmRankRuntime.html">LLM Rank Runtime</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmRuntimeUtils.html">LLM Runtime Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/logitBias.html">Logit Bias</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/loraManager.html">Lora Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/mambaCacheManager.html">Mamba Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/melSpectrogram.html">Mel Spectrogram</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/modelArtifacts.html">Model Artifacts</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/mtpDecoder.html">Mtp Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/multiDevicePluginCommRegistry.html">Multi Device Plugin Comm Registry</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/multiDevicePluginResourceFactory.html">Multi Device Plugin Resource Factory</a></li>
@@ -1011,7 +1040,11 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/resourcePools.html">Resource Pools</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/reusePlan.html">Reuse Plan</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/ropeCache.html">Rope Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/runtimeCoordinator.html">Runtime Coordinator</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/sharedResources.html">Shared Resources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/specCommonStateTracker.html">Spec Common State Tracker</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/specReuseContract.html">Spec Reuse Contract</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/specStatePlan.html">Spec State Plan</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/stepPreparer.html">Step Preparer</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/streaming.html">Streaming</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/systemPromptKVCache.html">System Prompt KV Cache</a></li>
@@ -1020,6 +1053,7 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/tensorParallelPluginResources.html">Tensor Parallel Plugin Resources</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/tensorRegistry.html">Tensor Registry</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/vanillaDecoder.html">Vanilla Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/visualTokenPruner.html">Visual Token Pruner</a></li>
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/sampler/index.html">Sampler Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
@@ -1189,7 +1223,7 @@ class END_NODES invisibleSubGraph
 <td><p>HuggingFace-compatible text tokenization system. Converts between text and token IDs using Byte-Pair Encoding (BPE). Supports various model vocabularies (GPT, Llama, Qwen) with configurable special tokens and preprocessing steps. <em>Files:</em> <code class="docutils literal notranslate"><span class="pre">cpp/tokenizer/tokenizer.{h,cpp}</span></code>, <code class="docutils literal notranslate"><span class="pre">preTokenizer.{h,cpp}</span></code>, <code class="docutils literal notranslate"><span class="pre">tokenEncoder.{h,cpp}</span></code></p></td>
 </tr>
 <tr class="row-even"><td><p><strong>Multimodal Runner</strong></p></td>
-<td><p>Vision and audio processing for multimodal models (VLMs). Processes image/audio inputs through Vision/Audio Transformer models and generates embeddings. Supports Qwen-VL, InternVL, and Qwen-Audio architectures. Integrates multimodal embeddings with text tokens for multimodal inference. <em>Files:</em> <code class="docutils literal notranslate"><span class="pre">cpp/multimodal/multimodalRunner.{h,cpp}</span></code>, <code class="docutils literal notranslate"><span class="pre">qwenViTRunner.{h,cpp}</span></code>, <code class="docutils literal notranslate"><span class="pre">internViTRunner.{h,cpp}</span></code></p></td>
+<td><p>Vision and audio processing for multimodal models (VLMs). Processes image/audio inputs through Vision/Audio Transformer models and generates embeddings. Supports Qwen-VL, InternVL, and Qwen-Audio architectures. Integrates multimodal embeddings with text tokens for multimodal inference. <em>Files:</em> <code class="docutils literal notranslate"><span class="pre">cpp/multimodal/common/multimodalRunner.{h,cpp}</span></code>, <code class="docutils literal notranslate"><span class="pre">cpp/multimodal/qwen2/qwenViTRunner.{h,cpp}</span></code>, <code class="docutils literal notranslate"><span class="pre">cpp/multimodal/internvl/internViTRunner.{h,cpp}</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p><strong>Linear KV Cache</strong></p></td>
 <td><p>Attention key-value cache management. Each engine executor maintains its own Linear KV Cache instance. Stores attention key-value pairs across inference steps for efficient autoregressive generation. Uses linear memory layout optimized for GPU access with support for batched processing and variable sequence lengths. <em>Files:</em> <code class="docutils literal notranslate"><span class="pre">cpp/runtime/linearKVCache.{h,cpp}</span></code></p></td>
@@ -1477,23 +1511,23 @@ graph LR
 <h2>Usage Examples<a class="headerlink" href="#usage-examples" title="Link to this heading">#</a></h2>
 <section id="standard-llm-inference-vanilla">
 <h3>Standard LLM Inference (Vanilla)<a class="headerlink" href="#standard-llm-inference-vanilla" title="Link to this heading">#</a></h3>
-<div class="highlight-cpp notranslate"><div class="highlight"><pre><span></span><span class="cp">#include</span><span class="w"> </span><span class="cpf">&quot;runtime/llmInferenceRuntime.h&quot;</span>
+<div class="highlight-cpp notranslate"><div class="highlight"><pre><span></span><span class="cp">#include</span><span class="w"> </span><span class="cpf">"runtime/llmInferenceRuntime.h"</span>
 <span class="cp">#include</span><span class="w"> </span><span class="cpf">&lt;unordered_map&gt;</span>
 
-<span class="c1">// Initialize a non-blocking CUDA stream (avoids implicit sync with TensorRT&#39;s aux streams)</span>
+<span class="c1">// Initialize a non-blocking CUDA stream (avoids implicit sync with TensorRT's aux streams)</span>
 <span class="n">cudaStream_t</span><span class="w"> </span><span class="n">stream</span><span class="p">;</span>
 <span class="n">CUDA_CHECK</span><span class="p">(</span><span class="n">cudaStreamCreateWithFlags</span><span class="p">(</span><span class="o">&amp;</span><span class="n">stream</span><span class="p">,</span><span class="w"> </span><span class="n">cudaStreamNonBlocking</span><span class="p">));</span>
 
 <span class="c1">// Initialize runtime — vanilla mode (no draft model)</span>
 <span class="n">std</span><span class="o">::</span><span class="n">unordered_map</span><span class="o">&lt;</span><span class="n">std</span><span class="o">::</span><span class="n">string</span><span class="p">,</span><span class="w"> </span><span class="n">std</span><span class="o">::</span><span class="n">string</span><span class="o">&gt;</span><span class="w"> </span><span class="n">loraWeightsMap</span><span class="p">{};</span><span class="w"> </span><span class="c1">// Empty for no LoRA</span>
-<span class="n">LLMInferenceRuntime</span><span class="w"> </span><span class="n">runtime</span><span class="p">(</span><span class="n">engineDir</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">loraWeightsMap</span><span class="p">,</span><span class="w"> </span><span class="n">stream</span><span class="p">);</span>
+<span class="n">LLMInferenceRuntime</span><span class="w"> </span><span class="n">runtime</span><span class="p">(</span><span class="n">engineDir</span><span class="p">,</span><span class="w"> </span><span class="s">""</span><span class="p">,</span><span class="w"> </span><span class="n">loraWeightsMap</span><span class="p">,</span><span class="w"> </span><span class="n">stream</span><span class="p">);</span>
 
 <span class="c1">// Prepare request</span>
 <span class="n">LLMGenerationRequest</span><span class="w"> </span><span class="n">request</span><span class="p">;</span>
 <span class="n">request</span><span class="p">.</span><span class="n">requests</span><span class="p">.</span><span class="n">resize</span><span class="p">(</span><span class="mi">1</span><span class="p">);</span>
 <span class="n">Message</span><span class="w"> </span><span class="n">userMsg</span><span class="p">;</span>
-<span class="n">userMsg</span><span class="p">.</span><span class="n">role</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;user&quot;</span><span class="p">;</span>
-<span class="n">userMsg</span><span class="p">.</span><span class="n">contents</span><span class="p">.</span><span class="n">push_back</span><span class="p">({</span><span class="s">&quot;text&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;What is the capital of France?&quot;</span><span class="p">});</span>
+<span class="n">userMsg</span><span class="p">.</span><span class="n">role</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"user"</span><span class="p">;</span>
+<span class="n">userMsg</span><span class="p">.</span><span class="n">contents</span><span class="p">.</span><span class="n">push_back</span><span class="p">({</span><span class="s">"text"</span><span class="p">,</span><span class="w"> </span><span class="s">"What is the capital of France?"</span><span class="p">});</span>
 <span class="n">request</span><span class="p">.</span><span class="n">requests</span><span class="p">[</span><span class="mi">0</span><span class="p">].</span><span class="n">messages</span><span class="p">.</span><span class="n">push_back</span><span class="p">(</span><span class="n">std</span><span class="o">::</span><span class="n">move</span><span class="p">(</span><span class="n">userMsg</span><span class="p">));</span>
 <span class="n">request</span><span class="p">.</span><span class="n">maxGenerateLength</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">100</span><span class="p">;</span>
 <span class="n">request</span><span class="p">.</span><span class="n">temperature</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">1.0</span><span class="p">;</span>
@@ -1505,7 +1539,7 @@ graph LR
 
 <span class="c1">// Execute inference</span>
 <span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">runtime</span><span class="p">.</span><span class="n">handleRequest</span><span class="p">(</span><span class="n">request</span><span class="p">,</span><span class="w"> </span><span class="n">response</span><span class="p">,</span><span class="w"> </span><span class="n">stream</span><span class="p">))</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="n">std</span><span class="o">::</span><span class="n">cout</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="s">&quot;Generated: &quot;</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="n">response</span><span class="p">.</span><span class="n">outputTexts</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="n">std</span><span class="o">::</span><span class="n">endl</span><span class="p">;</span>
+<span class="w">    </span><span class="n">std</span><span class="o">::</span><span class="n">cout</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="s">"Generated: "</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="n">response</span><span class="p">.</span><span class="n">outputTexts</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="n">std</span><span class="o">::</span><span class="n">endl</span><span class="p">;</span>
 <span class="p">}</span>
 
 <span class="c1">// Cleanup</span>
@@ -1515,10 +1549,10 @@ graph LR
 </section>
 <section id="eagle-speculative-decoding">
 <h3>EAGLE Speculative Decoding<a class="headerlink" href="#eagle-speculative-decoding" title="Link to this heading">#</a></h3>
-<div class="highlight-cpp notranslate"><div class="highlight"><pre><span></span><span class="cp">#include</span><span class="w"> </span><span class="cpf">&quot;runtime/llmInferenceRuntime.h&quot;</span>
-<span class="cp">#include</span><span class="w"> </span><span class="cpf">&quot;runtime/llmRuntimeUtils.h&quot;</span>
+<div class="highlight-cpp notranslate"><div class="highlight"><pre><span></span><span class="cp">#include</span><span class="w"> </span><span class="cpf">"runtime/llmInferenceRuntime.h"</span>
+<span class="cp">#include</span><span class="w"> </span><span class="cpf">"runtime/llmRuntimeUtils.h"</span>
 
-<span class="c1">// Initialize a non-blocking CUDA stream (avoids implicit sync with TensorRT&#39;s aux streams)</span>
+<span class="c1">// Initialize a non-blocking CUDA stream (avoids implicit sync with TensorRT's aux streams)</span>
 <span class="n">cudaStream_t</span><span class="w"> </span><span class="n">stream</span><span class="p">;</span>
 <span class="n">CUDA_CHECK</span><span class="p">(</span><span class="n">cudaStreamCreateWithFlags</span><span class="p">(</span><span class="o">&amp;</span><span class="n">stream</span><span class="p">,</span><span class="w"> </span><span class="n">cudaStreamNonBlocking</span><span class="p">));</span>
 
@@ -1530,14 +1564,14 @@ graph LR
 
 <span class="c1">// Initialize runtime — speculative decoding mode</span>
 <span class="n">std</span><span class="o">::</span><span class="n">unordered_map</span><span class="o">&lt;</span><span class="n">std</span><span class="o">::</span><span class="n">string</span><span class="p">,</span><span class="w"> </span><span class="n">std</span><span class="o">::</span><span class="n">string</span><span class="o">&gt;</span><span class="w"> </span><span class="n">loraWeightsMap</span><span class="p">{};</span>
-<span class="n">LLMInferenceRuntime</span><span class="w"> </span><span class="n">runtime</span><span class="p">(</span><span class="n">engineDir</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">loraWeightsMap</span><span class="p">,</span><span class="w"> </span><span class="n">draftingConfig</span><span class="p">,</span><span class="w"> </span><span class="n">stream</span><span class="p">);</span>
+<span class="n">LLMInferenceRuntime</span><span class="w"> </span><span class="n">runtime</span><span class="p">(</span><span class="n">engineDir</span><span class="p">,</span><span class="w"> </span><span class="s">""</span><span class="p">,</span><span class="w"> </span><span class="n">loraWeightsMap</span><span class="p">,</span><span class="w"> </span><span class="n">draftingConfig</span><span class="p">,</span><span class="w"> </span><span class="n">stream</span><span class="p">);</span>
 
 <span class="c1">// Prepare request</span>
 <span class="n">LLMGenerationRequest</span><span class="w"> </span><span class="n">request</span><span class="p">;</span>
 <span class="n">request</span><span class="p">.</span><span class="n">requests</span><span class="p">.</span><span class="n">resize</span><span class="p">(</span><span class="mi">1</span><span class="p">);</span>
 <span class="n">rt</span><span class="o">::</span><span class="n">Message</span><span class="w"> </span><span class="n">userMsg</span><span class="p">;</span>
-<span class="n">userMsg</span><span class="p">.</span><span class="n">role</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;user&quot;</span><span class="p">;</span>
-<span class="n">userMsg</span><span class="p">.</span><span class="n">contents</span><span class="p">.</span><span class="n">push_back</span><span class="p">({</span><span class="s">&quot;text&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;Explain quantum computing.&quot;</span><span class="p">});</span>
+<span class="n">userMsg</span><span class="p">.</span><span class="n">role</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"user"</span><span class="p">;</span>
+<span class="n">userMsg</span><span class="p">.</span><span class="n">contents</span><span class="p">.</span><span class="n">push_back</span><span class="p">({</span><span class="s">"text"</span><span class="p">,</span><span class="w"> </span><span class="s">"Explain quantum computing."</span><span class="p">});</span>
 <span class="n">request</span><span class="p">.</span><span class="n">requests</span><span class="p">[</span><span class="mi">0</span><span class="p">].</span><span class="n">messages</span><span class="p">.</span><span class="n">push_back</span><span class="p">(</span><span class="n">std</span><span class="o">::</span><span class="n">move</span><span class="p">(</span><span class="n">userMsg</span><span class="p">));</span>
 <span class="n">request</span><span class="p">.</span><span class="n">maxGenerateLength</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">200</span><span class="p">;</span>
 <span class="n">request</span><span class="p">.</span><span class="n">temperature</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">1.0</span><span class="p">;</span>
@@ -1549,7 +1583,7 @@ graph LR
 
 <span class="c1">// Execute inference</span>
 <span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">runtime</span><span class="p">.</span><span class="n">handleRequest</span><span class="p">(</span><span class="n">request</span><span class="p">,</span><span class="w"> </span><span class="n">response</span><span class="p">,</span><span class="w"> </span><span class="n">stream</span><span class="p">))</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="n">std</span><span class="o">::</span><span class="n">cout</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="s">&quot;Generated: &quot;</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="n">response</span><span class="p">.</span><span class="n">outputTexts</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="n">std</span><span class="o">::</span><span class="n">endl</span><span class="p">;</span>
+<span class="w">    </span><span class="n">std</span><span class="o">::</span><span class="n">cout</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="s">"Generated: "</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="n">response</span><span class="p">.</span><span class="n">outputTexts</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="n">std</span><span class="o">::</span><span class="n">endl</span><span class="p">;</span>
 <span class="p">}</span>
 
 <span class="c1">// Cleanup</span>
@@ -1559,11 +1593,11 @@ graph LR
 </section>
 <section id="multimodal-vlm-inference">
 <h3>Multimodal VLM Inference<a class="headerlink" href="#multimodal-vlm-inference" title="Link to this heading">#</a></h3>
-<div class="highlight-cpp notranslate"><div class="highlight"><pre><span></span><span class="cp">#include</span><span class="w"> </span><span class="cpf">&quot;runtime/llmInferenceRuntime.h&quot;</span>
-<span class="cp">#include</span><span class="w"> </span><span class="cpf">&quot;runtime/imageUtils.h&quot;</span>
+<div class="highlight-cpp notranslate"><div class="highlight"><pre><span></span><span class="cp">#include</span><span class="w"> </span><span class="cpf">"runtime/llmInferenceRuntime.h"</span>
+<span class="cp">#include</span><span class="w"> </span><span class="cpf">"runtime/imageUtils.h"</span>
 <span class="cp">#include</span><span class="w"> </span><span class="cpf">&lt;unordered_map&gt;</span>
 
-<span class="c1">// Initialize a non-blocking CUDA stream (avoids implicit sync with TensorRT&#39;s aux streams)</span>
+<span class="c1">// Initialize a non-blocking CUDA stream (avoids implicit sync with TensorRT's aux streams)</span>
 <span class="n">cudaStream_t</span><span class="w"> </span><span class="n">stream</span><span class="p">;</span>
 <span class="n">CUDA_CHECK</span><span class="p">(</span><span class="n">cudaStreamCreateWithFlags</span><span class="p">(</span><span class="o">&amp;</span><span class="n">stream</span><span class="p">,</span><span class="w"> </span><span class="n">cudaStreamNonBlocking</span><span class="p">));</span>
 
@@ -1575,13 +1609,13 @@ graph LR
 <span class="n">LLMGenerationRequest</span><span class="w"> </span><span class="n">request</span><span class="p">;</span>
 <span class="n">request</span><span class="p">.</span><span class="n">requests</span><span class="p">.</span><span class="n">resize</span><span class="p">(</span><span class="mi">1</span><span class="p">);</span>
 <span class="n">Message</span><span class="w"> </span><span class="n">mmMsg</span><span class="p">;</span>
-<span class="n">mmMsg</span><span class="p">.</span><span class="n">role</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;user&quot;</span><span class="p">;</span>
+<span class="n">mmMsg</span><span class="p">.</span><span class="n">role</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"user"</span><span class="p">;</span>
 <span class="c1">// Content metadata in messages should align with the external buffers order.</span>
-<span class="n">mmMsg</span><span class="p">.</span><span class="n">contents</span><span class="p">.</span><span class="n">push_back</span><span class="p">({</span><span class="s">&quot;image&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;/path/to/image.jpg&quot;</span><span class="p">});</span>
-<span class="n">mmMsg</span><span class="p">.</span><span class="n">contents</span><span class="p">.</span><span class="n">push_back</span><span class="p">({</span><span class="s">&quot;text&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;What&#39;s in this image?&quot;</span><span class="p">});</span>
+<span class="n">mmMsg</span><span class="p">.</span><span class="n">contents</span><span class="p">.</span><span class="n">push_back</span><span class="p">({</span><span class="s">"image"</span><span class="p">,</span><span class="w"> </span><span class="s">"/path/to/image.jpg"</span><span class="p">});</span>
+<span class="n">mmMsg</span><span class="p">.</span><span class="n">contents</span><span class="p">.</span><span class="n">push_back</span><span class="p">({</span><span class="s">"text"</span><span class="p">,</span><span class="w"> </span><span class="s">"What's in this image?"</span><span class="p">});</span>
 <span class="n">request</span><span class="p">.</span><span class="n">requests</span><span class="p">[</span><span class="mi">0</span><span class="p">].</span><span class="n">messages</span><span class="p">.</span><span class="n">push_back</span><span class="p">(</span><span class="n">std</span><span class="o">::</span><span class="n">move</span><span class="p">(</span><span class="n">mmMsg</span><span class="p">));</span>
 <span class="c1">// Image bytes are provided separately via imageBuffers.</span>
-<span class="n">request</span><span class="p">.</span><span class="n">requests</span><span class="p">[</span><span class="mi">0</span><span class="p">].</span><span class="n">imageBuffers</span><span class="p">.</span><span class="n">push_back</span><span class="p">(</span><span class="n">imageUtils</span><span class="o">::</span><span class="n">loadImageFromFile</span><span class="p">(</span><span class="s">&quot;/path/to/image.jpg&quot;</span><span class="p">));</span>
+<span class="n">request</span><span class="p">.</span><span class="n">requests</span><span class="p">[</span><span class="mi">0</span><span class="p">].</span><span class="n">imageBuffers</span><span class="p">.</span><span class="n">push_back</span><span class="p">(</span><span class="n">imageUtils</span><span class="o">::</span><span class="n">loadImageFromFile</span><span class="p">(</span><span class="s">"/path/to/image.jpg"</span><span class="p">));</span>
 <span class="n">request</span><span class="p">.</span><span class="n">maxGenerateLength</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">150</span><span class="p">;</span>
 <span class="n">request</span><span class="p">.</span><span class="n">temperature</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">1.0</span><span class="p">;</span>
 <span class="n">request</span><span class="p">.</span><span class="n">topK</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">50</span><span class="p">;</span>
@@ -1592,7 +1626,7 @@ graph LR
 
 <span class="c1">// Execute inference</span>
 <span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">runtime</span><span class="p">.</span><span class="n">handleRequest</span><span class="p">(</span><span class="n">request</span><span class="p">,</span><span class="w"> </span><span class="n">response</span><span class="p">,</span><span class="w"> </span><span class="n">stream</span><span class="p">))</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="n">std</span><span class="o">::</span><span class="n">cout</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="s">&quot;Generated: &quot;</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="n">response</span><span class="p">.</span><span class="n">outputTexts</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="n">std</span><span class="o">::</span><span class="n">endl</span><span class="p">;</span>
+<span class="w">    </span><span class="n">std</span><span class="o">::</span><span class="n">cout</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="s">"Generated: "</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="n">response</span><span class="p">.</span><span class="n">outputTexts</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="n">std</span><span class="o">::</span><span class="n">endl</span><span class="p">;</span>
 <span class="p">}</span>
 
 <span class="c1">// Cleanup</span>
@@ -1602,30 +1636,30 @@ graph LR
 </section>
 <section id="lora-adapter-switching">
 <h3>LoRA Adapter Switching<a class="headerlink" href="#lora-adapter-switching" title="Link to this heading">#</a></h3>
-<div class="highlight-cpp notranslate"><div class="highlight"><pre><span></span><span class="cp">#include</span><span class="w"> </span><span class="cpf">&quot;runtime/llmInferenceRuntime.h&quot;</span>
+<div class="highlight-cpp notranslate"><div class="highlight"><pre><span></span><span class="cp">#include</span><span class="w"> </span><span class="cpf">"runtime/llmInferenceRuntime.h"</span>
 <span class="cp">#include</span><span class="w"> </span><span class="cpf">&lt;unordered_map&gt;</span>
 
-<span class="c1">// Initialize a non-blocking CUDA stream (avoids implicit sync with TensorRT&#39;s aux streams)</span>
+<span class="c1">// Initialize a non-blocking CUDA stream (avoids implicit sync with TensorRT's aux streams)</span>
 <span class="n">cudaStream_t</span><span class="w"> </span><span class="n">stream</span><span class="p">;</span>
 <span class="n">CUDA_CHECK</span><span class="p">(</span><span class="n">cudaStreamCreateWithFlags</span><span class="p">(</span><span class="o">&amp;</span><span class="n">stream</span><span class="p">,</span><span class="w"> </span><span class="n">cudaStreamNonBlocking</span><span class="p">));</span>
 
 <span class="c1">// Initialize runtime with LoRA weights map</span>
 <span class="n">std</span><span class="o">::</span><span class="n">unordered_map</span><span class="o">&lt;</span><span class="n">std</span><span class="o">::</span><span class="n">string</span><span class="p">,</span><span class="w"> </span><span class="n">std</span><span class="o">::</span><span class="n">string</span><span class="o">&gt;</span><span class="w"> </span><span class="n">loraWeightsMap</span><span class="p">{</span>
-<span class="w">    </span><span class="p">{</span><span class="s">&quot;medical&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;lora_weights/medical_adapter.safetensors&quot;</span><span class="p">},</span>
-<span class="w">    </span><span class="p">{</span><span class="s">&quot;legal&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;lora_weights/legal_adapter.safetensors&quot;</span><span class="p">}</span>
+<span class="w">    </span><span class="p">{</span><span class="s">"medical"</span><span class="p">,</span><span class="w"> </span><span class="s">"lora_weights/medical_adapter.safetensors"</span><span class="p">},</span>
+<span class="w">    </span><span class="p">{</span><span class="s">"legal"</span><span class="p">,</span><span class="w"> </span><span class="s">"lora_weights/legal_adapter.safetensors"</span><span class="p">}</span>
 <span class="p">};</span>
-<span class="n">LLMInferenceRuntime</span><span class="w"> </span><span class="n">runtime</span><span class="p">(</span><span class="n">engineDir</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">loraWeightsMap</span><span class="p">,</span><span class="w"> </span><span class="n">stream</span><span class="p">);</span>
+<span class="n">LLMInferenceRuntime</span><span class="w"> </span><span class="n">runtime</span><span class="p">(</span><span class="n">engineDir</span><span class="p">,</span><span class="w"> </span><span class="s">""</span><span class="p">,</span><span class="w"> </span><span class="n">loraWeightsMap</span><span class="p">,</span><span class="w"> </span><span class="n">stream</span><span class="p">);</span>
 
 <span class="c1">// Execute inference with different LoRA adapters</span>
 <span class="n">LLMGenerationRequest</span><span class="w"> </span><span class="n">medicalRequest</span><span class="p">;</span>
 <span class="n">medicalRequest</span><span class="p">.</span><span class="n">requests</span><span class="p">.</span><span class="n">resize</span><span class="p">(</span><span class="mi">1</span><span class="p">);</span>
 <span class="p">{</span>
 <span class="w">    </span><span class="n">Message</span><span class="w"> </span><span class="n">msg</span><span class="p">;</span>
-<span class="w">    </span><span class="n">msg</span><span class="p">.</span><span class="n">role</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;user&quot;</span><span class="p">;</span>
-<span class="w">    </span><span class="n">msg</span><span class="p">.</span><span class="n">contents</span><span class="p">.</span><span class="n">push_back</span><span class="p">({</span><span class="s">&quot;text&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;Medical question&quot;</span><span class="p">});</span>
+<span class="w">    </span><span class="n">msg</span><span class="p">.</span><span class="n">role</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"user"</span><span class="p">;</span>
+<span class="w">    </span><span class="n">msg</span><span class="p">.</span><span class="n">contents</span><span class="p">.</span><span class="n">push_back</span><span class="p">({</span><span class="s">"text"</span><span class="p">,</span><span class="w"> </span><span class="s">"Medical question"</span><span class="p">});</span>
 <span class="w">    </span><span class="n">medicalRequest</span><span class="p">.</span><span class="n">requests</span><span class="p">[</span><span class="mi">0</span><span class="p">].</span><span class="n">messages</span><span class="p">.</span><span class="n">push_back</span><span class="p">(</span><span class="n">std</span><span class="o">::</span><span class="n">move</span><span class="p">(</span><span class="n">msg</span><span class="p">));</span>
 <span class="p">}</span>
-<span class="n">medicalRequest</span><span class="p">.</span><span class="n">loraWeightsName</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;medical&quot;</span><span class="p">;</span>
+<span class="n">medicalRequest</span><span class="p">.</span><span class="n">loraWeightsName</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"medical"</span><span class="p">;</span>
 <span class="n">medicalRequest</span><span class="p">.</span><span class="n">maxGenerateLength</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">100</span><span class="p">;</span>
 
 <span class="n">LLMGenerationResponse</span><span class="w"> </span><span class="n">medicalResponse</span><span class="p">;</span>
@@ -1636,11 +1670,11 @@ graph LR
 <span class="n">baseRequest</span><span class="p">.</span><span class="n">requests</span><span class="p">.</span><span class="n">resize</span><span class="p">(</span><span class="mi">1</span><span class="p">);</span>
 <span class="p">{</span>
 <span class="w">    </span><span class="n">Message</span><span class="w"> </span><span class="n">msg</span><span class="p">;</span>
-<span class="w">    </span><span class="n">msg</span><span class="p">.</span><span class="n">role</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;user&quot;</span><span class="p">;</span>
-<span class="w">    </span><span class="n">msg</span><span class="p">.</span><span class="n">contents</span><span class="p">.</span><span class="n">push_back</span><span class="p">({</span><span class="s">&quot;text&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;Base question&quot;</span><span class="p">});</span>
+<span class="w">    </span><span class="n">msg</span><span class="p">.</span><span class="n">role</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"user"</span><span class="p">;</span>
+<span class="w">    </span><span class="n">msg</span><span class="p">.</span><span class="n">contents</span><span class="p">.</span><span class="n">push_back</span><span class="p">({</span><span class="s">"text"</span><span class="p">,</span><span class="w"> </span><span class="s">"Base question"</span><span class="p">});</span>
 <span class="w">    </span><span class="n">baseRequest</span><span class="p">.</span><span class="n">requests</span><span class="p">[</span><span class="mi">0</span><span class="p">].</span><span class="n">messages</span><span class="p">.</span><span class="n">push_back</span><span class="p">(</span><span class="n">std</span><span class="o">::</span><span class="n">move</span><span class="p">(</span><span class="n">msg</span><span class="p">));</span>
 <span class="p">}</span>
-<span class="n">baseRequest</span><span class="p">.</span><span class="n">loraWeightsName</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;&quot;</span><span class="p">;</span>
+<span class="n">baseRequest</span><span class="p">.</span><span class="n">loraWeightsName</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">""</span><span class="p">;</span>
 <span class="n">baseRequest</span><span class="p">.</span><span class="n">maxGenerateLength</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">100</span><span class="p">;</span>
 
 <span class="n">LLMGenerationResponse</span><span class="w"> </span><span class="n">baseResponse</span><span class="p">;</span>
@@ -1739,8 +1773,8 @@ graph LR
   
 
   <!-- Scripts loaded after <body> so the DOM is not blocked -->
-  <script defer src="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
-<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+  <script defer src="../../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67"></script>
 
 
   <footer class="bd-footer">
@@ -1812,9 +1846,9 @@ graph LR
         <div class="footer-item">
 <div class="extra_footer">
   
-  <p>Last updated on August 18, 2026.</p>
+  <p>Last updated on September 03, 2026.</p>
   
-  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/bb29145">bb29145</a>.</p>
+  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/e8b29522938901f6df19ebeedd4b69bc8edbcd97">e8b2952</a>.</p>
   
 </div></div>
       

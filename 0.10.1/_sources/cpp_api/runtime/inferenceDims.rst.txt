@@ -1,0 +1,22 @@
+Inference Dims
+==============
+
+.. doxygenstruct:: trt_edgellm::rt::InferenceDims
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::ShapeDim
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::dimName
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::toString
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::firstInvalidMember
+   :project: TensorRT Edge-LLM
+

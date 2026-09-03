@@ -28,8 +28,8 @@
   </noscript>
   
   <!-- Loaded before other Sphinx assets -->
-  <link href="../../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
-<link href="../../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+  <link href="../../_static/styles/theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
 
     <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=03e43079" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/nvidia-sphinx-theme.css?v=933278ad" />
@@ -39,10 +39,10 @@
     <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=e02be394" />
   
   <!-- So that users can add custom icons -->
-  <script defer src="../../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <script defer src="../../_static/scripts/fontawesome.js?digest=cb8930eaaf36d9849b67"></script>
   <!-- Pre-loaded scripts that we'll load fully later -->
-  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
-<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67" />
 
 
 
@@ -58,9 +58,9 @@
     <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'cpp_api/kernels/dflashRuntimeKernels';</script>
     <script>
-        DOCUMENTATION_OPTIONS.theme_version = '0.20.0';
+        DOCUMENTATION_OPTIONS.theme_version = '0.21.0';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = './_static/switcher.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.10.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.10.1';
         DOCUMENTATION_OPTIONS.show_version_warning_banner =
             false;
         </script>
@@ -76,7 +76,7 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.10.0" />
+  <meta name="docsearch:version" content="0.10.1" />
   
     
     <script src="../../_static/searchtools.js"></script>
@@ -367,17 +367,19 @@
 </ul>
 </details></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/omni.html">Omni (Audio + Vision + Speech I/O)</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/experimental-server.html">Experimental High-Level Python API and Server</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/experimental-server.html">Experimental Python API and Server</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/nemo-evaluator.html">Evaluate with NeMo Evaluator</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Features</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/lora.html">LoRA (Low-Rank Adaptation)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/quantization.html">Quantization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/multi-device.html">Multi-Device Inference</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/reduce-vocab.html">Vocabulary Reduction</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/FP8KV.html">FP8 KV Cache</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/fp8-embedding.html">FP8 Embedding</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/streaming.html">Streaming Output</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/visual-token-pruning.html">Visual-Token Pruning (DART)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/kv-cache-reuse.html">KV Cache Reuse</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Input &amp; Chat Format</span></p>
@@ -398,6 +400,8 @@
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/cpp-runtime-overview.html">C++ Runtime Overview</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/llm-inference-runtime.html">LLM Inference Runtime</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/llm-streaming.html">LLM Streaming — Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/memory-monitoring.html">Memory monitoring</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/openai-server.html">HTTP Inference Server Architecture</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Models</span></p>
 <ul class="nav bd-sidenav">
@@ -412,6 +416,7 @@
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Testing</span></p>
 <ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/runtime-unit-tests.html">Unit-Testing the Runtime with a Substitute Engine</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/code-coverage.html">Code Coverage with SonarQube</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/few-layer-validation.html">Few-Layer Numeric Validation</a></li>
 </ul>
@@ -420,6 +425,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../../python_api.html">Python API Reference</a></li>
 <li class="toctree-l1 current active has-children"><a class="reference internal" href="../../cpp_api.html">C++ API Reference</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
 <li class="toctree-l2 has-children"><a class="reference internal" href="../action/index.html">Action Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../action/actionKvBatch.html">Action KV Batch</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../action/actionModelTypes.html">Action Model Types</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../action/actionUtils.html">Action Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../action/alpamayo1ActionRunner.html">Alpamayo1 Action Runner</a></li>
@@ -447,6 +453,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../common/mathUtils.html">Math Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/mmapReader.html">MMAP Reader</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/pagedKvTypes.html">Paged KV Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/parallelArtifactNames.html">Parallel Artifact Names</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/ropeUtils.html">Rope Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/safetensorsUtils.html">Safetensors Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/stringUtils.html">String Utils</a></li>
@@ -478,9 +485,13 @@
 <li class="toctree-l3"><a class="reference internal" href="cuteDslModuleLoader.html">Cute Dsl Module Loader</a></li>
 <li class="toctree-l3"><a class="reference internal" href="cuteDslNvfp4MoeRunner.html">Cute Dsl Nvfp4 Moe Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="cuteDslNvfp4MoeSm110Runner.html">Cute Dsl Nvfp4 Moe Sm110 Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="cuteDslRmsNormRunner.html">Cute Dsl Rms Norm Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="cuteDslSSDRunner.html">Cute Dsl Ssd Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="cuteDslTensorDescriptors.html">Cute Dsl Tensor Descriptors</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dartGatherKernels.html">Dart Gather Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dartSelectorKernels.html">Dart Selector Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="ddtreeKernels.html">Ddtree Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="decoderXQAJitCompiler.html">Decoder XQA Jit Compiler</a></li>
 <li class="toctree-l3"><a class="reference internal" href="decoderXQARunner.html">Decoder XQA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="dequant.html">Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="dequantize.html">Dequantize</a></li>
@@ -523,6 +534,10 @@
 <li class="toctree-l3"><a class="reference internal" href="moeSigmoidGroupTopkKernels.html">Moe Sigmoid Group Topk Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="moeTopkSoftmaxKernels.html">Moe Topk Softmax Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="mtpStateScatterKernels.html">Mtp State Scatter Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="nvfp4A16BlackwellGemmRunner.html">Nvfp4 A16 Blackwell GEMM Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="nvfp4A16BlackwellGemvJitCompiler.html">Nvfp4 A16 Blackwell Gemv Jit Compiler</a></li>
+<li class="toctree-l3"><a class="reference internal" href="nvfp4A16BlackwellGemvJitRunner.html">Nvfp4 A16 Blackwell Gemv Jit Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="nvfp4A16BlackwellSupport.html">Nvfp4 A16 Blackwell Support</a></li>
 <li class="toctree-l3"><a class="reference internal" href="nvfp4MoeLayout.html">Nvfp4 Moe Layout</a></li>
 <li class="toctree-l3"><a class="reference internal" href="nvfp4MoeNormalize.html">Nvfp4 Moe Normalize</a></li>
 <li class="toctree-l3"><a class="reference internal" href="nvfp4MoePluginGeforceTransform.html">Nvfp4 Moe Plugin Geforce Transform</a></li>
@@ -533,6 +548,9 @@
 <li class="toctree-l3"><a class="reference internal" href="nvfp4_dequant.html">Nvfp4 Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="nvfp4_scale.html">Nvfp4 Scale</a></li>
 <li class="toctree-l3"><a class="reference internal" href="nvfp4_tensor.html">Nvfp4 Tensor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="pluginJitCompileCache.html">Plugin Jit Compile Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="pluginJitCompiler.html">Plugin Jit Compiler</a></li>
+<li class="toctree-l3"><a class="reference internal" href="pluginJitEmbeddedSources.html">Plugin Jit Embedded Sources</a></li>
 <li class="toctree-l3"><a class="reference internal" href="scaleConvert.html">Scale Convert</a></li>
 <li class="toctree-l3"><a class="reference internal" href="selectiveStateUpdate.html">Selective State Update</a></li>
 <li class="toctree-l3"><a class="reference internal" href="speculativeKernelsUtils.html">Speculative Kernels Utils</a></li>
@@ -540,6 +558,7 @@
 <li class="toctree-l3"><a class="reference internal" href="talkerMLPKernels.html">Talker Mlp Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="utilKernels.html">Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="vectorizedTypes.html">Vectorized Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="xqaKernelTypes.html">XQA Kernel Types</a></li>
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../multimodal/index.html">Multimodal Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
@@ -580,11 +599,15 @@
 <li class="toctree-l3"><a class="reference internal" href="../plugins/int4GroupwiseGemmPluginV2.html">Int4 Groupwise GEMM Plugin V2</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/int4MoePlugin.html">Int4 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/mambaPlugin.html">Mamba Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4A16BlackwellDispatchPolicy.html">Nvfp4 A16 Blackwell Dispatch Policy</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4A16GemmPlugin.html">Nvfp4 A16 GEMM Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4A16GemmPluginV2.html">Nvfp4 A16 GEMM Plugin V2</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4A16MoePlugin.html">Nvfp4 A16 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4MoePlugin.html">Nvfp4 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4MoePluginGeforce.html">Nvfp4 Moe Plugin Geforce</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/pluginUtils.html">Plugin Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/qkvConcatPlugin.html">Qkv Concat Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/rmsNormPlugin.html">Rms Norm Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/vitAttentionPlugin.html">VIT Attention Plugin</a></li>
 </ul>
 </details></li>
@@ -612,6 +635,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../runtime/contextCacheMetrics.html">Context Cache Metrics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/contextCacheRequest.html">Context Cache Request</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/contextCacheTypes.html">Context Cache Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/dartPruner.html">Dart Pruner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/decoderRegistry.html">Decoder Registry</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/decoderUtils.html">Decoder Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/decodingInferenceContext.html">Decoding Inference Context</a></li>
@@ -623,6 +647,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../runtime/dsparkDecoder.html">Dspark Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/eagleDecoder.html">EAGLE Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/embeddingPreprocessor.html">Embedding Preprocessor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/encoderEmbeddingCache.html">Encoder Embedding Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/engineExecutor.html">Engine Executor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/evictionPlanner.html">Eviction Planner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/externalWeightManager.html">External Weight Manager</a></li>
@@ -638,11 +663,13 @@
 <li class="toctree-l3"><a class="reference internal" href="../runtime/layerDebugger.html">Layer Debugger</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/llmEngineConfig.html">LLM Engine Config</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/llmInferenceRuntime.html">LLM Inference Runtime</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/llmRankRuntime.html">LLM Rank Runtime</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/llmRuntimeUtils.html">LLM Runtime Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/logitBias.html">Logit Bias</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/loraManager.html">Lora Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/mambaCacheManager.html">Mamba Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/melSpectrogram.html">Mel Spectrogram</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/modelArtifacts.html">Model Artifacts</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/mtpDecoder.html">Mtp Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/multiDevicePluginCommRegistry.html">Multi Device Plugin Comm Registry</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/multiDevicePluginResourceFactory.html">Multi Device Plugin Resource Factory</a></li>
@@ -655,7 +682,11 @@
 <li class="toctree-l3"><a class="reference internal" href="../runtime/resourcePools.html">Resource Pools</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/reusePlan.html">Reuse Plan</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/ropeCache.html">Rope Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/runtimeCoordinator.html">Runtime Coordinator</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/sharedResources.html">Shared Resources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/specCommonStateTracker.html">Spec Common State Tracker</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/specReuseContract.html">Spec Reuse Contract</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/specStatePlan.html">Spec State Plan</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/stepPreparer.html">Step Preparer</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/streaming.html">Streaming</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/systemPromptKVCache.html">System Prompt KV Cache</a></li>
@@ -664,6 +695,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../runtime/tensorParallelPluginResources.html">Tensor Parallel Plugin Resources</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/tensorRegistry.html">Tensor Registry</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/vanillaDecoder.html">Vanilla Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/visualTokenPruner.html">Visual Token Pruner</a></li>
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../sampler/index.html">Sampler Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
@@ -747,8 +779,8 @@
   <section id="dflash-runtime-kernels">
 <h1>Dflash Runtime Kernels<a class="headerlink" href="#dflash-runtime-kernels" title="Link to this heading">#</a></h1>
 <dl class="cpp function">
-<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm6kernel31launchDFlashTargetKVCacheUpdateEPK4halfPK4halfP4halfPKfPK7int32_tPK7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t12cudaStream_t">
-<span id="_CPPv3N11trt_edgellm6kernel31launchDFlashTargetKVCacheUpdateEPK4halfPK4halfP4halfPKfPK7int32_tPK7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm6kernel31launchDFlashTargetKVCacheUpdateEPK4halfPK4halfP4halfPKfPK7int32_tPK7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t12cudaStream_t"></span><span id="trt_edgellm::kernel::launchDFlashTargetKVCacheUpdate__halfCP.halfCP.halfP.floatCP.int32_tCP.int32_tCP.int32_t.int32_t.int32_t.int32_t.int32_t.int32_t.int32_t.int32_t.int32_t.cudaStream_t"></span><span class="target" id="namespacetrt__edgellm_1_1kernel_1afba0b4ba2937668fa4e50cbb6e0bb603"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="marlinRepackIndex.html#_CPPv4N11trt_edgellm6kernelE" title="trt_edgellm::kernel"><span class="n"><span class="pre">kernel</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">launchDFlashTargetKVCacheUpdate</span></span></span><span class="sig-paren">(</span>
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm6kernel31launchDFlashTargetKVCacheUpdateEPK4halfPK4halfP4halfPKfPK7int32_tPK7int32_tPK7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t12cudaStream_t">
+<span id="_CPPv3N11trt_edgellm6kernel31launchDFlashTargetKVCacheUpdateEPK4halfPK4halfP4halfPKfPK7int32_tPK7int32_tPK7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm6kernel31launchDFlashTargetKVCacheUpdateEPK4halfPK4halfP4halfPKfPK7int32_tPK7int32_tPK7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t12cudaStream_t"></span><span id="trt_edgellm::kernel::launchDFlashTargetKVCacheUpdate__halfCP.halfCP.halfP.floatCP.int32_tCP.int32_tCP.int32_tCP.int32_t.int32_t.int32_t.int32_t.int32_t.int32_t.int32_t.int32_t.int32_t.cudaStream_t"></span><span class="target" id="namespacetrt__edgellm_1_1kernel_1a7225e157bb3fb0a66809510ea7356617"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="marlinRepackIndex.html#_CPPv4N11trt_edgellm6kernelE" title="trt_edgellm::kernel"><span class="n"><span class="pre">kernel</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">launchDFlashTargetKVCacheUpdate</span></span></span><span class="sig-paren">(</span>
 
 <dl>
 <dd><em class="sig-param"><span class="n"><span class="pre">half</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">kDelta</span></span></em>,</dd>
@@ -757,6 +789,7 @@
 <dd><em class="sig-param"><span class="kt"><span class="pre">float</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">cosSinCache</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">deltaStartPositions</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">deltaLengths</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">pageTable</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">batchSize</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">deltaLen</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">numKVHeads</span></span></em>,</dd>
@@ -764,60 +797,35 @@
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">rotaryDim</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">cosSinBatch</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">cosSinSeqLen</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">maxBatch</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">kvCapacity</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">numPages</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">maxPagesPerSeq</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em></dd>
 </dl>
 
-<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm6kernel31launchDFlashTargetKVCacheUpdateEPK4halfPK4halfP4halfPKfPK7int32_tPK7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t12cudaStream_t" title="Link to this definition">#</a><br /></dt>
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm6kernel31launchDFlashTargetKVCacheUpdateEPK4halfPK4halfP4halfPKfPK7int32_tPK7int32_tPK7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t12cudaStream_t" title="Link to this definition">#</a><br /></dt>
 <dd><p>Launch the DFlash target KV cache update kernel.</p>
-<p>Applies RoPE to k_delta and writes k_rope + v_delta into the combined KV cache at positions [deltaStart, deltaStart + deltaLen) for each batch element.</p>
+<p>Applies RoPE to k_delta and writes k_rope + v_delta into the paged KV pool at positions [deltaStart, deltaStart + deltaLen) for each batch element.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>kDelta</strong> – [B, deltaLen, numKVHeads, headDim] FP16, k_normed, no RoPE </p></li>
 <li><p><strong>vDelta</strong> – [B, deltaLen, numKVHeads, headDim] FP16 </p></li>
-<li><p><strong>kvCache</strong> – Two-pool NHD KV pool [2, maxBatch, kvCapacity, numKVHeads, headDim] FP16 (in/out). DFlash is identity-only (it opts out of KV-cache reuse), so this writes directly at the request’s own contiguous slot — no page table needed. </p></li>
+<li><p><strong>kvCache</strong> – Paged KV pool [2, numPages, kTOKENS_PER_PAGE, numKVHeads, headDim] FP16 (in/out). </p></li>
 <li><p><strong>cosSinCache</strong> – [cosSinBatch, cosSinSeqLen, rotaryDim] FP32 </p></li>
 <li><p><strong>deltaStartPositions</strong> – [B] INT32 </p></li>
-<li><p><strong>batchSize</strong> – ACTIVE batch size (number of requests to process this call; &lt;= maxBatch) </p></li>
+<li><p><strong>pageTable</strong> – [B, 2, maxPagesPerSeq] canonical page ids: K in [0, numPages), V in [numPages, 2 * numPages). Unmapped or out-of-plane ids skip that cache plane. </p></li>
+<li><p><strong>batchSize</strong> – ACTIVE batch size </p></li>
 <li><p><strong>deltaLen</strong> – number of delta tokens per batch </p></li>
 <li><p><strong>numKVHeads</strong> – number of KV heads </p></li>
 <li><p><strong>headDim</strong> – head dimension </p></li>
 <li><p><strong>rotaryDim</strong> – rotary embedding dimension </p></li>
 <li><p><strong>cosSinBatch</strong> – cos/sin cache batch size (1 or B) </p></li>
 <li><p><strong>cosSinSeqLen</strong> – cos/sin cache sequence length </p></li>
-<li><p><strong>maxBatch</strong> – ALLOCATION batch (outer dim of each K/V half in <code class="docutils literal notranslate"><span class="pre">kvCache</span></code>); sizes the V-pool offset (= maxBatch*kvCapacity*numKVHeads*headDim). NOT the active <code class="docutils literal notranslate"><span class="pre">batchSize</span></code>. </p></li>
-<li><p><strong>kvCapacity</strong> – ALLOCATION per-slot token capacity (capPadded); sizes each request’s slot stride and doubles as the OOB write guard (positions &gt;= kvCapacity are dropped). </p></li>
+<li><p><strong>numPages</strong> – Number of physical pages in each KV plane </p></li>
+<li><p><strong>maxPagesPerSeq</strong> – Logical pages per sequence; positions outside this capacity are skipped </p></li>
 <li><p><strong>stream</strong> – CUDA stream </p></li>
 <li><p><strong>deltaLengths</strong> – [B] INT32, per-batch delta lengths (skip t &gt;= deltaLengths[b]) </p></li>
 </ul>
-</dd>
-</dl>
-</dd></dl>
-
-<dl class="cpp function">
-<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm6kernel28checkDFlashPageTableIdentityEPK7int32_t7int32_t7int32_t">
-<span id="_CPPv3N11trt_edgellm6kernel28checkDFlashPageTableIdentityEPK7int32_t7int32_t7int32_t"></span><span id="_CPPv2N11trt_edgellm6kernel28checkDFlashPageTableIdentityEPK7int32_t7int32_t7int32_t"></span><span id="trt_edgellm::kernel::checkDFlashPageTableIdentity__int32_tCP.int32_t.int32_t"></span><span class="target" id="namespacetrt__edgellm_1_1kernel_1a9e9a4067d3fa47c54231606fc68d8bac"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="marlinRepackIndex.html#_CPPv4N11trt_edgellm6kernelE" title="trt_edgellm::kernel"><span class="n"><span class="pre">kernel</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">checkDFlashPageTableIdentity</span></span></span><span class="sig-paren">(</span>
-
-<dl>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">hostKRow</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">slot</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">maxPagesPerSeq</span></span></em></dd>
-</dl>
-
-<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm6kernel28checkDFlashPageTableIdentityEPK7int32_t7int32_t7int32_t" title="Link to this definition">#</a><br /></dt>
-<dd><p>Assert that a page table’s K-half row for <code class="docutils literal notranslate"><span class="pre">slot</span></code> is the static identity range <code class="docutils literal notranslate"><span class="pre">[slot*maxPagesPerSeq,</span> <span class="pre">(slot+1)*maxPagesPerSeq)</span></code> that DFlash’s contiguous target-KV update assumes. DFlash is identity-only (it opts out of KV-cache reuse, so its update never resolves token offsets through the page table); this makes that assumption an explicit, checkable guard instead of relying on a runtime-level opt-out to keep DFlash slots unmapped.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>hostKRow</strong> – [maxPagesPerSeq] host K page ids for <code class="docutils literal notranslate"><span class="pre">slot</span></code> (e.g. <code class="docutils literal notranslate"><span class="pre">KVPageTable::hostRow(slot)</span></code>) </p></li>
-<li><p><strong>slot</strong> – Batch slot whose row is being checked </p></li>
-<li><p><strong>maxPagesPerSeq</strong> – Number of logical pages per slot (row length) </p></li>
-</ul>
-</dd>
-<dt class="field-even">Throws<span class="colon">:</span></dt>
-<dd class="field-even"><p><span><span class="cpp-expr sig sig-inline cpp"><span class="n">std</span><span class="p">::</span><span class="n">runtime_error</span></span></span> – if any entry deviates from the identity range </p>
 </dd>
 </dl>
 </dd></dl>
@@ -833,7 +841,7 @@
 
 <span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm6kernel23checkDFlashRopeCapacityE7int32_t7int32_t" title="Link to this definition">#</a><br /></dt>
 <dd><p>Validate that a RoPE cos/sin cache covers every position DFlash’s target-KV update can write.</p>
-<p><code class="docutils literal notranslate"><span class="pre">kvCapacity</span></code> is the KV pool’s PADDED per-slot capacity (capPadded, a multiple of kTOKENS_PER_PAGE); the real, configured maximum sequence length is &lt;= kvCapacity (padding only rounds up). The RoPE cache is sized to that real (unpadded) maximum directly (see RopeCache::getOrCreate), so <code class="docutils literal notranslate"><span class="pre">cosSinSeqLen</span></code> can legitimately be smaller than <code class="docutils literal notranslate"><span class="pre">kvCapacity</span></code> whenever the configured capacity isn’t already page-aligned (e.g. maxKVCacheCapacity=4000 -&gt; kvCapacity=4096, cosSinSeqLen=4000) — comparing <code class="docutils literal notranslate"><span class="pre">cosSinSeqLen</span> <span class="pre">&lt;</span> <span class="pre">kvCapacity</span></code> (the pre-fix check) therefore false-positives on any non-page-aligned config. The correct invariant is the other direction: <code class="docutils literal notranslate"><span class="pre">cosSinSeqLen</span></code> must never EXCEED <code class="docutils literal notranslate"><span class="pre">kvCapacity</span></code>, since <code class="docutils literal notranslate"><span class="pre">kvCapacity</span></code> is provably an upper bound on every real position (padding never shrinks capacity).</p>
+<p><code class="docutils literal notranslate"><span class="pre">kvCapacity</span></code> is the page-aligned upper bound on every writable position. The RoPE cache tracks the unpadded configured maximum and may therefore be smaller; reject only <code class="docutils literal notranslate"><span class="pre">cosSinSeqLen</span> <span class="pre">&gt;</span> <span class="pre">kvCapacity</span></code>.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
@@ -848,8 +856,8 @@
 </dd></dl>
 
 <dl class="cpp function">
-<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm6kernel33launchDFlashPrepareProposalInputsEPK7int32_tPK7int32_t7int32_tP7int32_tP7int32_tP7int32_t7int32_t12cudaStream_t">
-<span id="_CPPv3N11trt_edgellm6kernel33launchDFlashPrepareProposalInputsEPK7int32_tPK7int32_t7int32_tP7int32_tP7int32_tP7int32_t7int32_t12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm6kernel33launchDFlashPrepareProposalInputsEPK7int32_tPK7int32_t7int32_tP7int32_tP7int32_tP7int32_t7int32_t12cudaStream_t"></span><span id="trt_edgellm::kernel::launchDFlashPrepareProposalInputs__int32_tCP.int32_tCP.int32_t.int32_tP.int32_tP.int32_tP.int32_t.cudaStream_t"></span><span class="target" id="namespacetrt__edgellm_1_1kernel_1ade44eb34d64b0e9c909744c2aab5e348"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="marlinRepackIndex.html#_CPPv4N11trt_edgellm6kernelE" title="trt_edgellm::kernel"><span class="n"><span class="pre">kernel</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">launchDFlashPrepareProposalInputs</span></span></span><span class="sig-paren">(</span>
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm6kernel33launchDFlashPrepareProposalInputsEPK7int32_tPK7int32_t7int32_tP7int32_tP7int32_tP7int32_tb7int32_t12cudaStream_t">
+<span id="_CPPv3N11trt_edgellm6kernel33launchDFlashPrepareProposalInputsEPK7int32_tPK7int32_t7int32_tP7int32_tP7int32_tP7int32_tb7int32_t12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm6kernel33launchDFlashPrepareProposalInputsEPK7int32_tPK7int32_t7int32_tP7int32_tP7int32_tP7int32_tb7int32_t12cudaStream_t"></span><span id="trt_edgellm::kernel::launchDFlashPrepareProposalInputs__int32_tCP.int32_tCP.int32_t.int32_tP.int32_tP.int32_tP.b.int32_t.cudaStream_t"></span><span class="target" id="namespacetrt__edgellm_1_1kernel_1a78dbf26a877b643533420b9a70a8df38"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="marlinRepackIndex.html#_CPPv4N11trt_edgellm6kernelE" title="trt_edgellm::kernel"><span class="n"><span class="pre">kernel</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">launchDFlashPrepareProposalInputs</span></span></span><span class="sig-paren">(</span>
 
 <dl>
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">oldDraftCacheLengths</span></span></em>,</dd>
@@ -858,13 +866,14 @@
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">packedAttentionMask</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">attentionPosId</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">contextLengths</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">causalProposalMask</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">batchSize</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em></dd>
 </dl>
 
-<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm6kernel33launchDFlashPrepareProposalInputsEPK7int32_tPK7int32_t7int32_tP7int32_tP7int32_tP7int32_t7int32_t12cudaStream_t" title="Link to this definition">#</a><br /></dt>
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm6kernel33launchDFlashPrepareProposalInputsEPK7int32_tPK7int32_t7int32_tP7int32_tP7int32_tP7int32_tb7int32_t12cudaStream_t" title="Link to this definition">#</a><br /></dt>
 <dd><p>Launch kernel to prepare DFlash proposal attention inputs.</p>
-<p>Computes target_len_after_delta = oldDraftCacheLengths[b] + deltaLen, then sets: attention_pos_id[b, i] = target_len_after_delta + i context_lengths[b] = target_len_after_delta + blockSize packed_attention_mask: full non-causal within proposal block</p>
+<p>Computes target_len_after_delta = oldDraftCacheLengths[b] + deltaLen, then sets: attention_pos_id[b, i] = target_len_after_delta + i context_lengths[b] = target_len_after_delta + blockSize packed_attention_mask: full non-causal within proposal block, or causal rows when requested</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
@@ -874,6 +883,7 @@
 <li><p><strong>packedAttentionMask</strong> – [B, BS, divUp(BS,32)] INT32 — output </p></li>
 <li><p><strong>attentionPosId</strong> – [B, BS] INT32 — output </p></li>
 <li><p><strong>contextLengths</strong> – [B] INT32 — output </p></li>
+<li><p><strong>causalProposalMask</strong> – true =&gt; row i attends only to proposal positions [0, i] </p></li>
 <li><p><strong>batchSize</strong> – batch size </p></li>
 <li><p><strong>stream</strong> – CUDA stream </p></li>
 </ul>
@@ -1002,10 +1012,9 @@
   </div>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm6kernel31launchDFlashTargetKVCacheUpdateEPK4halfPK4halfP4halfPKfPK7int32_tPK7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">launchDFlashTargetKVCacheUpdate()</span></code></a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm6kernel28checkDFlashPageTableIdentityEPK7int32_t7int32_t7int32_t"><code class="docutils literal notranslate"><span class="pre">checkDFlashPageTableIdentity()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm6kernel31launchDFlashTargetKVCacheUpdateEPK4halfPK4halfP4halfPKfPK7int32_tPK7int32_tPK7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t7int32_t12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">launchDFlashTargetKVCacheUpdate()</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm6kernel23checkDFlashRopeCapacityE7int32_t7int32_t"><code class="docutils literal notranslate"><span class="pre">checkDFlashRopeCapacity()</span></code></a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm6kernel33launchDFlashPrepareProposalInputsEPK7int32_tPK7int32_t7int32_tP7int32_tP7int32_tP7int32_t7int32_t12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">launchDFlashPrepareProposalInputs()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm6kernel33launchDFlashPrepareProposalInputsEPK7int32_tPK7int32_t7int32_tP7int32_tP7int32_tP7int32_tb7int32_t12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">launchDFlashPrepareProposalInputs()</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm6kernel35launchDFlashPrepareBaseVerifyInputsEPK7int32_t7int32_tP7int32_tP7int32_tP7int64_tP7int32_t7int32_t12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">launchDFlashPrepareBaseVerifyInputs()</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm6kernel35launchDFlashBuildLinearVerifyInputsEPK7int32_tPK7int32_tP7int32_tP6int8_t7int32_t7int32_t7int32_t7int32_t12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">launchDFlashBuildLinearVerifyInputs()</span></code></a></li>
 </ul>
@@ -1026,8 +1035,8 @@
   
 
   <!-- Scripts loaded after <body> so the DOM is not blocked -->
-  <script defer src="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
-<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+  <script defer src="../../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67"></script>
 
 
   <footer class="bd-footer">
@@ -1099,9 +1108,9 @@
         <div class="footer-item">
 <div class="extra_footer">
   
-  <p>Last updated on August 18, 2026.</p>
+  <p>Last updated on September 03, 2026.</p>
   
-  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/bb29145">bb29145</a>.</p>
+  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/e8b29522938901f6df19ebeedd4b69bc8edbcd97">e8b2952</a>.</p>
   
 </div></div>
       

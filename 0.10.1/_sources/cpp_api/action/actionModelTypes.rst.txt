@@ -1,0 +1,6 @@
+Action Model Types
+==================
+
+.. doxygenfile:: action/actionModelTypes.h
+   :project: TensorRT Edge-LLM
+

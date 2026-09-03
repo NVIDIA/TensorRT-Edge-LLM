@@ -18,6 +18,7 @@ API documentation for the common module.
    mathUtils
    mmapReader
    pagedKvTypes
+   parallelArtifactNames
    ropeUtils
    safetensorsUtils
    stringUtils

@@ -27,9 +27,13 @@ API documentation for the kernels module.
    cuteDslModuleLoader
    cuteDslNvfp4MoeRunner
    cuteDslNvfp4MoeSm110Runner
+   cuteDslRmsNormRunner
    cuteDslSSDRunner
    cuteDslTensorDescriptors
+   dartGatherKernels
+   dartSelectorKernels
    ddtreeKernels
+   decoderXQAJitCompiler
    decoderXQARunner
    dequant
    dequantize
@@ -72,6 +76,10 @@ API documentation for the kernels module.
    moeSigmoidGroupTopkKernels
    moeTopkSoftmaxKernels
    mtpStateScatterKernels
+   nvfp4A16BlackwellGemmRunner
+   nvfp4A16BlackwellGemvJitCompiler
+   nvfp4A16BlackwellGemvJitRunner
+   nvfp4A16BlackwellSupport
    nvfp4MoeLayout
    nvfp4MoeNormalize
    nvfp4MoePluginGeforceTransform
@@ -82,6 +90,9 @@ API documentation for the kernels module.
    nvfp4_dequant
    nvfp4_scale
    nvfp4_tensor
+   pluginJitCompileCache
+   pluginJitCompiler
+   pluginJitEmbeddedSources
    scaleConvert
    selectiveStateUpdate
    speculativeKernelsUtils
@@ -89,3 +100,4 @@ API documentation for the kernels module.
    talkerMLPKernels
    utilKernels
    vectorizedTypes
+   xqaKernelTypes

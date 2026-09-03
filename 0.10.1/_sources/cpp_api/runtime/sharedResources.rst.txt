@@ -1,0 +1,11 @@
+Shared Resources
+================
+
+.. doxygenstruct:: trt_edgellm::rt::SharedResources
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::allocateZeroBuffer
+   :project: TensorRT Edge-LLM
+

@@ -1,0 +1,8 @@
+Nvfp4 A16 Blackwell Dispatch Policy
+===================================
+
+.. doxygenstruct:: trt_edgellm::plugins::Nvfp4A16BlackwellDispatch
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

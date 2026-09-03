@@ -1,6 +1,6 @@
 Model Types
 ===========
 
-.. doxygenfile:: multimodal/modelTypes.h
+.. doxygenfile:: multimodal/common/modelTypes.h
    :project: TensorRT Edge-LLM
 

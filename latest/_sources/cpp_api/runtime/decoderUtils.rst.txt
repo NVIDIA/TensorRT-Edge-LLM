@@ -1,6 +1,9 @@
 Decoder Utils
 =============
 
+.. doxygenfunction:: trt_edgellm::rt::decoder_utils::zeroActiveRegion
+   :project: TensorRT Edge-LLM
+
 .. doxygenfunction:: trt_edgellm::rt::decoder_utils::loadDraftEngine
    :project: TensorRT Edge-LLM
 

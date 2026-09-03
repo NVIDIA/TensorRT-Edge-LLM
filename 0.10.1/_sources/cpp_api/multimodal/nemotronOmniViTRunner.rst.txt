@@ -1,0 +1,13 @@
+Nemotron Omni ViT Runner
+========================
+
+.. doxygenclass:: trt_edgellm::rt::NemotronOmniViTRunner
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::NemotronOmniViTConfig
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

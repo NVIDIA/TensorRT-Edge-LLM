@@ -16,6 +16,11 @@ Cache Record
    :members:
    :undoc-members:
 
+.. doxygenstruct:: trt_edgellm::rt::SpecPagedStateRecord
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
 .. doxygenstruct:: std::hash< trt_edgellm::rt::CacheRecordKey >
    :project: TensorRT Edge-LLM
    :members:

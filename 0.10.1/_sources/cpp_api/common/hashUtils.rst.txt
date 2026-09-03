@@ -1,0 +1,13 @@
+Hash Utils
+==========
+
+.. doxygenstruct:: trt_edgellm::hash_utils::Hash
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::hash_utils::Hash< std::tuple< Args... > >
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

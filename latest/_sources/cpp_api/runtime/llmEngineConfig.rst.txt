@@ -11,6 +11,18 @@ LLM Engine Config
    :members:
    :undoc-members:
 
+.. doxygenfunction:: trt_edgellm::rt::specDecodeModeName
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::isCachedBlockDraftMode
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::isCachedBlockDraftBase
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::isCachedBlockDraftDraft
+   :project: TensorRT Edge-LLM
+
 .. doxygenfunction:: trt_edgellm::rt::parseEngineConfig
    :project: TensorRT Edge-LLM
 

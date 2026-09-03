@@ -1,0 +1,13 @@
+KV Page Table
+=============
+
+.. doxygenclass:: trt_edgellm::rt::KVPageTable
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::KVPageTableRowUpdate
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

@@ -6,6 +6,7 @@ API documentation for the action module.
 .. toctree::
    :maxdepth: 1
 
+   actionKvBatch
    actionModelTypes
    actionUtils
    alpamayo1ActionRunner

@@ -1,0 +1,13 @@
+Context Cache Metrics
+=====================
+
+.. doxygenstruct:: trt_edgellm::rt::ContextCachePoolMetrics
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::ContextCacheMetrics
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

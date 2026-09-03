@@ -15,6 +15,9 @@ Sampling
 .. doxygenfunction:: trt_edgellm::applyLogitBias
    :project: TensorRT Edge-LLM
 
+.. doxygenfunction:: trt_edgellm::applyLogitBiasRepeatedRows
+   :project: TensorRT Edge-LLM
+
 .. doxygenfunction:: trt_edgellm::topKtopPSamplingFromLogits
    :project: TensorRT Edge-LLM
 

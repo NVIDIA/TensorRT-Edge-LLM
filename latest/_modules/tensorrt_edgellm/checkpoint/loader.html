@@ -27,8 +27,8 @@
   </noscript>
   
   <!-- Loaded before other Sphinx assets -->
-  <link href="../../../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
-<link href="../../../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+  <link href="../../../_static/styles/theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
+<link href="../../../_static/styles/pydata-sphinx-theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
 
     <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=03e43079" />
     <link rel="stylesheet" type="text/css" href="../../../_static/styles/nvidia-sphinx-theme.css?v=933278ad" />
@@ -38,10 +38,10 @@
     <link rel="stylesheet" type="text/css" href="../../../_static/custom.css?v=e02be394" />
   
   <!-- So that users can add custom icons -->
-  <script defer src="../../../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <script defer src="../../../_static/scripts/fontawesome.js?digest=cb8930eaaf36d9849b67"></script>
   <!-- Pre-loaded scripts that we'll load fully later -->
-  <link rel="preload" as="script" href="../../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
-<link rel="preload" as="script" href="../../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+  <link rel="preload" as="script" href="../../../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67" />
+<link rel="preload" as="script" href="../../../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67" />
 
 
 
@@ -56,6 +56,8 @@
     <script src="../../../_static/togglebutton.js?v=b8b12719"></script>
     <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
     <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.12.1/dist/mermaid.esm.min.mjs";
+
+
 
 
 
@@ -413,9 +415,9 @@ window.addEventListener("load", load);
 window.runMermaid = runMermaid;</script>
     <script>DOCUMENTATION_OPTIONS.pagename = '_modules/tensorrt_edgellm/checkpoint/loader';</script>
     <script>
-        DOCUMENTATION_OPTIONS.theme_version = '0.20.0';
+        DOCUMENTATION_OPTIONS.theme_version = '0.21.0';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = './_static/switcher.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.10.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.10.1';
         DOCUMENTATION_OPTIONS.show_version_warning_banner =
             false;
         </script>
@@ -429,7 +431,7 @@ window.runMermaid = runMermaid;</script>
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.10.0" />
+  <meta name="docsearch:version" content="0.10.1" />
   
     
     <script src="../../../_static/searchtools.js"></script>
@@ -716,17 +718,19 @@ window.runMermaid = runMermaid;</script>
 </ul>
 </details></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../user_guide/examples/omni.html">Omni (Audio + Vision + Speech I/O)</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../../user_guide/examples/experimental-server.html">Experimental High-Level Python API and Server</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../user_guide/examples/experimental-server.html">Experimental Python API and Server</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../user_guide/examples/nemo-evaluator.html">Evaluate with NeMo Evaluator</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Features</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../../user_guide/features/lora.html">LoRA (Low-Rank Adaptation)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../user_guide/features/quantization.html">Quantization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../user_guide/features/multi-device.html">Multi-Device Inference</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../user_guide/features/reduce-vocab.html">Vocabulary Reduction</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../user_guide/features/FP8KV.html">FP8 KV Cache</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../user_guide/features/fp8-embedding.html">FP8 Embedding</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../user_guide/features/streaming.html">Streaming Output</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../user_guide/features/visual-token-pruning.html">Visual-Token Pruning (DART)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../user_guide/features/kv-cache-reuse.html">KV Cache Reuse</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Input &amp; Chat Format</span></p>
@@ -747,6 +751,8 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l1"><a class="reference internal" href="../../../developer_guide/software-design/cpp-runtime-overview.html">C++ Runtime Overview</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../developer_guide/software-design/llm-inference-runtime.html">LLM Inference Runtime</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../developer_guide/software-design/llm-streaming.html">LLM Streaming — Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../developer_guide/software-design/memory-monitoring.html">Memory monitoring</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../developer_guide/software-design/openai-server.html">HTTP Inference Server Architecture</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Models</span></p>
 <ul class="nav bd-sidenav">
@@ -761,6 +767,7 @@ window.runMermaid = runMermaid;</script>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Testing</span></p>
 <ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../../developer_guide/testing/runtime-unit-tests.html">Unit-Testing the Runtime with a Substitute Engine</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../developer_guide/testing/code-coverage.html">Code Coverage with SonarQube</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../developer_guide/testing/few-layer-validation.html">Few-Layer Numeric Validation</a></li>
 </ul>
@@ -769,6 +776,7 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l1"><a class="reference internal" href="../../../python_api.html">Python API Reference</a></li>
 <li class="toctree-l1 has-children"><a class="reference internal" href="../../../cpp_api.html">C++ API Reference</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../../cpp_api/action/index.html">Action Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/action/actionKvBatch.html">Action KV Batch</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/action/actionModelTypes.html">Action Model Types</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/action/actionUtils.html">Action Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/action/alpamayo1ActionRunner.html">Alpamayo1 Action Runner</a></li>
@@ -796,6 +804,7 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/common/mathUtils.html">Math Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/common/mmapReader.html">MMAP Reader</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/common/pagedKvTypes.html">Paged KV Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/common/parallelArtifactNames.html">Parallel Artifact Names</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/common/ropeUtils.html">Rope Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/common/safetensorsUtils.html">Safetensors Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/common/stringUtils.html">String Utils</a></li>
@@ -827,9 +836,13 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/cuteDslModuleLoader.html">Cute Dsl Module Loader</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/cuteDslNvfp4MoeRunner.html">Cute Dsl Nvfp4 Moe Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/cuteDslNvfp4MoeSm110Runner.html">Cute Dsl Nvfp4 Moe Sm110 Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/cuteDslRmsNormRunner.html">Cute Dsl Rms Norm Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/cuteDslSSDRunner.html">Cute Dsl Ssd Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/cuteDslTensorDescriptors.html">Cute Dsl Tensor Descriptors</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/dartGatherKernels.html">Dart Gather Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/dartSelectorKernels.html">Dart Selector Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/ddtreeKernels.html">Ddtree Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/decoderXQAJitCompiler.html">Decoder XQA Jit Compiler</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/decoderXQARunner.html">Decoder XQA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/dequant.html">Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/dequantize.html">Dequantize</a></li>
@@ -872,6 +885,10 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/moeSigmoidGroupTopkKernels.html">Moe Sigmoid Group Topk Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/moeTopkSoftmaxKernels.html">Moe Topk Softmax Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/mtpStateScatterKernels.html">Mtp State Scatter Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/nvfp4A16BlackwellGemmRunner.html">Nvfp4 A16 Blackwell GEMM Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/nvfp4A16BlackwellGemvJitCompiler.html">Nvfp4 A16 Blackwell Gemv Jit Compiler</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/nvfp4A16BlackwellGemvJitRunner.html">Nvfp4 A16 Blackwell Gemv Jit Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/nvfp4A16BlackwellSupport.html">Nvfp4 A16 Blackwell Support</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/nvfp4MoeLayout.html">Nvfp4 Moe Layout</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/nvfp4MoeNormalize.html">Nvfp4 Moe Normalize</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/nvfp4MoePluginGeforceTransform.html">Nvfp4 Moe Plugin Geforce Transform</a></li>
@@ -882,6 +899,9 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/nvfp4_dequant.html">Nvfp4 Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/nvfp4_scale.html">Nvfp4 Scale</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/nvfp4_tensor.html">Nvfp4 Tensor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/pluginJitCompileCache.html">Plugin Jit Compile Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/pluginJitCompiler.html">Plugin Jit Compiler</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/pluginJitEmbeddedSources.html">Plugin Jit Embedded Sources</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/scaleConvert.html">Scale Convert</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/selectiveStateUpdate.html">Selective State Update</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/speculativeKernelsUtils.html">Speculative Kernels Utils</a></li>
@@ -889,6 +909,7 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/talkerMLPKernels.html">Talker Mlp Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/utilKernels.html">Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/vectorizedTypes.html">Vectorized Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/xqaKernelTypes.html">XQA Kernel Types</a></li>
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../../cpp_api/multimodal/index.html">Multimodal Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
@@ -929,11 +950,15 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/plugins/int4GroupwiseGemmPluginV2.html">Int4 Groupwise GEMM Plugin V2</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/plugins/int4MoePlugin.html">Int4 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/plugins/mambaPlugin.html">Mamba Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/plugins/nvfp4A16BlackwellDispatchPolicy.html">Nvfp4 A16 Blackwell Dispatch Policy</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/plugins/nvfp4A16GemmPlugin.html">Nvfp4 A16 GEMM Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/plugins/nvfp4A16GemmPluginV2.html">Nvfp4 A16 GEMM Plugin V2</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/plugins/nvfp4A16MoePlugin.html">Nvfp4 A16 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/plugins/nvfp4MoePlugin.html">Nvfp4 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/plugins/nvfp4MoePluginGeforce.html">Nvfp4 Moe Plugin Geforce</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/plugins/pluginUtils.html">Plugin Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/plugins/qkvConcatPlugin.html">Qkv Concat Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/plugins/rmsNormPlugin.html">Rms Norm Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/plugins/vitAttentionPlugin.html">VIT Attention Plugin</a></li>
 </ul>
 </details></li>
@@ -961,6 +986,7 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/contextCacheMetrics.html">Context Cache Metrics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/contextCacheRequest.html">Context Cache Request</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/contextCacheTypes.html">Context Cache Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/dartPruner.html">Dart Pruner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/decoderRegistry.html">Decoder Registry</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/decoderUtils.html">Decoder Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/decodingInferenceContext.html">Decoding Inference Context</a></li>
@@ -972,6 +998,7 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/dsparkDecoder.html">Dspark Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/eagleDecoder.html">EAGLE Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/embeddingPreprocessor.html">Embedding Preprocessor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/encoderEmbeddingCache.html">Encoder Embedding Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/engineExecutor.html">Engine Executor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/evictionPlanner.html">Eviction Planner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/externalWeightManager.html">External Weight Manager</a></li>
@@ -987,11 +1014,13 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/layerDebugger.html">Layer Debugger</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/llmEngineConfig.html">LLM Engine Config</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/llmInferenceRuntime.html">LLM Inference Runtime</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/llmRankRuntime.html">LLM Rank Runtime</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/llmRuntimeUtils.html">LLM Runtime Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/logitBias.html">Logit Bias</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/loraManager.html">Lora Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/mambaCacheManager.html">Mamba Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/melSpectrogram.html">Mel Spectrogram</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/modelArtifacts.html">Model Artifacts</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/mtpDecoder.html">Mtp Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/multiDevicePluginCommRegistry.html">Multi Device Plugin Comm Registry</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/multiDevicePluginResourceFactory.html">Multi Device Plugin Resource Factory</a></li>
@@ -1004,7 +1033,11 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/resourcePools.html">Resource Pools</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/reusePlan.html">Reuse Plan</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/ropeCache.html">Rope Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/runtimeCoordinator.html">Runtime Coordinator</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/sharedResources.html">Shared Resources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/specCommonStateTracker.html">Spec Common State Tracker</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/specReuseContract.html">Spec Reuse Contract</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/specStatePlan.html">Spec State Plan</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/stepPreparer.html">Step Preparer</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/streaming.html">Streaming</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/systemPromptKVCache.html">System Prompt KV Cache</a></li>
@@ -1013,6 +1046,7 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/tensorParallelPluginResources.html">Tensor Parallel Plugin Resources</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/tensorRegistry.html">Tensor Registry</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/vanillaDecoder.html">Vanilla Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/visualTokenPruner.html">Visual Token Pruner</a></li>
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../../cpp_api/sampler/index.html">Sampler Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
@@ -1094,18 +1128,18 @@ window.runMermaid = runMermaid;</script>
 <span></span><span class="c1"># SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION &amp; AFFILIATES. All rights reserved.</span>
 <span class="c1"># SPDX-License-Identifier: Apache-2.0</span>
 <span class="c1">#</span>
-<span class="c1"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);</span>
+<span class="c1"># Licensed under the Apache License, Version 2.0 (the "License");</span>
 <span class="c1"># you may not use this file except in compliance with the License.</span>
 <span class="c1"># You may obtain a copy of the License at</span>
 <span class="c1">#</span>
 <span class="c1"># http://www.apache.org/licenses/LICENSE-2.0</span>
 <span class="c1">#</span>
 <span class="c1"># Unless required by applicable law or agreed to in writing, software</span>
-<span class="c1"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS,</span>
+<span class="c1"># distributed under the License is distributed on an "AS IS" BASIS,</span>
 <span class="c1"># WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.</span>
 <span class="c1"># See the License for the specific language governing permissions and</span>
 <span class="c1"># limitations under the License.</span>
-<span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">"""</span>
 <span class="sd">Weight loader for safetensors checkpoints.</span>
 
 <span class="sd">Supports both single-file (``model.safetensors``) and multi-shard</span>
@@ -1116,14 +1150,14 @@ window.runMermaid = runMermaid;</script>
 <span class="sd">Rather than ``module.load_state_dict()``, weights are assigned directly to</span>
 <span class="sd">module buffers/parameters via :func:`_set_tensor`.  This preserves the</span>
 <span class="sd">original tensor dtype (fp8, uint8, bfloat16, ...) without any silent cast that</span>
-<span class="sd">PyTorch&#39;s state-dict mechanism might introduce, and handles keys not present</span>
+<span class="sd">PyTorch's state-dict mechanism might introduce, and handles keys not present</span>
 <span class="sd">in the module (logged as warnings rather than hard errors).</span>
 
 <span class="sd">Usage</span>
 <span class="sd">-----</span>
 <span class="sd">    model = AutoModel.from_pretrained(model_dir)   # from model.py</span>
 <span class="sd">    load_weights(model, model_dir)                 # fills all buffers in-place</span>
-<span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">"""</span>
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">json</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
@@ -1137,30 +1171,41 @@ window.runMermaid = runMermaid;</script>
 
 <span class="kn">from</span><span class="w"> </span><span class="nn">..config</span><span class="w"> </span><span class="kn">import</span> <span class="n">Mapping</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">..models.linear</span><span class="w"> </span><span class="kn">import</span> <span class="n">LinearBase</span><span class="p">,</span> <span class="n">TPMode</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.fused_weights</span><span class="w"> </span><span class="kn">import</span> <span class="n">split_fused_moe_experts</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.repacking</span><span class="w"> </span><span class="kn">import</span> <span class="n">apply_all_repacking</span>
 
 <span class="n">logger</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
 
-<span class="n">__all__</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&quot;load_weights&quot;</span><span class="p">,</span> <span class="s2">&quot;load_submodule_weights&quot;</span><span class="p">]</span>
+<span class="n">__all__</span> <span class="o">=</span> <span class="p">[</span><span class="s2">"load_weights"</span><span class="p">,</span> <span class="s2">"load_submodule_weights"</span><span class="p">]</span>
 
-<span class="n">_FUSED_INPUT_CHANNEL_ATTRS</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;pre_quant_scale&quot;</span><span class="p">}</span>
+<span class="n">_FUSED_INPUT_CHANNEL_ATTRS</span> <span class="o">=</span> <span class="p">{</span><span class="s2">"pre_quant_scale"</span><span class="p">}</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_splits_unchanged</span><span class="p">(</span><span class="n">attr_suffix</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">tensor</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""True when an attribute is invariant to an output-dim split.</span>
+
+<span class="sd">    Per-input-channel vectors (AWQ ``pre_quant_scale``) and per-tensor</span>
+<span class="sd">    scalars (NVFP4 ``weight_scale_2`` / ``input_scale``) carry no output</span>
+<span class="sd">    dimension, so both halves take the same tensor.</span>
+<span class="sd">    """</span>
+    <span class="k">return</span> <span class="n">attr_suffix</span> <span class="ow">in</span> <span class="n">_FUSED_INPUT_CHANNEL_ATTRS</span> <span class="ow">or</span> <span class="n">tensor</span><span class="o">.</span><span class="n">dim</span><span class="p">()</span> <span class="o">==</span> <span class="mi">0</span>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">_is_awq_prepacked_weight</span><span class="p">(</span><span class="n">tensor</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">,</span> <span class="n">attr_suffix</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
                              <span class="n">expected_N</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;True when *tensor* is the AWQ ModelOpt prepacked ``weight`` buffer.</span>
+<span class="w">    </span><span class="sd">"""True when *tensor* is the AWQ ModelOpt prepacked ``weight`` buffer.</span>
 
 <span class="sd">    The prepacked layout is ``uint8 [N//2, K]`` with two int4 nibbles per byte</span>
 <span class="sd">    (even N rows in the low nibble, odd N rows in the high nibble).  Any</span>
 <span class="sd">    per-head split has to unpack, slice, and re-pack instead of a plain</span>
 <span class="sd">    ``dim=0`` slice.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
-    <span class="k">return</span> <span class="p">(</span><span class="n">attr_suffix</span> <span class="o">==</span> <span class="s2">&quot;weight&quot;</span> <span class="ow">and</span> <span class="n">tensor</span><span class="o">.</span><span class="n">dtype</span> <span class="o">==</span> <span class="n">torch</span><span class="o">.</span><span class="n">uint8</span>
+<span class="sd">    """</span>
+    <span class="k">return</span> <span class="p">(</span><span class="n">attr_suffix</span> <span class="o">==</span> <span class="s2">"weight"</span> <span class="ow">and</span> <span class="n">tensor</span><span class="o">.</span><span class="n">dtype</span> <span class="o">==</span> <span class="n">torch</span><span class="o">.</span><span class="n">uint8</span>
             <span class="ow">and</span> <span class="n">tensor</span><span class="o">.</span><span class="n">dim</span><span class="p">()</span> <span class="o">==</span> <span class="mi">2</span> <span class="ow">and</span> <span class="n">tensor</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">*</span> <span class="mi">2</span> <span class="o">==</span> <span class="n">expected_N</span><span class="p">)</span>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">_unpack_awq_prepacked</span><span class="p">(</span><span class="n">w_u8</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">,</span> <span class="n">N</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Unpack ``[N//2, K] uint8`` AWQ ModelOpt weight to ``[N, K] int16``.&quot;&quot;&quot;</span>
+<span class="w">    </span><span class="sd">"""Unpack ``[N//2, K] uint8`` AWQ ModelOpt weight to ``[N, K] int16``."""</span>
     <span class="n">K</span> <span class="o">=</span> <span class="n">w_u8</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span>
     <span class="n">w_u16</span> <span class="o">=</span> <span class="n">w_u8</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">int16</span><span class="p">)</span> <span class="o">&amp;</span> <span class="mh">0xFF</span>
     <span class="n">unpacked</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">N</span><span class="p">,</span> <span class="n">K</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">int16</span><span class="p">)</span>
@@ -1170,9 +1215,9 @@ window.runMermaid = runMermaid;</script>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">_repack_awq_prepacked</span><span class="p">(</span><span class="n">w_int16</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Repack ``[N, K] int16`` nibbles back to AWQ ``[N//2, K] uint8``.&quot;&quot;&quot;</span>
+<span class="w">    </span><span class="sd">"""Repack ``[N, K] int16`` nibbles back to AWQ ``[N//2, K] uint8``."""</span>
     <span class="n">N</span> <span class="o">=</span> <span class="n">w_int16</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
-    <span class="k">assert</span> <span class="n">N</span> <span class="o">%</span> <span class="mi">2</span> <span class="o">==</span> <span class="mi">0</span><span class="p">,</span> <span class="sa">f</span><span class="s2">&quot;AWQ repack requires even N, got </span><span class="si">{</span><span class="n">N</span><span class="si">}</span><span class="s2">&quot;</span>
+    <span class="k">assert</span> <span class="n">N</span> <span class="o">%</span> <span class="mi">2</span> <span class="o">==</span> <span class="mi">0</span><span class="p">,</span> <span class="sa">f</span><span class="s2">"AWQ repack requires even N, got </span><span class="si">{</span><span class="n">N</span><span class="si">}</span><span class="s2">"</span>
     <span class="n">low</span> <span class="o">=</span> <span class="n">w_int16</span><span class="p">[</span><span class="mi">0</span><span class="p">::</span><span class="mi">2</span><span class="p">]</span> <span class="o">&amp;</span> <span class="mh">0xF</span>
     <span class="n">high</span> <span class="o">=</span> <span class="n">w_int16</span><span class="p">[</span><span class="mi">1</span><span class="p">::</span><span class="mi">2</span><span class="p">]</span> <span class="o">&amp;</span> <span class="mh">0xF</span>
     <span class="k">return</span> <span class="p">((</span><span class="n">high</span> <span class="o">&lt;&lt;</span> <span class="mi">4</span><span class="p">)</span> <span class="o">|</span> <span class="n">low</span><span class="p">)</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">uint8</span><span class="p">)</span>
@@ -1188,25 +1233,25 @@ window.runMermaid = runMermaid;</script>
 <span class="k">def</span><span class="w"> </span><span class="nf">load_weights</span><span class="p">(</span>
     <span class="n">model</span><span class="p">:</span> <span class="n">nn</span><span class="o">.</span><span class="n">Module</span><span class="p">,</span>
     <span class="n">model_dir</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
-    <span class="n">device</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;cpu&quot;</span><span class="p">,</span>
-    <span class="n">key_remap</span><span class="p">:</span> <span class="s2">&quot;Optional[Callable[[str], Optional[str]]]&quot;</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">device</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">"cpu"</span><span class="p">,</span>
+    <span class="n">key_remap</span><span class="p">:</span> <span class="s2">"Optional[Callable[[str], Optional[str]]]"</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">key_prefix</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">pre_repack_hook</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Callable</span><span class="p">[[</span><span class="n">nn</span><span class="o">.</span><span class="n">Module</span><span class="p">],</span> <span class="kc">None</span><span class="p">]]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">mapping</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Mapping</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Load all safetensors weights from *model_dir* into *model* in-place.</span>
+<span class="w">    </span><span class="sd">"""Load all safetensors weights from *model_dir* into *model* in-place.</span>
 
 <span class="sd">    Args:</span>
 <span class="sd">        model:      Module built by :meth:`~tensorrt_edgellm.model.AutoModel.from_pretrained`.</span>
 <span class="sd">        model_dir:  Checkpoint directory that contains safetensors files.</span>
-<span class="sd">        device:     Target device (e.g. ``&quot;cpu&quot;``, ``&quot;cuda:0&quot;``).</span>
+<span class="sd">        device:     Target device (e.g. ``"cpu"``, ``"cuda:0"``).</span>
 <span class="sd">                    Tensors are moved here after loading.</span>
 <span class="sd">        key_remap:  Optional callable ``(key: str) -&gt; Optional[str]``.</span>
 <span class="sd">                    Called on each checkpoint key *after* stripping the prefix.</span>
 <span class="sd">                    Return a new key to remap, the original key unchanged, or</span>
 <span class="sd">                    ``None`` to skip the tensor entirely.</span>
 <span class="sd">        key_prefix: Explicit checkpoint key prefix to strip (e.g.</span>
-<span class="sd">                    ``&quot;talker.&quot;`` or ``&quot;talker.code_predictor.&quot;``).</span>
+<span class="sd">                    ``"talker."`` or ``"talker.code_predictor."``).</span>
 <span class="sd">                    When provided, only keys starting with this prefix are</span>
 <span class="sd">                    loaded and auto-detection via :func:`_detect_key_prefix`</span>
 <span class="sd">                    is skipped.</span>
@@ -1217,7 +1262,7 @@ window.runMermaid = runMermaid;</script>
 <span class="sd">                    :func:`_shard_for_module` to slice each NVFP4</span>
 <span class="sd">                    weight/scale to its per-rank shard before assignment.</span>
 <span class="sd">                    Must match ``ModelConfig.mapping`` used to build *model*.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="n">mapping</span> <span class="o">=</span> <span class="n">mapping</span> <span class="ow">or</span> <span class="n">Mapping</span><span class="p">()</span>
     <span class="n">shard_map</span> <span class="o">=</span> <span class="n">_build_shard_map</span><span class="p">(</span><span class="n">model_dir</span><span class="p">)</span>
     <span class="c1"># Group keys by shard path to open each shard only once</span>
@@ -1226,15 +1271,15 @@ window.runMermaid = runMermaid;</script>
         <span class="n">path_to_keys</span><span class="o">.</span><span class="n">setdefault</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="p">[])</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">key</span><span class="p">)</span>
 
     <span class="k">if</span> <span class="n">key_prefix</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="n">strip_prefix</span><span class="p">,</span> <span class="n">insert_prefix</span> <span class="o">=</span> <span class="n">key_prefix</span><span class="p">,</span> <span class="s2">&quot;&quot;</span>
+        <span class="n">strip_prefix</span><span class="p">,</span> <span class="n">insert_prefix</span> <span class="o">=</span> <span class="n">key_prefix</span><span class="p">,</span> <span class="s2">""</span>
     <span class="k">else</span><span class="p">:</span>
-        <span class="c1"># Auto-detect a common VL wrapper prefix (e.g. &quot;language_model.&quot; for</span>
+        <span class="c1"># Auto-detect a common VL wrapper prefix (e.g. "language_model." for</span>
         <span class="c1"># InternVL) and strip it so the LLM weights map to our module tree.</span>
         <span class="n">all_keys</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="n">shard_map</span><span class="o">.</span><span class="n">keys</span><span class="p">())</span>
         <span class="n">strip_prefix</span><span class="p">,</span> <span class="n">insert_prefix</span> <span class="o">=</span> <span class="n">_detect_key_prefix</span><span class="p">(</span><span class="n">all_keys</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">strip_prefix</span><span class="p">:</span>
         <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
-            <span class="s2">&quot;Stripping key prefix </span><span class="si">%r</span><span class="s2"> from checkpoint keys (inserting </span><span class="si">%r</span><span class="s2">)&quot;</span><span class="p">,</span>
+            <span class="s2">"Stripping key prefix </span><span class="si">%r</span><span class="s2"> from checkpoint keys (inserting </span><span class="si">%r</span><span class="s2">)"</span><span class="p">,</span>
             <span class="n">strip_prefix</span><span class="p">,</span> <span class="n">insert_prefix</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_apply_prefix</span><span class="p">(</span><span class="n">key</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]:</span>
@@ -1247,7 +1292,7 @@ window.runMermaid = runMermaid;</script>
 
     <span class="n">loaded</span> <span class="o">=</span> <span class="n">skipped</span> <span class="o">=</span> <span class="mi">0</span>
     <span class="k">for</span> <span class="n">shard_path</span><span class="p">,</span> <span class="n">keys</span> <span class="ow">in</span> <span class="n">path_to_keys</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
-        <span class="k">if</span> <span class="n">shard_path</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="s2">&quot;.bin&quot;</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">shard_path</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="s2">".bin"</span><span class="p">):</span>
             <span class="c1"># PyTorch pickle shard -- load all at once, then iterate keys.</span>
             <span class="n">bin_state</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">shard_path</span><span class="p">,</span>
                                    <span class="n">map_location</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
@@ -1255,7 +1300,7 @@ window.runMermaid = runMermaid;</script>
             <span class="k">for</span> <span class="n">key</span> <span class="ow">in</span> <span class="n">keys</span><span class="p">:</span>
                 <span class="n">tensor</span> <span class="o">=</span> <span class="n">bin_state</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">key</span><span class="p">)</span>
                 <span class="k">if</span> <span class="n">tensor</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-                    <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Key not found in .bin shard: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">key</span><span class="p">)</span>
+                    <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">"Key not found in .bin shard: </span><span class="si">%s</span><span class="s2">"</span><span class="p">,</span> <span class="n">key</span><span class="p">)</span>
                     <span class="n">skipped</span> <span class="o">+=</span> <span class="mi">1</span>
                     <span class="k">continue</span>
                 <span class="n">mapped_key</span> <span class="o">=</span> <span class="n">_apply_prefix</span><span class="p">(</span><span class="n">key</span><span class="p">)</span>
@@ -1275,10 +1320,10 @@ window.runMermaid = runMermaid;</script>
                                              <span class="n">mapping</span><span class="o">=</span><span class="n">mapping</span><span class="p">):</span>
                     <span class="n">loaded</span> <span class="o">+=</span> <span class="mi">1</span>
                 <span class="k">else</span><span class="p">:</span>
-                    <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Key not found in model: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">key</span><span class="p">)</span>
+                    <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">"Key not found in model: </span><span class="si">%s</span><span class="s2">"</span><span class="p">,</span> <span class="n">key</span><span class="p">)</span>
                     <span class="n">skipped</span> <span class="o">+=</span> <span class="mi">1</span>
         <span class="k">else</span><span class="p">:</span>
-            <span class="k">with</span> <span class="n">safe_open</span><span class="p">(</span><span class="n">shard_path</span><span class="p">,</span> <span class="n">framework</span><span class="o">=</span><span class="s2">&quot;pt&quot;</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
+            <span class="k">with</span> <span class="n">safe_open</span><span class="p">(</span><span class="n">shard_path</span><span class="p">,</span> <span class="n">framework</span><span class="o">=</span><span class="s2">"pt"</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
                 <span class="k">for</span> <span class="n">key</span> <span class="ow">in</span> <span class="n">keys</span><span class="p">:</span>
                     <span class="n">tensor</span> <span class="o">=</span> <span class="n">f</span><span class="o">.</span><span class="n">get_tensor</span><span class="p">(</span><span class="n">key</span><span class="p">)</span>
                     <span class="n">mapped_key</span> <span class="o">=</span> <span class="n">_apply_prefix</span><span class="p">(</span><span class="n">key</span><span class="p">)</span>
@@ -1298,10 +1343,10 @@ window.runMermaid = runMermaid;</script>
                                                  <span class="n">mapping</span><span class="o">=</span><span class="n">mapping</span><span class="p">):</span>
                         <span class="n">loaded</span> <span class="o">+=</span> <span class="mi">1</span>
                     <span class="k">else</span><span class="p">:</span>
-                        <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Key not found in model: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">key</span><span class="p">)</span>
+                        <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">"Key not found in model: </span><span class="si">%s</span><span class="s2">"</span><span class="p">,</span> <span class="n">key</span><span class="p">)</span>
                         <span class="n">skipped</span> <span class="o">+=</span> <span class="mi">1</span>
 
-    <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Loaded </span><span class="si">%d</span><span class="s2"> tensors, skipped </span><span class="si">%d</span><span class="s2"> from </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">loaded</span><span class="p">,</span> <span class="n">skipped</span><span class="p">,</span>
+    <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">"Loaded </span><span class="si">%d</span><span class="s2"> tensors, skipped </span><span class="si">%d</span><span class="s2"> from </span><span class="si">%s</span><span class="s2">"</span><span class="p">,</span> <span class="n">loaded</span><span class="p">,</span> <span class="n">skipped</span><span class="p">,</span>
                 <span class="n">model_dir</span><span class="p">)</span>
 
     <span class="k">if</span> <span class="n">pre_repack_hook</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
@@ -1310,17 +1355,17 @@ window.runMermaid = runMermaid;</script>
     <span class="n">apply_all_repacking</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
     <span class="c1"># Post-process: apply tied embeddings (HF tie_word_embeddings=True models</span>
     <span class="c1"># omit lm_head.weight from the checkpoint; tie_weights() restores the share).</span>
-    <span class="n">config</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="s2">&quot;config&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
-    <span class="k">if</span> <span class="p">(</span><span class="nb">hasattr</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="s2">&quot;tie_weights&quot;</span><span class="p">)</span> <span class="ow">and</span> <span class="n">config</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
-            <span class="ow">and</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">config</span><span class="p">,</span> <span class="s2">&quot;tie_word_embeddings&quot;</span><span class="p">,</span> <span class="kc">False</span><span class="p">)):</span>
+    <span class="n">config</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="s2">"config"</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+    <span class="k">if</span> <span class="p">(</span><span class="nb">hasattr</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="s2">"tie_weights"</span><span class="p">)</span> <span class="ow">and</span> <span class="n">config</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+            <span class="ow">and</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">config</span><span class="p">,</span> <span class="s2">"tie_word_embeddings"</span><span class="p">,</span> <span class="kc">False</span><span class="p">)):</span>
         <span class="kn">from</span><span class="w"> </span><span class="nn">..models.linear</span><span class="w"> </span><span class="kn">import</span> <span class="n">FP16Linear</span>
-        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="nb">getattr</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="s2">&quot;lm_head&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">),</span> <span class="n">FP16Linear</span><span class="p">):</span>
+        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="nb">getattr</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="s2">"lm_head"</span><span class="p">,</span> <span class="kc">None</span><span class="p">),</span> <span class="n">FP16Linear</span><span class="p">):</span>
             <span class="n">model</span><span class="o">.</span><span class="n">tie_weights</span><span class="p">()</span>
-            <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Tied lm_head.weight to embed_tokens.weight&quot;</span><span class="p">)</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">"Tied lm_head.weight to embed_tokens.weight"</span><span class="p">)</span>
         <span class="k">else</span><span class="p">:</span>
             <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
-                <span class="s2">&quot;Skipping tied lm_head.weight for non-FP16 lm_head type </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span>
-                <span class="nb">type</span><span class="p">(</span><span class="nb">getattr</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="s2">&quot;lm_head&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">))</span><span class="o">.</span><span class="vm">__name__</span><span class="p">)</span></div>
+                <span class="s2">"Skipping tied lm_head.weight for non-FP16 lm_head type </span><span class="si">%s</span><span class="s2">"</span><span class="p">,</span>
+                <span class="nb">type</span><span class="p">(</span><span class="nb">getattr</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="s2">"lm_head"</span><span class="p">,</span> <span class="kc">None</span><span class="p">))</span><span class="o">.</span><span class="vm">__name__</span><span class="p">)</span></div>
 
 
 
@@ -1330,7 +1375,7 @@ window.runMermaid = runMermaid;</script>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">_detect_key_prefix</span><span class="p">(</span><span class="n">keys</span><span class="p">:</span> <span class="nb">list</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tuple</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Return ``(strip_prefix, insert_prefix)`` for remapping checkpoint keys.</span>
+<span class="w">    </span><span class="sd">"""Return ``(strip_prefix, insert_prefix)`` for remapping checkpoint keys.</span>
 
 <span class="sd">    Detects VL wrapper prefixes so that LLM weights map into our module tree.</span>
 <span class="sd">    After stripping ``strip_prefix`` from each key, ``insert_prefix`` is</span>
@@ -1338,72 +1383,79 @@ window.runMermaid = runMermaid;</script>
 
 <span class="sd">    Examples:</span>
 <span class="sd">      InternVL3 keys: ``language_model.model.embed_tokens.weight``</span>
-<span class="sd">        → strip ``&quot;language_model.&quot;`` → ``&quot;model.embed_tokens.weight&quot;`` ✓</span>
+<span class="sd">        → strip ``"language_model."`` → ``"model.embed_tokens.weight"`` ✓</span>
 
 <span class="sd">      Qwen3-VL-2B keys: ``model.language_model.embed_tokens.weight``</span>
-<span class="sd">        → strip ``&quot;model.language_model.&quot;`` + insert ``&quot;model.&quot;``</span>
-<span class="sd">        → ``&quot;model.embed_tokens.weight&quot;`` ✓</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">        → strip ``"model.language_model."`` + insert ``"model."``</span>
+<span class="sd">        → ``"model.embed_tokens.weight"`` ✓</span>
+<span class="sd">    """</span>
     <span class="n">key_set</span> <span class="o">=</span> <span class="nb">set</span><span class="p">(</span><span class="n">keys</span><span class="p">)</span>
-    <span class="k">for</span> <span class="n">prefix</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">&quot;language_model.&quot;</span><span class="p">,</span> <span class="s2">&quot;text_model.&quot;</span><span class="p">,</span> <span class="s2">&quot;llm.&quot;</span><span class="p">):</span>
-        <span class="k">if</span> <span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">model.embed_tokens.weight&quot;</span> <span class="ow">in</span> <span class="n">key_set</span>
-                <span class="ow">or</span> <span class="nb">any</span><span class="p">(</span><span class="n">k</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">model.layers.0.&quot;</span><span class="p">)</span> <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="n">keys</span><span class="p">)</span>
+    <span class="k">for</span> <span class="n">prefix</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">"language_model."</span><span class="p">,</span> <span class="s2">"text_model."</span><span class="p">,</span> <span class="s2">"llm."</span><span class="p">):</span>
+        <span class="k">if</span> <span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">model.embed_tokens.weight"</span> <span class="ow">in</span> <span class="n">key_set</span>
+                <span class="ow">or</span> <span class="nb">any</span><span class="p">(</span><span class="n">k</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">model.layers.0."</span><span class="p">)</span> <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="n">keys</span><span class="p">)</span>
                 <span class="ow">or</span> <span class="nb">any</span><span class="p">(</span>
-                    <span class="n">k</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">backbone.layers.0.&quot;</span><span class="p">)</span>
+                    <span class="n">k</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">backbone.layers.0."</span><span class="p">)</span>
                     <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="n">keys</span><span class="p">)):</span>
-            <span class="k">return</span> <span class="n">prefix</span><span class="p">,</span> <span class="s2">&quot;&quot;</span>
-    <span class="c1"># Qwen3-VL-2B: text decoder is under &quot;model.language_model.*&quot;.</span>
-    <span class="c1"># Strip the outer &quot;model.language_model.&quot; and prepend &quot;model.&quot; so that</span>
-    <span class="c1"># the stripped key (e.g. &quot;embed_tokens.weight&quot;) becomes</span>
-    <span class="c1"># &quot;model.embed_tokens.weight&quot; matching the CausalLM parameter tree.</span>
-    <span class="k">if</span> <span class="p">(</span><span class="nb">any</span><span class="p">(</span><span class="n">k</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="s2">&quot;model.language_model.&quot;</span><span class="p">)</span> <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="n">keys</span><span class="p">)</span>
-            <span class="ow">and</span> <span class="s2">&quot;model.embed_tokens.weight&quot;</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">key_set</span><span class="p">):</span>
-        <span class="k">return</span> <span class="s2">&quot;model.language_model.&quot;</span><span class="p">,</span> <span class="s2">&quot;model.&quot;</span>
-    <span class="c1"># Alpamayo-R1: LLM text decoder is under &quot;vlm.model.language_model.*&quot;.</span>
-    <span class="c1"># lm_head at &quot;vlm.lm_head.*&quot; falls through and requires key_remap.</span>
-    <span class="k">if</span> <span class="nb">any</span><span class="p">(</span><span class="n">k</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="s2">&quot;vlm.model.language_model.&quot;</span><span class="p">)</span> <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="n">keys</span><span class="p">):</span>
-        <span class="k">return</span> <span class="s2">&quot;vlm.model.language_model.&quot;</span><span class="p">,</span> <span class="s2">&quot;model.&quot;</span>
+            <span class="k">return</span> <span class="n">prefix</span><span class="p">,</span> <span class="s2">""</span>
+    <span class="c1"># Qwen3-VL-2B: text decoder is under "model.language_model.*".</span>
+    <span class="c1"># Strip the outer "model.language_model." and prepend "model." so that</span>
+    <span class="c1"># the stripped key (e.g. "embed_tokens.weight") becomes</span>
+    <span class="c1"># "model.embed_tokens.weight" matching the CausalLM parameter tree.</span>
+    <span class="k">if</span> <span class="p">(</span><span class="nb">any</span><span class="p">(</span><span class="n">k</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="s2">"model.language_model."</span><span class="p">)</span> <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="n">keys</span><span class="p">)</span>
+            <span class="ow">and</span> <span class="s2">"model.embed_tokens.weight"</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">key_set</span><span class="p">):</span>
+        <span class="k">return</span> <span class="s2">"model.language_model."</span><span class="p">,</span> <span class="s2">"model."</span>
+    <span class="c1"># Alpamayo-R1: LLM text decoder is under "vlm.model.language_model.*".</span>
+    <span class="c1"># lm_head at "vlm.lm_head.*" falls through and requires key_remap.</span>
+    <span class="k">if</span> <span class="nb">any</span><span class="p">(</span><span class="n">k</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="s2">"vlm.model.language_model."</span><span class="p">)</span> <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="n">keys</span><span class="p">):</span>
+        <span class="k">return</span> <span class="s2">"vlm.model.language_model."</span><span class="p">,</span> <span class="s2">"model."</span>
     <span class="c1"># Qwen3-ASR / Qwen3-Omni: LLM weights are under thinker.model.*</span>
-    <span class="k">if</span> <span class="p">(</span><span class="nb">any</span><span class="p">(</span><span class="n">k</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="s2">&quot;thinker.model.layers.0.&quot;</span><span class="p">)</span> <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="n">keys</span><span class="p">)</span>
-            <span class="ow">and</span> <span class="ow">not</span> <span class="nb">any</span><span class="p">(</span><span class="n">k</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="s2">&quot;model.layers.0.&quot;</span><span class="p">)</span> <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="n">keys</span><span class="p">)):</span>
-        <span class="k">return</span> <span class="s2">&quot;thinker.&quot;</span><span class="p">,</span> <span class="s2">&quot;&quot;</span>
+    <span class="k">if</span> <span class="p">(</span><span class="nb">any</span><span class="p">(</span><span class="n">k</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="s2">"thinker.model.layers.0."</span><span class="p">)</span> <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="n">keys</span><span class="p">)</span>
+            <span class="ow">and</span> <span class="ow">not</span> <span class="nb">any</span><span class="p">(</span><span class="n">k</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="s2">"model.layers.0."</span><span class="p">)</span> <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="n">keys</span><span class="p">)):</span>
+        <span class="k">return</span> <span class="s2">"thinker."</span><span class="p">,</span> <span class="s2">""</span>
     <span class="c1"># Qwen3-TTS: all weights are under talker.* (talker is the LLM backbone)</span>
-    <span class="k">if</span> <span class="p">(</span><span class="nb">any</span><span class="p">(</span><span class="n">k</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="s2">&quot;talker.model.layers.0.&quot;</span><span class="p">)</span> <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="n">keys</span><span class="p">)</span>
-            <span class="ow">and</span> <span class="ow">not</span> <span class="nb">any</span><span class="p">(</span><span class="n">k</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="s2">&quot;model.layers.0.&quot;</span><span class="p">)</span> <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="n">keys</span><span class="p">)):</span>
-        <span class="k">return</span> <span class="s2">&quot;talker.&quot;</span><span class="p">,</span> <span class="s2">&quot;&quot;</span>
-    <span class="k">return</span> <span class="s2">&quot;&quot;</span><span class="p">,</span> <span class="s2">&quot;&quot;</span>
+    <span class="k">if</span> <span class="p">(</span><span class="nb">any</span><span class="p">(</span><span class="n">k</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="s2">"talker.model.layers.0."</span><span class="p">)</span> <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="n">keys</span><span class="p">)</span>
+            <span class="ow">and</span> <span class="ow">not</span> <span class="nb">any</span><span class="p">(</span><span class="n">k</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="s2">"model.layers.0."</span><span class="p">)</span> <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="n">keys</span><span class="p">)):</span>
+        <span class="k">return</span> <span class="s2">"talker."</span><span class="p">,</span> <span class="s2">""</span>
+    <span class="k">return</span> <span class="s2">""</span><span class="p">,</span> <span class="s2">""</span>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">_resolve_shard</span><span class="p">(</span><span class="n">model_dir</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">shard</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Return the absolute shard path, asserting it stays inside model_dir.&quot;&quot;&quot;</span>
+<span class="w">    </span><span class="sd">"""Return the shard path, asserting the index-declared location stays</span>
+<span class="sd">    inside model_dir. The containment check is lexical (it does NOT follow the</span>
+<span class="sd">    final-component symlink) so a Hugging Face cache layout -- where</span>
+<span class="sd">    ``snapshots/&lt;rev&gt;/x.safetensors`` is a symlink into ``../../blobs/&lt;hash&gt;``</span>
+<span class="sd">    -- is accepted, while a genuine ``..``/absolute path-escape encoded in the</span>
+<span class="sd">    checkpoint index is still rejected."""</span>
     <span class="n">base</span> <span class="o">=</span> <span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span><span class="p">(</span><span class="n">model_dir</span><span class="p">)</span><span class="o">.</span><span class="n">resolve</span><span class="p">()</span>
-    <span class="n">resolved</span> <span class="o">=</span> <span class="p">(</span><span class="n">base</span> <span class="o">/</span> <span class="n">shard</span><span class="p">)</span><span class="o">.</span><span class="n">resolve</span><span class="p">()</span>
+    <span class="c1"># os.path.join lets an absolute ``shard`` override base (caught below);</span>
+    <span class="c1"># normpath collapses ``..`` lexically WITHOUT dereferencing symlinks.</span>
+    <span class="n">candidate</span> <span class="o">=</span> <span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">normpath</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="n">base</span><span class="p">),</span> <span class="n">shard</span><span class="p">)))</span>
     <span class="k">try</span><span class="p">:</span>
-        <span class="n">resolved</span><span class="o">.</span><span class="n">relative_to</span><span class="p">(</span><span class="n">base</span><span class="p">)</span>
+        <span class="n">candidate</span><span class="o">.</span><span class="n">relative_to</span><span class="p">(</span><span class="n">base</span><span class="p">)</span>
     <span class="k">except</span> <span class="ne">ValueError</span><span class="p">:</span>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
-            <span class="sa">f</span><span class="s2">&quot;Shard path </span><span class="si">{</span><span class="n">shard</span><span class="si">!r}</span><span class="s2"> in checkpoint index escapes model_dir &quot;</span>
-            <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">model_dir</span><span class="si">!r}</span><span class="s2">. This may indicate a malformed checkpoint.&quot;</span><span class="p">)</span>
-    <span class="k">return</span> <span class="nb">str</span><span class="p">(</span><span class="n">resolved</span><span class="p">)</span>
+            <span class="sa">f</span><span class="s2">"Shard path </span><span class="si">{</span><span class="n">shard</span><span class="si">!r}</span><span class="s2"> in checkpoint index escapes model_dir "</span>
+            <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">model_dir</span><span class="si">!r}</span><span class="s2">. This may indicate a malformed checkpoint."</span><span class="p">)</span>
+    <span class="k">return</span> <span class="nb">str</span><span class="p">(</span><span class="n">candidate</span><span class="p">)</span>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">_build_shard_map</span><span class="p">(</span><span class="n">model_dir</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Return a mapping of weight-key -&gt; absolute shard file path.</span>
+<span class="w">    </span><span class="sd">"""Return a mapping of weight-key -&gt; absolute shard file path.</span>
 
 <span class="sd">    Handles:</span>
 <span class="sd">      • ``model.safetensors``             (single file, no index)</span>
 <span class="sd">      • ``model.safetensors.index.json``  (multi-shard, weight_map inside)</span>
 <span class="sd">      • ``pytorch_model.bin``             (single PyTorch pickle file)</span>
 <span class="sd">      • ``pytorch_model.bin.index.json``  (multi-shard PyTorch pickle)</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="c1"># ---- safetensors (preferred) ----------------------------------------</span>
-    <span class="n">index_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">model_dir</span><span class="p">,</span> <span class="s2">&quot;model.safetensors.index.json&quot;</span><span class="p">)</span>
-    <span class="n">single_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">model_dir</span><span class="p">,</span> <span class="s2">&quot;model.safetensors&quot;</span><span class="p">)</span>
+    <span class="n">index_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">model_dir</span><span class="p">,</span> <span class="s2">"model.safetensors.index.json"</span><span class="p">)</span>
+    <span class="n">single_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">model_dir</span><span class="p">,</span> <span class="s2">"model.safetensors"</span><span class="p">)</span>
 
     <span class="k">if</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">exists</span><span class="p">(</span><span class="n">index_path</span><span class="p">):</span>
         <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">index_path</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
             <span class="n">index</span> <span class="o">=</span> <span class="n">json</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">f</span><span class="p">)</span>
-        <span class="n">weight_map</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="n">index</span><span class="p">[</span><span class="s2">&quot;weight_map&quot;</span><span class="p">]</span>
+        <span class="n">weight_map</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="n">index</span><span class="p">[</span><span class="s2">"weight_map"</span><span class="p">]</span>
         <span class="n">missing_shards</span> <span class="o">=</span> <span class="p">{</span>
             <span class="n">shard</span>
             <span class="k">for</span> <span class="n">shard</span> <span class="ow">in</span> <span class="nb">set</span><span class="p">(</span><span class="n">weight_map</span><span class="o">.</span><span class="n">values</span><span class="p">())</span>
@@ -1411,10 +1463,10 @@ window.runMermaid = runMermaid;</script>
         <span class="p">}</span>
         <span class="k">if</span> <span class="n">missing_shards</span> <span class="ow">and</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">exists</span><span class="p">(</span><span class="n">single_path</span><span class="p">):</span>
             <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
-                <span class="s2">&quot;Ignoring stale </span><span class="si">%s</span><span class="s2"> because shard file(s) are missing and &quot;</span>
-                <span class="s2">&quot;single-file model.safetensors exists: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span>
+                <span class="s2">"Ignoring stale </span><span class="si">%s</span><span class="s2"> because shard file(s) are missing and "</span>
+                <span class="s2">"single-file model.safetensors exists: </span><span class="si">%s</span><span class="s2">"</span><span class="p">,</span>
                 <span class="n">index_path</span><span class="p">,</span>
-                <span class="s2">&quot;, &quot;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="nb">sorted</span><span class="p">(</span><span class="n">missing_shards</span><span class="p">)),</span>
+                <span class="s2">", "</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="nb">sorted</span><span class="p">(</span><span class="n">missing_shards</span><span class="p">)),</span>
             <span class="p">)</span>
         <span class="k">else</span><span class="p">:</span>
             <span class="k">return</span> <span class="p">{</span>
@@ -1424,7 +1476,7 @@ window.runMermaid = runMermaid;</script>
 
     <span class="k">if</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">exists</span><span class="p">(</span><span class="n">single_path</span><span class="p">):</span>
         <span class="n">keys</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
-        <span class="k">with</span> <span class="n">safe_open</span><span class="p">(</span><span class="n">single_path</span><span class="p">,</span> <span class="n">framework</span><span class="o">=</span><span class="s2">&quot;pt&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
+        <span class="k">with</span> <span class="n">safe_open</span><span class="p">(</span><span class="n">single_path</span><span class="p">,</span> <span class="n">framework</span><span class="o">=</span><span class="s2">"pt"</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
             <span class="k">for</span> <span class="n">key</span> <span class="ow">in</span> <span class="n">f</span><span class="o">.</span><span class="n">keys</span><span class="p">():</span>
                 <span class="n">keys</span><span class="p">[</span><span class="n">key</span><span class="p">]</span> <span class="o">=</span> <span class="n">single_path</span>
         <span class="k">return</span> <span class="n">keys</span>
@@ -1436,39 +1488,39 @@ window.runMermaid = runMermaid;</script>
         <span class="p">}</span>
 
     <span class="c1"># ---- PyTorch pickle (.bin) fallback ---------------------------------</span>
-    <span class="n">bin_index_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">model_dir</span><span class="p">,</span> <span class="s2">&quot;pytorch_model.bin.index.json&quot;</span><span class="p">)</span>
-    <span class="n">bin_single_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">model_dir</span><span class="p">,</span> <span class="s2">&quot;pytorch_model.bin&quot;</span><span class="p">)</span>
+    <span class="n">bin_index_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">model_dir</span><span class="p">,</span> <span class="s2">"pytorch_model.bin.index.json"</span><span class="p">)</span>
+    <span class="n">bin_single_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">model_dir</span><span class="p">,</span> <span class="s2">"pytorch_model.bin"</span><span class="p">)</span>
 
     <span class="k">if</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">exists</span><span class="p">(</span><span class="n">bin_index_path</span><span class="p">):</span>
         <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">bin_index_path</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
             <span class="n">index</span> <span class="o">=</span> <span class="n">json</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">f</span><span class="p">)</span>
-        <span class="n">weight_map</span> <span class="o">=</span> <span class="n">index</span><span class="p">[</span><span class="s2">&quot;weight_map&quot;</span><span class="p">]</span>
+        <span class="n">weight_map</span> <span class="o">=</span> <span class="n">index</span><span class="p">[</span><span class="s2">"weight_map"</span><span class="p">]</span>
         <span class="k">return</span> <span class="p">{</span>
             <span class="n">key</span><span class="p">:</span> <span class="n">_resolve_shard</span><span class="p">(</span><span class="n">model_dir</span><span class="p">,</span> <span class="n">shard</span><span class="p">)</span>
             <span class="k">for</span> <span class="n">key</span><span class="p">,</span> <span class="n">shard</span> <span class="ow">in</span> <span class="n">weight_map</span><span class="o">.</span><span class="n">items</span><span class="p">()</span>
         <span class="p">}</span>
 
     <span class="k">if</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">exists</span><span class="p">(</span><span class="n">bin_single_path</span><span class="p">):</span>
-        <span class="c1"># Load with map_location=&quot;meta&quot; to get key names without loading data.</span>
+        <span class="c1"># Load with map_location="meta" to get key names without loading data.</span>
         <span class="n">meta</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">bin_single_path</span><span class="p">,</span>
-                          <span class="n">map_location</span><span class="o">=</span><span class="s2">&quot;meta&quot;</span><span class="p">,</span>
+                          <span class="n">map_location</span><span class="o">=</span><span class="s2">"meta"</span><span class="p">,</span>
                           <span class="n">weights_only</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
         <span class="k">return</span> <span class="p">{</span><span class="n">key</span><span class="p">:</span> <span class="n">bin_single_path</span> <span class="k">for</span> <span class="n">key</span> <span class="ow">in</span> <span class="n">meta</span><span class="o">.</span><span class="n">keys</span><span class="p">()}</span>
 
     <span class="k">raise</span> <span class="ne">FileNotFoundError</span><span class="p">(</span>
-        <span class="sa">f</span><span class="s2">&quot;No checkpoint files found in </span><span class="si">{</span><span class="n">model_dir</span><span class="si">!r}</span><span class="s2">. &quot;</span>
-        <span class="s2">&quot;Expected &#39;model.safetensors&#39;, &#39;model.safetensors.index.json&#39;, &quot;</span>
-        <span class="s2">&quot;&#39;pytorch_model.bin&#39;, or &#39;pytorch_model.bin.index.json&#39;.&quot;</span><span class="p">)</span>
+        <span class="sa">f</span><span class="s2">"No checkpoint files found in </span><span class="si">{</span><span class="n">model_dir</span><span class="si">!r}</span><span class="s2">. "</span>
+        <span class="s2">"Expected 'model.safetensors', 'model.safetensors.index.json', "</span>
+        <span class="s2">"'pytorch_model.bin', or 'pytorch_model.bin.index.json'."</span><span class="p">)</span>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">_navigate</span><span class="p">(</span><span class="n">model</span><span class="p">:</span> <span class="n">nn</span><span class="o">.</span><span class="n">Module</span><span class="p">,</span> <span class="n">parts</span><span class="p">:</span> <span class="nb">list</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">nn</span><span class="o">.</span><span class="n">Module</span><span class="p">,</span> <span class="nb">str</span><span class="p">]:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Walk the module tree following *parts* and return (leaf_module, attr).</span>
+<span class="w">    </span><span class="sd">"""Walk the module tree following *parts* and return (leaf_module, attr).</span>
 
 <span class="sd">    Integer parts are interpreted as ``nn.ModuleList`` indices.</span>
 
 <span class="sd">    Raises:</span>
 <span class="sd">        AttributeError: if any part of the path is not found.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="n">module</span> <span class="o">=</span> <span class="n">model</span>
     <span class="k">for</span> <span class="n">part</span> <span class="ow">in</span> <span class="n">parts</span><span class="p">[:</span><span class="o">-</span><span class="mi">1</span><span class="p">]:</span>
         <span class="k">if</span> <span class="n">part</span><span class="o">.</span><span class="n">isdigit</span><span class="p">():</span>
@@ -1476,30 +1528,30 @@ window.runMermaid = runMermaid;</script>
         <span class="k">else</span><span class="p">:</span>
             <span class="n">module</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">module</span><span class="p">,</span> <span class="n">part</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">module</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="k">raise</span> <span class="ne">AttributeError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;None encountered at &#39;</span><span class="si">{</span><span class="n">part</span><span class="si">}</span><span class="s2">&#39; in path&quot;</span><span class="p">)</span>
+            <span class="k">raise</span> <span class="ne">AttributeError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"None encountered at '</span><span class="si">{</span><span class="n">part</span><span class="si">}</span><span class="s2">' in path"</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">module</span><span class="p">,</span> <span class="n">parts</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">load_weight_shard</span><span class="p">(</span><span class="n">tensor</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">,</span>
                       <span class="n">dim</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
                       <span class="n">mapping</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Mapping</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Slice *tensor* along *dim* to the per-rank shard given by *mapping*.</span>
+<span class="w">    </span><span class="sd">"""Slice *tensor* along *dim* to the per-rank shard given by *mapping*.</span>
 
 <span class="sd">    Free function so any caller (``_shard_for_module``, future</span>
 <span class="sd">    ``MoEMethodBase.load_weights``) can reuse the same primitive.</span>
 <span class="sd">    Supports lazy partial reads when *tensor* is a safetensors slice</span>
 <span class="sd">    (has ``get_shape``).</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="n">mapping</span> <span class="o">=</span> <span class="n">mapping</span> <span class="ow">or</span> <span class="n">Mapping</span><span class="p">()</span>
     <span class="n">tp_size</span><span class="p">,</span> <span class="n">tp_rank</span> <span class="o">=</span> <span class="n">mapping</span><span class="o">.</span><span class="n">tp_size</span><span class="p">,</span> <span class="n">mapping</span><span class="o">.</span><span class="n">tp_rank</span>
     <span class="k">if</span> <span class="n">tp_size</span> <span class="o">&lt;=</span> <span class="mi">1</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">tensor</span>
 
     <span class="c1"># safetensors PySafeSlice path: read only the slice from disk.</span>
-    <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="n">tensor</span><span class="p">,</span> <span class="s2">&quot;get_shape&quot;</span><span class="p">):</span>
+    <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="n">tensor</span><span class="p">,</span> <span class="s2">"get_shape"</span><span class="p">):</span>
         <span class="n">shape</span> <span class="o">=</span> <span class="n">tensor</span><span class="o">.</span><span class="n">get_shape</span><span class="p">()</span>
         <span class="k">assert</span> <span class="n">shape</span><span class="p">[</span><span class="n">dim</span><span class="p">]</span> <span class="o">%</span> <span class="n">tp_size</span> <span class="o">==</span> <span class="mi">0</span><span class="p">,</span> <span class="p">(</span>
-            <span class="sa">f</span><span class="s2">&quot;TP shard: dim-</span><span class="si">{</span><span class="n">dim</span><span class="si">}</span><span class="s2"> </span><span class="si">{</span><span class="n">shape</span><span class="p">[</span><span class="n">dim</span><span class="p">]</span><span class="si">}</span><span class="s2"> not divisible by tp_size=</span><span class="si">{</span><span class="n">tp_size</span><span class="si">}</span><span class="s2">&quot;</span>
+            <span class="sa">f</span><span class="s2">"TP shard: dim-</span><span class="si">{</span><span class="n">dim</span><span class="si">}</span><span class="s2"> </span><span class="si">{</span><span class="n">shape</span><span class="p">[</span><span class="n">dim</span><span class="p">]</span><span class="si">}</span><span class="s2"> not divisible by tp_size=</span><span class="si">{</span><span class="n">tp_size</span><span class="si">}</span><span class="s2">"</span>
         <span class="p">)</span>
         <span class="n">shard</span> <span class="o">=</span> <span class="n">shape</span><span class="p">[</span><span class="n">dim</span><span class="p">]</span> <span class="o">//</span> <span class="n">tp_size</span>
         <span class="n">sl</span> <span class="o">=</span> <span class="p">[</span><span class="nb">slice</span><span class="p">(</span><span class="kc">None</span><span class="p">)]</span> <span class="o">*</span> <span class="nb">len</span><span class="p">(</span><span class="n">shape</span><span class="p">)</span>
@@ -1508,7 +1560,7 @@ window.runMermaid = runMermaid;</script>
 
     <span class="c1"># In-memory torch.Tensor path.</span>
     <span class="k">assert</span> <span class="n">tensor</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="n">dim</span><span class="p">]</span> <span class="o">%</span> <span class="n">tp_size</span> <span class="o">==</span> <span class="mi">0</span><span class="p">,</span> <span class="p">(</span>
-        <span class="sa">f</span><span class="s2">&quot;TP shard: dim-</span><span class="si">{</span><span class="n">dim</span><span class="si">}</span><span class="s2"> </span><span class="si">{</span><span class="n">tensor</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="n">dim</span><span class="p">]</span><span class="si">}</span><span class="s2"> not divisible by tp_size=</span><span class="si">{</span><span class="n">tp_size</span><span class="si">}</span><span class="s2">&quot;</span>
+        <span class="sa">f</span><span class="s2">"TP shard: dim-</span><span class="si">{</span><span class="n">dim</span><span class="si">}</span><span class="s2"> </span><span class="si">{</span><span class="n">tensor</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="n">dim</span><span class="p">]</span><span class="si">}</span><span class="s2"> not divisible by tp_size=</span><span class="si">{</span><span class="n">tp_size</span><span class="si">}</span><span class="s2">"</span>
     <span class="p">)</span>
     <span class="n">shard</span> <span class="o">=</span> <span class="n">tensor</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="n">dim</span><span class="p">]</span> <span class="o">//</span> <span class="n">tp_size</span>
     <span class="n">idx</span> <span class="o">=</span> <span class="p">[</span><span class="nb">slice</span><span class="p">(</span><span class="kc">None</span><span class="p">)]</span> <span class="o">*</span> <span class="n">tensor</span><span class="o">.</span><span class="n">dim</span><span class="p">()</span>
@@ -1520,23 +1572,23 @@ window.runMermaid = runMermaid;</script>
                       <span class="n">attr</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
                       <span class="n">tensor</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">,</span>
                       <span class="n">mapping</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Mapping</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Slice *tensor* to the per-rank shard declared by *module* for *attr*.</span>
+<span class="w">    </span><span class="sd">"""Slice *tensor* to the per-rank shard declared by *module* for *attr*.</span>
 
 <span class="sd">    Dispatches on :meth:`LinearBase.tp_split_dim` so each Linear subclass</span>
 <span class="sd">    owns its TP rule. The loader stays uniform across quant formats.</span>
 <span class="sd">    Wraps the shared :func:`load_weight_shard` primitive.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="n">mapping</span> <span class="o">=</span> <span class="n">mapping</span> <span class="ow">or</span> <span class="n">Mapping</span><span class="p">()</span>
     <span class="k">if</span> <span class="n">mapping</span><span class="o">.</span><span class="n">tp_size</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">tensor</span>
 
     <span class="n">dim</span> <span class="o">=</span> <span class="n">module</span><span class="o">.</span><span class="n">tp_split_dim</span><span class="p">(</span><span class="n">attr</span><span class="p">)</span> <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">module</span><span class="p">,</span> <span class="n">LinearBase</span><span class="p">)</span> <span class="k">else</span> <span class="kc">None</span>
-    <span class="n">tp_mode</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">module</span><span class="p">,</span> <span class="s2">&quot;tp_mode&quot;</span><span class="p">,</span> <span class="n">TPMode</span><span class="o">.</span><span class="n">REPLICATED</span><span class="p">)</span>
+    <span class="n">tp_mode</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">module</span><span class="p">,</span> <span class="s2">"tp_mode"</span><span class="p">,</span> <span class="n">TPMode</span><span class="o">.</span><span class="n">REPLICATED</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">dim</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="k">if</span> <span class="n">tp_mode</span> <span class="o">!=</span> <span class="n">TPMode</span><span class="o">.</span><span class="n">REPLICATED</span> <span class="ow">and</span> <span class="n">tensor</span><span class="o">.</span><span class="n">dim</span><span class="p">()</span> <span class="o">&gt;=</span> <span class="mi">2</span><span class="p">:</span>
             <span class="k">raise</span> <span class="ne">NotImplementedError</span><span class="p">(</span>
-                <span class="sa">f</span><span class="s2">&quot;TP sharding not declared for </span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="n">module</span><span class="p">)</span><span class="o">.</span><span class="vm">__name__</span><span class="si">}</span><span class="s2">.</span><span class="si">{</span><span class="n">attr</span><span class="si">}</span><span class="s2"> &quot;</span>
-                <span class="sa">f</span><span class="s2">&quot;under tp_mode=</span><span class="si">{</span><span class="n">tp_mode</span><span class="si">!r}</span><span class="s2">.&quot;</span><span class="p">)</span>
+                <span class="sa">f</span><span class="s2">"TP sharding not declared for </span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="n">module</span><span class="p">)</span><span class="o">.</span><span class="vm">__name__</span><span class="si">}</span><span class="s2">.</span><span class="si">{</span><span class="n">attr</span><span class="si">}</span><span class="s2"> "</span>
+                <span class="sa">f</span><span class="s2">"under tp_mode=</span><span class="si">{</span><span class="n">tp_mode</span><span class="si">!r}</span><span class="s2">."</span><span class="p">)</span>
         <span class="k">return</span> <span class="n">tensor</span>
 
     <span class="k">return</span> <span class="n">load_weight_shard</span><span class="p">(</span><span class="n">tensor</span><span class="p">,</span> <span class="n">dim</span><span class="p">,</span> <span class="n">mapping</span><span class="o">=</span><span class="n">mapping</span><span class="p">)</span>
@@ -1547,7 +1599,7 @@ window.runMermaid = runMermaid;</script>
                 <span class="n">tensor</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">,</span>
                 <span class="o">*</span><span class="p">,</span>
                 <span class="n">mapping</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Mapping</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Assign *tensor* to the buffer or parameter at *key* inside *model*.</span>
+<span class="w">    </span><span class="sd">"""Assign *tensor* to the buffer or parameter at *key* inside *model*.</span>
 
 <span class="sd">    Bfloat16 tensors are cast to float16 on the fly. The export pipeline</span>
 <span class="sd">    assumes FP16 activations and the C++ runtime requires FP16 (or FP8)</span>
@@ -1555,9 +1607,9 @@ window.runMermaid = runMermaid;</script>
 
 <span class="sd">    Returns True on success, False if the key does not resolve to a known</span>
 <span class="sd">    buffer or parameter.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="n">mapping</span> <span class="o">=</span> <span class="n">mapping</span> <span class="ow">or</span> <span class="n">Mapping</span><span class="p">()</span>
-    <span class="n">parts</span> <span class="o">=</span> <span class="n">key</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s2">&quot;.&quot;</span><span class="p">)</span>
+    <span class="n">parts</span> <span class="o">=</span> <span class="n">key</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s2">"."</span><span class="p">)</span>
     <span class="k">try</span><span class="p">:</span>
         <span class="n">module</span><span class="p">,</span> <span class="n">attr</span> <span class="o">=</span> <span class="n">_navigate</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">parts</span><span class="p">)</span>
     <span class="k">except</span> <span class="p">(</span><span class="ne">AttributeError</span><span class="p">,</span> <span class="ne">IndexError</span><span class="p">,</span> <span class="ne">TypeError</span><span class="p">):</span>
@@ -1576,7 +1628,7 @@ window.runMermaid = runMermaid;</script>
         <span class="k">return</span> <span class="kc">True</span>
 
     <span class="c1"># Key resolves to a module-level attribute that is neither buffer nor</span>
-    <span class="c1"># parameter (e.g. &#39;weight&#39; on nn.Embedding before load).</span>
+    <span class="c1"># parameter (e.g. 'weight' on nn.Embedding before load).</span>
     <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="n">module</span><span class="p">,</span> <span class="n">attr</span><span class="p">):</span>
         <span class="nb">setattr</span><span class="p">(</span><span class="n">module</span><span class="p">,</span> <span class="n">attr</span><span class="p">,</span> <span class="n">tensor</span><span class="p">)</span>
         <span class="k">return</span> <span class="kc">True</span>
@@ -1589,7 +1641,7 @@ window.runMermaid = runMermaid;</script>
                             <span class="n">tensor</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">,</span>
                             <span class="o">*</span><span class="p">,</span>
                             <span class="n">mapping</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Mapping</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Handle fused-weight checkpoint patterns not matched by ``_set_tensor``.</span>
+<span class="w">    </span><span class="sd">"""Handle fused-weight checkpoint patterns not matched by ``_set_tensor``.</span>
 
 <span class="sd">    Rules (first match wins):</span>
 <span class="sd">      1. ``.base_layer.`` PEFT prefix removal.</span>
@@ -1601,26 +1653,26 @@ window.runMermaid = runMermaid;</script>
 <span class="sd">         family; per-k-head ``[b | a]`` layout with width ``2 * gqa``).</span>
 
 <span class="sd">    Returns True if at least one split sub-tensor was set successfully.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="n">mapping</span> <span class="o">=</span> <span class="n">mapping</span> <span class="ow">or</span> <span class="n">Mapping</span><span class="p">()</span>
     <span class="n">world</span> <span class="o">=</span> <span class="n">mapping</span><span class="o">.</span><span class="n">tp_size</span>
     <span class="c1"># --- 1. Strip PEFT base_layer prefix ------------------------------------</span>
-    <span class="k">if</span> <span class="s2">&quot;.base_layer.&quot;</span> <span class="ow">in</span> <span class="n">key</span><span class="p">:</span>
-        <span class="n">stripped</span> <span class="o">=</span> <span class="n">key</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span><span class="s2">&quot;.base_layer.&quot;</span><span class="p">,</span> <span class="s2">&quot;.&quot;</span><span class="p">)</span>
+    <span class="k">if</span> <span class="s2">".base_layer."</span> <span class="ow">in</span> <span class="n">key</span><span class="p">:</span>
+        <span class="n">stripped</span> <span class="o">=</span> <span class="n">key</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span><span class="s2">".base_layer."</span><span class="p">,</span> <span class="s2">"."</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">_set_tensor</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">stripped</span><span class="p">,</span> <span class="n">tensor</span><span class="p">,</span> <span class="n">mapping</span><span class="o">=</span><span class="n">mapping</span><span class="p">):</span>
             <span class="k">return</span> <span class="kc">True</span>
         <span class="c1"># Still failed: fall through to fused-split checks with the stripped key</span>
         <span class="n">key</span> <span class="o">=</span> <span class="n">stripped</span>
 
     <span class="c1"># --- 2. Fused QKV split -------------------------------------------------</span>
-    <span class="k">if</span> <span class="s2">&quot;.self_attn.qkv_proj.&quot;</span> <span class="ow">in</span> <span class="n">key</span><span class="p">:</span>
-        <span class="n">config</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="s2">&quot;config&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+    <span class="k">if</span> <span class="s2">".self_attn.qkv_proj."</span> <span class="ow">in</span> <span class="n">key</span><span class="p">:</span>
+        <span class="n">config</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="s2">"config"</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">config</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
             <span class="k">return</span> <span class="kc">False</span>
-        <span class="c1"># Extract layer prefix and attribute suffix (e.g. &quot;weight&quot;, &quot;weight_scale&quot;)</span>
-        <span class="n">qkv_idx</span> <span class="o">=</span> <span class="n">key</span><span class="o">.</span><span class="n">index</span><span class="p">(</span><span class="s2">&quot;.self_attn.qkv_proj.&quot;</span><span class="p">)</span>
+        <span class="c1"># Extract layer prefix and attribute suffix (e.g. "weight", "weight_scale")</span>
+        <span class="n">qkv_idx</span> <span class="o">=</span> <span class="n">key</span><span class="o">.</span><span class="n">index</span><span class="p">(</span><span class="s2">".self_attn.qkv_proj."</span><span class="p">)</span>
         <span class="n">prefix</span> <span class="o">=</span> <span class="n">key</span><span class="p">[:</span><span class="n">qkv_idx</span><span class="p">]</span>
-        <span class="n">attr_suffix</span> <span class="o">=</span> <span class="n">key</span><span class="p">[</span><span class="n">qkv_idx</span> <span class="o">+</span> <span class="nb">len</span><span class="p">(</span><span class="s2">&quot;.self_attn.qkv_proj.&quot;</span><span class="p">):]</span>
+        <span class="n">attr_suffix</span> <span class="o">=</span> <span class="n">key</span><span class="p">[</span><span class="n">qkv_idx</span> <span class="o">+</span> <span class="nb">len</span><span class="p">(</span><span class="s2">".self_attn.qkv_proj."</span><span class="p">):]</span>
 
         <span class="c1"># When TP&gt;1 the config carries per-rank head counts. Multiply back up</span>
         <span class="c1"># so the split aligns with the full checkpoint tensor. Each split slice</span>
@@ -1633,73 +1685,73 @@ window.runMermaid = runMermaid;</script>
         <span class="k">if</span> <span class="p">(</span><span class="n">tensor</span><span class="o">.</span><span class="n">dim</span><span class="p">()</span> <span class="o">==</span> <span class="mi">0</span> <span class="ow">or</span> <span class="p">(</span><span class="n">tensor</span><span class="o">.</span><span class="n">dim</span><span class="p">()</span> <span class="o">==</span> <span class="mi">1</span> <span class="ow">and</span> <span class="n">tensor</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">&lt;=</span> <span class="mi">1</span><span class="p">)</span>
                 <span class="ow">or</span> <span class="n">attr_suffix</span> <span class="ow">in</span> <span class="n">_FUSED_INPUT_CHANNEL_ATTRS</span><span class="p">):</span>
             <span class="n">ok</span> <span class="o">=</span> <span class="n">_set_tensor</span><span class="p">(</span><span class="n">model</span><span class="p">,</span>
-                             <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.self_attn.q_proj.</span><span class="si">{</span><span class="n">attr_suffix</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+                             <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.self_attn.q_proj.</span><span class="si">{</span><span class="n">attr_suffix</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span>
                              <span class="n">tensor</span><span class="p">,</span>
                              <span class="n">mapping</span><span class="o">=</span><span class="n">mapping</span><span class="p">)</span>
             <span class="n">ok</span> <span class="o">|=</span> <span class="n">_set_tensor</span><span class="p">(</span><span class="n">model</span><span class="p">,</span>
-                              <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.self_attn.k_proj.</span><span class="si">{</span><span class="n">attr_suffix</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+                              <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.self_attn.k_proj.</span><span class="si">{</span><span class="n">attr_suffix</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span>
                               <span class="n">tensor</span><span class="p">,</span>
                               <span class="n">mapping</span><span class="o">=</span><span class="n">mapping</span><span class="p">)</span>
             <span class="n">ok</span> <span class="o">|=</span> <span class="n">_set_tensor</span><span class="p">(</span><span class="n">model</span><span class="p">,</span>
-                              <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.self_attn.v_proj.</span><span class="si">{</span><span class="n">attr_suffix</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+                              <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.self_attn.v_proj.</span><span class="si">{</span><span class="n">attr_suffix</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span>
                               <span class="n">tensor</span><span class="p">,</span>
                               <span class="n">mapping</span><span class="o">=</span><span class="n">mapping</span><span class="p">)</span>
             <span class="k">if</span> <span class="n">ok</span><span class="p">:</span>
-                <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Broadcast qkv_proj.</span><span class="si">%s</span><span class="s2"> -&gt; q/k/v for prefix </span><span class="si">%r</span><span class="s2">&quot;</span><span class="p">,</span>
+                <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">"Broadcast qkv_proj.</span><span class="si">%s</span><span class="s2"> -&gt; q/k/v for prefix </span><span class="si">%r</span><span class="s2">"</span><span class="p">,</span>
                              <span class="n">attr_suffix</span><span class="p">,</span> <span class="n">prefix</span><span class="p">)</span>
             <span class="k">return</span> <span class="n">ok</span>
 
         <span class="c1"># Per-output-channel attributes (weight, weight_scale): split dim 0.</span>
         <span class="n">split_sizes</span> <span class="o">=</span> <span class="p">[</span><span class="n">num_q</span><span class="p">,</span> <span class="n">num_kv</span><span class="p">,</span> <span class="n">num_kv</span><span class="p">]</span>
         <span class="n">expected</span> <span class="o">=</span> <span class="n">num_q</span> <span class="o">+</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">num_kv</span>
-        <span class="k">if</span> <span class="n">attr_suffix</span> <span class="o">==</span> <span class="s2">&quot;weight&quot;</span> <span class="ow">and</span> <span class="n">tensor</span><span class="o">.</span><span class="n">dim</span><span class="p">(</span>
+        <span class="k">if</span> <span class="n">attr_suffix</span> <span class="o">==</span> <span class="s2">"weight"</span> <span class="ow">and</span> <span class="n">tensor</span><span class="o">.</span><span class="n">dim</span><span class="p">(</span>
         <span class="p">)</span> <span class="o">&gt;=</span> <span class="mi">2</span> <span class="ow">and</span> <span class="n">tensor</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">*</span> <span class="mi">2</span> <span class="o">==</span> <span class="n">expected</span><span class="p">:</span>
             <span class="c1"># ModelOpt W4A16 stores packed int4 weights as [out/2, in].</span>
             <span class="n">split_sizes</span> <span class="o">=</span> <span class="p">[</span><span class="n">s</span> <span class="o">//</span> <span class="mi">2</span> <span class="k">for</span> <span class="n">s</span> <span class="ow">in</span> <span class="n">split_sizes</span><span class="p">]</span>
             <span class="n">expected</span> <span class="o">//=</span> <span class="mi">2</span>
         <span class="k">if</span> <span class="n">tensor</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">!=</span> <span class="n">expected</span><span class="p">:</span>
             <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
-                <span class="s2">&quot;qkv_proj.</span><span class="si">%s</span><span class="s2"> shape </span><span class="si">%s</span><span class="s2"> doesn&#39;t match expected (</span><span class="si">%d</span><span class="s2">, </span><span class="si">%d</span><span class="s2">, </span><span class="si">%d</span><span class="s2">), &quot;</span>
-                <span class="s2">&quot;skipping split&quot;</span><span class="p">,</span> <span class="n">attr_suffix</span><span class="p">,</span> <span class="n">tensor</span><span class="o">.</span><span class="n">shape</span><span class="p">,</span> <span class="o">*</span><span class="n">split_sizes</span><span class="p">)</span>
+                <span class="s2">"qkv_proj.</span><span class="si">%s</span><span class="s2"> shape </span><span class="si">%s</span><span class="s2"> doesn't match expected (</span><span class="si">%d</span><span class="s2">, </span><span class="si">%d</span><span class="s2">, </span><span class="si">%d</span><span class="s2">), "</span>
+                <span class="s2">"skipping split"</span><span class="p">,</span> <span class="n">attr_suffix</span><span class="p">,</span> <span class="n">tensor</span><span class="o">.</span><span class="n">shape</span><span class="p">,</span> <span class="o">*</span><span class="n">split_sizes</span><span class="p">)</span>
             <span class="k">return</span> <span class="kc">False</span>
         <span class="n">q</span><span class="p">,</span> <span class="n">k</span><span class="p">,</span> <span class="n">v</span> <span class="o">=</span> <span class="n">tensor</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="n">split_sizes</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
         <span class="n">ok</span> <span class="o">=</span> <span class="n">_set_tensor</span><span class="p">(</span><span class="n">model</span><span class="p">,</span>
-                         <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.self_attn.q_proj.</span><span class="si">{</span><span class="n">attr_suffix</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+                         <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.self_attn.q_proj.</span><span class="si">{</span><span class="n">attr_suffix</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span>
                          <span class="n">q</span><span class="p">,</span>
                          <span class="n">mapping</span><span class="o">=</span><span class="n">mapping</span><span class="p">)</span>
         <span class="n">ok</span> <span class="o">|=</span> <span class="n">_set_tensor</span><span class="p">(</span><span class="n">model</span><span class="p">,</span>
-                          <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.self_attn.k_proj.</span><span class="si">{</span><span class="n">attr_suffix</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+                          <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.self_attn.k_proj.</span><span class="si">{</span><span class="n">attr_suffix</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span>
                           <span class="n">k</span><span class="p">,</span>
                           <span class="n">mapping</span><span class="o">=</span><span class="n">mapping</span><span class="p">)</span>
         <span class="n">ok</span> <span class="o">|=</span> <span class="n">_set_tensor</span><span class="p">(</span><span class="n">model</span><span class="p">,</span>
-                          <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.self_attn.v_proj.</span><span class="si">{</span><span class="n">attr_suffix</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+                          <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.self_attn.v_proj.</span><span class="si">{</span><span class="n">attr_suffix</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span>
                           <span class="n">v</span><span class="p">,</span>
                           <span class="n">mapping</span><span class="o">=</span><span class="n">mapping</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">ok</span><span class="p">:</span>
-            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Split qkv_proj.</span><span class="si">%s</span><span class="s2"> -&gt; q/k/v for prefix </span><span class="si">%r</span><span class="s2">&quot;</span><span class="p">,</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">"Split qkv_proj.</span><span class="si">%s</span><span class="s2"> -&gt; q/k/v for prefix </span><span class="si">%r</span><span class="s2">"</span><span class="p">,</span>
                          <span class="n">attr_suffix</span><span class="p">,</span> <span class="n">prefix</span><span class="p">)</span>
         <span class="k">return</span> <span class="n">ok</span>
 
     <span class="c1"># --- 3. Fused gate+up split --------------------------------------------</span>
-    <span class="k">if</span> <span class="s2">&quot;.mlp.gate_up_proj.&quot;</span> <span class="ow">in</span> <span class="n">key</span><span class="p">:</span>
-        <span class="n">gate_up_idx</span> <span class="o">=</span> <span class="n">key</span><span class="o">.</span><span class="n">index</span><span class="p">(</span><span class="s2">&quot;.mlp.gate_up_proj.&quot;</span><span class="p">)</span>
+    <span class="k">if</span> <span class="s2">".mlp.gate_up_proj."</span> <span class="ow">in</span> <span class="n">key</span><span class="p">:</span>
+        <span class="n">gate_up_idx</span> <span class="o">=</span> <span class="n">key</span><span class="o">.</span><span class="n">index</span><span class="p">(</span><span class="s2">".mlp.gate_up_proj."</span><span class="p">)</span>
         <span class="n">prefix</span> <span class="o">=</span> <span class="n">key</span><span class="p">[:</span><span class="n">gate_up_idx</span><span class="p">]</span>
-        <span class="n">attr_suffix</span> <span class="o">=</span> <span class="n">key</span><span class="p">[</span><span class="n">gate_up_idx</span> <span class="o">+</span> <span class="nb">len</span><span class="p">(</span><span class="s2">&quot;.mlp.gate_up_proj.&quot;</span><span class="p">):]</span>
+        <span class="n">attr_suffix</span> <span class="o">=</span> <span class="n">key</span><span class="p">[</span><span class="n">gate_up_idx</span> <span class="o">+</span> <span class="nb">len</span><span class="p">(</span><span class="s2">".mlp.gate_up_proj."</span><span class="p">):]</span>
 
         <span class="c1"># Scalar, per-tensor, or per-input-channel attributes: copy to both.</span>
         <span class="k">if</span> <span class="p">(</span><span class="n">tensor</span><span class="o">.</span><span class="n">dim</span><span class="p">()</span> <span class="o">==</span> <span class="mi">0</span> <span class="ow">or</span> <span class="p">(</span><span class="n">tensor</span><span class="o">.</span><span class="n">dim</span><span class="p">()</span> <span class="o">==</span> <span class="mi">1</span> <span class="ow">and</span> <span class="n">tensor</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">&lt;=</span> <span class="mi">1</span><span class="p">)</span>
                 <span class="ow">or</span> <span class="n">attr_suffix</span> <span class="ow">in</span> <span class="n">_FUSED_INPUT_CHANNEL_ATTRS</span><span class="p">):</span>
             <span class="n">ok</span> <span class="o">=</span> <span class="n">_set_tensor</span><span class="p">(</span><span class="n">model</span><span class="p">,</span>
-                             <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.mlp.gate_proj.</span><span class="si">{</span><span class="n">attr_suffix</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+                             <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.mlp.gate_proj.</span><span class="si">{</span><span class="n">attr_suffix</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span>
                              <span class="n">tensor</span><span class="p">,</span>
                              <span class="n">mapping</span><span class="o">=</span><span class="n">mapping</span><span class="p">)</span>
             <span class="n">ok</span> <span class="o">|=</span> <span class="n">_set_tensor</span><span class="p">(</span><span class="n">model</span><span class="p">,</span>
-                              <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.mlp.up_proj.</span><span class="si">{</span><span class="n">attr_suffix</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+                              <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.mlp.up_proj.</span><span class="si">{</span><span class="n">attr_suffix</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span>
                               <span class="n">tensor</span><span class="p">,</span>
                               <span class="n">mapping</span><span class="o">=</span><span class="n">mapping</span><span class="p">)</span>
             <span class="k">if</span> <span class="n">ok</span><span class="p">:</span>
                 <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
-                    <span class="s2">&quot;Broadcast gate_up_proj.</span><span class="si">%s</span><span class="s2"> -&gt; gate/up for prefix </span><span class="si">%r</span><span class="s2">&quot;</span><span class="p">,</span>
+                    <span class="s2">"Broadcast gate_up_proj.</span><span class="si">%s</span><span class="s2"> -&gt; gate/up for prefix </span><span class="si">%r</span><span class="s2">"</span><span class="p">,</span>
                     <span class="n">attr_suffix</span><span class="p">,</span> <span class="n">prefix</span><span class="p">)</span>
             <span class="k">return</span> <span class="n">ok</span>
 
@@ -1707,15 +1759,15 @@ window.runMermaid = runMermaid;</script>
         <span class="n">half</span> <span class="o">=</span> <span class="n">tensor</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">//</span> <span class="mi">2</span>
         <span class="n">gate</span><span class="p">,</span> <span class="n">up</span> <span class="o">=</span> <span class="n">tensor</span><span class="p">[:</span><span class="n">half</span><span class="p">],</span> <span class="n">tensor</span><span class="p">[</span><span class="n">half</span><span class="p">:]</span>
         <span class="n">ok</span> <span class="o">=</span> <span class="n">_set_tensor</span><span class="p">(</span><span class="n">model</span><span class="p">,</span>
-                         <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.mlp.gate_proj.</span><span class="si">{</span><span class="n">attr_suffix</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+                         <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.mlp.gate_proj.</span><span class="si">{</span><span class="n">attr_suffix</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span>
                          <span class="n">gate</span><span class="p">,</span>
                          <span class="n">mapping</span><span class="o">=</span><span class="n">mapping</span><span class="p">)</span>
         <span class="n">ok</span> <span class="o">|=</span> <span class="n">_set_tensor</span><span class="p">(</span><span class="n">model</span><span class="p">,</span>
-                          <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.mlp.up_proj.</span><span class="si">{</span><span class="n">attr_suffix</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+                          <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.mlp.up_proj.</span><span class="si">{</span><span class="n">attr_suffix</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span>
                           <span class="n">up</span><span class="p">,</span>
                           <span class="n">mapping</span><span class="o">=</span><span class="n">mapping</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">ok</span><span class="p">:</span>
-            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Split gate_up_proj.</span><span class="si">%s</span><span class="s2"> -&gt; gate/up for prefix </span><span class="si">%r</span><span class="s2">&quot;</span><span class="p">,</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">"Split gate_up_proj.</span><span class="si">%s</span><span class="s2"> -&gt; gate/up for prefix </span><span class="si">%r</span><span class="s2">"</span><span class="p">,</span>
                          <span class="n">attr_suffix</span><span class="p">,</span> <span class="n">prefix</span><span class="p">)</span>
         <span class="k">return</span> <span class="n">ok</span>
 
@@ -1725,11 +1777,11 @@ window.runMermaid = runMermaid;</script>
     <span class="c1"># so reshape-per-head → slice → reshape-back is required. AWQ ModelOpt</span>
     <span class="c1"># prepacked ``weight`` (uint8 [N//2, K]) is unpacked/split/repacked;</span>
     <span class="c1"># ``pre_quant_scale`` broadcasts unchanged to both splits.</span>
-    <span class="k">if</span> <span class="s2">&quot;.linear_attn.in_proj_qkvz.&quot;</span> <span class="ow">in</span> <span class="n">key</span><span class="p">:</span>
-        <span class="n">idx</span> <span class="o">=</span> <span class="n">key</span><span class="o">.</span><span class="n">index</span><span class="p">(</span><span class="s2">&quot;.linear_attn.in_proj_qkvz.&quot;</span><span class="p">)</span>
+    <span class="k">if</span> <span class="s2">".linear_attn.in_proj_qkvz."</span> <span class="ow">in</span> <span class="n">key</span><span class="p">:</span>
+        <span class="n">idx</span> <span class="o">=</span> <span class="n">key</span><span class="o">.</span><span class="n">index</span><span class="p">(</span><span class="s2">".linear_attn.in_proj_qkvz."</span><span class="p">)</span>
         <span class="n">prefix</span> <span class="o">=</span> <span class="n">key</span><span class="p">[:</span><span class="n">idx</span><span class="p">]</span>
-        <span class="n">attr_suffix</span> <span class="o">=</span> <span class="n">key</span><span class="p">[</span><span class="n">idx</span> <span class="o">+</span> <span class="nb">len</span><span class="p">(</span><span class="s2">&quot;.linear_attn.in_proj_qkvz.&quot;</span><span class="p">):]</span>
-        <span class="n">mixer</span> <span class="o">=</span> <span class="n">_resolve_module</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.linear_attn&quot;</span><span class="p">)</span>
+        <span class="n">attr_suffix</span> <span class="o">=</span> <span class="n">key</span><span class="p">[</span><span class="n">idx</span> <span class="o">+</span> <span class="nb">len</span><span class="p">(</span><span class="s2">".linear_attn.in_proj_qkvz."</span><span class="p">):]</span>
+        <span class="n">mixer</span> <span class="o">=</span> <span class="n">_resolve_module</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.linear_attn"</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">mixer</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
             <span class="k">return</span> <span class="kc">False</span>
         <span class="n">num_k_heads</span> <span class="o">=</span> <span class="n">mixer</span><span class="o">.</span><span class="n">num_k_heads</span>
@@ -1740,13 +1792,13 @@ window.runMermaid = runMermaid;</script>
         <span class="n">per_head_qkvz</span> <span class="o">=</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">head_k_dim</span> <span class="o">+</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">head_v_dim</span> <span class="o">*</span> <span class="n">gqa</span>
         <span class="n">expected_N</span> <span class="o">=</span> <span class="n">num_k_heads</span> <span class="o">*</span> <span class="n">per_head_qkvz</span>
 
-        <span class="k">if</span> <span class="n">attr_suffix</span> <span class="ow">in</span> <span class="n">_FUSED_INPUT_CHANNEL_ATTRS</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">_splits_unchanged</span><span class="p">(</span><span class="n">attr_suffix</span><span class="p">,</span> <span class="n">tensor</span><span class="p">):</span>
             <span class="n">ok</span> <span class="o">=</span> <span class="n">_set_tensor</span><span class="p">(</span><span class="n">model</span><span class="p">,</span>
-                             <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.linear_attn.in_proj_qkv.</span><span class="si">{</span><span class="n">attr_suffix</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+                             <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.linear_attn.in_proj_qkv.</span><span class="si">{</span><span class="n">attr_suffix</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span>
                              <span class="n">tensor</span><span class="p">,</span>
                              <span class="n">mapping</span><span class="o">=</span><span class="n">mapping</span><span class="p">)</span>
             <span class="n">ok</span> <span class="o">|=</span> <span class="n">_set_tensor</span><span class="p">(</span><span class="n">model</span><span class="p">,</span>
-                              <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.linear_attn.in_proj_z.</span><span class="si">{</span><span class="n">attr_suffix</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+                              <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.linear_attn.in_proj_z.</span><span class="si">{</span><span class="n">attr_suffix</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span>
                               <span class="n">tensor</span><span class="p">,</span>
                               <span class="n">mapping</span><span class="o">=</span><span class="n">mapping</span><span class="p">)</span>
             <span class="k">return</span> <span class="n">ok</span>
@@ -1759,8 +1811,8 @@ window.runMermaid = runMermaid;</script>
         <span class="k">else</span><span class="p">:</span>
             <span class="k">if</span> <span class="n">tensor</span><span class="o">.</span><span class="n">dim</span><span class="p">()</span> <span class="o">&lt;</span> <span class="mi">1</span> <span class="ow">or</span> <span class="n">tensor</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">!=</span> <span class="n">expected_N</span><span class="p">:</span>
                 <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
-                    <span class="s2">&quot;in_proj_qkvz.</span><span class="si">%s</span><span class="s2"> shape </span><span class="si">%s</span><span class="s2"> incompatible with num_k_heads=</span><span class="si">%d</span><span class="s2"> &quot;</span>
-                    <span class="s2">&quot;per_head_qkvz=</span><span class="si">%d</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">attr_suffix</span><span class="p">,</span> <span class="n">tensor</span><span class="o">.</span><span class="n">shape</span><span class="p">,</span> <span class="n">num_k_heads</span><span class="p">,</span>
+                    <span class="s2">"in_proj_qkvz.</span><span class="si">%s</span><span class="s2"> shape </span><span class="si">%s</span><span class="s2"> incompatible with num_k_heads=</span><span class="si">%d</span><span class="s2"> "</span>
+                    <span class="s2">"per_head_qkvz=</span><span class="si">%d</span><span class="s2">"</span><span class="p">,</span> <span class="n">attr_suffix</span><span class="p">,</span> <span class="n">tensor</span><span class="o">.</span><span class="n">shape</span><span class="p">,</span> <span class="n">num_k_heads</span><span class="p">,</span>
                     <span class="n">per_head_qkvz</span><span class="p">)</span>
                 <span class="k">return</span> <span class="kc">False</span>
             <span class="n">rest</span> <span class="o">=</span> <span class="n">tensor</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">1</span><span class="p">:]</span>
@@ -1793,16 +1845,16 @@ window.runMermaid = runMermaid;</script>
             <span class="n">z_weight</span> <span class="o">=</span> <span class="n">z_full</span>
 
         <span class="n">ok</span> <span class="o">=</span> <span class="n">_set_tensor</span><span class="p">(</span><span class="n">model</span><span class="p">,</span>
-                         <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.linear_attn.in_proj_qkv.</span><span class="si">{</span><span class="n">attr_suffix</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+                         <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.linear_attn.in_proj_qkv.</span><span class="si">{</span><span class="n">attr_suffix</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span>
                          <span class="n">qkv_weight</span><span class="p">,</span>
                          <span class="n">mapping</span><span class="o">=</span><span class="n">mapping</span><span class="p">)</span>
         <span class="n">ok</span> <span class="o">|=</span> <span class="n">_set_tensor</span><span class="p">(</span><span class="n">model</span><span class="p">,</span>
-                          <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.linear_attn.in_proj_z.</span><span class="si">{</span><span class="n">attr_suffix</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+                          <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.linear_attn.in_proj_z.</span><span class="si">{</span><span class="n">attr_suffix</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span>
                           <span class="n">z_weight</span><span class="p">,</span>
                           <span class="n">mapping</span><span class="o">=</span><span class="n">mapping</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">ok</span><span class="p">:</span>
             <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
-                <span class="s2">&quot;Split in_proj_qkvz.</span><span class="si">%s</span><span class="s2"> -&gt; in_proj_qkv / in_proj_z for prefix </span><span class="si">%r</span><span class="s2">&quot;</span><span class="p">,</span>
+                <span class="s2">"Split in_proj_qkvz.</span><span class="si">%s</span><span class="s2"> -&gt; in_proj_qkv / in_proj_z for prefix </span><span class="si">%r</span><span class="s2">"</span><span class="p">,</span>
                 <span class="n">attr_suffix</span><span class="p">,</span> <span class="n">prefix</span><span class="p">)</span>
         <span class="k">return</span> <span class="n">ok</span>
 
@@ -1812,11 +1864,11 @@ window.runMermaid = runMermaid;</script>
     <span class="c1"># separate Linears of ``num_v_heads`` rows each — extract by strided</span>
     <span class="c1"># slicing.  AWQ ModelOpt prepacked ``weight`` goes through the same</span>
     <span class="c1"># unpack / slice / repack path as ``in_proj_qkvz`` above.</span>
-    <span class="k">if</span> <span class="s2">&quot;.linear_attn.in_proj_ba.&quot;</span> <span class="ow">in</span> <span class="n">key</span><span class="p">:</span>
-        <span class="n">idx</span> <span class="o">=</span> <span class="n">key</span><span class="o">.</span><span class="n">index</span><span class="p">(</span><span class="s2">&quot;.linear_attn.in_proj_ba.&quot;</span><span class="p">)</span>
+    <span class="k">if</span> <span class="s2">".linear_attn.in_proj_ba."</span> <span class="ow">in</span> <span class="n">key</span><span class="p">:</span>
+        <span class="n">idx</span> <span class="o">=</span> <span class="n">key</span><span class="o">.</span><span class="n">index</span><span class="p">(</span><span class="s2">".linear_attn.in_proj_ba."</span><span class="p">)</span>
         <span class="n">prefix</span> <span class="o">=</span> <span class="n">key</span><span class="p">[:</span><span class="n">idx</span><span class="p">]</span>
-        <span class="n">attr_suffix</span> <span class="o">=</span> <span class="n">key</span><span class="p">[</span><span class="n">idx</span> <span class="o">+</span> <span class="nb">len</span><span class="p">(</span><span class="s2">&quot;.linear_attn.in_proj_ba.&quot;</span><span class="p">):]</span>
-        <span class="n">mixer</span> <span class="o">=</span> <span class="n">_resolve_module</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.linear_attn&quot;</span><span class="p">)</span>
+        <span class="n">attr_suffix</span> <span class="o">=</span> <span class="n">key</span><span class="p">[</span><span class="n">idx</span> <span class="o">+</span> <span class="nb">len</span><span class="p">(</span><span class="s2">".linear_attn.in_proj_ba."</span><span class="p">):]</span>
+        <span class="n">mixer</span> <span class="o">=</span> <span class="n">_resolve_module</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.linear_attn"</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">mixer</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
             <span class="k">return</span> <span class="kc">False</span>
         <span class="n">num_k_heads</span> <span class="o">=</span> <span class="n">mixer</span><span class="o">.</span><span class="n">num_k_heads</span>
@@ -1825,13 +1877,13 @@ window.runMermaid = runMermaid;</script>
         <span class="n">per_head_ba</span> <span class="o">=</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">gqa</span>
         <span class="n">expected_N</span> <span class="o">=</span> <span class="n">num_k_heads</span> <span class="o">*</span> <span class="n">per_head_ba</span>
 
-        <span class="k">if</span> <span class="n">attr_suffix</span> <span class="ow">in</span> <span class="n">_FUSED_INPUT_CHANNEL_ATTRS</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">_splits_unchanged</span><span class="p">(</span><span class="n">attr_suffix</span><span class="p">,</span> <span class="n">tensor</span><span class="p">):</span>
             <span class="n">ok</span> <span class="o">=</span> <span class="n">_set_tensor</span><span class="p">(</span><span class="n">model</span><span class="p">,</span>
-                             <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.linear_attn.in_proj_b.</span><span class="si">{</span><span class="n">attr_suffix</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+                             <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.linear_attn.in_proj_b.</span><span class="si">{</span><span class="n">attr_suffix</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span>
                              <span class="n">tensor</span><span class="p">,</span>
                              <span class="n">mapping</span><span class="o">=</span><span class="n">mapping</span><span class="p">)</span>
             <span class="n">ok</span> <span class="o">|=</span> <span class="n">_set_tensor</span><span class="p">(</span><span class="n">model</span><span class="p">,</span>
-                              <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.linear_attn.in_proj_a.</span><span class="si">{</span><span class="n">attr_suffix</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+                              <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.linear_attn.in_proj_a.</span><span class="si">{</span><span class="n">attr_suffix</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span>
                               <span class="n">tensor</span><span class="p">,</span>
                               <span class="n">mapping</span><span class="o">=</span><span class="n">mapping</span><span class="p">)</span>
             <span class="k">return</span> <span class="n">ok</span>
@@ -1844,8 +1896,8 @@ window.runMermaid = runMermaid;</script>
         <span class="k">else</span><span class="p">:</span>
             <span class="k">if</span> <span class="n">tensor</span><span class="o">.</span><span class="n">dim</span><span class="p">()</span> <span class="o">&lt;</span> <span class="mi">1</span> <span class="ow">or</span> <span class="n">tensor</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">!=</span> <span class="n">expected_N</span><span class="p">:</span>
                 <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
-                    <span class="s2">&quot;in_proj_ba.</span><span class="si">%s</span><span class="s2"> shape </span><span class="si">%s</span><span class="s2"> incompatible with num_k_heads=</span><span class="si">%d</span><span class="s2"> &quot;</span>
-                    <span class="s2">&quot;per_head_ba=</span><span class="si">%d</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">attr_suffix</span><span class="p">,</span> <span class="n">tensor</span><span class="o">.</span><span class="n">shape</span><span class="p">,</span> <span class="n">num_k_heads</span><span class="p">,</span>
+                    <span class="s2">"in_proj_ba.</span><span class="si">%s</span><span class="s2"> shape </span><span class="si">%s</span><span class="s2"> incompatible with num_k_heads=</span><span class="si">%d</span><span class="s2"> "</span>
+                    <span class="s2">"per_head_ba=</span><span class="si">%d</span><span class="s2">"</span><span class="p">,</span> <span class="n">attr_suffix</span><span class="p">,</span> <span class="n">tensor</span><span class="o">.</span><span class="n">shape</span><span class="p">,</span> <span class="n">num_k_heads</span><span class="p">,</span>
                     <span class="n">per_head_ba</span><span class="p">)</span>
                 <span class="k">return</span> <span class="kc">False</span>
             <span class="n">rest</span> <span class="o">=</span> <span class="n">tensor</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">1</span><span class="p">:]</span>
@@ -1865,62 +1917,37 @@ window.runMermaid = runMermaid;</script>
             <span class="n">a_weight</span> <span class="o">=</span> <span class="n">a_full</span>
 
         <span class="n">ok</span> <span class="o">=</span> <span class="n">_set_tensor</span><span class="p">(</span><span class="n">model</span><span class="p">,</span>
-                         <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.linear_attn.in_proj_b.</span><span class="si">{</span><span class="n">attr_suffix</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+                         <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.linear_attn.in_proj_b.</span><span class="si">{</span><span class="n">attr_suffix</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span>
                          <span class="n">b_weight</span><span class="p">,</span>
                          <span class="n">mapping</span><span class="o">=</span><span class="n">mapping</span><span class="p">)</span>
         <span class="n">ok</span> <span class="o">|=</span> <span class="n">_set_tensor</span><span class="p">(</span><span class="n">model</span><span class="p">,</span>
-                          <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.linear_attn.in_proj_a.</span><span class="si">{</span><span class="n">attr_suffix</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+                          <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">.linear_attn.in_proj_a.</span><span class="si">{</span><span class="n">attr_suffix</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span>
                           <span class="n">a_weight</span><span class="p">,</span>
                           <span class="n">mapping</span><span class="o">=</span><span class="n">mapping</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">ok</span><span class="p">:</span>
             <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
-                <span class="s2">&quot;Split in_proj_ba.</span><span class="si">%s</span><span class="s2"> -&gt; in_proj_b / in_proj_a for prefix </span><span class="si">%r</span><span class="s2">&quot;</span><span class="p">,</span>
+                <span class="s2">"Split in_proj_ba.</span><span class="si">%s</span><span class="s2"> -&gt; in_proj_b / in_proj_a for prefix </span><span class="si">%r</span><span class="s2">"</span><span class="p">,</span>
                 <span class="n">attr_suffix</span><span class="p">,</span> <span class="n">prefix</span><span class="p">)</span>
         <span class="k">return</span> <span class="n">ok</span>
 
     <span class="c1"># --- 6. Fused MoE expert split -------------------------------------------</span>
-    <span class="c1"># Fused 3-D expert tensors (gate rows first, then up):</span>
-    <span class="c1">#   mlp.experts.gate_up_proj [E, 2*I, H] / mlp.experts.down_proj [E, H, I]</span>
-    <span class="c1"># Split into the per-expert Linear weights held by Qwen3MoEExperts.</span>
-    <span class="k">if</span> <span class="n">key</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="s2">&quot;.mlp.experts.gate_up_proj&quot;</span><span class="p">)</span> <span class="ow">and</span> <span class="n">tensor</span><span class="o">.</span><span class="n">dim</span><span class="p">()</span> <span class="o">==</span> <span class="mi">3</span><span class="p">:</span>
-        <span class="n">prefix</span> <span class="o">=</span> <span class="n">key</span><span class="p">[:</span><span class="o">-</span><span class="nb">len</span><span class="p">(</span><span class="s2">&quot;gate_up_proj&quot;</span><span class="p">)]</span>
-        <span class="n">inter</span> <span class="o">=</span> <span class="n">tensor</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="o">//</span> <span class="mi">2</span>
+    <span class="n">expert_weights</span> <span class="o">=</span> <span class="n">split_fused_moe_experts</span><span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="n">tensor</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">expert_weights</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
         <span class="n">ok</span> <span class="o">=</span> <span class="kc">True</span>
-        <span class="k">for</span> <span class="n">expert</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">tensor</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]):</span>
-            <span class="n">ok</span> <span class="o">&amp;=</span> <span class="n">_set_tensor</span><span class="p">(</span><span class="n">model</span><span class="p">,</span>
-                              <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">prefix</span><span class="si">}{</span><span class="n">expert</span><span class="si">}</span><span class="s2">.gate_proj.weight&quot;</span><span class="p">,</span>
-                              <span class="n">tensor</span><span class="p">[</span><span class="n">expert</span><span class="p">,</span> <span class="p">:</span><span class="n">inter</span><span class="p">,</span> <span class="p">:],</span>
-                              <span class="n">mapping</span><span class="o">=</span><span class="n">mapping</span><span class="p">)</span>
-            <span class="n">ok</span> <span class="o">&amp;=</span> <span class="n">_set_tensor</span><span class="p">(</span><span class="n">model</span><span class="p">,</span>
-                              <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">prefix</span><span class="si">}{</span><span class="n">expert</span><span class="si">}</span><span class="s2">.up_proj.weight&quot;</span><span class="p">,</span>
-                              <span class="n">tensor</span><span class="p">[</span><span class="n">expert</span><span class="p">,</span> <span class="n">inter</span><span class="p">:,</span> <span class="p">:],</span>
-                              <span class="n">mapping</span><span class="o">=</span><span class="n">mapping</span><span class="p">)</span>
+        <span class="k">for</span> <span class="n">split_key</span><span class="p">,</span> <span class="n">split_tensor</span> <span class="ow">in</span> <span class="n">expert_weights</span><span class="p">:</span>
+            <span class="n">ok</span> <span class="o">&amp;=</span> <span class="n">_set_tensor</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">split_key</span><span class="p">,</span> <span class="n">split_tensor</span><span class="p">,</span> <span class="n">mapping</span><span class="o">=</span><span class="n">mapping</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">ok</span><span class="p">:</span>
-            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
-                <span class="s2">&quot;Split fused experts.gate_up_proj -&gt; </span><span class="si">%d</span><span class="s2"> gate/up pairs &quot;</span>
-                <span class="s2">&quot;for prefix </span><span class="si">%r</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">tensor</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">prefix</span><span class="p">)</span>
-        <span class="k">return</span> <span class="n">ok</span>
-    <span class="k">if</span> <span class="n">key</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="s2">&quot;.mlp.experts.down_proj&quot;</span><span class="p">)</span> <span class="ow">and</span> <span class="n">tensor</span><span class="o">.</span><span class="n">dim</span><span class="p">()</span> <span class="o">==</span> <span class="mi">3</span><span class="p">:</span>
-        <span class="n">prefix</span> <span class="o">=</span> <span class="n">key</span><span class="p">[:</span><span class="o">-</span><span class="nb">len</span><span class="p">(</span><span class="s2">&quot;down_proj&quot;</span><span class="p">)]</span>
-        <span class="n">ok</span> <span class="o">=</span> <span class="kc">True</span>
-        <span class="k">for</span> <span class="n">expert</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">tensor</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]):</span>
-            <span class="n">ok</span> <span class="o">&amp;=</span> <span class="n">_set_tensor</span><span class="p">(</span><span class="n">model</span><span class="p">,</span>
-                              <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">prefix</span><span class="si">}{</span><span class="n">expert</span><span class="si">}</span><span class="s2">.down_proj.weight&quot;</span><span class="p">,</span>
-                              <span class="n">tensor</span><span class="p">[</span><span class="n">expert</span><span class="p">],</span>
-                              <span class="n">mapping</span><span class="o">=</span><span class="n">mapping</span><span class="p">)</span>
-        <span class="k">if</span> <span class="n">ok</span><span class="p">:</span>
-            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
-                <span class="s2">&quot;Split fused experts.down_proj -&gt; </span><span class="si">%d</span><span class="s2"> down weights &quot;</span>
-                <span class="s2">&quot;for prefix </span><span class="si">%r</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">tensor</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">prefix</span><span class="p">)</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">"Split fused </span><span class="si">%r</span><span class="s2"> into </span><span class="si">%d</span><span class="s2"> per-expert weights"</span><span class="p">,</span> <span class="n">key</span><span class="p">,</span>
+                         <span class="nb">len</span><span class="p">(</span><span class="n">expert_weights</span><span class="p">))</span>
         <span class="k">return</span> <span class="n">ok</span>
 
     <span class="k">return</span> <span class="kc">False</span>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">_resolve_module</span><span class="p">(</span><span class="n">model</span><span class="p">:</span> <span class="n">nn</span><span class="o">.</span><span class="n">Module</span><span class="p">,</span> <span class="n">dotted</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Optional</span><span class="p">[</span><span class="n">nn</span><span class="o">.</span><span class="n">Module</span><span class="p">]:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Walk attribute path on *model*. Returns None on any miss.&quot;&quot;&quot;</span>
+<span class="w">    </span><span class="sd">"""Walk attribute path on *model*. Returns None on any miss."""</span>
     <span class="n">mod</span> <span class="o">=</span> <span class="n">model</span>
-    <span class="k">for</span> <span class="n">part</span> <span class="ow">in</span> <span class="n">dotted</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s2">&quot;.&quot;</span><span class="p">):</span>
+    <span class="k">for</span> <span class="n">part</span> <span class="ow">in</span> <span class="n">dotted</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s2">"."</span><span class="p">):</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="n">part</span><span class="p">:</span>
             <span class="k">continue</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="nb">hasattr</span><span class="p">(</span><span class="n">mod</span><span class="p">,</span> <span class="n">part</span><span class="p">):</span>
@@ -1930,7 +1957,7 @@ window.runMermaid = runMermaid;</script>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">iter_checkpoint_keys</span><span class="p">(</span><span class="n">model_dir</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Iterator</span><span class="p">[</span><span class="nb">str</span><span class="p">]:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Yield all weight keys present in a checkpoint directory (no data).&quot;&quot;&quot;</span>
+<span class="w">    </span><span class="sd">"""Yield all weight keys present in a checkpoint directory (no data)."""</span>
     <span class="n">shard_map</span> <span class="o">=</span> <span class="n">_build_shard_map</span><span class="p">(</span><span class="n">model_dir</span><span class="p">)</span>
     <span class="k">yield from</span> <span class="n">shard_map</span><span class="o">.</span><span class="n">keys</span><span class="p">()</span>
 
@@ -1941,11 +1968,11 @@ window.runMermaid = runMermaid;</script>
     <span class="n">key_remap</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="nb">str</span><span class="p">],</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]],</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">transform</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Callable</span><span class="p">[[</span><span class="nb">str</span><span class="p">,</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">],</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">]]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-    <span class="n">label</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;model&quot;</span><span class="p">,</span>
+    <span class="n">label</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">"model"</span><span class="p">,</span>
     <span class="n">log</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">logging</span><span class="o">.</span><span class="n">Logger</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">do_repack</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Load a sliced ``{key: tensor}`` dict into a sub-encoder via ``_set_tensor``.</span>
+<span class="w">    </span><span class="sd">"""Load a sliced ``{key: tensor}`` dict into a sub-encoder via ``_set_tensor``.</span>
 
 <span class="sd">    Used by visual / audio modeling files that receive a flat weights dict</span>
 <span class="sd">    (already loaded from safetensors by the orchestrator) and need to filter</span>
@@ -1960,18 +1987,18 @@ window.runMermaid = runMermaid;</script>
 <span class="sd">    :param model: Target sub-encoder module.</span>
 <span class="sd">    :param weights: Flat ``{key: tensor}`` dict from safetensors.</span>
 <span class="sd">    :param key_remap: Called per checkpoint key. Return the new path inside</span>
-<span class="sd">        ``model`` (e.g. ``&quot;encoder.blocks.0.attn.weight&quot;``), or ``None`` to</span>
+<span class="sd">        ``model`` (e.g. ``"encoder.blocks.0.attn.weight"``), or ``None`` to</span>
 <span class="sd">        skip the key. Use this to strip / rewrite checkpoint prefixes.</span>
 <span class="sd">    :param transform: Optional ``(remapped_key, tensor) -&gt; tensor`` hook for</span>
 <span class="sd">        per-tensor reshaping (e.g. flat → conv2d) or interpolation.</span>
-<span class="sd">    :param label: Used in the missing-keys warning (&quot;&lt;label&gt;: keys not loaded&quot;).</span>
+<span class="sd">    :param label: Used in the missing-keys warning ("&lt;label&gt;: keys not loaded").</span>
 <span class="sd">    :param log: Logger used for the missing-keys warning. Defaults to this</span>
-<span class="sd">        module&#39;s logger.</span>
+<span class="sd">        module's logger.</span>
 <span class="sd">    :param do_repack: When ``True`` (default), call ``apply_all_repacking``</span>
 <span class="sd">        after assignment so type-aware fixups (FP8 scale cast, NVFP4 view-cast,</span>
 <span class="sd">        AWQ/GPTQ swizzle, ...) run.  Safe to leave on for non-quantized</span>
 <span class="sd">        sub-encoders — each fixup is gated by an ``isinstance`` check.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="k">if</span> <span class="n">log</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="n">log</span> <span class="o">=</span> <span class="n">logger</span>
     <span class="n">missing</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
@@ -1987,10 +2014,10 @@ window.runMermaid = runMermaid;</script>
         <span class="n">apply_all_repacking</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">missing</span><span class="p">:</span>
         <span class="n">log</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
-            <span class="s2">&quot;</span><span class="si">%s</span><span class="s2">: keys not loaded: </span><span class="si">%s%s</span><span class="s2">&quot;</span><span class="p">,</span>
+            <span class="s2">"</span><span class="si">%s</span><span class="s2">: keys not loaded: </span><span class="si">%s%s</span><span class="s2">"</span><span class="p">,</span>
             <span class="n">label</span><span class="p">,</span>
             <span class="n">missing</span><span class="p">[:</span><span class="mi">10</span><span class="p">],</span>
-            <span class="s2">&quot; ...&quot;</span> <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">missing</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">10</span> <span class="k">else</span> <span class="s2">&quot;&quot;</span><span class="p">,</span>
+            <span class="s2">" ..."</span> <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">missing</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">10</span> <span class="k">else</span> <span class="s2">""</span><span class="p">,</span>
         <span class="p">)</span>
 </pre></div>
 
@@ -2027,8 +2054,8 @@ window.runMermaid = runMermaid;</script>
   
 
   <!-- Scripts loaded after <body> so the DOM is not blocked -->
-  <script defer src="../../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
-<script defer src="../../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+  <script defer src="../../../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67"></script>
+<script defer src="../../../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67"></script>
 
 
   <footer class="bd-footer">
@@ -2100,9 +2127,9 @@ window.runMermaid = runMermaid;</script>
         <div class="footer-item">
 <div class="extra_footer">
   
-  <p>Last updated on August 18, 2026.</p>
+  <p>Last updated on September 03, 2026.</p>
   
-  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/bb29145">bb29145</a>.</p>
+  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/e8b29522938901f6df19ebeedd4b69bc8edbcd97">e8b2952</a>.</p>
   
 </div></div>
       

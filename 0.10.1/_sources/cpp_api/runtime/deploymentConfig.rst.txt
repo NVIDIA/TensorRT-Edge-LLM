@@ -1,0 +1,21 @@
+Deployment Config
+=================
+
+.. doxygenstruct:: trt_edgellm::rt::SpecDecodeDraftingConfig
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::SpecDecodeConfig
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::DeploymentConfig
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::createDeploymentConfig
+   :project: TensorRT Edge-LLM
+

@@ -6,9 +6,6 @@ Batch Evict Kernels
    :members:
    :undoc-members:
 
-.. doxygenfunction:: trt_edgellm::kernel::compactKVCacheSingleLayer
-   :project: TensorRT Edge-LLM
-
 .. doxygenfunction:: trt_edgellm::kernel::compactTensorBatch
    :project: TensorRT Edge-LLM
 

@@ -20,9 +20,13 @@ API documentation for the plugins module.
    int4GroupwiseGemmPluginV2
    int4MoePlugin
    mambaPlugin
+   nvfp4A16BlackwellDispatchPolicy
    nvfp4A16GemmPlugin
+   nvfp4A16GemmPluginV2
    nvfp4A16MoePlugin
    nvfp4MoePlugin
    nvfp4MoePluginGeforce
    pluginUtils
+   qkvConcatPlugin
+   rmsNormPlugin
    vitAttentionPlugin

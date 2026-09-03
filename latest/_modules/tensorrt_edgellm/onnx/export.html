@@ -27,8 +27,8 @@
   </noscript>
   
   <!-- Loaded before other Sphinx assets -->
-  <link href="../../../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
-<link href="../../../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+  <link href="../../../_static/styles/theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
+<link href="../../../_static/styles/pydata-sphinx-theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
 
     <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=03e43079" />
     <link rel="stylesheet" type="text/css" href="../../../_static/styles/nvidia-sphinx-theme.css?v=933278ad" />
@@ -38,10 +38,10 @@
     <link rel="stylesheet" type="text/css" href="../../../_static/custom.css?v=e02be394" />
   
   <!-- So that users can add custom icons -->
-  <script defer src="../../../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <script defer src="../../../_static/scripts/fontawesome.js?digest=cb8930eaaf36d9849b67"></script>
   <!-- Pre-loaded scripts that we'll load fully later -->
-  <link rel="preload" as="script" href="../../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
-<link rel="preload" as="script" href="../../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+  <link rel="preload" as="script" href="../../../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67" />
+<link rel="preload" as="script" href="../../../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67" />
 
 
 
@@ -56,6 +56,8 @@
     <script src="../../../_static/togglebutton.js?v=b8b12719"></script>
     <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
     <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.12.1/dist/mermaid.esm.min.mjs";
+
+
 
 
 
@@ -413,9 +415,9 @@ window.addEventListener("load", load);
 window.runMermaid = runMermaid;</script>
     <script>DOCUMENTATION_OPTIONS.pagename = '_modules/tensorrt_edgellm/onnx/export';</script>
     <script>
-        DOCUMENTATION_OPTIONS.theme_version = '0.20.0';
+        DOCUMENTATION_OPTIONS.theme_version = '0.21.0';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = './_static/switcher.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.10.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.10.1';
         DOCUMENTATION_OPTIONS.show_version_warning_banner =
             false;
         </script>
@@ -429,7 +431,7 @@ window.runMermaid = runMermaid;</script>
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.10.0" />
+  <meta name="docsearch:version" content="0.10.1" />
   
     
     <script src="../../../_static/searchtools.js"></script>
@@ -716,17 +718,19 @@ window.runMermaid = runMermaid;</script>
 </ul>
 </details></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../user_guide/examples/omni.html">Omni (Audio + Vision + Speech I/O)</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../../user_guide/examples/experimental-server.html">Experimental High-Level Python API and Server</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../user_guide/examples/experimental-server.html">Experimental Python API and Server</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../user_guide/examples/nemo-evaluator.html">Evaluate with NeMo Evaluator</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Features</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../../user_guide/features/lora.html">LoRA (Low-Rank Adaptation)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../user_guide/features/quantization.html">Quantization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../user_guide/features/multi-device.html">Multi-Device Inference</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../user_guide/features/reduce-vocab.html">Vocabulary Reduction</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../user_guide/features/FP8KV.html">FP8 KV Cache</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../user_guide/features/fp8-embedding.html">FP8 Embedding</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../user_guide/features/streaming.html">Streaming Output</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../user_guide/features/visual-token-pruning.html">Visual-Token Pruning (DART)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../user_guide/features/kv-cache-reuse.html">KV Cache Reuse</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Input &amp; Chat Format</span></p>
@@ -747,6 +751,8 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l1"><a class="reference internal" href="../../../developer_guide/software-design/cpp-runtime-overview.html">C++ Runtime Overview</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../developer_guide/software-design/llm-inference-runtime.html">LLM Inference Runtime</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../developer_guide/software-design/llm-streaming.html">LLM Streaming — Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../developer_guide/software-design/memory-monitoring.html">Memory monitoring</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../developer_guide/software-design/openai-server.html">HTTP Inference Server Architecture</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Models</span></p>
 <ul class="nav bd-sidenav">
@@ -761,6 +767,7 @@ window.runMermaid = runMermaid;</script>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Testing</span></p>
 <ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../../developer_guide/testing/runtime-unit-tests.html">Unit-Testing the Runtime with a Substitute Engine</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../developer_guide/testing/code-coverage.html">Code Coverage with SonarQube</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../developer_guide/testing/few-layer-validation.html">Few-Layer Numeric Validation</a></li>
 </ul>
@@ -769,6 +776,7 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l1"><a class="reference internal" href="../../../python_api.html">Python API Reference</a></li>
 <li class="toctree-l1 has-children"><a class="reference internal" href="../../../cpp_api.html">C++ API Reference</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../../cpp_api/action/index.html">Action Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/action/actionKvBatch.html">Action KV Batch</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/action/actionModelTypes.html">Action Model Types</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/action/actionUtils.html">Action Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/action/alpamayo1ActionRunner.html">Alpamayo1 Action Runner</a></li>
@@ -796,6 +804,7 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/common/mathUtils.html">Math Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/common/mmapReader.html">MMAP Reader</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/common/pagedKvTypes.html">Paged KV Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/common/parallelArtifactNames.html">Parallel Artifact Names</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/common/ropeUtils.html">Rope Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/common/safetensorsUtils.html">Safetensors Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/common/stringUtils.html">String Utils</a></li>
@@ -827,9 +836,13 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/cuteDslModuleLoader.html">Cute Dsl Module Loader</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/cuteDslNvfp4MoeRunner.html">Cute Dsl Nvfp4 Moe Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/cuteDslNvfp4MoeSm110Runner.html">Cute Dsl Nvfp4 Moe Sm110 Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/cuteDslRmsNormRunner.html">Cute Dsl Rms Norm Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/cuteDslSSDRunner.html">Cute Dsl Ssd Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/cuteDslTensorDescriptors.html">Cute Dsl Tensor Descriptors</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/dartGatherKernels.html">Dart Gather Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/dartSelectorKernels.html">Dart Selector Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/ddtreeKernels.html">Ddtree Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/decoderXQAJitCompiler.html">Decoder XQA Jit Compiler</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/decoderXQARunner.html">Decoder XQA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/dequant.html">Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/dequantize.html">Dequantize</a></li>
@@ -872,6 +885,10 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/moeSigmoidGroupTopkKernels.html">Moe Sigmoid Group Topk Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/moeTopkSoftmaxKernels.html">Moe Topk Softmax Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/mtpStateScatterKernels.html">Mtp State Scatter Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/nvfp4A16BlackwellGemmRunner.html">Nvfp4 A16 Blackwell GEMM Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/nvfp4A16BlackwellGemvJitCompiler.html">Nvfp4 A16 Blackwell Gemv Jit Compiler</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/nvfp4A16BlackwellGemvJitRunner.html">Nvfp4 A16 Blackwell Gemv Jit Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/nvfp4A16BlackwellSupport.html">Nvfp4 A16 Blackwell Support</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/nvfp4MoeLayout.html">Nvfp4 Moe Layout</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/nvfp4MoeNormalize.html">Nvfp4 Moe Normalize</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/nvfp4MoePluginGeforceTransform.html">Nvfp4 Moe Plugin Geforce Transform</a></li>
@@ -882,6 +899,9 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/nvfp4_dequant.html">Nvfp4 Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/nvfp4_scale.html">Nvfp4 Scale</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/nvfp4_tensor.html">Nvfp4 Tensor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/pluginJitCompileCache.html">Plugin Jit Compile Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/pluginJitCompiler.html">Plugin Jit Compiler</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/pluginJitEmbeddedSources.html">Plugin Jit Embedded Sources</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/scaleConvert.html">Scale Convert</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/selectiveStateUpdate.html">Selective State Update</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/speculativeKernelsUtils.html">Speculative Kernels Utils</a></li>
@@ -889,6 +909,7 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/talkerMLPKernels.html">Talker Mlp Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/utilKernels.html">Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/vectorizedTypes.html">Vectorized Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/kernels/xqaKernelTypes.html">XQA Kernel Types</a></li>
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../../cpp_api/multimodal/index.html">Multimodal Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
@@ -929,11 +950,15 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/plugins/int4GroupwiseGemmPluginV2.html">Int4 Groupwise GEMM Plugin V2</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/plugins/int4MoePlugin.html">Int4 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/plugins/mambaPlugin.html">Mamba Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/plugins/nvfp4A16BlackwellDispatchPolicy.html">Nvfp4 A16 Blackwell Dispatch Policy</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/plugins/nvfp4A16GemmPlugin.html">Nvfp4 A16 GEMM Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/plugins/nvfp4A16GemmPluginV2.html">Nvfp4 A16 GEMM Plugin V2</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/plugins/nvfp4A16MoePlugin.html">Nvfp4 A16 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/plugins/nvfp4MoePlugin.html">Nvfp4 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/plugins/nvfp4MoePluginGeforce.html">Nvfp4 Moe Plugin Geforce</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/plugins/pluginUtils.html">Plugin Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/plugins/qkvConcatPlugin.html">Qkv Concat Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/plugins/rmsNormPlugin.html">Rms Norm Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/plugins/vitAttentionPlugin.html">VIT Attention Plugin</a></li>
 </ul>
 </details></li>
@@ -961,6 +986,7 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/contextCacheMetrics.html">Context Cache Metrics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/contextCacheRequest.html">Context Cache Request</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/contextCacheTypes.html">Context Cache Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/dartPruner.html">Dart Pruner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/decoderRegistry.html">Decoder Registry</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/decoderUtils.html">Decoder Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/decodingInferenceContext.html">Decoding Inference Context</a></li>
@@ -972,6 +998,7 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/dsparkDecoder.html">Dspark Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/eagleDecoder.html">EAGLE Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/embeddingPreprocessor.html">Embedding Preprocessor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/encoderEmbeddingCache.html">Encoder Embedding Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/engineExecutor.html">Engine Executor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/evictionPlanner.html">Eviction Planner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/externalWeightManager.html">External Weight Manager</a></li>
@@ -987,11 +1014,13 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/layerDebugger.html">Layer Debugger</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/llmEngineConfig.html">LLM Engine Config</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/llmInferenceRuntime.html">LLM Inference Runtime</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/llmRankRuntime.html">LLM Rank Runtime</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/llmRuntimeUtils.html">LLM Runtime Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/logitBias.html">Logit Bias</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/loraManager.html">Lora Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/mambaCacheManager.html">Mamba Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/melSpectrogram.html">Mel Spectrogram</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/modelArtifacts.html">Model Artifacts</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/mtpDecoder.html">Mtp Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/multiDevicePluginCommRegistry.html">Multi Device Plugin Comm Registry</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/multiDevicePluginResourceFactory.html">Multi Device Plugin Resource Factory</a></li>
@@ -1004,7 +1033,11 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/resourcePools.html">Resource Pools</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/reusePlan.html">Reuse Plan</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/ropeCache.html">Rope Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/runtimeCoordinator.html">Runtime Coordinator</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/sharedResources.html">Shared Resources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/specCommonStateTracker.html">Spec Common State Tracker</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/specReuseContract.html">Spec Reuse Contract</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/specStatePlan.html">Spec State Plan</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/stepPreparer.html">Step Preparer</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/streaming.html">Streaming</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/systemPromptKVCache.html">System Prompt KV Cache</a></li>
@@ -1013,6 +1046,7 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/tensorParallelPluginResources.html">Tensor Parallel Plugin Resources</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/tensorRegistry.html">Tensor Registry</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/vanillaDecoder.html">Vanilla Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../cpp_api/runtime/visualTokenPruner.html">Visual Token Pruner</a></li>
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../../cpp_api/sampler/index.html">Sampler Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
@@ -1094,18 +1128,18 @@ window.runMermaid = runMermaid;</script>
 <span></span><span class="c1"># SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION &amp; AFFILIATES. All rights reserved.</span>
 <span class="c1"># SPDX-License-Identifier: Apache-2.0</span>
 <span class="c1">#</span>
-<span class="c1"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);</span>
+<span class="c1"># Licensed under the Apache License, Version 2.0 (the "License");</span>
 <span class="c1"># you may not use this file except in compliance with the License.</span>
 <span class="c1"># You may obtain a copy of the License at</span>
 <span class="c1">#</span>
 <span class="c1"># http://www.apache.org/licenses/LICENSE-2.0</span>
 <span class="c1">#</span>
 <span class="c1"># Unless required by applicable law or agreed to in writing, software</span>
-<span class="c1"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS,</span>
+<span class="c1"># distributed under the License is distributed on an "AS IS" BASIS,</span>
 <span class="c1"># WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.</span>
 <span class="c1"># See the License for the specific language governing permissions and</span>
 <span class="c1"># limitations under the License.</span>
-<span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">"""</span>
 <span class="sd">ONNX export via ``torch.onnx.export(dynamo=True)``.</span>
 
 
@@ -1136,7 +1170,7 @@ window.runMermaid = runMermaid;</script>
 <span class="sd">Extra outputs:</span>
 <span class="sd">    present_conv_0..M   updated conv states</span>
 <span class="sd">    present_ssm_0..M    updated ssm states</span>
-<span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">"""</span>
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">contextlib</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">gc</span>
@@ -1156,7 +1190,7 @@ window.runMermaid = runMermaid;</script>
 
 <span class="n">logger</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
 
-<span class="n">__all__</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&quot;export_onnx&quot;</span><span class="p">]</span>
+<span class="n">__all__</span> <span class="o">=</span> <span class="p">[</span><span class="s2">"export_onnx"</span><span class="p">]</span>
 
 <span class="c1"># ---------------------------------------------------------------------------</span>
 <span class="c1"># Public API</span>
@@ -1168,13 +1202,14 @@ window.runMermaid = runMermaid;</script>
 <span class="k">def</span><span class="w"> </span><span class="nf">export_onnx</span><span class="p">(</span>
     <span class="n">model</span><span class="p">:</span> <span class="n">CausalLM</span><span class="p">,</span>
     <span class="n">output_path</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
-    <span class="n">model_dir</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span><span class="p">,</span>
+    <span class="n">model_dir</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">""</span><span class="p">,</span>
     <span class="n">fp8_embedding</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
-    <span class="n">reduced_vocab_dir</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span><span class="p">,</span>
+    <span class="n">reduced_vocab_dir</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">""</span><span class="p">,</span>
     <span class="n">externalize_weights</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
-    <span class="n">config_filename</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;config.json&quot;</span><span class="p">,</span>
+    <span class="n">config_filename</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">"config.json"</span><span class="p">,</span>
+    <span class="n">write_shared_artifacts</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Export *model* to ONNX using the dynamo exporter.</span>
+<span class="w">    </span><span class="sd">"""Export *model* to ONNX using the dynamo exporter.</span>
 
 <span class="sd">    Writes ``model.onnx``, ``model.onnx.data``, the runtime config (named</span>
 <span class="sd">    *config_filename*), ``embedding.safetensors``, and any tokenizer files</span>
@@ -1195,10 +1230,13 @@ window.runMermaid = runMermaid;</script>
 <span class="sd">                             Supported kinds: ``int4_ffn``, ``int4_moe``,</span>
 <span class="sd">                             ``nvfp4_moe``, ``lm_head``, and ``all``.</span>
 <span class="sd">        config_filename: Filename for the runtime config beside the ONNX.</span>
-<span class="sd">                         Use ``&quot;config.json&quot;`` for single-device exports</span>
-<span class="sd">                         or ``&quot;config_tp{N}_rank{R}.json&quot;`` for per-rank</span>
-<span class="sd">                         TP exports so each rank is self-describing.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">                         Use ``"config.json"`` for single-device exports</span>
+<span class="sd">                         or ``"config_world{N}.json"`` for multi-rank</span>
+<span class="sd">                         exports.</span>
+<span class="sd">        write_shared_artifacts: Emit shared embedding/tokenizer files. Set to</span>
+<span class="sd">                                False on non-rank-0 per-rank exports to avoid</span>
+<span class="sd">                                redundant rewrites of identical sidecar files.</span>
+<span class="sd">    """</span>
     <span class="n">out_dir</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">dirname</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">abspath</span><span class="p">(</span><span class="n">output_path</span><span class="p">))</span>
     <span class="n">os</span><span class="o">.</span><span class="n">makedirs</span><span class="p">(</span><span class="n">out_dir</span><span class="p">,</span> <span class="n">exist_ok</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
     <span class="n">model</span><span class="o">.</span><span class="n">eval</span><span class="p">()</span>
@@ -1218,7 +1256,8 @@ window.runMermaid = runMermaid;</script>
                             <span class="n">out_dir</span><span class="p">,</span>
                             <span class="n">fp8_embedding</span><span class="o">=</span><span class="n">fp8_embedding</span><span class="p">,</span>
                             <span class="n">reduced_vocab_dir</span><span class="o">=</span><span class="n">reduced_vocab_dir</span><span class="p">,</span>
-                            <span class="n">config_filename</span><span class="o">=</span><span class="n">config_filename</span><span class="p">)</span>
+                            <span class="n">config_filename</span><span class="o">=</span><span class="n">config_filename</span><span class="p">,</span>
+                            <span class="n">write_shared_artifacts</span><span class="o">=</span><span class="n">write_shared_artifacts</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">external_weight_files</span><span class="p">:</span>
         <span class="n">patch_external_weight_manifest</span><span class="p">(</span><span class="n">out_dir</span><span class="p">,</span> <span class="n">external_weight_files</span><span class="p">)</span></div>
 
@@ -1230,10 +1269,10 @@ window.runMermaid = runMermaid;</script>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">_fix_nvfp4_weight_dtype</span><span class="p">(</span><span class="n">onnx_path</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Reinterpret INT8 NVFP4 weight initializers as FLOAT4E2M1.</span>
+<span class="w">    </span><span class="sd">"""Reinterpret INT8 NVFP4 weight initializers as FLOAT4E2M1.</span>
 
 <span class="sd">    Our model stores packed FP4 weights as int8 [out, in//2] (2 nibbles per byte).</span>
-<span class="sd">    TRT&#39;s DequantizeLinear with block_size requires FLOAT4E2M1 (elem_type=23)</span>
+<span class="sd">    TRT's DequantizeLinear with block_size requires FLOAT4E2M1 (elem_type=23)</span>
 <span class="sd">    type with logical shape [out, in] -- same bytes, different ONNX element type</span>
 <span class="sd">    and shape declaration.</span>
 
@@ -1241,7 +1280,7 @@ window.runMermaid = runMermaid;</script>
 <span class="sd">    (NVFP4 linear weights) and rewrites them:</span>
 <span class="sd">      elem_type  INT8  -&gt; FLOAT4E2M1 (23)</span>
 <span class="sd">      dims       [N, M] -&gt; [N, M*2]   (double the last dim -- nibble unpacking)</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="n">_FLOAT4E2M1</span> <span class="o">=</span> <span class="mi">23</span>  <span class="c1"># ONNX TensorProto.FLOAT4E2M1</span>
     <span class="n">_INT8</span> <span class="o">=</span> <span class="mi">3</span>  <span class="c1"># ONNX TensorProto.INT8</span>
     <span class="n">_FLOAT</span> <span class="o">=</span> <span class="mi">1</span>  <span class="c1"># ONNX TensorProto.FLOAT</span>
@@ -1269,9 +1308,9 @@ window.runMermaid = runMermaid;</script>
     <span class="n">fixed_value_infos</span> <span class="o">=</span> <span class="mi">0</span>
     <span class="n">fp4_weight_dims</span> <span class="o">=</span> <span class="p">{}</span>
     <span class="k">for</span> <span class="n">init</span> <span class="ow">in</span> <span class="n">model</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">initializer</span><span class="p">:</span>
-        <span class="c1"># Only NVFP4 tensors whose name ends with &quot;.weight&quot; (not scale / qweight).</span>
-        <span class="k">if</span> <span class="p">(</span><span class="ow">not</span> <span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="s2">&quot;.weight&quot;</span><span class="p">)</span> <span class="ow">or</span> <span class="s2">&quot;scale&quot;</span> <span class="ow">in</span> <span class="n">init</span><span class="o">.</span><span class="n">name</span>
-                <span class="ow">or</span> <span class="s2">&quot;qweight&quot;</span> <span class="ow">in</span> <span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="p">):</span>
+        <span class="c1"># Only NVFP4 tensors whose name ends with ".weight" (not scale / qweight).</span>
+        <span class="k">if</span> <span class="p">(</span><span class="ow">not</span> <span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="s2">".weight"</span><span class="p">)</span> <span class="ow">or</span> <span class="s2">"scale"</span> <span class="ow">in</span> <span class="n">init</span><span class="o">.</span><span class="n">name</span>
+                <span class="ow">or</span> <span class="s2">"qweight"</span> <span class="ow">in</span> <span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="p">):</span>
             <span class="k">continue</span>
         <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">init</span><span class="o">.</span><span class="n">dims</span><span class="p">)</span> <span class="o">&lt;</span> <span class="mi">1</span><span class="p">:</span>
             <span class="k">continue</span>
@@ -1294,7 +1333,7 @@ window.runMermaid = runMermaid;</script>
         <span class="k">return</span>
 
     <span class="k">for</span> <span class="n">node</span> <span class="ow">in</span> <span class="n">model</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">node</span><span class="p">:</span>
-        <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">op_type</span> <span class="o">!=</span> <span class="s2">&quot;DequantizeLinear&quot;</span> <span class="ow">or</span> <span class="ow">not</span> <span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">op_type</span> <span class="o">!=</span> <span class="s2">"DequantizeLinear"</span> <span class="ow">or</span> <span class="ow">not</span> <span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">:</span>
             <span class="k">continue</span>
         <span class="n">weight_dims</span> <span class="o">=</span> <span class="n">fp4_weight_dims</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
         <span class="k">if</span> <span class="n">weight_dims</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
@@ -1304,14 +1343,14 @@ window.runMermaid = runMermaid;</script>
                 <span class="n">_set_value_info</span><span class="p">(</span><span class="n">output_name</span><span class="p">,</span> <span class="n">_FLOAT</span><span class="p">,</span> <span class="n">weight_dims</span><span class="p">))</span>
 
     <span class="k">if</span> <span class="n">changed</span><span class="p">:</span>
-        <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;TRT fix: reinterpreted </span><span class="si">%d</span><span class="s2"> NVFP4 weight(s) as FLOAT4E2M1&quot;</span><span class="p">,</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">"TRT fix: reinterpreted </span><span class="si">%d</span><span class="s2"> NVFP4 weight(s) as FLOAT4E2M1"</span><span class="p">,</span>
                     <span class="n">changed</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">fixed_value_infos</span><span class="p">:</span>
-        <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;TRT fix: updated </span><span class="si">%d</span><span class="s2"> NVFP4 weight value_info entries&quot;</span><span class="p">,</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">"TRT fix: updated </span><span class="si">%d</span><span class="s2"> NVFP4 weight value_info entries"</span><span class="p">,</span>
                     <span class="n">fixed_value_infos</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">changed</span> <span class="o">==</span> <span class="mi">0</span> <span class="ow">and</span> <span class="n">fixed_value_infos</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">return</span>
-    <span class="n">data_file</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">basename</span><span class="p">(</span><span class="n">onnx_path</span><span class="p">)</span> <span class="o">+</span> <span class="s2">&quot;.data&quot;</span>
+    <span class="n">data_file</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">basename</span><span class="p">(</span><span class="n">onnx_path</span><span class="p">)</span> <span class="o">+</span> <span class="s2">".data"</span>
     <span class="n">onnx</span><span class="o">.</span><span class="n">save_model</span><span class="p">(</span>
         <span class="n">model</span><span class="p">,</span>
         <span class="n">onnx_path</span><span class="p">,</span>
@@ -1323,13 +1362,13 @@ window.runMermaid = runMermaid;</script>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">_strip_attention_plugin_optional_inputs</span><span class="p">(</span><span class="n">onnx_path</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Strip disabled optional inputs from AttentionPlugin ONNX nodes.</span>
+<span class="w">    </span><span class="sd">"""Strip disabled optional inputs from AttentionPlugin ONNX nodes.</span>
 
 <span class="sd">    The onnxscript translation always emits the full optional layout:</span>
 <span class="sd">    q/k norm gammas, context-mask selector, and tree/vision mask inputs. The</span>
 <span class="sd">    C++ plugin expects those optional groups compacted in that relative order,</span>
 <span class="sd">    with disabled groups removed from the ONNX node input list.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="n">_NUM_REQUIRED</span> <span class="o">=</span> <span class="mi">6</span>
     <span class="n">_GAMMA_POSITIONS</span> <span class="o">=</span> <span class="p">(</span><span class="mi">6</span><span class="p">,</span> <span class="mi">7</span><span class="p">)</span>
     <span class="n">_CONTEXT_MASK_SELECTOR_POSITION</span> <span class="o">=</span> <span class="mi">8</span>
@@ -1340,35 +1379,35 @@ window.runMermaid = runMermaid;</script>
     <span class="n">changed</span> <span class="o">=</span> <span class="mi">0</span>
     <span class="n">dropped_gamma_tensors</span><span class="p">:</span> <span class="nb">set</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
     <span class="k">for</span> <span class="n">node</span> <span class="ow">in</span> <span class="n">model</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">node</span><span class="p">:</span>
-        <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">op_type</span> <span class="o">!=</span> <span class="s2">&quot;AttentionPlugin&quot;</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">op_type</span> <span class="o">!=</span> <span class="s2">"AttentionPlugin"</span><span class="p">:</span>
             <span class="k">continue</span>
         <span class="n">tree_attn</span> <span class="o">=</span> <span class="nb">next</span><span class="p">(</span>
-            <span class="p">(</span><span class="n">a</span><span class="o">.</span><span class="n">i</span> <span class="k">for</span> <span class="n">a</span> <span class="ow">in</span> <span class="n">node</span><span class="o">.</span><span class="n">attribute</span> <span class="k">if</span> <span class="n">a</span><span class="o">.</span><span class="n">name</span> <span class="o">==</span> <span class="s2">&quot;enable_tree_attention&quot;</span><span class="p">),</span>
+            <span class="p">(</span><span class="n">a</span><span class="o">.</span><span class="n">i</span> <span class="k">for</span> <span class="n">a</span> <span class="ow">in</span> <span class="n">node</span><span class="o">.</span><span class="n">attribute</span> <span class="k">if</span> <span class="n">a</span><span class="o">.</span><span class="n">name</span> <span class="o">==</span> <span class="s2">"enable_tree_attention"</span><span class="p">),</span>
             <span class="mi">0</span><span class="p">,</span>
         <span class="p">)</span>
         <span class="n">context_mask_selector</span> <span class="o">=</span> <span class="nb">next</span><span class="p">(</span>
             <span class="p">(</span><span class="n">a</span><span class="o">.</span><span class="n">i</span> <span class="k">for</span> <span class="n">a</span> <span class="ow">in</span> <span class="n">node</span><span class="o">.</span><span class="n">attribute</span>
-             <span class="k">if</span> <span class="n">a</span><span class="o">.</span><span class="n">name</span> <span class="o">==</span> <span class="s2">&quot;enable_context_mask_selector&quot;</span><span class="p">),</span>
+             <span class="k">if</span> <span class="n">a</span><span class="o">.</span><span class="n">name</span> <span class="o">==</span> <span class="s2">"enable_context_mask_selector"</span><span class="p">),</span>
             <span class="mi">0</span><span class="p">,</span>
         <span class="p">)</span>
         <span class="n">vision_block_attn</span> <span class="o">=</span> <span class="nb">next</span><span class="p">(</span>
             <span class="p">(</span><span class="n">a</span><span class="o">.</span><span class="n">i</span> <span class="k">for</span> <span class="n">a</span> <span class="ow">in</span> <span class="n">node</span><span class="o">.</span><span class="n">attribute</span>
-             <span class="k">if</span> <span class="n">a</span><span class="o">.</span><span class="n">name</span> <span class="o">==</span> <span class="s2">&quot;enable_vision_block_attention&quot;</span><span class="p">),</span>
+             <span class="k">if</span> <span class="n">a</span><span class="o">.</span><span class="n">name</span> <span class="o">==</span> <span class="s2">"enable_vision_block_attention"</span><span class="p">),</span>
             <span class="mi">0</span><span class="p">,</span>
         <span class="p">)</span>
         <span class="n">qk_norm</span> <span class="o">=</span> <span class="nb">next</span><span class="p">(</span>
-            <span class="p">(</span><span class="n">a</span><span class="o">.</span><span class="n">i</span> <span class="k">for</span> <span class="n">a</span> <span class="ow">in</span> <span class="n">node</span><span class="o">.</span><span class="n">attribute</span> <span class="k">if</span> <span class="n">a</span><span class="o">.</span><span class="n">name</span> <span class="o">==</span> <span class="s2">&quot;enable_qk_norm&quot;</span><span class="p">),</span>
+            <span class="p">(</span><span class="n">a</span><span class="o">.</span><span class="n">i</span> <span class="k">for</span> <span class="n">a</span> <span class="ow">in</span> <span class="n">node</span><span class="o">.</span><span class="n">attribute</span> <span class="k">if</span> <span class="n">a</span><span class="o">.</span><span class="n">name</span> <span class="o">==</span> <span class="s2">"enable_qk_norm"</span><span class="p">),</span>
             <span class="mi">0</span><span class="p">,</span>
         <span class="p">)</span>
         <span class="n">skip_scale_factor</span> <span class="o">=</span> <span class="nb">next</span><span class="p">(</span>
             <span class="p">(</span><span class="n">a</span><span class="o">.</span><span class="n">f</span>
-             <span class="k">for</span> <span class="n">a</span> <span class="ow">in</span> <span class="n">node</span><span class="o">.</span><span class="n">attribute</span> <span class="k">if</span> <span class="n">a</span><span class="o">.</span><span class="n">name</span> <span class="o">==</span> <span class="s2">&quot;skip_softmax_scale_factor&quot;</span><span class="p">),</span>
+             <span class="k">for</span> <span class="n">a</span> <span class="ow">in</span> <span class="n">node</span><span class="o">.</span><span class="n">attribute</span> <span class="k">if</span> <span class="n">a</span><span class="o">.</span><span class="n">name</span> <span class="o">==</span> <span class="s2">"skip_softmax_scale_factor"</span><span class="p">),</span>
             <span class="mf">0.0</span><span class="p">,</span>
         <span class="p">)</span>
         <span class="n">inputs</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">)</span>
 
         <span class="k">def</span><span class="w"> </span><span class="nf">get_input</span><span class="p">(</span><span class="n">index</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
-            <span class="k">return</span> <span class="n">inputs</span><span class="p">[</span><span class="n">index</span><span class="p">]</span> <span class="k">if</span> <span class="n">index</span> <span class="o">&lt;</span> <span class="nb">len</span><span class="p">(</span><span class="n">inputs</span><span class="p">)</span> <span class="k">else</span> <span class="s2">&quot;&quot;</span>
+            <span class="k">return</span> <span class="n">inputs</span><span class="p">[</span><span class="n">index</span><span class="p">]</span> <span class="k">if</span> <span class="n">index</span> <span class="o">&lt;</span> <span class="nb">len</span><span class="p">(</span><span class="n">inputs</span><span class="p">)</span> <span class="k">else</span> <span class="s2">""</span>
 
         <span class="n">new_inputs</span> <span class="o">=</span> <span class="n">inputs</span><span class="p">[:</span><span class="n">_NUM_REQUIRED</span><span class="p">]</span>
         <span class="k">if</span> <span class="n">qk_norm</span><span class="p">:</span>
@@ -1427,10 +1466,10 @@ window.runMermaid = runMermaid;</script>
     <span class="k">if</span> <span class="ow">not</span> <span class="n">changed</span><span class="p">:</span>
         <span class="k">return</span>
     <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
-        <span class="s2">&quot;TRT fix: normalized optional inputs on </span><span class="si">%d</span><span class="s2"> AttentionPlugin node(s)&quot;</span><span class="p">,</span>
+        <span class="s2">"TRT fix: normalized optional inputs on </span><span class="si">%d</span><span class="s2"> AttentionPlugin node(s)"</span><span class="p">,</span>
         <span class="n">changed</span><span class="p">,</span>
     <span class="p">)</span>
-    <span class="n">data_file</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">basename</span><span class="p">(</span><span class="n">onnx_path</span><span class="p">)</span> <span class="o">+</span> <span class="s2">&quot;.data&quot;</span>
+    <span class="n">data_file</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">basename</span><span class="p">(</span><span class="n">onnx_path</span><span class="p">)</span> <span class="o">+</span> <span class="s2">".data"</span>
     <span class="n">onnx</span><span class="o">.</span><span class="n">save_model</span><span class="p">(</span>
         <span class="n">model</span><span class="p">,</span>
         <span class="n">onnx_path</span><span class="p">,</span>
@@ -1442,12 +1481,12 @@ window.runMermaid = runMermaid;</script>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">_fix_zero_volume_initializers</span><span class="p">(</span><span class="n">onnx_path</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Clear stray payload bytes on zero-volume initializers.</span>
+<span class="w">    </span><span class="sd">"""Clear stray payload bytes on zero-volume initializers.</span>
 
 <span class="sd">    A zero-volume initializer must carry zero payload bytes, otherwise the</span>
 <span class="sd">    TRT ONNX parser rejects the model with a size mismatch. Only the model</span>
 <span class="sd">    proto is rewritten; external-data references are left untouched.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="n">model</span> <span class="o">=</span> <span class="n">onnx</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">onnx_path</span><span class="p">,</span> <span class="n">load_external_data</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
     <span class="n">fixed</span> <span class="o">=</span> <span class="mi">0</span>
     <span class="k">for</span> <span class="n">init</span> <span class="ow">in</span> <span class="n">model</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">initializer</span><span class="p">:</span>
@@ -1460,39 +1499,39 @@ window.runMermaid = runMermaid;</script>
                        <span class="ow">or</span> <span class="n">init</span><span class="o">.</span><span class="n">data_location</span> <span class="o">!=</span> <span class="n">onnx</span><span class="o">.</span><span class="n">TensorProto</span><span class="o">.</span><span class="n">DEFAULT</span><span class="p">)</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="n">has_payload</span><span class="p">:</span>
             <span class="k">continue</span>
-        <span class="n">init</span><span class="o">.</span><span class="n">raw_data</span> <span class="o">=</span> <span class="sa">b</span><span class="s2">&quot;&quot;</span>
+        <span class="n">init</span><span class="o">.</span><span class="n">raw_data</span> <span class="o">=</span> <span class="sa">b</span><span class="s2">""</span>
         <span class="k">del</span> <span class="n">init</span><span class="o">.</span><span class="n">external_data</span><span class="p">[:]</span>
         <span class="n">init</span><span class="o">.</span><span class="n">data_location</span> <span class="o">=</span> <span class="n">onnx</span><span class="o">.</span><span class="n">TensorProto</span><span class="o">.</span><span class="n">DEFAULT</span>
         <span class="n">fixed</span> <span class="o">+=</span> <span class="mi">1</span>
     <span class="k">if</span> <span class="ow">not</span> <span class="n">fixed</span><span class="p">:</span>
         <span class="k">return</span>
     <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
-        <span class="s2">&quot;TRT fix: cleared stray payload on </span><span class="si">%d</span><span class="s2"> zero-volume initializer(s)&quot;</span><span class="p">,</span>
+        <span class="s2">"TRT fix: cleared stray payload on </span><span class="si">%d</span><span class="s2"> zero-volume initializer(s)"</span><span class="p">,</span>
         <span class="n">fixed</span><span class="p">)</span>
     <span class="n">onnx</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">onnx_path</span><span class="p">)</span>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">_strip_onnxscript_internal_attrs</span><span class="p">(</span><span class="n">onnx_path</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Remove ``_outputs`` attributes injected by onnxscript multi-output ops.</span>
+<span class="w">    </span><span class="sd">"""Remove ``_outputs`` attributes injected by onnxscript multi-output ops.</span>
 
 <span class="sd">    onnxscript emits ``_outputs=N`` on custom-domain nodes with multiple</span>
 <span class="sd">    outputs (e.g. TRT_MXFP8DynamicQuantize).  TRT does not recognise this</span>
 <span class="sd">    attribute and may reject the graph.  Strip all attrs whose name starts</span>
 <span class="sd">    with ``_`` from ``trt::`` domain nodes.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="n">model</span> <span class="o">=</span> <span class="n">onnx</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">onnx_path</span><span class="p">,</span> <span class="n">load_external_data</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
     <span class="n">stripped</span> <span class="o">=</span> <span class="mi">0</span>
     <span class="k">for</span> <span class="n">node</span> <span class="ow">in</span> <span class="n">model</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">node</span><span class="p">:</span>
-        <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">domain</span> <span class="o">!=</span> <span class="s2">&quot;trt&quot;</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">domain</span> <span class="o">!=</span> <span class="s2">"trt"</span><span class="p">:</span>
             <span class="k">continue</span>
-        <span class="n">internal</span> <span class="o">=</span> <span class="p">[</span><span class="n">a</span> <span class="k">for</span> <span class="n">a</span> <span class="ow">in</span> <span class="n">node</span><span class="o">.</span><span class="n">attribute</span> <span class="k">if</span> <span class="n">a</span><span class="o">.</span><span class="n">name</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="s2">&quot;_&quot;</span><span class="p">)]</span>
+        <span class="n">internal</span> <span class="o">=</span> <span class="p">[</span><span class="n">a</span> <span class="k">for</span> <span class="n">a</span> <span class="ow">in</span> <span class="n">node</span><span class="o">.</span><span class="n">attribute</span> <span class="k">if</span> <span class="n">a</span><span class="o">.</span><span class="n">name</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="s2">"_"</span><span class="p">)]</span>
         <span class="k">for</span> <span class="n">a</span> <span class="ow">in</span> <span class="n">internal</span><span class="p">:</span>
             <span class="n">node</span><span class="o">.</span><span class="n">attribute</span><span class="o">.</span><span class="n">remove</span><span class="p">(</span><span class="n">a</span><span class="p">)</span>
             <span class="n">stripped</span> <span class="o">+=</span> <span class="mi">1</span>
     <span class="k">if</span> <span class="ow">not</span> <span class="n">stripped</span><span class="p">:</span>
         <span class="k">return</span>
-    <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;TRT fix: stripped </span><span class="si">%d</span><span class="s2"> internal onnxscript attr(s)&quot;</span><span class="p">,</span> <span class="n">stripped</span><span class="p">)</span>
-    <span class="n">data_file</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">basename</span><span class="p">(</span><span class="n">onnx_path</span><span class="p">)</span> <span class="o">+</span> <span class="s2">&quot;.data&quot;</span>
+    <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">"TRT fix: stripped </span><span class="si">%d</span><span class="s2"> internal onnxscript attr(s)"</span><span class="p">,</span> <span class="n">stripped</span><span class="p">)</span>
+    <span class="n">data_file</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">basename</span><span class="p">(</span><span class="n">onnx_path</span><span class="p">)</span> <span class="o">+</span> <span class="s2">".data"</span>
     <span class="n">onnx</span><span class="o">.</span><span class="n">save_model</span><span class="p">(</span>
         <span class="n">model</span><span class="p">,</span>
         <span class="n">onnx_path</span><span class="p">,</span>
@@ -1504,11 +1543,11 @@ window.runMermaid = runMermaid;</script>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">_dedup_shared_dql_scales</span><span class="p">(</span><span class="n">model</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Duplicate shared DequantizeLinear scale initializers in-place.</span>
+<span class="w">    </span><span class="sd">"""Duplicate shared DequantizeLinear scale initializers in-place.</span>
 
 <span class="sd">    The dynamo exporter deduplicates identical scalar initializers (e.g.</span>
 <span class="sd">    per-tensor NVFP4 global scales) into a single initializer referenced</span>
-<span class="sd">    by DequantizeLinear nodes across many layers.  TRT&#39;s compiler backend</span>
+<span class="sd">    by DequantizeLinear nodes across many layers.  TRT's compiler backend</span>
 <span class="sd">    segfaults when a single scalar initializer fans out to many DQL nodes</span>
 <span class="sd">    spanning different transformer layers.</span>
 
@@ -1519,14 +1558,14 @@ window.runMermaid = runMermaid;</script>
 
 <span class="sd">    Operates on an already-loaded ``onnx.ModelProto`` in-place and returns</span>
 <span class="sd">    the number of duplicated references (0 means no changes).</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="n">_MAX_DUP_BYTES</span> <span class="o">=</span> <span class="mi">1024</span>  <span class="c1"># only duplicate initializers up to 1 KB</span>
 
     <span class="c1"># Collect all initializer names consumed by DQL nodes, counting</span>
     <span class="c1"># how many *distinct* DQL consumers each has.</span>
     <span class="n">dql_consumers</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">list</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>  <span class="c1"># init_name -&gt; [node_indices]</span>
     <span class="k">for</span> <span class="n">idx</span><span class="p">,</span> <span class="n">node</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">model</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">node</span><span class="p">):</span>
-        <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">op_type</span> <span class="o">!=</span> <span class="s2">&quot;DequantizeLinear&quot;</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">op_type</span> <span class="o">!=</span> <span class="s2">"DequantizeLinear"</span><span class="p">:</span>
             <span class="k">continue</span>
         <span class="k">for</span> <span class="n">inp</span> <span class="ow">in</span> <span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">:</span>
             <span class="n">dql_consumers</span><span class="o">.</span><span class="n">setdefault</span><span class="p">(</span><span class="n">inp</span><span class="p">,</span> <span class="p">[])</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">idx</span><span class="p">)</span>
@@ -1549,14 +1588,14 @@ window.runMermaid = runMermaid;</script>
         <span class="k">if</span> <span class="n">nbytes</span> <span class="o">&gt;</span> <span class="n">_MAX_DUP_BYTES</span><span class="p">:</span>
             <span class="n">skipped</span> <span class="o">+=</span> <span class="mi">1</span>
             <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
-                <span class="s2">&quot;TRT fix: skipping large shared DQL initializer </span><span class="si">%s</span><span class="s2"> &quot;</span>
-                <span class="s2">&quot;(</span><span class="si">%d</span><span class="s2"> bytes, </span><span class="si">%d</span><span class="s2"> consumers) — would double memory&quot;</span><span class="p">,</span> <span class="n">init_name</span><span class="p">,</span>
+                <span class="s2">"TRT fix: skipping large shared DQL initializer </span><span class="si">%s</span><span class="s2"> "</span>
+                <span class="s2">"(</span><span class="si">%d</span><span class="s2"> bytes, </span><span class="si">%d</span><span class="s2"> consumers) — would double memory"</span><span class="p">,</span> <span class="n">init_name</span><span class="p">,</span>
                 <span class="n">nbytes</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">node_indices</span><span class="p">))</span>
             <span class="k">continue</span>
 
         <span class="c1"># Keep first consumer using the original; duplicate for the rest</span>
         <span class="k">for</span> <span class="n">seq</span><span class="p">,</span> <span class="n">nidx</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">node_indices</span><span class="p">[</span><span class="mi">1</span><span class="p">:],</span> <span class="n">start</span><span class="o">=</span><span class="mi">1</span><span class="p">):</span>
-            <span class="n">clone_name</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">init_name</span><span class="si">}</span><span class="s2">__dup</span><span class="si">{</span><span class="n">seq</span><span class="si">}</span><span class="s2">&quot;</span>
+            <span class="n">clone_name</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">init_name</span><span class="si">}</span><span class="s2">__dup</span><span class="si">{</span><span class="n">seq</span><span class="si">}</span><span class="s2">"</span>
             <span class="n">clone</span> <span class="o">=</span> <span class="n">onnx</span><span class="o">.</span><span class="n">TensorProto</span><span class="p">()</span>
             <span class="n">clone</span><span class="o">.</span><span class="n">CopyFrom</span><span class="p">(</span><span class="n">orig</span><span class="p">)</span>
             <span class="n">clone</span><span class="o">.</span><span class="n">name</span> <span class="o">=</span> <span class="n">clone_name</span>
@@ -1572,13 +1611,13 @@ window.runMermaid = runMermaid;</script>
 
     <span class="k">if</span> <span class="n">duplicated</span><span class="p">:</span>
         <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
-            <span class="s2">&quot;TRT fix: duplicated </span><span class="si">%d</span><span class="s2"> shared DQL scale ref(s) &quot;</span>
-            <span class="s2">&quot;(</span><span class="si">%d</span><span class="s2"> unique, </span><span class="si">%d</span><span class="s2"> skipped as too large)&quot;</span><span class="p">,</span> <span class="n">duplicated</span><span class="p">,</span>
+            <span class="s2">"TRT fix: duplicated </span><span class="si">%d</span><span class="s2"> shared DQL scale ref(s) "</span>
+            <span class="s2">"(</span><span class="si">%d</span><span class="s2"> unique, </span><span class="si">%d</span><span class="s2"> skipped as too large)"</span><span class="p">,</span> <span class="n">duplicated</span><span class="p">,</span>
             <span class="nb">len</span><span class="p">(</span><span class="n">shared</span><span class="p">)</span> <span class="o">-</span> <span class="n">skipped</span><span class="p">,</span> <span class="n">skipped</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">duplicated</span>
 
 
-<span class="k">def</span><span class="w"> </span><span class="nf">_external_data_value</span><span class="p">(</span><span class="n">init</span><span class="p">,</span> <span class="n">key</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="s2">&quot;str | None&quot;</span><span class="p">:</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">_external_data_value</span><span class="p">(</span><span class="n">init</span><span class="p">,</span> <span class="n">key</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="s2">"str | None"</span><span class="p">:</span>
     <span class="k">for</span> <span class="n">entry</span> <span class="ow">in</span> <span class="n">init</span><span class="o">.</span><span class="n">external_data</span><span class="p">:</span>
         <span class="k">if</span> <span class="n">entry</span><span class="o">.</span><span class="n">key</span> <span class="o">==</span> <span class="n">key</span><span class="p">:</span>
             <span class="k">return</span> <span class="n">entry</span><span class="o">.</span><span class="n">value</span>
@@ -1588,7 +1627,7 @@ window.runMermaid = runMermaid;</script>
 <span class="k">def</span><span class="w"> </span><span class="nf">_initializer_data_nbytes</span><span class="p">(</span><span class="n">init</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
     <span class="k">if</span> <span class="n">init</span><span class="o">.</span><span class="n">raw_data</span><span class="p">:</span>
         <span class="k">return</span> <span class="nb">len</span><span class="p">(</span><span class="n">init</span><span class="o">.</span><span class="n">raw_data</span><span class="p">)</span>
-    <span class="n">length</span> <span class="o">=</span> <span class="n">_external_data_value</span><span class="p">(</span><span class="n">init</span><span class="p">,</span> <span class="s2">&quot;length&quot;</span><span class="p">)</span>
+    <span class="n">length</span> <span class="o">=</span> <span class="n">_external_data_value</span><span class="p">(</span><span class="n">init</span><span class="p">,</span> <span class="s2">"length"</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">length</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="k">return</span> <span class="mi">0</span>
     <span class="k">try</span><span class="p">:</span>
@@ -1601,7 +1640,7 @@ window.runMermaid = runMermaid;</script>
     <span class="n">_MAX_DUP_BYTES</span> <span class="o">=</span> <span class="mi">1024</span>
     <span class="n">dql_consumers</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">list</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
     <span class="k">for</span> <span class="n">idx</span><span class="p">,</span> <span class="n">node</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">model</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">node</span><span class="p">):</span>
-        <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">op_type</span> <span class="o">!=</span> <span class="s2">&quot;DequantizeLinear&quot;</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">op_type</span> <span class="o">!=</span> <span class="s2">"DequantizeLinear"</span><span class="p">:</span>
             <span class="k">continue</span>
         <span class="k">for</span> <span class="n">inp</span> <span class="ow">in</span> <span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">:</span>
             <span class="n">dql_consumers</span><span class="o">.</span><span class="n">setdefault</span><span class="p">(</span><span class="n">inp</span><span class="p">,</span> <span class="p">[])</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">idx</span><span class="p">)</span>
@@ -1624,7 +1663,7 @@ window.runMermaid = runMermaid;</script>
     <span class="n">model</span><span class="p">,</span>
     <span class="n">dedup_dql_scales</span><span class="p">:</span> <span class="nb">bool</span><span class="p">,</span>
     <span class="n">cast_fp32_weights_to_fp16</span><span class="p">:</span> <span class="nb">bool</span><span class="p">,</span>
-    <span class="n">preserve_fp32_patterns</span><span class="p">:</span> <span class="s2">&quot;tuple[str, ...]&quot;</span><span class="p">,</span>
+    <span class="n">preserve_fp32_patterns</span><span class="p">:</span> <span class="s2">"tuple[str, ...]"</span><span class="p">,</span>
     <span class="n">match_fp32_matmul_initializers</span><span class="p">:</span> <span class="nb">bool</span><span class="p">,</span>
     <span class="n">match_fp32_elementwise_initializers</span><span class="p">:</span> <span class="nb">bool</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
@@ -1633,15 +1672,15 @@ window.runMermaid = runMermaid;</script>
 
     <span class="n">plugin_fp32_init_names</span><span class="p">:</span> <span class="nb">set</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
     <span class="k">for</span> <span class="n">node</span> <span class="ow">in</span> <span class="n">model</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">node</span><span class="p">:</span>
-        <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">op_type</span> <span class="o">==</span> <span class="s2">&quot;update_ssm_state&quot;</span> <span class="ow">and</span> <span class="nb">len</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">1</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">op_type</span> <span class="o">==</span> <span class="s2">"update_ssm_state"</span> <span class="ow">and</span> <span class="nb">len</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">1</span><span class="p">:</span>
             <span class="n">plugin_fp32_init_names</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">[</span><span class="mi">1</span><span class="p">])</span>
-        <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">op_type</span> <span class="o">==</span> <span class="s2">&quot;gated_delta_net&quot;</span> <span class="ow">and</span> <span class="nb">len</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">5</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">op_type</span> <span class="o">==</span> <span class="s2">"gated_delta_net"</span> <span class="ow">and</span> <span class="nb">len</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">5</span><span class="p">:</span>
             <span class="n">plugin_fp32_init_names</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">[</span><span class="mi">5</span><span class="p">])</span>
-        <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">op_type</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">&quot;Nvfp4MoePlugin&quot;</span><span class="p">,</span> <span class="s2">&quot;NvFP4MoEPluginGeforce&quot;</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">op_type</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">"Nvfp4MoePlugin"</span><span class="p">,</span> <span class="s2">"NvFP4MoEPluginGeforce"</span><span class="p">):</span>
             <span class="k">for</span> <span class="n">input_idx</span> <span class="ow">in</span> <span class="p">(</span><span class="mi">4</span><span class="p">,</span> <span class="mi">7</span><span class="p">,</span> <span class="mi">8</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">10</span><span class="p">):</span>
                 <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">)</span> <span class="o">&gt;</span> <span class="n">input_idx</span><span class="p">:</span>
                     <span class="n">plugin_fp32_init_names</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">[</span><span class="n">input_idx</span><span class="p">])</span>
-        <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">op_type</span> <span class="o">==</span> <span class="s2">&quot;Fp16MoePlugin&quot;</span> <span class="ow">and</span> <span class="nb">len</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">4</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">op_type</span> <span class="o">==</span> <span class="s2">"Fp16MoePlugin"</span> <span class="ow">and</span> <span class="nb">len</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">4</span><span class="p">:</span>
             <span class="n">plugin_fp32_init_names</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">[</span><span class="mi">4</span><span class="p">])</span>
 
     <span class="n">init_map</span> <span class="o">=</span> <span class="p">{</span><span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="p">:</span> <span class="n">init</span> <span class="k">for</span> <span class="n">init</span> <span class="ow">in</span> <span class="n">model</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">initializer</span><span class="p">}</span>
@@ -1650,7 +1689,7 @@ window.runMermaid = runMermaid;</script>
         <span class="k">for</span> <span class="n">value</span> <span class="ow">in</span> <span class="p">(</span><span class="nb">list</span><span class="p">(</span><span class="n">model</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">input</span><span class="p">)</span> <span class="o">+</span> <span class="nb">list</span><span class="p">(</span><span class="n">model</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">value_info</span><span class="p">)</span> <span class="o">+</span>
                       <span class="nb">list</span><span class="p">(</span><span class="n">model</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">output</span><span class="p">)):</span>
             <span class="n">tensor_type</span> <span class="o">=</span> <span class="n">value</span><span class="o">.</span><span class="n">type</span><span class="o">.</span><span class="n">tensor_type</span>
-            <span class="k">if</span> <span class="n">tensor_type</span><span class="o">.</span><span class="n">HasField</span><span class="p">(</span><span class="s2">&quot;elem_type&quot;</span><span class="p">):</span>
+            <span class="k">if</span> <span class="n">tensor_type</span><span class="o">.</span><span class="n">HasField</span><span class="p">(</span><span class="s2">"elem_type"</span><span class="p">):</span>
                 <span class="n">elem_types</span><span class="p">[</span><span class="n">value</span><span class="o">.</span><span class="n">name</span><span class="p">]</span> <span class="o">=</span> <span class="n">tensor_type</span><span class="o">.</span><span class="n">elem_type</span>
         <span class="k">for</span> <span class="n">init</span> <span class="ow">in</span> <span class="n">model</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">initializer</span><span class="p">:</span>
             <span class="n">elem_types</span><span class="p">[</span><span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="p">]</span> <span class="o">=</span> <span class="n">init</span><span class="o">.</span><span class="n">data_type</span>
@@ -1658,7 +1697,7 @@ window.runMermaid = runMermaid;</script>
     <span class="n">matmul_fp32_init_names</span><span class="p">:</span> <span class="nb">set</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
     <span class="k">if</span> <span class="n">match_fp32_matmul_initializers</span><span class="p">:</span>
         <span class="k">for</span> <span class="n">node</span> <span class="ow">in</span> <span class="n">model</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">node</span><span class="p">:</span>
-            <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">op_type</span> <span class="o">!=</span> <span class="s2">&quot;MatMul&quot;</span> <span class="ow">or</span> <span class="nb">len</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">)</span> <span class="o">&lt;</span> <span class="mi">2</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">op_type</span> <span class="o">!=</span> <span class="s2">"MatMul"</span> <span class="ow">or</span> <span class="nb">len</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">)</span> <span class="o">&lt;</span> <span class="mi">2</span><span class="p">:</span>
                 <span class="k">continue</span>
             <span class="k">for</span> <span class="n">init_idx</span><span class="p">,</span> <span class="n">other_idx</span> <span class="ow">in</span> <span class="p">((</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">),</span> <span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="p">)):</span>
                 <span class="n">init</span> <span class="o">=</span> <span class="n">init_map</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">[</span><span class="n">init_idx</span><span class="p">])</span>
@@ -1667,7 +1706,7 @@ window.runMermaid = runMermaid;</script>
                 <span class="k">if</span> <span class="n">elem_types</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">[</span><span class="n">other_idx</span><span class="p">])</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>  <span class="c1"># FLOAT</span>
                     <span class="n">matmul_fp32_init_names</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="p">)</span>
 
-    <span class="n">_EW_OPS</span> <span class="o">=</span> <span class="nb">frozenset</span><span class="p">({</span><span class="s2">&quot;Mul&quot;</span><span class="p">,</span> <span class="s2">&quot;Add&quot;</span><span class="p">,</span> <span class="s2">&quot;Sub&quot;</span><span class="p">,</span> <span class="s2">&quot;Div&quot;</span><span class="p">})</span>
+    <span class="n">_EW_OPS</span> <span class="o">=</span> <span class="nb">frozenset</span><span class="p">({</span><span class="s2">"Mul"</span><span class="p">,</span> <span class="s2">"Add"</span><span class="p">,</span> <span class="s2">"Sub"</span><span class="p">,</span> <span class="s2">"Div"</span><span class="p">})</span>
     <span class="n">elementwise_fp32_init_names</span><span class="p">:</span> <span class="nb">set</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
     <span class="k">if</span> <span class="n">match_fp32_elementwise_initializers</span><span class="p">:</span>
         <span class="k">for</span> <span class="n">node</span> <span class="ow">in</span> <span class="n">model</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">node</span><span class="p">:</span>
@@ -1691,11 +1730,11 @@ window.runMermaid = runMermaid;</script>
             <span class="n">dims</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="n">init</span><span class="o">.</span><span class="n">dims</span><span class="p">)</span>
             <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">dims</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span> <span class="ow">or</span> <span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">dims</span><span class="p">)</span> <span class="o">==</span> <span class="mi">1</span> <span class="ow">and</span> <span class="n">dims</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">&lt;=</span> <span class="mi">1</span><span class="p">):</span>
                 <span class="k">continue</span>
-            <span class="k">if</span> <span class="p">(</span><span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="s2">&quot;.weight_scale&quot;</span><span class="p">)</span>
-                    <span class="ow">or</span> <span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="s2">&quot;.input_scale&quot;</span><span class="p">)</span>
-                    <span class="ow">or</span> <span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="s2">&quot;.pre_quant_scale&quot;</span><span class="p">)</span>
-                    <span class="ow">or</span> <span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="s2">&quot;_scale&quot;</span><span class="p">)</span>
-                    <span class="ow">or</span> <span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="s2">&quot;_scale_2&quot;</span><span class="p">)):</span>
+            <span class="k">if</span> <span class="p">(</span><span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="s2">".weight_scale"</span><span class="p">)</span>
+                    <span class="ow">or</span> <span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="s2">".input_scale"</span><span class="p">)</span>
+                    <span class="ow">or</span> <span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="s2">".pre_quant_scale"</span><span class="p">)</span>
+                    <span class="ow">or</span> <span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="s2">"_scale"</span><span class="p">)</span>
+                    <span class="ow">or</span> <span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="s2">"_scale_2"</span><span class="p">)):</span>
                 <span class="k">continue</span>
             <span class="k">if</span> <span class="n">init</span><span class="o">.</span><span class="n">name</span> <span class="ow">in</span> <span class="n">plugin_fp32_init_names</span><span class="p">:</span>
                 <span class="k">continue</span>
@@ -1709,7 +1748,7 @@ window.runMermaid = runMermaid;</script>
 
     <span class="k">if</span> <span class="n">match_fp32_matmul_initializers</span><span class="p">:</span>
         <span class="k">for</span> <span class="n">node</span> <span class="ow">in</span> <span class="n">model</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">node</span><span class="p">:</span>
-            <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">op_type</span> <span class="o">!=</span> <span class="s2">&quot;MatMul&quot;</span> <span class="ow">or</span> <span class="nb">len</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">)</span> <span class="o">&lt;</span> <span class="mi">2</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">op_type</span> <span class="o">!=</span> <span class="s2">"MatMul"</span> <span class="ow">or</span> <span class="nb">len</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">)</span> <span class="o">&lt;</span> <span class="mi">2</span><span class="p">:</span>
                 <span class="k">continue</span>
             <span class="k">for</span> <span class="n">init_idx</span><span class="p">,</span> <span class="n">other_idx</span> <span class="ow">in</span> <span class="p">((</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">),</span> <span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="p">)):</span>
                 <span class="n">init</span> <span class="o">=</span> <span class="n">init_map</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">[</span><span class="n">init_idx</span><span class="p">])</span>
@@ -1741,7 +1780,7 @@ window.runMermaid = runMermaid;</script>
 
 <span class="nd">@contextlib</span><span class="o">.</span><span class="n">contextmanager</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">_permissive_inline_opset</span><span class="p">():</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Patch onnx-ir InlinePass to resolve opset-version conflicts by taking max.</span>
+<span class="w">    </span><span class="sd">"""Patch onnx-ir InlinePass to resolve opset-version conflicts by taking max.</span>
 
 <span class="sd">    torch TORCHLIB functions are compiled at opset 18; our custom onnxscript</span>
 <span class="sd">    translation functions use opset 21 (required for FP8 ``QuantizeLinear``</span>
@@ -1751,7 +1790,7 @@ window.runMermaid = runMermaid;</script>
 
 <span class="sd">    The standard ONNX domain is strictly backwards-compatible, so taking the</span>
 <span class="sd">    higher version is correct: opset 21 is a superset of opset 18.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="k">try</span><span class="p">:</span>
         <span class="kn">from</span><span class="w"> </span><span class="nn">onnx_ir.passes.common.inliner</span><span class="w"> </span><span class="kn">import</span> <span class="n">InlinePass</span>
     <span class="k">except</span> <span class="ne">ImportError</span><span class="p">:</span>
@@ -1762,7 +1801,7 @@ window.runMermaid = runMermaid;</script>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_patched</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">node</span><span class="p">,</span> <span class="n">call_site_id</span><span class="p">):</span>
         <span class="c1"># Pre-merge opset_imports taking max to avoid ValueError in original.</span>
-        <span class="c1"># Also align function.opset_imports so _orig&#39;s equality check passes.</span>
+        <span class="c1"># Also align function.opset_imports so _orig's equality check passes.</span>
         <span class="n">op_id</span> <span class="o">=</span> <span class="n">node</span><span class="o">.</span><span class="n">op_identifier</span><span class="p">()</span>
         <span class="n">function</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_functions</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">op_id</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">function</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
@@ -1779,8 +1818,8 @@ window.runMermaid = runMermaid;</script>
         <span class="n">InlinePass</span><span class="o">.</span><span class="n">_instantiate_call</span> <span class="o">=</span> <span class="n">_orig</span>  <span class="c1"># type: ignore[method-assign]</span>
 
 
-<span class="k">def</span><span class="w"> </span><span class="nf">_setup_fp8kv_scales_for_export</span><span class="p">(</span><span class="n">model</span><span class="p">:</span> <span class="s2">&quot;CausalLM&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Pre-cache FP8 KV scales as Python floats before torch.export tracing.</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">setup_fp8_qkv_scales_for_export</span><span class="p">(</span><span class="n">model</span><span class="p">:</span> <span class="s2">"torch.nn.Module"</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Pre-cache FP8 Q/K/V scales as Python floats before torch.export tracing.</span>
 
 <span class="sd">    During tracing, calling ``.item()`` on a tensor buffer creates a</span>
 <span class="sd">    data-dependent symbolic expression that ``torch.export`` cannot guard on.</span>
@@ -1788,18 +1827,28 @@ window.runMermaid = runMermaid;</script>
 <span class="sd">    as plain Python attributes on each attention module, they appear as</span>
 <span class="sd">    compile-time constants during export.</span>
 
+<span class="sd">    Triggers on either ``enable_fp8_kv_cache`` (LLM) or ``enable_fp8_mha``</span>
+<span class="sd">    (ViT visual MHA) — both signal a calibrated checkpoint with</span>
+<span class="sd">    ``k_proj.k_scale`` / ``v_proj.v_scale`` to surface.</span>
+
 <span class="sd">    Stored attribute: ``module._qkv_scales_float = [q, k, v]``</span>
-<span class="sd">      - q_scale : ``q_proj.q_scale`` buffer value if present, else 1.0</span>
+<span class="sd">      - q_scale : module-level ``q_scale`` buffer if present (visual MHA;</span>
+<span class="sd">                  surfaced by ``_surface_visual_q_scales`` in the</span>
+<span class="sd">                  quantization frontend), else ``q_proj.q_scale`` (LLM</span>
+<span class="sd">                  convention), else 1.0</span>
 <span class="sd">      - k_scale : ``k_proj.k_scale`` buffer value if present, else 1.0</span>
 <span class="sd">      - v_scale : ``v_proj.v_scale`` buffer value if present, else 1.0</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="k">for</span> <span class="n">module</span> <span class="ow">in</span> <span class="n">model</span><span class="o">.</span><span class="n">modules</span><span class="p">():</span>
-        <span class="k">if</span> <span class="ow">not</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">module</span><span class="p">,</span> <span class="s2">&quot;enable_fp8_kv_cache&quot;</span><span class="p">,</span> <span class="kc">False</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="p">(</span><span class="nb">getattr</span><span class="p">(</span><span class="n">module</span><span class="p">,</span> <span class="s2">"enable_fp8_kv_cache"</span><span class="p">,</span> <span class="kc">False</span><span class="p">)</span>
+                <span class="ow">or</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">module</span><span class="p">,</span> <span class="s2">"enable_fp8_mha"</span><span class="p">,</span> <span class="kc">False</span><span class="p">)):</span>
             <span class="k">continue</span>
-        <span class="n">q_buf</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="nb">getattr</span><span class="p">(</span><span class="n">module</span><span class="p">,</span> <span class="s2">&quot;q_proj&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">),</span> <span class="s2">&quot;q_scale&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
-        <span class="n">k_buf</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="nb">getattr</span><span class="p">(</span><span class="n">module</span><span class="p">,</span> <span class="s2">&quot;k_proj&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">),</span> <span class="s2">&quot;k_scale&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
-        <span class="n">v_buf</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="nb">getattr</span><span class="p">(</span><span class="n">module</span><span class="p">,</span> <span class="s2">&quot;v_proj&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">),</span> <span class="s2">&quot;v_scale&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
-        <span class="k">if</span> <span class="n">v_buf</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">and</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">module</span><span class="p">,</span> <span class="s2">&quot;attention_k_eq_v&quot;</span><span class="p">,</span> <span class="kc">False</span><span class="p">):</span>
+        <span class="n">q_buf</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">module</span><span class="p">,</span> <span class="s2">"q_scale"</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">q_buf</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">q_buf</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="nb">getattr</span><span class="p">(</span><span class="n">module</span><span class="p">,</span> <span class="s2">"q_proj"</span><span class="p">,</span> <span class="kc">None</span><span class="p">),</span> <span class="s2">"q_scale"</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+        <span class="n">k_buf</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="nb">getattr</span><span class="p">(</span><span class="n">module</span><span class="p">,</span> <span class="s2">"k_proj"</span><span class="p">,</span> <span class="kc">None</span><span class="p">),</span> <span class="s2">"k_scale"</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+        <span class="n">v_buf</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="nb">getattr</span><span class="p">(</span><span class="n">module</span><span class="p">,</span> <span class="s2">"v_proj"</span><span class="p">,</span> <span class="kc">None</span><span class="p">),</span> <span class="s2">"v_scale"</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">v_buf</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">and</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">module</span><span class="p">,</span> <span class="s2">"attention_k_eq_v"</span><span class="p">,</span> <span class="kc">False</span><span class="p">):</span>
             <span class="n">v_buf</span> <span class="o">=</span> <span class="n">k_buf</span>
         <span class="n">module</span><span class="o">.</span><span class="n">_qkv_scales_float</span> <span class="o">=</span> <span class="p">[</span>
             <span class="nb">float</span><span class="p">(</span><span class="n">q_buf</span><span class="o">.</span><span class="n">item</span><span class="p">())</span> <span class="k">if</span> <span class="n">q_buf</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="mf">1.0</span><span class="p">,</span>
@@ -1808,40 +1857,40 @@ window.runMermaid = runMermaid;</script>
         <span class="p">]</span>
 
 
-<span class="k">def</span><span class="w"> </span><span class="nf">_capture_qk_norm_gammas_for_export</span><span class="p">(</span><span class="n">model</span><span class="p">:</span> <span class="s2">&quot;CausalLM&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Populate qk_norm gamma lists on every attention module before tracing.</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">_capture_qk_norm_gammas_for_export</span><span class="p">(</span><span class="n">model</span><span class="p">:</span> <span class="s2">"CausalLM"</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Populate qk_norm gamma lists on every attention module before tracing.</span>
 
 <span class="sd">    Runs in the shared export path so every export entrypoint captures the</span>
 <span class="sd">    loaded gamma weights. Raises if a module carries qk_norm weights but no</span>
 <span class="sd">    gamma values were captured — the export must never silently drop the</span>
 <span class="sd">    fused norm.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="k">for</span> <span class="n">module</span> <span class="ow">in</span> <span class="n">model</span><span class="o">.</span><span class="n">modules</span><span class="p">():</span>
-        <span class="k">if</span> <span class="ow">not</span> <span class="nb">hasattr</span><span class="p">(</span><span class="n">module</span><span class="p">,</span> <span class="s2">&quot;_capture_qk_norm_gamma_lists&quot;</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">hasattr</span><span class="p">(</span><span class="n">module</span><span class="p">,</span> <span class="s2">"_capture_qk_norm_gamma_lists"</span><span class="p">):</span>
             <span class="k">continue</span>
         <span class="n">module</span><span class="o">.</span><span class="n">_capture_qk_norm_gamma_lists</span><span class="p">()</span>
-        <span class="n">has_norm</span> <span class="o">=</span> <span class="p">(</span><span class="nb">getattr</span><span class="p">(</span><span class="n">module</span><span class="p">,</span> <span class="s2">&quot;q_norm&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
-                    <span class="ow">or</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">module</span><span class="p">,</span> <span class="s2">&quot;k_norm&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">)</span>
+        <span class="n">has_norm</span> <span class="o">=</span> <span class="p">(</span><span class="nb">getattr</span><span class="p">(</span><span class="n">module</span><span class="p">,</span> <span class="s2">"q_norm"</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+                    <span class="ow">or</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">module</span><span class="p">,</span> <span class="s2">"k_norm"</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">)</span>
         <span class="n">captured</span> <span class="o">=</span> <span class="nb">bool</span><span class="p">(</span>
-            <span class="nb">getattr</span><span class="p">(</span><span class="n">module</span><span class="p">,</span> <span class="s2">&quot;_q_norm_gamma_list&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
-            <span class="ow">or</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">module</span><span class="p">,</span> <span class="s2">&quot;_k_norm_gamma_list&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">))</span>
+            <span class="nb">getattr</span><span class="p">(</span><span class="n">module</span><span class="p">,</span> <span class="s2">"_q_norm_gamma_list"</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+            <span class="ow">or</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">module</span><span class="p">,</span> <span class="s2">"_k_norm_gamma_list"</span><span class="p">,</span> <span class="kc">None</span><span class="p">))</span>
         <span class="k">if</span> <span class="n">has_norm</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">captured</span><span class="p">:</span>
             <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span>
-                <span class="s2">&quot;qk_norm gamma capture failed for &quot;</span>
-                <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="n">module</span><span class="p">)</span><span class="o">.</span><span class="vm">__name__</span><span class="si">}</span><span class="s2">: the module has q_norm/k_norm &quot;</span>
-                <span class="s2">&quot;weights but no gamma values were captured — the export &quot;</span>
-                <span class="s2">&quot;would silently drop the fused qk_norm.&quot;</span><span class="p">)</span>
+                <span class="s2">"qk_norm gamma capture failed for "</span>
+                <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="n">module</span><span class="p">)</span><span class="o">.</span><span class="vm">__name__</span><span class="si">}</span><span class="s2">: the module has q_norm/k_norm "</span>
+                <span class="s2">"weights but no gamma values were captured — the export "</span>
+                <span class="s2">"would silently drop the fused qk_norm."</span><span class="p">)</span>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">_fix_initializer_dtypes</span><span class="p">(</span>
     <span class="n">onnx_path</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
     <span class="n">dedup_dql_scales</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
     <span class="n">cast_fp32_weights_to_fp16</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
-    <span class="n">preserve_fp32_patterns</span><span class="p">:</span> <span class="s2">&quot;tuple[str, ...]&quot;</span> <span class="o">=</span> <span class="p">(),</span>
+    <span class="n">preserve_fp32_patterns</span><span class="p">:</span> <span class="s2">"tuple[str, ...]"</span> <span class="o">=</span> <span class="p">(),</span>
     <span class="n">match_fp32_matmul_initializers</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
     <span class="n">match_fp32_elementwise_initializers</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Single-pass ONNX initializer fixup for TRT compatibility.</span>
+<span class="w">    </span><span class="sd">"""Single-pass ONNX initializer fixup for TRT compatibility.</span>
 
 <span class="sd">    Performs up to three corrections in one ONNX load+save:</span>
 
@@ -1874,10 +1923,10 @@ window.runMermaid = runMermaid;</script>
 <span class="sd">       dynamo exporter folding float32 buffers (e.g. RoPE ``inv_freq``)</span>
 <span class="sd">       into FP16 initializers — TRT rejects mixed-type element-wise ops.</span>
 <span class="sd">       Used by the DFlash draft model export.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
 
-    <span class="n">_onnx</span> <span class="o">=</span> <span class="nb">__import__</span><span class="p">(</span><span class="s2">&quot;onnx&quot;</span><span class="p">)</span>
+    <span class="n">_onnx</span> <span class="o">=</span> <span class="nb">__import__</span><span class="p">(</span><span class="s2">"onnx"</span><span class="p">)</span>
     <span class="n">metadata_model</span> <span class="o">=</span> <span class="n">_onnx</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">onnx_path</span><span class="p">,</span> <span class="n">load_external_data</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
     <span class="k">if</span> <span class="ow">not</span> <span class="n">_initializer_dtype_fixup_required</span><span class="p">(</span>
             <span class="n">metadata_model</span><span class="p">,</span>
@@ -1889,8 +1938,8 @@ window.runMermaid = runMermaid;</script>
             <span class="n">match_fp32_elementwise_initializers</span><span class="p">,</span>
     <span class="p">):</span>
         <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
-            <span class="s2">&quot;_fix_initializer_dtypes: no dtype fixup required; skipped &quot;</span>
-            <span class="s2">&quot;external tensor load&quot;</span><span class="p">)</span>
+            <span class="s2">"_fix_initializer_dtypes: no dtype fixup required; skipped "</span>
+            <span class="s2">"external tensor load"</span><span class="p">)</span>
         <span class="k">return</span>
     <span class="k">del</span> <span class="n">metadata_model</span>
     <span class="n">gc</span><span class="o">.</span><span class="n">collect</span><span class="p">()</span>
@@ -1910,17 +1959,17 @@ window.runMermaid = runMermaid;</script>
     <span class="c1">#   share the same 11-input ONNX surface.</span>
     <span class="n">plugin_fp32_init_names</span><span class="p">:</span> <span class="nb">set</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
     <span class="k">for</span> <span class="n">node</span> <span class="ow">in</span> <span class="n">model</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">node</span><span class="p">:</span>
-        <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">op_type</span> <span class="o">==</span> <span class="s2">&quot;update_ssm_state&quot;</span> <span class="ow">and</span> <span class="nb">len</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">1</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">op_type</span> <span class="o">==</span> <span class="s2">"update_ssm_state"</span> <span class="ow">and</span> <span class="nb">len</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">1</span><span class="p">:</span>
             <span class="n">plugin_fp32_init_names</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">[</span><span class="mi">1</span><span class="p">])</span>
-        <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">op_type</span> <span class="o">==</span> <span class="s2">&quot;gated_delta_net&quot;</span> <span class="ow">and</span> <span class="nb">len</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">5</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">op_type</span> <span class="o">==</span> <span class="s2">"gated_delta_net"</span> <span class="ow">and</span> <span class="nb">len</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">5</span><span class="p">:</span>
             <span class="n">plugin_fp32_init_names</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">[</span><span class="mi">5</span><span class="p">])</span>
-        <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">op_type</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">&quot;Nvfp4MoePlugin&quot;</span><span class="p">,</span> <span class="s2">&quot;NvFP4MoEPluginGeforce&quot;</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">op_type</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">"Nvfp4MoePlugin"</span><span class="p">,</span> <span class="s2">"NvFP4MoEPluginGeforce"</span><span class="p">):</span>
             <span class="k">for</span> <span class="n">input_idx</span> <span class="ow">in</span> <span class="p">(</span><span class="mi">4</span><span class="p">,</span> <span class="mi">7</span><span class="p">,</span> <span class="mi">8</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">10</span><span class="p">):</span>
                 <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">)</span> <span class="o">&gt;</span> <span class="n">input_idx</span><span class="p">:</span>
                     <span class="n">plugin_fp32_init_names</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">[</span><span class="n">input_idx</span><span class="p">])</span>
-        <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">op_type</span> <span class="o">==</span> <span class="s2">&quot;Nvfp4A16MoePlugin&quot;</span> <span class="ow">and</span> <span class="nb">len</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">8</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">op_type</span> <span class="o">==</span> <span class="s2">"Nvfp4A16MoePlugin"</span> <span class="ow">and</span> <span class="nb">len</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">8</span><span class="p">:</span>
             <span class="n">plugin_fp32_init_names</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">[</span><span class="mi">8</span><span class="p">])</span>
-        <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">op_type</span> <span class="o">==</span> <span class="s2">&quot;Fp16MoePlugin&quot;</span> <span class="ow">and</span> <span class="nb">len</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">4</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">op_type</span> <span class="o">==</span> <span class="s2">"Fp16MoePlugin"</span> <span class="ow">and</span> <span class="nb">len</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">4</span><span class="p">:</span>
             <span class="n">plugin_fp32_init_names</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">[</span><span class="mi">4</span><span class="p">])</span>
 
     <span class="n">init_map</span> <span class="o">=</span> <span class="p">{</span><span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="p">:</span> <span class="n">init</span> <span class="k">for</span> <span class="n">init</span> <span class="ow">in</span> <span class="n">model</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">initializer</span><span class="p">}</span>
@@ -1929,7 +1978,7 @@ window.runMermaid = runMermaid;</script>
         <span class="k">for</span> <span class="n">value</span> <span class="ow">in</span> <span class="p">(</span><span class="nb">list</span><span class="p">(</span><span class="n">model</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">input</span><span class="p">)</span> <span class="o">+</span> <span class="nb">list</span><span class="p">(</span><span class="n">model</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">value_info</span><span class="p">)</span> <span class="o">+</span>
                       <span class="nb">list</span><span class="p">(</span><span class="n">model</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">output</span><span class="p">)):</span>
             <span class="n">tensor_type</span> <span class="o">=</span> <span class="n">value</span><span class="o">.</span><span class="n">type</span><span class="o">.</span><span class="n">tensor_type</span>
-            <span class="k">if</span> <span class="n">tensor_type</span><span class="o">.</span><span class="n">HasField</span><span class="p">(</span><span class="s2">&quot;elem_type&quot;</span><span class="p">):</span>
+            <span class="k">if</span> <span class="n">tensor_type</span><span class="o">.</span><span class="n">HasField</span><span class="p">(</span><span class="s2">"elem_type"</span><span class="p">):</span>
                 <span class="n">elem_types</span><span class="p">[</span><span class="n">value</span><span class="o">.</span><span class="n">name</span><span class="p">]</span> <span class="o">=</span> <span class="n">tensor_type</span><span class="o">.</span><span class="n">elem_type</span>
         <span class="k">for</span> <span class="n">init</span> <span class="ow">in</span> <span class="n">model</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">initializer</span><span class="p">:</span>
             <span class="n">elem_types</span><span class="p">[</span><span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="p">]</span> <span class="o">=</span> <span class="n">init</span><span class="o">.</span><span class="n">data_type</span>
@@ -1937,7 +1986,7 @@ window.runMermaid = runMermaid;</script>
     <span class="n">matmul_fp32_init_names</span><span class="p">:</span> <span class="nb">set</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
     <span class="k">if</span> <span class="n">match_fp32_matmul_initializers</span><span class="p">:</span>
         <span class="k">for</span> <span class="n">node</span> <span class="ow">in</span> <span class="n">model</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">node</span><span class="p">:</span>
-            <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">op_type</span> <span class="o">!=</span> <span class="s2">&quot;MatMul&quot;</span> <span class="ow">or</span> <span class="nb">len</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">)</span> <span class="o">&lt;</span> <span class="mi">2</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">op_type</span> <span class="o">!=</span> <span class="s2">"MatMul"</span> <span class="ow">or</span> <span class="nb">len</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">)</span> <span class="o">&lt;</span> <span class="mi">2</span><span class="p">:</span>
                 <span class="k">continue</span>
             <span class="k">for</span> <span class="n">init_idx</span><span class="p">,</span> <span class="n">other_idx</span> <span class="ow">in</span> <span class="p">((</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">),</span> <span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="p">)):</span>
                 <span class="n">init</span> <span class="o">=</span> <span class="n">init_map</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">[</span><span class="n">init_idx</span><span class="p">])</span>
@@ -1947,7 +1996,7 @@ window.runMermaid = runMermaid;</script>
                     <span class="n">matmul_fp32_init_names</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="p">)</span>
 
     <span class="c1"># Pre-collect element-wise FP32 init names so the downgrade pass skips them.</span>
-    <span class="n">_EW_OPS</span> <span class="o">=</span> <span class="nb">frozenset</span><span class="p">({</span><span class="s2">&quot;Mul&quot;</span><span class="p">,</span> <span class="s2">&quot;Add&quot;</span><span class="p">,</span> <span class="s2">&quot;Sub&quot;</span><span class="p">,</span> <span class="s2">&quot;Div&quot;</span><span class="p">})</span>
+    <span class="n">_EW_OPS</span> <span class="o">=</span> <span class="nb">frozenset</span><span class="p">({</span><span class="s2">"Mul"</span><span class="p">,</span> <span class="s2">"Add"</span><span class="p">,</span> <span class="s2">"Sub"</span><span class="p">,</span> <span class="s2">"Div"</span><span class="p">})</span>
     <span class="n">elementwise_fp32_init_names</span><span class="p">:</span> <span class="nb">set</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
     <span class="k">if</span> <span class="n">match_fp32_elementwise_initializers</span><span class="p">:</span>
         <span class="k">for</span> <span class="n">node</span> <span class="ow">in</span> <span class="n">model</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">node</span><span class="p">:</span>
@@ -1961,7 +2010,7 @@ window.runMermaid = runMermaid;</script>
                     <span class="n">elementwise_fp32_init_names</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_is_preserved_fp32</span><span class="p">(</span><span class="n">init_name</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Does ``init_name`` match any caller-supplied preserve pattern?&quot;&quot;&quot;</span>
+<span class="w">        </span><span class="sd">"""Does ``init_name`` match any caller-supplied preserve pattern?"""</span>
         <span class="k">return</span> <span class="nb">any</span><span class="p">(</span><span class="n">p</span> <span class="ow">in</span> <span class="n">init_name</span> <span class="k">for</span> <span class="n">p</span> <span class="ow">in</span> <span class="n">preserve_fp32_patterns</span><span class="p">)</span>
 
     <span class="n">n_to_fp16</span> <span class="o">=</span> <span class="mi">0</span>
@@ -1975,7 +2024,7 @@ window.runMermaid = runMermaid;</script>
             <span class="n">init</span><span class="o">.</span><span class="n">raw_data</span> <span class="o">=</span> <span class="n">data</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span><span class="o">.</span><span class="n">tobytes</span><span class="p">()</span>
             <span class="n">n_to_fp32</span> <span class="o">+=</span> <span class="mi">1</span>
             <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
-                <span class="s2">&quot;_fix_initializer_dtypes: </span><span class="si">%s</span><span class="s2"> </span><span class="si">%s</span><span class="s2"> FP16→FP32 (plugin FP32 input)&quot;</span><span class="p">,</span>
+                <span class="s2">"_fix_initializer_dtypes: </span><span class="si">%s</span><span class="s2"> </span><span class="si">%s</span><span class="s2"> FP16→FP32 (plugin FP32 input)"</span><span class="p">,</span>
                 <span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="n">dims</span><span class="p">)</span>
             <span class="k">continue</span>
 
@@ -1988,33 +2037,33 @@ window.runMermaid = runMermaid;</script>
             <span class="k">continue</span>
         <span class="k">if</span> <span class="n">_is_preserved_fp32</span><span class="p">(</span><span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="p">):</span>  <span class="c1"># caller opted this init out</span>
             <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
-                <span class="s2">&quot;_fix_initializer_dtypes: </span><span class="si">%s</span><span class="s2"> </span><span class="si">%s</span><span class="s2"> kept FP32 (preserve pattern)&quot;</span><span class="p">,</span>
+                <span class="s2">"_fix_initializer_dtypes: </span><span class="si">%s</span><span class="s2"> </span><span class="si">%s</span><span class="s2"> kept FP32 (preserve pattern)"</span><span class="p">,</span>
                 <span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="nb">list</span><span class="p">(</span><span class="n">init</span><span class="o">.</span><span class="n">dims</span><span class="p">))</span>
             <span class="k">continue</span>
         <span class="k">if</span> <span class="n">init</span><span class="o">.</span><span class="n">name</span> <span class="ow">in</span> <span class="n">matmul_fp32_init_names</span><span class="p">:</span>
             <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
-                <span class="s2">&quot;_fix_initializer_dtypes: </span><span class="si">%s</span><span class="s2"> </span><span class="si">%s</span><span class="s2"> kept FP32 (MatMul FP32 input)&quot;</span><span class="p">,</span>
+                <span class="s2">"_fix_initializer_dtypes: </span><span class="si">%s</span><span class="s2"> </span><span class="si">%s</span><span class="s2"> kept FP32 (MatMul FP32 input)"</span><span class="p">,</span>
                 <span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="nb">list</span><span class="p">(</span><span class="n">init</span><span class="o">.</span><span class="n">dims</span><span class="p">))</span>
             <span class="k">continue</span>
         <span class="k">if</span> <span class="n">init</span><span class="o">.</span><span class="n">name</span> <span class="ow">in</span> <span class="n">elementwise_fp32_init_names</span><span class="p">:</span>
             <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
-                <span class="s2">&quot;_fix_initializer_dtypes: </span><span class="si">%s</span><span class="s2"> </span><span class="si">%s</span><span class="s2"> kept FP32 (element-wise FP32 input)&quot;</span><span class="p">,</span>
+                <span class="s2">"_fix_initializer_dtypes: </span><span class="si">%s</span><span class="s2"> </span><span class="si">%s</span><span class="s2"> kept FP32 (element-wise FP32 input)"</span><span class="p">,</span>
                 <span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="nb">list</span><span class="p">(</span><span class="n">init</span><span class="o">.</span><span class="n">dims</span><span class="p">))</span>
             <span class="k">continue</span>
         <span class="n">dims</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="n">init</span><span class="o">.</span><span class="n">dims</span><span class="p">)</span>
         <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">dims</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span> <span class="ow">or</span> <span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">dims</span><span class="p">)</span> <span class="o">==</span> <span class="mi">1</span> <span class="ow">and</span> <span class="n">dims</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">&lt;=</span> <span class="mi">1</span><span class="p">):</span>
             <span class="k">continue</span>  <span class="c1"># keep scalars as FP32</span>
-        <span class="k">if</span> <span class="p">(</span><span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="s2">&quot;.weight_scale&quot;</span><span class="p">)</span>
-                <span class="ow">or</span> <span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="s2">&quot;.input_scale&quot;</span><span class="p">)</span>
-                <span class="ow">or</span> <span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="s2">&quot;.pre_quant_scale&quot;</span><span class="p">)</span>
-                <span class="ow">or</span> <span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="s2">&quot;_scale&quot;</span><span class="p">)</span>
-                <span class="ow">or</span> <span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="s2">&quot;_scale_2&quot;</span><span class="p">)):</span>
+        <span class="k">if</span> <span class="p">(</span><span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="s2">".weight_scale"</span><span class="p">)</span>
+                <span class="ow">or</span> <span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="s2">".input_scale"</span><span class="p">)</span>
+                <span class="ow">or</span> <span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="s2">".pre_quant_scale"</span><span class="p">)</span>
+                <span class="ow">or</span> <span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="s2">"_scale"</span><span class="p">)</span>
+                <span class="ow">or</span> <span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="s2">"_scale_2"</span><span class="p">)):</span>
             <span class="k">continue</span>  <span class="c1"># keep quantization scales as FP32</span>
         <span class="n">data</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">frombuffer</span><span class="p">(</span><span class="n">init</span><span class="o">.</span><span class="n">raw_data</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="n">dims</span><span class="p">)</span>
         <span class="n">init</span><span class="o">.</span><span class="n">data_type</span> <span class="o">=</span> <span class="mi">10</span>  <span class="c1"># FLOAT16</span>
         <span class="n">init</span><span class="o">.</span><span class="n">raw_data</span> <span class="o">=</span> <span class="n">data</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">float16</span><span class="p">)</span><span class="o">.</span><span class="n">tobytes</span><span class="p">()</span>
         <span class="n">n_to_fp16</span> <span class="o">+=</span> <span class="mi">1</span>
-        <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;_fix_initializer_dtypes: </span><span class="si">%s</span><span class="s2"> </span><span class="si">%s</span><span class="s2"> FP32→FP16&quot;</span><span class="p">,</span> <span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="p">,</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">"_fix_initializer_dtypes: </span><span class="si">%s</span><span class="s2"> </span><span class="si">%s</span><span class="s2"> FP32→FP16"</span><span class="p">,</span> <span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="p">,</span>
                     <span class="n">dims</span><span class="p">)</span>
 
     <span class="k">if</span> <span class="n">match_fp32_matmul_initializers</span><span class="p">:</span>
@@ -2022,7 +2071,7 @@ window.runMermaid = runMermaid;</script>
             <span class="n">elem_types</span><span class="p">[</span><span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="p">]</span> <span class="o">=</span> <span class="n">init</span><span class="o">.</span><span class="n">data_type</span>
 
         <span class="k">for</span> <span class="n">node</span> <span class="ow">in</span> <span class="n">model</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">node</span><span class="p">:</span>
-            <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">op_type</span> <span class="o">!=</span> <span class="s2">&quot;MatMul&quot;</span> <span class="ow">or</span> <span class="nb">len</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">)</span> <span class="o">&lt;</span> <span class="mi">2</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">op_type</span> <span class="o">!=</span> <span class="s2">"MatMul"</span> <span class="ow">or</span> <span class="nb">len</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">)</span> <span class="o">&lt;</span> <span class="mi">2</span><span class="p">:</span>
                 <span class="k">continue</span>
             <span class="k">for</span> <span class="n">init_idx</span><span class="p">,</span> <span class="n">other_idx</span> <span class="ow">in</span> <span class="p">((</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">),</span> <span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="p">)):</span>
                 <span class="n">init</span> <span class="o">=</span> <span class="n">init_map</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">[</span><span class="n">init_idx</span><span class="p">])</span>
@@ -2036,15 +2085,15 @@ window.runMermaid = runMermaid;</script>
                 <span class="n">elem_types</span><span class="p">[</span><span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="p">]</span> <span class="o">=</span> <span class="n">init</span><span class="o">.</span><span class="n">data_type</span>
                 <span class="n">n_to_fp32</span> <span class="o">+=</span> <span class="mi">1</span>
                 <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
-                    <span class="s2">&quot;_fix_initializer_dtypes: </span><span class="si">%s</span><span class="s2"> </span><span class="si">%s</span><span class="s2"> FP16→FP32 &quot;</span>
-                    <span class="s2">&quot;(MatMul FP32 input match)&quot;</span><span class="p">,</span> <span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="nb">list</span><span class="p">(</span><span class="n">init</span><span class="o">.</span><span class="n">dims</span><span class="p">))</span>
+                    <span class="s2">"_fix_initializer_dtypes: </span><span class="si">%s</span><span class="s2"> </span><span class="si">%s</span><span class="s2"> FP16→FP32 "</span>
+                    <span class="s2">"(MatMul FP32 input match)"</span><span class="p">,</span> <span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="nb">list</span><span class="p">(</span><span class="n">init</span><span class="o">.</span><span class="n">dims</span><span class="p">))</span>
 
     <span class="k">if</span> <span class="n">match_fp32_elementwise_initializers</span><span class="p">:</span>
         <span class="c1"># Refresh elem_types after prior passes may have changed dtypes.</span>
         <span class="k">for</span> <span class="n">init</span> <span class="ow">in</span> <span class="n">model</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">initializer</span><span class="p">:</span>
             <span class="n">elem_types</span><span class="p">[</span><span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="p">]</span> <span class="o">=</span> <span class="n">init</span><span class="o">.</span><span class="n">data_type</span>
 
-        <span class="n">_EW_OPS</span> <span class="o">=</span> <span class="nb">frozenset</span><span class="p">({</span><span class="s2">&quot;Mul&quot;</span><span class="p">,</span> <span class="s2">&quot;Add&quot;</span><span class="p">,</span> <span class="s2">&quot;Sub&quot;</span><span class="p">,</span> <span class="s2">&quot;Div&quot;</span><span class="p">})</span>
+        <span class="n">_EW_OPS</span> <span class="o">=</span> <span class="nb">frozenset</span><span class="p">({</span><span class="s2">"Mul"</span><span class="p">,</span> <span class="s2">"Add"</span><span class="p">,</span> <span class="s2">"Sub"</span><span class="p">,</span> <span class="s2">"Div"</span><span class="p">})</span>
         <span class="k">for</span> <span class="n">node</span> <span class="ow">in</span> <span class="n">model</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">node</span><span class="p">:</span>
             <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">op_type</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">_EW_OPS</span> <span class="ow">or</span> <span class="nb">len</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">input</span><span class="p">)</span> <span class="o">&lt;</span> <span class="mi">2</span><span class="p">:</span>
                 <span class="k">continue</span>
@@ -2060,8 +2109,8 @@ window.runMermaid = runMermaid;</script>
                 <span class="n">elem_types</span><span class="p">[</span><span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="p">]</span> <span class="o">=</span> <span class="n">init</span><span class="o">.</span><span class="n">data_type</span>
                 <span class="n">n_to_fp32</span> <span class="o">+=</span> <span class="mi">1</span>
                 <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
-                    <span class="s2">&quot;_fix_initializer_dtypes: </span><span class="si">%s</span><span class="s2"> </span><span class="si">%s</span><span class="s2"> FP16→FP32 &quot;</span>
-                    <span class="s2">&quot;(</span><span class="si">%s</span><span class="s2"> FP32 input match)&quot;</span><span class="p">,</span> <span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="nb">list</span><span class="p">(</span><span class="n">init</span><span class="o">.</span><span class="n">dims</span><span class="p">),</span>
+                    <span class="s2">"_fix_initializer_dtypes: </span><span class="si">%s</span><span class="s2"> </span><span class="si">%s</span><span class="s2"> FP16→FP32 "</span>
+                    <span class="s2">"(</span><span class="si">%s</span><span class="s2"> FP32 input match)"</span><span class="p">,</span> <span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="nb">list</span><span class="p">(</span><span class="n">init</span><span class="o">.</span><span class="n">dims</span><span class="p">),</span>
                     <span class="n">node</span><span class="o">.</span><span class="n">op_type</span><span class="p">)</span>
 
     <span class="k">if</span> <span class="n">n_to_fp16</span> <span class="o">==</span> <span class="mi">0</span> <span class="ow">and</span> <span class="n">n_to_fp32</span> <span class="o">==</span> <span class="mi">0</span> <span class="ow">and</span> <span class="n">n_deduped</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
@@ -2074,19 +2123,19 @@ window.runMermaid = runMermaid;</script>
             <span class="n">vi_map</span><span class="p">[</span><span class="n">init</span><span class="o">.</span><span class="n">name</span><span class="p">]</span><span class="o">.</span><span class="n">type</span><span class="o">.</span><span class="n">tensor_type</span><span class="o">.</span><span class="n">elem_type</span> <span class="o">=</span> <span class="n">init</span><span class="o">.</span><span class="n">data_type</span>
 
     <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
-        <span class="s2">&quot;_fix_initializer_dtypes: </span><span class="si">%d</span><span class="s2">→FP16, </span><span class="si">%d</span><span class="s2">→FP32, </span><span class="si">%d</span><span class="s2"> DQL deduped, &quot;</span>
-        <span class="s2">&quot;saving...&quot;</span><span class="p">,</span> <span class="n">n_to_fp16</span><span class="p">,</span> <span class="n">n_to_fp32</span><span class="p">,</span> <span class="n">n_deduped</span><span class="p">)</span>
+        <span class="s2">"_fix_initializer_dtypes: </span><span class="si">%d</span><span class="s2">→FP16, </span><span class="si">%d</span><span class="s2">→FP32, </span><span class="si">%d</span><span class="s2"> DQL deduped, "</span>
+        <span class="s2">"saving..."</span><span class="p">,</span> <span class="n">n_to_fp16</span><span class="p">,</span> <span class="n">n_to_fp32</span><span class="p">,</span> <span class="n">n_deduped</span><span class="p">)</span>
     <span class="c1"># Delete existing external data file before re-saving.  onnx.save_model</span>
     <span class="c1"># opens the file in r+b mode and appends new tensors at the end, so the</span>
     <span class="c1"># old data would remain as unreferenced garbage, doubling the file size.</span>
     <span class="c1"># Derive the data filename from onnx_path so per-rank TP exports</span>
-    <span class="c1"># (model_tp{N}_rank{R}.onnx) get distinct .data files instead of</span>
+    <span class="c1"># (model_world{N}_rank{R}.onnx) get distinct .data files instead of</span>
     <span class="c1"># all overwriting the same model.onnx.data.</span>
-    <span class="n">data_file</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">basename</span><span class="p">(</span><span class="n">onnx_path</span><span class="p">)</span> <span class="o">+</span> <span class="s2">&quot;.data&quot;</span>
+    <span class="n">data_file</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">basename</span><span class="p">(</span><span class="n">onnx_path</span><span class="p">)</span> <span class="o">+</span> <span class="s2">".data"</span>
     <span class="n">ext_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">dirname</span><span class="p">(</span><span class="n">onnx_path</span><span class="p">),</span> <span class="n">data_file</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">isfile</span><span class="p">(</span><span class="n">ext_path</span><span class="p">):</span>
         <span class="n">old_size</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">getsize</span><span class="p">(</span><span class="n">ext_path</span><span class="p">)</span>
-        <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Removing stale external data </span><span class="si">%s</span><span class="s2"> (</span><span class="si">%.2f</span><span class="s2"> GB) before re-save&quot;</span><span class="p">,</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">"Removing stale external data </span><span class="si">%s</span><span class="s2"> (</span><span class="si">%.2f</span><span class="s2"> GB) before re-save"</span><span class="p">,</span>
                     <span class="n">ext_path</span><span class="p">,</span> <span class="n">old_size</span> <span class="o">/</span> <span class="mf">1e9</span><span class="p">)</span>
         <span class="n">os</span><span class="o">.</span><span class="n">remove</span><span class="p">(</span><span class="n">ext_path</span><span class="p">)</span>
     <span class="n">_onnx</span><span class="o">.</span><span class="n">save_model</span><span class="p">(</span>
@@ -2100,18 +2149,18 @@ window.runMermaid = runMermaid;</script>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">_export_model</span><span class="p">(</span>
-    <span class="n">model</span><span class="p">:</span> <span class="s2">&quot;CausalLM&quot;</span><span class="p">,</span>
+    <span class="n">model</span><span class="p">:</span> <span class="s2">"CausalLM"</span><span class="p">,</span>
     <span class="n">output_path</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
     <span class="n">optimize</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
     <span class="n">externalize_weights</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
-<span class="p">)</span> <span class="o">-&gt;</span> <span class="s2">&quot;list[dict[str, object]]&quot;</span><span class="p">:</span>
-    <span class="n">_setup_fp8kv_scales_for_export</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="s2">"list[dict[str, object]]"</span><span class="p">:</span>
+    <span class="n">setup_fp8_qkv_scales_for_export</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
     <span class="n">_capture_qk_norm_gammas_for_export</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
     <span class="n">spec</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">onnx_export_spec</span><span class="p">()</span>
 
     <span class="n">translation_table</span> <span class="o">=</span> <span class="n">build_custom_translation_table</span><span class="p">()</span>
 
-    <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Exporting ONNX to </span><span class="si">%s</span><span class="s2"> (opset </span><span class="si">%d</span><span class="s2">, dynamo) ...&quot;</span><span class="p">,</span> <span class="n">output_path</span><span class="p">,</span>
+    <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">"Exporting ONNX to </span><span class="si">%s</span><span class="s2"> (opset </span><span class="si">%d</span><span class="s2">, dynamo) ..."</span><span class="p">,</span> <span class="n">output_path</span><span class="p">,</span>
                 <span class="n">_OPSET_VERSION</span><span class="p">)</span>
     <span class="k">with</span> <span class="n">_permissive_inline_opset</span><span class="p">():</span>
         <span class="n">prog</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">onnx</span><span class="o">.</span><span class="n">export</span><span class="p">(</span>
@@ -2127,7 +2176,7 @@ window.runMermaid = runMermaid;</script>
             <span class="n">optimize</span><span class="o">=</span><span class="n">optimize</span><span class="p">,</span>
         <span class="p">)</span>
     <span class="n">prog</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="n">output_path</span><span class="p">,</span> <span class="n">external_data</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-    <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">output_path</span><span class="p">,</span> <span class="s2">&quot;rb&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">_f</span><span class="p">:</span>
+    <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">output_path</span><span class="p">,</span> <span class="s2">"rb"</span><span class="p">)</span> <span class="k">as</span> <span class="n">_f</span><span class="p">:</span>
         <span class="n">os</span><span class="o">.</span><span class="n">fsync</span><span class="p">(</span><span class="n">_f</span><span class="o">.</span><span class="n">fileno</span><span class="p">())</span>
     <span class="k">del</span> <span class="n">prog</span>
     <span class="n">gc</span><span class="o">.</span><span class="n">collect</span><span class="p">()</span>
@@ -2140,17 +2189,17 @@ window.runMermaid = runMermaid;</script>
     <span class="c1"># Models may opt specific initializer names out of the FP32→FP16</span>
     <span class="c1"># downgrade via a class attribute (see e.g. CodePredictorCausalLM).</span>
     <span class="n">preserve_patterns</span> <span class="o">=</span> <span class="nb">tuple</span><span class="p">(</span>
-        <span class="nb">getattr</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="s2">&quot;preserve_fp32_initializer_patterns&quot;</span><span class="p">,</span> <span class="p">()))</span>
+        <span class="nb">getattr</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="s2">"preserve_fp32_initializer_patterns"</span><span class="p">,</span> <span class="p">()))</span>
     <span class="n">_fix_initializer_dtypes</span><span class="p">(</span><span class="n">output_path</span><span class="p">,</span>
                             <span class="n">dedup_dql_scales</span><span class="o">=</span><span class="p">(</span><span class="n">nvfp4</span> <span class="ow">or</span> <span class="n">mxfp8</span><span class="p">),</span>
                             <span class="n">preserve_fp32_patterns</span><span class="o">=</span><span class="n">preserve_patterns</span><span class="p">,</span>
                             <span class="n">match_fp32_matmul_initializers</span><span class="o">=</span><span class="nb">bool</span><span class="p">(</span>
                                 <span class="nb">getattr</span><span class="p">(</span><span class="n">model</span><span class="p">,</span>
-                                        <span class="s2">&quot;match_fp32_matmul_initializers&quot;</span><span class="p">,</span>
+                                        <span class="s2">"match_fp32_matmul_initializers"</span><span class="p">,</span>
                                         <span class="kc">False</span><span class="p">)),</span>
                             <span class="n">match_fp32_elementwise_initializers</span><span class="o">=</span><span class="nb">bool</span><span class="p">(</span>
                                 <span class="nb">getattr</span><span class="p">(</span><span class="n">model</span><span class="p">,</span>
-                                        <span class="s2">&quot;match_fp32_elementwise_initializers&quot;</span><span class="p">,</span>
+                                        <span class="s2">"match_fp32_elementwise_initializers"</span><span class="p">,</span>
                                         <span class="kc">False</span><span class="p">)))</span>
     <span class="n">_strip_attention_plugin_optional_inputs</span><span class="p">(</span><span class="n">output_path</span><span class="p">)</span>
     <span class="c1"># Must run after every pass that re-saves with save_as_external_data</span>
@@ -2158,7 +2207,7 @@ window.runMermaid = runMermaid;</script>
     <span class="n">_fix_zero_volume_initializers</span><span class="p">(</span><span class="n">output_path</span><span class="p">)</span>
     <span class="n">external_weight_files</span> <span class="o">=</span> <span class="n">externalize_model_weights</span><span class="p">(</span>
         <span class="n">output_path</span><span class="p">,</span> <span class="n">model</span><span class="p">,</span> <span class="n">externalize_weights</span><span class="o">=</span><span class="n">externalize_weights</span><span class="p">)</span>
-    <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Export complete: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">output_path</span><span class="p">)</span>
+    <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">"Export complete: </span><span class="si">%s</span><span class="s2">"</span><span class="p">,</span> <span class="n">output_path</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">external_weight_files</span>
 </pre></div>
 
@@ -2195,8 +2244,8 @@ window.runMermaid = runMermaid;</script>
   
 
   <!-- Scripts loaded after <body> so the DOM is not blocked -->
-  <script defer src="../../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
-<script defer src="../../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+  <script defer src="../../../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67"></script>
+<script defer src="../../../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67"></script>
 
 
   <footer class="bd-footer">
@@ -2268,9 +2317,9 @@ window.runMermaid = runMermaid;</script>
         <div class="footer-item">
 <div class="extra_footer">
   
-  <p>Last updated on August 18, 2026.</p>
+  <p>Last updated on September 03, 2026.</p>
   
-  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/bb29145">bb29145</a>.</p>
+  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/e8b29522938901f6df19ebeedd4b69bc8edbcd97">e8b2952</a>.</p>
   
 </div></div>
       

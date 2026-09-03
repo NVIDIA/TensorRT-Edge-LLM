@@ -1,0 +1,86 @@
+LLM Runtime Utils
+=================
+
+.. doxygenstruct:: trt_edgellm::rt::Message
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::Message::MessageContent
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::TokenCallbackInfo
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::LogprobEntry
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::LLMGenerationRequest
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::LLMGenerationResponse
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::LongRopeParams
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::YarnParams
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::RopeConfig
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::EmbeddingData
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::formatRopeConfig
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::collectRopeConfig
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::initializeRopeCosSinCache
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::initializeNopeCosSinCache
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::initializeLongRopeCosSinCache
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::compactVector
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::buildBatchMapping
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::loadEmbeddingTable
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::clampMaxGenerateLengthForKVCapacity
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::generateMultimodalIndices
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::generateVisionBlockIds
+   :project: TensorRT Edge-LLM
+
