@@ -40,8 +40,9 @@ the scaled Q/K in low precision).
 - ncu: "compute and memory well-balanced"; bound by the L1/shared-memory pipe and
   a shared-memory-limited ~33% occupancy (DRAM only ~15%, fp16 path).
 
-Unit tests: `unittests/gemma4AudioAttentionTests.cpp` (kernel vs CPU fp32
-reference, **fp32 / fp16 / bf16** shape/mask sweep).
+Unit tests:
+`unittests/cpp/kernels/audioAttentionKernels/gemma4AudioAttentionTests.cpp`
+(kernel vs CPU fp32 reference, **fp32 / fp16 / bf16** shape/mask sweep).
 
 ## Correctness invariants (any change must preserve)
 

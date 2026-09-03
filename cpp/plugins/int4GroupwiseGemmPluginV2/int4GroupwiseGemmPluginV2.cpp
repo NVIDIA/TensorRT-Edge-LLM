@@ -35,6 +35,11 @@ namespace
 {
 constexpr char const* kINT4_GEMM_V2_PLUGIN_VERSION{"1"};
 constexpr char const* kINT4_GEMM_V2_PLUGIN_NAME{"Int4GroupwiseGemmPluginV2"};
+constexpr char const* kMAX_LOCK_WORKSPACE_BYTES_FIELD{"max_lock_workspace_bytes"};
+// Worst-case lock sizing follows the current CuTe DSL kernel set: bM=16 is
+// the smallest M tile and bN=128 is fixed across variants.
+constexpr int32_t kWORST_CASE_LOCK_TILE_M{16};
+constexpr int32_t kLOCK_TILE_N{128};
 
 // Fragment weight buffer rows for a (N, K) problem (bN=128, bK=64, kn=8).
 // The plugin's INT8 input[1] has shape [rows, 512] (each row = 128 uint32 words).
@@ -42,6 +47,29 @@ inline int32_t fragmentRows(int32_t N, int32_t K)
 {
     return divUp(N, 128) * divUp(K, 64) * 8;
 }
+
+#ifdef CUTE_DSL_INT4_FP16_GEMM_ENABLED
+inline int64_t computeMaxLockWorkspaceBytes(
+    DynamicPluginTensorDesc const* inputs, int32_t nbInputs, int32_t N, int32_t K)
+{
+    if (inputs == nullptr || nbInputs < 1 || N <= 0 || K <= 0 || K % 64 != 0)
+    {
+        return 0;
+    }
+    auto const& mx = inputs[0].max;
+    if (mx.nbDims < 2)
+    {
+        return 0;
+    }
+    int64_t const mMax = static_cast<int64_t>(mx.d[0]) * mx.d[1];
+    if (mMax <= 0)
+    {
+        return 0;
+    }
+    int64_t const locks = cuteDslInt4LockCount(static_cast<int32_t>(mMax), N, kWORST_CASE_LOCK_TILE_M, kLOCK_TILE_N);
+    return locks * static_cast<int64_t>(sizeof(int32_t));
+}
+#endif
 } // namespace
 
 // Static class fields initialization
@@ -76,10 +104,17 @@ Int4GroupwiseGemmPluginV2::Int4GroupwiseGemmPluginV2(std::string const& name, Pl
         {
             mGroupSize = *static_cast<int32_t const*>(fc->fields[i].data);
         }
+        else if (fieldName == kMAX_LOCK_WORKSPACE_BYTES_FIELD)
+        {
+            mMaxLockWorkspaceBytes = *static_cast<int64_t const*>(fc->fields[i].data);
+        }
     }
 }
 
-Int4GroupwiseGemmPluginV2::~Int4GroupwiseGemmPluginV2() {}
+Int4GroupwiseGemmPluginV2::~Int4GroupwiseGemmPluginV2()
+{
+    releaseLockWorkspace();
+}
 
 IPluginCapability* Int4GroupwiseGemmPluginV2::getCapabilityInterface(PluginCapabilityType type) noexcept
 {
@@ -109,6 +144,7 @@ IPluginV3* Int4GroupwiseGemmPluginV2::clone() noexcept
         plugin->setPluginNamespace(mNamespace.c_str());
         plugin->mTactic = mTactic;
         plugin->mAutotuneM = mAutotuneM;
+        plugin->mMaxLockWorkspaceBytes = mMaxLockWorkspaceBytes;
         return plugin;
     }
     catch (std::exception const& e)
@@ -249,31 +285,62 @@ int32_t Int4GroupwiseGemmPluginV2::configurePlugin(DynamicPluginTensorDesc const
             mAutotuneM = (m > 0) ? static_cast<int32_t>(m) : 0;
         }
     }
+#ifdef CUTE_DSL_INT4_FP16_GEMM_ENABLED
+    int64_t const maxLockWorkspaceBytes = computeMaxLockWorkspaceBytes(in, nbInputs, mGemmN, mGemmK);
+    if (maxLockWorkspaceBytes > mMaxLockWorkspaceBytes)
+    {
+        mMaxLockWorkspaceBytes = maxLockWorkspaceBytes;
+    }
+#endif
     return 0;
 }
 
 size_t Int4GroupwiseGemmPluginV2::getWorkspaceSize([[maybe_unused]] DynamicPluginTensorDesc const* inputs,
     int32_t /* nbInputs */, DynamicPluginTensorDesc const* /* outputs */, int32_t /* nbOutputs */) const noexcept
 {
-#ifdef CUTE_DSL_INT4_FP16_GEMM_ENABLED
-    // Serial split-K needs an int32 lock buffer sized for the launch grid. The
-    // tactic isn't known here (queried tactic-agnostically), so size for the worst
-    // case over valid tactics: smallest bM=16 (most M-tiles), bN=128, at max M.
-    if (mGemmN > 0 && mGemmK > 0 && mGemmK % 64 == 0)
-    {
-        auto const& mx = inputs[0].max;
-        if (mx.nbDims >= 2)
-        {
-            int64_t const mMax = static_cast<int64_t>(mx.d[0]) * mx.d[1];
-            if (mMax > 0)
-            {
-                int64_t const locks = cuteDslInt4LockCount(static_cast<int32_t>(mMax), mGemmN, 16, 128);
-                return static_cast<size_t>(locks) * sizeof(int32_t);
-            }
-        }
-    }
-#endif
     return 0;
+}
+
+bool Int4GroupwiseGemmPluginV2::ensureLockWorkspace(size_t requiredBytes) noexcept
+{
+#ifdef CUTE_DSL_INT4_FP16_GEMM_ENABLED
+    if (requiredBytes <= mLockWorkspaceBytes)
+    {
+        return true;
+    }
+
+    void* newWorkspace{nullptr};
+    cudaError_t const allocError = cudaMalloc(&newWorkspace, requiredBytes);
+    if (allocError != cudaSuccess)
+    {
+        LOG_ERROR("Int4GroupwiseGemmPluginV2: cudaMalloc for serial split-K locks failed: %s",
+            cudaGetErrorString(allocError));
+        return false;
+    }
+
+    releaseLockWorkspace();
+    mLockWorkspace = newWorkspace;
+    mLockWorkspaceBytes = requiredBytes;
+    return true;
+#else
+    return true;
+#endif
+}
+
+void Int4GroupwiseGemmPluginV2::releaseLockWorkspace() noexcept
+{
+    if (mLockWorkspace == nullptr)
+    {
+        return;
+    }
+    cudaError_t const freeError = cudaFree(mLockWorkspace);
+    if (freeError != cudaSuccess)
+    {
+        LOG_ERROR(
+            "Int4GroupwiseGemmPluginV2: cudaFree for serial split-K locks failed: %s", cudaGetErrorString(freeError));
+    }
+    mLockWorkspace = nullptr;
+    mLockWorkspaceBytes = 0;
 }
 
 int32_t Int4GroupwiseGemmPluginV2::enqueue(PluginTensorDesc const* inputDesc, PluginTensorDesc const* /* outputDesc */,
@@ -314,29 +381,32 @@ int32_t Int4GroupwiseGemmPluginV2::enqueue(PluginTensorDesc const* inputDesc, Pl
         // Tactic id = variant index + 1; tactic 0 (default) maps to variant 0,
         // which is always valid for an eligible positive-N, K%64==0 problem.
         int32_t const idx = (mTactic > 0) ? (mTactic - 1) : 0;
-        if (idx < 0 || idx >= cuteDslInt4NumVariants())
+        if (idx >= cuteDslInt4NumVariants())
         {
             return -1;
         }
         CuteDslInt4Variant const v = cuteDslInt4VariantAt(idx);
-
-        // The lock buffer only backs the in-kernel serial split-K reduction: each
-        // output tile has one int32 semaphore that must start at 0 so split-K
-        // slice 0 sees "its turn" and the ordered accumulation into C is correct.
-        // For splitK==1 there is a single slice, no cross-CTA reduction, and the
-        // kernel never touches the locks -- so zeroing them is pure waste.
         if (v.splitK > 1)
         {
             int64_t const nLocks = cuteDslInt4LockCount(M, mGemmN, v.bM, v.bN);
-            if (workspace != nullptr && nLocks > 0)
+            size_t const lockBytes = static_cast<size_t>(nLocks) * sizeof(int32_t);
+            if (mLockWorkspace == nullptr || lockBytes > mLockWorkspaceBytes)
             {
-                cudaMemsetAsync(workspace, 0, static_cast<size_t>(nLocks) * sizeof(int32_t), stream);
+                LOG_ERROR("Int4GroupwiseGemmPluginV2: serial split-K lock buffer was not allocated for this shape.");
+                return -1;
+            }
+            cudaError_t const memsetError = cudaMemsetAsync(mLockWorkspace, 0, lockBytes, stream);
+            if (memsetError != cudaSuccess)
+            {
+                LOG_ERROR("Int4GroupwiseGemmPluginV2: cudaMemsetAsync for serial split-K locks failed: %s",
+                    cudaGetErrorString(memsetError));
+                return -1;
             }
         }
         // input[1] is the fragment-layout weight buffer (INT8 bytes of the uint32
         // words); pass it straight through as mQW -- no repack, no cache.
-        return cuteDslInt4GemmLaunch(v, inputs[0], inputs[1], inputs[2], outputs[0], workspace, M, mGemmN, mGemmK,
-            /*swizzle=*/1, stream);
+        return cuteDslInt4GemmLaunch(v, inputs[0], inputs[1], inputs[2], outputs[0],
+            (v.splitK > 1) ? mLockWorkspace : nullptr, M, mGemmN, mGemmK, /*swizzle=*/1, stream);
 #else
         return -1;
 #endif
@@ -350,6 +420,20 @@ int32_t Int4GroupwiseGemmPluginV2::enqueue(PluginTensorDesc const* inputDesc, Pl
 int32_t Int4GroupwiseGemmPluginV2::onShapeChange(PluginTensorDesc const* /* in */, int32_t /* nbInputs */,
     PluginTensorDesc const* /* out */, int32_t /* nbOutputs */) noexcept
 {
+#ifdef CUTE_DSL_INT4_FP16_GEMM_ENABLED
+    try
+    {
+        if (mMaxLockWorkspaceBytes <= 0)
+        {
+            return -1;
+        }
+        return ensureLockWorkspace(static_cast<size_t>(mMaxLockWorkspaceBytes)) ? 0 : -1;
+    }
+    catch (std::exception const& e)
+    {
+        return -1;
+    }
+#endif
     return 0;
 }
 
@@ -417,6 +501,21 @@ int32_t Int4GroupwiseGemmPluginV2::getValidTactics(
 
 int32_t Int4GroupwiseGemmPluginV2::setTactic(int32_t tactic) noexcept
 {
+#ifdef CUTE_DSL_INT4_FP16_GEMM_ENABLED
+    if (tactic > 0)
+    {
+        int32_t const idx = tactic - 1;
+        if (idx >= cuteDslInt4NumVariants())
+        {
+            return -1;
+        }
+        CuteDslInt4Variant const v = cuteDslInt4VariantAt(idx);
+        if (!cuteDslInt4VariantValid(v, mGemmN, mGemmK))
+        {
+            return -1;
+        }
+    }
+#endif
     mTactic = tactic;
     return 0;
 }
@@ -439,6 +538,7 @@ PluginFieldCollection const* Int4GroupwiseGemmPluginV2::getFieldsToSerialize() n
     mDataToSerialize.emplace_back("gemm_n", &mGemmN, PluginFieldType::kINT32, 1);
     mDataToSerialize.emplace_back("gemm_k", &mGemmK, PluginFieldType::kINT32, 1);
     mDataToSerialize.emplace_back("group_size", &mGroupSize, PluginFieldType::kINT32, 1);
+    mDataToSerialize.emplace_back(kMAX_LOCK_WORKSPACE_BYTES_FIELD, &mMaxLockWorkspaceBytes, PluginFieldType::kINT64, 1);
 
     mFCToSerialize.nbFields = mDataToSerialize.size();
     mFCToSerialize.fields = mDataToSerialize.data();

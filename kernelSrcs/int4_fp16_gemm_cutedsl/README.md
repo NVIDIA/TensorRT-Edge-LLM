@@ -135,8 +135,8 @@ imports Torch via `int4_reference`.
 
 | File | Role |
 |---|---|
-| `unittests/int4Fp16GemmCuteDslTests.cu` | gtest: random inputs → CPU FP32 reference → launch → compare. Covers all 16 baked GEMM variants plus residual-M and non-64-aligned-N cases; tolerance `relErr < 0.05`. |
-| `unittests/int4Fp16GemvCuteDslTests.cu` | gtest for the eight decode GEMV variants, including non-64-aligned `N`. |
+| `unittests/kernelSrcs/int4_fp16_gemm_cutedsl/int4Fp16GemmCuteDslTests.cu` | gtest: random inputs → CPU FP32 reference → launch → compare. Covers all 16 baked GEMM variants plus residual-M and non-64-aligned-N cases; tolerance `relErr < 0.05`. |
+| `unittests/kernelSrcs/int4_fp16_gemm_cutedsl/int4Fp16GemvCuteDslTests.cu` | gtest for the eight decode GEMV variants, including non-64-aligned `N`. |
 
 The tests drive the AOT artifact directly, independently of
 `Int4GroupwiseGemmPluginV2`: an X-macro table generates module declarations,
@@ -145,9 +145,11 @@ structs, launches the generated wrapper, and compares against an FP32 reference.
 This isolates kernel geometry from plugin tactic selection.
 
 The test is gated on `CUTE_DSL_INT4_FP16_GEMM_ENABLED` and auto-discovered by
-CMake (the `unittests/**/*.cu` glob), so **no CMake edits are required** — the
-group define is emitted generically from `metadata.json`, and `cute_dsl_setup()`
-wires the artifact include dir + define onto `unitTest`.
+CMake (the per-directory glob in `unittests/CMakeLists.txt`), so **no CMake
+edits are required** as long as the file lands in a directory that already has a
+test group — the group define is emitted generically from `metadata.json`, and
+`cute_dsl_setup()` wires the artifact include dir + define onto every test
+target.
 
 ### Build + run the test
 
@@ -158,7 +160,7 @@ cmake -B build -DBUILD_UNIT_TESTS=ON -DENABLE_CUTE_DSL=int4_fp16_gemm \
 cmake --build build -j
 
 # Run just the int4 accuracy cases
-./build/unitTest --gtest_filter='Int4Fp16GemmAllVariants/*'
+./build/unittests/unitTestCuteDslKernels --gtest_filter='Int4Fp16GemmAllVariants/*'
 ```
 
 The tests load and exercise every baked GEMM/GEMV module, so they expect a full

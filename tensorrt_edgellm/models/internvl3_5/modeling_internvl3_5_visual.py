@@ -42,6 +42,7 @@ import torch.nn.functional as F
 
 from ... import config as config_module
 from ..linear import make_linear
+from ..ops import init_fp8_mha, quantize_qkv_for_fp8_mha, vit_attention_plugin
 
 if TYPE_CHECKING:
     from ...config import ModelConfig
@@ -178,21 +179,40 @@ class InternVL3_5VisionAttention(nn.Module):
             bias=True,
             module_name=f"{name_prefix}.projection_layer"
             if name_prefix else "")
+        # Real q/k/v projections: scale buffers land on the existing
+        # submodules (see init_fp8_mha docstring).
+        # InternViT-300M d64 / InternViT-6B d128 both have FP8 kernels.
+        self.enable_fp8_mha = init_fp8_mha(self,
+                                           model_config,
+                                           self.head_dim,
+                                           k_proj=self.k_proj,
+                                           v_proj=self.v_proj)
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+    def forward(self, hidden_states: torch.Tensor, cu_seqlens: torch.Tensor,
+                max_seqlen_carrier: torch.Tensor) -> torch.Tensor:
         B, N, _ = hidden_states.shape
-        q = self.q_proj(hidden_states).reshape(B, N, self.num_heads,
-                                               self.head_dim).transpose(1, 2)
-        k = self.k_proj(hidden_states).reshape(B, N, self.num_heads,
-                                               self.head_dim).transpose(1, 2)
-        v = self.v_proj(hidden_states).reshape(B, N, self.num_heads,
-                                               self.head_dim).transpose(1, 2)
-        scores = torch.matmul(q, k.transpose(-2, -1))
-        if self.attention_scale != 1.0:
-            scores = scores * self.attention_scale
-        attn = F.softmax(scores, dim=-1)
-        out = torch.matmul(attn, v).transpose(1, 2).contiguous().reshape(
-            B, N, self.embed_dim)
+        q = self.q_proj(hidden_states).reshape(B * N, self.num_heads,
+                                               self.head_dim)
+        k = self.k_proj(hidden_states).reshape(B * N, self.num_heads,
+                                               self.head_dim)
+        v = self.v_proj(hidden_states).reshape(B * N, self.num_heads,
+                                               self.head_dim)
+        q = q.to(torch.float16)
+        k = k.to(torch.float16)
+        v = v.to(torch.float16)
+        q, k, v, qkv_scales = quantize_qkv_for_fp8_mha(self, q, k, v)
+        attn_output = vit_attention_plugin(
+            q,
+            k,
+            v,
+            cu_seqlens,
+            max_seqlen_carrier,
+            num_heads=self.num_heads,
+            head_size=self.head_dim,
+            attention_scale=self.attention_scale,
+            qkv_scales=qkv_scales,
+        )
+        out = attn_output.reshape(B, N, self.embed_dim)
         return self.projection_layer(out)
 
 
@@ -288,9 +308,11 @@ class InternVL3_5VisionLayer(nn.Module):
                                      torch.ones(hidden_size),
                                      requires_grad=True)
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+    def forward(self, hidden_states: torch.Tensor, cu_seqlens: torch.Tensor,
+                max_seqlen_carrier: torch.Tensor) -> torch.Tensor:
         hidden_states = hidden_states + self.lambda_1 * self.attention(
-            self.layernorm_before(hidden_states))
+            self.layernorm_before(hidden_states), cu_seqlens,
+            max_seqlen_carrier)
         hidden_states = hidden_states + self.lambda_2 * self.mlp(
             self.layernorm_after(hidden_states))
         return hidden_states
@@ -338,8 +360,21 @@ class InternVL3_5VisionEncoder(nn.Module):
         ])
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        B, N, _ = hidden_states.shape
+        # Uniform-length ragged descriptors for the ViT attention plugin: every
+        # image contributes exactly N tokens, so cu_seqlens is a static-stride
+        # ramp and the max-seqlen carrier is shape-only (its length N is what
+        # the plugin reads; contents are never touched).
+        cu_seqlens = torch.arange(0, (B + 1) * N,
+                                  N,
+                                  dtype=torch.int32,
+                                  device=hidden_states.device)
+        max_seqlen_carrier = torch.zeros(N,
+                                         dtype=torch.int32,
+                                         device=hidden_states.device)
         for layer_module in self.layer:
-            hidden_states = layer_module(hidden_states)
+            hidden_states = layer_module(hidden_states, cu_seqlens,
+                                         max_seqlen_carrier)
         return hidden_states
 
 

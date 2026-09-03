@@ -20,6 +20,9 @@ Pipeline produced by the AOT pack:
    per-token router weight, and scatter-reduces the result back to the original
    token layout, emitting `[T, H]` FP16.
 
+The legacy `nvfp4_moe` prefill/decode N-major sources and the legacy
+`Nvfp4MoePlugin` Marlin path are no longer part of this backend.
+
 ## Supported Hardware
 
 | GPU | SM | Status |
@@ -217,7 +220,7 @@ for SM110.
 ## Validation
 
 The SM110 NVFP4 MoE contract is validated by the
-[`CuteDslNvfp4MoeSm110Test`](../../unittests/nvfp4MoeCuteDslSm110Tests.cu)
+[`CuteDslNvfp4MoeSm110Test`](../../unittests/cpp/kernels/moe/nvfp4MoeCuteDslSm110Tests.cu)
 smoke and accuracy tests.
 
 ## File Map

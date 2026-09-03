@@ -53,7 +53,7 @@ def test_make_eval_cmd_uses_existing_server_url():
         nemo_evaluator_bin="nemo-evaluator",
         eval_type="mmlu",
         model_id="test-model",
-        engine_dir="",
+        model="",
         output_dir="results",
         parallelism=1,
         max_new_tokens=128,
@@ -72,10 +72,45 @@ def test_make_eval_cmd_uses_existing_server_url():
     assert cmd[cmd.index("--model_type") + 1] == "chat"
 
 
+def test_make_server_cmd_matches_modular_server_cli():
+    args = argparse.Namespace(
+        model="Qwen/Qwen2.5-0.5B-Instruct",
+        cache_dir="/tmp/engine-cache",
+        host="127.0.0.1",
+        max_input_len=2048,
+        max_batch_size=2,
+        max_kv_cache_capacity=8192,
+        speculative_config='{"method":"mtp","num_speculative_tokens":3}',
+    )
+
+    cmd = run_nemo_eval._make_server_cmd(args, 8765)
+
+    assert cmd == [
+        sys.executable,
+        "-m",
+        "experimental.server",
+        "Qwen/Qwen2.5-0.5B-Instruct",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8765",
+        "--speculative-config",
+        '{"method":"mtp","num_speculative_tokens":3}',
+        "--cache-dir",
+        "/tmp/engine-cache",
+        "--max-input-len",
+        "2048",
+        "--max-batch-size",
+        "2",
+        "--max-kv-cache-capacity",
+        "8192",
+    ]
+
+
 def test_parse_args_defaults_to_local_server(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["run_nemo_eval.py"])
 
     args = run_nemo_eval.parse_args()
 
     assert args.model_url == "http://127.0.0.1:8000/v1/chat/completions"
-    assert args.engine_dir == ""
+    assert args.model == ""

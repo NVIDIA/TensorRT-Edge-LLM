@@ -7,9 +7,7 @@ defaults:
     max_input_len: 2048
     max_batch_size: 1
     max_kv_cache_capacity: 8192
-    enable_batching: false
-    batch_timeout_ms: 10.0
-    max_queue_batch_size:
+    speculative_config: ""
 
   evaluator:
     eval_type: mmlu
@@ -33,9 +31,5 @@ cases:
     model_param: NVIDIA-Nemotron-3-Nano-4B-NVFP4-nvfp4-mxsl8192-mxbs2-mxil2048
     server:
       max_batch_size: 2
-      enable_batching: true
-      max_queue_batch_size: 2
-    evaluator:
-      parallelism: 2
     score:
       min: 0.60

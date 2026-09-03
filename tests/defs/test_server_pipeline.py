@@ -50,7 +50,17 @@ def test_build_pybind(env_config: EnvironmentConfig,
     install_cmd = (f'cd {shlex.quote(repo_root)}'
                    f' && python3 -m venv {pybind_venv}'
                    f' && {pybind_venv}/bin/pip install -q'
-                   ' -r requirements-server.txt')
+                   ' -e ".[server,native-build]"')
+    if env_config.trt_package_dir:
+        trt_python_dir = shlex.quote(
+            os.path.join(env_config.trt_package_dir, "python"))
+        install_cmd += (
+            f' && PY_TAG=$({pybind_venv}/bin/python -c '
+            "'import sys; print(\"cp%d%d\" % sys.version_info[:2])')"
+            f' && TRT_WHL=$(find {trt_python_dir} -maxdepth 1 -type f '
+            "-name \"tensorrt-*${PY_TAG}*.whl\" -print -quit)"
+            ' && test -n "$TRT_WHL"'
+            f' && {pybind_venv}/bin/pip install -q "$TRT_WHL"')
     result = run_command(cmd=['bash', '-c', install_cmd],
                          remote_config=remote_config,
                          timeout=120,
@@ -383,7 +393,7 @@ if not so_files:
     raise RuntimeError('_edgellm_runtime.so not found in ' + {pybind_build_dir!r})
 spec = importlib.util.spec_from_file_location('_edgellm_runtime', os.path.join({pybind_build_dir!r}, so_files[0]))
 rt = importlib.util.module_from_spec(spec)
-sys.modules['_edgellm_runtime'] = rt  # so api_server/engine reuse this exact module
+sys.modules['_edgellm_runtime'] = rt  # make the HLAPI reuse this exact module
 spec.loader.exec_module(rt)
 
 engine_dir = {engine_dir!r}
@@ -420,8 +430,8 @@ for step in lps:
         assert isinstance(e.piece, bytes), f'piece should be bytes, got {{type(e.piece)}}'
 
 # Also exercise the OpenAI-compatible formatting layer on the same raw response.
-from experimental.server import api_server
-obj = api_server._format_logprobs(response)
+from experimental.server.api.serving_chat import _format_logprob_steps
+obj = _format_logprob_steps(ids, lps, True)
 assert obj is not None and 'content' in obj, f'missing content: {{obj}}'
 oc = obj['content']
 assert len(oc) == len(ids), f'content {{len(oc)}} != token count {{len(ids)}}'
@@ -816,7 +826,7 @@ print('SERVER_INFERENCE_LENGTH_REASON_PASSED')
 
 
 class TestHLAPI:
-    """E2E tests for the high-level LLM Python API with pre-built engines."""
+    """E2E tests for checkpoint-direct high-level Python inference."""
 
     @staticmethod
     def _build_hlapi_env_setup(trt_package_dir: str = "") -> str:
@@ -834,38 +844,250 @@ class TestHLAPI:
     @staticmethod
     def _hlapi_python(env_config: EnvironmentConfig,
                       remote_config: Optional[RemoteConfig]) -> str:
-        """Interpreter for the injected HLAPI script: the venv from
-        requirements-server.txt, resolved against the same base dir
-        test_build_pybind created it in."""
+        """Interpreter for the injected HLAPI script: the server/build venv
+        created by test_build_pybind under the same repository root."""
         repo_root = '.' if remote_config else env_config.llm_sdk_dir
         return f'{repo_root}/{_SERVER_VENV}/bin/python3'
+
+    @staticmethod
+    def _llm_init_script(config: TestConfig,
+                         env_config: EnvironmentConfig) -> str:
+        """Construct the public checkpoint/cache API with the CI profile."""
+        try:
+            model_dir = config.get_torch_model_dir()
+            spec_type = "none"
+            draft_model_dir = ""
+            if config.is_mtp:
+                spec_type = "mtp"
+                if config.model_name.lower().startswith("gemma-"):
+                    draft_model_dir = \
+                        config.get_gemma4_mtp_assistant_model_dir()
+            elif config.is_dflash:
+                spec_type = "dflash"
+                draft_model_dir = config.get_dflash_draft_model_dir()
+            elif config.is_dspark:
+                spec_type = "dspark"
+                draft_model_dir = config.get_dspark_draft_model_dir()
+            elif config.is_eagle:
+                spec_type = "eagle3"
+                draft_model_dir = config.get_eagle_draft_checkpoint_dir()
+        except ValueError as exc:
+            pytest.skip("checkpoint-direct HLAPI source is unavailable on "
+                        f"this runner: {exc}")
+
+        cache_dir = os.path.join(config.engine_dir,
+                                 "experimental-server-cache")
+        plugin_path = os.path.join(env_config.build_dir,
+                                   "libNvInfer_edgellm_plugin.so")
+        max_kv = config.max_kv_cache_capacity or config.max_seq_len
+
+        return f"""\
+from experimental.server.runtime.engine_build import BuildOptions
+llm = LLM(
+    model={model_dir!r},
+    cache_dir={cache_dir!r},
+    max_input_len={config.max_input_len},
+    max_batch_size={config.max_batch_size},
+    max_kv_cache_capacity={max_kv},
+    draft_top_k={config.eagle_draft_top_k},
+    draft_step={config.eagle_draft_step},
+    verify_tree_size={config.max_verify_tree_size},
+    build_options=BuildOptions(
+        spec_type={spec_type!r},
+        draft_model_dir={draft_model_dir!r},
+        max_input_len={config.max_input_len},
+        max_batch_size={config.max_batch_size},
+        max_kv_cache_capacity={max_kv},
+        max_image_tokens={config.max_image_tokens!r},
+        max_image_tokens_per_image={config.max_image_tokens_per_image!r},
+        plugin_path={plugin_path!r},
+    ),
+)"""
+
+    def test_http_server_lifecycle(self, test_param: str,
+                                   executable_files: Dict[str, str],
+                                   remote_config: Optional[RemoteConfig],
+                                   test_logger: logging.Logger,
+                                   env_config: EnvironmentConfig) -> None:
+        """Exercise the real ASGI API, including stream cancellation."""
+        config = TestConfig.from_param_string(test_param, ModelType.LLM,
+                                              TaskType.INFERENCE, env_config)
+        test_logger.info("HTTP server lifecycle: model=%s", config.model_name)
+
+        setup = self._build_hlapi_env_setup(env_config.trt_package_dir or "")
+        llm_init = self._llm_init_script(config, env_config)
+        script = f"""\
+{setup}
+import http.client
+import json
+import socket
+import threading
+import time
+
+import uvicorn
+
+from experimental.server import LLM
+from experimental.server.api.app import create_app
+from experimental.server.config import ApiConfig
+from experimental.server.runtime.engine_client import EngineClient
+
+{llm_init}
+api_config = ApiConfig(max_queued_requests=0, queue_timeout=5.0)
+engine_client = EngineClient(llm, api_config)
+app = create_app(engine_client, api_config)
+
+
+with socket.socket() as probe:
+    probe.bind(('127.0.0.1', 0))
+    port = probe.getsockname()[1]
+
+server = uvicorn.Server(uvicorn.Config(
+    app,
+    host='127.0.0.1',
+    port=port,
+    log_level='error',
+    access_log=False,
+))
+server_error = []
+
+
+def run_server():
+    try:
+        server.run()
+    except BaseException as error:
+        server_error.append(error)
+
+
+def request(path, *, payload=None, raw=None, method='POST'):
+    body = raw
+    if body is None and payload is not None:
+        body = json.dumps(payload).encode()
+    headers = {{'content-type': 'application/json'}} if body is not None else {{}}
+    connection = http.client.HTTPConnection('127.0.0.1', port, timeout=180)
+    try:
+        connection.request(method, path, body=body, headers=headers)
+        response = connection.getresponse()
+        return (response.status,
+                {{key.lower(): value for key, value in response.getheaders()}},
+                response.read())
+    finally:
+        connection.close()
+
+
+worker = threading.Thread(target=run_server, daemon=True)
+worker.start()
+deadline = time.monotonic() + 60
+while not server.started and worker.is_alive() and time.monotonic() < deadline:
+    time.sleep(0.05)
+assert server.started and not server_error, server_error
+
+try:
+    status, _, body = request('/health', method='GET')
+    health = json.loads(body)
+    assert status == 200 and health['status'] == 'healthy'
+    assert health['capabilities']['max_num_seqs'] == 1
+
+    status, _, body = request('/v1/models', method='GET')
+    models = json.loads(body)
+    assert status == 200 and models['data'][0]['id']
+
+    status, _, body = request('/v1/chat/completions',
+                              raw=b'{{\"messages\":')
+    assert status == 400
+    assert json.loads(body)['error']['type'] == 'invalid_request_error'
+    assert engine_client.active_requests == 0
+
+    completion = {{
+        'messages': [{{'role': 'user', 'content': 'Say hello briefly.'}}],
+        'temperature': 0,
+        'max_tokens': 16,
+    }}
+    status, _, body = request('/v1/chat/completions', payload=completion)
+    result = json.loads(body)
+    assert status == 200, result
+    assert result['choices'][0]['message']['content']
+    assert result['usage']['completion_tokens'] > 0
+
+    streaming = {{
+        'messages': [{{
+            'role': 'user',
+            'content': 'Count from one to five, one number per line.',
+        }}],
+        'temperature': 0,
+        'max_tokens': 32,
+        'stream': True,
+        'stream_options': {{'include_usage': True}},
+    }}
+    status, headers, body = request('/v1/chat/completions',
+                                    payload=streaming)
+    assert status == 200
+    assert headers['content-type'].startswith('text/event-stream')
+    frames = [frame for frame in body.decode().split('\\n\\n') if frame]
+    assert frames[-1] == 'data: [DONE]'
+    payloads = [json.loads(frame.removeprefix('data: '))
+                for frame in frames[:-1]]
+    choices = [item['choices'][0] for item in payloads
+               if item.get('choices')]
+    assert choices[0]['delta']['role'] == 'assistant'
+    assert any(choice['delta'].get('content') for choice in choices)
+    assert any(choice.get('finish_reason') for choice in choices)
+    usage = [item['usage'] for item in payloads if item.get('usage')]
+    assert len(usage) == 1 and usage[0]['completion_tokens'] > 0
+    assert engine_client.active_requests == 0
+    assert engine_client.queued_requests == 0
+    print('HTTP_SERVER_LIFECYCLE_PASSED')
+finally:
+    server.should_exit = True
+    worker.join(timeout=180)
+    assert not worker.is_alive(), 'HTTP server did not shut down'
+    assert not server_error, server_error
+"""
+        python = self._hlapi_python(env_config, remote_config)
+        cmd = ['bash', '-c', f'{python} -c {shlex.quote(script)}']
+        env_vars = None
+        if env_config.trt_package_dir:
+            env_vars = {
+                "LD_LIBRARY_PATH":
+                f"$LD_LIBRARY_PATH:{env_config.trt_package_dir}/lib"
+            }
+
+        with timer_context(f"HTTP server lifecycle for {config.model_name}",
+                           test_logger):
+            result = run_command(cmd=cmd,
+                                 remote_config=remote_config,
+                                 timeout=900,
+                                 logger=test_logger,
+                                 env_vars=env_vars)
+
+        output = result.get('output', '')
+        if (not result['success']
+                or 'HTTP_SERVER_LIFECYCLE_PASSED' not in output):
+            pytest.fail(f"HTTP server lifecycle failed:\n{output}")
 
     def test_hlapi_generate(self, test_param: str, executable_files: Dict[str,
                                                                           str],
                             remote_config: Optional[RemoteConfig],
                             test_logger: logging.Logger,
                             env_config: EnvironmentConfig) -> None:
-        """Test LLM.generate() with a pre-built engine directory."""
+        """Test LLM.generate() from a checkpoint and shared build cache."""
         is_vlm = "-mnit" in test_param
         model_type = ModelType.VLM if is_vlm else ModelType.LLM
         config = TestConfig.from_param_string(test_param, model_type,
                                               TaskType.INFERENCE, env_config)
 
-        engine_dir = config.get_llm_engine_dir()
-        visual_engine_dir = config.get_visual_engine_dir() if is_vlm else ""
-        test_logger.info("HLAPI generate: engine=%s visual=%s", engine_dir,
-                         visual_engine_dir or "(none)")
+        test_logger.info("HLAPI generate: model=%s", config.model_name)
 
         prompt = "Please introduce the company NVIDIA and its CEO."
         max_tokens = 128
 
         setup = self._build_hlapi_env_setup(env_config.trt_package_dir or "")
+        llm_init = self._llm_init_script(config, env_config)
 
         script = f"""\
 {setup}
 from experimental.server import LLM, SamplingParams
 
-llm = LLM(engine_dir={engine_dir!r}, multimodal_engine_dir={visual_engine_dir!r})
+{llm_init}
 outputs = llm.generate(
     [{prompt!r}],
     SamplingParams(temperature=0.7, max_tokens={max_tokens}),
@@ -915,19 +1137,20 @@ print('HLAPI_GENERATE_PASSED')
         """Test LLM.generate() returns per-token logprobs when num_logprobs > 0."""
         config = TestConfig.from_param_string(test_param, ModelType.LLM,
                                               TaskType.INFERENCE, env_config)
-        engine_dir = config.get_llm_engine_dir()
-        test_logger.info("HLAPI generate with logprobs: engine=%s", engine_dir)
+        test_logger.info("HLAPI generate with logprobs: model=%s",
+                         config.model_name)
 
         prompt = "Count from 1 to 5."
         max_tokens = 32
         num_logprobs = 3
         setup = self._build_hlapi_env_setup(env_config.trt_package_dir or "")
+        llm_init = self._llm_init_script(config, env_config)
 
         script = f"""\
 {setup}
 from experimental.server import LLM, SamplingParams
 
-llm = LLM(engine_dir={engine_dir!r})
+{llm_init}
 outputs = llm.generate(
     [[{{"role": "user", "content": {prompt!r}}}]],
     SamplingParams(temperature=0.0, top_p=1.0, top_k=1, max_tokens={max_tokens},
@@ -947,10 +1170,11 @@ for step in lps:
         assert e.logprob <= 0.0, f'logprob should be <= 0, got {{e.logprob}}'
         assert isinstance(e.token, str), f'token should be str, got {{type(e.token)}}'
         assert isinstance(e.bytes, list), f'bytes should be list, got {{type(e.bytes)}}'
-print('HLAPI_GENERATE_LOGPROBS_PASSED')
+        print('HLAPI_GENERATE_LOGPROBS_PASSED')
 """
         script_escaped = shlex.quote(script)
-        cmd = ['bash', '-c', f'python3 -c {script_escaped}']
+        python = self._hlapi_python(env_config, remote_config)
+        cmd = ['bash', '-c', f'{python} -c {script_escaped}']
 
         env_vars = None
         if env_config.trt_package_dir:
@@ -992,12 +1216,6 @@ print('HLAPI_GENERATE_LOGPROBS_PASSED')
         model_type = ModelType.ASR if is_asr else ModelType.OMNI
         config = TestConfig.from_param_string(test_param, model_type,
                                               TaskType.INFERENCE, env_config)
-        engine_dir = config.get_llm_engine_dir()
-        audio_engine_dir = (getattr(config, "get_audio_engine_dir",
-                                    lambda: "")()
-                            or os.environ.get("AUDIO_ENCODER_ENGINE_DIR", ""))
-        if not audio_engine_dir:
-            pytest.skip("AUDIO_ENCODER_ENGINE_DIR not set")
         test_wav = (getattr(config, "get_audio_test_wav", lambda: "")()
                     or os.environ.get("AUDIO_TEST_WAV", ""))
         if test_wav:
@@ -1019,13 +1237,14 @@ with wave.open(buf, 'wb') as w:
 wav_bytes = buf.getvalue()"""
 
         setup = self._build_hlapi_env_setup(env_config.trt_package_dir or "")
+        llm_init = self._llm_init_script(config, env_config)
         script = f"""\
 {setup}
 import base64
 {wav_setup}
 wav_b64 = base64.b64encode(wav_bytes).decode()
 from experimental.server import LLM, SamplingParams
-llm = LLM(engine_dir={engine_dir!r}, multimodal_engine_dir={audio_engine_dir!r})
+{llm_init}
 messages = [{{'role': 'user', 'content': [
     {{'type': 'input_audio', 'input_audio': {{'data': wav_b64, 'format': 'wav'}}}}
 ]}}]
@@ -1066,20 +1285,19 @@ print('HLAPI_STREAM_WITH_AUDIO_PASSED')
 
         Runs generation in a subprocess against a real engine. The +100 case
         selects a non-special tokenizer ID and verifies that deterministic
-        generation returns it for both the prefill-sampled token and a vanilla
-        decode token. The -100 case first records the baseline greedy token,
-        then verifies biasing that token suppresses it. When a draft model is
-        present, speculative decoding is explicitly disabled because combining
-        it with logit bias is rejected.
+        generation returns it for both the prefill-sampled token and a decode
+        token. The -100 case first records the baseline greedy token, then
+        verifies biasing that token suppresses it. A speculative bundle remains
+        on its native speculative path.
         """
         config = TestConfig.from_param_string(test_param, ModelType.LLM,
                                               TaskType.INFERENCE, env_config)
 
-        engine_dir = config.get_llm_engine_dir()
-        test_logger.info("HLAPI logit_bias: engine=%s", engine_dir)
+        test_logger.info("HLAPI logit_bias: model=%s", config.model_name)
 
         prompt = "Complete this sentence with one short word: NVIDIA makes"
         setup = self._build_hlapi_env_setup(env_config.trt_package_dir or "")
+        llm_init = self._llm_init_script(config, env_config)
 
         script = f"""\
 {setup}
@@ -1087,10 +1305,8 @@ import json
 import os
 from experimental.server import LLM, SamplingParams
 
-engine_dir = {engine_dir!r}
-
-def pick_positive_bias_target_id(engine_dir):
-    tokenizer_path = os.path.join(engine_dir, 'tokenizer.json')
+def pick_positive_bias_target_id(model_dir):
+    tokenizer_path = os.path.join(model_dir, 'tokenizer.json')
     with open(tokenizer_path, encoding='utf-8') as f:
         tokenizer = json.load(f)
 
@@ -1140,7 +1356,6 @@ def generate_ids(llm, *, max_tokens=1, logit_bias=None):
             top_p=1.0,
             top_k=1,
             max_tokens=max_tokens,
-            disable_spec_decode=llm.has_draft_model,
             logit_bias=logit_bias or {{}},
         ),
     )
@@ -1148,9 +1363,9 @@ def generate_ids(llm, *, max_tokens=1, logit_bias=None):
     assert ids, 'Expected at least one generated token id'
     return ids
 
-llm = LLM(engine_dir=engine_dir)
+{llm_init}
 
-target_token_id = pick_positive_bias_target_id(engine_dir)
+target_token_id = pick_positive_bias_target_id(llm.model_dir)
 forced_token_count = 2
 positive_token_ids = generate_ids(
     llm,
@@ -1209,24 +1424,21 @@ print('HLAPI_GENERATE_WITH_LOGIT_BIAS_PASSED')
                                   test_logger: logging.Logger,
                                   env_config: EnvironmentConfig) -> None:
         """HLAPI video path, generate + streaming: local clip -> decode+sample ->
-        video ImageData -> per-model ViT runner, covering any video-capable VLM
-        (Qwen-VL / InternVL3). ``VIDEO_TEST_CLIP`` overrides the synthetic PyAV
+        video ImageData -> per-model ViT runner, covering Qwen-VL, InternVL3,
+        and Nemotron-Omni. ``VIDEO_TEST_CLIP`` overrides the synthetic PyAV
         clip encoded on the inference machine; ``VIDEO_TEST_NFRAMES`` must fit
         the visual engine's profile."""
-        is_vlm = "-mnit" in test_param
-        if not is_vlm:
-            pytest.skip("video HLAPI test requires a VLM test_param ('-mnit')")
-        config = TestConfig.from_param_string(test_param, ModelType.VLM,
+        if "-mnit" not in test_param:
+            pytest.skip("video HLAPI test requires a multimodal test_param")
+        model_type = (ModelType.OMNI
+                      if "-omni" in test_param.lower() else ModelType.VLM)
+        config = TestConfig.from_param_string(test_param, model_type,
                                               TaskType.INFERENCE, env_config)
-        engine_dir = config.get_llm_engine_dir()
-        visual_engine_dir = (config.get_visual_engine_dir() or os.environ.get(
-            "VISUAL_ENCODER_ENGINE_DIR", ""))
-        if not visual_engine_dir:
-            pytest.skip("visual engine dir not set")
         test_clip = os.environ.get("VIDEO_TEST_CLIP", "")
         nframes = int(os.environ.get("VIDEO_TEST_NFRAMES", "8"))
 
         setup = self._build_hlapi_env_setup(env_config.trt_package_dir or "")
+        llm_init = self._llm_init_script(config, env_config)
         if test_clip:
             clip_setup = f"clip_path = {test_clip!r}"
         else:
@@ -1256,7 +1468,7 @@ container.close()"""
 {setup}
 {clip_setup}
 from experimental.server import LLM, SamplingParams
-llm = LLM(engine_dir={engine_dir!r}, multimodal_engine_dir={visual_engine_dir!r})
+{llm_init}
 messages = [{{'role': 'user', 'content': [
     {{'type': 'video', 'video': clip_path, 'nframes': {nframes}}},
     {{'type': 'text', 'text': 'Describe what happens in this video.'}}
@@ -1310,23 +1522,23 @@ print('HLAPI_VIDEO_TOO_LONG_PASSED')
                              remote_config: Optional[RemoteConfig],
                              test_logger: logging.Logger,
                              env_config: EnvironmentConfig) -> None:
-        """Test LLM.generate_stream() with a pre-built engine directory."""
+        """Test LLM.generate_stream() from the checkpoint cache."""
         config = TestConfig.from_param_string(test_param, ModelType.LLM,
                                               TaskType.INFERENCE, env_config)
 
-        engine_dir = config.get_llm_engine_dir()
-        test_logger.info("HLAPI streaming: engine=%s", engine_dir)
+        test_logger.info("HLAPI streaming: model=%s", config.model_name)
 
         prompt = "Count from 1 to 10."
         max_tokens = 128
 
         setup = self._build_hlapi_env_setup(env_config.trt_package_dir or "")
+        llm_init = self._llm_init_script(config, env_config)
 
         script = f"""\
 {setup}
 from experimental.server import LLM, SamplingParams
 
-llm = LLM(engine_dir={engine_dir!r})
+{llm_init}
 chunks = list(llm.generate_stream(
     [{{"role": "user", "content": {prompt!r}}}],
     SamplingParams(temperature=0.7, max_tokens={max_tokens}),
@@ -1376,20 +1588,20 @@ print('HLAPI_STREAMING_PASSED')
         """Test LLM.generate_stream() delivers per-token logprobs matching token count."""
         config = TestConfig.from_param_string(test_param, ModelType.LLM,
                                               TaskType.INFERENCE, env_config)
-        engine_dir = config.get_llm_engine_dir()
-        test_logger.info("HLAPI streaming with logprobs: engine=%s",
-                         engine_dir)
+        test_logger.info("HLAPI streaming with logprobs: model=%s",
+                         config.model_name)
 
         prompt = "Count from 1 to 5."
         max_tokens = 32
         num_logprobs = 3
         setup = self._build_hlapi_env_setup(env_config.trt_package_dir or "")
+        llm_init = self._llm_init_script(config, env_config)
 
         script = f"""\
 {setup}
 from experimental.server import LLM, SamplingParams
 
-llm = LLM(engine_dir={engine_dir!r})
+{llm_init}
 chunks = list(llm.generate_stream(
     [{{"role": "user", "content": {prompt!r}}}],
     SamplingParams(temperature=0.0, top_p=1.0, top_k=1, max_tokens={max_tokens},
@@ -1410,20 +1622,29 @@ for chunk in chunks:
             assert isinstance(e.token, str), f'token should be str, got {{type(e.token)}}'
             assert isinstance(e.bytes, list), f'bytes should be list, got {{type(e.bytes)}}'
 
-# Also exercise the SSE formatting layer on the same engine: streaming
+# Also exercise the real serving layer on the same engine: streaming
 # choices[0].logprobs must be the OpenAI object shape {{"content": [...]}} with
-# nested top_logprobs, mirroring the non-streaming _format_logprobs.
+# nested top_logprobs.
+import asyncio as _asyncio
 import json as _json
-from experimental.server import api_server
-from experimental.server.tool_calling import validate_tool_request
-_msgs = [{{"role": "user", "content": {prompt!r}}}]
-_tc = validate_tool_request(_msgs, None, None)
+from experimental.server.config import ApiConfig
+from experimental.server.api.protocol import ChatCompletionRequest
+from experimental.server.api.serving_chat import OpenAIServingChat
+from experimental.server.runtime.engine_client import EngineClient
+_request = ChatCompletionRequest(
+    messages=[{{"role": "user", "content": {prompt!r}}}],
+    stream=True,
+    logprobs=True,
+    top_logprobs={num_logprobs},
+    max_tokens={max_tokens},
+    temperature=0.0,
+)
+_config = ApiConfig()
+_handler = OpenAIServingChat(EngineClient(llm, _config), _config)
+async def _collect_sse():
+    return [chunk async for chunk in _handler.stream_chat_completion(_request)]
 lp_objs = []
-for sse in api_server._generate_stream_sse(
-        llm, _msgs,
-        SamplingParams(temperature=0.0, top_p=1.0, top_k=1, max_tokens={max_tokens},
-                       num_logprobs={num_logprobs}),
-        'chatcmpl-test', False, tool_config=_tc):
+for sse in _asyncio.run(_collect_sse()):
     if not sse.startswith('data: ') or sse.strip() == 'data: [DONE]':
         continue
     _choice = _json.loads(sse[len('data: '):].strip())['choices'][0]
@@ -1439,7 +1660,8 @@ for lp in lp_objs:
 print('HLAPI_STREAMING_LOGPROBS_PASSED')
 """
         script_escaped = shlex.quote(script)
-        cmd = ['bash', '-c', f'python3 -c {script_escaped}']
+        python = self._hlapi_python(env_config, remote_config)
+        cmd = ['bash', '-c', f'{python} -c {script_escaped}']
 
         env_vars = None
         if env_config.trt_package_dir:
@@ -1474,16 +1696,16 @@ print('HLAPI_STREAMING_LOGPROBS_PASSED')
         """HLAPI non-streaming: SamplingParams(stop=[...]) trims output, finish_reason == 'stop'."""
         config = TestConfig.from_param_string(test_param, ModelType.LLM,
                                               TaskType.INFERENCE, env_config)
-        engine_dir = config.get_llm_engine_dir()
         prompt = "List three colors, separated by commas. End your list with '###'."
         stop = "###"
         setup = self._build_hlapi_env_setup(env_config.trt_package_dir or "")
+        llm_init = self._llm_init_script(config, env_config)
 
         script = f"""\
 {setup}
 from experimental.server import LLM, SamplingParams
 
-llm = LLM(engine_dir={engine_dir!r})
+{llm_init}
 outputs = llm.generate(
     [{prompt!r}],
     SamplingParams(temperature=0.0, top_p=1.0, top_k=1, max_tokens=128, stop=[{stop!r}]),
@@ -1530,16 +1752,16 @@ print('HLAPI_GENERATE_WITH_STOP_PASSED')
         """HLAPI streaming: stop string trimmed from chunks, last chunk reason == 'stop'."""
         config = TestConfig.from_param_string(test_param, ModelType.LLM,
                                               TaskType.INFERENCE, env_config)
-        engine_dir = config.get_llm_engine_dir()
         prompt = "List three colors, separated by commas. End your list with '###'."
         stop = "###"
         setup = self._build_hlapi_env_setup(env_config.trt_package_dir or "")
+        llm_init = self._llm_init_script(config, env_config)
 
         script = f"""\
 {setup}
 from experimental.server import LLM, SamplingParams
 
-llm = LLM(engine_dir={engine_dir!r})
+{llm_init}
 chunks = list(llm.generate_stream(
     [{{"role": "user", "content": {prompt!r}}}],
     SamplingParams(temperature=0.0, top_p=1.0, top_k=1, max_tokens=128, stop=[{stop!r}]),
@@ -1586,15 +1808,15 @@ print('HLAPI_STREAMING_WITH_STOP_PASSED')
         """Verify HLAPI non-streaming reports finish_reason='length' on max_tokens hit."""
         config = TestConfig.from_param_string(test_param, ModelType.LLM,
                                               TaskType.INFERENCE, env_config)
-        engine_dir = config.get_llm_engine_dir()
         prompt = "Write a long detailed essay about transformer neural networks."
         setup = self._build_hlapi_env_setup(env_config.trt_package_dir or "")
+        llm_init = self._llm_init_script(config, env_config)
 
         script = f"""\
 {setup}
 from experimental.server import LLM, SamplingParams
 
-llm = LLM(engine_dir={engine_dir!r})
+{llm_init}
 outputs = llm.generate(
     [{prompt!r}],
     SamplingParams(temperature=0.0, top_p=1.0, top_k=1, max_tokens=8),
@@ -1636,15 +1858,15 @@ print('HLAPI_GENERATE_LENGTH_REASON_PASSED')
         """HLAPI streaming: terminal chunk reports finish_reason='length' on max_tokens hit."""
         config = TestConfig.from_param_string(test_param, ModelType.LLM,
                                               TaskType.INFERENCE, env_config)
-        engine_dir = config.get_llm_engine_dir()
         prompt = "Write a long detailed essay about transformer neural networks."
         setup = self._build_hlapi_env_setup(env_config.trt_package_dir or "")
+        llm_init = self._llm_init_script(config, env_config)
 
         script = f"""\
 {setup}
 from experimental.server import LLM, SamplingParams
 
-llm = LLM(engine_dir={engine_dir!r})
+{llm_init}
 chunks = list(llm.generate_stream(
     [{{"role": "user", "content": {prompt!r}}}],
     SamplingParams(temperature=0.0, top_p=1.0, top_k=1, max_tokens=8),

@@ -45,14 +45,14 @@ struct BaseInsertResult
     bool inserted{};
 };
 
-//! One record candidate that owns a coherent draft path through pathBlockCount.
-struct DraftPathMatch
+//! One record candidate that owns a coherent paged spec-state path through pathBlockCount.
+struct SpecPagedStateMatch
 {
     RecordId record{};
     int32_t pathBlockCount{};
 };
 
-inline bool operator==(DraftPathMatch const& lhs, DraftPathMatch const& rhs) noexcept
+inline bool operator==(SpecPagedStateMatch const& lhs, SpecPagedStateMatch const& rhs) noexcept
 {
     return lhs.record == rhs.record && lhs.pathBlockCount == rhs.pathBlockCount;
 }
@@ -80,23 +80,34 @@ private:
     std::unordered_map<PageId, BlockHash> mReverse;
 };
 
-//! Maps EAGLE draft block boundaries to complete record-owned paths.
+//! Maps paged speculative block boundaries to complete record-owned paths.
 //!
-//! Unlike BaseBlockIndex, draft pages are not independently canonicalized. Every match identifies one CacheRecord so
+//! Unlike BaseBlockIndex, spec pages are not independently canonicalized. Every match identifies one CacheRecord so
 //! callers always consume a coherent path from one producer rather than stitching pages from unrelated records.
-class DraftPathIndex
+class SpecPagedStateIndex
 {
 public:
-    //! Register every paired full-block boundary in one EAGLE-capable record.
+    //! Register every paired full-block boundary in one paged spec-state record.
     void insert(CacheRecord const& record);
     //! Return the longest boundary at or below maxBlockCount without changing ownership or recency.
-    std::optional<DraftPathMatch> lookupLongest(std::vector<BlockHash> const& hashes, int32_t maxBlockCount) const;
-    bool contains(BlockHash const& terminalHash, DraftPathMatch const& match) const;
+    std::optional<SpecPagedStateMatch> lookupLongest(std::vector<BlockHash> const& hashes, int32_t maxBlockCount) const;
+    bool contains(BlockHash const& terminalHash, SpecPagedStateMatch const& match) const;
     //! Remove only the entries owned by record; a base-only record is a no-op.
     void erase(CacheRecord const& record);
 
 private:
-    std::unordered_map<BlockHash, std::vector<DraftPathMatch>> mForward;
+    std::unordered_map<BlockHash, std::vector<SpecPagedStateMatch>> mForward;
+};
+
+//! Wrapper for speculative state lookup substrates.
+class SpecStateIndex
+{
+public:
+    SpecPagedStateIndex const& paged() const noexcept;
+    SpecPagedStateIndex& paged() noexcept;
+
+private:
+    SpecPagedStateIndex mPaged;
 };
 
 } // namespace rt

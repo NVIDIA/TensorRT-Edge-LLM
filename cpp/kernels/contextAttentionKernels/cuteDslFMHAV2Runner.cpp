@@ -17,6 +17,8 @@
 
 #include "cuteDslFMHAV2Runner.h"
 
+#if defined(CUTE_DSL_FMHA_ENABLED)
+
 #include "attentionScaleUtils.h"
 #include "common/checkMacros.h"
 #include "common/cudaUtils.h"
@@ -61,8 +63,8 @@ namespace
 
 bool isFMHAV2SM(int32_t smVersion)
 {
-    return smVersion == 80 || smVersion == 86 || smVersion == 87 || smVersion == 89 || smVersion == 100
-        || smVersion == 101 || smVersion == 110 || smVersion == 120 || smVersion == 121;
+    return smVersion == 80 || smVersion == 86 || smVersion == 87 || smVersion == 89 || smVersion == 90
+        || smVersion == 100 || smVersion == 101 || smVersion == 110 || smVersion == 120 || smVersion == 121;
 }
 
 bool isFMHAV2PagedLlmHeadSize(int32_t headSize)
@@ -790,3 +792,86 @@ bool CuteDslFMHAV2Runner::run(void const* qPtr, void const* kPtr, void const* vP
 }
 
 } // namespace trt_edgellm
+
+#else
+
+// Keep symbols available for unconditional callers; false reports that CuTe DSL kernels are unavailable.
+namespace trt_edgellm
+{
+
+CuteDslFMHAV2Runner::CuteDslFMHAV2Runner(int32_t, int32_t, int32_t, int32_t, int32_t, int32_t, bool) {}
+
+bool CuteDslFMHAV2Runner::canImplement(int32_t, int32_t, int32_t, int32_t, nvinfer1::DataType, CuteDslFMHAV2MaskType)
+{
+    return false;
+}
+
+bool CuteDslFMHAV2Runner::canImplementPaged(
+    int32_t, int32_t, int32_t, int32_t, nvinfer1::DataType, CuteDslFMHAV2MaskType)
+{
+    return false;
+}
+
+bool CuteDslFMHAV2Runner::canImplementViT(int32_t, int32_t, nvinfer1::DataType)
+{
+    return false;
+}
+
+bool CuteDslFMHAV2Runner::preflightLlm(cudaStream_t, int32_t)
+{
+    return false;
+}
+
+bool CuteDslFMHAV2Runner::preflightPaged(cudaStream_t, int32_t)
+{
+    return false;
+}
+
+bool CuteDslFMHAV2Runner::preflightPadding(cudaStream_t)
+{
+    return false;
+}
+
+bool CuteDslFMHAV2Runner::preflightVisionBlock(cudaStream_t)
+{
+    return false;
+}
+
+bool CuteDslFMHAV2Runner::preflightViT(cudaStream_t)
+{
+    return false;
+}
+
+bool CuteDslFMHAV2Runner::run(
+    void const*, void const*, void const*, void*, int32_t const*, cudaStream_t, float, int32_t)
+{
+    return false;
+}
+
+bool CuteDslFMHAV2Runner::runPaged(void const*, void const*, int32_t const*, void*, int32_t const*, int32_t const*,
+    int32_t, int32_t, int32_t, cudaStream_t, float, int32_t)
+{
+    return false;
+}
+
+bool CuteDslFMHAV2Runner::runPadding(
+    void const*, void const*, void const*, void*, int32_t const*, int32_t const*, cudaStream_t, float)
+{
+    return false;
+}
+
+bool CuteDslFMHAV2Runner::runVisionBlock(void const*, void const*, void const*, void*, int32_t const*, int32_t const*,
+    int32_t const*, cudaStream_t, float, int32_t)
+{
+    return false;
+}
+
+bool CuteDslFMHAV2Runner::run(
+    void const*, void const*, void const*, void*, int32_t const*, int32_t, int32_t, int32_t, cudaStream_t, float)
+{
+    return false;
+}
+
+} // namespace trt_edgellm
+
+#endif // defined(CUTE_DSL_FMHA_ENABLED)

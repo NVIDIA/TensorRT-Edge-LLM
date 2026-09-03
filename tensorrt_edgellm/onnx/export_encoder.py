@@ -55,7 +55,8 @@ import torch.nn as nn
 from .dynamo_translations import build_custom_translation_table
 from .export import (_OPSET_VERSION, _fix_initializer_dtypes,
                      _fix_nvfp4_weight_dtype, _permissive_inline_opset,
-                     _strip_onnxscript_internal_attrs)
+                     _strip_onnxscript_internal_attrs,
+                     setup_fp8_qkv_scales_for_export)
 
 if TYPE_CHECKING:
     from ..config import ModelConfig
@@ -328,6 +329,10 @@ def export_visual_onnx(
                                        dtype=dtype)
     visual_model = visual_model.to(device)
     visual_model.eval()
+
+    # Surface FP8 MHA scales onto attention modules so dynamo sees them as
+    # Python-float constants. No-op when FP8 MHA is not enabled.
+    setup_fp8_qkv_scales_for_export(visual_model)
 
     # I/O spec is provided by the model class
     dynamo_inputs, onnx_input_names, output_names, dynamic_shapes = (

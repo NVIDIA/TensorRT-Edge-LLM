@@ -22,7 +22,7 @@
 #include "common/logger.h"
 #include "common/trtUtils.h"
 #include "common/version.h"
-#include "multimodal/imageUtils.h"
+#include "multimodal/common/imageUtils.h"
 
 #include <cmath>
 

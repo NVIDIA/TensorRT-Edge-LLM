@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <dlfcn.h>
 #include <fstream>
 #include <iterator>
 #include <limits>
@@ -51,12 +52,46 @@ namespace
 using Json = nlohmann::json;
 
 constexpr size_t kWeightAlignment = 256;
+constexpr size_t kPackedNvfp4ArenaAlignment = 2U << 20;
 constexpr char const* kStorageAliasField = "storage_alias_of";
+constexpr char const* kRegisterPluginWeightSymbol = "edgellmRegisterFusedNvfp4WeightResource";
+constexpr char const* kUnregisterPluginWeightSymbol = "edgellmUnregisterFusedNvfp4WeightResource";
+using RegisterPluginWeightFn = bool (*)(int32_t, int32_t, void const*, void const*, int32_t, int32_t, int32_t);
+using UnregisterPluginWeightFn = bool (*)(int32_t, int32_t);
 
 size_t alignWeightBytes(size_t bytes)
 {
     ELLM_CHECK(bytes <= std::numeric_limits<size_t>::max() - (kWeightAlignment - 1), "Weight arena size overflow");
     return (bytes + kWeightAlignment - 1) & ~(kWeightAlignment - 1);
+}
+
+bool isPackedNvfp4Binding(Json const& binding)
+{
+    return binding.value("source_layout", "") == "nvfp4_packed";
+}
+
+bool isPluginResourceBinding(Json const& binding)
+{
+    bool const hasResourceId = binding.contains("plugin_resource_id");
+    bool const hasResourceKind = binding.contains("plugin_resource_kind");
+    ELLM_CHECK(hasResourceId == hasResourceKind,
+        "Plugin resource bindings must define both plugin_resource_id and plugin_resource_kind");
+    return hasResourceId;
+}
+
+bool registerPluginWeightResource(int32_t deviceId, int32_t resourceId, void const* weight, void const* scale,
+    int32_t outFeatures, int32_t inFeatures, int32_t scaleCols)
+{
+    auto registerResource = reinterpret_cast<RegisterPluginWeightFn>(dlsym(RTLD_DEFAULT, kRegisterPluginWeightSymbol));
+    ELLM_CHECK(registerResource != nullptr, std::string{kRegisterPluginWeightSymbol} + " was not found in the plugin");
+    return registerResource(deviceId, resourceId, weight, scale, outFeatures, inFeatures, scaleCols);
+}
+
+bool unregisterPluginWeightResource(int32_t deviceId, int32_t resourceId) noexcept
+{
+    auto unregisterResource
+        = reinterpret_cast<UnregisterPluginWeightFn>(dlsym(RTLD_DEFAULT, kUnregisterPluginWeightSymbol));
+    return unregisterResource != nullptr && unregisterResource(deviceId, resourceId);
 }
 
 Coords bindingShape(Json const& binding)
@@ -388,15 +423,83 @@ void validateTensor(nvinfer1::ICudaEngine const& engine, Tensor const& tensor)
 
 } // namespace
 
+ExternalWeightManager::ExternalWeightManager(ExternalWeightManager&& other) noexcept
+{
+    *this = std::move(other);
+}
+
+ExternalWeightManager& ExternalWeightManager::operator=(ExternalWeightManager&& other) noexcept
+{
+    if (this == &other)
+    {
+        return *this;
+    }
+    releasePluginResources();
+    mWeightStorage = std::move(other.mWeightStorage);
+    mWeights = std::move(other.mWeights);
+    mPluginResourceTensors = std::move(other.mPluginResourceTensors);
+    mPluginResourceRegistrations = std::move(other.mPluginResourceRegistrations);
+    mEmbedding = std::move(other.mEmbedding);
+    mPleEmbedding = std::move(other.mPleEmbedding);
+    mLoaded = std::exchange(other.mLoaded, false);
+    mValidated = std::exchange(other.mValidated, false);
+    mRegistered = std::exchange(other.mRegistered, false);
+    other.mPluginResourceRegistrations.clear();
+    return *this;
+}
+
+ExternalWeightManager::~ExternalWeightManager() noexcept
+{
+    releasePluginResources();
+}
+
+void ExternalWeightManager::releasePluginResources() noexcept
+{
+    for (PluginResourceRegistration const& registration : mPluginResourceRegistrations)
+    {
+        if (!unregisterPluginWeightResource(registration.deviceId, registration.resourceId))
+        {
+            LOG_WARNING("Failed to unregister fused NVFP4 weight resource %d on device %d", registration.resourceId,
+                registration.deviceId);
+        }
+    }
+    mPluginResourceRegistrations.clear();
+}
+
 void ExternalWeightManager::load(std::filesystem::path const& engineDir, std::filesystem::path const& configPath,
     cudaStream_t stream, std::filesystem::path const& componentCheckpointDir,
-    std::filesystem::path const& targetCheckpointDir)
+    std::filesystem::path const& targetCheckpointDir, std::optional<int32_t> tpRank, std::optional<int32_t> tpSize)
 {
     NVTX_SCOPED_RANGE(nvtx_model_weight_preparation, "MODEL_WEIGHT_PREPARATION", nvtx_colors::YELLOW);
     ELLM_CHECK(!mLoaded, "ExternalWeightManager::load called more than once");
     Json const config = readConfig(configPath);
-    Json const bindings = config.value("checkpoint_weight_bindings", Json::array());
+    Json bindings = config.value("checkpoint_weight_bindings", Json::array());
     ELLM_CHECK(bindings.is_array(), "checkpoint_weight_bindings must be an array in " + configPath.string());
+    ELLM_CHECK(
+        tpRank.has_value() == tpSize.has_value(), "External weight TP rank and TP size must be provided together");
+    ELLM_CHECK(!tpRank.has_value() || *tpRank >= 0, "External weight TP rank must be nonnegative");
+    ELLM_CHECK(!tpSize.has_value() || *tpSize > 0, "External weight TP size must be positive");
+    ELLM_CHECK(!tpRank.has_value() || !tpSize.has_value() || *tpRank < *tpSize,
+        "External weight TP rank must be smaller than TP size");
+    for (Json& binding : bindings)
+    {
+        ELLM_CHECK(binding.is_object(), "checkpoint_weight_bindings entries must be objects");
+        if (tpRank.has_value())
+        {
+            binding["runtime_rank"] = *tpRank;
+        }
+        if (!binding.contains("tp_shard"))
+        {
+            continue;
+        }
+        ELLM_CHECK(tpRank.has_value(), "TP checkpoint binding requires a runtime TP rank");
+        Json& shard = binding["tp_shard"];
+        ELLM_CHECK(shard.is_object(), "tp_shard must be an object");
+        int32_t const shardSize = shard.value("size", 0);
+        ELLM_CHECK(shardSize > 1, "tp_shard.size must be greater than one");
+        ELLM_CHECK(!tpSize.has_value() || shardSize == *tpSize, "tp_shard.size does not match the runtime TP size");
+        shard["rank"] = *tpRank;
+    }
 
     using Clock = std::chrono::steady_clock;
     auto const start = Clock::now();
@@ -534,21 +637,27 @@ void ExternalWeightManager::load(std::filesystem::path const& engineDir, std::fi
             layouts[bindingIndex].shape = shape;
             layouts[bindingIndex].dtype = dtype;
         }
-        for (size_t bindingIndex = 0; bindingIndex < bindings.size(); ++bindingIndex)
-        {
-            Json const& binding = bindings[bindingIndex];
-            if (binding.contains(kStorageAliasField))
+        bool const hasPackedNvfp4Weights = std::any_of(bindings.begin(), bindings.end(),
+            [](Json const& binding) { return !binding.contains(kStorageAliasField) && isPackedNvfp4Binding(binding); });
+        auto allocateBindings = [&](bool packedNvfp4) {
+            for (size_t bindingIndex = 0; bindingIndex < bindings.size(); ++bindingIndex)
             {
-                continue;
+                Json const& binding = bindings[bindingIndex];
+                if (binding.contains(kStorageAliasField) || isPackedNvfp4Binding(binding) != packedNvfp4)
+                {
+                    continue;
+                }
+                BindingLayout& layout = layouts[bindingIndex];
+                size_t const bytes = static_cast<size_t>(layout.shape.volume()) * utils::getTypeSize(layout.dtype);
+                ELLM_CHECK(bytes > 0, "Checkpoint binding has an empty tensor: " + binding.value("engine_name", ""));
+                storageBytes = alignWeightBytes(storageBytes);
+                layout.offset = storageBytes;
+                ELLM_CHECK(bytes <= std::numeric_limits<size_t>::max() - storageBytes, "Weight arena size overflow");
+                storageBytes += bytes;
             }
-            BindingLayout& layout = layouts[bindingIndex];
-            size_t const bytes = static_cast<size_t>(layout.shape.volume()) * utils::getTypeSize(layout.dtype);
-            ELLM_CHECK(bytes > 0, "Checkpoint binding has an empty tensor: " + binding.value("engine_name", ""));
-            storageBytes = alignWeightBytes(storageBytes);
-            layout.offset = storageBytes;
-            ELLM_CHECK(bytes <= std::numeric_limits<size_t>::max() - storageBytes, "Weight arena size overflow");
-            storageBytes += bytes;
-        }
+        };
+        allocateBindings(/*packedNvfp4=*/true);
+        allocateBindings(/*packedNvfp4=*/false);
         for (size_t bindingIndex = 0; bindingIndex < bindings.size(); ++bindingIndex)
         {
             Json const& binding = bindings[bindingIndex];
@@ -579,13 +688,24 @@ void ExternalWeightManager::load(std::filesystem::path const& engineDir, std::fi
         storageBytes = alignWeightBytes(storageBytes);
         ELLM_CHECK(
             storageBytes <= static_cast<size_t>(std::numeric_limits<int64_t>::max()), "Weight arena is too large");
-        mWeightStorage = Tensor(Coords{static_cast<int64_t>(storageBytes)}, DeviceType::kGPU,
+        size_t const arenaAlignmentPadding = hasPackedNvfp4Weights ? kPackedNvfp4ArenaAlignment - 1 : 0;
+        ELLM_CHECK(arenaAlignmentPadding <= std::numeric_limits<size_t>::max() - storageBytes,
+            "Aligned weight arena size overflow");
+        size_t const allocationBytes = storageBytes + arenaAlignmentPadding;
+        mWeightStorage = Tensor(Coords{static_cast<int64_t>(allocationBytes)}, DeviceType::kGPU,
             nvinfer1::DataType::kUINT8, "ExternalWeightManager::weightArena");
-        weightArenaBytes = storageBytes;
+        weightArenaBytes = allocationBytes;
         arenaAllocationTime = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - phaseStart);
 
         phaseStart = Clock::now();
         auto* storage = static_cast<uint8_t*>(mWeightStorage.rawPointer());
+        if (hasPackedNvfp4Weights)
+        {
+            uintptr_t const address = reinterpret_cast<uintptr_t>(storage);
+            uintptr_t const alignedAddress
+                = (address + kPackedNvfp4ArenaAlignment - 1) & ~(kPackedNvfp4ArenaAlignment - 1);
+            storage = reinterpret_cast<uint8_t*>(alignedAddress);
+        }
         std::vector<Tensor> preparedWeights;
         preparedWeights.reserve(bindings.size());
         for (size_t bindingIndex = 0; bindingIndex < bindings.size(); ++bindingIndex)
@@ -659,12 +779,75 @@ void ExternalWeightManager::load(std::filesystem::path const& engineDir, std::fi
         checkpointRegistrationTime = std::chrono::duration_cast<std::chrono::milliseconds>(registrationTime);
         transformTime = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - phaseStart);
 
+        struct PluginResourceParts
+        {
+            Tensor const* weight{nullptr};
+            Tensor const* scale{nullptr};
+        };
+        std::unordered_map<int32_t, PluginResourceParts> pluginResources;
+        for (size_t bindingIndex = 0; bindingIndex < bindings.size(); ++bindingIndex)
+        {
+            Json const& binding = bindings[bindingIndex];
+            if (!isPluginResourceBinding(binding))
+            {
+                continue;
+            }
+            int32_t const resourceId = binding.at("plugin_resource_id").get<int32_t>();
+            ELLM_CHECK(resourceId >= 0, "plugin_resource_id must be nonnegative");
+            std::string const kind = binding.at("plugin_resource_kind").get<std::string>();
+            PluginResourceParts& parts = pluginResources[resourceId];
+            if (kind == "weight")
+            {
+                ELLM_CHECK(parts.weight == nullptr, "Duplicate plugin weight resource id");
+                parts.weight = &preparedWeights[bindingIndex];
+            }
+            else
+            {
+                ELLM_CHECK(kind == "scale", "Unsupported plugin resource kind: " + kind);
+                ELLM_CHECK(parts.scale == nullptr, "Duplicate plugin scale resource id");
+                parts.scale = &preparedWeights[bindingIndex];
+            }
+        }
+        int32_t deviceId = -1;
+        CUDA_CHECK(cudaGetDevice(&deviceId));
+        mPluginResourceRegistrations.reserve(mPluginResourceRegistrations.size() + pluginResources.size());
+        for (auto const& [resourceId, parts] : pluginResources)
+        {
+            ELLM_CHECK(parts.weight != nullptr && parts.scale != nullptr,
+                "Fused NVFP4 plugin resource is missing its weight or scale");
+            Coords const weightShape = parts.weight->getShape();
+            Coords const scaleShape = parts.scale->getShape();
+            ELLM_CHECK(parts.weight->getDataType() == nvinfer1::DataType::kUINT8,
+                "Fused NVFP4 plugin weights must use packed UINT8 storage");
+            ELLM_CHECK(parts.scale->getDataType() == nvinfer1::DataType::kFP8,
+                "Fused NVFP4 plugin block scales must use FP8 storage");
+            ELLM_CHECK(weightShape.getNumDims() == 2 && scaleShape.getNumDims() == 2 && weightShape[0] == scaleShape[0],
+                "Fused NVFP4 plugin resource shapes are inconsistent");
+            ELLM_CHECK(weightShape[0] <= std::numeric_limits<int32_t>::max()
+                    && weightShape[1] <= std::numeric_limits<int32_t>::max() / 2
+                    && scaleShape[1] <= std::numeric_limits<int32_t>::max(),
+                "Fused NVFP4 plugin resource shape exceeds INT32 limits");
+            int32_t const outFeatures = static_cast<int32_t>(weightShape[0]);
+            int32_t const inFeatures = static_cast<int32_t>(weightShape[1] * 2);
+            int32_t const scaleCols = static_cast<int32_t>(scaleShape[1]);
+            ELLM_CHECK(inFeatures % 16 == 0 && scaleCols == inFeatures / 16,
+                "Fused NVFP4 plugin resource weight and scale widths are inconsistent");
+            ELLM_CHECK(registerPluginWeightResource(deviceId, resourceId, parts.weight->rawPointer(),
+                           parts.scale->rawPointer(), outFeatures, inFeatures, scaleCols),
+                "Fused NVFP4 plugin rejected external weight resource " + std::to_string(resourceId));
+            mPluginResourceRegistrations.push_back(PluginResourceRegistration{deviceId, resourceId});
+        }
+
         for (size_t bindingIndex = 0; bindingIndex < bindings.size(); ++bindingIndex)
         {
             Json const& binding = bindings[bindingIndex];
             BindingLayout const& layout = layouts[bindingIndex];
             Tensor tensor = std::move(preparedWeights[bindingIndex]);
-            if (isEmbeddingBinding(binding))
+            if (isPluginResourceBinding(binding))
+            {
+                mPluginResourceTensors.push_back(std::move(tensor));
+            }
+            else if (isEmbeddingBinding(binding))
             {
                 ELLM_CHECK(!mEmbedding.has_value(), "Runtime config has multiple embedding bindings");
                 if (binding.at("engine_name").get<std::string>() != "__embedding__")
@@ -687,15 +870,17 @@ void ExternalWeightManager::load(std::filesystem::path const& engineDir, std::fi
     }
 
     // This is the startup/inference boundary. Source-layout tensors and
-    // checkpoint mappings are gone; only immutable final engine inputs remain.
+    // checkpoint mappings are gone; only immutable engine inputs and plugin
+    // resources remain.
     mLoaded = true;
-    if (!mWeights.empty() || mEmbedding.has_value() || mPleEmbedding.has_value())
+    if (!mWeights.empty() || !mPluginResourceTensors.empty() || mEmbedding.has_value() || mPleEmbedding.has_value())
     {
+        int32_t const modelWeightTensorCount = static_cast<int32_t>(mWeights.size() + mPluginResourceTensors.size());
         auto const elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - start);
         if (bindings.empty())
         {
-            LOG_INFO("Loaded %d transformed model weight tensor(s)%s%s in %lld ms",
-                static_cast<int32_t>(mWeights.size()), mEmbedding.has_value() ? " and the embedding table" : "",
+            LOG_INFO("Loaded %d transformed model weight tensor(s)%s%s in %lld ms", modelWeightTensorCount,
+                mEmbedding.has_value() ? " and the embedding table" : "",
                 mPleEmbedding.has_value() ? " and the PLE table" : "", static_cast<long long>(elapsed.count()));
         }
         else
@@ -704,7 +889,7 @@ void ExternalWeightManager::load(std::filesystem::path const& engineDir, std::fi
                 "Prepared %d model weight tensor(s)%s%s from checkpoint in %lld ms "
                 "(index %lld ms, validate %lld ms, map/register %lld ms, peak mapped source %zu bytes, "
                 "arena %zu bytes, aliases saved %zu bytes in %lld ms, transform %lld ms)",
-                static_cast<int32_t>(mWeights.size()), mEmbedding.has_value() ? " and the embedding table" : "",
+                modelWeightTensorCount, mEmbedding.has_value() ? " and the embedding table" : "",
                 mPleEmbedding.has_value() ? " and the PLE table" : "", static_cast<long long>(elapsed.count()),
                 static_cast<long long>(checkpointIndexTime.count()),
                 static_cast<long long>(checkpointValidationTime.count()),

@@ -80,14 +80,22 @@ void assembleDeepstackEmbedding(rt::Tensor const& inputIds, rt::Tensor const& de
 //! the host `generateMultimodalIndices` reference. Runs entirely on `stream` — no host round-trip, so
 //! no D2H/H2D copy is needed to feed `embeddingLookup`/`assembleDeepstackEmbedding`.
 //!
+//! When KV cache prefix reuse is active, the suffix token IDs do not include media tokens from the
+//! reused prefix, but the embedding tensor still contains rows for ALL media items (prefix + suffix).
+//! The optional per-batch base offsets shift each batch item's starting counter so suffix tokens index
+//! past the prefix rows. Without offsets (nullptr), counters start at 0 as before.
+//!
 //! \param[in]  inputIds          GPU token IDs [batchSize, seqLen] (INT32)
 //! \param[out] multimodalIndices GPU indices [batchSize, seqLen] (INT32), same element count as inputIds
 //! \param[in]  imageTokenId      Image placeholder token id, or std::nullopt if no image
 //! \param[in]  audioTokenId      Audio placeholder token id, or std::nullopt if no audio
 //! \param[in]  stream            CUDA stream for execution
+//! \param[in]  imageBaseOffsets  Device pointer to per-batch image index offsets [batchSize], or nullptr
+//! \param[in]  audioBaseOffsets  Device pointer to per-batch audio index offsets [batchSize], or nullptr
 void generateMultimodalIndices(rt::Tensor const& inputIds, rt::Tensor& multimodalIndices,
     std::optional<int32_t> imageTokenId = std::nullopt, std::optional<int32_t> audioTokenId = std::nullopt,
-    cudaStream_t stream = nullptr);
+    cudaStream_t stream = nullptr, int32_t const* imageBaseOffsets = nullptr,
+    int32_t const* audioBaseOffsets = nullptr);
 
 //! \brief Gather Gemma4 per-layer token-identity embeddings.
 //!

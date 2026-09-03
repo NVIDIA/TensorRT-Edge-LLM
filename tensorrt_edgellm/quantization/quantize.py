@@ -43,7 +43,7 @@ from transformers import (AutoModel, AutoModelForCausalLM,
 
 from .datasets import (AudioDataset, ImageDataset, TextDataset, dataset_name,
                        resolve_dataset)
-from .quantization_configs import build_quant_config
+from .quantization_configs import _VISUAL_PREFIXES, build_quant_config
 from .qwen3_asr_loader import (asr_calibration_dataloader, is_qwen3_asr_model,
                                load_qwen3_asr_joint_for_calibration,
                                postprocess_qwen3_asr_checkpoint)
@@ -119,11 +119,16 @@ def _pre_register_phi4mm_attention_for_kv_quant(
     registered: set[type] = set()
     for _, module in model.named_modules():
         attn_type = type(module)
-        # trust_remote_code classes are loaded under 'transformers_modules';
-        # match on __module__ so this survives class renames.
-        if (getattr(attn_type, "__module__",
-                    "").startswith("transformers_modules")
-                and hasattr(module, "k_proj") and attn_type not in registered
+        # Match Phi4MMAttention by class name: the Phi4MM text decoder fuses
+        # q/k/v into a single qkv_proj, so a ``hasattr(module, "k_proj")`` gate
+        # never fires for it and it is left unregistered (hf_quant_config.json
+        # is then omitted). Keep a generic trust_remote_code fallback for other
+        # custom attentions that expose separate q/k/v projections.
+        is_phi4mm_attn = attn_type.__name__ == "Phi4MMAttention"
+        is_trc_kv_attn = (getattr(attn_type, "__module__",
+                                  "").startswith("transformers_modules")
+                          and hasattr(module, "k_proj"))
+        if ((is_phi4mm_attn or is_trc_kv_attn) and attn_type not in registered
                 and QuantModuleRegistry.get(attn_type) is None):
             register_attention_for_kv_quant(attn_type)
             registered.add(attn_type)
@@ -409,6 +414,58 @@ def _mtp_num_hidden_layers(model: torch.nn.Module) -> int:
     return int(getattr(text_config, "mtp_num_hidden_layers", 0) or 0)
 
 
+def _has_mtp_weights(model_dir: str) -> Optional[bool]:
+    """Whether *model_dir* ships ``mtp.*`` draft tensors, or None if unknowable.
+
+    ``mtp_num_hidden_layers`` describes the architecture, not the file: an Omni
+    checkpoint can declare the head and ship none of its weights. Quantizing on
+    the config alone would then calibrate a randomly initialised draft.
+
+    None means the tensor names could not be read at all — no safetensors in the
+    directory. That is not the same as "no MTP": the weights may arrive by some
+    other route (a caller that patches loading, a non-safetensors format), so
+    callers must not treat it as absence.
+    """
+    index = os.path.join(model_dir, "model.safetensors.index.json")
+    if os.path.isfile(index):
+        with open(index, encoding="utf-8") as f:
+            keys = json.load(f).get("weight_map", {})
+        return any(".mtp." in k or k.startswith("mtp.") for k in keys)
+
+    single = os.path.join(model_dir, "model.safetensors")
+    if os.path.isfile(single):
+        from safetensors import safe_open
+        with safe_open(single, framework="pt") as f:
+            return any(".mtp." in k or k.startswith("mtp.") for k in f.keys())
+    return None
+
+
+def _resolve_mtp_dir(mtp_draft_dir: Optional[str],
+                     model_dir: str) -> Optional[str]:
+    """Return the directory holding the MTP weights, or None to skip.
+
+    An explicit ``--mtp_draft_dir`` is the caller asserting the weights are
+    there, so a missing head is a user error and raises. Falling back to
+    *model_dir* only means the config declared a head, which checkpoints do
+    without shipping one, so that case skips with a diagnostic instead.
+    """
+    mtp_dir = mtp_draft_dir or model_dir
+    present = _has_mtp_weights(mtp_dir)
+    if mtp_draft_dir is not None:
+        # The caller named this directory, so anything short of a confirmed
+        # ``mtp.*`` set — including an unreadable or mistyped path — is theirs
+        # to fix.
+        if present:
+            return mtp_dir
+        raise ValueError(
+            f"--mtp_draft_dir: {mtp_dir} ships no readable 'mtp.*' weights")
+    if present is False:
+        print(f"Skipping MTP quantization: {mtp_dir} declares an MTP head "
+              "but ships no 'mtp.*' weights.")
+        return None
+    return mtp_dir
+
+
 def _calibrate(model, dataloader):
     """Forward-loop calibration pass."""
     for data in tqdm(dataloader, desc="Calibrating"):
@@ -499,6 +556,37 @@ def _remove_stale_safetensors_index(output_dir: str) -> None:
         os.remove(index_path)
 
 
+def _surface_visual_q_scales(model: torch.nn.Module) -> None:
+    """Save visual attention Q's calibrated scale as a top-level buffer.
+
+    ModelOpt's ``postprocess_state_dict`` (``modelopt/torch/export/quant_utils.py``)
+    renames ``k_bmm_quantizer._amax -> k_proj.k_scale`` (and v_bmm analogue) at
+    save time, but has no Q rename — so ``q_bmm_quantizer._amax`` (matched by the
+    ``_amax`` skip-key) is silently dropped from the saved state_dict. Register a
+    ``q_scale = amax / 448`` buffer directly on the parent attention module so
+    it survives ``save_pretrained -> safetensors -> load_state_dict``. The name
+    "q_scale" contains none of modelopt's skip-keys, so it passes through
+    ``postprocess_state_dict`` unchanged.
+
+    LLM attention modules (whose ``q_bmm_quantizer`` is enabled by
+    ``FP8_ATTN`` when ``--kv_cache_quantization fp8``) follow the legacy
+    ``qScale=1.0`` convention, so we filter by visual prefix to avoid
+    materializing buffers the LLM loader doesn't expect.
+    """
+    FP8_E4M3_MAX = 448.0
+    for name, module in model.named_modules():
+        if not any(p in name for p in _VISUAL_PREFIXES):
+            continue
+        q_q = getattr(module, "q_bmm_quantizer", None)
+        if q_q is None:
+            continue
+        amax = getattr(q_q, "_amax", None)
+        if amax is None:
+            continue
+        scale = (amax.detach().float() / FP8_E4M3_MAX).reshape(())
+        module.register_buffer("q_scale", scale)
+
+
 def _fix_generation_config_for_strict_validate(model) -> None:
     """WAR for transformers >= 5.x ``GenerationConfig.validate(strict=True)``.
 
@@ -551,6 +639,39 @@ def _is_hybrid_model(model):
     if any("linear_attn" in n for n, _ in model.named_modules()):
         return True
     return False
+
+
+def _share_gdn_qkvzba_scales(model) -> int:
+    """Unify per-tensor scales across the 4 GDN input projections.
+
+    Groups ``in_proj_qkv``/``z``/``b``/``a`` of every GDN mixer and runs
+    ModelOpt's :func:`preprocess_linear_fusion` on the group — the same
+    scale-unification ModelOpt export applies to fused layers (input and
+    weight amax each unified to the group max).  Identical per-tensor
+    scales are the precondition for the exporter to concatenate the four
+    projections into a single NVFP4 GEMM.  ModelOpt's own shared-input
+    detection cannot be used here: its dummy forward misgroups projections
+    on hybrid Mamba/GDN models (see ``_skip_resmooth_for_hybrid``), so the
+    groups are formed explicitly by module structure.  Returns the number
+    of mixers updated.
+    """
+    from modelopt.torch.export.quant_utils import preprocess_linear_fusion
+
+    shared = 0
+    for _, module in model.named_modules():
+        projs = [
+            getattr(module, n, None)
+            for n in ("in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a")
+        ]
+        if any(p is None for p in projs):
+            continue
+        if not all(
+                getattr(getattr(p, "weight_quantizer", None), "is_enabled",
+                        False) for p in projs):
+            continue
+        preprocess_linear_fusion(projs)
+        shared += 1
+    return shared
 
 
 @contextmanager
@@ -613,6 +734,22 @@ def _skip_resmooth_for_hybrid(model, quantization: str = ""):
         yield
     finally:
         _ueh.requantize_resmooth_fused_llm_layers = _orig
+
+
+def _is_image_blind_calibration(model, quant_cfg: dict) -> bool:
+    """Return True if a text-only calibration would miss image activations.
+
+    Needs a visual tower and an algorithm that *reshapes* weights against the
+    calibration distribution rather than only recording ranges. ``awq_lite``
+    searches per-channel pre_quant_scales, so text-only data optimizes the
+    image-token ranges away and the model degenerates on image input.
+    ``max`` (fp8, nvfp4) only records ranges and is modality-blind either way.
+    """
+    if not any(
+            any(p in name for p in _VISUAL_PREFIXES)
+            for name, _ in model.named_modules()):
+        return False
+    return quant_cfg.get("algorithm") not in (None, "max")
 
 
 def _calibrate_multimodal(model, batches):
@@ -684,15 +821,18 @@ def quantize_and_export(
     lm_head_quantization: Optional[str] = None,
     visual_quantization: Optional[str] = None,
     cp_quantization: Optional[str] = None,
+    visual_mha_quantization: Optional[str] = None,
     kv_cache_quantization: Optional[str] = None,
     audio_quantization: Optional[str] = None,
     dtype: str = "fp16",
     device: str = "cuda",
     *,
+    mtp_draft_dir: Optional[str] = None,
     text_dataset: Union[str, TextDataset, None] = None,
     image_dataset: Union[str, ImageDataset, None] = None,
     audio_dataset: Union[str, AudioDataset, None] = None,
     num_samples: int = 512,
+    fuse_gdn_qkvzba_scales: bool = False,
 ) -> str:
     """Load a HuggingFace model, quantize it, and export a unified checkpoint.
 
@@ -703,6 +843,9 @@ def quantize_and_export(
     on the visual path — a multimodal calibration loader is required for
     accurate visual stats (see ``A3``).
 
+    Image calibration is selected automatically for a quantized backbone under
+    an unquantized visual tower -- see ``_is_image_blind_calibration``.
+
     ``text_dataset`` / ``image_dataset`` / ``audio_dataset`` each accept a
     registered dataset name (str), a dataset generator function, or ``None``
     for that modality's default. Only the dataset for the modality a run
@@ -711,6 +854,12 @@ def quantize_and_export(
     with a pointer to the customization guide.
     """
     from ..chat_template import _get_model_type
+    from .models.eagle3_draft import _resolve_model_dir
+
+    # ``model_dir`` may be a HuggingFace hub id; resolve it once so the
+    # path-based consumers below (weight globs, processor-file copies, the
+    # unified-export index probe) see a real directory.
+    model_dir = _resolve_model_dir(model_dir)
 
     # Qwen3-Omni needs a joint Thinker+Talker multimodal calibration chain
     # the generic single-model path below can't express; delegate the full
@@ -763,6 +912,7 @@ def quantize_and_export(
         return quantize_and_export_omni(
             model_dir=model_dir,
             output_dir=output_dir,
+            mtp_draft_dir=mtp_draft_dir,
             quantization=quantization,
             lm_head_quantization=lm_head_quantization,
             kv_cache_quantization=kv_cache_quantization,
@@ -790,17 +940,21 @@ def quantize_and_export(
     mtp_layers = _mtp_num_hidden_layers(model)
     mtp_quantized = False
     mtp_state_dict: dict[str, torch.Tensor] = {}
+    mtp_dir = None
     if (mtp_layers > 0 and quantization is not None
             and not base_already_quantized):
+        mtp_dir = _resolve_mtp_dir(mtp_draft_dir, model_dir)
+    if mtp_dir is not None:
         text_ds = resolve_dataset(text_dataset, "text")
         from .models.mtp_draft import (export_quantized_mtp_state_dict,
                                        quantize_mtp_from_base)
-        print(f"Detected {mtp_layers} MTP layer(s); quantizing MTP draft "
-              "before base model.")
+
+        print(f"Detected {mtp_layers} MTP layer(s); quantizing MTP "
+              f"draft (weights from {mtp_dir}) before base model.")
         quantized_mtp_draft = quantize_mtp_from_base(
             base_model=model,
             tokenizer=tokenizer,
-            model_dir=model_dir,
+            model_dir=mtp_dir,
             quantization=quantization,
             lm_head_quantization=lm_head_quantization,
             kv_cache_quantization=kv_cache_quantization,
@@ -845,8 +999,10 @@ def quantize_and_export(
             lm_head_quantization,
             kv_cache_quantization,
             visual_quantization=visual_quantization,
+            visual_mha_quantization=visual_mha_quantization,
             audio_quantization=audio_quantization,
             cp_quantization=cp_quantization,
+            fuse_gdn_qkvzba_scales=fuse_gdn_qkvzba_scales,
         )
         # When INT4 is exported to the cuteDSL GEMM kernel's fragment layout, repack
         # requires N%64==0 && K%64==0. Small hybrid/GDN projections (e.g. Qwen3.5
@@ -859,9 +1015,10 @@ def quantize_and_export(
                         module,
                         torch.nn.Linear) and (module.out_features % 64 != 0
                                               or module.in_features % 64 != 0):
-                    quant_cfg["quant_cfg"][f"*{name}.weight_quantizer"] = {
-                        "enable": False
-                    }
+                    quant_cfg["quant_cfg"].append({
+                        "quantizer_name": f"*{name}.weight_quantizer",
+                        "enable": False,
+                    })
                     print(
                         f"[int4] skipping {name}: weight [{module.out_features}, "
                         f"{module.in_features}] not 64-aligned (kept fp16)")
@@ -947,11 +1104,15 @@ def quantize_and_export(
                 quant_cfg,
                 forward_loop=lambda m: _calibrate_asr_multimodal(m, batches),
             )
-        elif visual_quantization is not None:
+        elif (visual_quantization is not None
+              or _is_image_blind_calibration(model, quant_cfg)):
             image_ds = resolve_dataset(image_dataset, "image")
             print(f"Image calibration dataset: {dataset_name(image_ds)}")
             # Multimodal calibration: feed (image, text) pairs through the
             # whole VLM so visual + LLM quantizers both see real activations.
+            if visual_quantization is None:
+                from .gemma4_patch import apply as _apply_gemma4_patch
+                _apply_gemma4_patch(model, _get_model_type(model_dir))
             processor = AutoProcessor.from_pretrained(model_dir,
                                                       trust_remote_code=True)
             mm_samples = min(num_samples, 128)
@@ -960,6 +1121,8 @@ def quantize_and_export(
                 image_dataset=image_ds,
                 num_samples=mm_samples,
                 is_phi4mm=_is_phi4mm_model(model_dir))
+            # Mixing text batches in was tried and reverted: it wins back
+            # some text accuracy but costs more on image benchmarks.
             mtq.quantize(
                 model,
                 quant_cfg,
@@ -976,7 +1139,12 @@ def quantize_and_export(
             mtq.quantize(model,
                          quant_cfg,
                          forward_loop=lambda m: _calibrate(m, loader))
+        if fuse_gdn_qkvzba_scales:
+            n_shared = _share_gdn_qkvzba_scales(model)
+            print(f"GDN qkvzba scale sharing: {n_shared} layer(s)")
         mtq.print_quant_summary(model)
+        if visual_mha_quantization == "fp8":
+            _surface_visual_q_scales(model)
 
     print(f"Quantization: {time.time() - t0:.1f}s")
 

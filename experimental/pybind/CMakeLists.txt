@@ -111,21 +111,36 @@ endif()
 # ── pybind11 ──────────────────────────────────────────────────────────────
 find_package(
   Python 3.10
-  COMPONENTS Interpreter Development
+  COMPONENTS Interpreter Development.Module
   REQUIRED)
 find_package(pybind11 CONFIG REQUIRED)
 
 # ── Header include paths (from source tree) ───────────────────────────────
+set(NEMOTRON_ASR_DIR ${EDGELLM_ROOT}/experimental_models/nemotron3_5_asr/cpp)
+set(EDGELLM_NEMOTRON_ASR_RUNTIME)
+if(_PYBIND_STANDALONE)
+  find_library(
+    EDGELLM_NEMOTRON_ASR_RUNTIME
+    NAMES nemotronAsrExperimental
+    HINTS ${EDGELLM_BUILD_DIR}/experimental_models/nemotron3_5_asr/cpp
+    NO_DEFAULT_PATH)
+elseif(TARGET nemotronAsrExperimental)
+  set(EDGELLM_NEMOTRON_ASR_RUNTIME nemotronAsrExperimental)
+endif()
+
 set(EDGELLM_INCLUDE_DIRS
     ${EDGELLM_ROOT}/cpp ${EDGELLM_ROOT}/examples/multimodal
     ${EDGELLM_ROOT}/3rdParty/nlohmannJson/include ${EDGELLM_ROOT}/3rdParty/stb)
+if(EDGELLM_NEMOTRON_ASR_RUNTIME)
+  list(APPEND EDGELLM_INCLUDE_DIRS ${NEMOTRON_ASR_DIR})
+endif()
 
 # ── Build the pybind shared library ───────────────────────────────────────
 # device_link_stub.cu is an empty CUDA file that forces CMake to run the
 # device-link step so __cudaRegisterLinkedBinary_* symbols from edgellmCore are
 # resolved.
 pybind11_add_module(
-  _edgellm_runtime SHARED NO_EXTRAS
+  _edgellm_runtime MODULE NO_EXTRAS
   ${CMAKE_CURRENT_SOURCE_DIR}/edgellm_pybind.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/device_link_stub.cu)
 set_target_properties(_edgellm_runtime PROPERTIES CUDA_RESOLVE_DEVICE_SYMBOLS
@@ -153,11 +168,27 @@ endif()
 target_include_directories(_edgellm_runtime PRIVATE ${EDGELLM_INCLUDE_DIRS})
 target_include_directories(_edgellm_runtime SYSTEM PRIVATE ${CUDA_INCLUDE}
                                                            ${TRT_INCLUDE_DIR})
+if(EDGELLM_NEMOTRON_ASR_RUNTIME)
+  target_compile_definitions(_edgellm_runtime
+                             PRIVATE EDGELLM_ENABLE_NEMOTRON_ASR=1)
+  target_link_libraries(_edgellm_runtime
+                        PRIVATE ${EDGELLM_NEMOTRON_ASR_RUNTIME})
+endif()
 
 if(TARGET Python::Module)
   target_link_libraries(_edgellm_runtime PRIVATE Python::Module)
 else()
   target_link_libraries(_edgellm_runtime PRIVATE Python::Python)
+endif()
+
+# Wheel payloads retain every AOT kernel declared by the selected artifact,
+# including variants that current runtime sources do not reference.
+set(_EDGELLM_WHEEL_CUTE_DSL_ARCHIVE)
+if(NOT _PYBIND_STANDALONE
+   AND DEFINED EDGELLM_WHEEL_PAYLOAD_DIR
+   AND NOT EDGELLM_WHEEL_PAYLOAD_DIR STREQUAL "")
+  get_property(_EDGELLM_WHEEL_CUTE_DSL_ARCHIVE GLOBAL
+               PROPERTY EDGELLM_CUTE_DSL_STATIC_LIBRARY)
 endif()
 
 # edgellmCore contains CUDA device code; --whole-archive ensures fatbin data and
@@ -167,6 +198,7 @@ if(_PYBIND_STANDALONE)
     _edgellm_runtime
     PRIVATE -Wl,--whole-archive
             ${EDGELLM_CORE_LIB}
+            ${_EDGELLM_WHEEL_CUTE_DSL_ARCHIVE}
             -Wl,--no-whole-archive
             ${EDGELLM_BUILDER_LIB}
             ${NVINFER_LIB}
@@ -182,6 +214,7 @@ else()
     _edgellm_runtime
     PRIVATE -Wl,--whole-archive
             edgellmCore
+            ${_EDGELLM_WHEEL_CUTE_DSL_ARCHIVE}
             -Wl,--no-whole-archive
             edgellmBuilder
             TensorRT::TensorRT
@@ -199,6 +232,5 @@ elseif(AARCH64_BUILD)
   target_link_options(_edgellm_runtime PRIVATE "-L${CUDA_DIR}/lib/stubs")
 endif()
 
-# Allow unresolved symbols that will be satisfied at load time (e.g. libnvdla).
-target_link_options(_edgellm_runtime PRIVATE
-                    "-Wl,--unresolved-symbols=ignore-in-shared-libs")
+# CPython API symbols are resolved by the running interpreter. All other
+# dependencies are linked explicitly and audited during payload verification.

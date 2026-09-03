@@ -82,9 +82,9 @@ public:
     static constexpr int32_t kHiddenSizeAlignment = 128;
     //! The FC1/FC2 CuTe-DSL cubins are runtime-polymorphic in L (num_experts);
     //! the product contract restricts the runner to this discrete set.
-    static constexpr int32_t kMaxNumExperts = 256;
-    static constexpr int32_t kSupportedNumExperts[] = {128, 256};
-    static constexpr int32_t kMaxTopK = 8;
+    static constexpr int32_t kMaxNumExperts = 512;
+    static constexpr int32_t kSupportedNumExperts[] = {128, 256, 512};
+    static constexpr int32_t kMaxTopK = 32;
 
     //! True iff numExperts is one of the product-supported expert counts.
     static constexpr bool isSupportedNumExperts(int32_t numExperts)

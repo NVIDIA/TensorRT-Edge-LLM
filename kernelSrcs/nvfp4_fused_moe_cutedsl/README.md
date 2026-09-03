@@ -64,7 +64,7 @@ cross-compilation, artifact layout, and CMake configuration.
 
 ## CuTe DSL SM121 Support
 
-`nvidia-cutlass-dsl==4.6.1` supports the `sm_121a` architecture used by
+`nvidia-cutlass-dsl==4.7.0` supports the `sm_121a` architecture used by
 DIGITS/GB10. For SM121 fused MoE builds, `build_cutedsl.py` sets
 `CUTE_DSL_ARCH=sm_121a` for this group so the generated image targets SM121
 directly instead of relying on an SM120-compatible cubin.

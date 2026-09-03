@@ -83,10 +83,10 @@ def export_decode_moe_variant(args):
     io_dtype = cutlass.Float16
 
     sf_vec_size = 16
-    # MMA tile N is a compile-time axis (n128 or n256 variants); M is fixed
-    # at 128 by the decode kernel's tile scheduler. Shape axes H/I/E/top_k
-    # are runtime via the wrapper below.
-    mma_tiler_mn = (128, args.mma_tiler_n)
+    # MMA tile M and N are both compile-time axes (m64/m128 x n128/n256
+    # variants); the scheduler only requires M to be a multiple of 64.
+    # Shape axes H/I/E/top_k are runtime via the wrapper below.
+    mma_tiler_mn = (args.mma_tiler_m, args.mma_tiler_n)
 
     print(f"Fused decode MoE variant: activation={activation}, "
           f"io_dtype=fp16, mma_tiler_mn={mma_tiler_mn}")
@@ -434,6 +434,13 @@ def main():
         "--mma_tiler_n", type=int, default=128,
         choices=[128, 256],
         help="Compile-time MMA N-tile size (n128 or n256 variants)"
+    )
+    parser.add_argument(
+        "--mma_tiler_m", type=int, default=128,
+        choices=[64, 128],
+        help="Compile-time MMA M-tile size. Decode routes few rows per expert "
+             "(top_k tokens), so m64 wastes less of the tile; the scheduler "
+             "requires a multiple of 64."
     )
     parser.add_argument(
         "--output_dir", type=str, required=True,

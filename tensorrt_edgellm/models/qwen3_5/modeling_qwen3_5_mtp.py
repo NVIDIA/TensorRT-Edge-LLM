@@ -23,8 +23,8 @@ import torch.nn.functional as F
 
 from ...config import ModelConfig
 from ..default.modeling_default import OnnxSpec
-from ..linear import make_linear
-from ..ops import KV_PAGE_SIZE, attention_plugin
+from ..linear import is_int4_linear, make_linear
+from ..ops import KV_PAGE_SIZE, attention_plugin, qkv_concat
 from .modeling_qwen3_5_text import MLP, GatedAttention, Qwen3_5RMSNorm
 
 __all__ = ["Qwen3_5MtpDraftModel", "Qwen3_5MtpDecoderLayer"]
@@ -44,6 +44,10 @@ class Qwen3_5MtpDecoderLayer(nn.Module):
         self.input_layernorm = Qwen3_5RMSNorm(config.hidden_size,
                                               config.rms_norm_eps)
         self.self_attn = GatedAttention(config, layer_idx=layer_idx)
+        self._uses_int4_qkv = any(
+            is_int4_linear(proj)
+            for proj in (self.self_attn.q_proj, self.self_attn.k_proj,
+                         self.self_attn.v_proj))
         self.post_attention_layernorm = Qwen3_5RMSNorm(config.hidden_size,
                                                        config.rms_norm_eps)
         self.mlp = MLP(config, layer_idx=layer_idx)
@@ -78,8 +82,11 @@ class Qwen3_5MtpDecoderLayer(nn.Module):
                                    batch_size, seq_len,
                                    attn.num_kv_heads * attn.head_dim)
 
+        qkv = (qkv_concat(query_states, key_states, value_states)
+               if self._uses_int4_qkv else torch.cat(
+                   [query_states, key_states, value_states], dim=-1))
         attn_output, present_key_value = attention_plugin(
-            torch.cat([query_states, key_states, value_states], dim=-1),
+            qkv,
             past_key_value,
             context_lengths,
             rope_rotary_cos_sin,

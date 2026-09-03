@@ -33,8 +33,10 @@ TensorRT Edge-LLM: NVIDIA C++/CUDA/Python inference runtime for deploying LLMs a
 | Build (cross-compile AArch64) | `cmake .. -DTRT_PACKAGE_DIR=$TRT_PACKAGE_DIR -DAARCH64_BUILD=ON && make -j$(nproc)` |
 | Build (NVTX profiling) | `cmake .. -DTRT_PACKAGE_DIR=$TRT_PACKAGE_DIR -DENABLE_NVTX_PROFILING=ON && make -j$(nproc)` |
 | Build against TRT-RTX | Same as above, but point `TRT_PACKAGE_DIR` at a TRT-RTX package (`libtensorrt_rtx.so` + `tensorrt_onnxparser_rtx`). `FindTensorRT.cmake` selects the correct lib automatically. |
-| C++ unit tests (all) | `./build/unitTest` |
-| C++ unit tests (filter) | `./build/unitTest --gtest_filter="LoggerTest.*"` |
+| C++ unit tests (all) | `cd build && ctest --output-on-failure --parallel $(nproc)` (drop `--parallel` on an embedded board — limited device memory) |
+| C++ unit tests (one group) | `./build/unittests/unitTestRuntime` (see `unittests/CMakeLists.txt` for the group list) |
+| C++ unit tests (filter) | `./build/unittests/unitTestCommon --gtest_filter="LoggerTest.*"` |
+| C++ unit tests (build all) | `cmake --build build --target unitTests -j$(nproc)` |
 | Python package (install) | `pip install -r requirements.txt && python -m build --wheel --outdir dist . && pip install dist/*.whl` |
 | Python tool extras | `pip install ".[tools]"` |
 | Python test suite | `pytest --priority=l0_pipeline_a30 -v` |

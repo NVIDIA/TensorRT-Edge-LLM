@@ -42,6 +42,7 @@ __all__ = [
     "unpack_nvfp4_codes",
     "repack_nvfp4_a16_marlin_linear",
     "repack_nvfp4_a16_marlin_moe_experts",
+    "repack_nvfp4_a16_marlin_gated_moe_experts",
     "repack_nvfp4_gated_moe_experts",
     "repack_nvfp4_moe_experts",
     "repack_fp16_moe_experts",
@@ -458,7 +459,17 @@ def _repack_nvfp4_a16_marlin_linears(model: nn.Module) -> None:
         wp = module._buffers.get("weight")
         ws = module._buffers.get("weight_scale")
         wg = module._buffers.get("weight_scale_2")
-        if wp is None or ws is None or wg is None:
+        if wp is None:
+            logger.warning(
+                "NVFP4A16MarlinLinear missing weight; skipping repack")
+            continue
+        if wp.dtype in (torch.float16, torch.bfloat16, torch.float32):
+            logger.warning(
+                "NVFP4A16MarlinLinear has dense %s weight; refusing to "
+                "quantize in-export. Checkpoint must provide packed NVFP4 "
+                "(uint8 weight + e4m3 scales). Skipping repack.", wp.dtype)
+            continue
+        if ws is None or wg is None:
             logger.warning("NVFP4A16MarlinLinear missing packed buffers; "
                            "skipping repack")
             continue
@@ -1050,6 +1061,62 @@ def repack_nvfp4_a16_marlin_moe_experts(
     )
 
 
+def repack_nvfp4_a16_marlin_gated_moe_experts(
+    gate_packed: "list",
+    gate_scale: "list",
+    gate_global: "list",
+    up_packed: "list",
+    up_scale: "list",
+    up_global: "list",
+    down_packed: "list",
+    down_scale: "list",
+    down_global: "list",
+    moe_inter_padded: int,
+) -> Tuple[torch.Tensor, ...]:
+    """Stack + repack SwiGLU NVFP4 (W4A16) experts for ``Nvfp4A16MoePlugin``.
+
+    FC1 is two independently Marlin-packed projections concatenated on N
+    (``[gate | up]``, each padded to ``moe_inter_padded``). The plugin takes
+    one FC1 global scale; gate/up must share ``weight_scale_2`` (ModelOpt
+    official Qwen3.6 NVFP4 does). FC2 matches the non-gated helper.
+    """
+    num_experts = len(gate_packed)
+    fc1_q, fc1_bs, fc1_g = [], [], []
+    fc2_q, fc2_bs, fc2_g = [], [], []
+    for e in range(num_experts):
+        q_gate, s_gate, g_gate, _, n_gate = repack_nvfp4_a16_marlin_linear(
+            gate_packed[e], gate_scale[e], gate_global[e], pad_n_to=128)
+        q_up, s_up, g_up, _, n_up = repack_nvfp4_a16_marlin_linear(
+            up_packed[e], up_scale[e], up_global[e], pad_n_to=128)
+        if n_gate != moe_inter_padded or n_up != moe_inter_padded:
+            raise ValueError(f"SwiGLU FC1 padded N gate={n_gate} up={n_up} != "
+                             f"moe_inter_padded {moe_inter_padded}")
+        if not torch.equal(g_gate.reshape(-1), g_up.reshape(-1)):
+            raise ValueError(
+                "Nvfp4A16MoePlugin SwiGLU needs one FC1 global scale; "
+                f"expert {e} gate/up weight_scale_2 differ")
+        fc1_q.append(torch.cat([q_gate, q_up], dim=-1))
+        fc1_bs.append(torch.cat([s_gate, s_up], dim=-1))
+        fc1_g.append(g_gate)
+        wp2, ws2 = _pad_nvfp4_linear_k(down_packed[e], down_scale[e],
+                                       moe_inter_padded)
+        q2, s2, g2, _, _ = repack_nvfp4_a16_marlin_linear(wp2,
+                                                          ws2,
+                                                          down_global[e],
+                                                          pad_n_to=128)
+        fc2_q.append(q2)
+        fc2_bs.append(s2)
+        fc2_g.append(g2)
+    return (
+        torch.cat(fc1_q, dim=0),
+        torch.cat(fc1_bs, dim=0),
+        torch.cat(fc1_g, dim=0),
+        torch.cat(fc2_q, dim=0),
+        torch.cat(fc2_bs, dim=0),
+        torch.cat(fc2_g, dim=0),
+    )
+
+
 # ---------------------------------------------------------------------------
 # NVFP4 MoE Marlin tile pack
 # ---------------------------------------------------------------------------
@@ -1114,6 +1181,30 @@ def decode_modelopt_nvfp4(
     dense = dense.reshape(out_f, in_f)
     dense *= ws2
     return dense.astype(np.float32)
+
+
+def _decode_or_passthrough_nvfp4(proj: nn.Module,
+                                 group_size: int = 16) -> np.ndarray:
+    """Return a gated-expert projection as dense fp32 ``[out, in]``.
+
+    Pre-quantized NVFP4 MoE checkpoints keep small gate/router-style
+    projections in float16/bfloat16 while packing the heavy experts to NVFP4.
+    Such a weight loads into an NVFP4-typed linear (so ``is_nvfp4_linear`` is
+    True) but its buffer stays float, not packed int8/uint8. Decode only the
+    genuinely packed weights; pass a float weight through unchanged so it is
+    re-packed downstream by ``_pack_nvfp4_moe_weight``. Any other dtype is
+    unexpected and raised so the failure surfaces here rather than as a
+    downstream precision/shape mismatch.
+    """
+    w = proj.weight
+    if w.dtype in (torch.int8, torch.uint8):
+        return decode_modelopt_nvfp4(w, proj.weight_scale, proj.weight_scale_2,
+                                     group_size)
+    if w.dtype not in (torch.float16, torch.bfloat16):
+        raise TypeError(
+            f"unexpected gated-MoE projection weight dtype {w.dtype}; expected "
+            "packed int8/uint8 or unquantized float16/bfloat16")
+    return w.detach().to(torch.float32).cpu().numpy()
 
 
 def _round_dense_to_bf16(dense: np.ndarray) -> np.ndarray:
@@ -1368,12 +1459,9 @@ def repack_nvfp4_gated_moe_experts(
                 and is_nvfp4_linear(down)):
             raise TypeError("Gated NVFP4 MoE experts must use NVFP4 quant")
 
-        gate_dense = decode_modelopt_nvfp4(gate.weight, gate.weight_scale,
-                                           gate.weight_scale_2, group_size)
-        up_dense = decode_modelopt_nvfp4(up.weight, up.weight_scale,
-                                         up.weight_scale_2, group_size)
-        down_dense = decode_modelopt_nvfp4(down.weight, down.weight_scale,
-                                           down.weight_scale_2, group_size)
+        gate_dense = _decode_or_passthrough_nvfp4(gate, group_size)
+        up_dense = _decode_or_passthrough_nvfp4(up, group_size)
+        down_dense = _decode_or_passthrough_nvfp4(down, group_size)
 
         gate_dense, up_dense, down_dense = _pad_nvfp4_gated_moe_dense_weights(
             gate_dense, up_dense, down_dense, hidden_size, moe_inter_size,

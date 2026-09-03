@@ -205,12 +205,9 @@ static void buildTensorMapImpl(TensorMap& map, PipelineIO& io, SharedResources& 
                 ? cfg.kvSharingDonors[localAttnIdx]
                 : -1;
 
-            // Plugin (combined KV): bind to donor's tensor if shared, else own tensor. Bind the
-            // pool-shaped view — the AttentionPlugin engine binding contract is the paged pool
-            // [2, numPages, kTOKENS_PER_PAGE, numKVHeads, headDim], not the internal slot-shaped
-            // allocation (see KVCacheManager::getCombinedKVCachePoolView()).
-            auto& combinedKV = (donorIdx >= 0) ? kvMgr.getCombinedKVCachePoolView(donorIdx)
-                                               : kvMgr.getCombinedKVCachePoolView(localAttnIdx);
+            // Plugin (combined KV): bind to donor's pool if shared, else own pool.
+            auto& combinedKV
+                = (donorIdx >= 0) ? kvMgr.getCombinedKVCache(donorIdx) : kvMgr.getCombinedKVCache(localAttnIdx);
             map.set(binding_names::formatKVCacheName(localAttnIdx, /*isPast=*/true), combinedKV);
             map.set(binding_names::formatKVCacheName(localAttnIdx, /*isPast=*/false), combinedKV); // alias: in-place
             ++localAttnIdx;
@@ -286,7 +283,7 @@ static void buildTensorMapImpl(TensorMap& map, PipelineIO& io, SharedResources& 
 
     // Hidden states output. SpecDecode base engines write their target features
     // into baseHiddenStates. The vanilla LLM path uses
-    // outputHiddenStates instead (shape uses cfg.hiddenSize). Either or neither is
+    // outputHiddenStates instead (shape uses cfg.hiddenSize). Any subset may be
     // bound here; the engine introspection in EngineExecutor::prepare() will set
     // the address only if the engine actually exposes the binding.
     if (cfg.isSpecDecodeBase && !io.baseHiddenStates.isEmpty())
@@ -296,6 +293,15 @@ static void buildTensorMapImpl(TensorMap& map, PipelineIO& io, SharedResources& 
     else if (!io.outputHiddenStates.isEmpty())
     {
         map.set(binding_names::kOutputHiddenStates, io.outputHiddenStates);
+    }
+
+    // Accept-layer output (Omni-Next Thinker), orthogonal to the above: on a
+    // SpecDecode base `hidden_states` is the draft's post-norm feed, so the
+    // Talker's mid-stack tensor arrives under its own name. Engines without the
+    // binding ignore this entry, so they stay loadable.
+    if (!io.outputHiddenStates.isEmpty())
+    {
+        map.set(binding_names::kAcceptHiddenStates, io.outputHiddenStates);
     }
 
     // SpecDecode base-engine verification bindings. The base engine's verification
@@ -408,7 +414,7 @@ void buildTensorMapForGemma4MTPDraft(
     map.set(binding_names::kKVPageTable, res.kvPageTables[0]->kernelView());
     for (auto const& entry : draftCfg.gemma4MTPKVSharingMap)
     {
-        rt::Tensor& targetKV = baseCacheManager.getCombinedKVCachePoolView(entry.targetAbsoluteLayerIdx);
+        rt::Tensor& targetKV = baseCacheManager.getCombinedKVCache(entry.targetAbsoluteLayerIdx);
         map.set(binding_names::formatKVCacheName(entry.assistantLayerIdx, /*isPast=*/true), targetKV);
     }
 }
@@ -470,7 +476,7 @@ PipelineIO PipelineIO::createForLLM(LLMEngineConfig const& cfg, cudaStream_t str
 }
 
 PipelineIO PipelineIO::createForSpecDecode(
-    DeploymentConfig const& bundle, int32_t maxRuntimeBatchSize, cudaStream_t stream)
+    DeploymentConfig const& bundle, int32_t maxRuntimeBatchSize, cudaStream_t stream, bool hasAcceptHiddenOutput)
 {
     check::check(bundle.draft.has_value(), "PipelineIO::createForSpecDecode requires DeploymentConfig.draft to be set");
     check::check(bundle.specConfig.has_value(),
@@ -501,11 +507,21 @@ PipelineIO PipelineIO::createForSpecDecode(
     io.outputLogits = rt::Tensor(
         {maxLogitsSize, maxVocabSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "PipelineIO::outputLogits");
 
-    // Allocate hidden states for SpecDecode. DFlash binds the draft target-hidden
-    // input directly to baseHiddenStates, so it does not need the generic
-    // EAGLE/MTP draft hidden-state ping-pong buffers.
+    // Allocate hidden states for SpecDecode. Cached block-draft modes bind the
+    // draft target-hidden input to compact base hidden states, so they do not
+    // need the generic EAGLE/MTP draft hidden-state ping-pong buffers.
     allocateSpecDecodeHiddenStates(io, maxRuntimeBatchSize, maxTensorSeqLen, baseOutputHiddenDim,
-        draftRuntimeHiddenSize, nvinfer1::DataType::kHALF, bundle.specDecodeMode() != SpecDecodeMode::kDFlash);
+        draftRuntimeHiddenSize, nvinfer1::DataType::kHALF, !isCachedBlockDraftMode(bundle.specDecodeMode()));
+
+    // Accept-layer hidden states for the Qwen3-Omni Talker, only when the base
+    // engine can actually fill them. Sized on the base hidden size, not
+    // baseOutputHiddenDim — the latter is the draft's input width and is
+    // 3x hidden for EAGLE3.
+    if (hasAcceptHiddenOutput)
+    {
+        io.outputHiddenStates = Tensor({maxRuntimeBatchSize, maxTensorSeqLen, bundle.base.hiddenSize}, DeviceType::kGPU,
+            nvinfer1::DataType::kHALF, "PipelineIO::outputHiddenStates");
+    }
 
     if (hasDeepstackFeatures(bundle.base))
     {
@@ -552,7 +568,7 @@ PipelineIO PipelineIO::createForSpecDecode(
     CUDA_CHECK(cudaMemsetAsync(io.skipSoftmaxScale.rawPointer(), 0, io.skipSoftmaxScale.getMemoryCapacity(), stream));
 
     bool const useSpecTree
-        = (bundle.specDecodeMode() == SpecDecodeMode::kDFlash || bundle.specDecodeMode() == SpecDecodeMode::kMTP)
+        = (isCachedBlockDraftMode(bundle.specDecodeMode()) || bundle.specDecodeMode() == SpecDecodeMode::kMTP)
         && bundle.specConfig->draftingTopK > 1;
     if (useSpecTree)
     {

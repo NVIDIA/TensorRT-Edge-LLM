@@ -21,6 +21,10 @@ endif()
 set(_trt_hints ${TENSORRT_ROOT} /usr /opt/tensorrt)
 set(_trt_lib_suffixes lib lib64 lib/${CMAKE_SYSTEM_PROCESSOR}-linux-gnu)
 set(_trt_inc_suffixes include include/${CMAKE_SYSTEM_PROCESSOR}-linux-gnu)
+if(CMAKE_SYSTEM_NAME STREQUAL "QNX")
+  list(APPEND _trt_lib_suffixes lib/aarch64-qnx)
+  list(APPEND _trt_inc_suffixes include/aarch64-qnx)
+endif()
 
 find_path(
   TensorRT_INCLUDE_DIR NvInfer.h
@@ -96,3 +100,7 @@ if(TensorRT_FOUND)
                  INTERFACE_LINK_LIBRARIES TensorRT::TensorRT)
   endif()
 endif()
+
+# Compatibility variables used by the current builder and example targets.
+set(ONNX_PARSER_INCLUDE_DIR "${TensorRT_OnnxParser_INCLUDE_DIR}")
+set(NV_ONNX_PARSER_LIB TensorRT::OnnxParser)

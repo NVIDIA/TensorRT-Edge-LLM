@@ -69,6 +69,9 @@ import torch
 if TYPE_CHECKING:
     from ..config import ModelConfig
 
+# Importing the CLI module no longer eagerly loads the package export API.
+# Register model-family implementations before AutoModel dispatch below.
+from .. import _export_api as _registered_export_api  # noqa: F401
 from ..checkpoint.checkpoint_utils import normalize_rope_scaling_for_runtime
 from ..config import _is_diffusion_gemma_model_type
 from ..external_weights import (EXTERNAL_WEIGHT_CHOICES,
@@ -244,6 +247,7 @@ _DEFAULT_LAYOUT: dict[str, str] = {
     "action": "action",
     "mtp_draft": "mtp_draft",
     "dflash_draft": "dflash_draft",
+    "jetspec_draft": "jetspec_draft",
     "dspark_draft": "dspark_draft",
 }
 
@@ -624,19 +628,37 @@ def _find_token_id(model_dir: str, token_str: str) -> "Optional[int]":
 
 
 def _load_all_weights(model_dir: str) -> dict:
-    """Load all safetensors shards in *model_dir* into a flat dict."""
+    """Load all safetensors (or PyTorch ``.bin``) shards in *model_dir* into a
+    flat dict."""
     import glob
 
     from safetensors.torch import load_file
 
     shards = sorted(glob.glob(os.path.join(model_dir, "*.safetensors")))
-    if not shards:
-        logger.error("No safetensors files found in %s", model_dir)
+    if shards:
+        weights: dict = {}
+        for shard in shards:
+            logger.info("  Loading shard: %s", os.path.basename(shard))
+            weights.update(load_file(shard, device="cpu"))
+        return weights
+
+    # Fallback: PyTorch pickle checkpoints. Some officially supported AWQ VLMs
+    # (e.g. InternVL3-*-AWQ) ship only ``pytorch_model*.bin`` and no safetensors.
+    # Mirror the ``.bin`` support the core weight loader already
+    # has (checkpoint/loader.py _build_shard_map).
+    import torch
+
+    bin_shards = sorted(glob.glob(os.path.join(model_dir, "pytorch_model*.bin"))) \
+        or sorted(glob.glob(os.path.join(model_dir, "*.bin")))
+    if not bin_shards:
+        logger.error("No safetensors or .bin weight files found in %s",
+                     model_dir)
         sys.exit(1)
-    weights: dict = {}
-    for shard in shards:
-        logger.info("  Loading shard: %s", os.path.basename(shard))
-        weights.update(load_file(shard, device="cpu"))
+    weights = {}
+    for shard in bin_shards:
+        logger.info("  Loading .bin shard: %s", os.path.basename(shard))
+        weights.update(torch.load(shard, map_location="cpu",
+                                  weights_only=True))
     return weights
 
 
@@ -778,16 +800,18 @@ def _collect_user_token_id(model_dir: str, root: dict) -> dict:
     return {}
 
 
-def _patch_multimodal_token_ids(model_dir: str, llm_out_dir: str,
-                                model_type: str) -> None:
-    """Inject multimodal special-token IDs into the exported LLM's ``config.json``.
+def _patch_multimodal_token_ids(model_dir: str,
+                                llm_out_dir: str,
+                                model_type: str,
+                                config_filename: str = "config.json") -> None:
+    """Inject multimodal special-token IDs into the exported LLM runtime config.
 
     Dispatches to the family-specific collector in priority order:
     thinker_config → Nemotron rename → tokenizer fallback.  Any IDs a
     later collector returns that aren't already set by an earlier one are
     merged in (handles hybrid layouts).
     """
-    cfg_path = os.path.join(llm_out_dir, "config.json")
+    cfg_path = os.path.join(llm_out_dir, config_filename)
     if not os.path.exists(cfg_path):
         return
 
@@ -926,6 +950,34 @@ def _cosmos3_edge_llm_key_remap(key: str) -> "Optional[str]":
     return key
 
 
+def _rank_suffix(world: int, rank: int) -> str:
+    if world <= 1:
+        return ""
+    return f"_world{world}_rank{rank}"
+
+
+def _world_suffix(world: int) -> str:
+    if world <= 1:
+        return ""
+    return f"_world{world}"
+
+
+def _is_speculative_model_config(config: "ModelConfig") -> bool:
+    return any(
+        bool(getattr(config, name, False)) for name in (
+            "is_eagle3_draft",
+            "eagle_base",
+            "is_dflash_draft",
+            "dflash_base",
+            "is_dspark_draft",
+            "dspark_base",
+            "is_mtp_draft",
+            "mtp_base",
+            "gemma4_mtp_draft",
+            "gemma4_mtp_base",
+        ))
+
+
 def _export_llm(model_dir: str,
                 llm_out_dir: str,
                 model_type: str = "",
@@ -938,6 +990,9 @@ def _export_llm(model_dir: str,
                 dflash_base: bool = False,
                 dflash_tree_base: bool = False,
                 dflash_draft_dir: str = "",
+                jetspec_base: bool = False,
+                jetspec_tree_base: bool = False,
+                jetspec_draft_dir: str = "",
                 dspark_base: bool = False,
                 dspark_draft_dir: str = "",
                 gemma4_mtp_base: bool = False,
@@ -949,7 +1004,7 @@ def _export_llm(model_dir: str,
     """Export LLM backbone via the standard tensorrt_edgellm pipeline.
 
     When ``tp_size > 1``, exports ``tp_size`` per-rank ONNX files named
-    ``model_tp{N}_rank{R}.onnx`` (matches ``cpp/builder/llmBuilder.cpp``).
+    ``model_world{N}_rank{R}.onnx``.
     Each rank reloads the checkpoint fresh and shards weights to its
     slice on assignment.
     """
@@ -1000,17 +1055,12 @@ def _export_llm(model_dir: str,
                     GEMMA4_NVFP4_KEY_REMAP
                 key_remap = GEMMA4_NVFP4_KEY_REMAP
 
-    if tp_size <= 1:
-        ranks = [(0, 1)]
-        out_paths = [os.path.join(llm_out_dir, "model.onnx")]
-    else:
-        ranks = [(r, tp_size) for r in range(tp_size)]
-        out_paths = [
-            os.path.join(llm_out_dir, f"model_tp{tp_size}_rank{r}.onnx")
-            for r in range(tp_size)
-        ]
+    ranks = [(0, 1)] if tp_size <= 1 else [(r, tp_size)
+                                           for r in range(tp_size)]
 
-    for (rank, world), output_path in zip(ranks, out_paths):
+    for rank, world in ranks:
+        output_path = os.path.join(llm_out_dir,
+                                   f"model{_rank_suffix(world, rank)}.onnx")
         if world > 1:
             logger.info("[LLM] === rank %d / %d ===", rank, world)
 
@@ -1039,6 +1089,9 @@ def _export_llm(model_dir: str,
                 dflash_base=dflash_base,
                 dflash_tree_base=dflash_tree_base,
                 dflash_draft_dir=dflash_draft_dir or None,
+                jetspec_base=jetspec_base,
+                jetspec_tree_base=jetspec_tree_base,
+                jetspec_draft_dir=jetspec_draft_dir or None,
                 dspark_base=dspark_base,
                 dspark_draft_dir=dspark_draft_dir or None,
                 gemma4_mtp_base=gemma4_mtp_base,
@@ -1047,6 +1100,10 @@ def _export_llm(model_dir: str,
                 num_decoder_layers=num_decoder_layers,
                 extra_configs=_extra_configs,
             )
+            if world > 1 and _is_speculative_model_config(model.config):
+                raise ValueError(
+                    "Tensor-parallel speculative decoding export is not supported."
+                )
         except (OSError, ValueError, RuntimeError, ImportError) as exc:
             logger.exception("[LLM] Failed to load checkpoint")
             raise SystemExit(1) from exc
@@ -1070,11 +1127,13 @@ def _export_llm(model_dir: str,
                     "attention variant is not wired for skip-softmax yet)",
                     skip_softmax_scale_factor)
 
-        # Per-rank runtime config so each rank artifact is self-describing.
+        # Runtime config is shared at world scope; ONNX files remain rank-local.
         # Single-device exports keep the conventional "config.json".
-        config_filename = ("config.json" if world == 1 else
-                           f"config_tp{world}_rank{rank}.json")
+        config_filename = f"config{_world_suffix(world)}.json"
 
+        # Embedding and tokenizer files are shared across ranks, so write
+        # them once. Every rank may rewrite the shared config; rank metadata is
+        # canonicalized so common equal-split TP exports remain stable.
         logger.info("[LLM] Exporting to %s", output_path)
         try:
             from ..onnx.export import export_onnx
@@ -1084,7 +1143,8 @@ def _export_llm(model_dir: str,
                         fp8_embedding=fp8_embedding,
                         reduced_vocab_dir=reduced_vocab_dir,
                         externalize_weights=externalize_weights,
-                        config_filename=config_filename)
+                        config_filename=config_filename,
+                        write_shared_artifacts=(rank == 0))
         except (OSError, ValueError, RuntimeError) as exc:
             logger.exception("[LLM] ONNX export failed")
             raise SystemExit(1) from exc
@@ -1110,7 +1170,10 @@ def _export_llm(model_dir: str,
     # Source of truth: ``thinker_config`` (Qwen3-Omni) or root config
     # (Qwen-VL / Nemotron-Omni).  Naming conventions vary across checkpoints
     # — see :func:`_patch_multimodal_token_ids` for the fallback chain.
-    _patch_multimodal_token_ids(model_dir, llm_out_dir, model_type)
+    _patch_multimodal_token_ids(model_dir,
+                                llm_out_dir,
+                                model_type,
+                                config_filename=config_filename)
 
     # Standalone Talker checkpoints route through ``_export_llm`` (not the
     # qwen3_tts ``_export_talker``) because their model_type isn't in the
@@ -1411,6 +1474,76 @@ def _export_dflash_draft(model_dir: str,
     logger.info("[DFlash Draft] Done: %s", output_path)
 
 
+def _export_jetspec_draft(model_dir: str,
+                          draft_out_dir: str,
+                          jetspec_draft_dir: str,
+                          draft_reduced_vocab_dir: str = "") -> None:
+    """Export the JetSpec draft model, optionally with reduced vocabulary."""
+    os.makedirs(draft_out_dir, exist_ok=True)
+    output_path = os.path.join(draft_out_dir, "model.onnx")
+
+    logger.info("[JetSpec Draft] Loading checkpoint from %s",
+                jetspec_draft_dir)
+    try:
+        from ..model import AutoModel
+        model = AutoModel.from_pretrained(model_dir,
+                                          device="cpu",
+                                          jetspec_draft=True,
+                                          jetspec_draft_dir=jetspec_draft_dir)
+    except (OSError, ValueError, RuntimeError, ImportError) as exc:
+        logger.exception("[JetSpec Draft] Failed to load checkpoint")
+        raise SystemExit(1) from exc
+
+    full_size = model.config.vocab_size
+    reduced_size = None
+    if draft_reduced_vocab_dir:
+        logger.info("[JetSpec Draft] Applying vocab reduction from %s",
+                    draft_reduced_vocab_dir)
+        try:
+            from ..vocab_reduction.onnx_export import \
+                apply_reduced_vocab_from_dir
+            apply_reduced_vocab_from_dir(model, draft_reduced_vocab_dir)
+            reduced_size = model.config.reduced_vocab_size
+            logger.info("[JetSpec Draft] lm_head reduced: %d -> %d", full_size,
+                        reduced_size)
+        except (OSError, ValueError, RuntimeError, ImportError) as exc:
+            logger.exception("[JetSpec Draft] Vocab reduction failed")
+            raise SystemExit(1) from exc
+
+    logger.info("[JetSpec Draft] Exporting to %s", output_path)
+    try:
+        from ..onnx.export import export_onnx
+        export_onnx(model, output_path, model_dir=jetspec_draft_dir)
+    except (OSError, ValueError, RuntimeError) as exc:
+        logger.exception("[JetSpec Draft] ONNX export failed")
+        raise SystemExit(1) from exc
+
+    if draft_reduced_vocab_dir:
+        from tensorrt_edgellm._safetensors_io import \
+            save_file as _save_safetensors
+
+        from ..vocab_reduction.constants import (DRAFT_VOCAB_INFO_NAME,
+                                                 DRAFT_VOCAB_MAP_NAME)
+        vocab_map = model._reduced_vocab_map_for_runtime
+        map_path = os.path.join(draft_out_dir, DRAFT_VOCAB_MAP_NAME)
+        _save_safetensors({"vocab_map": vocab_map.cpu().to(torch.int32)},
+                          map_path)
+        logger.info("[JetSpec Draft] Wrote draft vocab map: %s (%d tokens)",
+                    map_path, vocab_map.numel())
+        with open(os.path.join(draft_out_dir, DRAFT_VOCAB_INFO_NAME),
+                  "w") as fh:
+            json.dump(
+                {
+                    "vocab_size": full_size,
+                    "reduced_vocab_size": reduced_size,
+                    "source": draft_reduced_vocab_dir
+                },
+                fh,
+                indent=2)
+
+    logger.info("[JetSpec Draft] Done: %s", output_path)
+
+
 def _patch_dflash_mask_embedding(llm_out_dir: str,
                                  dflash_draft_dir: str,
                                  embedding_scale: float = 1.0) -> None:
@@ -1668,9 +1801,11 @@ def _export_visual(model_dir: str, visual_out_dir: str, weights: dict,
     ``qwen3_omni`` / ``qwen3_omni_moe`` model_types and runs the
     remap inside its own ``build_qwen3_omni_visual``.
     """
-    model_config = _tower_model_config(
-        model_config, weights,
-        ("visual.", "thinker.visual.", "model.visual.", "vision_tower."))
+    from ..quantization.quantization_configs import _VISUAL_PREFIXES
+    tower_prefixes = tuple(f"{root}{p}." for p in _VISUAL_PREFIXES
+                           for root in ("", "model.", "thinker.",
+                                        "model.embed_tokens_extend."))
+    model_config = _tower_model_config(model_config, weights, tower_prefixes)
     os.makedirs(visual_out_dir, exist_ok=True)
     output_path = os.path.join(visual_out_dir, "model.onnx")
 
@@ -1988,8 +2123,8 @@ def _export_audio(model_dir: str,
     """Export audio encoder via from-scratch tensorrt_edgellm pipeline."""
     if model_config is not None:
         model_config = _tower_model_config(
-            model_config, weights,
-            ("audio_tower.", "thinker.audio_tower.", "audio_embed."))
+            model_config, weights, ("audio_tower.", "thinker.audio_tower.",
+                                    "model.audio_tower.", "audio_embed."))
     os.makedirs(audio_out_dir, exist_ok=True)
     output_path = os.path.join(audio_out_dir, "model.onnx")
 
@@ -2150,22 +2285,28 @@ def _export_audio(model_dir: str,
 
 
 def _copy_asr_tokenizer(model_dir: str, out_dir: str) -> None:
-    """Copy the RNN-T tokenizer sidecar into the engine dir.
+    """Copy the RNN-T tokenizer and prompt metadata into the export dir.
 
     ``NemotronAsrRuntime`` detokenizes emitted RNN-T tokens with
     ``tokenizer.json`` (``tokenizer_config.json`` is optional — special-token
     config). Copying them here keeps the exported engine dir self-contained.
     """
     import shutil
-    for name in ("tokenizer.json", "tokenizer_config.json"):
+    required = ("tokenizer.json", "processor_config.json")
+    missing = [
+        name for name in required
+        if not os.path.isfile(os.path.join(model_dir, name))
+    ]
+    if missing:
+        raise FileNotFoundError(
+            "Nemotron-3.5-ASR checkpoint is missing required runtime "
+            f"artifacts: {', '.join(missing)}")
+    for name in ("tokenizer.json", "tokenizer_config.json",
+                 "processor_config.json"):
         src = os.path.join(model_dir, name)
         if os.path.exists(src):
             shutil.copy2(src, os.path.join(out_dir, name))
             logger.info("[Audio] Copied %s", name)
-        elif name == "tokenizer.json":
-            logger.warning(
-                "[Audio] %s not found in checkpoint — the RNN-T runtime "
-                "needs it to detokenize.", name)
 
 
 # ---------------------------------------------------------------------------
@@ -2537,6 +2678,35 @@ def _stage_component_weight_index(model_dir: str, tmp_dir: str,
         json.dump({"weight_map": filtered}, f)
 
 
+def _sub_llm_has_quantized_weights(model_dir: str, key_prefix: str) -> bool:
+    """True if *model_dir* ships any quantized tensor under *key_prefix*.
+
+    NVFP4/FP8 linears carry a ``weight_scale`` sidecar; AWQ/GPTQ instead pack
+    the weight itself as ``qweight`` and carry no ``weight_scale``, so both
+    markers have to be checked or those sub-LLMs read as fully FP16. Reads the
+    safetensors index / shard headers only.
+    """
+    import glob
+    import struct
+    markers = (".weight_scale", ".qweight")
+
+    def _hit(keys) -> bool:
+        return any(
+            k.startswith(key_prefix) and k.endswith(markers) for k in keys)
+
+    index = os.path.join(model_dir, "model.safetensors.index.json")
+    if os.path.isfile(index):
+        with open(index) as f:
+            return _hit(json.load(f).get("weight_map", {}))
+    for sf in sorted(glob.glob(os.path.join(model_dir, "*.safetensors"))):
+        with open(sf, "rb") as f:
+            n = struct.unpack("<Q", f.read(8))[0]
+            hdr = json.loads(f.read(n))
+        if _hit(hdr):
+            return True
+    return False
+
+
 def _maybe_stage_hf_quant_config(model_dir: str, tmp_dir: str, key_prefix: str,
                                  key_remap) -> bool:
     """Rewrite ``hf_quant_config.json``'s ``exclude_modules`` for a sub-LLM.
@@ -2548,6 +2718,14 @@ def _maybe_stage_hf_quant_config(model_dir: str, tmp_dir: str, key_prefix: str,
     """
     hf_qc_src = os.path.join(model_dir, "hf_quant_config.json")
     if not os.path.isfile(hf_qc_src):
+        # Modelopt roots keep the quant metadata in config.json's
+        # ``quantization_config`` instead (exact module names, not a ``*``
+        # glob). A sub-LLM is fully FP16 iff it ships no quantized tensor, so
+        # detect that directly: no ``{key_prefix}*.weight_scale`` in the
+        # checkpoint means the inherited quantization_config must be dropped.
+        if key_prefix and not _sub_llm_has_quantized_weights(
+                model_dir, key_prefix):
+            return True
         return False
     if not key_prefix:
         # No sub-LLM namespace: the exclusion patterns already match the
@@ -2567,8 +2745,13 @@ def _maybe_stage_hf_quant_config(model_dir: str, tmp_dir: str, key_prefix: str,
             pat = pat[len(key_prefix):]
         elif pat.startswith(stripped_prefix):
             pat = pat[len(stripped_prefix):]
-        elif not ("*" in pat or pat == ""):
-            continue  # belongs to a different sub-LLM
+        elif not (pat.startswith("*") or pat == ""):
+            # A leading ``*`` makes the glob sub-LLM agnostic (e.g. ``*lm_head*``);
+            # anything else that is not our prefix names another sub-LLM. Testing
+            # for ``*`` anywhere would keep ``talker.…linear_attn*`` in the
+            # thinker's list, where prefix normalisation collapses it onto the
+            # thinker's own modules.
+            continue
         if key_remap is not None and pat:
             remapped = key_remap(pat)
             if remapped is not None:
@@ -3776,6 +3959,26 @@ def main() -> None:
         help="Path to the DFlash draft checkpoint directory.",
     )
     p.add_argument(
+        "--jetspec-base",
+        action="store_true",
+        help="Export as JetSpec base model (adds target hidden-state output).",
+    )
+    p.add_argument(
+        "--jetspec-tree-base",
+        action="store_true",
+        help="Export JetSpec base with DDTree hybrid state metadata inputs.",
+    )
+    p.add_argument(
+        "--jetspec-draft",
+        action="store_true",
+        help="Export JetSpec draft model.",
+    )
+    p.add_argument(
+        "--jetspec-draft-dir",
+        default="",
+        help="Path to the JetSpec draft checkpoint directory.",
+    )
+    p.add_argument(
         "--dspark-base",
         action="store_true",
         help="Export as DSpark base model (adds target hidden-state output).",
@@ -3819,10 +4022,10 @@ def main() -> None:
         dest="tp_size",
         type=int,
         default=1,
-        help=(
-            "Tensor-parallel world size (default: 1 = single device). "
-            "When >1, exports per-rank LLM ONNX files named "
-            "model_tp{N}_rank{R}.onnx (matching cpp/builder/llmBuilder.cpp)."),
+        help=
+        ("Tensor-parallel world size (default: 1 = single device). "
+         "When >1, exports per-rank LLM ONNX files named model_world{N}_rank{R}.onnx."
+         ),
     )
     p.add_argument(
         "--talker-sidecar-from",
@@ -3846,7 +4049,7 @@ def main() -> None:
             "of the LLM backbone. The runtime config.json and the ONNX KV "
             "in/out count follow N automatically. Supported for the plain "
             "default model path (e.g. Qwen3) and hybrid base models (e.g. "
-            "Qwen3.5, Nemotron-H); not for eagle/mtp/dflash "
+            "Qwen3.5, Nemotron-H); not for eagle/mtp/dflash/jetspec "
             "speculative-decoding variants."),
     )
     p.add_argument(
@@ -3960,6 +4163,17 @@ def main() -> None:
 
     if args.mtp_tree_base:
         args.mtp = True
+    if args.tp_size > 1 and (args.eagle_base or args.mtp or args.dflash_base
+                             or args.dflash_tree_base or args.dflash_draft
+                             or args.dspark_base or args.dspark_draft
+                             or gemma4_mtp_requested):
+        p.error(
+            "Tensor-parallel speculative decoding export is not supported.")
+    if args.tp_size > 1 and externalize_weights:
+        p.error(
+            "--externalize-weights is not supported with --tp-size > 1 because its weight files and manifest "
+            "are not rank-local yet")
+
     if args.eagle_base and args.mtp:
         p.error("--eagle-base and --mtp cannot be enabled together")
     if args.eagle_draft_dir and not args.eagle_base:
@@ -3972,26 +4186,53 @@ def main() -> None:
         p.error("--mtp-draft-dir cannot be combined with --eagle-base")
     if args.dflash_tree_base:
         args.dflash_base = True
+    if args.jetspec_tree_base:
+        args.jetspec_base = True
     if mtp_draft_dir_arg and (args.dflash_base or args.dflash_draft
+                              or args.jetspec_base or args.jetspec_draft
                               or args.dspark_base or args.dspark_draft):
-        p.error("--mtp-draft-dir cannot be combined with DFlash/DSpark export")
-    if args.dflash_base and (args.eagle_base or args.mtp):
-        p.error("--dflash-base cannot be combined with --eagle-base or --mtp")
-    if args.dflash_draft and (args.eagle_base or args.mtp):
-        p.error("--dflash-draft cannot be combined with --eagle-base or --mtp")
+        p.error("--mtp-draft-dir cannot be combined with "
+                "DFlash/JetSpec/DSpark export")
+    if args.dflash_base and (args.eagle_base or args.mtp or args.jetspec_base
+                             or args.jetspec_draft or args.dspark_base
+                             or args.dspark_draft):
+        p.error("--dflash-base cannot be combined with "
+                "EAGLE/MTP/JetSpec/DSpark modes")
+    if args.dflash_draft and (args.eagle_base or args.mtp or args.jetspec_base
+                              or args.jetspec_draft or args.dspark_base
+                              or args.dspark_draft):
+        p.error("--dflash-draft cannot be combined with "
+                "EAGLE/MTP/JetSpec/DSpark modes")
     if args.dflash_draft and not args.dflash_draft_dir:
         p.error("--dflash-draft requires --dflash-draft-dir")
+    if args.jetspec_base and (args.eagle_base or args.mtp or args.dflash_base
+                              or args.dflash_draft or args.dspark_base
+                              or args.dspark_draft):
+        p.error("--jetspec-base cannot be combined with "
+                "EAGLE/MTP/DFlash/DSpark modes")
+    if args.jetspec_draft and (args.eagle_base or args.mtp or args.dflash_base
+                               or args.dflash_draft or args.dspark_base
+                               or args.dspark_draft):
+        p.error("--jetspec-draft cannot be combined with "
+                "EAGLE/MTP/DFlash/DSpark modes")
+    if args.jetspec_base and not args.jetspec_draft_dir:
+        p.error("--jetspec-base requires --jetspec-draft-dir "
+                "for target layer metadata")
+    if args.jetspec_draft and not args.jetspec_draft_dir:
+        p.error("--jetspec-draft requires --jetspec-draft-dir")
     if args.dspark_base and (args.eagle_base or args.mtp or args.dflash_base
-                             or args.dflash_draft):
-        p.error("--dspark-base cannot be combined with EAGLE/MTP/DFlash modes")
+                             or args.dflash_draft or args.jetspec_base
+                             or args.jetspec_draft):
+        p.error("--dspark-base cannot be combined with "
+                "EAGLE/MTP/DFlash/JetSpec modes")
     if args.dspark_draft and (args.eagle_base or args.mtp or args.dflash_base
-                              or args.dflash_draft):
-        p.error(
-            "--dspark-draft cannot be combined with EAGLE/MTP/DFlash modes")
+                              or args.dflash_draft or args.jetspec_base
+                              or args.jetspec_draft):
+        p.error("--dspark-draft cannot be combined with "
+                "EAGLE/MTP/DFlash/JetSpec modes")
     if args.dspark_base and not args.dspark_draft_dir:
-        p.error(
-            "--dspark-base requires --dspark-draft-dir for target layer metadata"
-        )
+        p.error("--dspark-base requires --dspark-draft-dir "
+                "for target layer metadata")
     if args.dspark_draft and not args.dspark_draft_dir:
         p.error("--dspark-draft requires --dspark-draft-dir")
     if args.mtp and args.skip_llm:
@@ -4000,11 +4241,16 @@ def main() -> None:
         p.error("--mtp-draft-dir requires LLM export; remove --skip-llm")
     if args.dflash_base and args.skip_llm:
         p.error("--dflash-base requires LLM export; remove --skip-llm")
+    if args.jetspec_base and args.skip_llm:
+        p.error("--jetspec-base requires LLM export; remove --skip-llm")
     if args.dspark_base and args.skip_llm:
         p.error("--dspark-base requires LLM export; remove --skip-llm")
     if args.dflash_draft and args.skip_llm:
         logger.info(
             "--dflash-draft implies --skip-llm (draft export is independent)")
+    if args.jetspec_draft and args.skip_llm:
+        logger.info(
+            "--jetspec-draft implies --skip-llm (draft export is independent)")
     if args.dspark_draft and args.skip_llm:
         logger.info(
             "--dspark-draft implies --skip-llm (draft export is independent)")
@@ -4032,13 +4278,16 @@ def main() -> None:
         if args.num_decoder_layer < 1:
             p.error("--num-decoder-layer must be >= 1")
         if (args.eagle_base or args.mtp or args.dflash_base
-                or args.dflash_draft or args.dspark_base or args.dspark_draft):
+                or args.dflash_draft or args.jetspec_base or args.jetspec_draft
+                or args.dspark_base or args.dspark_draft):
             p.error("--num-decoder-layer cannot be combined with "
                     "--eagle-base / --mtp / --dflash-base / --dflash-draft / "
+                    "--jetspec-base / --jetspec-draft / "
                     "--dspark-base / --dspark-draft")
 
     _VALID_COMPONENTS = {
-        "thinker", "mtp_draft", "talker", "code_predictor", "visual", "audio",
+        "thinker", "mtp_draft", "dflash_draft", "jetspec_draft",
+        "dspark_draft", "talker", "code_predictor", "visual", "audio",
         "code2wav", "action", "dllm"
     }
     requested_components = {
@@ -4076,7 +4325,9 @@ def main() -> None:
                     "the visual component.")
         if not wants_diffusion_engines and not wants_visual:
             p.error("No DiffusionGemma components selected for export.")
-        if args.mtp or args.eagle_base or args.dflash_base or args.dflash_draft:
+        if (args.mtp or args.eagle_base or args.dflash_base
+                or args.dflash_draft or args.jetspec_base or args.jetspec_draft
+                or args.dspark_base or args.dspark_draft):
             p.error("DiffusionGemma cannot be combined with speculative "
                     "decode export flags")
         if args.reduced_vocab_dir:
@@ -4167,6 +4418,7 @@ def main() -> None:
     # When only a standalone draft flag is set, run just that draft stage.
     # If a matching base flag is also set, export both base and draft artifacts.
     _draft_only = ((args.dflash_draft and not args.dflash_base)
+                   or (args.jetspec_draft and not args.jetspec_base)
                    or (args.dspark_draft and not args.dspark_base))
 
     def _export_visual_component(out: str) -> None:
@@ -4208,6 +4460,9 @@ def main() -> None:
              dflash_base=args.dflash_base,
              dflash_tree_base=args.dflash_tree_base,
              dflash_draft_dir=args.dflash_draft_dir,
+             jetspec_base=args.jetspec_base,
+             jetspec_tree_base=args.jetspec_tree_base,
+             jetspec_draft_dir=args.jetspec_draft_dir,
              dspark_base=args.dspark_base,
              dspark_draft_dir=args.dspark_draft_dir,
              gemma4_mtp_base=gemma4_mtp_requested,
@@ -4229,6 +4484,12 @@ def main() -> None:
             out,
             args.dflash_draft_dir,
             draft_reduced_vocab_dir=args.draft_reduced_vocab_dir)),
+        (args.jetspec_draft, "jetspec_draft",
+         lambda out: _export_jetspec_draft(model_dir,
+                                           out,
+                                           args.jetspec_draft_dir,
+                                           draft_reduced_vocab_dir=args.
+                                           draft_reduced_vocab_dir)),
         (args.dspark_draft, "dspark_draft", lambda out: _export_dspark_draft(
             model_dir, out, args.dspark_draft_dir)),
         (_has_llm_component(model_type, "talker") and not args.skip_llm
@@ -4288,6 +4549,8 @@ def main() -> None:
                 gemma4_mtp_assistant_dir if gemma4_mtp_assistant_dir else "no")
     logger.info("DFlash base   : %s", "yes" if args.dflash_base else "no")
     logger.info("DFlash draft  : %s", "yes" if args.dflash_draft else "no")
+    logger.info("JetSpec base  : %s", "yes" if args.jetspec_base else "no")
+    logger.info("JetSpec draft : %s", "yes" if args.jetspec_draft else "no")
     logger.info("DSpark base   : %s", "yes" if args.dspark_base else "no")
     logger.info("DSpark draft  : %s", "yes" if args.dspark_draft else "no")
     logger.info("Reduced vocab : %s",

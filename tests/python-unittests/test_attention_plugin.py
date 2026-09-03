@@ -67,16 +67,17 @@ PAGE_SIZE = 128
 # D512 native-paged CuTe DSL SM-support contract, hand-maintained (not read
 # from build_cutedsl.py) so a dropped kernel on a supported SM fails, not skips
 # green.
-NATIVE_SMS = frozenset({80, 86, 87, 89, 100, 101, 110, 120, 121})
+NATIVE_SMS = frozenset({80, 86, 87, 89, 90, 100, 101, 110, 120, 121})
 CUTEDSL_D512_FP8_SMS = frozenset({100, 101, 110})
 # FP8 KV-cache support is constrained by the bundled XQA decode kernels.
-FP8_KV_CACHE_SMS = frozenset({89, 100, 101, 110, 120, 121})
+FP8_KV_CACHE_SMS = frozenset({89, 90, 100, 101, 110, 120, 121})
 _CUTEDSL_MODULE_FAILURE_HOOK = "TRT_EDGELLM_TEST_FAIL_CUTEDSL_MODULE"
 _CUTEDSL_LAZY_ATTENTION_MODULE_BY_SM = {
     80: "fmha_v2_d128_paged",
     86: "fmha_v2_d128_paged",
     87: "fmha_v2_d128_paged",
     89: "fmha_v2_d128_paged",
+    90: "fmha_v2_d128_paged",
     100: "fmha_d128_paged",
     101: "fmha_d128_paged",
     110: "fmha_d128_paged",
@@ -1201,7 +1202,7 @@ def _run_head512_vision_prefill_case(case: str):
 
 
 @pytest.mark.skipif(
-    _device_sm() not in (80, 86, 87, 89, 100, 101, 110, 120, 121),
+    _device_sm() not in (80, 86, 87, 89, 90, 100, 101, 110, 120, 121),
     reason="D256 FMHA-v2 bidirectional attention requires a supported CUDA SM")
 @pytest.mark.parametrize("case", ["all_text", "page_crossing"])
 def test_prefill_head256_vision_fmha_v2_bidirectional(case):
@@ -2478,7 +2479,7 @@ def test_ragged_prefill(label, seqlens):
 # [20, 8] plus valid Q lengths [4, 3] produce the exact logical KV lengths
 # [24, 11] while the physical Q tensor remains batch-strided at S=4.
 @pytest.mark.skipif(_device_sm()
-                    not in (80, 86, 87, 89, 100, 101, 110, 120, 121),
+                    not in (80, 86, 87, 89, 90, 100, 101, 110, 120, 121),
                     reason="D256 CuTe DSL PADDING FMHA is unsupported")
 def test_diffusion_gemma_padding_prefill():
     q_lens = [4, 3]

@@ -36,19 +36,21 @@ class EngineExecutor;
 //! Owns immutable, final-layout model weights prepared during initialization.
 //!
 //! The checkpoint path allocates one persistent arena, then writes every final
-//! engine input directly from bounded CUDA-mapped checkpoint ranges. Each range
+//! engine input or plugin resource directly from bounded CUDA-mapped checkpoint
+//! ranges. Each range
 //! is released after its transform; once load() returns, later methods only
 //! validate or publish stable arena addresses.
 class ExternalWeightManager
 {
 public:
     ExternalWeightManager() = default;
+    ~ExternalWeightManager() noexcept;
 
     ExternalWeightManager(ExternalWeightManager const&) = delete;
     ExternalWeightManager& operator=(ExternalWeightManager const&) = delete;
 
-    ExternalWeightManager(ExternalWeightManager&&) noexcept = default;
-    ExternalWeightManager& operator=(ExternalWeightManager&&) noexcept = default;
+    ExternalWeightManager(ExternalWeightManager&& other) noexcept;
+    ExternalWeightManager& operator=(ExternalWeightManager&& other) noexcept;
 
     //! Load plugin-ready sidecars or load and transform an original checkpoint.
     //!
@@ -57,10 +59,10 @@ public:
     //! for a separately packaged draft.
     //!
     //! The stream is synchronized before this method returns, leaving only
-    //! engine-input tensors in their final plugin layouts.
+    //! engine-input tensors and plugin resources in their final layouts.
     void load(std::filesystem::path const& engineDir, std::filesystem::path const& configPath, cudaStream_t stream,
-        std::filesystem::path const& componentCheckpointDir = {},
-        std::filesystem::path const& targetCheckpointDir = {});
+        std::filesystem::path const& componentCheckpointDir = {}, std::filesystem::path const& targetCheckpointDir = {},
+        std::optional<int32_t> tpRank = std::nullopt, std::optional<int32_t> tpSize = std::nullopt);
 
     void validateAgainstEngine(EngineExecutor const& executor, std::string_view engineLabel);
 
@@ -86,10 +88,21 @@ public:
     }
 
 private:
-    // One allocation owns every checkpoint-backed engine input. Individual
-    // tensors below are stable, non-owning views into this storage.
+    struct PluginResourceRegistration
+    {
+        int32_t deviceId;
+        int32_t resourceId;
+    };
+
+    void releasePluginResources() noexcept;
+
+    // One allocation owns every checkpoint-backed engine input and plugin
+    // resource. Individual tensors below are stable, non-owning views into this
+    // storage.
     Tensor mWeightStorage{};
     std::vector<Tensor> mWeights{};
+    std::vector<Tensor> mPluginResourceTensors{};
+    std::vector<PluginResourceRegistration> mPluginResourceRegistrations{};
     std::optional<Tensor> mEmbedding{};
     std::optional<Tensor> mPleEmbedding{};
     bool mLoaded{false};

@@ -15,7 +15,7 @@
 
 import json
 
-from experimental.server.tool_chat_template import (
+from experimental.server.parsing.tool_chat_template import (
     ToolChatTemplateFormatter, needs_tool_chat_template,
     normalize_messages_for_tools)
 
@@ -60,6 +60,46 @@ class _RecordingTemplateOwner:
                 "add_generation_prompt": kwargs["add_generation_prompt"],
             },
             sort_keys=True)
+
+
+class _ReplayTemplateOwner:
+
+    def __init__(self, extra_generation_token=False):
+        self.extra_generation_token = extra_generation_token
+        self.tokenizer = self
+        self.apply_count = 0
+
+    def apply_chat_template(self, messages, **kwargs):
+        self.apply_count += 1
+        prefix = "history<assistant><think>\n"
+        if kwargs["add_generation_prompt"]:
+            suffix = "\n</think>\n\n"
+            if self.extra_generation_token:
+                suffix += "<extra>"
+            return prefix + suffix
+        assistant = messages[-1]
+        return (prefix + assistant["reasoning_content"] + "\n</think>\n\n" +
+                assistant["content"])
+
+    def encode(self, prompt, *, add_special_tokens):
+        assert add_special_tokens is False
+        special_token_ids = {
+            "</think>": 256,
+            "<extra>": 257,
+            "\n\n": 258,
+        }
+        token_ids = []
+        offset = 0
+        while offset < len(prompt):
+            special_token = next((token for token in special_token_ids
+                                  if prompt.startswith(token, offset)), None)
+            if special_token is None:
+                token_ids.append(ord(prompt[offset]))
+                offset += 1
+            else:
+                token_ids.append(special_token_ids[special_token])
+                offset += len(special_token)
+        return token_ids
 
 
 def test_formats_tool_template():
@@ -119,6 +159,36 @@ def test_formats_tool_template():
     assert tool_message["content"] == '{"temperature": 22}'
 
 
+def test_computes_context_reuse_replay_tail_from_tokenized_template():
+    owner = _ReplayTemplateOwner()
+    formatter = ToolChatTemplateFormatter([], template_owner=owner)
+    _, replay_tail_length = formatter.format_with_replay_tail([{
+        "role":
+        "user",
+        "content":
+        "hello",
+    }])
+    assert replay_tail_length == 4
+    _, replay_tail_length = formatter.format_with_replay_tail([{
+        "role":
+        "user",
+        "content":
+        "another request",
+    }])
+    assert replay_tail_length == 4
+    assert owner.apply_count == 3
+
+    formatter = ToolChatTemplateFormatter(
+        [], template_owner=_ReplayTemplateOwner(extra_generation_token=True))
+    _, replay_tail_length = formatter.format_with_replay_tail([{
+        "role":
+        "user",
+        "content":
+        "hello",
+    }])
+    assert replay_tail_length == 5
+
+
 def test_normalize_converts_video_url_spelling():
     # HF chat templates only know {"type": "video"}; the video_url alias must
     # be converted before formatting or the template emits no video
@@ -152,7 +222,7 @@ def test_flatten_content_blocks():
     """Pure-text block arrays collapse to a plain string (else the template
     renders an empty turn); media, raw-string lists, empty lists, and JSON
     tool-result lists pass through to role-specific handling instead."""
-    from experimental.server.tool_chat_template import \
+    from experimental.server.parsing.tool_chat_template import \
         normalize_messages_for_tools
 
     media = [{
@@ -214,5 +284,5 @@ def test_flatten_content_blocks():
     assert out[2]["content"] == "plain string untouched"
     assert out[3]["content"] == "result 42"
     assert out[4]["content"] == '{"temperature": 22}'.join(["[", "]"])  # json
-    assert out[5]["content"] == '["x", "y"]'  # raw-string list serialized
+    assert out[5]["content"] == "x\ny"  # pure-text list -> joined
     assert out[6]["content"] == "[]"  # empty list serialized

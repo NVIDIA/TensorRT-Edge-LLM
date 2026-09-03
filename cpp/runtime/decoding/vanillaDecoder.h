@@ -68,10 +68,7 @@ public:
     }
 
     void resetForNewSequences(Tensor&, cudaStream_t) override {}
-    void onBatchEvict(
-        std::vector<int32_t> const&, int32_t, int32_t, Tensor&, cudaStream_t, BatchCompactionMode) override
-    {
-    }
+    void onBatchEvict(std::vector<int32_t> const&, int32_t, int32_t, Tensor&, cudaStream_t) override {}
 
 private:
     DecodingRuntimeContext& mRuntime;

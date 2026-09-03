@@ -108,7 +108,7 @@ and rebuild.
 ## Validation
 
 The split-path backend is covered by the
-[SM100/101/110 runner smoke and accuracy tests](../../../unittests/nvfp4MoeCuteDslSm110Tests.cu).
+[SM100/101/110 runner smoke and accuracy tests](../../../unittests/cpp/kernels/moe/nvfp4MoeCuteDslSm110Tests.cu).
 Avoid validating production routing by instantiating Python-only helper
 modules directly; model integration should be tested at the export path
 that explicitly emits `Nvfp4MoePlugin` for an SM100/101/110 target.
@@ -118,4 +118,4 @@ that explicitly emits `Nvfp4MoePlugin` for an SM100/101/110 target.
 1. Manually generate the `nvfp4_moe` artifact with the shared workflow.
 2. Copy or mount the workspace on Thor.
 3. Build the plugin with `-DENABLE_CUTE_DSL=nvfp4_moe -DCMAKE_CUDA_ARCHITECTURES=110a`.
-4. Run `./build/unitTest --gtest_filter='CuteDslNvfp4MoeSm110Test.*'`.
+4. Run `./build/unittests/unitTestKernelsMoe --gtest_filter='CuteDslNvfp4MoeSm110Test.*'`.

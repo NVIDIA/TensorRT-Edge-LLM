@@ -149,8 +149,6 @@ def _build_full_model_quant_cfg(quantization: str,
             flush=True)
 
     disable_globs = [
-        # ---- Thinker non-LLM submodules (FP16) ----
-        "*thinker.lm_head*",  # Final LM head — FP16 for logit fidelity
         # ---- Talker non-LLM submodules (FP16) ----
         "*talker.code2wav.*",  # Code2Wav vocoder (not actually attached
         #   to the talker subtree in HF but kept
@@ -160,14 +158,19 @@ def _build_full_model_quant_cfg(quantization: str,
         "*talker.codec_head*",  # Codec output projection (FP16: feeds
         #   Code2Wav; FP4 noise here materially
         #   hurts audio quality)
-        # ---- Talker GDN mixers (FP16) ----
-        # The gated-delta-net recurrent loop feeds its own state back every
-        # step, so in_proj/out_proj quantization noise self-amplifies across
-        # frames. The pre-quantized reference checkpoints keep these FP16 as
-        # well (their exclude lists carry the fused ``in_proj_qkvz``/
-        # ``in_proj_ba`` names).
-        "*talker.model.layers.*.linear_attn.*",
+        # GDN mixers stay quantized on both sub-models, matching the Qwen3.5
+        # recipe. An earlier note warned that GDN quantization noise
+        # self-amplifies across Talker frames; re-measuring TTS after enabling
+        # it showed no regression (N=3 medians, seed-tts-eval 20: WER EN 3.31 %,
+        # ZH 5.81 %, ECAPA SIM 0.778). That run widened several quantization
+        # surfaces at once, so it clears the Talker but does not isolate GDN.
     ]
+    # The final LM head stays FP16 for logit fidelity unless the caller asks
+    # otherwise. These globs are appended after ``build_quant_config``'s enable
+    # rules and override them, so pinning it unconditionally would make
+    # ``--lm_head_quantization`` a silent no-op on every Omni checkpoint.
+    if lm_head_quantization is None:
+        disable_globs.append("*thinker.lm_head*")
     # Only pin the visual encoder / audio_tower to FP16 when the caller did
     # not opt them into quantization via ``visual_quantization`` /
     # ``audio_quantization``. When they are opted in, ``build_quant_config``
@@ -1511,6 +1514,47 @@ def _backfill_missing_amax(model) -> int:
     return n_filled
 
 
+def _exclude_fp16_mtp_modules(output_dir: str, mtp_state_dict: dict) -> None:
+    """Record the MTP head's FP16-kept modules in the checkpoint quant config.
+
+    ``export_hf_checkpoint`` builds the exclude list from the backbone's
+    quantizers only -- it never sees the separately quantized MTP head, so the
+    output config carries no ``thinker.mtp.*`` entries. The draft loader
+    (``make_mtp_draft_config``) then treats every MTP linear as quantized and
+    mis-unpacks the FP16 ones. List the FP16-kept linears (router gate /
+    shared-expert gate -- 2-D ``.weight`` with no ``.weight_scale``, plus the
+    tied ``lm_head`` when it too is FP16) so the draft export keeps them FP16.
+    """
+    scaled = {
+        k[:-len(".weight_scale")]
+        for k in mtp_state_dict if k.endswith(".weight_scale")
+    }
+    fp16 = {
+        k[:-len(".weight")]
+        for k, v in mtp_state_dict.items()
+        if k.endswith(".weight") and getattr(v, "dim", lambda: 0)() == 2
+        and k[:-len(".weight")] not in scaled
+    }
+    # The borrowed lm_head is FP16 unless --lm_head_quantization quantized it
+    # (then it carries a weight_scale and must stay quantized, not excluded).
+    if "thinker.mtp.lm_head" not in scaled:
+        fp16.add("thinker.mtp.lm_head")
+
+    cfg_path = os.path.join(output_dir, "config.json")
+    with open(cfg_path) as f:
+        cfg = json.load(f)
+    qc = cfg.get("quantization_config")
+    if not isinstance(qc, dict):
+        return
+    for key in ("ignore", "modules_to_not_convert"):
+        if isinstance(qc.get(key), list):
+            qc[key].extend(m for m in sorted(fp16) if m not in qc[key])
+    with open(cfg_path, "w") as f:
+        json.dump(cfg, f, indent=2)
+    print(f"Excluded {len(fp16)} FP16-kept MTP module(s) from the quant "
+          "config (draft-loader keep-set).")
+
+
 # ---------------------------------------------------------------------------
 # Top-level entry point (called from ``tensorrt-edgellm-quantize llm``)
 # ---------------------------------------------------------------------------
@@ -1519,6 +1563,7 @@ def _backfill_missing_amax(model) -> int:
 def quantize_and_export_omni(
     model_dir: str,
     output_dir: str,
+    mtp_draft_dir: Optional[str] = None,
     quantization: Optional[str] = None,
     lm_head_quantization: Optional[str] = None,
     kv_cache_quantization: Optional[str] = None,
@@ -1548,6 +1593,11 @@ def quantize_and_export_omni(
 
     t0 = time.time()
     model, tokenizer, processor = _load_omni_model(model_dir, dtype, device)
+
+    # Quantized ``thinker.mtp.*`` draft tensors, folded into the unified
+    # export via ``extra_state_dict`` (populated below when the model ships an
+    # MTP head and a backbone precision was requested).
+    mtp_state_dict: dict[str, torch.Tensor] = {}
 
     if is_quantized(model):
         if visual_quantization is not None or audio_quantization is not None:
@@ -1595,6 +1645,60 @@ def quantize_and_export_omni(
             visual_quantization=visual_quantization,
             audio_quantization=audio_quantization,
         )
+
+        # Quantize the single-layer MTP head (``thinker.mtp.*``) first, while
+        # the Thinker is still unquantized: the draft calibrates against the
+        # Thinker's last hidden state, mirroring the dense LLM path. The
+        # sparse-MoE head (Omni-Next) and the dense head take the same recipe;
+        # dispatch on the draft checkpoint's num_experts.
+        from .quantize import _mtp_num_hidden_layers, _resolve_mtp_dir
+
+        # The config declares the architecture while the checkpoint decides
+        # whether the weights are there to quantize. Omni checkpoints exist that
+        # declare ``mtp_num_hidden_layers=1`` and ship no ``thinker.mtp.*``
+        # tensors; pass --mtp_draft_dir to supply them.
+        mtp_dir = None
+        if (_mtp_num_hidden_layers(model.thinker) > 0
+                and quantization is not None):
+            mtp_dir = _resolve_mtp_dir(mtp_draft_dir, model_dir)
+        if mtp_dir is not None:
+            from .models.mtp_draft import (export_quantized_mtp_state_dict,
+                                           quantize_mtp_from_base)
+            print(f"Quantizing MTP draft (weights from {mtp_dir}) before the "
+                  "Thinker backbone.")
+            quantized_mtp_draft = quantize_mtp_from_base(
+                base_model=model.thinker,
+                tokenizer=tokenizer,
+                model_dir=mtp_dir,
+                quantization=quantization,
+                lm_head_quantization=lm_head_quantization,
+                kv_cache_quantization=kv_cache_quantization,
+                dtype=dtype,
+                device=device,
+                text_dataset=text_dataset,
+                num_samples=num_samples,
+            )
+            raw_mtp = export_quantized_mtp_state_dict(quantized_mtp_draft,
+                                                      dtype)
+            # The exporter emits standalone-LLM ``mtp.*`` keys; the Omni
+            # checkpoint nests the head under the Thinker, so re-prefix to
+            # ``thinker.mtp.*``. Drop an FP16 ``lm_head`` (borrowed/tied, absent
+            # from the source ckpt) but keep a quantized one (carries a
+            # ``weight_scale``) so ``--lm_head_quantization`` reaches the draft.
+            lm_head_quantized = any(
+                k.startswith("mtp.lm_head") and k.endswith(".weight_scale")
+                for k in raw_mtp)
+            mtp_state_dict = {
+                f"thinker.{k}": v
+                for k, v in raw_mtp.items()
+                if lm_head_quantized or not k.startswith("mtp.lm_head")
+            }
+            print(f"Prepared {len(mtp_state_dict)} quantized MTP tensor(s) "
+                  "for unified export (thinker.mtp.*).")
+            del quantized_mtp_draft
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
         mtq.quantize(
             model,
             quant_cfg,
@@ -1612,7 +1716,11 @@ def quantize_and_export_omni(
 
     os.makedirs(output_dir, exist_ok=True)
     with torch.inference_mode():
-        export_hf_checkpoint(model, export_dir=output_dir)
+        export_hf_checkpoint(model,
+                             export_dir=output_dir,
+                             extra_state_dict=mtp_state_dict)
+    if mtp_state_dict:
+        _exclude_fp16_mtp_modules(output_dir, mtp_state_dict)
     tokenizer.save_pretrained(output_dir)
     if processor is not None:
         processor.save_pretrained(output_dir)

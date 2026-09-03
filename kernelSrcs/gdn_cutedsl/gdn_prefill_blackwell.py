@@ -71,6 +71,9 @@ from gdn_prefill_blackwell_helpers import (
     make_smem_layout_epi_kind,
 )
 
+# CuTe DSL 4.7 O3 spills heavily for this kernel on SM110.
+_GDN_COMPILE_OPTIONS = "--opt-level 2"
+
 
 def make_thread_cooperative_group(size: Int32):
     # return pipeline.CooperativeGroup(pipeline.Agent.Thread, size, size) # old version
@@ -4705,6 +4708,7 @@ def chunk_gated_delta_rule(
             t_trace["cu_seqlens"],
             cache["sm_count"],
             stream=current_stream,
+            options=_GDN_COMPILE_OPTIONS,
         )
 
     t_run = _to_cute_tensors_bw(ph)
@@ -5202,7 +5206,9 @@ def _compile_prefill_bw(n, h, hv, k, v, seq_len, stream, gpu_arch=""):
     t = _to_cute_tensors_bw(ph)
     run_fn = _get_jit_blackwell()
 
-    compile_opts = ("--gpu-arch " + gpu_arch) if gpu_arch else None
+    compile_opts = _GDN_COMPILE_OPTIONS
+    if gpu_arch:
+        compile_opts += " --gpu-arch " + gpu_arch
     compiled = cute.compile(
         run_fn,
         t["q"], t["k"], t["v"],
@@ -5215,7 +5221,7 @@ def _compile_prefill_bw(n, h, hv, k, v, seq_len, stream, gpu_arch=""):
         # count; the trace value is a placeholder.
         cutlass.Int32(cutlass.utils.HardwareInfo().get_device_multiprocessor_count()),
         stream,
-        **(dict(options=compile_opts) if compile_opts else {}),
+        options=compile_opts,
     )
     _compiled_blackwell["_"] = compiled
     return compiled

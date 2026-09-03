@@ -1,0 +1,301 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version = 1
+qualified_python_abis = ["cp310", "cp311", "cp312"]
+qualified_tensorrt_majors = [10, 11]
+
+[support]
+required_platform_releases = [
+  "ubuntu:22.04",
+  "ubuntu:24.04",
+  "jetson:jp70",
+  "jetson:jp71",
+  "jetson:jp72",
+  "drive:7.2",
+  "dgx-spark:current",
+]
+
+[[cutedsl_artifacts]]
+cpu_arch = "x86_64"
+gpu_sm = 80
+cuda_major = 13
+
+[[cutedsl_artifacts]]
+cpu_arch = "x86_64"
+gpu_sm = 86
+cuda_major = 13
+
+[[cutedsl_artifacts]]
+cpu_arch = "x86_64"
+gpu_sm = 90
+cuda_major = 13
+
+[[cutedsl_artifacts]]
+cpu_arch = "x86_64"
+gpu_sm = 100
+cuda_major = 13
+
+[[cutedsl_artifacts]]
+cpu_arch = "x86_64"
+gpu_sm = 120
+cuda_major = 13
+
+# TODO: Remove after RTX5080 source-build validation migrates to CUDA 13.
+# This artifact exists only for the CUDA 12.9 fallback required until the
+# TensorRT 10.15 CUDA TILE/Myelin fix reaches the qualified TensorRT branch;
+# no CUDA 12 wheel payload is published.
+[[cutedsl_artifacts]]
+cpu_arch = "x86_64"
+gpu_sm = 120
+cuda_major = 12
+
+[[cutedsl_artifacts]]
+cpu_arch = "aarch64"
+gpu_sm = 87
+cuda_major = 13
+
+[[cutedsl_artifacts]]
+cpu_arch = "aarch64"
+gpu_sm = 90
+cuda_major = 13
+
+[[cutedsl_artifacts]]
+cpu_arch = "aarch64"
+gpu_sm = 101
+cuda_major = 12
+
+[[cutedsl_artifacts]]
+cpu_arch = "aarch64"
+gpu_sm = 110
+cuda_major = 13
+
+[[cutedsl_artifacts]]
+cpu_arch = "aarch64"
+gpu_sm = 121
+cuda_major = 12
+
+[[cutedsl_artifacts]]
+cpu_arch = "aarch64"
+gpu_sm = 121
+cuda_major = 13
+
+# This public matrix contains only runtime and source-build metadata.
+# Deployment-specific automation settings are maintained separately.
+
+# Runtime SONAMEs are exact selection inputs. Update rows when the qualified SDK
+# changes; do not add compatibility fallbacks to the loader.
+
+[[variants]]
+variant_id = "x86-ubuntu2204-cu13-sm80"
+platform_family = "ubuntu"
+platform_probe_source = "os-release"
+platform_probe_values = ["ubuntu:22.04"]
+platform_release = "22.04"
+cpu_arch = "x86_64"
+cuda_runtime_soname = "libcudart.so.13"
+tensorrt_runtime_soname = "libnvinfer.so.10"
+gpu_sm = 80
+cute_dsl_artifact_tag = "sm_80"
+cuda_ctk_version = "13.0"
+embedded_target = ""
+cmake_args = ["-DENABLE_CUTE_DSL=ALL"]
+
+[[variants]]
+variant_id = "x86-ubuntu2404-cu13-sm86"
+platform_family = "ubuntu"
+platform_probe_source = "os-release"
+platform_probe_values = ["ubuntu:24.04"]
+platform_release = "24.04"
+cpu_arch = "x86_64"
+cuda_runtime_soname = "libcudart.so.13"
+tensorrt_runtime_soname = "libnvinfer.so.10"
+gpu_sm = 86
+cute_dsl_artifact_tag = "sm_86"
+cuda_ctk_version = "13.2"
+embedded_target = ""
+cmake_args = ["-DENABLE_CUTE_DSL=ALL"]
+
+[[variants]]
+variant_id = "x86-ubuntu2404-cu13-sm100"
+platform_family = "ubuntu"
+platform_probe_source = "os-release"
+platform_probe_values = ["ubuntu:24.04"]
+platform_release = "24.04"
+cpu_arch = "x86_64"
+cuda_runtime_soname = "libcudart.so.13"
+tensorrt_runtime_soname = "libnvinfer.so.10"
+gpu_sm = 100
+cute_dsl_artifact_tag = "sm_100"
+cuda_ctk_version = "13.2"
+embedded_target = ""
+cmake_args = ["-DENABLE_CUTE_DSL=ALL"]
+
+[[variants]]
+variant_id = "x86-ubuntu2404-cu13-sm120"
+platform_family = "ubuntu"
+platform_probe_source = "os-release"
+platform_probe_values = ["ubuntu:24.04"]
+platform_release = "24.04"
+cpu_arch = "x86_64"
+cuda_runtime_soname = "libcudart.so.13"
+tensorrt_runtime_soname = "libnvinfer.so.10"
+gpu_sm = 120
+cute_dsl_artifact_tag = "sm_120"
+cuda_ctk_version = "13.2"
+embedded_target = ""
+cmake_args = ["-DENABLE_CUTE_DSL=ALL"]
+
+[[variants]]
+variant_id = "jetson-orin-jp72-cu13-sm87"
+platform_family = "jetson"
+platform_probe_source = "l4t"
+platform_probe_values = ["R39.2"]
+platform_release = "jp72"
+cpu_arch = "aarch64"
+cuda_runtime_soname = "libcudart.so.13"
+tensorrt_runtime_soname = "libnvinfer.so.10"
+gpu_sm = 87
+cute_dsl_artifact_tag = "sm_87"
+cuda_ctk_version = "13.2"
+embedded_target = "jetson-orin"
+cmake_args = ["-DAARCH64_BUILD=ON", "-DENABLE_CUTE_DSL=ALL"]
+
+[[variants]]
+variant_id = "jetson-thor-jp70-cu13-sm110"
+platform_family = "jetson"
+platform_probe_source = "l4t"
+platform_probe_values = ["R38.2"]
+platform_release = "jp70"
+cpu_arch = "aarch64"
+cuda_runtime_soname = "libcudart.so.13"
+tensorrt_runtime_soname = "libnvinfer.so.10"
+gpu_sm = 110
+cute_dsl_artifact_tag = "sm_110"
+cuda_ctk_version = "13.0"
+embedded_target = "jetson-thor"
+cmake_args = ["-DAARCH64_BUILD=ON", "-DENABLE_CUTE_DSL=ALL"]
+
+[[variants]]
+variant_id = "jetson-thor-jp71-cu13-sm110"
+platform_family = "jetson"
+platform_probe_source = "l4t"
+platform_probe_values = ["R38.4"]
+platform_release = "jp71"
+cpu_arch = "aarch64"
+cuda_runtime_soname = "libcudart.so.13"
+tensorrt_runtime_soname = "libnvinfer.so.10"
+gpu_sm = 110
+cute_dsl_artifact_tag = "sm_110"
+cuda_ctk_version = "13.0"
+embedded_target = "jetson-thor"
+cmake_args = ["-DAARCH64_BUILD=ON", "-DENABLE_CUTE_DSL=ALL"]
+
+[[variants]]
+variant_id = "jetson-thor-jp72-cu13-sm110"
+platform_family = "jetson"
+platform_probe_source = "l4t"
+platform_probe_values = ["R39.2"]
+platform_release = "jp72"
+cpu_arch = "aarch64"
+cuda_runtime_soname = "libcudart.so.13"
+tensorrt_runtime_soname = "libnvinfer.so.10"
+gpu_sm = 110
+cute_dsl_artifact_tag = "sm_110"
+cuda_ctk_version = "13.2"
+embedded_target = "jetson-thor"
+cmake_args = ["-DAARCH64_BUILD=ON", "-DENABLE_CUTE_DSL=ALL"]
+
+[[variants]]
+variant_id = "drive-thor-d72-cu13-sm110"
+platform_family = "drive"
+platform_probe_source = "driveos"
+platform_probe_values = ["7.2"]
+platform_release = "7.2"
+cpu_arch = "aarch64"
+cuda_runtime_soname = "libcudart.so.13"
+tensorrt_runtime_soname = "libnvinfer.so.10"
+gpu_sm = 110
+cute_dsl_artifact_tag = "sm_110"
+cuda_ctk_version = "13.3"
+embedded_target = "auto-thor"
+cmake_args = [
+  "-DAARCH64_BUILD=ON",
+  "-DENABLE_CUTE_DSL=ALL",
+  "-DCUDA_TARGET_DIR=/usr/local/cuda/n1/targets/aarch64-linux",
+]
+
+[[variants]]
+variant_id = "dgx-spark-cu13-sm121"
+platform_family = "dgx-spark"
+platform_probe_source = "device-model"
+platform_probe_values = ["DGX Spark", "GB10"]
+platform_release = "current"
+cpu_arch = "aarch64"
+cuda_runtime_soname = "libcudart.so.13"
+tensorrt_runtime_soname = "libnvinfer.so.10"
+gpu_sm = 121
+cute_dsl_artifact_tag = "sm_121"
+cuda_ctk_version = "13.0"
+embedded_target = "gb10"
+cmake_args = ["-DAARCH64_BUILD=ON", "-DENABLE_CUTE_DSL=ALL"]
+
+[[variants]]
+variant_id = "x86-ubuntu2404-cu13-sm80-trt11"
+platform_family = "ubuntu"
+platform_probe_source = "os-release"
+platform_probe_values = ["ubuntu:24.04"]
+platform_release = "24.04"
+cpu_arch = "x86_64"
+cuda_runtime_soname = "libcudart.so.13"
+tensorrt_runtime_soname = "libnvinfer.so.11"
+gpu_sm = 80
+cute_dsl_artifact_tag = "sm_80"
+cuda_ctk_version = "13.2"
+embedded_target = ""
+cmake_args = ["-DENABLE_CUTE_DSL=ALL"]
+
+[[variants]]
+variant_id = "x86-ubuntu2404-cu13-sm86-trt11"
+platform_family = "ubuntu"
+platform_probe_source = "os-release"
+platform_probe_values = ["ubuntu:24.04"]
+platform_release = "24.04"
+cpu_arch = "x86_64"
+cuda_runtime_soname = "libcudart.so.13"
+tensorrt_runtime_soname = "libnvinfer.so.11"
+gpu_sm = 86
+cute_dsl_artifact_tag = "sm_86"
+cuda_ctk_version = "13.2"
+embedded_target = ""
+cmake_args = ["-DENABLE_CUTE_DSL=ALL"]
+
+[[variants]]
+variant_id = "x86-ubuntu2404-cu13-sm100-trt11"
+platform_family = "ubuntu"
+platform_probe_source = "os-release"
+platform_probe_values = ["ubuntu:24.04"]
+platform_release = "24.04"
+cpu_arch = "x86_64"
+cuda_runtime_soname = "libcudart.so.13"
+tensorrt_runtime_soname = "libnvinfer.so.11"
+gpu_sm = 100
+cute_dsl_artifact_tag = "sm_100"
+cuda_ctk_version = "13.2"
+embedded_target = ""
+cmake_args = ["-DENABLE_CUTE_DSL=ALL"]
+
+[[variants]]
+variant_id = "x86-ubuntu2404-cu13-sm120-trt11"
+platform_family = "ubuntu"
+platform_probe_source = "os-release"
+platform_probe_values = ["ubuntu:24.04"]
+platform_release = "24.04"
+cpu_arch = "x86_64"
+cuda_runtime_soname = "libcudart.so.13"
+tensorrt_runtime_soname = "libnvinfer.so.11"
+gpu_sm = 120
+cute_dsl_artifact_tag = "sm_120"
+cuda_ctk_version = "13.2"
+embedded_target = ""
+cmake_args = ["-DENABLE_CUTE_DSL=ALL"]

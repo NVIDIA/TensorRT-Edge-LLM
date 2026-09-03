@@ -47,6 +47,8 @@ from tqdm import tqdm
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from tensorrt_edgellm._safetensors_io import save_file
+from tensorrt_edgellm.checkpoint.fused_weights import (
+    split_fused_moe_experts, split_fused_shared_expert)
 
 from ..datasets import TextDataset, dataset_name, resolve_dataset
 from ..quantization_configs import build_quant_config
@@ -175,16 +177,84 @@ class Qwen3_5GatedAttention(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# MTP Decoder Layer and Model
+# MTP MLPs, Decoder Layer, and Model
 # ---------------------------------------------------------------------------
 
 
+def _num_experts(config) -> int:
+    """Routed-expert count under whichever key the checkpoint family uses.
+
+    ``num_experts`` is an ``attribute_map`` alias for ``num_local_experts`` on
+    some HF configs, but not all of them declare the map — ``Qwen3OmniNextTextConfig``
+    ships an empty one — so reading a single key silently reports a sparse-MoE
+    head as dense. Mirrors the parsing in :mod:`tensorrt_edgellm.config`.
+    """
+    for key in ("num_experts", "num_local_experts"):
+        value = getattr(config, key, None)
+        if value:
+            return int(value)
+    return 0
+
+
+class MtpSparseMoeBlock(nn.Module):
+    """Qwen3.5 sparse-MoE block used by the MTP calibration model."""
+
+    def __init__(self, config):
+        super().__init__()
+        hidden_size = config.hidden_size
+        intermediate_size = int(config.moe_intermediate_size)
+        self.num_experts = _num_experts(config)
+        self.top_k = int(config.num_experts_per_tok)
+
+        if not 0 < self.top_k <= self.num_experts:
+            raise ValueError("num_experts_per_tok must be in [1, num_experts]")
+
+        self.gate = nn.Linear(hidden_size, self.num_experts, bias=False)
+        self.experts = nn.ModuleList([
+            SwiGLUMLP(hidden_size, intermediate_size)
+            for _ in range(self.num_experts)
+        ])
+
+        shared_size = int(
+            getattr(config, "shared_expert_intermediate_size", 0) or 0)
+        self.has_shared_expert = shared_size > 0
+        if self.has_shared_expert:
+            self.shared_expert = SwiGLUMLP(hidden_size, shared_size)
+            self.shared_expert_gate = nn.Linear(hidden_size, 1, bias=False)
+
+    def forward(self, hidden_states):
+        batch_size, sequence_length, hidden_size = hidden_states.shape
+        flat_states = hidden_states.reshape(-1, hidden_size)
+        router_probs = torch.softmax(self.gate(flat_states).float(), dim=-1)
+        routing_weights, selected_experts = torch.topk(router_probs,
+                                                       self.top_k,
+                                                       dim=-1)
+        routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
+        routing_weights = routing_weights.to(flat_states.dtype)
+
+        routed_states = torch.zeros_like(flat_states)
+        for expert_id in torch.unique(selected_experts).tolist():
+            token_indices, expert_slots = torch.where(
+                selected_experts == expert_id)
+            expert_states = self.experts[expert_id](flat_states[token_indices])
+            expert_states *= routing_weights[token_indices, expert_slots, None]
+            routed_states.index_add_(0, token_indices,
+                                     expert_states.to(routed_states.dtype))
+
+        if self.has_shared_expert:
+            shared_states = self.shared_expert(flat_states)
+            shared_states *= torch.sigmoid(
+                self.shared_expert_gate(flat_states))
+            routed_states += shared_states
+
+        return routed_states.reshape(batch_size, sequence_length, hidden_size)
+
+
 class MtpDecoderLayer(nn.Module):
-    """Single Qwen3.5 MTP decoder layer (gated attention + SwiGLU MLP)."""
+    """Single Qwen3.5 MTP decoder layer (gated attention + dense/MoE MLP)."""
 
     def __init__(self,
-                 hidden_size,
-                 intermediate_size,
+                 config,
                  num_heads,
                  num_kv_heads,
                  head_dim,
@@ -192,6 +262,7 @@ class MtpDecoderLayer(nn.Module):
                  bias,
                  attention_scale=None):
         super().__init__()
+        hidden_size = config.hidden_size
         self.input_layernorm = Qwen3_5RMSNorm(hidden_size, eps=rms_norm_eps)
         self.self_attn = Qwen3_5GatedAttention(hidden_size, num_heads,
                                                num_kv_heads, head_dim,
@@ -199,7 +270,10 @@ class MtpDecoderLayer(nn.Module):
                                                attention_scale)
         self.post_attention_layernorm = Qwen3_5RMSNorm(hidden_size,
                                                        eps=rms_norm_eps)
-        self.mlp = SwiGLUMLP(hidden_size, intermediate_size)
+        if _num_experts(config) > 0:
+            self.mlp = MtpSparseMoeBlock(config)
+        else:
+            self.mlp = SwiGLUMLP(hidden_size, config.intermediate_size)
 
     def forward(self, hidden_states, cos, sin):
         residual = hidden_states
@@ -237,8 +311,7 @@ class MtpDraftModel(nn.Module):
 
         # Single decoder layer
         self.layers = nn.ModuleList([
-            MtpDecoderLayer(hs, config.intermediate_size,
-                            config.num_attention_heads,
+            MtpDecoderLayer(config, config.num_attention_heads,
                             config.num_key_value_heads, head_dim,
                             config.rms_norm_eps, bias, attention_scale)
         ])
@@ -299,6 +372,11 @@ class MtpDraftModel(nn.Module):
         checkpoint's ``lm_head.weight`` (or tied from ``embed_tokens``).
         """
         config = AutoConfig.from_pretrained(model_dir, trust_remote_code=True)
+        # Descend to the text config that declares the MTP head: Omni nests it
+        # under ``thinker_config.text_config``; other multimodal models expose
+        # a direct ``text_config``; plain LLMs are already at that level.
+        if hasattr(config, "thinker_config"):
+            config = config.thinker_config
         if hasattr(config, "text_config"):
             config = config.text_config
         model = cls(config)
@@ -307,9 +385,12 @@ class MtpDraftModel(nn.Module):
         for sf_path in sorted(Path(model_dir).glob("*.safetensors")):
             with safe_open(str(sf_path), framework="pt", device=device) as f:
                 for key in f.keys():
-                    if key.startswith("mtp."):
-                        new_key = key[len("mtp."):]
-                        mtp_state_dict[new_key] = f.get_tensor(key)
+                    # Standalone LLMs store the head as ``mtp.*``; Omni
+                    # checkpoints nest it under the Thinker (``thinker.mtp.*``).
+                    prefix = next((p for p in ("mtp.", "thinker.mtp.")
+                                   if key.startswith(p)), None)
+                    if prefix is not None:
+                        mtp_state_dict[key[len(prefix):]] = f.get_tensor(key)
                     elif key == "lm_head.weight":
                         mtp_state_dict["lm_head.weight"] = f.get_tensor(key)
                     elif key in ("model.embed_tokens.weight",
@@ -318,19 +399,51 @@ class MtpDraftModel(nn.Module):
                             mtp_state_dict["lm_head.weight"] = f.get_tensor(
                                 key)
 
+        if not any(k != "lm_head.weight" for k in mtp_state_dict):
+            raise RuntimeError(
+                f"No 'mtp.*' tensors found under {model_dir} — nothing to "
+                "load for the draft head; check that the checkpoint is "
+                "complete and carries the MTP draft weights.")
+
+        _split_fused_mtp_weights(mtp_state_dict, model)
+
         missing, unexpected = model.load_state_dict(mtp_state_dict,
                                                     strict=False)
+        # Omni checkpoints ship no ``mtp.lm_head``: the draft borrows the
+        # base head at export, or --lm_head_quantization copies it in.
+        expected_absent = ("rotary_emb", "lm_head")
         real_missing = [
-            k for k in missing if not k.startswith("embed_tokens")
-            and not k.startswith("rotary_emb")
+            k for k in missing if not k.startswith(expected_absent)
         ]
         if real_missing:
-            print(f"Warning: Missing keys in MTP draft model: {real_missing}")
+            raise RuntimeError(
+                f"MTP draft has {len(real_missing)} unloaded weight(s); "
+                f"first keys: {real_missing[:10]}")
         if unexpected:
-            print(f"Warning: Unexpected keys in MTP draft model: {unexpected}")
+            raise RuntimeError(
+                f"MTP draft checkpoint has {len(unexpected)} unsupported "
+                f"weight(s); first keys: {unexpected[:10]}")
 
         model.to(device)
         return model
+
+
+def _split_fused_mtp_weights(state_dict: Dict[str, torch.Tensor],
+                             model: nn.Module) -> None:
+    """Expand fused checkpoint tensors into the calibration module layout."""
+    mlp = model.layers[0].mlp
+    shared_expert = getattr(mlp, "shared_expert", None)
+    for key in list(state_dict):
+        tensor = state_dict[key]
+        split_weights = split_fused_moe_experts(key, tensor)
+        if split_weights is None and shared_expert is not None:
+            split_weights = split_fused_shared_expert(
+                key, tensor, shared_expert.gate_proj.in_features,
+                shared_expert.gate_proj.out_features)
+        if split_weights is None:
+            continue
+        del state_dict[key]
+        state_dict.update(split_weights)
 
 
 # ---------------------------------------------------------------------------
@@ -401,8 +514,31 @@ def quantize_mtp_from_base(
 
     _share_embed_tokens(base_model, mtp_draft)
 
+    # Omni checkpoints ship no ``mtp.lm_head``, so the draft's copy is still at
+    # its random init here. Quantizing that would calibrate on noise; the real
+    # head is the base's, which the draft borrows at export anyway.
+    if lm_head_quantization is not None:
+        base_lm = getattr(base_model, "lm_head", None) or getattr(
+            getattr(base_model, "model", None), "lm_head", None)
+        if base_lm is not None and hasattr(mtp_draft, "lm_head"):
+            with torch.no_grad():
+                mtp_draft.lm_head.weight.copy_(
+                    base_lm.weight.to(mtp_draft.lm_head.weight))
+            print("Loaded base LM head into the MTP draft for quantization.")
+
     quant_cfg = build_quant_config(quantization, lm_head_quantization,
                                    kv_cache_quantization)
+    is_moe = isinstance(mtp_draft.layers[0].mlp, MtpSparseMoeBlock)
+    if is_moe:
+        quant_cfg["quant_cfg"].extend({
+            "quantizer_name": pattern,
+            "enable": False,
+        } for pattern in (
+            "*mlp.gate.weight_quantizer",
+            "*mlp.gate.input_quantizer",
+            "*shared_expert_gate.weight_quantizer",
+            "*shared_expert_gate.input_quantizer",
+        ))
     from ..quantize import _text_calib_dataloader
     text_ds = resolve_dataset(text_dataset, "text")
     print(f"MTP text calibration: {dataset_name(text_ds)}")
@@ -421,6 +557,16 @@ def quantize_mtp_from_base(
             draft(data, last_hidden)
 
     mtq.quantize(mtp_draft, quant_cfg, forward_loop=_calib)
+
+    if is_moe:
+        # Top-k routing leaves un-fired experts without a calibration amax, and
+        # NVFP4 export reads weight_scale_2 from it; derive one from the weights.
+        from ..qwen3_omni import _backfill_missing_amax
+        n_filled = _backfill_missing_amax(mtp_draft)
+        if n_filled:
+            print(f"Backfilled {n_filled} MTP amax buffer(s) from weights "
+                  "(top-k routing left them uncalibrated).")
+
     mtq.print_quant_summary(mtp_draft)
     return mtp_draft
 

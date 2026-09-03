@@ -49,7 +49,7 @@ _ARTIFACTS = (
     "examples/llm/llm_inference",
     "examples/llm/llm_stream",
     "examples/llm/llm_bench",
-    "unitTest",
+    "unittests/unitTestRuntime",
 )
 
 

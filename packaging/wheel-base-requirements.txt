@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Python-only base-wheel build backend and frontend.
+build==1.3.0
+cmake==3.31.6
+ninja==1.13.0
+scikit-build-core==0.11.6
+tomli==2.2.1; python_version < "3.11"
+wheel==0.45.1

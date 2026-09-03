@@ -1,16 +1,23 @@
 # Quick Start
 
-This guide runs the image-capable
-[Qwen/Qwen3.5-0.8B](https://huggingface.co/Qwen/Qwen3.5-0.8B) checkpoint through
-CPU ONNX export, TensorRT engine build, C++ vision-language inference, and the
-OpenAI-compatible server. Complete [Installation](installation.md) first.
+This guide provides two independent ways to run the image-capable
+[Qwen/Qwen3.5-0.8B](https://huggingface.co/Qwen/Qwen3.5-0.8B) checkpoint:
+
+1. CPU ONNX export, TensorRT engine build, and C++ vision-language inference.
+2. Checkpoint-direct engine build and inference through the Python
+   OpenAI-compatible server.
+
+Complete [Installation](installation.md) first. You do not need to complete the
+ONNX workflow before using the Python server.
 
 ```bash
 export WORKSPACE_DIR=$HOME/tensorrt-edgellm-workspace/Qwen3.5-0.8B
 mkdir -p "$WORKSPACE_DIR"
 ```
 
-## 1. Export the Checkpoint
+## Option 1: ONNX and C++ runtime
+
+### 1. Export the Checkpoint
 
 Run export in the active Edge-LLM Python environment. Unquantized and supported
 pre-quantized checkpoints export on CPU:
@@ -34,7 +41,7 @@ run `tensorrt-edgellm-quantize` on an x86 GPU host before export. Quantization
 changes model accuracy; validate a generated checkpoint against its source
 model before deployment. See [Quantization](../features/quantization.md).
 
-## 2. Build the Engines
+### 2. Build the Engines
 
 Run both builders on the target from the repository root. Engine profile values
 are deployment limits; increase them only when the workload requires it.
@@ -55,7 +62,7 @@ are deployment limits; increase them only when the workload requires it.
   --maxImageTokensPerImage 512
 ```
 
-## 3. Run Vision-Language Inference
+### 3. Run Vision-Language Inference
 
 The repository includes the image used below. Create `$WORKSPACE_DIR/input.json`:
 
@@ -101,32 +108,20 @@ cat "$WORKSPACE_DIR/output.json"
 The response contains generated text, token IDs, token counts, and the finish
 reason.
 
-## 4. Start the OpenAI-Compatible Server
+## Option 2: One-line Python server
 
-The server uses the same engines built above. It requires the `server` package
-extra and the C++ Python binding. From the repository root, install the extra
-in the active Edge-LLM environment and reconfigure the existing build directory
-without changing its platform settings:
+The server does not consume the ONNX engines from Option 1. First complete the
+[C++ source build with the optional Python frontend enabled](installation.md#optional-python-frontend),
+including `BUILD_PYTHON_BINDINGS=ON`. After the native build finishes,
+[install Edge-LLM and the server dependencies](installation.md#install-and-launch-the-python-server).
 
-```bash
-python -m pip install -e ".[server]"
-
-cmake -S . -B build \
-  -DBUILD_PYTHON_BINDINGS=ON \
-  -Dpybind11_DIR="$(python -c 'import pybind11; print(pybind11.get_cmake_dir())')"
-cmake --build build --target _edgellm_runtime -j$(nproc)
-```
-
-Start the server from the repository root. Local media is disabled by default;
-the final option grants access only to the example-image directory.
+With that environment active, launch from the repository root. The first
+launch downloads the checkpoint, builds every component required by the model,
+and stores the runtime bundle in the server cache. The media option grants
+access only to the example-image directory.
 
 ```bash
-python -m experimental.server \
-  --model "$WORKSPACE_DIR/engines/llm" \
-  --multimodal-engine-dir "$WORKSPACE_DIR/engines" \
-  --allowed-local-media-path "$PWD/examples/multimodal/pics" \
-  --host 127.0.0.1 \
-  --port 8000
+tensorrt-edgellm-serve Qwen/Qwen3.5-0.8B --allowed-local-media-path "$PWD/examples/multimodal/pics"
 ```
 
 In another terminal, run the request from the repository root:
@@ -138,12 +133,12 @@ curl -s http://127.0.0.1:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   --data-binary @- <<EOF
 {
-  "model": "Qwen3.5-0.8B",
+  "model": "Qwen/Qwen3.5-0.8B",
   "messages": [
     {
       "role": "user",
       "content": [
-        {"type": "image", "image": "$IMAGE_PATH"},
+        {"type": "image_url", "image_url": {"url": "file://$IMAGE_PATH"}},
         {"type": "text", "text": "Describe this image."}
       ]
     }
@@ -161,4 +156,6 @@ for streaming, batching, audio, video, and tool-calling options.
 See [Input JSON Format](../format/input-format.md) for C++ request fields,
 [Examples](../examples/index.md) for other model contracts, and
 [Direct Engine Builder](direct-engine-builder.md) for the experimental
-checkpoint-to-engine frontend.
+checkpoint-to-engine frontend. See
+[Multi-Device Inference](../features/multi-device.md) for TP2 export,
+per-rank engine builds, and local multi-GPU execution.

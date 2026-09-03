@@ -22,6 +22,8 @@
 set(NEMOTRON_ASR_CPP_SRCS runtime/nemotronAsrRuntime.cpp)
 
 add_library(nemotronAsrExperimental STATIC ${NEMOTRON_ASR_CPP_SRCS})
+set_target_properties(nemotronAsrExperimental
+                      PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # A static library only needs the core headers to compile; it does not link the
 # core libraries (the executables do). Avoid a build-order dependency on the

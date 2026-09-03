@@ -1,7 +1,7 @@
 # Evaluate with NeMo Evaluator
 
-NeMo Evaluator can measure the accuracy of a TensorRT Edge-LLM engine through the experimental OpenAI-compatible
-server. Export and build the engine before starting this workflow.
+NeMo Evaluator can measure a supported checkpoint through the experimental OpenAI-compatible server. The server
+builds or reuses its complete runtime bundle before evaluation.
 
 ## Install Dependencies
 
@@ -20,8 +20,8 @@ See the [experimental server guide](experimental-server.md) for setup details.
 Start the server in one terminal:
 
 ```bash
-python -m experimental.server \
-  --model /path/to/llm_engine \
+tensorrt-edgellm-serve \
+  Qwen/Qwen2.5-0.5B-Instruct \
   --port 8000
 ```
 
@@ -53,11 +53,12 @@ Use `--model-url` when the server listens elsewhere.
 
 ## Start the Server Automatically
 
-For a one-command local run, pass a pre-built engine instead of a URL:
+For a one-command local run, pass a Hugging Face model ID or local checkpoint instead of a URL:
 
 ```bash
 python scripts/run_nemo_eval.py \
-  --engine-dir /path/to/llm_engine \
+  --model Qwen/Qwen2.5-0.5B-Instruct \
+  --cache-dir /data/edgellm-cache \
   --eval-type mmlu \
   --limit-samples 250 \
   --output-dir nemo-results
@@ -66,19 +67,18 @@ python scripts/run_nemo_eval.py \
 The helper starts the server with the current Python environment, waits for `/health`, runs the evaluation, and stops
 the server. Server output is written to `nemo-results/edgellm_server.log`.
 
-Use the server options only with `--engine-dir`. For example, concurrent evaluator requests can be micro-batched:
+Use the server build-profile options only with `--model`:
 
 ```bash
 python scripts/run_nemo_eval.py \
-  --engine-dir /path/to/llm_engine \
+  --model /path/to/checkpoint \
   --max-batch-size 2 \
-  --enable-batching \
-  --max-queue-batch-size 2 \
-  --parallelism 2
+  --max-input-len 2048 \
+  --max-kv-cache-capacity 8192
 ```
 
-Visual and speculative-decoding engines can be supplied with `--visual-engine-dir` and
-`--spec-decode-engine-dir`, respectively.
+Multimodal components are built from the checkpoint as part of the same bundle. Pass the same JSON accepted by the
+server's `--speculative-config` option to evaluate a speculative-decoding configuration.
 
 ## Optional Named Cases
 
@@ -88,7 +88,7 @@ CI or repeated runs. The repository cases are in `tests/nemo_eval/cases.yml` and
 ```bash
 python scripts/run_nemo_eval.py \
   --case Qwen2.5-0.5B-Instruct \
-  --engine-dir /path/to/llm_engine
+  --model Qwen/Qwen2.5-0.5B-Instruct
 ```
 
 Pass `--config /path/to/cases.yml` with `--case` to use a different case file. Values from the selected case override

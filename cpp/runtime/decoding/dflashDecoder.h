@@ -19,6 +19,8 @@
 
 #include "common/hashUtils.h"
 #include "runtime/decoding/decodingStrategy.h"
+#include "runtime/decoding/dflashDecodeUtils.h"
+#include "runtime/decoding/specCommonStateTracker.h"
 #include "runtime/state/externalWeightManager.h"
 
 #include <filesystem>
@@ -33,8 +35,8 @@ class DFlashDecoder final : public DecodingStrategy
 {
 public:
     DFlashDecoder(DecodingRuntimeContext& runtime, std::filesystem::path const& engineDir,
-        SpecDecodeDraftingConfig const& draftingConfig, std::unique_ptr<EngineExecutor> draftExecutor,
-        cudaStream_t stream);
+        dflash_utils::CachedBlockDraftRuntimeConfig blockDraftConfig, std::unique_ptr<EngineExecutor> draftExecutor,
+        ExternalWeightManager draftWeights, cudaStream_t stream);
 
     DecodingStrategyKind kind() const noexcept override
     {
@@ -43,7 +45,7 @@ public:
 
     char const* name() const noexcept override
     {
-        return "dflash";
+        return userModeName();
     }
 
     bool isSpeculative() const noexcept override
@@ -51,8 +53,17 @@ public:
         return true;
     }
 
+    DecodingStrategyCapabilities capabilities() const noexcept override
+    {
+        return {/*.ownsBaseVerificationCudaGraphs=*/true};
+    }
+
+    DecodingKvHeadroom requiredKvHeadroom() const override;
+
     bool decodeStep(DecodingInferenceContext& context) override;
     bool captureCudaGraphs(cudaStream_t stream) override;
+    bool initializeForGeneration(DecodingInferenceContext& context) override;
+    std::vector<int32_t> const& commonMaterializedStateLengths() const noexcept override;
 
     int64_t getRequiredContextMemorySize() const noexcept override;
     void setContextMemory(Tensor& memory) override;
@@ -65,11 +76,11 @@ public:
 
     void resetForNewSequences(Tensor& reuseLengths, cudaStream_t stream) override;
     void onBatchEvict(std::vector<int32_t> const& batchMapping, int32_t oldActiveBatch, int32_t newActiveBatch,
-        Tensor& deviceBatchMapping, cudaStream_t stream, BatchCompactionMode mode) override;
+        Tensor& deviceBatchMapping, cudaStream_t stream) override;
 
 private:
     bool runDraftForward(DecodingInferenceContext& context);
-    bool prepareDFlashVerifyInputs(DecodingInferenceContext& context);
+    bool prepareBlockDraftVerifyInputs(DecodingInferenceContext& context);
     bool captureDraftCudaGraphs(cudaStream_t stream);
     bool buildTreeVerifyInputs(DecodingInferenceContext& context);
     bool runBaseVerification(DecodingInferenceContext& context);
@@ -83,10 +94,25 @@ private:
     void reshapeBaseVerificationInputsOutputs(int32_t batchSize, int32_t verifySize);
     void prepareCommonBaseVerificationInputs(int32_t batchSize, int32_t verifySize);
     void commitAcceptedTreePath(DecodingInferenceContext& context, int32_t verifySize, int32_t maxAcceptLength);
+    void bindTargetHiddenDelta(
+        int32_t activeBatchSize, int64_t maxDeltaLen, int64_t sourceSeqLen, bool allowLargeDelta, cudaStream_t stream);
     bool checkCudaLastError(char const* stage) const;
+    bool useDDTree() const noexcept
+    {
+        return mBlockDraft.treePolicy == dflash_utils::BlockDraftTreePolicy::kDDTree;
+    }
+    bool causalProposalMask() const noexcept
+    {
+        return mBlockDraft.proposalAttention == dflash_utils::ProposalAttentionPolicy::kCausal;
+    }
+    char const* userModeName() const noexcept
+    {
+        return specDecodeModeName(mBlockDraft.userMode);
+    }
 
     DecodingRuntimeContext& mRuntime;
     HybridCacheManager& mDraftCacheManager;
+    dflash_utils::CachedBlockDraftRuntimeConfig mBlockDraft;
 
     std::unique_ptr<EngineExecutor> mDraftExecutor;
     TensorMap mDraftTensorMap;
@@ -121,21 +147,9 @@ private:
     Tensor mAcceptLength;         //!< [B] INT32
     Tensor mHostAcceptLengths;    //!< [B] INT32 (CPU)
     Tensor mHostAcceptedTokenIds; //!< [B, maxAcceptBufferSize] INT32 (CPU)
-    Tensor mBuildWorkspace;       //!< DDTree build workspace bytes
 
-    //! DFlash-specific parameters. Linear DFlash treats mBlockSize as the base
-    //! verify window length and copies mProposalLen = mVerifySize - 1 draft tokens
-    //! after the anchor. DDTree uses mBlockSize as the draft block horizon.
-    int32_t mBlockSize{16};
-    int32_t mProposalLen{15};
-    int32_t mVerifySize{16};
-    int32_t mCandidateTopK{1};
-    int32_t mMaskTokenId{0};
-    int32_t mDraftHiddenSize{0};
-    int32_t mBaseOutputHiddenDim{0};
-    int32_t mDraftVocabSize{0};
-
-    bool mUseDDTree{false};
+    SpecCommonStateTracker mCommonStateTracker;
+    Tensor mBuildWorkspace; //!< DDTree build workspace bytes
 
     //! Draft vocab map [reducedVocabSize] INT32 (GPU). Active when draft
     //! lm_head uses a reduced vocabulary. Sized to zero otherwise.

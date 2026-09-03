@@ -1,5 +1,31 @@
 # Release Notes
 
+## 0.10.1
+- Added experimental Dual NVIDIA DGX Spark support with TP=2 tensor-parallel inference over MPI and NCCL
+- Redesigned the experimental OpenAI-compatible server for faster cold launches and lower memory usage
+- Added architecture-aware Python wheel packaging for x86, Jetson, DRIVE, and DGX Spark
+- Added Nemotron-Omni video input to the experimental server
+- Added JetSpec speculative decoding support for Qwen3-8B
+- Added Qwen3.8-27B DSpark hybrid-base export support
+- Extended MTP verification trees to depth 16 and added `logit_bias` support on speculative decoding paths
+- Added context-cache reuse for speculative decoding, including hybrid and MTP models
+- Added end-to-end FP8 ViT attention support
+- Added DART visual-token pruning to reduce VLM prefill work
+- Added a media artifact cache that retains ViT and audio encoder embeddings across repeated media prefixes
+- Added NVFP4 W4A16 export for official LM heads and Qwen3 A16 MoE
+- Added NVFP4 MoE build and runtime support for NVIDIA Nemotron 3 Super 120B-A12B checkpoints with 512 routed experts and top-32 routing
+- Added Blackwell SM110 dense NVFP4-A16 GEMM and GEMV kernels
+- Improved Blackwell performance with single-launch D80 SSD prefill, faster SM12x fused MoE, fused GDN projections, and one less per-layer KV copy
+- Added a CuTe DSL RMSNorm plugin and upgraded CuTe DSL to 4.7.0
+- Enabled FMHA-v2 and XQA on Hopper SM90 with JIT-compiled XQA kernels
+- Added QNX cross-compilation support and DGX Spark platform detection
+- Fixed `Int4GroupwiseGemmPluginV2` accuracy for QKV concat aliasing, split-K workspace isolation, and LoRA insertion
+- Fixed speculative decoding page tables, EAGLE KV page planes, DSpark paged KV metadata, Mamba replay, and draft cost accounting
+- Fixed context reuse for cross-batch image contamination and zero-budget encoder caches
+- Fixed export for Gemma 4 Unified quantized checkpoints, Qwen NVFP4 mixed-precision dispatch, fused-MoE MTP drafts, and thinking-default chat templates
+- Fixed the Cosmos3 Reasoner visual patch layout and batched audio embedding concatenation
+- Fixed cross-platform GPU memory reporting
+
 ## 0.10.0
 - Added Day-0 support for Qwen3.8-27B
 - Added NVIDIA Nemotron-3.5 Lightning support with MTP and DFlash speculative decoding

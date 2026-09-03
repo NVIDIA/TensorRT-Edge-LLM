@@ -134,6 +134,7 @@ tests:
   - tests/defs/test_omni_pipeline.py::TestOmniPipeline::test_e2e_bench[Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4-nvfp4-mxsl8192-mxbs2-mxil8192-mnit128-mxit6400-mxpiit1280-mnts10-mxts6000-coco-bs2]
   - tests/defs/test_omni_pipeline.py::TestOmniPipeline::test_e2e_bench[Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4-nvfp4-mxsl8192-mxbs2-mxil8192-mnit128-mxit6400-mxpiit1280-mnts10-mxts6000-OmniBench-bs1]
   - tests/defs/test_omni_pipeline.py::TestOmniPipeline::test_e2e_bench[Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4-nvfp4-mxsl8192-mxbs2-mxil8192-mnit128-mxit6400-mxpiit1280-mnts10-mxts6000-librispeech_clean_test-bs1]
+  - tests/defs/test_server_pipeline.py::TestHLAPI::test_hlapi_video_generate[Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4-nvfp4-mxsl8192-mxbs1-mxil8192-mnit128-mxit6400-mxpiit1280-mnts10-mxts6000]
 
   # Qwen2.5-7B-Instruct - nvfp4-lmnvfp4 (best throughput)
   - tests/defs/test_llm_pipeline.py::TestLLMPipeline::test_engine_build[Qwen2.5-7B-Instruct-nvfp4-lmnvfp4-mxsl4096-mxbs8-mxil4096]

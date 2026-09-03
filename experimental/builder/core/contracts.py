@@ -43,6 +43,7 @@ class Component(str, Enum):
     CODE_PREDICTOR = "code-predictor"
     VISUAL = "visual"
     AUDIO = "audio"
+    RNNT = "rnnt"
     CODE2WAV = "code2wav"
     SPEAKER_ENCODER = "speaker-encoder"
     SPEECH_TOKENIZER_ENCODER = "speech-tokenizer-encoder"
@@ -142,9 +143,13 @@ class ComponentSpec:
 
     def output_path(self,
                     requested_dir: str,
-                    spec_role: SpecRole = SpecRole.NONE) -> str:
+                    spec_role: SpecRole = SpecRole.NONE,
+                    tp_size: int = 1,
+                    tp_rank: int = 0) -> str:
         """Return the engine path for this component and speculative role."""
         filename = self.engine_filename
+        if self.component == Component.LLM and spec_role == SpecRole.NONE and tp_size > 1:
+            filename = f"llm_world{tp_size}_rank{tp_rank}.engine"
         if self.supports_spec_role:
             if spec_role == SpecRole.BASE:
                 filename = "spec_base.engine"
@@ -158,9 +163,12 @@ class ComponentSpec:
 
     def config_path(self,
                     requested_dir: str,
-                    spec_role: SpecRole = SpecRole.NONE) -> str:
+                    spec_role: SpecRole = SpecRole.NONE,
+                    tp_size: int = 1) -> str:
         """Return the runtime config path for this component and role."""
         filename = "config.json"
+        if self.component == Component.LLM and spec_role == SpecRole.NONE and tp_size > 1:
+            filename = f"config_world{tp_size}.json"
         if self.supports_spec_role:
             if spec_role == SpecRole.BASE:
                 filename = "base_config.json"
@@ -213,6 +221,8 @@ _COMPONENT_SPECS: Dict[Component, ComponentSpec] = {
                   "audio",
                   "audio_encoder.engine",
                   external_weight_kinds=_ENGINE_WEIGHT_KINDS),
+    Component.RNNT:
+    ComponentSpec(Component.RNNT, "rnnt", "rnnt_step.engine"),
     Component.CODE2WAV:
     ComponentSpec(Component.CODE2WAV,
                   "code2wav",
@@ -242,6 +252,7 @@ _COMPONENT_BUILD_ORDER: Tuple[Component, ...] = (
     Component.LLM,
     Component.VISUAL,
     Component.AUDIO,
+    Component.RNNT,
     Component.TALKER,
     Component.CODE_PREDICTOR,
     Component.CODE2WAV,

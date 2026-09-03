@@ -31,6 +31,7 @@ Supported quantization formats
     fp16   - plain bfloat16/float16 weights (no quantization)
     fp8    - FP8 E4M3 per-tensor static quantization
     nvfp4  - NVFP4 per-group quantization with FP8 group scales
+    nvfp4_a16 - weight-only NVFP4 (W4A16 / ModelOpt ``W4A16_NVFP4``)
     int4_awq            - AWQ INT4 group quantization (column-packed int32 checkpoints)
     int4_awq_modelopt   - W4A16_AWQ pre-packed uint8 ``[out//2, in]`` checkpoints
     int4_gptq           - GPTQ INT4 group quantization
@@ -405,6 +406,10 @@ class QuantConfig:
     gptq_zero_point_offset: int = 1
     # kv_cache_quant: "fp8" when KV-cache is quantised, None otherwise
     kv_cache_quant: Optional[str] = None
+    # visual_mha_quant: "fp8" when the ViT visual attention (Q*K^T / P*V
+    # matmuls) is quantised, None otherwise. Orthogonal to kv_cache_quant
+    # (which only gates the LLM KV cache).
+    visual_mha_quant: Optional[str] = None
     # module names excluded from quantisation (typically ["lm_head"])
     excluded: List[str] = field(default_factory=list)
     # Per-layer quant type overrides for MIXED_PRECISION checkpoints.
@@ -738,6 +743,17 @@ class ModelConfig:
     # for targets measured to keep target-hidden well inside FP16 range
     # (Nemotron-3.5). Qwen3-8B keeps the FP32 guard (target-hidden ~abs 2e4).
     dflash_fc_native_precision: bool = False
+    # ------------------------------------------ JetSpec config
+    # JetSpec uses the DFlash/DDTree cached-draft contract with causal proposal
+    # attention inside the draft block. The DFlash-prefixed fields are still
+    # populated for the shared DFlashDraftModel ONNX implementation.
+    jetspec_base: bool = False
+    jetspec_tree_base: bool = False
+    is_jetspec_draft_flag: bool = False
+    jetspec_target_layer_ids: List[int] = field(default_factory=list)
+    jetspec_block_size: int = 16
+    jetspec_mask_token_id: int = 151669
+    jetspec_causal_head: bool = False
     # ------------------------------------------ DSpark config
     # DSpark uses the DFlash-like target-hidden feedback path, then applies
     # a sequential Markov/confidence head outside the draft backbone engine.
@@ -843,7 +859,8 @@ class ModelConfig:
         return bool(self.mtp_num_hidden_layers is not None
                     and self.gdn_cfg is None and self.mamba_cfg is None
                     and not self.mtp_base and not self.is_eagle3_draft
-                    and not self.is_dflash_draft and not self.is_dspark_draft)
+                    and not self.is_dflash_draft and not self.is_jetspec_draft
+                    and not self.is_dspark_draft)
 
     @property
     def is_gemma4_mtp_draft(self) -> bool:
@@ -858,6 +875,10 @@ class ModelConfig:
     @property
     def is_dflash_draft(self) -> bool:
         return self.is_dflash_draft_flag
+
+    @property
+    def is_jetspec_draft(self) -> bool:
+        return self.is_jetspec_draft_flag
 
     @property
     def is_dspark_draft(self) -> bool:
@@ -997,7 +1018,13 @@ class ModelConfig:
         num_global_kv_heads = int(
             llm_dict.get("num_global_key_value_heads", 0) or 0)
 
-        quant = _parse_quant(model_dir, llm_dict)
+        # Omni roots keep one ignore list for thinker + talker; scope it to the
+        # sub-model this config represents (talker/CP go through their own
+        # staged sub-config instead).
+        submodel_prefix = ""
+        if root.get("thinker_config") is not None and llm_dict is not root:
+            submodel_prefix = "thinker."
+        quant = _parse_quant(model_dir, llm_dict, submodel_prefix)
         raw_layer_types = _parse_raw_layer_types(llm_dict)
         layer_types = _parse_layer_types(llm_dict)
         attention_layer_types = _parse_attention_layer_types(
@@ -1084,6 +1111,20 @@ class ModelConfig:
         use_vision_bidirectional_attention = bool(
             model_type in ("gemma4_unified", "gemma4_unified_text")
             and llm_dict.get("use_bidirectional_attention") == "vision")
+
+        jetspec_config = (llm_dict.get("jetspec_config")
+                          or llm_dict.get("dflash_config") or {})
+        jetspec_target_layer_ids = list(
+            jetspec_config.get("target_layer_ids",
+                               llm_dict.get("target_layer_ids", [])) or [])
+        jetspec_block_size = int(
+            jetspec_config.get("block_size", llm_dict.get("block_size", 16)))
+        jetspec_mask_token_id = int(
+            jetspec_config.get("mask_token_id",
+                               llm_dict.get("mask_token_id", 151669)))
+        jetspec_causal_head = bool(
+            jetspec_config.get("causal_head",
+                               llm_dict.get("causal_head", True)))
 
         # Sparse MoE fields.  HF uses "num_local_experts" as the internal key
         # and maps "num_experts" → "num_local_experts" via attribute_map.
@@ -1210,6 +1251,12 @@ class ModelConfig:
             mtp_tree_base=bool(llm_dict.get("mtp_tree_base", False)),
             dflash_base=bool(llm_dict.get("dflash_base", False)),
             dflash_tree_base=bool(llm_dict.get("dflash_tree_base", False)),
+            jetspec_base=bool(llm_dict.get("jetspec_base", False)),
+            jetspec_tree_base=bool(llm_dict.get("jetspec_tree_base", False)),
+            jetspec_target_layer_ids=jetspec_target_layer_ids,
+            jetspec_block_size=jetspec_block_size,
+            jetspec_mask_token_id=jetspec_mask_token_id,
+            jetspec_causal_head=jetspec_causal_head,
             dflash_target_layer_ids=list(
                 (llm_dict.get("dflash_config", {})
                  or {}).get("target_layer_ids")
@@ -1387,7 +1434,8 @@ def make_dspark_draft_config(
         default_attention_scale: Callable[[int], float]) -> ModelConfig:
     """Build a DSpark draft ModelConfig from a DeepSpec DSpark checkpoint."""
     _, llm_dict = load_checkpoint_config_dicts(draft_dir)
-    dspark_config = llm_dict.get("dspark_config", {}) or {}
+    dspark_config = (llm_dict.get("dspark_config")
+                     or llm_dict.get("dflash_config", {}) or {})
 
     quant = _parse_quant(draft_dir, llm_dict)
     target_layer_ids = list(
@@ -1584,6 +1632,54 @@ def make_dflash_draft_config(
                 "mask_token_id",
                 llm_dict.get("mask_token_id", default_mask_token_id))),
         quant=quant,
+    )
+
+
+def make_jetspec_draft_config(
+        draft_dir: str,
+        default_attention_scale: Callable[[int], float]) -> ModelConfig:
+    """Build a JetSpec draft config from an official JetSpec checkpoint.
+
+    The public JetSpec Qwen3 checkpoint stores its metadata in ``dflash_config``
+    because JetSpec reuses the DFlash draft-head implementation. Persist the
+    exported runtime config under ``jetspec_config`` while also filling the
+    DFlash fields consumed by :class:`DFlashDraftModel`.
+    """
+    _, llm_dict = load_checkpoint_config_dicts(draft_dir)
+    base = make_dflash_draft_config(draft_dir, default_attention_scale)
+    jetspec_config = (llm_dict.get("jetspec_config")
+                      or llm_dict.get("dflash_config") or {})
+    target_layer_ids = list(
+        jetspec_config.get("target_layer_ids",
+                           llm_dict.get("target_layer_ids", [])) or [])
+    if not target_layer_ids:
+        raise ValueError(
+            "JetSpec draft config requires target_layer_ids in config.json.")
+
+    block_size = int(
+        jetspec_config.get("block_size",
+                           llm_dict.get("block_size", base.dflash_block_size)))
+    mask_token_id = int(
+        jetspec_config.get("mask_token_id",
+                           llm_dict.get("mask_token_id", 151669)))
+    causal_head = bool(
+        jetspec_config.get("causal_head", llm_dict.get("causal_head", True)))
+    if not causal_head:
+        raise ValueError(
+            "JetSpec draft config requires causal_head=true; use DFlash for non-causal block drafts."
+        )
+
+    return replace(
+        base,
+        is_dflash_draft_flag=False,
+        is_jetspec_draft_flag=True,
+        jetspec_target_layer_ids=target_layer_ids,
+        jetspec_block_size=block_size,
+        jetspec_mask_token_id=mask_token_id,
+        jetspec_causal_head=causal_head,
+        dflash_target_layer_ids=target_layer_ids,
+        dflash_block_size=block_size,
+        dflash_mask_token_id=mask_token_id,
     )
 
 
@@ -2086,7 +2182,9 @@ def _effective_excluded_modules(model_dir: str,
     return _with_gdn_fused_exclusions(normalized)
 
 
-def _detect_modelopt_unquantized_linears(model_dir: str) -> List[str]:
+def _detect_modelopt_unquantized_linears(model_dir: str,
+                                         submodel_prefix: str = ""
+                                         ) -> List[str]:
     """Return module_name strings of Linears the ModelOpt checkpoint left unquantized.
 
     A ModelOpt-quantized Linear stores both ``<name>.weight`` (packed) and
@@ -2119,6 +2217,12 @@ def _detect_modelopt_unquantized_linears(model_dir: str) -> List[str]:
     if not all_keys:
         return []
 
+    # Omni roots hold every sub-model's tensors. Restrict the scan, or another
+    # sub-model's unquantized Linears would be normalised onto this one's
+    # module names and silently unquantize them.
+    if submodel_prefix:
+        all_keys = [k for k in all_keys if k.startswith(submodel_prefix)]
+
     weight_modules = {
         k.rsplit(".", 1)[0]
         for k in all_keys if k.endswith(".weight")
@@ -2148,9 +2252,36 @@ def _detect_modelopt_unquantized_linears(model_dir: str) -> List[str]:
     return _with_gdn_fused_exclusions(sorted(excluded))
 
 
-def _parse_quant(model_dir: str, config: dict) -> QuantConfig:
-    """Determine quantisation config from hf_quant_config.json or config.json."""
+def _scope_exclusions(patterns: List[str], submodel_prefix: str) -> List[str]:
+    """Keep only exclusions that apply to *submodel_prefix*, prefix stripped.
 
+    Omni roots share one ignore list across thinker/talker, and short-name
+    normalisation later drops both prefixes. A talker-scoped glob such as
+    ``talker.model.layers.0.mlp.shared_expert*`` would therefore also unquantize
+    the thinker's own shared_expert. A leading ``*`` marks a submodel-agnostic
+    glob and is kept as-is.
+    """
+    if not submodel_prefix:
+        return patterns
+    scoped = []
+    for pat in patterns:
+        if pat.startswith(submodel_prefix):
+            scoped.append(pat[len(submodel_prefix):])
+        elif pat.startswith("*") or pat == "":
+            scoped.append(pat)
+    return scoped
+
+
+def _parse_quant(model_dir: str,
+                 config: dict,
+                 submodel_prefix: str = "") -> QuantConfig:
+    """Determine quantisation config from hf_quant_config.json or config.json.
+
+    Checkpoint-provided W4A16 ``lm_head`` (``W4A16_NVFP4`` in
+    ``quantized_layers``, e.g. Qwen3.6-35B-A3B-NVFP4) maps to
+    :data:`QUANT_NVFP4_A16`. Excluded FP16/BF16 heads stay FP16; export does
+    not invent packed NVFP4 for them.
+    """
     # ---- Sidecar hf_quant_config.json ---------------------------------------
     hf_path = os.path.join(model_dir, "hf_quant_config.json")
     if os.path.exists(hf_path):
@@ -2163,10 +2294,11 @@ def _parse_quant(model_dir: str, config: dict) -> QuantConfig:
             # then augment with submodules ModelOpt actually left unquantized
             # (false negatives — typically visual tower / audio encoder).
             excluded = _effective_excluded_modules(
-                model_dir, list(q.get("exclude_modules", [])))
-            excluded.extend(
-                m for m in _detect_modelopt_unquantized_linears(model_dir)
-                if m not in excluded)
+                model_dir,
+                _scope_exclusions(list(q.get("exclude_modules", [])),
+                                  submodel_prefix))
+            excluded.extend(m for m in _detect_modelopt_unquantized_linears(
+                model_dir, submodel_prefix) if m not in excluded)
             return QuantConfig(
                 quant_type=QUANT_INT4_AWQ_MODELOPT,
                 group_size=int(q.get("group_size", 128)),
@@ -2175,13 +2307,17 @@ def _parse_quant(model_dir: str, config: dict) -> QuantConfig:
         if algo == "MIXED_PRECISION":
             quantized_layers = q.get("quantized_layers", {})
             dominant, group_size, layer_overrides = _parse_mixed_precision(
-                quantized_layers)
+                quantized_layers,
+                config.get("model_type") or "")
             return QuantConfig(
                 quant_type=dominant,
                 group_size=group_size,
-                kv_cache_quant=_kv_norm(q.get("kv_cache_quant_algo", "")),
+                kv_cache_quant=_detect_llm_kv_cache_fp8(model_dir),
+                visual_mha_quant=_detect_visual_mha_fp8(model_dir),
                 excluded=_effective_excluded_modules(
-                    model_dir, list(q.get("exclude_modules", []))),
+                    model_dir,
+                    _scope_exclusions(list(q.get("exclude_modules", [])),
+                                      submodel_prefix)),
                 layer_overrides=layer_overrides,
                 is_mixed_precision=True,
             )
@@ -2190,14 +2326,16 @@ def _parse_quant(model_dir: str, config: dict) -> QuantConfig:
         if qt == QUANT_MXFP8 and gs == 1:
             gs = 32  # MXFP8 default block_size
         excluded = _effective_excluded_modules(
-            model_dir, list(q.get("exclude_modules", [])))
-        excluded.extend(
-            m for m in _detect_modelopt_unquantized_linears(model_dir)
-            if m not in excluded)
+            model_dir,
+            _scope_exclusions(list(q.get("exclude_modules", [])),
+                              submodel_prefix))
+        excluded.extend(m for m in _detect_modelopt_unquantized_linears(
+            model_dir, submodel_prefix) if m not in excluded)
         return QuantConfig(
             quant_type=qt,
             group_size=gs,
-            kv_cache_quant=_kv_norm(q.get("kv_cache_quant_algo", "")),
+            kv_cache_quant=_detect_llm_kv_cache_fp8(model_dir),
+            visual_mha_quant=_detect_visual_mha_fp8(model_dir),
             excluded=excluded,
         )
 
@@ -2214,7 +2352,9 @@ def _parse_quant(model_dir: str, config: dict) -> QuantConfig:
                 quant_type=QUANT_INT4_AWQ_MODELOPT,
                 group_size=int(qc.get("group_size", 128)),
                 excluded=_effective_excluded_modules(
-                    model_dir, list(qc.get("ignore", []))),
+                    model_dir,
+                    _scope_exclusions(list(qc.get("ignore", [])),
+                                      submodel_prefix)),
             )
         group_size = 1
         cg = qc.get("config_groups", {})
@@ -2237,8 +2377,10 @@ def _parse_quant(model_dir: str, config: dict) -> QuantConfig:
             quant_type=quant_type,
             group_size=group_size,
             kv_cache_quant=kv_str,
-            excluded=_effective_excluded_modules(model_dir,
-                                                 list(qc.get("ignore", []))),
+            excluded=_effective_excluded_modules(
+                model_dir,
+                _scope_exclusions(list(qc.get("ignore", [])),
+                                  submodel_prefix)),
         )
 
     # quant_method == awq (column-packed int4 checkpoints)
@@ -2333,7 +2475,8 @@ def _algo_to_quant_type(algo: str) -> str:
     return QUANT_FP16
 
 
-def _parse_mixed_precision(quantized_layers: dict) -> "tuple[str, int, dict]":
+def _parse_mixed_precision(quantized_layers: dict,
+                           model_type: str = "") -> "tuple[str, int, dict]":
     """Parse MIXED_PRECISION quantized_layers dict.
 
     Returns ``(dominant_quant_type, dominant_group_size, layer_overrides)``.
@@ -2355,11 +2498,11 @@ def _parse_mixed_precision(quantized_layers: dict) -> "tuple[str, int, dict]":
         return QUANT_FP16, 1, {}
 
     def _mixed_quant_type(algo: str) -> str:
-        # ModelOpt tags weight-only NVFP4 as ``W4A16_NVFP4``; the generic mapper
-        # collapses it to plain (W4A4) ``nvfp4``. Preserve the A16 distinction so
-        # weight-only experts/lm_head route to the NVFP4-A16 Marlin path.
+        # Nemotron-H W4A16 layers require the Marlin path; other model families
+        # use their established NVFP4 export paths.
         qt = _algo_to_quant_type(algo)
-        if qt == QUANT_NVFP4 and "W4A16" in algo.upper():
+        if (qt == QUANT_NVFP4 and "W4A16" in algo.upper()
+                and model_type.lower().startswith("nemotron_h")):
             return QUANT_NVFP4_A16
         return qt
 
@@ -2391,3 +2534,63 @@ def _kv_norm(s: Optional[str]) -> Optional[str]:
     if not s:
         return None
     return s.strip().lower() or None
+
+
+# Keep in sync with quantization_configs._VISUAL_PREFIXES (not imported here:
+# that module pulls in modelopt, too heavy for config parsing).
+_VISUAL_PATH_HINTS = ("visual", "vision_tower", "vision_model",
+                      "multi_modal_projector", "mlp1", "image_embed",
+                      "embed_vision")
+
+
+def _safetensor_keys(model_dir: str) -> Optional[List[str]]:
+    """Return all tensor keys from sharded or single-file safetensors."""
+    index_path = os.path.join(model_dir, "model.safetensors.index.json")
+    if os.path.exists(index_path):
+        with open(index_path) as f:
+            return list(json.load(f).get("weight_map", {}).keys())
+    st_path = os.path.join(model_dir, "model.safetensors")
+    if not os.path.exists(st_path):
+        return None
+    from safetensors import safe_open
+    with safe_open(st_path, framework="pt") as f:
+        return list(f.keys())
+
+
+def _detect_visual_mha_fp8(model_dir: str) -> Optional[str]:
+    """Return ``"fp8"`` iff the checkpoint carries visual-MHA Q/K/V scales.
+
+    Self-describing detection: the presence of ``<visual_prefix>*.q_scale``
+    buffers in the safetensors is the ground-truth signal that ViT FP8
+    MHA was calibrated. Avoids trusting modelopt's hf_quant_config.json
+    metadata (which has no ``visual_mha_quant_algo`` slot and conflates
+    ViT q/k/v_bmm with the LLM KV cache).
+    """
+    keys = _safetensor_keys(model_dir)
+    if keys is None:
+        return None
+    for k in keys:
+        if k.endswith(".q_scale") and any(h in k for h in _VISUAL_PATH_HINTS):
+            return "fp8"
+    return None
+
+
+def _detect_llm_kv_cache_fp8(model_dir: str) -> Optional[str]:
+    """Return ``"fp8"`` iff the checkpoint carries LLM KV-cache K/V scales.
+
+    Self-describing detection: an ``<llm_attn>.k_proj.k_scale`` buffer
+    outside of any visual / vision subtree is the ground-truth signal.
+    Modelopt's ``hf_quant_config.json:kv_cache_quant_algo`` field would
+    say "FP8" even when only ViT MHA was requested (because its writer
+    trips on any enabled ``k_bmm_quantizer``, including the visual one);
+    ignoring that field and looking at the checkpoint directly avoids
+    the false positive.
+    """
+    keys = _safetensor_keys(model_dir)
+    if keys is None:
+        return None
+    for k in keys:
+        if k.endswith(".k_proj.k_scale") and not any(
+                h in k for h in _VISUAL_PATH_HINTS):
+            return "fp8"
+    return None

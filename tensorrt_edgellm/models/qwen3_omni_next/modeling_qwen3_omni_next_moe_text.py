@@ -40,6 +40,7 @@ Dense path (``modeling_qwen3_omni_next_text.py`` /
 """
 
 import itertools
+import logging
 from typing import List, Tuple
 
 import torch
@@ -58,6 +59,27 @@ from ..qwen3_5_moe.modeling_qwen3_5_moe import (Qwen3_5MoeBackbone,
                                                 Qwen3_5MoeCausalLM)
 
 __all__ = ["Qwen3OmniNextMoeLanguageModel"]
+
+logger = logging.getLogger(__name__)
+
+
+def _emit_accept_hidden(config: ModelConfig) -> bool:
+    """True when an ``mtp_base`` graph needs a separate accept-layer output.
+
+    Only when the backbone really captures a distinct mid-stack tensor. With
+    ``accept_hidden_layer`` unset or out of range it falls back to the post-norm
+    output, and returning that same value twice lets the ONNX exporter collapse
+    the pair — which silently shifts every later output name by one.
+
+    The bound mirrors ``Qwen3OmniNextMoeBackbone.forward``, whose capture loop
+    zips ``layers`` with ``layer_types``: bounding on ``num_hidden_layers``
+    alone would let a config with a shorter ``layer_types`` pass this gate while
+    the loop never captures, producing exactly the aliased pair above.
+    """
+    k = int(getattr(config, "accept_hidden_layer", -1))
+    depth = min(int(config.num_hidden_layers), len(config.layer_types))
+    return 1 <= k <= depth
+
 
 # ---------------------------------------------------------------------------
 # Backbone with accept_hidden_layer / emitted_hidden_states hook
@@ -196,10 +218,12 @@ class Qwen3OmniNextMoeBackbone(Qwen3_5MoeBackbone):
 # ---------------------------------------------------------------------------
 
 
-def _make_flat_wrapper_hybrid_with_hidden(model: nn.Module,
-                                          Na: int,
-                                          Ng: int,
-                                          mtp_base: bool = False) -> nn.Module:
+def _make_flat_wrapper_hybrid_with_hidden(
+        model: nn.Module,
+        Na: int,
+        Ng: int,
+        mtp_base: bool = False,
+        emit_accept_hidden: bool = False) -> nn.Module:
     """Build flat forward wrapper for hybrid MoE Thinker with hidden_states.
 
     Like :func:`...qwen3_5.modeling_qwen3_5_text._make_flat_wrapper_hybrid`
@@ -229,8 +253,12 @@ def _make_flat_wrapper_hybrid_with_hidden(model: nn.Module,
                                          for i in range(Ng))) if Ng else "()"
 
     if mtp_base:
+        # The unpack arity here must equal the inner forward's return arity, and
+        # the returned tuple must line up with ``output_names`` element for
+        # element — a one-slot drift mislabels every present_* binding.
+        accept = ", accept_hidden_states" if emit_accept_hidden else ""
         body = (
-            f"    logits, hidden_states, present_key_values, "
+            f"    logits, hidden_states{accept}, present_key_values, "
             f"present_conv_states, present_recurrent_states, "
             f"intermediate_conv_states, "
             f"intermediate_recurrent_states = self._model(\n"
@@ -241,7 +269,7 @@ def _make_flat_wrapper_hybrid_with_hidden(model: nn.Module,
             f"        attention_pos_id=attention_pos_id, "
             f"attention_mask=attention_mask, "
             f"spec_verify_phase_marker=spec_verify_phase_marker)\n"
-            f"    return ((logits, hidden_states)\n"
+            f"    return ((logits, hidden_states{accept})\n"
             f"            + tuple(present_key_values)\n"
             f"            + tuple(present_conv_states)\n"
             f"            + tuple(present_recurrent_states)\n"
@@ -357,11 +385,16 @@ class Qwen3OmniNextMoeLanguageModel(Qwen3_5MoeCausalLM):
         logits = self.lm_head(selected_hidden_states).to(torch.float32)
 
         if mtp_base:
-            # MTP verify base: the draft consumes the POST-NORM full-sequence
-            # hidden. Do NOT use ``emitted_hidden_states`` here — the omni
-            # thinker export inherits ``accept_hidden_layer`` (e.g. 18) from
-            # the talker config, which would emit a mid-layer pre-norm tensor
-            # and collapse the draft acceptance rate.
+            # Slot 1 is post-norm (the draft's contract) and slot 2 the
+            # mid-stack capture (the Talker's). Collapsing them onto
+            # ``emitted_hidden_states`` would feed the draft a pre-norm tensor
+            # and quietly collapse its acceptance rate.
+            if _emit_accept_hidden(self.config):
+                return (logits, hidden_states,
+                        self.model.emitted_hidden_states, present_key_values,
+                        present_conv_states, present_recurrent_states,
+                        intermediate_conv_states,
+                        intermediate_recurrent_states)
             return (logits, hidden_states, present_key_values,
                     present_conv_states, present_recurrent_states,
                     intermediate_conv_states, intermediate_recurrent_states)
@@ -469,6 +502,18 @@ class Qwen3OmniNextMoeLanguageModel(Qwen3_5MoeCausalLM):
         max_pages = torch.export.Dim("max_pages_per_seq", min=1, max=32768)
         num_pages = torch.export.Dim("num_pages", min=1, max=1048576)
         mtp_base = _is_mtp_base_export(config)
+        # The wrapper's return tuple and output_names must agree, so both read
+        # this one value.
+        emit_accept = mtp_base and _emit_accept_hidden(config)
+        if mtp_base and not emit_accept:
+            # Text-only MTP is legitimate, so warn rather than raise; without it
+            # the mismatch only surfaces when someone wires up a Talker.
+            logger.warning(
+                "MTP base export: accept_hidden_layer=%s is unusable for "
+                "%d layers, so no '%s' output is emitted. This engine cannot "
+                "feed a Qwen3-Omni Talker (text-only speculative decoding).",
+                getattr(config, "accept_hidden_layer", None),
+                config.num_hidden_layers, "accept_hidden_states")
         num_selected = torch.export.Dim("num_selected", min=1,
                                         max=256) if mtp_base else None
 
@@ -507,9 +552,13 @@ class Qwen3OmniNextMoeLanguageModel(Qwen3_5MoeCausalLM):
                 "attention_pos_id", "attention_mask",
                 "spec_verify_phase_marker"
             ]
+            # ``all_shapes`` below is positional against ``args`` (inputs only),
+            # so a new OUTPUT needs no entry there.
+            head = ["logits", "hidden_states"]
+            if emit_accept:
+                head.append("accept_hidden_states")
             output_names = (
-                ["logits", "hidden_states"] +
-                [f"present_key_values_{i}" for i in range(Na)] +
+                head + [f"present_key_values_{i}" for i in range(Na)] +
                 [f"present_conv_state_{i}" for i in range(Ng)] +
                 [f"present_recurrent_state_{i}" for i in range(Ng)] +
                 [f"intermediate_conv_state_{i}" for i in range(Ng)] +
@@ -526,10 +575,8 @@ class Qwen3OmniNextMoeLanguageModel(Qwen3_5MoeCausalLM):
             all_shapes.append({0: torch.export.Dim.AUTO
                                })  # spec_verify_phase_marker
 
-        wrapped = _make_flat_wrapper_hybrid_with_hidden(self,
-                                                        Na,
-                                                        Ng,
-                                                        mtp_base=mtp_base)
+        wrapped = _make_flat_wrapper_hybrid_with_hidden(
+            self, Na, Ng, mtp_base=mtp_base, emit_accept_hidden=emit_accept)
         wrapped.eval()
 
         return OnnxSpec(wrapped=wrapped,

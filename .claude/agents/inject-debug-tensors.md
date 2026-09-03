@@ -212,13 +212,13 @@ git checkout HEAD -- \
     cpp/runtime/llmEngineRunner.h \
     cpp/runtime/llmEngineRunner.cpp \
     cpp/runtime/llmInferenceRuntime.h \
-    cpp/multimodal/multimodalRunner.h \
-    cpp/multimodal/multimodalRunner.cpp \
-    cpp/multimodal/audioRunner.h \
-    cpp/multimodal/audioRunner.cpp \
-    cpp/multimodal/internViTRunner.cpp \
-    cpp/multimodal/qwenViTRunner.cpp \
-    cpp/multimodal/phi4mmViTRunner.cpp \
+    cpp/multimodal/common/multimodalRunner.h \
+    cpp/multimodal/common/multimodalRunner.cpp \
+    cpp/multimodal/qwen3_omni/audioRunner.h \
+    cpp/multimodal/qwen3_omni/audioRunner.cpp \
+    cpp/multimodal/internvl/internViTRunner.cpp \
+    cpp/multimodal/qwen2/qwenViTRunner.cpp \
+    cpp/multimodal/phi4mm/phi4mmViTRunner.cpp \
     examples/llm/llm_build.cpp \
     examples/llm/llm_inference.cpp \
     examples/multimodal/visual_build.cpp

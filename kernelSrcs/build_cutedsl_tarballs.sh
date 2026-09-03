@@ -20,7 +20,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/.." && pwd)"
 
 : "${CUDA_CTK_VERSION:=13.0}"
-: "${CUTE_DSL_VERSION:=4.6.1}"
+: "${CUTE_DSL_VERSION:=4.7.0}"
 : "${CUTE_DSL_RUNTIME_LIBS_VERSION:=${CUTE_DSL_VERSION}}"
 : "${CUTE_DSL_KERNELS:=ALL}"
 : "${CUTE_DSL_JOBS:=$(nproc)}"
@@ -36,11 +36,11 @@ cache_dir="${HOME:-/tmp}/.cache/tensorrt-edge-llm"
 case "${host_cuda_major}" in
     13)
         : "${CUTE_DSL_CUPY_PACKAGE:=cupy-cuda13x==13.6.0}"
-        : "${CUTE_DSL_TARGETS:=x86_64:sm_80,x86_64:sm_100,x86_64:sm_120,aarch64:sm_87,aarch64:sm_110,aarch64:sm_121}"
+        : "${CUTE_DSL_TARGETS:=x86_64:sm_80,x86_64:sm_90,x86_64:sm_100,x86_64:sm_120,aarch64:sm_87,aarch64:sm_90,aarch64:sm_110,aarch64:sm_121}"
         ;;
     12)
         : "${CUTE_DSL_CUPY_PACKAGE:=cupy-cuda12x==12.3.0}"
-        : "${CUTE_DSL_TARGETS:=x86_64:sm_80,x86_64:sm_100,x86_64:sm_120,aarch64:sm_87,aarch64:sm_110,aarch64:sm_121}"
+        : "${CUTE_DSL_TARGETS:=x86_64:sm_80,x86_64:sm_90,x86_64:sm_100,x86_64:sm_120,aarch64:sm_110,aarch64:sm_121}"
         ;;
     *)
         if [[ -z "${CUTE_DSL_CUPY_PACKAGE:-}" ]] || [[ -z "${CUTE_DSL_TARGETS:-}" ]]; then

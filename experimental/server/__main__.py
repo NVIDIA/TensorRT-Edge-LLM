@@ -14,6 +14,6 @@
 # limitations under the License.
 """Entry point for ``python -m experimental.server``."""
 
-from .api_server import main
+from .cli import main
 
 main()

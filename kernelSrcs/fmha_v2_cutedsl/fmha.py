@@ -2930,8 +2930,9 @@ def run(
 
     # Run + (optional) sanity check.  No low-precision NumPy reference is
     # bundled here — correctness is covered by the C++ unit test
-    # `unittests/contextAttentionTest.cpp` (compares against a FP32 BSHD
-    # reference); this CLI path only smoke-checks that the launch is
+    # `unittests/cpp/kernels/contextAttentionKernels/contextAttentionTest.cpp`
+    # (compares against a FP32 BSHD reference); this CLI path only smoke-checks
+    # that the launch is
     # well-formed when not exporting.
     if paged_kv:
         compiled_fa2(

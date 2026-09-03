@@ -34,6 +34,16 @@ namespace kernel
 //! Copy CUDA-addressable bytes directly into final device storage.
 cudaError_t launchCopyBytes(void const* source, void* destination, size_t bytes, cudaStream_t stream);
 
+//! Copy one byte range from each source row into compact destination rows.
+cudaError_t launchCopy2DBytes(void const* source, void* destination, int64_t rows, size_t sourceRowBytes,
+    size_t sourceColumnOffsetBytes, size_t destinationRowBytes, cudaStream_t stream);
+
+//! Gather and cast a contiguous column slice from BF16/FP32 source rows.
+cudaError_t launchBf16SliceToFp16(void const* source, void* destination, int64_t rows, int64_t sourceColumns,
+    int64_t sourceColumnOffset, int64_t destinationColumns, cudaStream_t stream);
+cudaError_t launchFp32SliceToFp16(void const* source, void* destination, int64_t rows, int64_t sourceColumns,
+    int64_t sourceColumnOffset, int64_t destinationColumns, cudaStream_t stream);
+
 //! Cast device BF16 ``[N]`` → FP16 ``[N]`` (elementwise).
 cudaError_t launchBf16ToFp16(void const* dBf16, void* dFp16, int64_t n, cudaStream_t stream);
 

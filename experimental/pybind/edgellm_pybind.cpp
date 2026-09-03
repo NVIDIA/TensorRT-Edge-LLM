@@ -29,7 +29,7 @@
 #include "common/logger.h"
 #include "common/tensor.h"
 #include "common/trtUtils.h"
-#include "multimodal/code2WavRunner.h"
+#include "multimodal/qwen3_omni/code2WavRunner.h"
 #include "profiling/metrics.h"
 #include "runtime/audioLoader.h"
 #include "runtime/audioUtils.h"
@@ -37,6 +37,9 @@
 #include "runtime/llmInferenceRuntime.h"
 #include "runtime/llmRuntimeUtils.h"
 #include "runtime/melSpectrogram.h"
+#ifdef EDGELLM_ENABLE_NEMOTRON_ASR
+#include "runtime/nemotronAsrRuntime.h"
+#endif
 #include "runtime/qwen3OmniTTSRuntime.h"
 #include "runtime/streaming.h"
 
@@ -46,6 +49,7 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -232,28 +236,34 @@ int32_t runStandaloneTTS(Qwen3OmniTTSRuntime& ttsRuntime, Code2WavRunner& code2w
 }
 
 //! Unified Python wrapper for LLMInferenceRuntime.
-//! Supports both vanilla decoding (no draft model) and Eagle speculative decoding
+//! Supports both vanilla decoding and the runtime's speculative decoders
 //! through constructor overloading — mirrors the C++ unified runtime.
 class PyLLMRuntime
 {
 public:
-    //! Vanilla constructor (no speculative decoding).
+    //! Vanilla constructor (no speculative decoding). The trailing
+    //! contextCacheConfig defaults to a disabled config, leaving the existing
+    //! identity-page runtime path unchanged when callers omit it.
     PyLLMRuntime(std::string const& engineDir, std::string const& multimodalEngineDir,
-        std::unordered_map<std::string, std::string> const& loraWeightsMap)
+        std::unordered_map<std::string, std::string> const& loraWeightsMap, std::string const& checkpointDir,
+        ContextCacheConfig const& contextCacheConfig)
     {
         mPluginHandle = loadEdgellmPluginLib();
-        mRuntime = std::make_unique<LLMInferenceRuntime>(engineDir, multimodalEngineDir, loraWeightsMap, mStream.get());
+        mRuntime = std::make_unique<LLMInferenceRuntime>(
+            engineDir, multimodalEngineDir, loraWeightsMap, mStream.get(), contextCacheConfig, checkpointDir);
     }
 
-    //! Eagle speculative decoding constructor.
+    //! Speculative decoding constructor.
     PyLLMRuntime(std::string const& engineDir, std::string const& multimodalEngineDir,
         std::unordered_map<std::string, std::string> const& loraWeightsMap, int32_t draftTopK, int32_t draftStep,
-        int32_t verifyTreeSize)
+        int32_t verifyTreeSize, std::string const& checkpointDir, std::string const& draftCheckpointDir,
+        ContextCacheConfig const& contextCacheConfig, int32_t dflashBlockSize)
     {
         mPluginHandle = loadEdgellmPluginLib();
         SpecDecodeDraftingConfig draftingConfig{draftTopK, draftStep, verifyTreeSize};
-        mRuntime = std::make_unique<LLMInferenceRuntime>(
-            engineDir, multimodalEngineDir, loraWeightsMap, draftingConfig, mStream.get());
+        draftingConfig.dflashBlockSize = dflashBlockSize;
+        mRuntime = std::make_unique<LLMInferenceRuntime>(engineDir, multimodalEngineDir, loraWeightsMap, draftingConfig,
+            mStream.get(), contextCacheConfig, checkpointDir, draftCheckpointDir);
     }
 
     LLMGenerationResponse handleRequest(LLMGenerationRequest const& request)
@@ -267,12 +277,12 @@ public:
     //! Load the Qwen3-Omni audio-output stack (Talker + CodePredictor + Code2Wav).
     //! tokenizerDir is normally the Thinker engine dir.
     void loadOmni(std::string const& talkerEngineDir, std::string const& codePredictorEngineDir,
-        std::string const& code2wavEngineDir, std::string const& tokenizerDir)
+        std::string const& code2wavEngineDir, std::string const& tokenizerDir, std::string const& checkpointDir)
     {
         // Voice-clone reference encoders are not wired into the server yet.
-        mTtsRuntime = std::make_unique<Qwen3OmniTTSRuntime>(
-            talkerEngineDir, codePredictorEngineDir, tokenizerDir, /*cloneEncoderDir=*/"", mStream.get());
-        mCode2wavRunner = std::make_unique<Code2WavRunner>(code2wavEngineDir, mStream.get());
+        mTtsRuntime = std::make_unique<Qwen3OmniTTSRuntime>(talkerEngineDir, codePredictorEngineDir, tokenizerDir,
+            /*cloneEncoderDir=*/"", mStream.get(), checkpointDir);
+        mCode2wavRunner = std::make_unique<Code2WavRunner>(code2wavEngineDir, mStream.get(), checkpointDir);
         if (!mTtsRuntime->captureDecodingCUDAGraph(mStream.get()))
         {
             LOG_WARNING("CUDA graph capture failed for TTS decoding, proceeding without.");
@@ -350,6 +360,11 @@ public:
         return mTtsRuntime->getSpeakerNames();
     }
 
+    std::vector<int32_t> countPromptTokens(LLMGenerationRequest const& request) const
+    {
+        return mRuntime->countPromptTokens(request);
+    }
+
     bool captureDecodingCudaGraph()
     {
         return mRuntime->captureDecodingCUDAGraph(mStream.get());
@@ -385,6 +400,11 @@ public:
         return mRuntime->getMultimodalMetrics();
     }
 
+    std::optional<ContextCacheMetrics> getContextCacheMetrics() const
+    {
+        return mRuntime->getContextCacheMetrics();
+    }
+
 private:
     CudaStreamWrapper mStream;
     std::unique_ptr<void, DlDeleter> mPluginHandle;
@@ -401,13 +421,13 @@ class PyTTSRuntime
 {
 public:
     PyTTSRuntime(std::string const& talkerEngineDir, std::string const& codePredictorEngineDir,
-        std::string const& code2wavEngineDir, std::string const& tokenizerDir)
+        std::string const& code2wavEngineDir, std::string const& tokenizerDir, std::string const& checkpointDir)
     {
         mPluginHandle = loadEdgellmPluginLib();
         std::string const& tokenizer = tokenizerDir.empty() ? talkerEngineDir : tokenizerDir;
         mTtsRuntime = std::make_unique<Qwen3OmniTTSRuntime>(
-            talkerEngineDir, codePredictorEngineDir, tokenizer, /*cloneEncoderDir=*/"", mStream.get());
-        mCode2wavRunner = std::make_unique<Code2WavRunner>(code2wavEngineDir, mStream.get());
+            talkerEngineDir, codePredictorEngineDir, tokenizer, /*cloneEncoderDir=*/"", mStream.get(), checkpointDir);
+        mCode2wavRunner = std::make_unique<Code2WavRunner>(code2wavEngineDir, mStream.get(), checkpointDir);
         if (!mTtsRuntime->captureDecodingCUDAGraph(mStream.get()))
         {
             LOG_WARNING("CUDA graph capture failed for TTS decoding, proceeding without.");
@@ -431,6 +451,47 @@ private:
     std::unique_ptr<Qwen3OmniTTSRuntime> mTtsRuntime;
     std::unique_ptr<Code2WavRunner> mCode2wavRunner;
 };
+
+#ifdef EDGELLM_ENABLE_NEMOTRON_ASR
+class PyNemotronAsrRuntime
+{
+public:
+    PyNemotronAsrRuntime(std::string const& engineDir, std::string const& tokenizerDir)
+    {
+        mPluginHandle = loadEdgellmPluginLib();
+        std::string const& tokenizer = tokenizerDir.empty() ? engineDir : tokenizerDir;
+        mRuntime = std::make_unique<NemotronAsrRuntime>(engineDir, tokenizer, mStream.get());
+    }
+
+    NemotronAsrRuntime::Result transcribe(std::string const& audioBytes, int32_t promptId)
+    {
+        constexpr int32_t kTargetSampleRate = 16000;
+        audio::AudioPCM pcm;
+        if (!audio::loadAudioBytes(
+                reinterpret_cast<uint8_t const*>(audioBytes.data()), audioBytes.size(), kTargetSampleRate, pcm))
+        {
+            throw std::runtime_error("Audio decode failed (unsupported container or corrupt bytes)");
+        }
+        int32_t const resolvedPromptId = promptId >= 0 ? promptId : mRuntime->defaultPromptId();
+        return mRuntime->transcribe(pcm, resolvedPromptId, mStream.get());
+    }
+
+    int32_t defaultPromptId() const
+    {
+        return mRuntime->defaultPromptId();
+    }
+
+    int64_t maxMelFrames() const
+    {
+        return mRuntime->maxMelFrames();
+    }
+
+private:
+    CudaStreamWrapper mStream;
+    std::unique_ptr<void, DlDeleter> mPluginHandle;
+    std::unique_ptr<NemotronAsrRuntime> mRuntime;
+};
+#endif
 
 imageUtils::ImageData loadImageFromPath(std::string const& path)
 {
@@ -569,6 +630,48 @@ PYBIND11_MODULE(_edgellm_runtime, m)
         .def_readonly("total_images", &metrics::MultimodalMetrics::totalImages)
         .def_readonly("total_image_tokens", &metrics::MultimodalMetrics::totalImageTokens)
         .def("get_total_runs", &metrics::MultimodalMetrics::getTotalRuns);
+
+    py::class_<ContextCachePoolMetrics>(m, "ContextCachePoolMetrics")
+        .def_readonly("free", &ContextCachePoolMetrics::free)
+        .def_readonly("capacity", &ContextCachePoolMetrics::capacity);
+
+    py::class_<ContextCacheMetrics>(m, "ContextCacheMetrics")
+        .def_readonly("admitted_sequences", &ContextCacheMetrics::admittedSequences)
+        .def_readonly("hit_sequences", &ContextCacheMetrics::hitSequences)
+        .def_readonly("lookup_bypass_sequences", &ContextCacheMetrics::lookupBypassSequences)
+        .def_readonly("forced_cold_sequences", &ContextCacheMetrics::forcedColdSequences)
+        .def_readonly("standard_plans", &ContextCacheMetrics::standardPlans)
+        .def_readonly("no_reusable_prefix_plans", &ContextCacheMetrics::noReusablePrefixPlans)
+        .def_readonly("full_input_rewind_plans", &ContextCacheMetrics::fullInputRewindPlans)
+        .def_readonly("matched_tokens", &ContextCacheMetrics::matchedTokens)
+        .def_readonly("reused_tokens", &ContextCacheMetrics::reusedTokens)
+        .def_readonly("publication_attempts", &ContextCacheMetrics::publicationAttempts)
+        .def_readonly("committed_publications", &ContextCacheMetrics::committedPublications)
+        .def_readonly("existing_publications", &ContextCacheMetrics::existingPublications)
+        .def_readonly("published_endpoints", &ContextCacheMetrics::publishedEndpoints)
+        .def_readonly("hybrid_restores", &ContextCacheMetrics::hybridRestores)
+        .def_readonly("hybrid_snapshot_pressure_skips", &ContextCacheMetrics::hybridSnapshotPressureSkips)
+        .def_readonly("hybrid_capture_synchronizations", &ContextCacheMetrics::hybridCaptureSynchronizations)
+        .def_readonly("spec_full_page_replays", &ContextCacheMetrics::specFullPageReplays)
+        .def_readonly("spec_pair_publications", &ContextCacheMetrics::specPairPublications)
+        .def_readonly("planning_nanoseconds", &ContextCacheMetrics::planningNanoseconds)
+        .def_readonly("current_records", &ContextCacheMetrics::currentRecords)
+        .def_readonly("base_kv_pages", &ContextCacheMetrics::baseKvPages)
+        .def_readonly("draft_kv_pages", &ContextCacheMetrics::draftKvPages)
+        .def_readonly("recurrent_snapshots", &ContextCacheMetrics::recurrentSnapshots)
+        .def_readonly("partial_kv_snapshots", &ContextCacheMetrics::partialKvSnapshots)
+        .def_readonly("evicted_records", &ContextCacheMetrics::evictedRecords)
+        .def_readonly("reclaimed_base_kv_pages", &ContextCacheMetrics::reclaimedBaseKvPages)
+        .def_readonly("reclaimed_draft_kv_pages", &ContextCacheMetrics::reclaimedDraftKvPages)
+        .def_readonly("reclaimed_recurrent_snapshots", &ContextCacheMetrics::reclaimedRecurrentSnapshots)
+        .def_readonly("reclaimed_partial_kv_snapshots", &ContextCacheMetrics::reclaimedPartialKvSnapshots);
+
+    py::class_<ContextCacheConfig>(m, "ContextCacheConfig")
+        .def(py::init<>())
+        .def_readwrite("enabled", &ContextCacheConfig::enabled)
+        .def_readwrite("max_records", &ContextCacheConfig::maxRecords)
+        .def_readwrite("recurrent_snapshot_pool_bytes", &ContextCacheConfig::recurrentSnapshotPoolBytes)
+        .def_readwrite("partial_kv_snapshot_pool_bytes", &ContextCacheConfig::partialKvSnapshotPoolBytes);
 
     // ========================================================================
     // Image utilities
@@ -718,6 +821,7 @@ PYBIND11_MODULE(_edgellm_runtime, m)
         .def(py::init<>())
         .def_readonly("token_ids", &StreamChunk::tokenIds)
         .def_readonly("text", &StreamChunk::text)
+        .def_readonly("prompt_token_count", &StreamChunk::promptTokenCount)
         .def_readonly("finished", &StreamChunk::finished)
         .def_readonly("reason", &StreamChunk::reason)
         .def_readonly("logprobs", &StreamChunk::logprobs);
@@ -774,6 +878,14 @@ PYBIND11_MODULE(_edgellm_runtime, m)
     // ========================================================================
     // Request / Response (continued)
     // ========================================================================
+    py::enum_<ContextCacheLookupPolicy>(m, "ContextCacheLookupPolicy")
+        .value("USE_CACHE", ContextCacheLookupPolicy::kUseCache)
+        .value("BYPASS", ContextCacheLookupPolicy::kBypass);
+
+    py::enum_<ContextCacheCommitPolicy>(m, "ContextCacheCommitPolicy")
+        .value("INCLUDING_GENERATED_TOKENS", ContextCacheCommitPolicy::kIncludingGeneratedTokens)
+        .value("PREFILL_STATE_ONLY", ContextCacheCommitPolicy::kPrefillStateOnly);
+
     py::class_<LLMGenerationRequest>(m, "LLMGenerationRequest")
         .def(py::init<>())
         .def_readwrite("requests", &LLMGenerationRequest::requests)
@@ -788,8 +900,12 @@ PYBIND11_MODULE(_edgellm_runtime, m)
         .def_readwrite("add_generation_prompt", &LLMGenerationRequest::addGenerationPrompt)
         .def_readwrite("enable_thinking", &LLMGenerationRequest::enableThinking)
         .def_readwrite("disable_spec_decode", &LLMGenerationRequest::disableSpecDecode)
+        .def_readwrite("recurrent_capture_interval", &LLMGenerationRequest::recurrentCaptureInterval)
         .def_readwrite("stream_channels", &LLMGenerationRequest::streamChannels)
-        .def_readwrite("num_logprobs", &LLMGenerationRequest::numLogprobs);
+        .def_readwrite("num_logprobs", &LLMGenerationRequest::numLogprobs)
+        .def_readwrite("context_cache_lookup_policy", &LLMGenerationRequest::contextCacheLookupPolicy)
+        .def_readwrite("context_cache_commit_policy", &LLMGenerationRequest::contextCacheCommitPolicy)
+        .def_readwrite("context_cache_replay_tail_length", &LLMGenerationRequest::contextCacheReplayTailLength);
 
     py::class_<LLMGenerationResponse>(m, "LLMGenerationResponse")
         .def(py::init<>())
@@ -802,21 +918,24 @@ PYBIND11_MODULE(_edgellm_runtime, m)
     // ========================================================================
     // Runtime: unified (vanilla + Eagle speculative decoding)
     // ========================================================================
-    py::class_<PyLLMRuntime>(m, "LLMRuntime",
-        "Unified LLM inference runtime. Supports both vanilla decoding and Eagle speculative decoding.")
-        .def(py::init<std::string const&, std::string const&, std::unordered_map<std::string, std::string> const&>(),
+    py::class_<PyLLMRuntime>(m, "LLMRuntime", "Unified LLM inference runtime with optional speculative decoding.")
+        .def(py::init<std::string const&, std::string const&, std::unordered_map<std::string, std::string> const&,
+                 std::string const&, ContextCacheConfig const&>(),
             py::arg("engine_dir"), py::arg("multimodal_engine_dir") = "",
             py::arg("lora_weights_map") = std::unordered_map<std::string, std::string>{},
+            py::arg("checkpoint_dir") = "", py::arg("context_cache_config") = ContextCacheConfig{},
             "Construct for vanilla (non-speculative) decoding")
         .def(py::init<std::string const&, std::string const&, std::unordered_map<std::string, std::string> const&,
-                 int32_t, int32_t, int32_t>(),
+                 int32_t, int32_t, int32_t, std::string const&, std::string const&, ContextCacheConfig const&,
+                 int32_t>(),
             py::arg("engine_dir"), py::arg("multimodal_engine_dir"), py::arg("lora_weights_map"),
-            py::arg("draft_top_k"), py::arg("draft_step"), py::arg("verify_tree_size"),
-            "Construct for Eagle speculative decoding")
+            py::arg("draft_top_k"), py::arg("draft_step"), py::arg("verify_tree_size"), py::arg("checkpoint_dir") = "",
+            py::arg("draft_checkpoint_dir") = "", py::arg("context_cache_config") = ContextCacheConfig{},
+            py::arg("dflash_block_size") = 0, "Construct for speculative decoding")
         .def("handle_request", &PyLLMRuntime::handleRequest, py::arg("request"),
             py::call_guard<py::gil_scoped_release>(), "Process a generation request and return the response")
         .def("load_omni", &PyLLMRuntime::loadOmni, py::arg("talker_engine_dir"), py::arg("code_predictor_engine_dir"),
-            py::arg("code2wav_engine_dir"), py::arg("tokenizer_dir"),
+            py::arg("code2wav_engine_dir"), py::arg("tokenizer_dir"), py::arg("checkpoint_dir") = "",
             "Load the Qwen3-Omni audio-output stack (Talker + CodePredictor + Code2Wav)")
         .def("handle_request_streaming_audio", &PyLLMRuntime::handleRequestStreamingAudio, py::arg("request"),
             py::arg("audio_channel"), py::arg("params"), py::call_guard<py::gil_scoped_release>(),
@@ -825,6 +944,8 @@ PYBIND11_MODULE(_edgellm_runtime, m)
             py::arg("audio_channel"), py::call_guard<py::gil_scoped_release>(),
             "Standalone TTS on the loaded Omni stack; returns the number of codec frames generated")
         .def("get_speaker_names", &PyLLMRuntime::getSpeakerNames)
+        .def("count_prompt_tokens", &PyLLMRuntime::countPromptTokens, py::arg("request"),
+            py::call_guard<py::gil_scoped_release>(), "Handle an explicit text token-count request")
         .def("capture_decoding_cuda_graph", &PyLLMRuntime::captureDecodingCudaGraph,
             "Capture CUDA graphs for optimized decoding")
         .def("save_system_prompt_kv_cache", &PyLLMRuntime::saveSystemPromptKVCache, py::arg("prompt"),
@@ -836,17 +957,36 @@ PYBIND11_MODULE(_edgellm_runtime, m)
             py::return_value_policy::reference_internal)
         .def("get_eagle_generation_metrics", &PyLLMRuntime::getSpecDecodeGenerationMetrics,
             py::return_value_policy::reference_internal) // deprecated alias
-        .def("get_multimodal_metrics", &PyLLMRuntime::getMultimodalMetrics);
+        .def("get_multimodal_metrics", &PyLLMRuntime::getMultimodalMetrics)
+        .def("get_context_cache_metrics", &PyLLMRuntime::getContextCacheMetrics);
 
     py::class_<PyTTSRuntime>(
         m, "TTSRuntime", "TTS-only runtime (Qwen3-TTS-style): Talker + CodePredictor + Code2Wav, no Thinker engine")
-        .def(py::init<std::string const&, std::string const&, std::string const&, std::string const&>(),
+        .def(py::init<std::string const&, std::string const&, std::string const&, std::string const&,
+                 std::string const&>(),
             py::arg("talker_engine_dir"), py::arg("code_predictor_engine_dir"), py::arg("code2wav_engine_dir"),
-            py::arg("tokenizer_dir") = "", py::call_guard<py::gil_scoped_release>())
+            py::arg("tokenizer_dir") = "", py::arg("checkpoint_dir") = "", py::call_guard<py::gil_scoped_release>())
         .def("handle_request_tts", &PyTTSRuntime::handleRequestTTS, py::arg("text"), py::arg("params"),
             py::arg("audio_channel"), py::call_guard<py::gil_scoped_release>(),
             "Synthesize speech for text; PCM chunks stream to audio_channel; returns codec frame count")
         .def("get_speaker_names", &PyTTSRuntime::getSpeakerNames);
+
+#ifdef EDGELLM_ENABLE_NEMOTRON_ASR
+    py::class_<NemotronAsrRuntime::Result>(m, "NemotronAsrResult")
+        .def_readonly("tokens", &NemotronAsrRuntime::Result::tokens)
+        .def_readonly("text", &NemotronAsrRuntime::Result::text)
+        .def_readonly("num_mel_frames", &NemotronAsrRuntime::Result::numMelFrames)
+        .def_readonly("num_encoder_frames", &NemotronAsrRuntime::Result::numEncoderFrames)
+        .def_readonly("num_decode_steps", &NemotronAsrRuntime::Result::numDecodeSteps);
+
+    py::class_<PyNemotronAsrRuntime>(m, "NemotronAsrRuntime")
+        .def(py::init<std::string const&, std::string const&>(), py::arg("engine_dir"), py::arg("tokenizer_dir") = "",
+            py::call_guard<py::gil_scoped_release>())
+        .def("transcribe", &PyNemotronAsrRuntime::transcribe, py::arg("audio_bytes"), py::arg("prompt_id") = -1,
+            py::call_guard<py::gil_scoped_release>())
+        .def("default_prompt_id", &PyNemotronAsrRuntime::defaultPromptId)
+        .def_property_readonly("max_mel_frames", &PyNemotronAsrRuntime::maxMelFrames);
+#endif
 
     // ========================================================================
     // Builder: LLM

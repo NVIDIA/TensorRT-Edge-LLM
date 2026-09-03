@@ -83,8 +83,12 @@ struct PipelineIO
     Tensor draftHiddenStatesIn;
     Tensor draftHiddenStatesOut;
 
-    //! Engine hidden_states output. Used by the vanilla LLM path; SpecDecode
-    //! routes its hidden states through `baseHiddenStates` instead.
+    //! Engine accept-layer output: the Qwen3-Omni Talker's feed on both
+    //! pipelines. Bound to `hidden_states` on the vanilla path, and to
+    //! `accept_hidden_states` on a SpecDecode base, where `hidden_states` is
+    //! instead the draft's post-norm feed in `baseHiddenStates`. Binding the
+    //! latter here would hand the Talker a post-final-norm tensor — degraded
+    //! audio rather than an error.
     Tensor outputHiddenStates;
 
     //! Per-request copies of `inputsEmbeds` / `outputHiddenStates` that
@@ -103,7 +107,7 @@ struct PipelineIO
     //! Written by proposal/verify input preparation kernels; consumed by the base and draft
     //! engines via the `kAttentionPosId` binding.
     Tensor specDecodePositionIds;
-    //! Shape-only marker for hybrid MTP/DFlash base engines. The runtime binds
+    //! Shape-only marker for hybrid MTP/DFlash/JetSpec base engines. The runtime binds
     //! this tensor at shape [0] for normal prefill/decode and [1] for spec
     //! verify; plugins branch on the shape, not the payload.
     Tensor specVerifyPhaseMarker;
@@ -123,8 +127,13 @@ struct PipelineIO
 
     //! Build PipelineIO for a two-engine speculative-decoding runtime
     //! (basic I/O, hidden states, deepstack embeds, MRope cos/sin cache).
+    //!
+    //! `hasAcceptHiddenOutput` must say whether the base engine actually exposes
+    //! the `accept_hidden_states` binding: allocating regardless would make
+    //! `outputHiddenStates.isEmpty()` stop meaning "nothing will fill this", and
+    //! the Talker would be handed uninitialised memory instead of failing.
     static PipelineIO createForSpecDecode(
-        DeploymentConfig const& bundle, int32_t maxRuntimeBatchSize, cudaStream_t stream);
+        DeploymentConfig const& bundle, int32_t maxRuntimeBatchSize, cudaStream_t stream, bool hasAcceptHiddenOutput);
 };
 
 void allocateBasicIO(

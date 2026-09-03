@@ -98,7 +98,7 @@ cmake -S "${PROJECT_ROOT}" -B "${BUILD_DIR}" \
 # Step 2 — Build
 # ---------------------------------------------------------------------------
 echo "==> Building with coverage instrumentation (${JOBS} jobs)"
-cmake --build "${BUILD_DIR}" --target unitTest -j "${JOBS}"
+cmake --build "${BUILD_DIR}" --target unitTests -j "${JOBS}"
 
 # ---------------------------------------------------------------------------
 # Step 3 — Clear stale coverage data
@@ -115,8 +115,25 @@ find "${BUILD_DIR}" -name '*.cu.gcda' -delete 2>/dev/null || true
 # Step 4 — Run unit tests
 # ---------------------------------------------------------------------------
 echo "==> Running unit tests (filter: ${GTEST_FILTER})"
-"${BUILD_DIR}/unitTest" --gtest_filter="${GTEST_FILTER}" \
-                        --gtest_output="xml:${BUILD_DIR}/test_results.xml" \
+# Every group contributes to the same gcda set, so coverage is the union of all
+# of them. That is also why this runs serially: the groups share edgellmCore's
+# objects, so concurrent processes would be merging the same .gcda files.
+# GTEST_FILTER and GTEST_OUTPUT reach the executables through the environment
+# because ctest drives them, not this script.
+#
+# The reports come from gtest rather than from `ctest --output-junit`, for two
+# reasons. --output-junit needs CMake 3.21 and this project declares 3.20
+# (--test-dir is fine at 3.20). And ctest reports one entry per registered test,
+# which here is one per group: the per-test-case detail that the JUnit consumers
+# read would be replaced by ten rows. A trailing slash makes gtest write one
+# file per executable, named after it.
+TEST_REPORT_DIR="${BUILD_DIR}/test_results"
+rm -rf "${TEST_REPORT_DIR}"
+mkdir -p "${TEST_REPORT_DIR}"
+GTEST_FILTER="${GTEST_FILTER}" \
+    GTEST_OUTPUT="xml:${TEST_REPORT_DIR}/" \
+    ctest --test-dir "${BUILD_DIR}" \
+          --output-on-failure \
     || TEST_EXIT=$?
 
 if [[ "${TEST_EXIT:-0}" -ne 0 ]]; then
@@ -176,7 +193,7 @@ echo "=== Coverage Summary ==="
 echo "  Build directory    : ${BUILD_DIR}"
 echo "  .gcno files        : ${GCNO_COUNT}"
 echo "  .gcda files        : ${GCDA_COUNT}"
-echo "  Test results       : ${BUILD_DIR}/test_results.xml"
+echo "  Test results       : ${BUILD_DIR}/test_results/ (one XML per group)"
 echo "  SonarQube coverage : ${BUILD_DIR}/sonarqube-coverage.xml"
 echo ""
 echo "To analyze with SonarQube, ensure sonar-project.properties contains:"

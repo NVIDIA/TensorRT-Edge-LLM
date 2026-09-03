@@ -35,6 +35,13 @@ namespace rt
 
 class LayerDebugger; // Few-layer-validation debug: per-layer logits/KV dump (runtime/debug/layerDebugger.h)
 
+//! Maximum KV positions that one decoder execution may address beyond its materialized endpoint.
+struct DecodingKvHeadroom
+{
+    int32_t baseExtraTokens{};
+    int32_t draftExtraTokens{};
+};
+
 /**
  * @brief Pre-allocated flat accumulator for per-step log-probabilities of one batch slot.
  *
@@ -61,6 +68,7 @@ struct BatchResult
     int32_t generateLength{0};               //!< Number of tokens generated
     int32_t actualIterations{0};             //!< Number of iterations executed
     int32_t effectivePrefillLength{0};       //!< Effective prefill length after system prompt cache reuse
+    int32_t prunedPrefillTokens{0};          //!< Prompt tokens removed by visual-token pruning
     //! Per-step top log-probabilities: logprobs[step] = [LogprobEntry, ...], sorted descending.
     //! Populated only when numLogprobs > 0 in the original request.
     std::vector<std::vector<LogprobEntry>> logprobs;
@@ -81,7 +89,10 @@ struct DecodingInferenceContext
     std::vector<std::vector<int32_t>> tokenIds;           //!< Token IDs for each sequence: [batch_size][seq_length]
     std::vector<int32_t> currentGenerateLengths;          //!< Current generation length for each sequence
     std::vector<int32_t> effectivePrefillLengths;         //!< Prefill length after system prompt cache reuse
-    std::vector<int8_t> finishedStates;                   //!< Finished state for each sequence
+    //! Per-slot prompt tokens removed by visual-token pruning (empty when pruning is off —
+    //! treat a missing entry as 0).
+    std::vector<int32_t> prunedPrefillTokens;
+    std::vector<int8_t> finishedStates; //!< Finished state for each sequence
 
     std::unordered_map<int32_t, BatchResult> completedBatches; //!< Results of completed batches
     std::vector<int32_t> batchIndexMapping;                    //!< Maps current batch index to original index
@@ -115,6 +126,16 @@ struct DecodingInferenceContext
     bool logitBiasGpuDirty{false}; //!< True when CPU-side bias state must be uploaded to GPU
 
     bool outputThinkerEmbeddings{false}; //!< Whether to capture hidden states for the Talker pipeline
+
+    //! Hybrid+MTP context-reuse endpoint path is active for this request. Set by the runtime before the folded draft
+    //! prefill so MTPDecoder::initializeForGeneration runs the draft prefill pre-publication (default MTP keeps its
+    //! decode-round-0 draft prefill when this is false).
+    bool hybridMtpEndpointReuse{false};
+    //! Guards the speculative draft prefill so it runs exactly once, whether triggered pre-publication (Hybrid+MTP
+    //! endpoint reuse) or in decode round 0 (default speculative path).
+    bool speculativeDraftPrefillComplete{false};
+    //! Hybrid+MTP boundary-replay tail length for the two-chunk prefill (0 = single-chunk). Carried from the request.
+    int32_t contextCacheReplayTailLength{0};
 
     //! Optional per-token callback invoked after each accepted token update.
     std::optional<TokenCallback> onTokenGenerated;

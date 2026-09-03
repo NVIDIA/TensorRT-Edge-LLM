@@ -14,11 +14,13 @@
 # limitations under the License.
 """Checkpoint-backed dense projection shared by model families."""
 
+from dataclasses import replace
 from typing import Optional
 
 import numpy as np
 import tensorrt as trt
 
+from ..core import weight_policy
 from . import functional as F
 from .module import BuildContext, Module
 
@@ -69,8 +71,33 @@ class Linear(Module):
             return self._apply_static_adapter(hidden_states, output,
                                               "replicated", rank)
 
-        descriptor = self.weight_descriptor()
         tp_mode = self._tp_mode()
+        quant_type = self.quant_type()
+        # The fused CuTeDSL kernels currently target SM100/101/103/110. SM12x
+        # uses TensorRT's NVFP4 Q/DQ matmul followed by the generic all-reduce.
+        use_fused_nvfp4_tp = (tp_mode == "row" and self.cfg.tp_size > 1
+                              and quant_type == "nvfp4"
+                              and not self.has_adapter()
+                              and not self.ctx.options.sm12x)
+        full_descriptor = self.weights.linear_descriptor(
+            self.prefix,
+            quant_type,
+            external_kind=(weight_policy.EXTERNAL_WEIGHT_NVFP4_TP
+                           if use_fused_nvfp4_tp else ""),
+        )
+        descriptor = self.weights.shard_linear(full_descriptor, tp_mode,
+                                               self.cfg.tp_size,
+                                               self.cfg.tp_rank)
+        if use_fused_nvfp4_tp:
+            sharded_weights = replace(descriptor, bias=None, bias_recipe=None)
+            return F.fused_nvfp4_gemm_all_reduce(
+                hidden_states,
+                sharded_weights,
+                full_descriptor.bias,
+                self.cfg.tp_size,
+                rank,
+                name=self.prefix,
+                bias_recipe=full_descriptor.bias_recipe)
         output = F.linear_from_weights(hidden_states,
                                        descriptor,
                                        rank,

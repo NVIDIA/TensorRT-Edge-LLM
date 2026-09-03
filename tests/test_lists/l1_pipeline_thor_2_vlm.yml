@@ -91,6 +91,9 @@ tests:
   - tests/defs/test_vlm_pipeline.py::TestVLMPipeline::test_e2e_bench[Qwen3-VL-4B-Instruct-fp16-vitfp8-mxsl8192-mxbs2-mxil7168-mnit128-mxit6400-mxpiit1280-mmmu-bs1]
   # Qwen3-VL-4B-Instruct - fp8-vitfp8
   - tests/defs/test_vlm_pipeline.py::TestVLMPipeline::test_engine_build[Qwen3-VL-4B-Instruct-fp8-vitfp8-mxsl8192-mxbs2-mxil7168-mnit128-mxit6400-mxpiit1280]
+  # Qwen3-VL-4B-Instruct - fp8-vitfp8-vitmhafp8 (fp8 ViT attention)
+  - tests/defs/test_vlm_pipeline.py::TestVLMPipeline::test_engine_build[Qwen3-VL-4B-Instruct-fp8-vitfp8-vitmhafp8-mxsl8192-mxbs2-mxil7168-mnit128-mxit6400-mxpiit1280]
+  - tests/defs/test_vlm_pipeline.py::TestVLMPipeline::test_e2e_bench[Qwen3-VL-4B-Instruct-fp8-vitfp8-vitmhafp8-mxsl8192-mxbs2-mxil7168-mnit128-mxit6400-mxpiit1280-mmmu-bs1]
 
   # Qwen3-VL-4B-Instruct - nvfp4-vitfp8
   - tests/defs/test_vlm_pipeline.py::TestVLMPipeline::test_engine_build[Qwen3-VL-4B-Instruct-nvfp4-vitfp8-mxsl8192-mxbs2-mxil7168-mnit128-mxit6400-mxpiit1280]

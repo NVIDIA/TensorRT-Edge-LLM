@@ -16,6 +16,10 @@ Small JSON request sets for `llm_inference` smoke and runtime-sanity runs.
   and extra retained base-KV pages for cross-request reuse.
   Hybrid engines additionally require at least one recurrent snapshot slot and, when they contain attention, at least one partial-KV snapshot slot.
   EAGLE engines additionally require extra retained draft-KV pages and greedy sampling; this fixture sets `top_k: 1`.
+- `llm_spec_prefill_evict.json`
+  Batch-2 speculative regression where slot 0 stops on its first generated token and slot 1 survives managed row
+  compaction. The survivor is repeated with an explicit cache-bypass cold control and must remain token-identical.
+  Recommended engine: a DFlash/JetSpec engine with `maxBatchSize >= 2` and context reuse enabled.
 - `llm_runtime_sanity_check.json`
   Text-runtime sanity coverage for chat templating, system-prompt KV cache, `disable_spec_decode`, and same-process reuse.
   Recommended engine: vanilla or EAGLE LLM, `maxBatchSize >= 1`, `maxInputLen >= 1024`, `maxKVCacheCapacity >= 4096`.

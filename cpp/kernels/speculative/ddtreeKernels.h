@@ -74,12 +74,13 @@ struct DDTreeBuildOutputs
 //! Parameters for ddtreeBuild().
 struct DDTreeBuildParams
 {
-    DDTreeBuildInputs inputs;   //!< Required input tensors.
-    DDTreeBuildOutputs outputs; //!< Required output tensors.
-    int32_t candidateTopK;      //!< Per-depth candidateTopK from DFlash draftingTopK.
-    void* workspace;            //!< Temporary workspace from getDDTreeBuildWorkspaceSize().
-    size_t workspaceSize;       //!< Workspace size in bytes.
-    cudaStream_t stream;        //!< CUDA stream for kernel launches.
+    DDTreeBuildInputs inputs;           //!< Required input tensors.
+    DDTreeBuildOutputs outputs;         //!< Required output tensors.
+    int32_t candidateTopK;              //!< Per-depth candidateTopK from DFlash draftingTopK.
+    void* workspace;                    //!< Temporary workspace from getDDTreeBuildWorkspaceSize().
+    size_t workspaceSize;               //!< Workspace size in bytes.
+    cudaStream_t stream;                //!< CUDA stream for kernel launches.
+    int32_t firstCandidateLogitsRow{1}; //!< Logits row used for depth-1 children.
 };
 
 //! Returns temporary workspace size required by ddtreeBuild().
@@ -92,10 +93,13 @@ size_t getDDTreeBuildWorkspaceSize(
 //!
 //! The tree is flattened in score-prioritized order. Node 0 is the committed
 //! root token. For each proposal depth, the builder first takes the top
-//! `candidateTopK` tokens from the corresponding DFlash draft-logits row, then
+//! `candidateTopK` tokens from the corresponding draft-logits row, then
 //! repeatedly appends the highest-scoring available child whose parent is
 //! already in the tree. This keeps the verify tree prefix-closed: every emitted
 //! node can trace a valid path back to the root.
+//! firstCandidateLogitsRow controls whether depth-1 children consume logits row
+//! 0 (next-token block drafts) or row 1 (mask-position block drafts such as
+//! DFlash/JetSpec, and MTP stacked logits where row 0 is a root placeholder).
 //!
 //! Example with candidateTopK = 2 and verifySize = 6:
 //!
@@ -113,6 +117,8 @@ size_t getDDTreeBuildWorkspaceSize(
 //!     rootTokenIds [GPU, Int32]: last accepted token for each batch, [batch].
 //!     baseLengths [GPU, Int32]: committed base length before verify, [batch].
 //!     candidateTopK: DFlash DDTree candidateTopK, wired from draftingTopK.
+//!     firstCandidateLogitsRow: logits row used for depth-1 children. Depth D
+//!         children consume row firstCandidateLogitsRow + D - 1.
 //!     draftVocabMappingTable: optional reduced-to-full draft vocab mapping, [vocabSize].
 //!     workspace: temporary storage with size from getDDTreeBuildWorkspaceSize().
 //!
@@ -128,6 +134,8 @@ size_t getDDTreeBuildWorkspaceSize(
 //!         [batch, verifySize, ceil(verifySize / 32)].
 //!     ancestorMask [GPU, Int8]: unpacked EAGLE-style tree attention mask, [batch, verifySize, verifySize].
 //!     contextLengths [GPU, Int32]: baseLengths + verifySize, [batch].
+//!         Tree verification writes every flattened node into a contiguous KV suffix.
+//!         Absolute token positions are still provided separately through positionIds.
 //!     selectTokenIndices [GPU, Int64]: [0, 1, ..., verifySize - 1] per batch, [batch, verifySize].
 //!
 //! The DDTree builder runs on GPU with fixed-size scratch. It does not provide a CPU runtime fallback.

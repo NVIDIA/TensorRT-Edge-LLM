@@ -240,15 +240,15 @@ def test_extract_mel_round_trip_synthetic(runtime, fe_type, container,
 
 # ---------------------------------------------------------------------------
 # Source resolution (pure python, no runtime): OpenAI audio content -> local
-# path / bytes; the http(s) rejection is a security boundary (no remote fetch).
+# path / bounded bytes.
 # ---------------------------------------------------------------------------
 
 
 def _resolve(item):
     import sys
     sys.path.insert(0, REPO_ROOT)
-    from experimental.server.audio_preprocess import resolve_audio_message
-    return resolve_audio_message(item)
+    from experimental.server.media import audio_preprocess
+    return audio_preprocess.resolve_audio_message(item)
 
 
 def test_resolve_input_audio_base64():
@@ -270,9 +270,23 @@ def test_resolve_input_audio_missing_data():
 
 
 @pytest.mark.parametrize("url", ["http://h/a.wav", "https://h/a.wav"])
-def test_resolve_audio_url_rejects_remote(url):
-    with pytest.raises(ValueError):
-        _resolve({"type": "audio_url", "audio_url": {"url": url}})
+def test_resolve_audio_url_fetches_remote(url, monkeypatch):
+    import sys
+    sys.path.insert(0, REPO_ROOT)
+    from experimental.server.media import audio_preprocess
+
+    calls = []
+    monkeypatch.setattr(
+        audio_preprocess, "fetch_remote_media",
+        lambda source, kind, limit: calls.append(
+            (source, kind, limit)) or b"wav")
+    assert audio_preprocess.resolve_audio_message({
+        "type": "audio_url",
+        "audio_url": {
+            "url": url
+        }
+    }) == b"wav"
+    assert calls == [(url, "audio", audio_preprocess.MAX_AUDIO_UPLOAD_BYTES)]
 
 
 def test_resolve_audio_url_data_and_file(tmp_path):
