@@ -85,12 +85,14 @@ class Qwen3OmniNextMtpDraftModel(NetworkModule):
 
     def input_tensors(self) -> Dict[str, object]:
         cfg = self.cfg
+        kv_dtype = (trt.DataType.FP8
+                    if cfg.kv_cache_quant == "fp8" else trt.float16)
         return {
             "inputs_embeds":
             self.add_input("inputs_embeds", trt.float16,
                            (-1, -1, cfg.hidden_size)),
             "past_key_values": [
-                self.add_input(f"past_key_values_{index}", trt.float16,
+                self.add_input(f"past_key_values_{index}", kv_dtype,
                                (2, -1, F.KV_PAGE_SIZE, cfg.num_key_value_heads,
                                 cfg.head_dim))
                 for index in range(cfg.num_hidden_layers)

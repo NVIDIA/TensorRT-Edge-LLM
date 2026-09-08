@@ -348,13 +348,32 @@ API.
 
 ## Runtime Concurrency
 
-The current high-level runtime has one mutable generation state. The server
-therefore admits one request at a time and uses a bounded async queue configured
+The current high-level runtime has one mutable generation state. By default the
+server admits one request at a time and uses a bounded async queue configured
 by `--max-queued-requests` and `--queue-timeout`. Queue overflow and timeout
 return HTTP 429 (Anthropic 529). Streaming disconnects cancel the native channel
 immediately, wait for the native worker to exit, and then release the runtime
 lease. Engines stay resident across HTTP connections; graceful server shutdown
 drains active work and releases the runtime and its device resources.
+
+`--enable-batching` merges concurrent non-streaming requests into one runtime
+call. Requests join a batch only when their generation-level settings match
+(sampling parameters, `max_tokens`, chat-template and thinking flags,
+speculative-decoding and context-cache options); each request keeps its own
+messages, media, stop strings and logit bias. A request waits at most
+`--batch-timeout-ms` (default 10) for others to arrive, and one call carries at
+most `--max-queue-batch-size` requests, capped by the engine's
+`--max-batch-size`. Decode is memory-bandwidth bound, so a batch of four costs
+little more than a single request and aggregate throughput scales almost
+linearly. Streaming requests still run one at a time; a streaming request in
+flight delays batched requests until it completes. `/health` reports the
+active batching settings.
+
+`--max-verify-tree-size` and `--max-draft-tree-size` bound the speculative
+tree the compiled bundle supports. The builder defaults both to 60; for linear
+MTP drafting a bound of one more than the largest `num_speculative_tokens` you
+intend to run is sufficient, and the runtime's spec-verify state buffers
+scale with it (about 0.9 GB per position for a 27B hybrid model at batch 4).
 
 Continuous batching, chunked prefill scheduling, and tensor parallelism require
 additional native scheduler support and are rejected at launch.

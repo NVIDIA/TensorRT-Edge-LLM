@@ -174,6 +174,11 @@ class ModelConfig:
     draft_top_k: Optional[int] = None
     draft_step: Optional[int] = None
     verify_tree_size: Optional[int] = None
+    max_verify_tree_size: Optional[int] = None
+    max_draft_tree_size: Optional[int] = None
+    enable_batching: bool = False
+    batch_timeout_ms: float = 10.0
+    max_queue_batch_size: Optional[int] = None
     speculative_config: Optional[SpeculativeConfig] = None
     context_cache_config: ContextCacheConfig = field(
         default_factory=ContextCacheConfig)
@@ -184,6 +189,10 @@ class ModelConfig:
                 or self.engine_cache_max_size_gb <= 0):
             raise ServerConfigError(
                 "engine_cache_max_size_gb must be positive")
+        if (isinstance(self.batch_timeout_ms, bool)
+                or not math.isfinite(self.batch_timeout_ms)
+                or self.batch_timeout_ms < 0):
+            raise ServerConfigError("batch_timeout_ms must be non-negative")
 
     def llm_kwargs(self) -> Dict[str, Any]:
         return {
@@ -197,6 +206,11 @@ class ModelConfig:
             "draft_top_k": self.draft_top_k,
             "draft_step": self.draft_step,
             "verify_tree_size": self.verify_tree_size,
+            "max_verify_tree_size": self.max_verify_tree_size,
+            "max_draft_tree_size": self.max_draft_tree_size,
+            "enable_batching": self.enable_batching,
+            "batch_timeout_ms": self.batch_timeout_ms,
+            "max_queue_batch_size": self.max_queue_batch_size,
             "speculative_config": self.speculative_config,
             "context_cache_config": self.context_cache_config,
         }
@@ -251,6 +265,13 @@ def _positive_float(value: str) -> float:
     parsed = float(value)
     if not math.isfinite(parsed) or parsed <= 0:
         raise argparse.ArgumentTypeError("must be positive")
+    return parsed
+
+
+def _non_negative_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed < 0:
+        raise argparse.ArgumentTypeError("must be non-negative")
     return parsed
 
 
@@ -325,7 +346,39 @@ def create_argument_parser() -> argparse.ArgumentParser:
     model.add_argument("--draft-top-k", type=_positive_int)
     model.add_argument("--draft-step", type=_positive_int)
     model.add_argument("--verify-tree-size", type=_positive_int)
+    model.add_argument(
+        "--max-verify-tree-size",
+        type=_positive_int,
+        help="Largest base verification input the compiled bundle supports. "
+        "Spec-verify state buffers scale with it; the builder default is 60.",
+    )
+    model.add_argument(
+        "--max-draft-tree-size",
+        type=_positive_int,
+        help="Largest draft proposal the compiled bundle supports; the "
+        "builder default is 60.",
+    )
     model.add_argument("--speculative-config", default="")
+    model.add_argument(
+        "--enable-batching",
+        action="store_true",
+        help="Merge concurrent non-streaming requests with matching sampling "
+        "settings into one runtime call, up to the engine's max batch size. "
+        "Streaming requests still run one at a time.",
+    )
+    model.add_argument(
+        "--batch-timeout-ms",
+        type=_non_negative_float,
+        default=10.0,
+        help="How long a request waits for compatible requests to join its "
+        "batch before running.",
+    )
+    model.add_argument(
+        "--max-queue-batch-size",
+        type=_positive_int,
+        help="Cap on requests merged per runtime call; defaults to the "
+        "engine's max batch size.",
+    )
     model.add_argument(
         "--enable-context-reuse",
         action="store_true",
@@ -377,6 +430,11 @@ def parse_server_config(argv: Optional[Sequence[str]] = None) -> ServerConfig:
         draft_top_k=args.draft_top_k,
         draft_step=draft_step,
         verify_tree_size=args.verify_tree_size,
+        max_verify_tree_size=args.max_verify_tree_size,
+        max_draft_tree_size=args.max_draft_tree_size,
+        enable_batching=args.enable_batching,
+        batch_timeout_ms=args.batch_timeout_ms,
+        max_queue_batch_size=args.max_queue_batch_size,
         speculative_config=speculative,
         context_cache_config=context_cache,
     )
