@@ -188,11 +188,44 @@ class Weights:
                     if not candidate.endswith("embed_tokens.weight")
                 ]
         candidates = list(dict.fromkeys(candidates))
+        owned = self._sidecar_in_owner_namespace(name)
+        if owned is not None:
+            candidates = [owned]
         for candidate in candidates:
             if self.store.has(candidate):
                 return candidate
         if required:
             raise KeyError(f"checkpoint tensor not found: {name!r}")
+        return None
+
+    # Per-module tensors that must live beside the module's weight. A draft
+    # resolves its modules in a separate checkpoint namespace (Qwen3.5 MTP
+    # ``mtp.``); without this pin, a sidecar missing there would be answered
+    # by the base model's identically named module.
+    _MODULE_SIDECARS = (".weight_scale", ".weight_scale_2",
+                        ".weight_global_scale", ".input_scale",
+                        ".input_global_scale", ".bias", ".pre_quant_scale",
+                        ".qzeros", ".scales", ".g_idx", ".q_scale", ".k_scale",
+                        ".v_scale")
+    _PRIMARY_WEIGHTS = (".weight", ".qweight", ".weight_packed")
+
+    def _sidecar_in_owner_namespace(self, name: str) -> Optional[str]:
+        """Concrete key for a module sidecar, pinned to its weight's namespace.
+
+        Returns None when *name* is not a module sidecar or the module has no
+        resolvable primary weight, leaving ordinary candidate resolution to
+        run.
+        """
+        for suffix in self._MODULE_SIDECARS:
+            if name.endswith(suffix) and len(name) > len(suffix):
+                prefix = name[:-len(suffix)]
+                break
+        else:
+            return None
+        for weight_suffix in self._PRIMARY_WEIGHTS:
+            key = self._resolve(prefix + weight_suffix, required=False)
+            if key is not None:
+                return key[:-len(weight_suffix)] + suffix
         return None
 
     def checkpoint_key(self, name: str) -> str:
@@ -241,15 +274,36 @@ class Weights:
                 locations[name] = location
         return locations
 
+    _QUANT_SIDECAR_SUFFIXES = (".weight_scale", ".weight_scale_2",
+                               ".weight_global_scale", ".qweight",
+                               ".weight_packed", ".scales")
+
     def module_quant_type(self,
                           name: str,
                           *,
                           tie_word_embeddings: bool = False) -> str:
         """Return the checkpoint precision owned by one model projection."""
+        lookup = name
         normalize = getattr(self.conversion, "normalize_checkpoint_name", None)
         if normalize is not None:
-            name = normalize(name)
-        return self.quant.module_type(name, tie_word_embeddings)
+            lookup = normalize(lookup)
+        quant_type = self.quant.module_type(lookup, tie_word_embeddings)
+        # A draft resolves its projections in a separate checkpoint namespace
+        # (Qwen3.5 MTP stores them under ``mtp.``), where the same short name
+        # may be unquantized even though the base layer carries a quantized
+        # override. The tensor actually read decides: a bare weight with no
+        # quantization sidecar is FP16. ``lm_head`` is skipped because its
+        # resolution consults this method for embedding tying.
+        if (quant_type != quantization.QUANT_FP16 and name != "lm_head"
+                and self._has_plain_weight(name)):
+            return quantization.QUANT_FP16
+        return quant_type
+
+    def _has_plain_weight(self, name: str) -> bool:
+        if not self.has(name + ".weight"):
+            return False
+        return not any(
+            self.has(name + suffix) for suffix in self._QUANT_SIDECAR_SUFFIXES)
 
     def parameter_spec(self,
                        name: str,
