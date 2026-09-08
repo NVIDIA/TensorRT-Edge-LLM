@@ -92,8 +92,23 @@ def try_write_packaged_chat_template(model_dir: str,
 
 
 def _format_chat(tokenizer, messages, **kwargs) -> str:
-    """Apply a tokenizer chat template and return text."""
-    return tokenizer.apply_chat_template(messages, tokenize=False, **kwargs)
+    """Apply a tokenizer chat template and return text.
+
+    Probes render with thinking disabled unless told otherwise: templates
+    that rewrite the conversation in thinking mode (Qwen3.8 injects reasoning
+    instructions into the system block and treats an undefined flag as
+    enabled) would otherwise yield prefixes that never match a request.
+    """
+    kwargs.setdefault("enable_thinking", False)
+    try:
+        return tokenizer.apply_chat_template(messages,
+                                             tokenize=False,
+                                             **kwargs)
+    except TypeError:
+        kwargs.pop("enable_thinking", None)
+        return tokenizer.apply_chat_template(messages,
+                                             tokenize=False,
+                                             **kwargs)
 
 
 def _format_chat_generation(tokenizer, messages, enable_thinking: bool) -> str:
@@ -213,10 +228,17 @@ def process_chat_template(model_dir: str,
 
         generation_prompt_thinking = None
         try:
+            # Slice against a thinking-mode baseline: a template may render a
+            # longer conversation in thinking mode, so the non-thinking
+            # baseline offset would cut into the wrong place.
+            thinking_base = _format_chat(tokenizer,
+                                         [system_message, user_message],
+                                         add_generation_prompt=False,
+                                         enable_thinking=True)
             thinking_formatted = _format_chat_generation(
                 tokenizer, [system_message, user_message],
                 enable_thinking=True)
-            candidate = thinking_formatted[len(user_formatted):]
+            candidate = thinking_formatted[len(thinking_base):]
             if candidate != generation_prompt:
                 generation_prompt_thinking = candidate
         except (TypeError, ValueError, KeyError):
