@@ -50,6 +50,7 @@ async def health(request: Request):
         "model": client.model_name,
         "active_requests": client.active_requests,
         "queued_requests": client.queued_requests,
+        "batching": client.batching,
         "capabilities": {
             "chat": caps.chat,
             "transcription": caps.transcription,

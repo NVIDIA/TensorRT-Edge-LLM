@@ -48,6 +48,8 @@ class BuildOptions:
     max_input_len: Optional[int] = None
     max_kv_cache_capacity: Optional[int] = None
     max_batch_size: Optional[int] = None
+    max_verify_tree_size: Optional[int] = None
+    max_draft_tree_size: Optional[int] = None
     max_image_tokens: Optional[int] = None
     max_image_tokens_per_image: Optional[int] = None
     tp_size: Optional[int] = None
@@ -85,6 +87,8 @@ class BuildOptions:
             ("--max-input-len", self.max_input_len),
             ("--max-kv-cache-capacity", self.max_kv_cache_capacity),
             ("--max-batch-size", self.max_batch_size),
+            ("--max-verify-tree-size", self.max_verify_tree_size),
+            ("--max-draft-tree-size", self.max_draft_tree_size),
             ("--max-image-tokens", self.max_image_tokens),
             ("--max-image-tokens-per-image", self.max_image_tokens_per_image),
             ("--tp-size", self.tp_size),

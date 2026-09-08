@@ -51,6 +51,7 @@ from ..parsing.tool_calling import (ToolConfig, parse_assistant_output,
                                     validate_tool_request)
 from ..parsing.tool_chat_template import (ToolChatTemplateFormatter,
                                           needs_tool_chat_template)
+from .batching import RequestBatcher, resolve_batch_size
 from .engine_layout import BundleLayout, EngineType, inspect_bundle
 
 logger = logging.getLogger("edgellm.server")
@@ -658,6 +659,11 @@ class LLM:
         draft_top_k: Optional[int] = None,
         draft_step: Optional[int] = None,
         verify_tree_size: Optional[int] = None,
+        max_verify_tree_size: Optional[int] = None,
+        max_draft_tree_size: Optional[int] = None,
+        enable_batching: bool = False,
+        batch_timeout_ms: float = 10.0,
+        max_queue_batch_size: Optional[int] = None,
         build_options: Optional["BuildOptions"] = None,
         speculative_config: Optional[Any] = None,
         context_cache_config: Optional[Union[ContextCacheConfig,
@@ -671,12 +677,19 @@ class LLM:
             raise ValueError("engine_cache_max_size_gb must be positive")
         for name, value in (("draft_top_k", draft_top_k),
                             ("draft_step", draft_step), ("verify_tree_size",
-                                                         verify_tree_size)):
+                                                         verify_tree_size),
+                            ("max_verify_tree_size", max_verify_tree_size),
+                            ("max_draft_tree_size", max_draft_tree_size),
+                            ("max_queue_batch_size", max_queue_batch_size)):
             if value is None:
                 continue
             if (isinstance(value, bool) or not isinstance(value, int)
                     or value <= 0):
                 raise ValueError(f"{name} must be a positive integer")
+        if (isinstance(batch_timeout_ms, bool)
+                or not math.isfinite(batch_timeout_ms)
+                or batch_timeout_ms < 0):
+            raise ValueError("batch_timeout_ms must be non-negative")
 
         self._model_id = _derive_model_id(model)
         self._draft_top_k = draft_top_k or _DEFAULT_DRAFT_TOP_K
@@ -704,6 +717,7 @@ class LLM:
         self._prev_ctx_admitted_sequences = 0
         self._closed = False
         self._runtime = None
+        self._batcher: Optional[RequestBatcher] = None
 
         from .engine_build import BuildOptions, cache_root, prepare_model
 
@@ -711,6 +725,8 @@ class LLM:
             max_input_len=max_input_len,
             max_batch_size=max_batch_size,
             max_kv_cache_capacity=max_kv_cache_capacity,
+            max_verify_tree_size=max_verify_tree_size,
+            max_draft_tree_size=max_draft_tree_size,
         )
         spec_method = options.spec_type
         num_speculative_tokens = None
@@ -758,6 +774,9 @@ class LLM:
         self._init_from_bundle(prepared.bundle_dir)
 
         self._load_runtime()
+        if enable_batching:
+            self._batcher = self._make_batcher(batch_timeout_ms,
+                                               max_queue_batch_size)
 
     # ------------------------------------------------------------------
     # Initialization
@@ -1136,7 +1155,7 @@ class LLM:
         tool_parser: str = "auto",
         reasoning_parser: str = "none",
     ) -> CompletionOutput:
-        response = self._handle_request(request)
+        response = self._run_generation(request)
         text = response.output_texts[0] if response.output_texts else ""
         token_ids = response.output_ids[0] if response.output_ids else []
         prompt_tokens = (response.prompt_token_counts[0]
@@ -1223,6 +1242,38 @@ class LLM:
             int(cc.hybrid_restores),
         )
 
+    def _make_batcher(self, batch_timeout_ms: float,
+                      max_queue_batch_size: Optional[int]) -> RequestBatcher:
+        try:
+            video_singleton = self._video_model_family() == "nemotron"
+        except Exception:
+            video_singleton = False
+        batcher = RequestBatcher(
+            runtime_handler=self._handle_request,
+            max_batch_size=resolve_batch_size(self._max_batch_size,
+                                              max_queue_batch_size),
+            timeout_ms=batch_timeout_ms,
+            video_requires_singleton=video_singleton,
+        )
+        logger.info(
+            "Request batching enabled (max_batch_size=%d, timeout_ms=%.1f)",
+            batcher.max_batch_size, batcher.timeout_ms)
+        return batcher
+
+    @property
+    def batcher(self) -> Optional[RequestBatcher]:
+        """Active request batcher, or None when requests run one at a time."""
+        return getattr(self, "_batcher", None)
+
+    def _run_generation(self, request):
+        """Complete one non-streaming request, merged with concurrent ones
+        when batching is enabled."""
+        batcher = self.batcher
+        if batcher is not None and not getattr(request, "stream_channels",
+                                               None):
+            return batcher.submit(request)
+        return self._handle_request(request)
+
     def _handle_request(self, request):
         """Serialized entry to the C++ runtime."""
         with self._infer_guard():
@@ -1240,6 +1291,12 @@ class LLM:
         with self._close_lock:
             if self._closed:
                 return
+            # Drain queued batches before the runtime goes away; the worker
+            # routes them through _handle_request, which takes the same locks.
+            batcher = self.batcher
+            if batcher is not None:
+                batcher.close()
+                self._batcher = None
             self._closed = True
             with self._admission_sem:
                 with self._infer_lock:

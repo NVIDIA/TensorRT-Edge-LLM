@@ -49,10 +49,21 @@ class EngineCapabilities:
 
 
 class _AdmissionController:
-    """Bounded queue for the runtime's single generation slot."""
+    """Bounded queue in front of the runtime's generation slots.
 
-    def __init__(self, max_queued_requests: int, timeout: float) -> None:
-        self._semaphore = asyncio.Semaphore(1)
+    One slot unless request batching is enabled, in which case up to the
+    micro-batch size of requests may hold leases at once so their rows can
+    share a runtime call.
+    """
+
+    def __init__(self,
+                 max_queued_requests: int,
+                 timeout: float,
+                 max_active: int = 1) -> None:
+        if max_active < 1:
+            raise ValueError("max_active must be positive")
+        self._max_active = max_active
+        self._semaphore = asyncio.Semaphore(max_active)
         self._max_queued = max_queued_requests
         self._timeout = timeout
         self._active = 0
@@ -73,7 +84,8 @@ class _AdmissionController:
         acquired = False
         if self._closing:
             raise ServerUnavailableError()
-        if self._active + self._waiting >= self._max_queued + 1:
+        if (self._active + self._waiting
+                >= self._max_queued + self._max_active):
             raise ServerOverloadedError()
         self._waiting += 1
 
@@ -93,7 +105,7 @@ class _AdmissionController:
                 self._semaphore.release()
                 acquired = False
                 raise ServerUnavailableError()
-            self._active = 1
+            self._active += 1
             return _AdmissionLease(self)
         except BaseException:
             if acquired:
@@ -101,7 +113,7 @@ class _AdmissionController:
             raise
 
     def release(self) -> None:
-        self._active = 0
+        self._active -= 1
         self._semaphore.release()
 
     async def close(self) -> None:
@@ -110,7 +122,8 @@ class _AdmissionController:
             if self._drained:
                 return
             self._closing = True
-            await self._semaphore.acquire()
+            for _ in range(self._max_active):
+                await self._semaphore.acquire()
             self._drained = True
 
 
@@ -145,6 +158,11 @@ def _read_json(path: str) -> Dict[str, Any]:
         return value if isinstance(value, dict) else {}
     except (OSError, ValueError):
         return {}
+
+
+def _batch_size_for(llm: Union[LLM, TTS]) -> int:
+    batcher = getattr(llm, "batcher", None)
+    return batcher.max_batch_size if batcher is not None else 1
 
 
 def _capabilities_for(llm: Union[LLM, TTS]) -> EngineCapabilities:
@@ -190,7 +208,7 @@ def _capabilities_for(llm: Union[LLM, TTS]) -> EngineCapabilities:
             builder.get("max_input_len"), int) else None,
         max_batch_size=builder.get("max_batch_size") if isinstance(
             builder.get("max_batch_size"), int) else None,
-        max_num_seqs=1,
+        max_num_seqs=_batch_size_for(llm),
         kv_cache_dtype=str(config.get("kv_cache_dtype", "unknown")),
         speculative_decoding=llm.has_draft_model,
         speculative_method=str(config.get("spec_decode_type", "none")),
@@ -260,6 +278,7 @@ class EngineClient:
         self._admission = _AdmissionController(
             self._api_config.max_queued_requests,
             self._api_config.queue_timeout,
+            max_active=_batch_size_for(llm),
         )
         self._capabilities = _capabilities_for(llm)
         self._close_lock = asyncio.Lock()
@@ -285,6 +304,15 @@ class EngineClient:
     @property
     def queued_requests(self) -> int:
         return self._admission.waiting
+
+    @property
+    def batching(self) -> Dict[str, Any]:
+        batcher = getattr(self._llm, "batcher", None)
+        return {
+            "enabled": batcher is not None,
+            "max_batch_size": batcher.max_batch_size if batcher else 1,
+            "timeout_ms": batcher.timeout_ms if batcher else 0.0,
+        }
 
     async def close(self) -> None:
         """Drain request ownership, then release the model runtime once."""
