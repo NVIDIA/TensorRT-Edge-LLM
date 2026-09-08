@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -471,9 +471,9 @@ def _set_tensor(model: nn.Module,
                 mapping: Optional[Mapping] = None) -> bool:
     """Assign *tensor* to the buffer or parameter at *key* inside *model*.
 
-    Bfloat16 tensors are cast to float16 on the fly. The export pipeline
-    assumes FP16 activations and the C++ runtime requires FP16 (or FP8)
-    weight files. Doing the cast here avoids a separate post-loading sweep.
+    Floating-point checkpoint tensors are cast to an existing destination's
+    declared half-precision dtype. Bfloat16 tensors retain the legacy float16
+    fallback when the destination dtype is unavailable.
 
     Returns True on success, False if the key does not resolve to a known
     buffer or parameter.
@@ -485,8 +485,14 @@ def _set_tensor(model: nn.Module,
     except (AttributeError, IndexError, TypeError):
         return False
 
-    if tensor.dtype == torch.bfloat16:
-        tensor = tensor.to(torch.float16)
+    if tensor.dtype in (torch.float32, torch.bfloat16, torch.float16):
+        destination = module._parameters.get(
+            attr) if attr in module._parameters else module._buffers.get(attr)
+        destination_dtype = getattr(destination, "dtype", None)
+        if destination_dtype in (torch.float16, torch.bfloat16):
+            tensor = tensor.to(destination_dtype)
+        elif tensor.dtype == torch.bfloat16:
+            tensor = tensor.to(torch.float16)
 
     tensor = _shard_for_module(module, attr, tensor, mapping)
 
