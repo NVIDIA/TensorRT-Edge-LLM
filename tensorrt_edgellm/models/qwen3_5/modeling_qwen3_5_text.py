@@ -873,6 +873,17 @@ def fuse_gdn_input_projections(model: nn.Module) -> int:
         # --- Fuse: concatenate weights along output dim (dim 0) ----------
         fused_buffers: dict = {}
         proj_modules = [getattr(mixer, n) for n in _GDN_PROJ_NAMES]
+        # Anti-compressed checkpoints can quantize only some GDN projections
+        # (e.g. in_proj_qkv/z -> NVFP4 FP8, in_proj_b/a -> FP16); a single cat
+        # cannot mix those dtypes, so keep the unfused path in that case.
+        wptrs = [getattr(p, "weight", None) for p in proj_modules]
+        if any(wp is None for wp in wptrs) or len({wp.dtype
+                                                   for wp in wptrs}) != 1:
+            logger.warning(
+                "GDN fusion skipped for %s: projections have mixed weight "
+                "dtypes (%s).", name,
+                ", ".join(sorted(str(wp.dtype) for wp in wptrs)))
+            continue
         for attr in list(proj_modules[0]._buffers) + list(
                 proj_modules[0]._parameters):
             parts = [getattr(p, attr) for p in proj_modules]
