@@ -26,8 +26,8 @@ family to these contracts.
 - [Text generation](../getting_started/quick-start-guide.md): one shared workflow
   for dense LLM, MoE, VLM, and Omni text output; Phi-4 Multimodal adds the
   model-specific [vision-LoRA merge](phi4.md)
-- [Speculative Decoding](speculative-decoding.md): MTP, EAGLE3, DFlash, and
-  DSpark acceleration
+- [Speculative Decoding](speculative-decoding.md): MTP, EAGLE3, DFlash, DSpark,
+  and JetSpec acceleration
 - [ASR](asr.md): audio to transcript text with Qwen3-ASR
 - [Nemotron-3.5-ASR](../../developer_guide/models/nemotron3_5_asr.md): audio to transcript text with a model-specific RNN-T runtime
 

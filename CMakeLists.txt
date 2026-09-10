@@ -15,10 +15,22 @@
 
 cmake_minimum_required(VERSION 3.20 FATAL_ERROR)
 
+option(EDGELLM_PYTHON_ONLY_WHEEL
+       "Configure only the Python sources for the wheel fan-in base" OFF)
+if(EDGELLM_PYTHON_ONLY_WHEEL)
+  set(_EDGELLM_PROJECT_LANGUAGES NONE)
+else()
+  set(_EDGELLM_PROJECT_LANGUAGES C CXX CUDA)
+endif()
+
 project(
   tensorrt_edgellm_sdk
-  VERSION 0.10.0
-  LANGUAGES C CXX CUDA)
+  VERSION 0.10.1
+  LANGUAGES ${_EDGELLM_PROJECT_LANGUAGES})
+
+if(EDGELLM_PYTHON_ONLY_WHEEL)
+  return()
+endif()
 
 # Specify the C++ standard and flags
 set(CMAKE_CXX_STANDARD 17)
@@ -32,6 +44,29 @@ set(CMAKE_CUDA_FLAGS
     "${CMAKE_CUDA_FLAGS} -Wno-deprecated-declarations -Xcompiler=-Werror,-Wno-error=unused-parameter"
 )
 set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--no-undefined")
+
+function(edgellm_apply_qnx_warning_suppressions target)
+  if(QNX_BUILD)
+    # Suppress QNX 8 system-header false positives on affected project targets.
+    set(_qnx_warning_suppressions
+        -Wno-array-bounds
+        -Wno-maybe-uninitialized
+        -Wno-dangling-pointer
+        -Wno-free-nonheap-object
+        -Wno-stringop-overflow
+        -Wno-return-type
+        -Wno-stringop-overread)
+    target_compile_options(
+      ${target}
+      PRIVATE $<$<COMPILE_LANGUAGE:C,CXX>:${_qnx_warning_suppressions}>)
+
+    set(_qnx_cuda_warning_suppressions ${_qnx_warning_suppressions})
+    list(TRANSFORM _qnx_cuda_warning_suppressions PREPEND "-Xcompiler=")
+    target_compile_options(
+      ${target}
+      PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:${_qnx_cuda_warning_suppressions}>)
+  endif()
+endfunction()
 
 # Code coverage with gcov (for SonarQube analysis)
 option(ENABLE_COVERAGE "Enable gcov code coverage instrumentation" OFF)
@@ -82,8 +117,9 @@ endif()
 set_ifndef(CUDA_CTK_VERSION 12.8)
 set_ifndef(CUDA_DIR /usr/local/cuda-${CUDA_CTK_VERSION})
 
-if(NOT AARCH64_BUILD)
-  set(CMAKE_CUDA_ARCHITECTURES 80;86;89)
+# Wheel payloads are single-SM builds; preserve the caller's architecture.
+if(NOT DEFINED EDGELLM_WHEEL_PAYLOAD_DIR AND NOT AARCH64_BUILD)
+  set(CMAKE_CUDA_ARCHITECTURES 80;86;89;90)
   if(CUDA_CTK_VERSION VERSION_GREATER_EQUAL 12.8)
     list(APPEND CMAKE_CUDA_ARCHITECTURES 100a 120)
   endif()
@@ -124,9 +160,11 @@ find_path(
   PATH_SUFFIXES include)
 
 set(CUDA_INCLUDE_DIR ${CUDA_RUNTIME_API_INCLUDE_DIR}
-                     ${CURAND_KERNEL_INCLUDE_DIR})
+                     ${CURAND_KERNEL_INCLUDE_DIR} ${CUDA_PLATFORM_INCLUDE_DIR})
 
 set(CUDA_USE_STATIC_CUDA_RUNTIME OFF)
+
+include(${CMAKE_SOURCE_DIR}/cmake/FindNVRTC.cmake)
 
 # NVTX profiling support option (default: OFF)
 option(ENABLE_NVTX_PROFILING "Enable NVTX profiling support" OFF)
@@ -194,13 +232,14 @@ target_link_options(commonLibraryExt INTERFACE
 #                       SM110-only ``Nvfp4MoePlugin``
 #   nvfp4_fused_moe  -- SM12x (consumer Blackwell / Spark GB10) fused NVFP4
 #                       MoE; consumed by ``NvFP4MoEPluginGeforce``
+#   rmsnorm          -- FP16/BF16 RMSNorm for supported production hidden sizes
 #   semicolon-separated group list (e.g. -DENABLE_CUTE_DSL=fmha;gdn)
 # cmake-format: on
 set(ENABLE_CUTE_DSL
     "fmha"
     CACHE
       STRING
-      "CuTe DSL kernels: fmha (default), ALL, or semicolon-separated group list (fmha;gdn;f16_moe)"
+      "CuTe DSL kernels: fmha (default), ALL, or semicolon-separated group list (fmha;gdn;f16_moe;rmsnorm)"
 )
 
 # Build Core libraries of the project. attentionPlugin shared library and
@@ -222,32 +261,24 @@ endif()
 option(BUILD_PYTHON_BINDINGS "Enable building Python pybind11 bindings" OFF)
 
 if(BUILD_UNIT_TESTS)
+  # FORCE, because a build tree configured before gmock was enabled already
+  # caches OFF, and a plain `set(... CACHE ...)` would leave it there — the
+  # failure is then a missing gmock/gmock.h, not a stale-cache message.
   set(BUILD_GMOCK
-      OFF
-      CACHE BOOL "Disable Google Mock")
+      ON
+      CACHE BOOL "Enable Google Mock" FORCE)
   add_subdirectory(${CMAKE_SOURCE_DIR}/3rdParty/googletest)
-  file(GLOB_RECURSE UNIT_TESTS_SRCS ${CMAKE_SOURCE_DIR}/unittests/*.cpp
-       ${CMAKE_SOURCE_DIR}/unittests/*.cu)
-  add_executable(unitTest ${UNIT_TESTS_SRCS})
-  target_include_directories(unitTest PRIVATE ${COMMON_INCLUDE_DIRS}
-                                              ${CMAKE_SOURCE_DIR})
-  # Define project root path for tests to access resources
-  target_compile_definitions(unitTest
-                             PRIVATE PROJECT_ROOT_DIR="${CMAKE_SOURCE_DIR}")
-  if(ENABLE_CUTEDSL_MODULE_TEST_HOOK)
-    target_compile_definitions(unitTest PRIVATE ENABLE_CUTEDSL_MODULE_TEST_HOOK)
-  endif()
-  # Resource-registration tests resolve the plugin's exported lifecycle ABI.
-  add_dependencies(unitTest NvInfer_edgellm_plugin)
-  target_link_libraries(
-    unitTest PRIVATE gtest gtest_main edgellmCore commonLibraryExt exampleUtils
-                     ${CUDA_DRIVER_LINK_LIB})
   include(${CMAKE_SOURCE_DIR}/cmake/CuteDsl.cmake)
-  cute_dsl_setup(LINK_TARGETS unitTest)
-  add_cross_build_link_options(unitTest)
+  enable_testing()
+  # Targets, grouping and per-target wiring all live in
+  # unittests/CMakeLists.txt.
   add_subdirectory(unittests)
 endif()
 
 if(BUILD_PYTHON_BINDINGS)
   add_subdirectory(experimental/pybind)
+  if(DEFINED EDGELLM_WHEEL_PAYLOAD_DIR AND NOT EDGELLM_WHEEL_PAYLOAD_DIR
+                                           STREQUAL "")
+    include(${CMAKE_SOURCE_DIR}/packaging/cmake/InstallWheel.cmake)
+  endif()
 endif()

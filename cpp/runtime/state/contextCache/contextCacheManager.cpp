@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <iterator>
 #include <utility>
 
@@ -61,7 +62,7 @@ size_t resourceDemandCount(ResourceDemand const& demand) noexcept
 
 size_t totalResourceCount(ReusePlan const& plan) noexcept
 {
-    return plan.basePageBindings.size() + plan.draftPageBindings.size()
+    return plan.basePageBindings.size() + plan.specPageBindings.size()
         + static_cast<size_t>(plan.recurrentSnapshotBinding.has_value())
         + static_cast<size_t>(plan.partialKvSnapshotBinding.has_value()) + resourceDemandCount(plan.demand);
 }
@@ -112,6 +113,17 @@ BaseProjection prepareBaseProjection(
     return projection;
 }
 
+std::vector<ResourceId> specStateResources(SpecPagedStateRecord const& state)
+{
+    std::vector<ResourceId> resources;
+    resources.reserve(state.pagePath.size());
+    for (PageId const page : state.pagePath)
+    {
+        resources.push_back(ResourceId{ResourceType::kDraftKvPage, page});
+    }
+    return resources;
+}
+
 std::optional<RecordId> selectRecordLimitVictim(CacheRecordStore const& records)
 {
     size_t const recordLimit = static_cast<size_t>(records.maxRecords());
@@ -144,12 +156,12 @@ namespace
 class PublicationRollbackGuard
 {
 public:
-    PublicationRollbackGuard(ResourcePools& pools, BaseBlockIndex& baseIndex, DraftPathIndex& draftIndex,
+    PublicationRollbackGuard(ResourcePools& pools, BaseBlockIndex& baseIndex, SpecStateIndex& specIndex,
         CacheRecordStore& records, std::vector<ResourceId> const& cacheResources,
         std::vector<MissingBaseMapping> const& missingMappings) noexcept
         : mPools(pools)
         , mBaseIndex(baseIndex)
-        , mDraftIndex(draftIndex)
+        , mSpecIndex(specIndex)
         , mRecords(records)
         , mCacheResources(cacheResources)
         , mMissingMappings(missingMappings)
@@ -165,9 +177,9 @@ public:
         {
             return;
         }
-        if (mDraftIndexed)
+        if (mSpecIndexed)
         {
-            mDraftIndex.erase(mRecords.get(mInsertedRecord));
+            mSpecIndex.paged().erase(mRecords.get(mInsertedRecord));
         }
         if (mInsertedRecord != 0 && mRecords.contains(mInsertedRecord))
         {
@@ -200,9 +212,9 @@ public:
         mInsertedRecord = id;
     }
 
-    void draftIndexed() noexcept
+    void specIndexed() noexcept
     {
-        mDraftIndexed = true;
+        mSpecIndexed = true;
     }
 
     void commit() noexcept
@@ -213,40 +225,52 @@ public:
 private:
     ResourcePools& mPools;
     BaseBlockIndex& mBaseIndex;
-    DraftPathIndex& mDraftIndex;
+    SpecStateIndex& mSpecIndex;
     CacheRecordStore& mRecords;
     std::vector<ResourceId> const& mCacheResources;
     std::vector<MissingBaseMapping> const& mMissingMappings;
     size_t mAddedCacheRefCount{};
     size_t mInsertedMappingCount{};
     RecordId mInsertedRecord{};
-    bool mDraftIndexed{};
+    bool mSpecIndexed{};
     bool mCommitted{};
 };
 
-class CacheRefRollbackGuard
+class SpecUpgradeRollbackGuard
 {
 public:
-    CacheRefRollbackGuard(ResourcePools& pools, std::vector<ResourceId> const& resources) noexcept
+    SpecUpgradeRollbackGuard(ResourcePools& pools, SpecStateIndex& specIndex, CacheRecord const& upgradedRecord,
+        std::vector<ResourceId> const& resources) noexcept
         : mPools(pools)
+        , mSpecIndex(specIndex)
+        , mUpgradedRecord(upgradedRecord)
         , mResources(resources)
     {
     }
 
-    CacheRefRollbackGuard(CacheRefRollbackGuard const&) = delete;
-    CacheRefRollbackGuard& operator=(CacheRefRollbackGuard const&) = delete;
+    SpecUpgradeRollbackGuard(SpecUpgradeRollbackGuard const&) = delete;
+    SpecUpgradeRollbackGuard& operator=(SpecUpgradeRollbackGuard const&) = delete;
 
-    ~CacheRefRollbackGuard() noexcept
+    ~SpecUpgradeRollbackGuard() noexcept
     {
         if (mCommitted)
         {
             return;
+        }
+        if (mSpecIndexed)
+        {
+            mSpecIndex.paged().erase(mUpgradedRecord);
         }
         while (mAddedCount > 0)
         {
             --mAddedCount;
             mPools.releaseCacheRef(mResources[mAddedCount]);
         }
+    }
+
+    void specIndexed() noexcept
+    {
+        mSpecIndexed = true;
     }
 
     void addAll()
@@ -265,8 +289,11 @@ public:
 
 private:
     ResourcePools& mPools;
+    SpecStateIndex& mSpecIndex;
+    CacheRecord const& mUpgradedRecord;
     std::vector<ResourceId> const& mResources;
     size_t mAddedCount{};
+    bool mSpecIndexed{};
     bool mCommitted{};
 };
 
@@ -292,7 +319,7 @@ CacheRequestLease& CacheRequestLease::operator=(CacheRequestLease&& other) noexc
         mMatchedBlockHashes = std::move(other.mMatchedBlockHashes);
         mActiveResources = std::move(other.mActiveResources);
         mBasePages = std::move(other.mBasePages);
-        mDraftPages = std::move(other.mDraftPages);
+        mSpecPages = std::move(other.mSpecPages);
         mSpecReplayDependency = other.mSpecReplayDependency;
         mHybridHasAttention = other.mHybridHasAttention;
         mRecurrentSnapshotBinding = other.mRecurrentSnapshotBinding;
@@ -303,7 +330,7 @@ CacheRequestLease& CacheRequestLease::operator=(CacheRequestLease&& other) noexc
         other.mMatchedBlockHashes.clear();
         other.mActiveResources.clear();
         other.mBasePages.clear();
-        other.mDraftPages.clear();
+        other.mSpecPages.clear();
         other.mSpecReplayDependency.reset();
         other.mHybridHasAttention = false;
         other.mRecurrentSnapshotBinding.reset();
@@ -319,7 +346,7 @@ std::vector<PageId> const& CacheRequestLease::basePages() const noexcept
 
 std::vector<PageId> const& CacheRequestLease::draftPages() const noexcept
 {
-    return mDraftPages;
+    return mSpecPages;
 }
 
 std::optional<int32_t> CacheRequestLease::recurrentSnapshotSlot() const noexcept
@@ -348,16 +375,18 @@ void CacheRequestLease::release() noexcept
     mMatchedBlockHashes.clear();
     mActiveResources.clear();
     mBasePages.clear();
-    mDraftPages.clear();
+    mSpecPages.clear();
     mSpecReplayDependency.reset();
     mHybridHasAttention = false;
     mRecurrentSnapshotBinding.reset();
     mPartialKvSnapshotBinding.reset();
 }
 
-ContextCacheManager::ContextCacheManager(int32_t pageSize, ResourceDemand capacities, int32_t maxRecords)
+ContextCacheManager::ContextCacheManager(
+    int32_t pageSize, ResourceDemand capacities, int32_t maxRecords, std::optional<SpecReuseContract> specReuseContract)
     : mPageSize(validateManagerConfiguration(pageSize, capacities, maxRecords))
     , mPools(capacities)
+    , mSpecReuseContract(specReuseContract)
     , mRecords(maxRecords)
 {
 }
@@ -376,6 +405,13 @@ AcquireResult ContextCacheManager::acquireHybrid(std::vector<HybridCheckpointCan
         candidates, inputFullBlockHashes, inputTokenCount, mPageSize, hasAttention, mRecords, lookupPolicy));
 }
 
+AcquireResult ContextCacheManager::acquireHybridMtp(std::vector<HybridCheckpointCandidate> const& candidates,
+    std::vector<BlockHash> const& inputFullBlockHashes, int32_t inputTokenCount, ContextCacheLookupPolicy lookupPolicy)
+{
+    return acquire(
+        makeHybridMtpReusePlan(candidates, inputFullBlockHashes, inputTokenCount, mPageSize, mRecords, lookupPolicy));
+}
+
 std::vector<int32_t> ContextCacheManager::hybridCandidateLengths(int32_t inputTokenCount) const
 {
     return mRecords.hybridCandidateLengths(inputTokenCount);
@@ -384,8 +420,10 @@ std::vector<int32_t> ContextCacheManager::hybridCandidateLengths(int32_t inputTo
 AcquireResult ContextCacheManager::acquireSpec(
     std::vector<BlockHash> const& inputFullBlockHashes, int32_t inputTokenCount, ContextCacheLookupPolicy lookupPolicy)
 {
-    return acquire(makeSpecReusePlan(
-        inputFullBlockHashes, inputTokenCount, mPageSize, mBaseIndex, mDraftIndex, mRecords, lookupPolicy));
+    ELLM_CHECK(mSpecReuseContract.has_value(), "Speculative context cache acquire requires a registered contract");
+    return acquire(makeSpecReusePlan(SpecReusePlanInput{inputFullBlockHashes, inputTokenCount, mPageSize, lookupPolicy,
+                                         mBaseIndex, mSpecIndex, mRecords},
+        *mSpecReuseContract));
 }
 
 AcquireResult ContextCacheManager::acquire(ReusePlan plan)
@@ -399,10 +437,10 @@ AcquireResult ContextCacheManager::acquire(ReusePlan plan)
     lease.mRecurrentSnapshotBinding = plan.recurrentSnapshotBinding;
     lease.mPartialKvSnapshotBinding = plan.partialKvSnapshotBinding;
     lease.mActiveResources.reserve(totalResourceCount(plan));
-    size_t const sharedBasePageCount = plan.basePageBindings.size();
-    size_t const sharedDraftPageCount = plan.draftPageBindings.size();
-    lease.mBasePages.reserve(sharedBasePageCount + static_cast<size_t>(plan.demand.baseKvPages));
-    lease.mDraftPages.reserve(sharedDraftPageCount + static_cast<size_t>(plan.demand.draftKvPages));
+    size_t const reusedBasePageCount = plan.basePageBindings.size();
+    size_t const reusedSpecPageCount = plan.specPageBindings.size();
+    lease.mBasePages.reserve(reusedBasePageCount + static_cast<size_t>(plan.demand.baseKvPages));
+    lease.mSpecPages.reserve(reusedSpecPageCount + static_cast<size_t>(plan.demand.draftKvPages));
 
     for (size_t index = 0; index < plan.basePageBindings.size(); ++index)
     {
@@ -410,20 +448,20 @@ AcquireResult ContextCacheManager::acquire(ReusePlan plan)
         ResourceId const resource{ResourceType::kBaseKvPage, page};
         mPools.addActiveRef(resource);
         lease.mActiveResources.push_back(resource);
-        if (index < sharedBasePageCount)
+        if (index < reusedBasePageCount)
         {
             lease.mBasePages.push_back(page);
         }
     }
-    for (size_t index = 0; index < plan.draftPageBindings.size(); ++index)
+    for (size_t index = 0; index < plan.specPageBindings.size(); ++index)
     {
-        PageId const page = plan.draftPageBindings[index];
+        PageId const page = plan.specPageBindings[index];
         ResourceId const resource{ResourceType::kDraftKvPage, page};
         mPools.addActiveRef(resource);
         lease.mActiveResources.push_back(resource);
-        if (index < sharedDraftPageCount)
+        if (index < reusedSpecPageCount)
         {
-            lease.mDraftPages.push_back(page);
+            lease.mSpecPages.push_back(page);
         }
     }
 
@@ -440,7 +478,7 @@ AcquireResult ContextCacheManager::acquire(ReusePlan plan)
         lease.mActiveResources.push_back(resource);
     }
 
-    std::optional<RecordId> const protectedRecord = plan.draftRecord.has_value() ? plan.draftRecord : plan.hybridRecord;
+    std::optional<RecordId> const protectedRecord = plan.specRecord.has_value() ? plan.specRecord : plan.hybridRecord;
     EvictionPlan const eviction = EvictionPlanner::plan(plan.demand, mPools, mRecords, protectedRecord);
     if (!eviction.feasible)
     {
@@ -462,12 +500,12 @@ AcquireResult ContextCacheManager::acquire(ReusePlan plan)
         }
         else if (resource.type == ResourceType::kDraftKvPage)
         {
-            lease.mDraftPages.push_back(resource.index);
+            lease.mSpecPages.push_back(resource.index);
         }
     }
-    if (plan.draftRecord.has_value() && mRecords.contains(*plan.draftRecord))
+    if (plan.specRecord.has_value() && mRecords.contains(*plan.specRecord))
     {
-        mRecords.touch(*plan.draftRecord);
+        mRecords.touch(*plan.specRecord);
     }
     if (plan.hybridRecord.has_value() && mRecords.contains(*plan.hybridRecord))
     {
@@ -489,7 +527,8 @@ bool ContextCacheManager::growBasePages(CacheRequestLease& lease, int32_t count)
 bool ContextCacheManager::growSpecPages(CacheRequestLease& lease, int32_t baseCount, int32_t draftCount)
 {
     ELLM_CHECK(lease.valid() && lease.mManager == this, "Context cache lease does not belong to this manager");
-    ELLM_CHECK(lease.mMode == ReusePlanMode::kSpec, "Speculative context cache growth requires an EAGLE lease");
+    ELLM_CHECK(lease.mMode == ReusePlanMode::kSpec || lease.mMode == ReusePlanMode::kHybridMtp,
+        "Paired base/spec context cache growth requires a spec or hybrid+MTP lease");
     ELLM_CHECK(baseCount >= 0 && draftCount >= 0, "Context cache growth counts must be non-negative");
     return growPages(lease, ResourceDemand{baseCount, draftCount, 0, 0});
 }
@@ -498,7 +537,8 @@ std::optional<HybridSnapshotReservation> ContextCacheManager::reserveHybridSnaps
     CacheRequestLease& lease, bool needsPartialKvSnapshot)
 {
     ELLM_CHECK(lease.valid() && lease.mManager == this, "Context cache lease does not belong to this manager");
-    ELLM_CHECK(lease.mMode == ReusePlanMode::kHybrid, "Hybrid snapshot reservation requires an exact-checkpoint lease");
+    ELLM_CHECK(lease.mMode == ReusePlanMode::kHybrid || lease.mMode == ReusePlanMode::kHybridMtp,
+        "Hybrid snapshot reservation requires an exact-checkpoint lease");
     ELLM_CHECK(!needsPartialKvSnapshot || lease.mHybridHasAttention,
         "Pure-recurrent context cache cannot reserve a partial KV snapshot");
 
@@ -532,7 +572,8 @@ std::optional<HybridSnapshotReservation> ContextCacheManager::reserveHybridSnaps
 
 void ContextCacheManager::releaseRestoredHybridSnapshots(CacheRequestLease& lease)
 {
-    ELLM_CHECK(lease.valid() && lease.mManager == this && lease.mMode == ReusePlanMode::kHybrid,
+    ELLM_CHECK(lease.valid() && lease.mManager == this
+            && (lease.mMode == ReusePlanMode::kHybrid || lease.mMode == ReusePlanMode::kHybridMtp),
         "Restored hybrid snapshots require an exact-checkpoint lease");
     if (lease.mRecurrentSnapshotBinding.has_value())
     {
@@ -549,7 +590,8 @@ void ContextCacheManager::releaseRestoredHybridSnapshots(CacheRequestLease& leas
 void ContextCacheManager::retireHybridSnapshotReservation(
     CacheRequestLease& lease, HybridSnapshotReservation const& reservation)
 {
-    ELLM_CHECK(lease.valid() && lease.mManager == this && lease.mMode == ReusePlanMode::kHybrid,
+    ELLM_CHECK(lease.valid() && lease.mManager == this
+            && (lease.mMode == ReusePlanMode::kHybrid || lease.mMode == ReusePlanMode::kHybridMtp),
         "Hybrid snapshot retirement requires an exact-checkpoint lease");
     releaseLeaseResource(lease, ResourceId{ResourceType::kRecurrentSnapshot, reservation.recurrentSnapshotSlot});
     if (reservation.partialKvSnapshotSlot.has_value())
@@ -573,7 +615,7 @@ bool ContextCacheManager::growPages(CacheRequestLease& lease, ResourceDemand con
     size_t const growth = resourceDemandCount(demand);
     lease.mActiveResources.reserve(lease.mActiveResources.size() + growth);
     lease.mBasePages.reserve(lease.mBasePages.size() + static_cast<size_t>(demand.baseKvPages));
-    lease.mDraftPages.reserve(lease.mDraftPages.size() + static_cast<size_t>(demand.draftKvPages));
+    lease.mSpecPages.reserve(lease.mSpecPages.size() + static_cast<size_t>(demand.draftKvPages));
     std::vector<ResourceId> allocated(growth);
 
     applyEviction(eviction);
@@ -588,7 +630,7 @@ bool ContextCacheManager::growPages(CacheRequestLease& lease, ResourceDemand con
         }
         else if (resource.type == ResourceType::kDraftKvPage)
         {
-            lease.mDraftPages.push_back(resource.index);
+            lease.mSpecPages.push_back(resource.index);
         }
     }
     return true;
@@ -597,7 +639,7 @@ bool ContextCacheManager::growPages(CacheRequestLease& lease, ResourceDemand con
 PublishResult ContextCacheManager::commitPreparedPublication(PreparedPublication publication)
 {
     PublicationRollbackGuard rollback(
-        mPools, mBaseIndex, mDraftIndex, mRecords, publication.cacheResources, publication.missingBaseMappings);
+        mPools, mBaseIndex, mSpecIndex, mRecords, publication.cacheResources, publication.missingBaseMappings);
     for (ResourceId const& resource : publication.cacheResources)
     {
         mPools.addCacheRef(resource);
@@ -615,10 +657,10 @@ PublishResult ContextCacheManager::commitPreparedPublication(PreparedPublication
     ELLM_CHECK(inserted.inserted, "Context cache exact record appeared during publication");
     rollback.recordInserted(inserted.id);
     CacheRecord const& record = mRecords.get(inserted.id);
-    if (!record.draftPagePath.empty())
+    if (record.specState.has_value())
     {
-        mDraftIndex.insert(record);
-        rollback.draftIndexed();
+        mSpecIndex.paged().insert(record);
+        rollback.specIndexed();
     }
     rollback.commit();
 
@@ -646,19 +688,21 @@ PublishResult ContextCacheManager::publish(CacheRequestLease& lease, PublishRequ
 {
     ELLM_CHECK(lease.valid() && lease.mManager == this, "Context cache lease does not belong to this manager");
     ELLM_CHECK(lease.mMode == ReusePlanMode::kVanilla || lease.mMode == ReusePlanMode::kSpec,
-        "Standard context cache publication requires a vanilla or EAGLE lease");
+        "Standard context cache publication requires a vanilla or speculative lease");
     ELLM_CHECK(request.residentStateLength >= 0, "Context cache resident state length must be non-negative");
 
     bool const specPublication = lease.mMode == ReusePlanMode::kSpec;
+    ELLM_CHECK(!specPublication || mSpecReuseContract.has_value(),
+        "Context cache spec publication requires its registered contract");
     size_t const residentFullBlocks = static_cast<size_t>(request.residentStateLength / mPageSize);
     size_t const requestedPublishCount = std::min(request.fullBlockHashes.size(), residentFullBlocks);
     ELLM_CHECK(requestedPublishCount > 0, "Context cache publication requires at least one resident full block");
     ELLM_CHECK(
         requestedPublishCount <= lease.mBasePages.size(), "Context cache publication exceeds the lease base page path");
-    if (specPublication)
+    if (specPublication && mSpecReuseContract->ownsPagedSpecState)
     {
-        ELLM_CHECK(requestedPublishCount <= lease.mDraftPages.size(),
-            "EAGLE context cache publication exceeds the lease draft page path");
+        ELLM_CHECK(requestedPublishCount <= lease.mSpecPages.size(),
+            "Context cache publication exceeds the lease spec-state page path");
     }
     size_t const matchedPublishCount = std::min(requestedPublishCount, lease.mMatchedBlockHashes.size());
     for (size_t index = 0; index < matchedPublishCount; ++index)
@@ -672,18 +716,22 @@ PublishResult ContextCacheManager::publish(CacheRequestLease& lease, PublishRequ
         ELLM_CHECK(static_cast<size_t>(dependency.pathBlockCount) <= requestedPublishCount
                 && request.fullBlockHashes[static_cast<size_t>(dependency.pathBlockCount - 1)]
                     == dependency.terminalHash,
-            "EAGLE context cache publication does not match its full-page replay dependency");
+            "Speculative context cache publication does not match its full-page replay dependency");
     }
 
     size_t const publishCount = requestedPublishCount;
 
     std::vector<BlockHash> logicalHashes(
         request.fullBlockHashes.begin(), request.fullBlockHashes.begin() + static_cast<std::ptrdiff_t>(publishCount));
-    std::vector<PageId> draftPages;
+    std::optional<SpecPagedStateRecord> specState;
     if (specPublication)
     {
-        draftPages.assign(
-            lease.mDraftPages.begin(), lease.mDraftPages.begin() + static_cast<std::ptrdiff_t>(publishCount));
+        size_t const specPublishCount = mSpecReuseContract->ownsPagedSpecState ? publishCount : 0;
+        std::vector<PageId> specPages(
+            lease.mSpecPages.begin(), lease.mSpecPages.begin() + static_cast<std::ptrdiff_t>(specPublishCount));
+        SpecLeaseStateView const leaseState{specPages};
+        specState = makeSpecPublishedState(
+            SpecPublishStateInput{leaseState, logicalHashes, request.residentStateLength}, *mSpecReuseContract);
     }
     CacheRecordKey const key{logicalHashes.back(), static_cast<int32_t>(publishCount)};
     std::optional<RecordId> const existing = mRecords.find(key);
@@ -694,31 +742,34 @@ PublishResult ContextCacheManager::publish(CacheRequestLease& lease, PublishRequ
             "Existing context cache record is shorter than its exact key");
         std::vector<PageId> canonicalPages(existingRecord.basePagePath.begin(),
             existingRecord.basePagePath.begin() + static_cast<std::ptrdiff_t>(publishCount));
-        bool const existingHasPairedDraft = existingRecord.draftPagePath.size() == publishCount;
-        if (!specPublication || existingHasPairedDraft)
+        if (!specState.has_value())
         {
             mRecords.touch(*existing);
             return PublishResult{PublishStatus::kExistingRecord, existing, std::move(canonicalPages),
                 static_cast<int32_t>(publishCount)};
         }
 
-        ELLM_CHECK(
-            existingRecord.draftPagePath.empty(), "Existing context cache record has an incomplete paired draft path");
-        CacheRecord upgradedRecord = existingRecord;
-        upgradedRecord.draftPagePath = draftPages;
-        std::vector<ResourceId> draftResources;
-        draftResources.reserve(draftPages.size());
-        for (PageId const page : draftPages)
+        if (existingRecord.specState.has_value())
         {
-            draftResources.push_back(ResourceId{ResourceType::kDraftKvPage, page});
+            // Duplicate producers for the same logical prefix can materialize different physical pages. The first
+            // published record remains canonical; later producer pages stay request-private and are released with the
+            // lease.
+            mRecords.touch(*existing);
+            return PublishResult{PublishStatus::kExistingRecord, existing, std::move(canonicalPages),
+                static_cast<int32_t>(publishCount)};
         }
 
-        CacheRefRollbackGuard cacheRefRollback(mPools, draftResources);
-        cacheRefRollback.addAll();
-        mDraftIndex.insert(upgradedRecord);
+        CacheRecord upgradedRecord = existingRecord;
+        upgradedRecord.specState = specState;
+        std::vector<ResourceId> specResources = specStateResources(*specState);
 
-        mRecords.setDraftState(*existing, std::move(draftPages));
-        cacheRefRollback.commit();
+        SpecUpgradeRollbackGuard rollback(mPools, mSpecIndex, upgradedRecord, specResources);
+        rollback.addAll();
+        mSpecIndex.paged().insert(upgradedRecord);
+        rollback.specIndexed();
+
+        mRecords.setSpecState(*existing, std::move(*specState));
+        rollback.commit();
         return PublishResult{
             PublishStatus::kPublished, existing, std::move(canonicalPages), static_cast<int32_t>(publishCount)};
     }
@@ -729,9 +780,9 @@ PublishResult ContextCacheManager::publish(CacheRequestLease& lease, PublishRequ
     record.key = key;
     record.logicalBlockHashes = std::move(logicalHashes);
     record.basePagePath = projection.canonicalPages;
-    if (specPublication)
+    if (specState.has_value())
     {
-        record.draftPagePath = std::move(draftPages);
+        record.specState = std::move(specState);
     }
 
     PreparedPublication publication;
@@ -815,6 +866,76 @@ PublishResult ContextCacheManager::publishHybrid(CacheRequestLease& lease, Hybri
     return commitPreparedPublication(std::move(publication));
 }
 
+PublishResult ContextCacheManager::publishHybridMtp(CacheRequestLease& lease, HybridPublishRequest const& request)
+{
+    ELLM_CHECK(lease.valid() && lease.mManager == this, "Context cache lease does not belong to this manager");
+    ELLM_CHECK(
+        lease.mMode == ReusePlanMode::kHybridMtp, "Hybrid+MTP context cache publication requires a combined lease");
+
+    ELLM_CHECK(
+        request.checkpoint.exactLength > 0, "Hybrid+MTP context cache publication identity does not match its lease");
+    // This is the local form of SpecReuseContract::futureDependencyTokens == 1. Keep the boundary private so a
+    // consumer can rewrite its draft KV without mutating shared state.
+    size_t const fullBlockCount = static_cast<size_t>((request.checkpoint.exactLength - 1) / mPageSize);
+    ELLM_CHECK(request.fullBlockHashes.size() == fullBlockCount,
+        "Hybrid+MTP context cache publication requires every complete logical block before its exact boundary");
+    // MTP always publishes a partial page, so both snapshots must always be present.
+    bool const needsPartialSnapshot = true;
+    ELLM_CHECK(request.snapshots.recurrentSnapshotSlot >= 0
+            && request.snapshots.partialKvSnapshotSlot.has_value() == needsPartialSnapshot,
+        "Hybrid+MTP context cache publication has an incomplete snapshot set");
+    ELLM_CHECK(fullBlockCount <= lease.mBasePages.size() && fullBlockCount <= lease.mSpecPages.size(),
+        "Hybrid+MTP context cache publication exceeds its paired base/draft page paths");
+
+    auto ownsActiveResource = [&](ResourceId const& resource) {
+        return std::find(lease.mActiveResources.begin(), lease.mActiveResources.end(), resource)
+            != lease.mActiveResources.end();
+    };
+    ELLM_CHECK(
+        ownsActiveResource(ResourceId{ResourceType::kRecurrentSnapshot, request.snapshots.recurrentSnapshotSlot}),
+        "Hybrid+MTP context cache lease does not own the recurrent snapshot reservation");
+    ELLM_CHECK(
+        ownsActiveResource(ResourceId{ResourceType::kPartialKvSnapshot, *request.snapshots.partialKvSnapshotSlot}),
+        "Hybrid+MTP context cache lease does not own the bundled partial KV snapshot reservation");
+
+    size_t const matchedBlockCount = std::min(fullBlockCount, lease.mMatchedBlockHashes.size());
+    ELLM_CHECK(std::equal(request.fullBlockHashes.begin(),
+                   request.fullBlockHashes.begin() + static_cast<std::ptrdiff_t>(matchedBlockCount),
+                   lease.mMatchedBlockHashes.begin()),
+        "Hybrid+MTP context cache publication does not match the acquired logical prefix");
+
+    std::optional<RecordId> const existing = mRecords.findHybrid(request.checkpoint);
+    if (existing.has_value())
+    {
+        CacheRecord const& record = mRecords.get(*existing);
+        mRecords.touch(*existing);
+        return PublishResult{
+            PublishStatus::kExistingRecord, existing, record.basePagePath, static_cast<int32_t>(fullBlockCount)};
+    }
+
+    BaseProjection projection = prepareBaseProjection(mBaseIndex, request.fullBlockHashes, lease.mBasePages);
+
+    std::vector<PageId> draftPages(
+        lease.mSpecPages.begin(), lease.mSpecPages.begin() + static_cast<std::ptrdiff_t>(fullBlockCount));
+
+    CacheRecord record;
+    record.key = CacheRecordKey{request.checkpoint.exactPrefixDigest, static_cast<int32_t>(fullBlockCount)};
+    record.logicalBlockHashes = request.fullBlockHashes;
+    record.basePagePath = projection.canonicalPages;
+    record.specState = SpecPagedStateRecord{std::move(draftPages)};
+    record.recurrentSnapshotSlot = request.snapshots.recurrentSnapshotSlot;
+    record.partialKvSnapshotSlot = request.snapshots.partialKvSnapshotSlot;
+    record.exactCheckpointLength = request.checkpoint.exactLength;
+
+    PreparedPublication publication;
+    publication.canonicalBasePages = projection.canonicalPages;
+    publication.missingBaseMappings = std::move(projection.missingMappings);
+    publication.record = std::move(record);
+    publication.cacheResources = publication.record.resources();
+    publication.recordLimitVictim = selectRecordLimitVictim(mRecords);
+    publication.publishedBaseFullBlockCount = static_cast<int32_t>(fullBlockCount);
+    return commitPreparedPublication(std::move(publication));
+}
 ResourcePools const& ContextCacheManager::pools() const noexcept
 {
     return mPools;
@@ -825,9 +946,9 @@ BaseBlockIndex const& ContextCacheManager::baseIndex() const noexcept
     return mBaseIndex;
 }
 
-DraftPathIndex const& ContextCacheManager::draftIndex() const noexcept
+SpecStateIndex const& ContextCacheManager::specIndex() const noexcept
 {
-    return mDraftIndex;
+    return mSpecIndex;
 }
 
 CacheRecordStore const& ContextCacheManager::records() const noexcept
@@ -848,7 +969,7 @@ void ContextCacheManager::releaseLease(CacheRequestLease& lease) noexcept
     lease.mMatchedBlockHashes.clear();
     lease.mActiveResources.clear();
     lease.mBasePages.clear();
-    lease.mDraftPages.clear();
+    lease.mSpecPages.clear();
     lease.mSpecReplayDependency.reset();
     lease.mHybridHasAttention = false;
     lease.mRecurrentSnapshotBinding.reset();
@@ -861,7 +982,10 @@ void ContextCacheManager::evictRecord(RecordId id)
         mPools.freeCount(ResourceType::kDraftKvPage), mPools.freeCount(ResourceType::kRecurrentSnapshot),
         mPools.freeCount(ResourceType::kPartialKvSnapshot)};
     CacheRecord const record = mRecords.erase(id);
-    mDraftIndex.erase(record);
+    if (record.specState.has_value())
+    {
+        mSpecIndex.paged().erase(record);
+    }
     for (PageId const page : record.basePagePath)
     {
         ResourceId const resource{ResourceType::kBaseKvPage, page};
@@ -871,9 +995,12 @@ void ContextCacheManager::evictRecord(RecordId id)
             mBaseIndex.erasePage(page);
         }
     }
-    for (PageId const page : record.draftPagePath)
+    if (record.specState.has_value())
     {
-        mPools.releaseCacheRef(ResourceId{ResourceType::kDraftKvPage, page});
+        for (PageId const page : record.specState->pagePath)
+        {
+            mPools.releaseCacheRef(ResourceId{ResourceType::kDraftKvPage, page});
+        }
     }
     if (record.recurrentSnapshotSlot.has_value())
     {

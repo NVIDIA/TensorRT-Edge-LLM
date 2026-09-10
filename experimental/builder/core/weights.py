@@ -585,7 +585,9 @@ class Weights:
         bias = (None if linear.bias is None else np.ascontiguousarray(
             linear.bias[indices]))
         weight_scale = linear.weight_scale
-        if weight_scale is not None and np.ndim(weight_scale) > 0:
+        if (weight_scale is not None
+                and (isinstance(weight_scale, ParameterSpec)
+                     or np.ndim(weight_scale) > 0)):
             weight_scale = self._select_output_axis(weight_scale, indices)
         return replace(linear,
                        weight=weight,
@@ -724,13 +726,82 @@ class Weights:
             logical_in_features=in_features,
         )
 
-    def linear_descriptor(self, prefix: str, quant_type: str) -> LinearWeights:
+    def linear_nvfp4_tp_metadata(self, prefix: str) -> Optional[LinearWeights]:
+        """Describe raw NVFP4 tensors consumed by the fused TP plugin.
+
+        TensorRT-native NVFP4 GEMMs retain constant weights so Myelin can own
+        their lowering. The fused TP plugin instead consumes the provider's
+        packed bytes directly, which lets the runtime materialize one rank's
+        row-parallel shard without reading the payload during engine build.
+        """
+        if self._reduce_lm_head(prefix):
+            return None
+        (weight_name, scale_name, global_scale_name, input_scale_name,
+         reciprocal) = self._nvfp4_names(prefix)
+        weight_key = self._resolve(weight_name)
+        scale_key = self._resolve(scale_name)
+        weight_dtype = self.store.dtype(weight_key)
+        scale_dtype = self.store.dtype(scale_key)
+        # The plugin resource ABI owns packed NVFP4 bytes as UINT8. Signed I8
+        # and sub-byte F4 provider layouts stay on the existing build-time path
+        # until their storage contracts can be represented without changing
+        # the payload type.
+        if weight_dtype != "U8" or scale_dtype != "F8_E4M3":
+            return None
+        weight_shape = self.store.shape(weight_key)
+        scale_shape = self.store.shape(scale_key)
+        if len(weight_shape) != 2 or len(scale_shape) != 2:
+            raise ValueError(
+                f"{prefix}: NVFP4 weight and scale must be rank-2")
+        out_features = int(weight_shape[0])
+        in_features = int(weight_shape[1]) * 2
+        expected_scale_shape = (out_features, in_features // self.group_size)
+        if tuple(scale_shape) != expected_scale_shape:
+            raise ValueError(
+                f"{prefix}: NVFP4 scale shape {scale_shape} does not match "
+                f"{expected_scale_shape}")
+        weight_scale_2 = self._nvfp4_global_scale(
+            self.store.get_scalar_f32(self._resolve(global_scale_name)),
+            reciprocal)
+        input_scale = (self._nvfp4_global_scale(
+            self.store.get_scalar_f32(self._resolve(input_scale_name)),
+            reciprocal) if self.has(input_scale_name) else 1.0)
+        bias_name = prefix + ".bias"
+        bias = self.f16(bias_name) if self.has(bias_name) else None
+        # Keep the checkpoint's byte-addressable packed shape. Logical FP4
+        # dimensions are carried separately for plugin shape validation.
+        return LinearWeights(
+            quantization.QUANT_NVFP4,
+            ParameterSpec(weight_shape, np.uint8),
+            bias,
+            weight_scale=ParameterSpec(scale_shape, np.uint8),
+            weight_scale_2=weight_scale_2,
+            input_scale=input_scale,
+            group_size=self.group_size,
+            weight_recipe=self.checkpoint_binding([weight_name],
+                                                  "nvfp4_packed"),
+            scale_recipe=self.checkpoint_binding([scale_name], "nvfp4_scale"),
+            logical_out_features=out_features,
+            logical_in_features=in_features,
+        )
+
+    def linear_descriptor(self,
+                          prefix: str,
+                          quant_type: str,
+                          *,
+                          external_kind: str = "") -> LinearWeights:
         """Return a dense projection payload or metadata, as required."""
         if (quant_type == quantization.QUANT_NVFP4
                 and not self.is_nvfp4(prefix)):
             raise ValueError(
                 f"{prefix}: quantization config selects NVFP4, but the "
                 "checkpoint has no NVFP4 weight and scale tensors")
+        if (quant_type == quantization.QUANT_NVFP4
+                and external_kind and self._policy.externalizes_parameter(
+                    external_kind, prefix)):
+            descriptor = self.linear_nvfp4_tp_metadata(prefix)
+            if descriptor is not None:
+                return descriptor
         kind = ("fp16" if quant_type == quantization.QUANT_FP16 else
                 "int4_ffn" if quant_type in (
                     quantization.QUANT_INT4_AWQ,
@@ -783,20 +854,56 @@ class Weights:
                 f"cannot {mode}-shard linear dimension {split_size} over {tp_size} ranks"
             )
 
-        def split(array, axis):
-            if array is None or np.ndim(array) == 0:
-                return array
-            return np.ascontiguousarray(
-                np.split(array, tp_size, axis=axis)[tp_rank])
+        def rank_neutral_recipe(recipe, **fields):
+            if recipe is None:
+                return None
+            result = dict(recipe)
+            extra = dict(result.get("extra", {}))
+            extra.update(fields)
+            result["extra"] = extra
+            return result
 
-        weight = split(linear.weight, 0 if mode == "column" else 1)
-        bias = split(linear.bias, 0) if mode == "column" else linear.bias
-        if mode == "row" and bias is not None and tp_rank != 0:
-            bias = np.zeros_like(bias)
+        def split(value, recipe, axis):
+            if value is None:
+                return value, recipe
+            if isinstance(value, ParameterSpec):
+                shape = list(value.shape)
+                if shape[axis] % tp_size:
+                    raise ValueError(
+                        f"cannot shard parameter shape {value.shape} on axis {axis} over {tp_size} ranks"
+                    )
+                shape[axis] //= tp_size
+                return (replace(value, shape=tuple(shape)),
+                        rank_neutral_recipe(recipe,
+                                            tp_shard={
+                                                "axis": axis,
+                                                "size": tp_size
+                                            }))
+            if np.ndim(value) == 0:
+                return value, recipe
+            return (np.ascontiguousarray(
+                np.split(value, tp_size, axis=axis)[tp_rank]), None)
+
+        weight, weight_recipe = split(linear.weight, linear.weight_recipe,
+                                      0 if mode == "column" else 1)
+        if mode == "column":
+            bias, bias_recipe = split(linear.bias, linear.bias_recipe, 0)
+        else:
+            bias, bias_recipe = linear.bias, linear.bias_recipe
+            if isinstance(bias, ParameterSpec):
+                bias_recipe = rank_neutral_recipe(bias_recipe,
+                                                  tp_rank0_only=True)
+            elif bias is not None and tp_rank != 0:
+                bias = np.zeros_like(bias)
+                bias_recipe = None
 
         weight_scale = linear.weight_scale
-        if weight_scale is not None and np.ndim(weight_scale) > 0:
-            if mode == "column":
+        if (weight_scale is not None
+                and (isinstance(weight_scale, ParameterSpec)
+                     or np.ndim(weight_scale) > 0)):
+            if linear.quant_type == quantization.QUANT_NVFP4:
+                matching = [0 if mode == "column" else 1]
+            elif mode == "column":
                 matching = [
                     axis for axis, extent in enumerate(weight_scale.shape)
                     if extent in (full_out, full_out // 2)
@@ -808,16 +915,29 @@ class Weights:
                     if extent in (full_in, groups)
                 ]
             if matching:
-                weight_scale = split(weight_scale, matching[0])
+                weight_scale, scale_recipe = split(weight_scale,
+                                                   linear.scale_recipe,
+                                                   matching[0])
+            else:
+                scale_recipe = linear.scale_recipe
+        else:
+            scale_recipe = linear.scale_recipe
 
         pre_quant_scale = linear.pre_quant_scale
-        if mode == "row" and pre_quant_scale is not None:
+        if (mode == "row" and pre_quant_scale is not None
+                and (isinstance(pre_quant_scale, ParameterSpec)
+                     or np.ndim(pre_quant_scale) > 0)):
             matching = [
                 axis for axis, extent in enumerate(pre_quant_scale.shape)
                 if extent == full_in
             ]
             if matching:
-                pre_quant_scale = split(pre_quant_scale, matching[0])
+                pre_quant_scale, pre_quant_recipe = split(
+                    pre_quant_scale, linear.pre_quant_recipe, matching[0])
+            else:
+                pre_quant_recipe = linear.pre_quant_recipe
+        else:
+            pre_quant_recipe = linear.pre_quant_recipe
 
         permutation = linear.activation_permutation
         if mode == "row" and permutation is not None:
@@ -833,10 +953,10 @@ class Weights:
             weight_scale=weight_scale,
             pre_quant_scale=pre_quant_scale,
             activation_permutation=permutation,
-            weight_recipe=None,
-            bias_recipe=None,
-            scale_recipe=None,
-            pre_quant_recipe=None,
+            weight_recipe=weight_recipe,
+            bias_recipe=bias_recipe,
+            scale_recipe=scale_recipe,
+            pre_quant_recipe=pre_quant_recipe,
             activation_permutation_recipe=None,
             logical_out_features=(full_out //
                                   tp_size if mode == "column" else full_out),

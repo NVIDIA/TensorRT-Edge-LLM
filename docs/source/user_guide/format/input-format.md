@@ -80,10 +80,12 @@ This guide describes the input JSON format for the LLM inference tool. The forma
 - Image: `{"type": "image", "image": "/path/to/image.jpg"}`. Optional `"do_resize"` (default `true`): set to `false` when the image is already resized to the model's target size — the vision runner then consumes it as-is instead of resizing internally (see [Pre-resized image input](#pre-resized-image-input-do_resize-false)).
 - Audio: `{"type": "audio", "audio": "/path/to/clip.wav"}` (raw `.wav` / `.mp3` / `.flac` decoded in C++ via vendored miniaudio + in-tree mel extractor. Feature-extractor family — `whisper` / `parakeet` — is auto-derived from the engine's `audio/config.json`, mirroring HF / vLLM where FE is pinned by the model. The HTTP server in `experimental.server` accepts the same audio formats via `input_audio` / `audio_url` and routes through the same C++ mel path.)
 - The C++ `llm_inference` CLI does not accept video content. The
-  [OpenAI-compatible server](../examples/experimental-server.md#video-input)
+  [OpenAI-compatible server](../examples/experimental-server.md#image-video-and-audio-input)
   accepts `video`, `video_url`, or an explicit frame list for supported Qwen
-  and InternVL model families. The Cosmos3 policy runtime has a separate
-  observation/action contract; see the [Cosmos3 VLA guide](../examples/vla/cosmos3.md).
+  and InternVL model families and Nemotron Omni. Nemotron Omni accepts exactly
+  one video and no images per request. The Cosmos3 policy runtime has a
+  separate observation/action contract; see the
+  [Cosmos3 VLA guide](../examples/vla/cosmos3.md).
 
 ## Examples
 
@@ -152,7 +154,7 @@ The same field is available on the video content item, on the Python `ImageData`
 **Contract for pre-resized inputs:**
 
 - Supply raw **uint8 RGB** pixels. Do **not** rescale or normalize the pixel values yourself — mean/std normalization always runs inside the runtime.
-- Dimensions must exactly match the model's resize target. The per-model target formulas are exposed as stateless C++ functions in `cpp/multimodal/imageUtils.h`. For example, for the Qwen family:
+- Dimensions must exactly match the model's resize target. The per-model target formulas are exposed as stateless C++ functions in `cpp/multimodal/common/imageUtils.h`. For example, for the Qwen family:
 
   ```cpp
   auto [targetHeight, targetWidth] = rt::imageUtils::qwenSmartResize(
@@ -243,7 +245,15 @@ Top-level `logit_bias` applies to every request by default. A request-level `log
 }
 ```
 
-**Speculative decoding limitation:** Requests with a non-empty `logit_bias` map are rejected while speculative decoding is active. Set `disable_spec_decode: true` to explicitly use vanilla decoding for that batch before sending logit bias.
+`logit_bias` remains active during speculative decoding. The runtime applies
+the request's map to every verification row and to fallback sampling for EAGLE,
+MTP, DFlash, JetSpec, and DSpark. `disable_spec_decode: true` may still be used
+to force vanilla decoding for comparison, but it is not required for logit
+bias.
+
+Token IDs use the full tokenizer vocabulary. With a reduced-vocabulary engine,
+a token omitted from the engine vocabulary cannot be restored by positive
+bias; the runtime ignores that entry and logs a warning.
 
 ### Top-N Log-Probabilities
 
@@ -311,6 +321,5 @@ When a stop string triggers termination, the request's finish reason is `stop-wo
 
 - System prompt: Uses provided system message, or model default from chat template
 - LoRA: All requests in same batch must use same adapter
-- Logit bias: Supported through vanilla decoding; active speculative decoding must be explicitly disabled first.
 - Paths: Use absolute or relative paths for images/videos
 - Format: Follows OpenAI chat completion API structure

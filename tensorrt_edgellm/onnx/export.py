@@ -78,6 +78,7 @@ def export_onnx(
     reduced_vocab_dir: str = "",
     externalize_weights=None,
     config_filename: str = "config.json",
+    write_shared_artifacts: bool = True,
 ) -> None:
     """Export *model* to ONNX using the dynamo exporter.
 
@@ -101,8 +102,11 @@ def export_onnx(
                              ``nvfp4_moe``, ``lm_head``, and ``all``.
         config_filename: Filename for the runtime config beside the ONNX.
                          Use ``"config.json"`` for single-device exports
-                         or ``"config_tp{N}_rank{R}.json"`` for per-rank
-                         TP exports so each rank is self-describing.
+                         or ``"config_world{N}.json"`` for multi-rank
+                         exports.
+        write_shared_artifacts: Emit shared embedding/tokenizer files. Set to
+                                False on non-rank-0 per-rank exports to avoid
+                                redundant rewrites of identical sidecar files.
     """
     out_dir = os.path.dirname(os.path.abspath(output_path))
     os.makedirs(out_dir, exist_ok=True)
@@ -123,7 +127,8 @@ def export_onnx(
                             out_dir,
                             fp8_embedding=fp8_embedding,
                             reduced_vocab_dir=reduced_vocab_dir,
-                            config_filename=config_filename)
+                            config_filename=config_filename,
+                            write_shared_artifacts=write_shared_artifacts)
     if external_weight_files:
         patch_external_weight_manifest(out_dir, external_weight_files)
 
@@ -683,8 +688,8 @@ def _permissive_inline_opset():
         InlinePass._instantiate_call = _orig  # type: ignore[method-assign]
 
 
-def _setup_fp8kv_scales_for_export(model: "CausalLM") -> None:
-    """Pre-cache FP8 KV scales as Python floats before torch.export tracing.
+def setup_fp8_qkv_scales_for_export(model: "torch.nn.Module") -> None:
+    """Pre-cache FP8 Q/K/V scales as Python floats before torch.export tracing.
 
     During tracing, calling ``.item()`` on a tensor buffer creates a
     data-dependent symbolic expression that ``torch.export`` cannot guard on.
@@ -692,15 +697,25 @@ def _setup_fp8kv_scales_for_export(model: "CausalLM") -> None:
     as plain Python attributes on each attention module, they appear as
     compile-time constants during export.
 
+    Triggers on either ``enable_fp8_kv_cache`` (LLM) or ``enable_fp8_mha``
+    (ViT visual MHA) — both signal a calibrated checkpoint with
+    ``k_proj.k_scale`` / ``v_proj.v_scale`` to surface.
+
     Stored attribute: ``module._qkv_scales_float = [q, k, v]``
-      - q_scale : ``q_proj.q_scale`` buffer value if present, else 1.0
+      - q_scale : module-level ``q_scale`` buffer if present (visual MHA;
+                  surfaced by ``_surface_visual_q_scales`` in the
+                  quantization frontend), else ``q_proj.q_scale`` (LLM
+                  convention), else 1.0
       - k_scale : ``k_proj.k_scale`` buffer value if present, else 1.0
       - v_scale : ``v_proj.v_scale`` buffer value if present, else 1.0
     """
     for module in model.modules():
-        if not getattr(module, "enable_fp8_kv_cache", False):
+        if not (getattr(module, "enable_fp8_kv_cache", False)
+                or getattr(module, "enable_fp8_mha", False)):
             continue
-        q_buf = getattr(getattr(module, "q_proj", None), "q_scale", None)
+        q_buf = getattr(module, "q_scale", None)
+        if q_buf is None:
+            q_buf = getattr(getattr(module, "q_proj", None), "q_scale", None)
         k_buf = getattr(getattr(module, "k_proj", None), "k_scale", None)
         v_buf = getattr(getattr(module, "v_proj", None), "v_scale", None)
         if v_buf is None and getattr(module, "attention_k_eq_v", False):
@@ -984,7 +999,7 @@ def _fix_initializer_dtypes(
     # opens the file in r+b mode and appends new tensors at the end, so the
     # old data would remain as unreferenced garbage, doubling the file size.
     # Derive the data filename from onnx_path so per-rank TP exports
-    # (model_tp{N}_rank{R}.onnx) get distinct .data files instead of
+    # (model_world{N}_rank{R}.onnx) get distinct .data files instead of
     # all overwriting the same model.onnx.data.
     data_file = os.path.basename(onnx_path) + ".data"
     ext_path = os.path.join(os.path.dirname(onnx_path), data_file)
@@ -1009,7 +1024,7 @@ def _export_model(
     optimize: bool = True,
     externalize_weights=None,
 ) -> "list[dict[str, object]]":
-    _setup_fp8kv_scales_for_export(model)
+    setup_fp8_qkv_scales_for_export(model)
     _capture_qk_norm_gammas_for_export(model)
     spec = model.onnx_export_spec()
 

@@ -165,7 +165,21 @@ MambaCacheManager::MambaCacheManager(Config const& config, cudaStream_t stream)
             {static_cast<int64_t>(infoBytes)}, DeviceType::kGPU, DataType::kINT8, "MambaCacheManager::mtpLayerInfos");
         CUDA_CHECK(cudaMemcpyAsync(
             mDeviceMtpLayerInfos.rawPointer(), hostInfos.data(), infoBytes, cudaMemcpyHostToDevice, stream));
-        // Sync before hostInfos goes out of scope.
+        if (useReplay)
+        {
+            std::vector<mamba_ssm::MambaReplayLayerInfo> replayInfos(mConfig.numRecurrentLayers);
+            for (int32_t i = 0; i < mConfig.numRecurrentLayers; ++i)
+            {
+                replayInfos[i] = {mRecurrentStates[i].rawPointer(), mReplayDaStates[i].rawPointer(),
+                    mReplayUStates[i].rawPointer(), mReplayBStates[i].rawPointer()};
+            }
+            size_t const replayInfoBytes = replayInfos.size() * sizeof(mamba_ssm::MambaReplayLayerInfo);
+            mDeviceMambaReplayLayerInfos = rt::Tensor({static_cast<int64_t>(replayInfoBytes)}, DeviceType::kGPU,
+                DataType::kINT8, "MambaCacheManager::mambaReplayLayerInfos");
+            CUDA_CHECK(cudaMemcpyAsync(mDeviceMambaReplayLayerInfos.rawPointer(), replayInfos.data(), replayInfoBytes,
+                cudaMemcpyHostToDevice, stream));
+        }
+        // Sync before hostInfos and replayInfos go out of scope.
         CUDA_CHECK(cudaStreamSynchronize(stream));
 
         LOG_INFO("MambaCacheManager: allocated spec-verify intermediate state buffers (%d layers, maxSeqLen=%d)",
@@ -189,6 +203,7 @@ MambaCacheManager::MambaCacheManager(MambaCacheManager&& other) noexcept
     mReplayUStates = std::move(other.mReplayUStates);
     mReplayBStates = std::move(other.mReplayBStates);
     mDeviceMtpLayerInfos = std::move(other.mDeviceMtpLayerInfos);
+    mDeviceMambaReplayLayerInfos = std::move(other.mDeviceMambaReplayLayerInfos);
 
     other.mConfig = Config{};
 }
@@ -206,6 +221,7 @@ MambaCacheManager& MambaCacheManager::operator=(MambaCacheManager&& other) noexc
         mReplayUStates = std::move(other.mReplayUStates);
         mReplayBStates = std::move(other.mReplayBStates);
         mDeviceMtpLayerInfos = std::move(other.mDeviceMtpLayerInfos);
+        mDeviceMambaReplayLayerInfos = std::move(other.mDeviceMambaReplayLayerInfos);
 
         other.mConfig = Config{};
     }
@@ -385,11 +401,10 @@ void MambaCacheManager::scatterAcceptedLinearStates(rt::Tensor const& acceptLeng
     {
         // Mamba: reconstruct the accepted recurrent state by replaying the SSD scan from the read-only
         // committed state, consuming the per-token replay stash the verify pass wrote.
-        for (int32_t i = 0; i < mConfig.numRecurrentLayers; ++i)
-        {
-            mamba_ssm::invokeMambaReplayReconstruct(mRecurrentStates[i], mReplayDaStates[i], mReplayUStates[i],
-                mReplayBStates[i], acceptLengths, activeBatchSize, stream);
-        }
+        auto const* const replayInfos
+            = static_cast<mamba_ssm::MambaReplayLayerInfo const*>(mDeviceMambaReplayLayerInfos.rawPointer());
+        mamba_ssm::invokeMambaReplayReconstructBatched(replayInfos, mConfig.numRecurrentLayers, mRecurrentStates[0],
+            mReplayUStates[0], mReplayBStates[0], acceptLengths, activeBatchSize, stream);
     }
     else
     {

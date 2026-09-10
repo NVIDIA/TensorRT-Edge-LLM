@@ -25,7 +25,7 @@ namespace version
 {
 
 //! Runtime version string in format major.minor.patch.build
-inline constexpr char const* kRUNTIME_VERSION = "0.10.0";
+inline constexpr char const* kRUNTIME_VERSION = "0.10.1";
 
 //! Check if model version matches runtime version
 //! @param modelVersion Version string from model's config.json

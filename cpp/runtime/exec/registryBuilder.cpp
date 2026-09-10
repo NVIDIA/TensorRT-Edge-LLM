@@ -65,6 +65,15 @@ void addRopeTensorSpecs(TensorRegistry& reg, LLMEngineConfig const& cfg)
     addRopeTensor(binding_names::kRopeCosSin, cfg.rotaryDim);
 }
 
+//! Add the dynamic page-table binding. AttentionPlugin cross-checks its row count against the packed QKV batch,
+//! so the first dimension must track the active batch rather than the full physical table extent.
+void addKVPageTableSpec(TensorRegistry& reg, LLMEngineConfig const& cfg)
+{
+    int32_t const maxPagesPerSeq = rt::computeMaxPagesPerSeq(cfg.maxKVCacheCapacity);
+    reg.addTensor({binding_names::kKVPageTable, TensorIO::kInput, nvinfer1::DataType::kINT32,
+        {sym(&InferenceDims::batch), fixed(2), fixed(maxPagesPerSeq)}});
+}
+
 TensorRegistry buildRegistryForLLM(LLMEngineConfig const& cfg, std::optional<int32_t> specDecodeBaseOutputHiddenDim)
 {
     TensorRegistry reg;
@@ -139,9 +148,8 @@ TensorRegistry buildRegistryForLLM(LLMEngineConfig const& cfg, std::optional<int
     // the bound address and the engine branches to the initial-prefill path.
     reg.addTensor({binding_names::kKVCacheStartIndex, TensorIO::kInput, nvinfer1::DataType::kINT32,
         {sym(&InferenceDims::startIndexLen)}});
-    int32_t const maxPagesPerSeq = rt::computeMaxPagesPerSeq(cfg.maxKVCacheCapacity);
-    reg.addTensor({binding_names::kKVPageTable, TensorIO::kInput, nvinfer1::DataType::kINT32,
-        {sym(&InferenceDims::batch), fixed(2), fixed(maxPagesPerSeq)}});
+
+    addKVPageTableSpec(reg, cfg);
 
     if (cfg.useVisionBidirectionalAttention)
     {
@@ -205,10 +213,15 @@ TensorRegistry buildRegistryForLLM(LLMEngineConfig const& cfg, std::optional<int
             addMambaTensor(binding_names::kConvStateTemplate, TensorIO::kInput, cfg.convStateDtype, convShape);
             addMambaTensor(binding_names::kPresentConvStateTemplate, TensorIO::kOutput, cfg.convStateDtype, convShape);
 
-            // Hybrid MTP/DFlash/DSpark base: declare the per-layer spec-verify recurrent-state
-            // outputs. recurrentSpecVerifyUsesReplay selects which output set the engine declares
+            // Hybrid MTP/DFlash/JetSpec/DSpark base: per-layer intermediate state outputs
+            // written during prefill/verification so accepted recurrent/conv state snapshots
+            // can be committed after speculative verification.
+            // recurrentSpecVerifyUsesReplay selects which output set the engine declares
             // (replay stash vs full-state snapshot).
-            if (cfg.specDecodeType == SpecDecodeMode::kMTP || cfg.specDecodeType == SpecDecodeMode::kDFlash
+            //
+            // intermediate_recurrent_state_%d: [batch, seqLen, recurrentNumHeads, recurrentHeadDim, recurrentStateSize]
+            // intermediate_conv_state_%d:      [batch, seqLen, convDim, convKernel]
+            if (cfg.specDecodeType == SpecDecodeMode::kMTP || isCachedBlockDraftMode(cfg.specDecodeType)
                 || cfg.specDecodeType == SpecDecodeMode::kDSpark)
             {
                 bool const useReplay = cfg.recurrentSpecVerifyUsesReplay;
@@ -285,7 +298,8 @@ TensorRegistry buildRegistryForLLM(LLMEngineConfig const& cfg, std::optional<int
         reg.addTensor({binding_names::kAttentionPosId, TensorIO::kInput, nvinfer1::DataType::kINT32,
             {sym(&InferenceDims::batch), sym(&InferenceDims::attnMaskSeqLen)}});
 
-        if ((cfg.specDecodeType == SpecDecodeMode::kMTP || cfg.specDecodeType == SpecDecodeMode::kDFlash)
+        if ((cfg.specDecodeType == SpecDecodeMode::kMTP || isCachedBlockDraftMode(cfg.specDecodeType)
+                || cfg.specDecodeType == SpecDecodeMode::kDSpark)
             && cfg.numLinearAttnLayers > 0)
         {
             reg.addTensor({binding_names::kSpecVerifyPhaseMarker, TensorIO::kInput, nvinfer1::DataType::kINT32,
@@ -345,6 +359,8 @@ TensorRegistry buildRegistryForSpecDecodeDraft(DeploymentConfig const& bundle)
     // KV cache); [batch] for proposal / accept.
     reg.addTensor({binding_names::kKVCacheStartIndex, TensorIO::kInput, nvinfer1::DataType::kINT32,
         {sym(&InferenceDims::startIndexLen)}});
+
+    addKVPageTableSpec(reg, cfg);
 
     if (cfg.contextMaskSelectorEnabled)
     {
@@ -445,9 +461,15 @@ TensorRegistry buildRegistryForDFlashDraft(DeploymentConfig const& bundle)
     reg.addTensor(
         {binding_names::kContextLengths, TensorIO::kInput, nvinfer1::DataType::kINT32, {sym(&InferenceDims::batch)}});
 
+    addKVPageTableSpec(reg, cfg);
+
     // kvcache_start_index: [startIndexLen] INT32
     reg.addTensor({binding_names::kKVCacheStartIndex, TensorIO::kInput, nvinfer1::DataType::kINT32,
         {sym(&InferenceDims::startIndexLen)}});
+
+    int32_t const maxPagesPerSeq = rt::computeMaxPagesPerSeq(cfg.maxKVCacheCapacity);
+    reg.addTensor({binding_names::kKVPageTable, TensorIO::kInput, nvinfer1::DataType::kINT32,
+        {sym(&InferenceDims::batch), fixed(2), fixed(maxPagesPerSeq)}});
 
     // dflash_delta_lengths: [batch] INT32 — per-batch delta lengths for multi-batch
     reg.addTensor({binding_names::kDFlashDeltaLengths, TensorIO::kInput, nvinfer1::DataType::kINT32,
@@ -476,9 +498,7 @@ TensorRegistry buildRegistryForDFlashDraft(DeploymentConfig const& bundle)
             }
             auto const& lc = cfg.kvLayerConfigs[localAttnIdx];
             // DFlash's own combined draft cache uses the same paged-pool contract and the exact
-            // serialized engine page count. Deployment validation separately requires this mode
-            // to use only its minimum active pages because its update plugin recovers maxBatch/cap by
-            // dividing numPages by the builder-configured pages_per_slot.
+            // serialized engine page count.
             int32_t const numPages = cfg.kvPoolPages;
             std::vector<ShapeDim> const shape{
                 fixed(2), fixed(numPages), fixed(kTokensPerPage), fixed(lc.numKVHeads), fixed(lc.headDim)};
@@ -517,6 +537,8 @@ TensorRegistry buildRegistryForGemma4MTPDraft(DeploymentConfig const& bundle)
     // context_lengths: [B] target KV lengths.
     reg.addTensor(
         {binding_names::kContextLengths, TensorIO::kInput, nvinfer1::DataType::kINT32, {sym(&InferenceDims::batch)}});
+
+    addKVPageTableSpec(reg, bundle.base);
 
     addRopeTensorSpecs(reg, draftCfg);
 
@@ -585,10 +607,7 @@ TensorRegistry buildRegistryForDSparkDraft(DeploymentConfig const& bundle)
     reg.addTensor({binding_names::kKVCacheStartIndex, TensorIO::kInput, nvinfer1::DataType::kINT32,
         {sym(&InferenceDims::startIndexLen)}});
 
-    // kv_page_table: [batch, 2, maxPagesPerSeq] INT32
-    int32_t const maxPagesPerSeq = rt::computeMaxPagesPerSeq(cfg.maxKVCacheCapacity);
-    reg.addTensor({binding_names::kKVPageTable, TensorIO::kInput, nvinfer1::DataType::kINT32,
-        {sym(&InferenceDims::batch), fixed(2), fixed(maxPagesPerSeq)}});
+    addKVPageTableSpec(reg, cfg);
 
     // dflash_delta_lengths: [batch] INT32
     reg.addTensor({binding_names::kDFlashDeltaLengths, TensorIO::kInput, nvinfer1::DataType::kINT32,
@@ -616,9 +635,7 @@ TensorRegistry buildRegistryForDSparkDraft(DeploymentConfig const& bundle)
                 continue;
             }
             auto const& lc = cfg.kvLayerConfigs[localAttnIdx];
-            // DSpark uses the exact serialized engine page count. Deployment validation separately
-            // requires the minimum active pages because the update plugin derives (maxBatch, cap) from
-            // this count and the build-time pages_per_slot.
+            // DSpark uses the exact serialized engine page count.
             int32_t const numPages = cfg.kvPoolPages;
             std::vector<ShapeDim> const shape{
                 fixed(2), fixed(numPages), fixed(kTokensPerPage), fixed(lc.numKVHeads), fixed(lc.headDim)};

@@ -26,6 +26,7 @@
 #include <chrono>
 #include <cuda_fp16.h>
 #include <fstream>
+#include <initializer_list>
 #include <nlohmann/json.hpp>
 
 namespace trt_edgellm
@@ -40,6 +41,30 @@ using Json = nlohmann::json;
 constexpr char const* kEncoderEngineFile = "audio_encoder.engine";
 constexpr char const* kStepEngineFile = "rnnt_step.engine";
 constexpr char const* kConfigFile = "config.json";
+
+struct EnginePaths
+{
+    std::filesystem::path encoder;
+    std::filesystem::path step;
+};
+
+EnginePaths resolveEnginePaths(std::filesystem::path const& root)
+{
+    EnginePaths const direct{root / "audio" / kEncoderEngineFile, root / "rnnt" / kStepEngineFile};
+    EnginePaths const flat{root / kEncoderEngineFile, root / kStepEngineFile};
+    bool const hasDirectEncoder = std::filesystem::is_regular_file(direct.encoder);
+    bool const hasDirectStep = std::filesystem::is_regular_file(direct.step);
+    bool const hasFlatEncoder = std::filesystem::is_regular_file(flat.encoder);
+    bool const hasFlatStep = std::filesystem::is_regular_file(flat.step);
+    if (hasDirectEncoder && hasDirectStep && !hasFlatEncoder && !hasFlatStep)
+    {
+        return direct;
+    }
+    check::check(hasFlatEncoder && hasFlatStep && !hasDirectEncoder && !hasDirectStep,
+        "Nemotron-3.5-ASR bundle must contain exactly one complete engine layout: "
+        "audio/audio_encoder.engine plus rnnt/rnnt_step.engine, or both engines at its root");
+    return flat;
+}
 
 //! Encoder output frames for a mel length: three causal stride-2 stages,
 //! each ``floor(L/2) + 1``.
@@ -61,6 +86,21 @@ void checkTensorDataType(
             + getDataTypeString(engine.getTensorDataType(name)) + ", expected " + getDataTypeString(expected));
 }
 
+void checkTensorShape(nvinfer1::ICudaEngine const& engine, char const* name, std::initializer_list<int64_t> expected,
+    char const* engineLabel)
+{
+    auto const shape = engine.getTensorShape(name);
+    check::check(shape.nbDims == static_cast<int32_t>(expected.size()),
+        std::string(engineLabel) + ": tensor '" + name + "' has unexpected rank");
+    int32_t axis = 0;
+    for (int64_t const dimension : expected)
+    {
+        check::check(dimension < 0 || shape.d[axis] == dimension,
+            std::string(engineLabel) + ": tensor '" + name + "' has unexpected dimension " + std::to_string(axis));
+        ++axis;
+    }
+}
+
 } // namespace
 
 NemotronAsrRuntime::NemotronAsrRuntime(
@@ -71,13 +111,14 @@ NemotronAsrRuntime::NemotronAsrRuntime(
     mRuntime = std::unique_ptr<nvinfer1::IRuntime>(nvinfer1::createInferRuntime(gLogger));
     check::check(mRuntime != nullptr, "Failed to create TRT runtime");
 
-    mEncoderEngine = deserializeCudaEngineFromFile(*mRuntime, engineDir / kEncoderEngineFile);
-    check::check(mEncoderEngine != nullptr, "Failed to load " + (engineDir / kEncoderEngineFile).string());
+    auto const enginePaths = resolveEnginePaths(engineDir);
+    mEncoderEngine = deserializeCudaEngineFromFile(*mRuntime, enginePaths.encoder);
+    check::check(mEncoderEngine != nullptr, "Failed to load " + enginePaths.encoder.string());
     mEncoderContext = std::unique_ptr<nvinfer1::IExecutionContext>(mEncoderEngine->createExecutionContext());
     check::check(mEncoderContext != nullptr, "Failed to create encoder execution context");
 
-    mStepEngine = deserializeCudaEngineFromFile(*mRuntime, engineDir / kStepEngineFile);
-    check::check(mStepEngine != nullptr, "Failed to load " + (engineDir / kStepEngineFile).string());
+    mStepEngine = deserializeCudaEngineFromFile(*mRuntime, enginePaths.step);
+    check::check(mStepEngine != nullptr, "Failed to load " + enginePaths.step.string());
     mStepContext = std::unique_ptr<nvinfer1::IExecutionContext>(mStepEngine->createExecutionContext());
     check::check(mStepContext != nullptr, "Failed to create step execution context");
 
@@ -85,16 +126,32 @@ NemotronAsrRuntime::NemotronAsrRuntime(
     checkTensorDataType(*mEncoderEngine, "input_features", nvinfer1::DataType::kHALF, "encoder");
     checkTensorDataType(*mEncoderEngine, "prompt_ids", nvinfer1::DataType::kINT64, "encoder");
     checkTensorDataType(*mEncoderEngine, "encoder_frames", nvinfer1::DataType::kHALF, "encoder");
+    checkTensorShape(*mEncoderEngine, "input_features", {1, -1, mMelBins}, "encoder");
+    checkTensorShape(*mEncoderEngine, "prompt_ids", {1}, "encoder");
+    checkTensorShape(*mEncoderEngine, "encoder_frames", {1, -1, mDecoderHiddenSize}, "encoder");
     checkTensorDataType(*mStepEngine, "decoder_input_ids", nvinfer1::DataType::kINT64, "rnnt_step");
     for (char const* name :
         {"hidden_state", "cell_state", "encoder_frame", "logits", "present_hidden_state", "present_cell_state"})
     {
         checkTensorDataType(*mStepEngine, name, nvinfer1::DataType::kHALF, "rnnt_step");
     }
+    checkTensorShape(*mStepEngine, "decoder_input_ids", {1, 1}, "rnnt_step");
+    checkTensorShape(*mStepEngine, "hidden_state", {mNumDecoderLayers, 1, mDecoderHiddenSize}, "rnnt_step");
+    checkTensorShape(*mStepEngine, "cell_state", {mNumDecoderLayers, 1, mDecoderHiddenSize}, "rnnt_step");
+    checkTensorShape(*mStepEngine, "encoder_frame", {1, mDecoderHiddenSize}, "rnnt_step");
+    checkTensorShape(*mStepEngine, "logits", {1, mVocabSize}, "rnnt_step");
+    checkTensorShape(*mStepEngine, "present_hidden_state", {mNumDecoderLayers, 1, mDecoderHiddenSize}, "rnnt_step");
+    checkTensorShape(*mStepEngine, "present_cell_state", {mNumDecoderLayers, 1, mDecoderHiddenSize}, "rnnt_step");
 
+    check::check(
+        mEncoderEngine->getNbOptimizationProfiles() == 1, "encoder must contain exactly one optimization profile");
+    auto const minProfile = mEncoderEngine->getProfileShape("input_features", 0, nvinfer1::OptProfileSelector::kMIN);
     auto const maxProfile = mEncoderEngine->getProfileShape("input_features", 0, nvinfer1::OptProfileSelector::kMAX);
-    check::check(maxProfile.nbDims == 3 && maxProfile.d[2] == mMelBins,
-        "encoder input_features profile does not match config num_mel_bins");
+    check::check(minProfile.nbDims == 3 && maxProfile.nbDims == 3 && minProfile.d[0] == 1 && maxProfile.d[0] == 1
+            && minProfile.d[2] == mMelBins && maxProfile.d[2] == mMelBins && minProfile.d[1] > 0
+            && minProfile.d[1] <= maxProfile.d[1],
+        "encoder input_features profile does not match the batch-1 mel contract");
+    mMinMelFrames = minProfile.d[1];
     mMaxMelFrames = maxProfile.d[1];
     mMaxEncoderFrames = encoderFramesForMel(mMaxMelFrames);
 
@@ -133,7 +190,19 @@ void NemotronAsrRuntime::loadConfig(std::filesystem::path const& configPath)
     mNumDecoderLayers = config.value("num_decoder_layers", 2);
     mMaxSymbolsPerStep = config.value("max_symbols_per_step", 10);
     mDefaultPromptId = config.value("default_prompt_id", 101);
-    mMelBins = config.at("encoder_config").value("num_mel_bins", 128);
+    Json const& encoderConfig = config.at("encoder_config");
+    mMelBins = encoderConfig.value("num_mel_bins", 128);
+    mNumPrompts = config.value("num_prompts", 128);
+
+    check::check(mVocabSize > 0 && mBlankTokenId >= 0 && mBlankTokenId < mVocabSize,
+        "config.json has an invalid RNN-T vocabulary or blank_token_id");
+    check::check(mDecoderHiddenSize > 0 && mNumDecoderLayers > 0 && mMaxSymbolsPerStep > 0,
+        "config.json has invalid RNN-T decoder dimensions");
+    check::check(mMelBins > 0 && mNumPrompts > 0 && mDefaultPromptId >= 0 && mDefaultPromptId < mNumPrompts,
+        "config.json has an invalid mel or language-prompt contract");
+    check::check(
+        encoderConfig.value("subsampling_factor", 8) == 8 && encoderConfig.value("subsampling_conv_stride", 2) == 2,
+        "Nemotron-3.5-ASR runtime requires factor-eight stride-two encoder subsampling");
 }
 
 void NemotronAsrRuntime::allocateBuffers(cudaStream_t)
@@ -177,7 +246,7 @@ NemotronAsrRuntime::~NemotronAsrRuntime() noexcept
 }
 
 int64_t NemotronAsrRuntime::runEncoder(
-    audio::AudioPCM const& pcm, int32_t promptId, cudaStream_t stream, Timings* timings)
+    audio::AudioPCM const& pcm, int32_t promptId, cudaStream_t stream, int64_t& numMelFrames, Timings* timings)
 {
     using Clock = std::chrono::steady_clock;
     auto elapsedMs = [](Clock::time_point a, Clock::time_point b) {
@@ -197,10 +266,16 @@ int64_t NemotronAsrRuntime::runEncoder(
     auto const encStart = Clock::now();
     auto const melShape = melHost.getShape(); // [T_mel, melBins]
     int64_t const melFrames = melShape[0];
+    numMelFrames = melFrames;
     check::check(melFrames > 0, "Audio too short: zero mel frames");
+    check::check(melFrames >= mMinMelFrames,
+        "Audio too short: " + std::to_string(melFrames) + " mel frames is below engine min "
+            + std::to_string(mMinMelFrames));
     check::check(melFrames <= mMaxMelFrames,
         "Audio too long: " + std::to_string(melFrames) + " mel frames exceeds engine max "
             + std::to_string(mMaxMelFrames));
+    check::check(promptId >= 0 && promptId < mNumPrompts,
+        "Language prompt id " + std::to_string(promptId) + " is outside [0, " + std::to_string(mNumPrompts) + ")");
 
     // fp32 host mel → fp16 staging → device.
     float const* melData = static_cast<float const*>(melHost.rawPointer());
@@ -277,37 +352,59 @@ NemotronAsrRuntime::Result NemotronAsrRuntime::decodeGreedy(int64_t numFrames, c
         mStepBindingsSet = true;
     }
 
-    if (mStepGraphExec == nullptr)
+    if (!mStepGraphCaptureAttempted)
     {
+        mStepGraphCaptureAttempted = true;
         // Warmup (initializes TRT internal state), then capture one full step:
         // engine enqueue + argmax. Bindings are fixed so one graph serves all
         // steps. On capture failure fall back to per-step enqueue.
+        CUDA_CHECK(cudaMemsetAsync(
+            mEncoderFrameStaging.rawPointer(), 0, static_cast<size_t>(mDecoderHiddenSize) * sizeof(__half), stream));
         check::check(mStepContext->enqueueV3(stream), "rnnt_step warmup enqueue failed");
         CUDA_CHECK(cudaStreamSynchronize(stream));
 
-        bool captured = true;
-        CUDA_CHECK(cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal));
-        captured &= mStepContext->enqueueV3(stream);
-        kernel::invokeRowwiseArgmax<__half>(static_cast<__half const*>(mLogits.rawPointer()), /*rows=*/1, mVocabSize,
-            static_cast<int32_t*>(mTokenOut.rawPointer()), stream);
-        cudaStreamCaptureStatus captureStatus{};
-        CUDA_CHECK(cudaStreamIsCapturing(stream, &captureStatus));
-        if (captureStatus != cudaStreamCaptureStatusNone)
+        cudaError_t const beginStatus = cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal);
+        if (beginStatus == cudaSuccess)
         {
-            CUDA_CHECK(cudaStreamEndCapture(stream, &mStepGraph));
-        }
-        if (captured && mStepGraph != nullptr)
-        {
-            if (instantiateCudaGraph(&mStepGraphExec, mStepGraph) != cudaSuccess)
+            bool const enqueued = mStepContext->enqueueV3(stream);
+            if (enqueued)
             {
-                static_cast<void>(cudaGetLastError());
-                mStepGraphExec = nullptr;
-                LOG_WARNING("RNN-T step CUDA graph instantiation failed; falling back to per-step enqueue.");
+                kernel::invokeRowwiseArgmax<__half>(static_cast<__half const*>(mLogits.rawPointer()), /*rows=*/1,
+                    mVocabSize, static_cast<int32_t*>(mTokenOut.rawPointer()), stream);
+            }
+            cudaGraph_t capturedGraph{nullptr};
+            cudaError_t const endStatus = cudaStreamEndCapture(stream, &capturedGraph);
+            if (enqueued && endStatus == cudaSuccess && capturedGraph != nullptr)
+            {
+                cudaGraphExec_t capturedExec{nullptr};
+                cudaError_t const instantiateStatus = instantiateCudaGraph(&capturedExec, capturedGraph);
+                if (instantiateStatus == cudaSuccess)
+                {
+                    mStepGraph = capturedGraph;
+                    mStepGraphExec = capturedExec;
+                    LOG_INFO("RNN-T step CUDA graph captured.");
+                }
+                else
+                {
+                    static_cast<void>(cudaGraphDestroy(capturedGraph));
+                    static_cast<void>(cudaGetLastError());
+                    LOG_WARNING("RNN-T step CUDA graph instantiation failed; falling back to per-step enqueue.");
+                }
             }
             else
             {
-                LOG_INFO("RNN-T step CUDA graph captured.");
+                if (capturedGraph != nullptr)
+                {
+                    static_cast<void>(cudaGraphDestroy(capturedGraph));
+                }
+                static_cast<void>(cudaGetLastError());
+                LOG_WARNING("RNN-T step CUDA graph capture failed; falling back to per-step enqueue.");
             }
+        }
+        else
+        {
+            static_cast<void>(cudaGetLastError());
+            LOG_WARNING("RNN-T step CUDA graph capture could not start; falling back to per-step enqueue.");
         }
         // The warmup only wrote the present buffers [1] and the logits, both
         // of which the first real step overwrites; current state [0] and
@@ -323,6 +420,7 @@ NemotronAsrRuntime::Result NemotronAsrRuntime::decodeGreedy(int64_t numFrames, c
     auto const decodeStart = std::chrono::steady_clock::now();
     int64_t t = 0;
     int32_t symbols = 0;
+    bool pendingStateUpdate = false;
     while (t < numFrames)
     {
         // Stage the current encoder frame at the step engine's fixed input.
@@ -342,6 +440,7 @@ NemotronAsrRuntime::Result NemotronAsrRuntime::decodeGreedy(int64_t numFrames, c
         CUDA_CHECK(cudaMemcpyAsync(
             mTokenHostI32.rawPointer(), mTokenOut.rawPointer(), sizeof(int32_t), cudaMemcpyDeviceToHost, stream));
         CUDA_CHECK(cudaStreamSynchronize(stream));
+        pendingStateUpdate = false;
         ++result.numDecodeSteps;
         int32_t const best = *mTokenHostI32.dataPointer<int32_t>();
 
@@ -364,12 +463,18 @@ NemotronAsrRuntime::Result NemotronAsrRuntime::decodeGreedy(int64_t numFrames, c
             *mTokenHostI64.dataPointer<int64_t>() = best;
             CUDA_CHECK(cudaMemcpyAsync(mDecoderInputIds.rawPointer(), mTokenHostI64.rawPointer(), sizeof(int64_t),
                 cudaMemcpyHostToDevice, stream));
+            pendingStateUpdate = true;
             if (++symbols >= mMaxSymbolsPerStep)
             {
                 ++t;
                 symbols = 0;
             }
         }
+    }
+
+    if (pendingStateUpdate)
+    {
+        CUDA_CHECK(cudaStreamSynchronize(stream));
     }
 
     if (timings != nullptr)
@@ -386,9 +491,10 @@ NemotronAsrRuntime::Result NemotronAsrRuntime::decodeGreedy(int64_t numFrames, c
 NemotronAsrRuntime::Result NemotronAsrRuntime::transcribe(
     audio::AudioPCM const& pcm, int32_t promptId, cudaStream_t stream, Timings* timings)
 {
-    int64_t const numFrames = runEncoder(pcm, promptId, stream, timings);
+    int64_t numMelFrames = 0;
+    int64_t const numFrames = runEncoder(pcm, promptId, stream, numMelFrames, timings);
     Result result = decodeGreedy(numFrames, stream, timings);
-    result.numMelFrames = static_cast<int64_t>(pcm.samples.size()) / mMelExtractor.config().hopLength;
+    result.numMelFrames = numMelFrames;
     return result;
 }
 

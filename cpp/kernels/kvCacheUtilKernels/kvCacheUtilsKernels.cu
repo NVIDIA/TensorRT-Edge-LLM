@@ -77,166 +77,6 @@ void incrementLengthTensor(rt::Tensor& lengthTensor, rt::Tensor const& newIncrem
         lengthTensor.dataPointer<int32_t>(), newIncrementTensor.dataPointer<int32_t>(), 0, activeBatchSize);
 }
 
-// Single-layer tensor<->cache copy. Linear-vectorized per-(kv, head) scheme: one CTA handles one
-// (kv*head) slice for the configured decoder layer, threads iterate linearly over seqLen*HEAD_DIM
-// in VEC_SIZE chunks. HEAD_DIM-agnostic as long as it is a positive multiple of VEC_SIZE.
-template <typename T, int32_t HEAD_DIM, bool TENSOR_TO_CACHE>
-__global__ void instantiateKVCacheKernel(T* KVCacheBuffer, T* KVCacheTensor, int64_t kvCacheMaxBatch,
-    int64_t kvCacheMaxSequenceLength, int64_t batchIdx, int64_t numDecoderLayers, int64_t numKVHeads,
-    int64_t sequenceLength, int64_t headDim)
-{
-    static_assert(HEAD_DIM == 64 || HEAD_DIM == 128 || HEAD_DIM == 256 || HEAD_DIM == 512,
-        "Only HEAD_DIM = 64, 128, 256, or 512 is supported.");
-    using Vec = DVec<T>;
-    constexpr int32_t VEC_SIZE = Vec::vec_size;
-    static_assert(HEAD_DIM % VEC_SIZE == 0, "HEAD_DIM must be a multiple of vector size.");
-
-    // Grid x: decoderLayerIdx * (2 * numKVHeads) + kvHeadIdx. Treat 2*numKVHeads as flat dim.
-    int32_t const CTAIdx = blockIdx.x;
-    int64_t const decoderLayerIdx = CTAIdx / (2 * numKVHeads);
-    int64_t const kvHeadIdx = CTAIdx % (2 * numKVHeads);
-
-    // Tensor layout: [numDecoderLayers, 2, numKVHeads, sequenceLength, headDim]
-    // Cache  layout: [numDecoderLayers, maxBatch, 2, numKVHeads, maxSeqLen, headDim]
-    int64_t const ctaTensorOffset
-        = decoderLayerIdx * 2 * numKVHeads * sequenceLength * HEAD_DIM + kvHeadIdx * sequenceLength * HEAD_DIM;
-    int64_t const ctaCacheOffset
-        = decoderLayerIdx * (kvCacheMaxBatch * 2 * numKVHeads * kvCacheMaxSequenceLength * HEAD_DIM)
-        + batchIdx * 2 * numKVHeads * kvCacheMaxSequenceLength * HEAD_DIM
-        + kvHeadIdx * kvCacheMaxSequenceLength * HEAD_DIM;
-
-    int32_t const numVecs = (sequenceLength * HEAD_DIM) / VEC_SIZE;
-    int32_t const tid = threadIdx.y * blockDim.x + threadIdx.x;
-    int32_t const threadsPerBlock = blockDim.x * blockDim.y;
-
-    T* tensorPtr = KVCacheTensor + ctaTensorOffset;
-    T* cachePtr = KVCacheBuffer + ctaCacheOffset;
-
-    Vec vec;
-    for (int32_t vecIdx = tid; vecIdx < numVecs; vecIdx += threadsPerBlock)
-    {
-        int64_t const elemOff = static_cast<int64_t>(vecIdx) * VEC_SIZE;
-        if constexpr (TENSOR_TO_CACHE)
-        {
-            vec.load(tensorPtr + elemOff);
-            vec.store(cachePtr + elemOff);
-        }
-        else
-        {
-            vec.load(cachePtr + elemOff);
-            vec.store(tensorPtr + elemOff);
-        }
-    }
-}
-
-void instantiateKVCacheLayerFromTensor(
-    rt::Tensor& dstKVCacheLayer, rt::Tensor const& srcKVCacheTensor, int32_t batchIdx, cudaStream_t stream)
-{
-    // srcKVCacheTensor shape: [2, numKVHeads, sequenceLength, headDim]
-    auto const& srcShape = srcKVCacheTensor.getShape();
-    check::check(srcShape.getNumDims() == 4 && srcShape[0] == 2,
-        "Source tensor must be 4D: [2, numKVHeads, sequenceLength, headDim]");
-
-    int32_t const numKVHeads = srcShape[1];
-    int32_t const sequenceLength = srcShape[2];
-    int32_t const headDim = srcShape[3];
-
-    // dstKVCacheLayer shape: [maxBatchSize, 2, numKVHeads, maxSequenceLength, headDim]
-    auto const& dstShape = dstKVCacheLayer.getShape();
-    int32_t const kvCacheMaxBatch = dstShape[0];
-    int32_t const kvCacheMaxSequenceLength = dstShape[3];
-
-    ELLM_CHECK(batchIdx < kvCacheMaxBatch,
-        "batchIdx out of range. Max=" + std::to_string(kvCacheMaxBatch) + ", got=" + std::to_string(batchIdx));
-    ELLM_CHECK(sequenceLength <= kvCacheMaxSequenceLength,
-        "sequenceLength exceeds max. Max=" + std::to_string(kvCacheMaxSequenceLength)
-            + ", got=" + std::to_string(sequenceLength));
-    ELLM_CHECK(dstKVCacheLayer.getDataType() == nvinfer1::DataType::kHALF, "Only half type is supported.");
-
-    // Single layer: grid = 2 * numKVHeads CTAs
-    dim3 gridDim(2 * numKVHeads);
-    dim3 blockDim(32, 4);
-
-    half* srcPtr = const_cast<half*>(srcKVCacheTensor.dataPointer<half>());
-
-    switch (headDim)
-    {
-    case 64:
-        instantiateKVCacheKernel<half, 64, true><<<gridDim, blockDim, 0, stream>>>(dstKVCacheLayer.dataPointer<half>(),
-            srcPtr, kvCacheMaxBatch, kvCacheMaxSequenceLength, batchIdx, 1, numKVHeads, sequenceLength, headDim);
-        break;
-    case 128:
-        instantiateKVCacheKernel<half, 128, true><<<gridDim, blockDim, 0, stream>>>(dstKVCacheLayer.dataPointer<half>(),
-            srcPtr, kvCacheMaxBatch, kvCacheMaxSequenceLength, batchIdx, 1, numKVHeads, sequenceLength, headDim);
-        break;
-    case 256:
-        instantiateKVCacheKernel<half, 256, true><<<gridDim, blockDim, 0, stream>>>(dstKVCacheLayer.dataPointer<half>(),
-            srcPtr, kvCacheMaxBatch, kvCacheMaxSequenceLength, batchIdx, 1, numKVHeads, sequenceLength, headDim);
-        break;
-    case 512:
-        instantiateKVCacheKernel<half, 512, true><<<gridDim, blockDim, 0, stream>>>(dstKVCacheLayer.dataPointer<half>(),
-            srcPtr, kvCacheMaxBatch, kvCacheMaxSequenceLength, batchIdx, 1, numKVHeads, sequenceLength, headDim);
-        break;
-    default:
-        throw std::runtime_error("instantiateKVCacheLayerFromTensor(): Unsupported headDim=" + std::to_string(headDim));
-    }
-}
-
-void saveKVCacheLayerIntoTensor(
-    rt::Tensor& dstKVCacheTensor, rt::Tensor const& srcKVCacheLayer, int32_t batchIdx, cudaStream_t stream)
-{
-    // dstKVCacheTensor shape: [2, numKVHeads, sequenceLength, headDim]
-    auto const& dstShape = dstKVCacheTensor.getShape();
-    check::check(dstShape.getNumDims() == 4 && dstShape[0] == 2,
-        "Destination tensor must be 4D: [2, numKVHeads, sequenceLength, headDim]");
-
-    int32_t const numKVHeads = dstShape[1];
-    int32_t const sequenceLength = dstShape[2];
-    int32_t const headDim = dstShape[3];
-
-    // srcKVCacheLayer shape: [maxBatchSize, 2, numKVHeads, maxSequenceLength, headDim]
-    auto const& srcShape = srcKVCacheLayer.getShape();
-    int32_t const kvCacheMaxBatch = srcShape[0];
-    int32_t const kvCacheMaxSequenceLength = srcShape[3];
-
-    ELLM_CHECK(batchIdx < kvCacheMaxBatch,
-        "batchIdx out of range. Max=" + std::to_string(kvCacheMaxBatch) + ", got=" + std::to_string(batchIdx));
-    ELLM_CHECK(sequenceLength <= kvCacheMaxSequenceLength,
-        "sequenceLength exceeds max. Max=" + std::to_string(kvCacheMaxSequenceLength)
-            + ", got=" + std::to_string(sequenceLength));
-    ELLM_CHECK(dstKVCacheTensor.getDataType() == nvinfer1::DataType::kHALF, "Only half type is supported.");
-
-    dim3 gridDim(2 * numKVHeads);
-    dim3 blockDim(32, 4);
-
-    half* srcPtr = const_cast<half*>(srcKVCacheLayer.dataPointer<half>());
-
-    switch (headDim)
-    {
-    case 64:
-        instantiateKVCacheKernel<half, 64, false><<<gridDim, blockDim, 0, stream>>>(srcPtr,
-            dstKVCacheTensor.dataPointer<half>(), kvCacheMaxBatch, kvCacheMaxSequenceLength, batchIdx, 1, numKVHeads,
-            sequenceLength, headDim);
-        break;
-    case 128:
-        instantiateKVCacheKernel<half, 128, false><<<gridDim, blockDim, 0, stream>>>(srcPtr,
-            dstKVCacheTensor.dataPointer<half>(), kvCacheMaxBatch, kvCacheMaxSequenceLength, batchIdx, 1, numKVHeads,
-            sequenceLength, headDim);
-        break;
-    case 256:
-        instantiateKVCacheKernel<half, 256, false><<<gridDim, blockDim, 0, stream>>>(srcPtr,
-            dstKVCacheTensor.dataPointer<half>(), kvCacheMaxBatch, kvCacheMaxSequenceLength, batchIdx, 1, numKVHeads,
-            sequenceLength, headDim);
-        break;
-    case 512:
-        instantiateKVCacheKernel<half, 512, false><<<gridDim, blockDim, 0, stream>>>(srcPtr,
-            dstKVCacheTensor.dataPointer<half>(), kvCacheMaxBatch, kvCacheMaxSequenceLength, batchIdx, 1, numKVHeads,
-            sequenceLength, headDim);
-        break;
-    default: throw std::runtime_error("saveKVCacheLayerIntoTensor(): Unsupported headDim=" + std::to_string(headDim));
-    }
-}
-
 //=============================================================================
 // Batched KV Cache Copy Kernel (save / restore across layers)
 //=============================================================================
@@ -244,9 +84,9 @@ void saveKVCacheLayerIntoTensor(
 /// TENSOR_TO_CACHE == true  => copy from tensor (saved) to cache buffer (restore)
 /// TENSOR_TO_CACHE == false => copy from cache buffer to tensor (save)
 ///
-/// NHD pool layout. The cache for one layer is [2, maxBatch, capPadded, H, D] with the K/V
-/// split OUTERMOST, so the K-half and V-half are each a contiguous [maxBatch, capPadded, H, D] pool.
-/// Within a half, batch row `b`'s first `sequenceLength` tokens form one contiguous span of
+/// The cache is a canonical [2, numPages, kTOKENS_PER_PAGE, H, D] pool. Its active-slot K/V views
+/// each have [maxBatch, capPadded, H, D] shape. Within an active half, batch row `b`'s first
+/// `sequenceLength` tokens form one contiguous span of
 /// sequenceLength*H*D elements starting at b*capPadded*H*D — token-major, then head, then dim.
 ///
 /// Saved tensor layout (per layer): [2, sequenceLength, H, D] (K plane then V plane), each plane a
@@ -274,7 +114,7 @@ __global__ void batchedKVCacheCopyKernel(KVLayerInfo const* __restrict__ cacheLa
     KVLayerInfo const cacheInfo = cacheLayerInfos[layerIdx];
     KVLayerInfo const tensorInfo = tensorLayerInfos[layerIdx];
     int32_t const numKVHeads = cacheInfo.numKVHeads;
-    int32_t const capPadded = cacheInfo.maxSeqLen; // per-row token capacity of the NHD pool
+    int32_t const capPadded = cacheInfo.maxSeqLen; // per-row token capacity of the active-slot view
 
     T* cacheBuffer = static_cast<T*>(cacheInfo.data);
     T* tensorBuffer = static_cast<T*>(tensorInfo.data);
@@ -322,7 +162,7 @@ void saveKVCacheBatched(KVLayerInfo const* srcLayerInfos, KVLayerInfo const* dst
         return;
     }
 
-    // NHD: each layer is two contiguous block copies (K-half, V-half). Grid.x selects the half.
+    // Each layer uses two contiguous active-slot copies (K half, V half). Grid.x selects the half.
     dim3 grid(2, numLayers);
     dim3 block(32, 4);
 
@@ -359,7 +199,7 @@ void instantiateKVCacheBatched(KVLayerInfo const* dstLayerInfos, KVLayerInfo con
         return;
     }
 
-    // NHD: each layer is two contiguous block copies (K-half, V-half). Grid.x selects the half.
+    // Each layer uses two contiguous active-slot copies (K half, V half). Grid.x selects the half.
     dim3 grid(2, numLayers);
     dim3 block(32, 4);
 
@@ -545,6 +385,71 @@ void gatherPagedKVToSplit(void const* pool, void* kDst, void* vDst, int32_t cons
             static_cast<uint8_t*>(kDst), static_cast<uint8_t*>(vDst), pageTable, kvSeqLens, maxPagesPerSeq, seqLen,
             pageBytes, tokenBytes);
     }
+    CUDA_CHECK(cudaGetLastError());
+}
+
+__global__ void gatherPagedKVToHeadMajorKernel(uint8_t const* __restrict__ pool, uint8_t* __restrict__ kDst,
+    uint8_t* __restrict__ vDst, int32_t const* __restrict__ pageTable, int32_t const* __restrict__ kvSeqLens,
+    int32_t maxPagesPerSeq, int32_t seqLen, int32_t numKVHeads, int32_t headDim, size_t elemSize)
+{
+    int32_t const batch = blockIdx.x;
+    int32_t const logicalPage = blockIdx.y;
+    int32_t const head = blockIdx.z;
+    int32_t const tokenStart = logicalPage * rt::kTOKENS_PER_PAGE;
+    int32_t const tokensInPage = min(rt::kTOKENS_PER_PAGE, seqLen - tokenStart);
+    int32_t const kPage = pageTable[(static_cast<size_t>(batch) * 2 + 0) * maxPagesPerSeq + logicalPage];
+    int32_t const vPage = pageTable[(static_cast<size_t>(batch) * 2 + 1) * maxPagesPerSeq + logicalPage];
+    size_t const tokenBytes = static_cast<size_t>(numKVHeads) * headDim * elemSize;
+    size_t const headBytes = static_cast<size_t>(headDim) * elemSize;
+    size_t const pageBytes = static_cast<size_t>(rt::kTOKENS_PER_PAGE) * tokenBytes;
+
+    for (int32_t scalar = threadIdx.x; scalar < tokensInPage * headDim; scalar += blockDim.x)
+    {
+        int32_t const token = scalar / headDim;
+        int32_t const dim = scalar % headDim;
+        size_t const dstOffset
+            = ((static_cast<size_t>(batch) * numKVHeads + head) * seqLen + tokenStart + token) * headBytes
+            + static_cast<size_t>(dim) * elemSize;
+        bool const live = tokenStart + token < kvSeqLens[batch] && kPage >= 0 && vPage >= 0;
+        if (!live)
+        {
+            for (size_t byte = 0; byte < elemSize; ++byte)
+            {
+                kDst[dstOffset + byte] = 0;
+                vDst[dstOffset + byte] = 0;
+            }
+            continue;
+        }
+
+        size_t const srcElement = (static_cast<size_t>(token) * numKVHeads + head) * headDim + dim;
+        size_t const kOffset = static_cast<size_t>(kPage) * pageBytes + srcElement * elemSize;
+        size_t const vOffset = static_cast<size_t>(vPage) * pageBytes + srcElement * elemSize;
+        for (size_t byte = 0; byte < elemSize; ++byte)
+        {
+            kDst[dstOffset + byte] = pool[kOffset + byte];
+            vDst[dstOffset + byte] = pool[vOffset + byte];
+        }
+    }
+}
+
+void gatherPagedKVToHeadMajor(void const* pool, void* kDst, void* vDst, int32_t const* pageTable,
+    int32_t const* kvSeqLens, int32_t maxPagesPerSeq, int32_t batchSize, int32_t seqLen, int32_t numKVHeads,
+    int32_t headDim, size_t elemSize, cudaStream_t stream)
+{
+    check::check(batchSize > 0 && seqLen > 0 && numKVHeads > 0 && headDim > 0 && elemSize > 0,
+        "gatherPagedKVToHeadMajor: dimensions and element size must be positive.");
+    check::check(pageTable != nullptr && kvSeqLens != nullptr,
+        "gatherPagedKVToHeadMajor: page table and sequence lengths are required.");
+    int32_t const numLogicalPages = (seqLen + rt::kTOKENS_PER_PAGE - 1) / rt::kTOKENS_PER_PAGE;
+    check::check(
+        numLogicalPages <= maxPagesPerSeq, "gatherPagedKVToHeadMajor: sequence length exceeds the page-table row.");
+
+    constexpr int32_t kTHREADS_PER_BLOCK{256};
+    dim3 const grid(
+        static_cast<uint32_t>(batchSize), static_cast<uint32_t>(numLogicalPages), static_cast<uint32_t>(numKVHeads));
+    gatherPagedKVToHeadMajorKernel<<<grid, kTHREADS_PER_BLOCK, 0, stream>>>(static_cast<uint8_t const*>(pool),
+        static_cast<uint8_t*>(kDst), static_cast<uint8_t*>(vDst), pageTable, kvSeqLens, maxPagesPerSeq, seqLen,
+        numKVHeads, headDim, elemSize);
     CUDA_CHECK(cudaGetLastError());
 }
 

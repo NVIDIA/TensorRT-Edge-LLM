@@ -12,14 +12,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""
-vLLM-style inference server for TensorRT Edge-LLM.
+"""Checkpoint-native inference server for TensorRT Edge-LLM.
 
 Public API::
 
     from experimental.server import LLM, SamplingParams
 
-    llm = LLM(model="Qwen/Qwen3-1.7B")
+    llm = LLM(model="Qwen/Qwen3.5-0.8B")
     outputs = llm.generate(["Hello!"], SamplingParams(max_tokens=64))
     print(outputs[0].text)
 
@@ -27,10 +26,13 @@ Public API::
     llm.serve(port=8000)
 """
 
-from .engine import (LLM, TTS, AudioParams, CompletionOutput, SamplingParams,
-                     StreamDelta)
+from .config import ContextCacheConfig
+from .runtime.engine import (LLM, TTS, AudioParams, CompletionOutput,
+                             SamplingParams, StreamDelta, load_model)
+from .runtime.engine_build import clear_engine_cache, prune_engine_cache
 
 __all__ = [
     "LLM", "TTS", "SamplingParams", "CompletionOutput", "StreamDelta",
-    "AudioParams"
+    "AudioParams", "load_model", "ContextCacheConfig", "clear_engine_cache",
+    "prune_engine_cache"
 ]

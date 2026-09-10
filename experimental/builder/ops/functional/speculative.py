@@ -40,13 +40,14 @@ def hidden_state_feedback(hidden_states,
             raise ValueError("EAGLE3 target-layer IDs are out of range")
         return F.concatenate(
             tuple(all_hidden_states[index] for index in indices), 2)
-    if config.spec_decode_type in ("dflash", "dspark"):
+    if config.spec_decode_type in ("dflash", "jetspec", "dspark"):
         if config.spec_decode_type == "dspark":
             indices = config.dspark_target_layer_ids
             algorithm = "DSpark"
         else:
             indices = config.dflash_target_layer_ids or [1, 8, 15, 22, 29]
-            algorithm = "DFlash"
+            algorithm = ("JetSpec"
+                         if config.spec_decode_type == "jetspec" else "DFlash")
         selected = [
             all_hidden_states[index] for index in indices
             if index < len(all_hidden_states)
@@ -59,13 +60,14 @@ def hidden_state_feedback(hidden_states,
 
 def update_dflash_target_cache(key_delta: Tensor, value_delta: Tensor,
                                past_key_value: Tensor, rope_cos_sin: Tensor,
-                               delta_start: Tensor, delta_lengths: Tensor, *,
+                               delta_start: Tensor, delta_lengths: Tensor,
+                               kv_page_table: Tensor, *,
                                pages_per_slot: int) -> Tensor:
     """Write target-hidden K/V deltas into the persistent draft cache."""
     if pages_per_slot <= 0:
         raise ValueError("pages_per_slot must be positive")
     return operation("dflash_target_cache_update", [
         key_delta, value_delta, past_key_value, rope_cos_sin, delta_start,
-        delta_lengths
+        delta_lengths, kv_page_table
     ],
                      pages_per_slot=pages_per_slot)

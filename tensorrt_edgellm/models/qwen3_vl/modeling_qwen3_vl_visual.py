@@ -36,7 +36,8 @@ import torch.nn.functional as F
 
 from ... import config as config_module
 from ..linear import make_linear
-from ..ops import (is_trt_native_attention_enabled, trt_ragged_attention,
+from ..ops import (init_fp8_mha, is_trt_native_attention_enabled,
+                   quantize_qkv_for_fp8_mha, trt_ragged_attention,
                    vit_attention_plugin)
 
 if TYPE_CHECKING:
@@ -207,6 +208,9 @@ class Qwen3VLVisionAttention(nn.Module):
             bias=True,
             module_name=f"{name_prefix}.proj" if name_prefix else "")
         self._use_trt_attn = is_trt_native_attention_enabled()
+        # Fused-qkv attention: init_fp8_mha creates synthetic k_proj/v_proj
+        # placeholders for the modelopt scale paths (see its docstring).
+        self.enable_fp8_mha = init_fp8_mha(self, model_config, self.head_dim)
 
     def forward(
         self,
@@ -236,6 +240,7 @@ class Qwen3VLVisionAttention(nn.Module):
                 head_size=self.head_dim,
                 attention_scale=self.attention_scale)
         else:
+            q, k, v, qkv_scales = quantize_qkv_for_fp8_mha(self, q, k, v)
             attn_output = vit_attention_plugin(
                 q,
                 k,
@@ -244,7 +249,9 @@ class Qwen3VLVisionAttention(nn.Module):
                 max_seqlen_carrier,
                 num_heads=self.num_heads,
                 head_size=self.head_dim,
-                attention_scale=self.attention_scale)
+                attention_scale=self.attention_scale,
+                qkv_scales=qkv_scales,
+            )
         attn_output = attn_output.reshape(seq_length, -1)
         return self.proj(attn_output)
 
@@ -358,7 +365,9 @@ class Qwen3VLVisualModel(nn.Module):
     def __init__(self, config: dict, model_config: "ModelConfig") -> None:
         super().__init__()
         self.hidden_size: int = config["hidden_size"]
-        self.num_heads: int = config["num_heads"]
+        # AWQ/quantized checkpoints may name this `num_attention_heads`.
+        self.num_heads: int = config.get("num_heads",
+                                         config.get("num_attention_heads"))
         self.head_dim: int = self.hidden_size // self.num_heads
         self.in_channels: int = config.get("in_channels", 3)
         self.patch_size: int = config["patch_size"]

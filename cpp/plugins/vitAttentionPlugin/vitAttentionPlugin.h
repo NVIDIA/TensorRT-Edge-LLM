@@ -51,8 +51,11 @@ public:
     //! \param[in] numHeads Number of attention heads
     //! \param[in] headSize Head dimension size
     //! \param[in] attentionScale Optional absolute QK^T multiplier; defaults to 1/sqrt(headSize)
+    //! \param[in] qkvScales Per-tensor dequant scales ``[qScale, kScale, vScale]`` (FP8 → original)
+    //!                      folded into the FMHA softmax/output scales.
     ViTAttentionPlugin(std::string const& name, int32_t numHeads, int32_t headSize,
-        std::optional<float> attentionScale = std::nullopt);
+        std::optional<float> attentionScale = std::nullopt,
+        std::vector<float> const& qkvScales = std::vector<float>{1.f, 1.f, 1.f});
     ViTAttentionPlugin(std::string const& name, nvinfer1::PluginFieldCollection const* fc);
 
     ViTAttentionPlugin() = delete;
@@ -104,6 +107,20 @@ protected:
     nvinfer1::DataType const mDataType{nvinfer1::DataType::kHALF};
     int32_t mSMVersion; //!< CUDA SM version
     ViTFMHABackend mFMHABackend{ViTFMHABackend::kNONE};
+
+    //! The actual FP8 mode is chosen per-build by the Q/K/V tensor dtype the graph supplies.
+    bool supportsFp8Mha() const noexcept
+    {
+        return mFMHABackend == ViTFMHABackend::kCUTE_DSL_FMHA_BLACKWELL
+            && (mHeadSize == 64 || mHeadSize == 80 || mHeadSize == 96 || mHeadSize == 128);
+    }
+
+    //! Host QKV dequant scales [q, k, v] (quant→orig).
+    //! - q scale: folded into softmaxScale for FP8 FMHA.
+    //! - k scale: folded into softmaxScale for FP8 FMHA.
+    //! - v scale: folded into scaleOutput for FP8 FMHA.
+    //! Attention output is always FP16; downstream Q/DQ for o_proj is handled by the TRT graph.
+    std::vector<float> mQkvScales{1.f, 1.f, 1.f};
 
     std::vector<nvinfer1::PluginField> mDataToSerialize;
     nvinfer1::PluginFieldCollection mFCToSerialize{};

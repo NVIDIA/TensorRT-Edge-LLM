@@ -164,6 +164,17 @@ public:
     //! the kernel-side n256 indexing issue is fixed.
     static constexpr int32_t kLevelTileNLarge = 256;
 
+    //! MMA tile M. Decode routes only top_k rows per token, so the default
+    //! 128-row tile runs mostly empty; 64 is the scheduler's minimum (it
+    //! asserts divisibility by 64). Measured on SM121 with E=256/I=512/top_k=8:
+    //! m64 is 12.9-15.2% faster than m128 over routed_rows 8..56.
+    static constexpr int32_t kLevelTileM = 128;
+    static constexpr int32_t kLevelTileMSmall = 64;
+
+    //! Upper bound of the routed_rows range where m64 was measured. Past it we
+    //! keep m128 rather than extrapolate.
+    static constexpr int32_t kTileMSmallMaxRows = 128;
+
     //! MMA tile-K (compile-time, bolted to NVFP4 block-scale geometry).
     //! Mirrors ``tile_k = sf_vec_size * 8`` in moe_{decode,prefill}_kernel.py.
     static constexpr int32_t kCuteDslTileK = kNvfp4SfVecSize * 8;
@@ -234,6 +245,10 @@ private:
     //! N must already be a multiple of kLevelTileN (enforced by canImplement).
     static int32_t selectMmaTilerN(int32_t moeInterSize);
 
+    //! Picks the MMA M-tile from the routed-row count. Decode-only: the
+    //! prefill backend keeps m128 because it already fills the tile.
+    static int32_t selectMmaTilerM(int32_t routedRows);
+
     //! Decode-backend launch -- dispatches to the activation x N-tile variant.
     int32_t runDecode(CuteDslNvfp4MoeParams const& params, void* workspace, cudaStream_t stream);
 
@@ -243,12 +258,19 @@ private:
 
     // AOT kernel modules -- FP16 io_dtype, all six activations
     // (identity/silu/swiglu/gelu/relu2/geglu) x both backends (decode/prefill) x n128 = 12 modules.
-    static detail::LazyKernelModule<nvfp4_fused_moe_decode_identity_n128_Kernel_Module_t> sDecodeIdentity_n128;
-    static detail::LazyKernelModule<nvfp4_fused_moe_decode_silu_n128_Kernel_Module_t> sDecodeSiLU_n128;
-    static detail::LazyKernelModule<nvfp4_fused_moe_decode_swiglu_n128_Kernel_Module_t> sDecodeSwiGLU_n128;
-    static detail::LazyKernelModule<nvfp4_fused_moe_decode_gelu_n128_Kernel_Module_t> sDecodeGeLU_n128;
-    static detail::LazyKernelModule<nvfp4_fused_moe_decode_relu2_n128_Kernel_Module_t> sDecodeReLU2_n128;
-    static detail::LazyKernelModule<nvfp4_fused_moe_decode_geglu_n128_Kernel_Module_t> sDecodeGeGLU_n128;
+    static detail::LazyKernelModule<nvfp4_fused_moe_decode_identity_m128_n128_Kernel_Module_t>
+        sDecodeIdentity_m128_n128;
+    static detail::LazyKernelModule<nvfp4_fused_moe_decode_silu_m128_n128_Kernel_Module_t> sDecodeSiLU_m128_n128;
+    static detail::LazyKernelModule<nvfp4_fused_moe_decode_swiglu_m128_n128_Kernel_Module_t> sDecodeSwiGLU_m128_n128;
+    static detail::LazyKernelModule<nvfp4_fused_moe_decode_gelu_m128_n128_Kernel_Module_t> sDecodeGeLU_m128_n128;
+    static detail::LazyKernelModule<nvfp4_fused_moe_decode_relu2_m128_n128_Kernel_Module_t> sDecodeReLU2_m128_n128;
+    static detail::LazyKernelModule<nvfp4_fused_moe_decode_geglu_m128_n128_Kernel_Module_t> sDecodeGeGLU_m128_n128;
+    static detail::LazyKernelModule<nvfp4_fused_moe_decode_identity_m64_n128_Kernel_Module_t> sDecodeIdentity_m64_n128;
+    static detail::LazyKernelModule<nvfp4_fused_moe_decode_silu_m64_n128_Kernel_Module_t> sDecodeSiLU_m64_n128;
+    static detail::LazyKernelModule<nvfp4_fused_moe_decode_swiglu_m64_n128_Kernel_Module_t> sDecodeSwiGLU_m64_n128;
+    static detail::LazyKernelModule<nvfp4_fused_moe_decode_gelu_m64_n128_Kernel_Module_t> sDecodeGeLU_m64_n128;
+    static detail::LazyKernelModule<nvfp4_fused_moe_decode_relu2_m64_n128_Kernel_Module_t> sDecodeReLU2_m64_n128;
+    static detail::LazyKernelModule<nvfp4_fused_moe_decode_geglu_m64_n128_Kernel_Module_t> sDecodeGeGLU_m64_n128;
     static detail::LazyKernelModule<nvfp4_fused_moe_prefill_identity_n128_Kernel_Module_t> sPrefillIdentity_n128;
     static detail::LazyKernelModule<nvfp4_fused_moe_prefill_silu_n128_Kernel_Module_t> sPrefillSiLU_n128;
     static detail::LazyKernelModule<nvfp4_fused_moe_prefill_swiglu_n128_Kernel_Module_t> sPrefillSwiGLU_n128;

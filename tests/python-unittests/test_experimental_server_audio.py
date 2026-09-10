@@ -12,11 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Tests for the audio-output server plumbing (no GPU / native module).
-
-Covers /v1/chat/completions audio request parsing, talker-knob and voice
-validation, the shared text+audio channel pump, and TTS engine-dir checks.
-"""
+"""Tests for native audio streaming helpers (no GPU / native module)."""
 
 import threading
 from collections import deque
@@ -24,11 +20,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from experimental.server.api_server import (_apply_talker_knobs,
-                                            _parse_audio_request,
-                                            _validate_voice)
-from experimental.server.engine import (TTS, AudioParams, _native_audio_params,
-                                        _pump_channels, _stream_tts)
+from experimental.server.runtime import engine as server_engine
+from experimental.server.runtime.engine import (TTS, AudioParams,
+                                                _native_audio_params,
+                                                _pump_channels, _stream_tts)
+from experimental.server.runtime.engine_build import PreparedModel
 
 # ---------------------------------------------------------------------------
 # Fakes
@@ -45,11 +41,6 @@ class _FakeFinishReason:
 
 
 FAKE_RT = SimpleNamespace(FinishReason=_FakeFinishReason)
-
-
-def _fake_llm(omni_capable=True, voices=()):
-    return SimpleNamespace(omni_capable=omni_capable,
-                           list_voices=lambda: list(voices))
 
 
 class _FakeChannel:
@@ -76,13 +67,17 @@ class _FakeChannel:
         self.cancelled = True
 
 
-def _text_chunk(text, finished=False, reason=_FakeFinishReason.END_ID):
+def _text_chunk(text,
+                finished=False,
+                reason=_FakeFinishReason.END_ID,
+                prompt_token_count=4):
     return SimpleNamespace(
         text=text,
         token_ids=[1],
         finished=finished,
         reason=reason if finished else _FakeFinishReason.NOT_FINISHED,
         logprobs=[],
+        prompt_token_count=prompt_token_count,
     )
 
 
@@ -95,123 +90,6 @@ def _run_pump(text_channel, audio_channel, run=lambda: None):
         if chan is not None:
             chan.finished = True
     return list(_pump_channels(FAKE_RT, run, text_channel, audio_channel))
-
-
-# ---------------------------------------------------------------------------
-# _apply_talker_knobs / _parse_audio_request / _validate_voice
-# ---------------------------------------------------------------------------
-
-
-def test_talker_knobs_applied_with_types():
-    params = AudioParams()
-    error = _apply_talker_knobs(
-        {
-            "talker_temperature": 1,
-            "talker_top_k": 5,
-            "codec_chunk_frames": 3
-        }, params, "")
-    assert error is None
-    assert params.talker_temperature == 1.0
-    assert isinstance(params.talker_temperature, float)
-    assert params.talker_top_k == 5
-    assert params.codec_chunk_frames == 3
-
-
-@pytest.mark.parametrize("cfg,fragment", [
-    ({
-        "talker_top_k": "high"
-    }, "must be an integer"),
-    ({
-        "talker_top_k": 1.5
-    }, "must be an integer"),
-    ({
-        "talker_top_k": True
-    }, "must be an integer"),
-    ({
-        "talker_temperature": "hot"
-    }, "must be a number"),
-    ({
-        "talker_temperature": -0.1
-    }, "must be >= 0"),
-    ({
-        "codec_chunk_frames": 0
-    }, "must be >= 1"),
-    ({
-        "max_audio_length": 0
-    }, "must be >= 1"),
-])
-def test_talker_knobs_rejected(cfg, fragment):
-    error = _apply_talker_knobs(cfg, AudioParams(), "audio.")
-    assert error is not None and fragment in error
-    assert error.startswith(f"'audio.{next(iter(cfg))}'")
-
-
-def test_parse_audio_request_ignores_text_only():
-    assert _parse_audio_request({}, _fake_llm()) == (None, None)
-    assert _parse_audio_request({"modalities": ["text"]},
-                                _fake_llm()) == (None, None)
-
-
-@pytest.mark.parametrize("body", [
-    {
-        "modalities": "audio"
-    },
-    {
-        "modalities": ["audio", "video"]
-    },
-    {
-        "modalities": ["audio"],
-        "audio": "pcm16"
-    },
-    {
-        "modalities": ["audio"],
-        "audio": {
-            "format": "mp3"
-        }
-    },
-    {
-        "modalities": ["audio"],
-        "audio": {
-            "voice": 3
-        }
-    },
-])
-def test_parse_audio_request_rejects_malformed(body):
-    params, error = _parse_audio_request(body, _fake_llm())
-    assert params is None and error
-
-
-def test_parse_audio_request_requires_omni_engines():
-    params, error = _parse_audio_request({"modalities": ["text", "audio"]},
-                                         _fake_llm(omni_capable=False))
-    assert params is None and "no Omni audio engines" in error
-
-
-def test_parse_audio_request_full():
-    body = {
-        "modalities": ["text", "audio"],
-        "audio": {
-            "voice": "ryan",
-            "talker_temperature": 0.8,
-            "codec_chunk_frames": 5,
-        },
-    }
-    params, error = _parse_audio_request(body,
-                                         _fake_llm(voices=["ryan", "serena"]))
-    assert error is None
-    assert params.voice == "ryan"
-    assert params.talker_temperature == 0.8
-    assert params.codec_chunk_frames == 5
-
-
-def test_validate_voice():
-    llm = _fake_llm(voices=["ryan", "serena"])
-    assert _validate_voice(llm, "") is None
-    assert _validate_voice(llm, "ryan") is None
-    assert "available: ryan, serena" in _validate_voice(llm, "bob")
-    assert _validate_voice(llm, 3) == "'voice' must be a string"
-    # Model without a speaker map: accept anything rather than reject all.
-    assert _validate_voice(_fake_llm(voices=[]), "anything") is None
 
 
 # ---------------------------------------------------------------------------
@@ -276,7 +154,7 @@ def test_pump_cancels_channels_on_early_close():
 
 
 # ---------------------------------------------------------------------------
-# _native_audio_params / TTS engine-dir validation
+# _native_audio_params / checkpoint-direct TTS construction
 # ---------------------------------------------------------------------------
 
 
@@ -292,11 +170,54 @@ def test_native_audio_params_maps_all_fields():
     assert not hasattr(captured, "voice")
 
 
-def test_tts_rejects_missing_engine_dirs(tmp_path):
-    talker = tmp_path / "talker"
-    talker.mkdir()
-    with pytest.raises(ValueError, match="code_predictor engine dir"):
-        TTS(talker_engine_dir=str(talker))
+def _mock_prepared_tts(monkeypatch, tmp_path, *, complete=True):
+    checkpoint = tmp_path / "checkpoint"
+    bundle = tmp_path / "cache" / "bundle"
+    checkpoint.mkdir(parents=True)
+    for component, filename in (("talker", "llm.engine"), ("code_predictor",
+                                                           "llm.engine"),
+                                ("code2wav", "code2wav.engine")):
+        directory = bundle / component
+        directory.mkdir(parents=True, exist_ok=True)
+        if complete or component == "talker":
+            (directory / filename).touch()
+    prepared = PreparedModel(str(bundle), str(checkpoint))
+    monkeypatch.setattr(
+        "experimental.server.runtime.engine_build.prepare_model",
+        lambda *args, **kwargs: prepared)
+    return prepared
+
+
+def test_tts_rejects_incomplete_model_bundle(monkeypatch, tmp_path):
+    _mock_prepared_tts(monkeypatch, tmp_path, complete=False)
+    with pytest.raises(ValueError, match="complete TTS runtime"):
+        TTS(model=str(tmp_path / "checkpoint"))
+
+
+def test_tts_loads_all_components_from_model_cache(monkeypatch, tmp_path):
+    prepared = _mock_prepared_tts(monkeypatch, tmp_path)
+    captured = {}
+    runtime = SimpleNamespace(get_speaker_names=lambda: ["Ryan"])
+
+    def create_runtime(**kwargs):
+        captured.update(kwargs)
+        return runtime
+
+    monkeypatch.setattr(
+        server_engine,
+        "_import_runtime",
+        lambda: SimpleNamespace(TTSRuntime=create_runtime),
+    )
+    tts = TTS(model="Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+              cache_dir=str(tmp_path / "cache"))
+
+    assert tts.bundle_dir == prepared.bundle_dir
+    assert tts.model_dir == prepared.model_dir
+    assert captured["checkpoint_dir"] == prepared.model_dir
+    assert captured["talker_engine_dir"].endswith("/talker")
+    assert captured["code_predictor_engine_dir"].endswith("/code_predictor")
+    assert captured["code2wav_engine_dir"].endswith("/code2wav")
+    assert tts.list_voices() == ["Ryan"]
 
 
 # ---------------------------------------------------------------------------
@@ -320,25 +241,6 @@ def test_stream_tts_acquires_gate_for_direct_callers():
     assert [d.audio_bytes for d in deltas] == [b"pcm"]
     # Acquired on entry, released by the worker: back to its initial count.
     assert sem.acquire(blocking=False)
-
-
-def test_stream_tts_leaves_gate_to_handoff():
-    """With a handoff the HTTP layer already owns the slot; taking it again
-    here would deadlock against its own non-blocking acquire."""
-    channel = _FakeChannel([_audio_chunk(b"pcm", is_final=True)],
-                           finished_from_start=True)
-    released = []
-    handoff = SimpleNamespace(worker_started=lambda: None,
-                              release=lambda: released.append(True))
-    runtime = SimpleNamespace(handle_request_tts=lambda *a: None)
-    list(
-        _stream_tts(_tts_rt(channel),
-                    runtime,
-                    "hi",
-                    AudioParams(),
-                    None,
-                    admission_handoff=handoff))
-    assert released == [True]
 
 
 def test_stream_tts_holds_infer_guard_during_call():

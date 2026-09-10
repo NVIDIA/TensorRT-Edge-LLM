@@ -301,7 +301,7 @@ size_t MambaPlugin::getWorkspaceSize([[maybe_unused]] DynamicPluginTensorDesc co
     {
         int32_t const batch = static_cast<int32_t>(xDesc.max.d[0]);
         int32_t const seqLen = static_cast<int32_t>(xDesc.max.d[1]);
-        if (trt_edgellm::CuteDslSSDRunner::canImplement(mDim, mDstate, 80) && seqLen >= 128)
+        if (seqLen >= 128)
         {
             return trt_edgellm::CuteDslSSDRunner::getWorkspaceSize(batch, seqLen, mNheads, mDim, mDstate, mNgroups);
         }

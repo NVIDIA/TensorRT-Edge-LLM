@@ -39,3 +39,36 @@ target_include_directories(llm_bench PRIVATE ${COMMON_INCLUDE_DIRS}
                                              ${CMAKE_SOURCE_DIR}/examples/utils)
 target_compile_options(llm_bench PRIVATE -Wno-psabi)
 add_cross_build_link_options(llm_bench)
+
+# All-reduce communication is registered through symbols resolved from the
+# dlopen'd plugin, instead of linking the plugin into this executable.
+# Build-time linking causes duplicate CUDA device-code modules between the
+# plugin and executable, which corrupts kernel execution on local multi-device
+# systems.
+
+# Optional multi-device support. Runtime collective code loads NCCL dynamically.
+# MPI launch support is optional for llm_inference so local single-process
+# threaded launch can be built without an MPI dependency.
+option(ENABLE_MULTI_DEVICE
+       "Enable multi-device inference using runtime-loaded NCCL" OFF)
+option(ENABLE_MULTI_DEVICE_MPI
+       "Enable MPI rank-launch support for multi-device inference" OFF)
+
+if(ENABLE_MULTI_DEVICE)
+  target_compile_definitions(llm_inference PRIVATE EDGELLM_ENABLE_MULTI_DEVICE)
+
+  if(ENABLE_MULTI_DEVICE_MPI)
+    find_package(MPI REQUIRED)
+
+    target_compile_definitions(llm_inference
+                               PRIVATE EDGELLM_ENABLE_MULTI_DEVICE_MPI)
+    target_link_libraries(llm_inference PRIVATE MPI::MPI_CXX)
+    target_include_directories(llm_inference PRIVATE ${MPI_CXX_INCLUDE_DIRS})
+    message(STATUS "Multi-device support ENABLED (MPI + runtime-loaded NCCL)")
+  else()
+    message(
+      STATUS
+        "Multi-device support ENABLED (threaded/default + runtime-loaded NCCL; MPI disabled)"
+    )
+  endif()
+endif()

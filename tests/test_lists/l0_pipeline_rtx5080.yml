@@ -17,4 +17,4 @@ tests:
   - tests/defs/test_server_pipeline.py::TestHLAPI::test_hlapi_generate[Qwen3.5-0.8B-fp16-mxsl4096-mxbs2-mxil4096-mnit128-mxit4096-mxpiit512-vlm_basic]
   - tests/defs/test_server_pipeline.py::TestHLAPI::test_hlapi_video_generate[Qwen3.5-0.8B-fp16-mxsl4096-mxbs2-mxil4096-mnit128-mxit4096-mxpiit512-vlm_basic]
   - tests/defs/test_server_pipeline.py::TestHLAPI::test_hlapi_generate_with_audio[Qwen3-ASR-0.6B-fp16-mxsl4096-mxbs1-mxil1024-mnts100-mxts3000-asr_basic]
-  - tests/defs/test_server_pipeline.py::TestHLAPI::test_hlapi_streaming[Qwen2.5-0.5B-Instruct-FP8-KV-fp8-fp8kv-mxsl4096-mxbs4-mxil2048-llm_basic]
+  - tests/defs/test_server_pipeline.py::TestHLAPI::test_http_server_lifecycle[Qwen2.5-0.5B-Instruct-FP8-KV-fp8-fp8kv-mxsl4096-mxbs4-mxil2048-llm_basic]

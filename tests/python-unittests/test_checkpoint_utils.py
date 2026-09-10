@@ -97,11 +97,11 @@ def _assert_kmrope(rope_scaling):
 
 def test_qwen3_vl_transformers_v5_recovers_rope_from_text_config_rope_parameters(
 ):
-    """The bug that caused MR !761 VLM CI failures: transformers-v5 puts the
-    RoPE dict in ``text_config.rope_parameters`` (with ``rope_scaling: null``).
-    The promoted LLM dict must contain ``rope_scaling`` with ``mrope_section``,
-    or the C++ runtime classifies the engine as non-MRope and QwenViTRunner
-    rejects the request."""
+    """Transformers v5 puts the VLM RoPE dict in
+    ``text_config.rope_parameters`` (with ``rope_scaling: null``). The promoted
+    LLM dict must contain ``rope_scaling`` with ``mrope_section``, or the C++
+    runtime classifies the engine as non-MRope and QwenViTRunner rejects the
+    request."""
     with tempfile.TemporaryDirectory() as td:
         _write_config(td, _qwen3_vl_v5_config([24, 20, 20]))
         _root, llm = load_checkpoint_config_dicts(td)

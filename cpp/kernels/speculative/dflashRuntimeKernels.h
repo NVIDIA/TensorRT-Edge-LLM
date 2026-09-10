@@ -28,56 +28,36 @@ namespace kernel
 
 /// Launch the DFlash target KV cache update kernel.
 ///
-/// Applies RoPE to k_delta and writes k_rope + v_delta into the combined KV cache
+/// Applies RoPE to k_delta and writes k_rope + v_delta into the paged KV pool
 /// at positions [deltaStart, deltaStart + deltaLen) for each batch element.
 ///
 /// @param kDelta       [B, deltaLen, numKVHeads, headDim] FP16, k_normed, no RoPE
 /// @param vDelta       [B, deltaLen, numKVHeads, headDim] FP16
-/// @param kvCache      Two-pool NHD KV pool [2, maxBatch, kvCapacity, numKVHeads, headDim] FP16 (in/out).
-///                     DFlash is identity-only (it opts out of KV-cache reuse), so this
-///                     writes directly at the request's own contiguous slot — no page table needed.
+/// @param kvCache      Paged KV pool [2, numPages, kTOKENS_PER_PAGE, numKVHeads, headDim] FP16 (in/out).
 /// @param cosSinCache  [cosSinBatch, cosSinSeqLen, rotaryDim] FP32
 /// @param deltaStartPositions [B] INT32
-/// @param batchSize    ACTIVE batch size (number of requests to process this call; <= maxBatch)
+/// @param pageTable    [B, 2, maxPagesPerSeq] canonical page ids: K in [0, numPages), V in
+///                     [numPages, 2 * numPages). Unmapped or out-of-plane ids skip that cache plane.
+/// @param batchSize    ACTIVE batch size
 /// @param deltaLen     number of delta tokens per batch
 /// @param numKVHeads   number of KV heads
 /// @param headDim      head dimension
 /// @param rotaryDim    rotary embedding dimension
 /// @param cosSinBatch  cos/sin cache batch size (1 or B)
 /// @param cosSinSeqLen cos/sin cache sequence length
-/// @param maxBatch     ALLOCATION batch (outer dim of each K/V half in `kvCache`); sizes the V-pool
-///                     offset (= maxBatch*kvCapacity*numKVHeads*headDim). NOT the active `batchSize`.
-/// @param kvCapacity   ALLOCATION per-slot token capacity (capPadded); sizes each request's slot
-///                     stride and doubles as the OOB write guard (positions >= kvCapacity are dropped).
+/// @param numPages     Number of physical pages in each KV plane
+/// @param maxPagesPerSeq Logical pages per sequence; positions outside this capacity are skipped
 /// @param stream       CUDA stream
 /// @param deltaLengths  [B] INT32, per-batch delta lengths (skip t >= deltaLengths[b])
 void launchDFlashTargetKVCacheUpdate(half const* kDelta, half const* vDelta, half* kvCache, float const* cosSinCache,
-    int32_t const* deltaStartPositions, int32_t const* deltaLengths, int32_t batchSize, int32_t deltaLen,
-    int32_t numKVHeads, int32_t headDim, int32_t rotaryDim, int32_t cosSinBatch, int32_t cosSinSeqLen, int32_t maxBatch,
-    int32_t kvCapacity, cudaStream_t stream);
-
-/// Assert that a page table's K-half row for `slot` is the static identity range
-/// `[slot*maxPagesPerSeq, (slot+1)*maxPagesPerSeq)` that DFlash's contiguous target-KV update
-/// assumes. DFlash is identity-only (it opts out of KV-cache reuse, so its update
-/// never resolves token offsets through the page table); this makes that assumption an explicit,
-/// checkable guard instead of relying on a runtime-level opt-out to keep DFlash slots unmapped.
-///
-/// @param hostKRow       [maxPagesPerSeq] host K page ids for `slot` (e.g. `KVPageTable::hostRow(slot)`)
-/// @param slot           Batch slot whose row is being checked
-/// @param maxPagesPerSeq Number of logical pages per slot (row length)
-/// @throws std::runtime_error if any entry deviates from the identity range
-void checkDFlashPageTableIdentity(int32_t const* hostKRow, int32_t slot, int32_t maxPagesPerSeq);
+    int32_t const* deltaStartPositions, int32_t const* deltaLengths, int32_t const* pageTable, int32_t batchSize,
+    int32_t deltaLen, int32_t numKVHeads, int32_t headDim, int32_t rotaryDim, int32_t cosSinBatch, int32_t cosSinSeqLen,
+    int32_t numPages, int32_t maxPagesPerSeq, cudaStream_t stream);
 
 /// Validate that a RoPE cos/sin cache covers every position DFlash's target-KV update can write.
 ///
-/// `kvCapacity` is the KV pool's PADDED per-slot capacity (capPadded, a multiple of kTOKENS_PER_PAGE); the
-/// real, configured maximum sequence length is <= kvCapacity (padding only rounds up). The RoPE cache is
-/// sized to that real (unpadded) maximum directly (see RopeCache::getOrCreate), so `cosSinSeqLen`
-/// can legitimately be smaller than `kvCapacity` whenever the configured capacity isn't already
-/// page-aligned (e.g. maxKVCacheCapacity=4000 -> kvCapacity=4096, cosSinSeqLen=4000) — comparing
-/// `cosSinSeqLen < kvCapacity` (the pre-fix check) therefore false-positives on any non-page-aligned
-/// config. The correct invariant is the other direction: `cosSinSeqLen` must never EXCEED `kvCapacity`,
-/// since `kvCapacity` is provably an upper bound on every real position (padding never shrinks capacity).
+/// `kvCapacity` is the page-aligned upper bound on every writable position. The RoPE cache tracks the
+/// unpadded configured maximum and may therefore be smaller; reject only `cosSinSeqLen > kvCapacity`.
 ///
 /// @param cosSinSeqLen Sequence length of the bound rope_cos_sin cache
 /// @param kvCapacity   KV pool's padded per-slot capacity (capPadded)
@@ -89,7 +69,7 @@ void checkDFlashRopeCapacity(int32_t cosSinSeqLen, int32_t kvCapacity);
 /// Computes target_len_after_delta = oldDraftCacheLengths[b] + deltaLen, then sets:
 ///   attention_pos_id[b, i] = target_len_after_delta + i
 ///   context_lengths[b] = target_len_after_delta + blockSize
-///   packed_attention_mask: full non-causal within proposal block
+///   packed_attention_mask: full non-causal within proposal block, or causal rows when requested
 ///
 /// @param oldDraftCacheLengths [B] INT32 — draft cache lengths BEFORE delta (GPU)
 /// @param deltaLengths [B] INT32 — per-batch delta token count (GPU)
@@ -97,11 +77,12 @@ void checkDFlashRopeCapacity(int32_t cosSinSeqLen, int32_t kvCapacity);
 /// @param packedAttentionMask [B, BS, divUp(BS,32)] INT32 — output
 /// @param attentionPosId      [B, BS] INT32 — output
 /// @param contextLengths      [B] INT32 — output
+/// @param causalProposalMask  true => row i attends only to proposal positions [0, i]
 /// @param batchSize    batch size
 /// @param stream       CUDA stream
 void launchDFlashPrepareProposalInputs(int32_t const* oldDraftCacheLengths, int32_t const* deltaLengths,
     int32_t blockSize, int32_t* packedAttentionMask, int32_t* attentionPosId, int32_t* contextLengths,
-    int32_t batchSize, cudaStream_t stream);
+    bool causalProposalMask, int32_t batchSize, cudaStream_t stream);
 
 /// Launch kernel to prepare DFlash base verification attention inputs.
 ///

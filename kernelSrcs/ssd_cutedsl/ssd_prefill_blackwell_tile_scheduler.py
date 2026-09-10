@@ -38,6 +38,7 @@ class Mamba2SSDTileSchedulerParams:
         problem_shape_ntiles: int,
         eh: int,
         ngroup_ratio: int,
+        num_d_tiles: int,
         *,
         loc=None,
         ip=None,
@@ -45,11 +46,17 @@ class Mamba2SSDTileSchedulerParams:
         self.problem_shape_ntiles = problem_shape_ntiles
         self.eh = eh
         self.ngroup_ratio = ngroup_ratio
+        self.num_d_tiles = num_d_tiles
         self._loc = loc
 
     def __extract_mlir_values__(self):
         values, self._values_pos = [], []
-        for obj in [self.problem_shape_ntiles, self.eh, self.ngroup_ratio]:
+        for obj in [
+            self.problem_shape_ntiles,
+            self.eh,
+            self.ngroup_ratio,
+            self.num_d_tiles,
+        ]:
             obj_values = extract_mlir_values(obj)
             values += obj_values
             self._values_pos.append(len(obj_values))
@@ -58,7 +65,12 @@ class Mamba2SSDTileSchedulerParams:
     def __new_from_mlir_values__(self, values):
         obj_list = []
         for obj, n_items in zip(
-            [self.problem_shape_ntiles, self.eh, self.ngroup_ratio],
+            [
+                self.problem_shape_ntiles,
+                self.eh,
+                self.ngroup_ratio,
+                self.num_d_tiles,
+            ],
             self._values_pos,
             strict=False,
         ):
@@ -162,11 +174,17 @@ class Mamba2SSDTileScheduler:
             self.params.problem_shape_ntiles, loc=loc, ip=ip
         )
 
-        eh_idx = current_work_linear_idx % self.params.eh
-        b_idx = current_work_linear_idx // self.params.eh
+        d_tile_idx = current_work_linear_idx % self.params.num_d_tiles
+        logical_work_idx = current_work_linear_idx // self.params.num_d_tiles
+        eh_idx = logical_work_idx % self.params.eh
+        b_idx = logical_work_idx // self.params.eh
         g_idx = eh_idx // self.params.ngroup_ratio
-        # cur_tile_coord is (b_idx, eh_idx, g_idx)
-        cur_tile_coord = tuple(Int32(x) for x in (b_idx, eh_idx, g_idx))
+        # cur_tile_coord is (b_idx, eh_idx, g_idx, d_tile_idx). The D tile is
+        # the fastest-varying work dimension so adjacent persistent CTAs can
+        # process the two independent D64 slices of logical D80 concurrently.
+        cur_tile_coord = tuple(
+            Int32(x) for x in (b_idx, eh_idx, g_idx, d_tile_idx)
+        )
 
         return WorkTileInfo(cur_tile_coord, is_valid)
 

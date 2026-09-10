@@ -1,6 +1,7 @@
 # Experimental TensorRT Edge-LLM container for Jetson Thor.
 #
-# Build from the repository root with no additional build arguments:
+# Initialize submodules, then build from the repository root:
+#   git submodule update --init --recursive
 #   docker build --network=host --shm-size=8g \
 #     -f experimental/docker/Dockerfile \
 #     -t tensorrt-edge-llm:experimental .

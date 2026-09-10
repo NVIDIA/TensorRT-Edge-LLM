@@ -41,7 +41,9 @@ state (layer index 25 out of 27) is extracted before ``post_layernorm``.
 
 from __future__ import annotations
 
+import logging
 import math
+import re
 from typing import TYPE_CHECKING
 
 import torch
@@ -50,6 +52,9 @@ import torch.nn.functional as F
 
 from ... import config as config_module
 from ..linear import make_linear
+from ..ops import init_fp8_mha, quantize_qkv_for_fp8_mha, vit_attention_plugin
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ...config import ModelConfig
@@ -120,48 +125,76 @@ class Phi4MMVisionAttention(nn.Module):
         self.head_dim = hidden_size // num_heads
         self.attention_scale = attention_scale
         self.hidden_size = hidden_size
+        # FP8 head-dim padding (TRT-LLM Gemma4-vision recipe): SigLIP's
+        # d=72 rows are not 16-byte aligned for FP8 TMA, so when FP8 MHA is
+        # requested the q/k/v projections are widened per-head to d=80 with
+        # zero output rows and out_proj absorbs the extra columns with zero
+        # weights (exact: QK dots are unchanged by zero columns, V zero
+        # columns produce zero O columns that meet zero out_proj weights).
+        # The softmax scale stays 1/sqrt(72). The zero rows/columns are
+        # injected into the checkpoint tensors by ``_load_phi4mm_weights``.
+        fp8_requested = getattr(model_config.quant, "visual_mha_quant",
+                                None) == "fp8"
+        self.kernel_head_dim = (80 if fp8_requested and self.head_dim == 72
+                                else self.head_dim)
+        qkv_out = num_heads * self.kernel_head_dim
         self.q_proj = make_linear(
             model_config,
             hidden_size,
-            hidden_size,
+            qkv_out,
             bias=True,
             module_name=f"{name_prefix}.q_proj" if name_prefix else "")
         self.k_proj = make_linear(
             model_config,
             hidden_size,
-            hidden_size,
+            qkv_out,
             bias=True,
             module_name=f"{name_prefix}.k_proj" if name_prefix else "")
         self.v_proj = make_linear(
             model_config,
             hidden_size,
-            hidden_size,
+            qkv_out,
             bias=True,
             module_name=f"{name_prefix}.v_proj" if name_prefix else "")
         self.out_proj = make_linear(
             model_config,
-            hidden_size,
+            qkv_out,
             hidden_size,
             bias=True,
             module_name=f"{name_prefix}.out_proj" if name_prefix else "")
+        # Real q/k/v projections: scale buffers land on the existing
+        # submodules (see init_fp8_mha docstring).
+        self.enable_fp8_mha = init_fp8_mha(self,
+                                           model_config,
+                                           self.kernel_head_dim,
+                                           k_proj=self.k_proj,
+                                           v_proj=self.v_proj)
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+    def forward(self, hidden_states: torch.Tensor, cu_seqlens: torch.Tensor,
+                max_seqlen_carrier: torch.Tensor) -> torch.Tensor:
         N, S, _ = hidden_states.shape
-        q = self.q_proj(hidden_states).view(N, S, self.num_heads,
-                                            self.head_dim).transpose(1, 2)
-        k = self.k_proj(hidden_states).view(N, S, self.num_heads,
-                                            self.head_dim).transpose(1, 2)
-        v = self.v_proj(hidden_states).view(N, S, self.num_heads,
-                                            self.head_dim).transpose(1, 2)
-        # Manual SDPA decomposition — dynamo export emits F.sdpa as a
-        # multi-output ONNX Attention op that TRT cannot parse.
-        scores = torch.matmul(q, k.transpose(-2, -1))
-        if self.attention_scale != 1.0:
-            scores = scores * self.attention_scale
-        attn_weights = F.softmax(scores, dim=-1,
-                                 dtype=torch.float32).to(q.dtype)
-        out = torch.matmul(attn_weights, v)
-        out = out.transpose(1, 2).reshape(N, S, self.hidden_size)
+        q = self.q_proj(hidden_states).reshape(N * S, self.num_heads,
+                                               self.kernel_head_dim)
+        k = self.k_proj(hidden_states).reshape(N * S, self.num_heads,
+                                               self.kernel_head_dim)
+        v = self.v_proj(hidden_states).reshape(N * S, self.num_heads,
+                                               self.kernel_head_dim)
+        q = q.to(torch.float16)
+        k = k.to(torch.float16)
+        v = v.to(torch.float16)
+        q, k, v, qkv_scales = quantize_qkv_for_fp8_mha(self, q, k, v)
+        attn_output = vit_attention_plugin(
+            q,
+            k,
+            v,
+            cu_seqlens,
+            max_seqlen_carrier,
+            num_heads=self.num_heads,
+            head_size=self.kernel_head_dim,
+            attention_scale=self.attention_scale,
+            qkv_scales=qkv_scales,
+        )
+        out = attn_output.reshape(N, S, self.num_heads * self.kernel_head_dim)
         return self.out_proj(out)
 
 
@@ -236,9 +269,10 @@ class Phi4MMVisionEncoderLayer(nn.Module):
             model_config,
             name_prefix=f"{name_prefix}.mlp" if name_prefix else "")
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+    def forward(self, hidden_states: torch.Tensor, cu_seqlens: torch.Tensor,
+                max_seqlen_carrier: torch.Tensor) -> torch.Tensor:
         hidden_states = hidden_states + self.self_attn(
-            self.layer_norm1(hidden_states))
+            self.layer_norm1(hidden_states), cu_seqlens, max_seqlen_carrier)
         hidden_states = hidden_states + self.mlp(
             self.layer_norm2(hidden_states))
         return hidden_states
@@ -280,9 +314,22 @@ class Phi4MMVisionEncoder(nn.Module):
     def forward(self, hidden_states: torch.Tensor,
                 feature_layer_idx: int) -> tuple[torch.Tensor, torch.Tensor]:
         """Returns (feature_hidden_states, last_hidden_states)."""
+        N, S, _ = hidden_states.shape
+        # Uniform-length ragged descriptors for the ViT attention plugin: every
+        # crop contributes exactly S tokens, so cu_seqlens is a static-stride
+        # ramp and the max-seqlen carrier is shape-only (its length S is what
+        # the plugin reads; contents are never touched).
+        cu_seqlens = torch.arange(0, (N + 1) * S,
+                                  S,
+                                  dtype=torch.int32,
+                                  device=hidden_states.device)
+        max_seqlen_carrier = torch.zeros(S,
+                                         dtype=torch.int32,
+                                         device=hidden_states.device)
         feature: torch.Tensor | None = None
         for i, layer in enumerate(self.layers):
-            hidden_states = layer(hidden_states)
+            hidden_states = layer(hidden_states, cu_seqlens,
+                                  max_seqlen_carrier)
             if i == feature_layer_idx:
                 feature = hidden_states
         assert feature is not None
@@ -515,12 +562,65 @@ def _load_phi4mm_weights(
     """
     from ...checkpoint.loader import load_submodule_weights
 
+    weights = _pad_attention_head_dim(model, weights, prefix)
+
     def _remap(k: str) -> "str | None":
         if not k.startswith(prefix):
             return None
         return k[len(prefix):]
 
     load_submodule_weights(model, weights, _remap, label="Phi4MMVisualModel")
+
+
+def _pad_attention_head_dim(model: Phi4MMVisualModel, weights: dict,
+                            prefix: str) -> dict:
+    """Zero-pad attention weights from head_dim to kernel_head_dim.
+
+    Active only when :class:`Phi4MMVisionAttention` widened its projections
+    for FP8 MHA (SigLIP d=72 -> 80; see the class docstring). q/k/v_proj
+    weights/biases gain zero output rows per head; out_proj.weight gains
+    zero input columns per head. Zero rows/columns keep the attention
+    numerically exact while making the per-head row stride 16B-aligned for
+    the FP8 TMA path. Works for both fp16 and pre-quantized FP8 (e4m3 zero
+    is exact; per-tensor scales are unaffected by zero padding).
+    """
+    attn = next(
+        (m for m in model.modules() if isinstance(m, Phi4MMVisionAttention)),
+        None)
+    if attn is None or attn.kernel_head_dim == attn.head_dim:
+        return weights
+    heads, d, dp = attn.num_heads, attn.head_dim, attn.kernel_head_dim
+
+    qkv_re = re.compile(r"self_attn\.[qkv]_proj\.(weight|bias)$")
+    out_re = re.compile(r"self_attn\.out_proj\.weight$")
+
+    padded = dict(weights)
+    n_padded = 0
+    for key, t in weights.items():
+        if not key.startswith(prefix):
+            continue
+        rel = key[len(prefix):]
+        if qkv_re.search(rel):
+            if rel.endswith("weight"):  # [heads*d, in] -> [heads*dp, in]
+                t3 = t.reshape(heads, d, t.shape[1])
+                pad = torch.zeros((heads, dp - d, t.shape[1]), dtype=t.dtype)
+                padded[key] = torch.cat([t3, pad],
+                                        dim=1).reshape(heads * dp, t.shape[1])
+            else:  # bias [heads*d] -> [heads*dp]
+                t2 = t.reshape(heads, d)
+                pad = torch.zeros((heads, dp - d), dtype=t.dtype)
+                padded[key] = torch.cat([t2, pad], dim=1).reshape(heads * dp)
+            n_padded += 1
+        elif out_re.search(rel):  # [out, heads*d] -> [out, heads*dp]
+            t3 = t.reshape(t.shape[0], heads, d)
+            pad = torch.zeros((t.shape[0], heads, dp - d), dtype=t.dtype)
+            padded[key] = torch.cat([t3, pad],
+                                    dim=2).reshape(t.shape[0], heads * dp)
+            n_padded += 1
+    logger.info(
+        "Phi4MM visual: zero-padded %d attention tensors head_dim %d -> %d "
+        "for FP8 MHA", n_padded, d, dp)
+    return padded
 
 
 # ---------------------------------------------------------------------------

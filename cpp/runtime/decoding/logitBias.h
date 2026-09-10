@@ -75,16 +75,6 @@ void setLogitBiasVocabMap(LogitBias& logitBias, Tensor const& reducedToFullVocab
  */
 bool hasLogitBias(LLMGenerationRequest const& request) noexcept;
 
-/**
- * @brief Return true when logit bias must be rejected for an active speculative decoder.
- *
- * Logit bias remains valid when the selected request strategy is vanilla.
- *
- * @param request Batched generation request
- * @param speculativeDecoderSelected Whether this request selected a speculative decoder
- */
-bool shouldRejectLogitBiasWithSpecDecode(LLMGenerationRequest const& request, bool speculativeDecoderSelected) noexcept;
-
 /*!
  * @brief Prepare request-local bias maps in the model output vocabulary.
  * @param logitBias Runtime-owned vocabulary mapping
@@ -108,6 +98,19 @@ void prepareLogitBias(
  * @throws std::runtime_error If tensor reshaping, validation, or CUDA operations fail
  */
 void applyLogitBias(LogitBias& logitBias, Tensor& logits, DecodingInferenceContext& context, cudaStream_t stream);
+
+/*!
+ * @brief Apply request logit biases to repeated per-slot logits rows before sampling or acceptance.
+ * @param logitBias Runtime-owned GPU buffers and host staging
+ * @param logits Logits to update in place, shaped [activeBatchSize, rowsPerSlot, vocab] or
+ * [activeBatchSize * rowsPerSlot, vocab]
+ * @param context Request-local bias maps and dirty state
+ * @param rowsPerSlot Number of contiguous logits rows owned by each active request slot
+ * @param stream CUDA stream used for copies and kernel execution
+ * @throws std::runtime_error If tensor reshaping, validation, or CUDA operations fail
+ */
+void applyLogitBiasRepeatedRows(
+    LogitBias& logitBias, Tensor& logits, DecodingInferenceContext& context, int32_t rowsPerSlot, cudaStream_t stream);
 
 } // namespace rt
 } // namespace trt_edgellm

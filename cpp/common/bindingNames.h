@@ -115,6 +115,17 @@ inline constexpr char const* kLogits = "logits";
 inline constexpr char const* kOutputHiddenStates = "hidden_states";
 
 /*!
+ * @brief Thinker accept-layer hidden states, the Qwen3-Omni-Next Talker's feed.
+ *
+ * Shape: [batch_size, sequence_length, thinker_hidden_size] (FLOAT16)
+ * Pre-norm output of decoder layer `accept_hidden_layer - 1`, i.e. HF's
+ * `hidden_states[k]`. Emitted only by Omni-Next Thinker engines built as a
+ * speculative-decoding base, where `hidden_states` is contractually the draft's
+ * post-norm feed and so cannot also carry this.
+ */
+inline constexpr char const* kAcceptHiddenStates = "accept_hidden_states";
+
+/*!
  * @brief Cached speculative draft model input: concatenated target hidden states.
  *
  * Shape: [batch_size, context_length, base_output_hidden_dim] (FLOAT16)

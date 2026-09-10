@@ -17,6 +17,7 @@
 
 #pragma once
 
+#include "action/actionKvBatch.h"
 #include "action/actionModelTypes.h"
 #include "common/tensor.h"
 #include "common/trtUtils.h"
@@ -28,7 +29,6 @@
 #include <NvInfer.h>
 #include <cuda_runtime.h>
 #include <memory>
-#include <optional>
 #include <random>
 #include <string>
 #include <vector>
@@ -64,17 +64,11 @@ public:
     //! \param checkpointDir Original model checkpoint used for runtime weights
     //! \param stream CUDA stream for operations
     //! \param kvCacheConfig KV cache layout from the LLM (from KVCacheManager::Config())
-    //! \param basePageTableIsIdentity Whether the base cache manager's KV page table is (and is
-    //!        guaranteed to remain) an identity mapping. See the identity-only contract note on
-    //!        getSeparateKVCacheForDecoderLayer() -- this consumer reads physical slot rows directly
-    //!        and is not page-table-aware, so it must refuse to load rather than
-    //!        silently consume unrelated physical pages once non-identity reuse exists.
-    //! \throws std::runtime_error If engine loading, configuration parsing, or allocation fails, or
-    //!         if `basePageTableIsIdentity` is false.
+    //! \throws std::runtime_error If engine loading, configuration parsing, or allocation fails.
     //!
     //! config.json must include rope_theta and num_hidden_layers (decoder layer count)
     Alpamayo1ActionRunner(std::string const& engineDir, std::string const& checkpointDir, cudaStream_t stream,
-        KVCacheManager::Config const& kvCacheConfig, bool basePageTableIsIdentity);
+        KVCacheManager::Config const& kvCacheConfig);
 
     ~Alpamayo1ActionRunner() noexcept = default;
 
@@ -112,12 +106,10 @@ public:
     //! \brief Run one batched diffusion/flow-matching loop and return future trajectory waypoints for all batch items.
     //! Call preprocess() once per request before this (prefill path).
     //! \param stream CUDA stream for operations
-    //! \param activeBatchSize Number of active sequences
-    //! \param kvcache KV cache containing the VLM outputs; used for KV cache lengths and layer tensors
-    //! \param vlmOutputsRopeDeltas Per-batch VLM RoPE deltas (e.g. from vision runner getMropeRopeDeltasPerBatch); size
-    //! must match batch.
-    std::vector<std::vector<FutureTrajectoryPoint>> sampleTrajectory(cudaStream_t stream, int32_t activeBatchSize,
-        HybridCacheManager& kvcache, std::vector<int64_t> const& vlmOutputsRopeDeltas);
+    //! \param kvcache KV cache page pool containing the VLM outputs
+    //! \param batch Dense action-local page table, lengths, and positional metadata
+    std::vector<std::vector<FutureTrajectoryPoint>> sampleTrajectory(
+        cudaStream_t stream, HybridCacheManager const& kvcache, ActionKvBatchView const& batch);
 
     /*!
      * \brief Preprocess batched token IDs for Alpamayo (e.g. replace <|traj_history|> pads with trajectory
@@ -147,31 +139,6 @@ private:
     //! \param activeBatchSize Number of active sequences
     void setDynamicInputShapes(int32_t activeBatchSize);
 
-    //! \brief Copy all KV cache lengths from device to host and return pointer to host buffer.
-    //! \param stream CUDA stream for execution
-    //! \param activeBatchSize Active batch size
-    //! \return Pointer to the host buffer containing the KV cache lengths
-    int32_t const* getActualKVLengths(cudaStream_t stream, int32_t activeBatchSize);
-
-    //! \brief Deinterleave combined [maxBatchSize, 2, H, S, D] (KV Cache layout from attention plugin) for one layer
-    //! into owned buffers and return refs to them. The Alpamayo action expert's exported graph consumes separate K/V
-    //! caches of shape [2, maxBatchSize, H, S, D] (the TRT native attention op layout), so this runner repacks the
-    //! plugin-path combined buffer into that layout.
-    //!
-    //! CONTRACT: this reads KV from physical slot row `b` of the combined pool
-    //! directly -- it does not receive or consult the base cache manager's KVPageTable. It is
-    //! therefore only correct while the base cache is identity-mapped (slot == physical row), which
-    //! is enforced once, at construction time, by the `basePageTableIsIdentity` check in the
-    //! constructor. If non-identity base-cache reuse is ever enabled for a model with an Alpamayo
-    //! action head, this function must gain page-aware gather logic before that check is relaxed.
-    //! \param stream CUDA stream for execution
-    //! \param kvcache KV cache containing the VLM outputs; used to read active batch size and KV cache lengths
-    //! \param decoderLayerIdx Index of the decoder layer
-    //! \param activeBatchSize Number of active batch rows to copy from the combined KV buffer
-    //! \return Pair of references to the K and V cache tensors for the decoder layer
-    std::pair<rt::Tensor&, rt::Tensor&> getSeparateKVCacheForDecoderLayer(
-        cudaStream_t stream, HybridCacheManager& kvcache, int32_t decoderLayerIdx, int32_t activeBatchSize);
-
     //! \brief Load model fields from config.json (e.g. rope_theta, num_hidden_layers).
     bool parseModelConfig(std::string const& configPath);
 
@@ -194,8 +161,6 @@ private:
     rt::Tensor mTimeStepsT1Device;
     rt::Tensor mTimeStepsT0Host;
     rt::Tensor mTimeStepsT1Host;
-    rt::Tensor mKvcacheActualLengthsHost;
-    int32_t* mKvcacheActualLengthsDevice{nullptr};
     rt::Tensor mRopeCosSinDevice;
     rt::Tensor mPositionIdsHost;
     rt::Tensor mPositionIdsDevice;

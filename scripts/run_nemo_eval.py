@@ -305,9 +305,7 @@ def _apply_case_config(args: argparse.Namespace, config: Dict[str,
         "max_input_len": "max_input_len",
         "max_batch_size": "max_batch_size",
         "max_kv_cache_capacity": "max_kv_cache_capacity",
-        "enable_batching": "enable_batching",
-        "batch_timeout_ms": "batch_timeout_ms",
-        "max_queue_batch_size": "max_queue_batch_size",
+        "speculative_config": "speculative_config",
     }
     evaluator_fields = {
         "eval_type": "eval_type",
@@ -374,8 +372,8 @@ def _build_overrides(args: argparse.Namespace) -> str:
 def _default_model_id(args: argparse.Namespace) -> str:
     if args.model_id:
         return args.model_id
-    if args.engine_dir:
-        return Path(args.engine_dir).name
+    if args.model:
+        return Path(args.model).name
     return "tensorrt-edgellm"
 
 
@@ -384,17 +382,16 @@ def _make_server_cmd(args: argparse.Namespace, port: int) -> List[str]:
         sys.executable,
         "-m",
         "experimental.server",
-        "--model",
-        args.engine_dir,
+        args.model,
         "--host",
         args.host,
         "--port",
         str(port),
     ]
-    if args.visual_engine_dir:
-        cmd.extend(["--visual-engine-dir", args.visual_engine_dir])
-    if args.spec_decode_engine_dir:
-        cmd.extend(["--spec-decode-engine-dir", args.spec_decode_engine_dir])
+    if args.speculative_config:
+        cmd.extend(["--speculative-config", args.speculative_config])
+    if args.cache_dir:
+        cmd.extend(["--cache-dir", args.cache_dir])
     cmd.extend([
         "--max-input-len",
         str(args.max_input_len),
@@ -403,13 +400,6 @@ def _make_server_cmd(args: argparse.Namespace, port: int) -> List[str]:
         "--max-kv-cache-capacity",
         str(args.max_kv_cache_capacity),
     ])
-    if args.enable_batching:
-        cmd.append("--enable-batching")
-        cmd.extend(["--batch-timeout-ms", str(args.batch_timeout_ms)])
-        if args.max_queue_batch_size is not None:
-            cmd.extend(
-                ["--max-queue-batch-size",
-                 str(args.max_queue_batch_size)])
     return cmd
 
 
@@ -450,12 +440,16 @@ def parse_args() -> argparse.Namespace:
         help="OpenAI-compatible chat completions URL for an existing server",
     )
     source_group.add_argument(
-        "--engine-dir",
+        "--model",
         default="",
-        help="Pre-built engine to launch locally before evaluation",
+        help="Hugging Face model ID or local checkpoint to serve locally",
     )
-    parser.add_argument("--visual-engine-dir", default="")
-    parser.add_argument("--spec-decode-engine-dir", default="")
+    parser.add_argument("--cache-dir", default="")
+    parser.add_argument(
+        "--speculative-config",
+        default="",
+        help="JSON speculative-decoding configuration passed to the server",
+    )
     parser.add_argument("--nemo-evaluator-bin", default="nemo-evaluator")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=0)
@@ -466,17 +460,6 @@ def parse_args() -> argparse.Namespace:
         "--max-kv-cache-capacity",
         type=int,
         default=8192,
-    )
-    parser.add_argument("--enable-batching", action="store_true")
-    parser.add_argument(
-        "--batch-timeout-ms",
-        type=float,
-        default=10.0,
-    )
-    parser.add_argument(
-        "--max-queue-batch-size",
-        type=int,
-        default=None,
     )
     parser.add_argument("--eval-type", default="mmlu")
     parser.add_argument("--model-id", default="")
@@ -502,7 +485,7 @@ def parse_args() -> argparse.Namespace:
             parser.error(str(exc))
     elif args.config:
         parser.error("--case is required when --config is provided")
-    if not args.model_url and not args.engine_dir:
+    if not args.model_url and not args.model:
         args.model_url = _DEFAULT_MODEL_URL
     return args
 
@@ -515,7 +498,7 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     model_url = args.model_url
     server_log: Optional[Path] = None
-    if args.engine_dir:
+    if args.model:
         port = args.port if args.port else _free_port()
         model_url = f"http://{args.host}:{port}/v1/chat/completions"
         server_log = output_dir / "edgellm_server.log"

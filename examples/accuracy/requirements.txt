@@ -2,6 +2,7 @@ evaluate==0.4.6
 datasets==4.8.5
 tqdm==4.67.3
 rouge-score==0.1.2
+six>=1.16.0
 jiwer==4.0.0
 absl-py==2.4.0
 huggingface-hub==1.15.0

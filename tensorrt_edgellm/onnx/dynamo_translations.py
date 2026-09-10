@@ -37,6 +37,7 @@ import onnxscript
 import torch
 from onnxscript import opset21 as _op21
 from onnxscript import script
+from onnxscript.onnx_types import Union as OnnxUnion
 
 # Custom ONNX domains
 _trt = onnxscript.values.Opset("trt", 1)
@@ -312,6 +313,24 @@ def _int4_groupwise_gemm_v2_translation(
         gemm_n=gemm_n,
         gemm_k=gemm_k,
         group_size=group_size,
+    )
+
+
+# ---------------------------------------------------------------------------
+# QKV packing op
+# ---------------------------------------------------------------------------
+
+
+@script()
+def _qkv_concat_translation(
+    q: onnxscript.FLOAT16,
+    k: onnxscript.FLOAT16,
+    v: onnxscript.FLOAT16,
+) -> onnxscript.FLOAT16:
+    return _trt_edgellm.QkvConcatPlugin(
+        q,
+        k,
+        v,
     )
 
 
@@ -775,19 +794,26 @@ def _gather_nd_translation(
 # ViT attention op
 # ---------------------------------------------------------------------------
 
+_QKV_T = OnnxUnion[onnxscript.FLOAT16, onnxscript.FLOAT8E4M3FN]
+
 
 @script()
 def _vit_attention_plugin_translation(
-    query_states: onnxscript.FLOAT16,
-    key_states: onnxscript.FLOAT16,
-    value_states: onnxscript.FLOAT16,
+    query_states: _QKV_T,
+    key_states: _QKV_T,
+    value_states: _QKV_T,
     cu_seqlens: onnxscript.INT32,
     max_seqlen_carrier: onnxscript.INT32,
     num_heads: int,
     head_size: int,
     attention_scale: float,
+    qkv_scales: Sequence[float],
 ) -> onnxscript.FLOAT16:
-    """ViT ragged self-attention without KV cache."""
+    """ViT ragged self-attention without KV cache.
+
+    Q/K/V are FLOAT16 (FP16 MHA) or FLOAT8E4M3FN (FP8 MHA via preceding
+    QuantizeLinear nodes fused by TRT with upstream RoPE/V-path ops).
+    """
     return _trt_edgellm.ViTAttentionPlugin(
         query_states,
         key_states,
@@ -797,7 +823,30 @@ def _vit_attention_plugin_translation(
         num_heads=num_heads,
         head_size=head_size,
         attention_scale=attention_scale,
+        qkv_scales=qkv_scales,
     )
+
+
+def _vit_attention_plugin_dispatch(
+    query_states,
+    key_states,
+    value_states,
+    cu_seqlens,
+    max_seqlen_carrier,
+    num_heads: int,
+    head_size: int,
+    attention_scale: float,
+    qkv_scales=None,
+):
+    # FP16-MHA callers omit qkv_scales (torch-op default None); the ONNX
+    # attribute is FLOATS, so normalize to the identity scales here.
+    if qkv_scales is None:
+        qkv_scales = [1.0, 1.0, 1.0]
+    return _vit_attention_plugin_translation(query_states, key_states,
+                                             value_states, cu_seqlens,
+                                             max_seqlen_carrier, num_heads,
+                                             head_size, attention_scale,
+                                             qkv_scales)
 
 
 # ---------------------------------------------------------------------------
@@ -1223,6 +1272,7 @@ def _dflash_target_kv_cache_update_translation(
     rope_cos_sin: onnxscript.FLOAT,
     delta_start_positions: onnxscript.INT32,
     delta_lengths: onnxscript.INT32,
+    kv_page_table: onnxscript.INT32,
 ) -> onnxscript.FLOAT16:
     """DFlash target KV cache update: apply RoPE to k_delta, write k+v into cache."""
     present_kv = _trt_edgellm.DFlashTargetKVCacheUpdate(
@@ -1232,6 +1282,7 @@ def _dflash_target_kv_cache_update_translation(
         rope_cos_sin,
         delta_start_positions,
         delta_lengths,
+        kv_page_table,
     )
     return present_kv
 
@@ -1305,6 +1356,8 @@ def build_custom_translation_table() -> dict:
         _int4_groupwise_gemm_translation,
         torch.ops.trt.int4_groupwise_gemm_v2.default:
         _int4_groupwise_gemm_v2_translation,
+        torch.ops.trt.qkv_concat.default:
+        _qkv_concat_translation,
         torch.ops.trt.nvfp4_a16_gemm.default:
         _nvfp4_a16_gemm_translation,
         torch.ops.trt.int8_sq_act_qdq.default:
@@ -1324,7 +1377,7 @@ def build_custom_translation_table() -> dict:
         torch.ops.trt_edgellm.gated_delta_net_with_intermediate.default:
         _gated_delta_net_intermediate_dispatch,
         torch.ops.trt.vit_attention_plugin.default:
-        _vit_attention_plugin_translation,
+        _vit_attention_plugin_dispatch,
         torch.ops.trt.trt_ragged_attention.default:
         _trt_ragged_attention_translation,
         torch.ops.trt.gather_nd.default:

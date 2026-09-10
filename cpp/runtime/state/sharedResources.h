@@ -45,8 +45,7 @@ struct SharedResources
     std::vector<std::unique_ptr<HybridCacheManager>> cacheManagers;
 
     //! One KVPageTable per cache manager, index-aligned with `cacheManagers`. Each table starts as an uploaded identity
-    //! mapping. The legacy runtime keeps that mapping static and physically compacts slot rows; the context cache
-    //! instead updates and compacts logical page-table rows while leaving physical KV pages in place.
+    //! mapping. Batch eviction compacts logical rows while leaving physical pages in place.
     std::vector<std::unique_ptr<KVPageTable>> kvPageTables;
 
     RopeCache ropePool;

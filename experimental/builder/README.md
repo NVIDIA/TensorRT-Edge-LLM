@@ -111,15 +111,14 @@ artifacts are emitted beside those engines.
 ## Weights Stay In The Checkpoint
 
 Every supported weight that the runtime can rebuild from the original
-checkpoint becomes an engine input. `config.json` records a
-`checkpoint_weight_bindings` entry naming the provider keys and the conversion
-each input needs. It also records dtype, shape, and byte count for every
-provider tensor plus deterministic content samples from a bounded,
-model-spanning sentinel set. The runtime validates that identity before
-registering checkpoint pages, so a same-shape checkpoint with a different
-recorded identity is rejected rather than silently producing unrelated output.
-`llm_inference` reads those weights once at load time and performs layout
-conversion on the GPU:
+checkpoint becomes either a TensorRT engine input or a plugin-owned resource.
+`config.json` records the provider keys and conversion recipe for each external
+weight. It also records dtype, shape, and byte count for every provider tensor
+plus deterministic content samples from a bounded, model-spanning sentinel
+set. The runtime validates that identity before registering checkpoint pages,
+so a same-shape checkpoint with a different recorded identity is rejected
+rather than silently producing unrelated output. `llm_inference` reads those
+weights once at load time and performs layout conversion on the GPU:
 
 ```bash
 llm_inference --engineDir /path/to/engines --checkpointDir /path/to/checkpoint ...
@@ -158,7 +157,7 @@ describes them:
 |---|---|
 | FP8 and MXFP8 | Their Q/DQ constants are folded into the graph by design |
 | A reduced-vocabulary LM head | The head is rewritten at build time |
-| Tensor-parallel model weights | The runtime reads whole tensors, not rank shards |
+| Tensor-parallel model weights outside the fused NVFP4 plugin | Their TensorRT/Myelin layouts are selected at build time |
 | The FP8 embedding table (`--fp8-embedding`) | Quantized at build time |
 | Padded or fused MoE expert banks | No per-expert checkpoint layout to repack |
 | A visual patch embedding | Folded into the graph as a small constant |
@@ -172,9 +171,12 @@ from the checkpoint. One `--checkpointDir` serves all components built from
 the same checkpoint.
 
 `--externalize-weights` narrows the default to specific kinds (`int4_ffn`,
-`int4_moe`, `nvfp4_moe`, `lm_head`, `fp16`, `embedding`, `all`) and is
-repeatable. Requesting a kind the build cannot support is an error, while the
-default silently keeps that kind in the engine and logs it.
+`int4_moe`, `nvfp4_moe`, `nvfp4_tp`, `lm_head`, `fp16`, `embedding`, `all`)
+and is repeatable. `nvfp4_tp` covers row-parallel packed weights and block
+scales consumed by the fused NVFP4 GEMM/all-reduce plugin; the runtime slices
+each rank's persistent plugin resource directly from the checkpoint. Requesting
+a kind the build cannot support is an error, while the default silently keeps
+that kind in the engine and logs it.
 
 ## Speculative Decoding
 

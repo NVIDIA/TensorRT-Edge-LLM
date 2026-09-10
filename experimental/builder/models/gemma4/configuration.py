@@ -21,6 +21,9 @@ from typing import List
 
 from ...core import contracts
 
+_ASSISTANT_MODEL_TYPES = frozenset(
+    ("gemma4_assistant", "gemma4_unified_assistant"))
+
 
 def available_components(root: dict, registered):
     """Return only encoder components represented by this checkpoint."""
@@ -84,7 +87,7 @@ def prepare_text_config(config: dict, root: dict,
 
 def update_device_config(config, root: dict,
                          component: contracts.Component) -> None:
-    assistant = str(root.get("model_type", "")) == "gemma4_assistant"
+    assistant = str(root.get("model_type", "")) in _ASSISTANT_MODEL_TYPES
     config.assistant_hidden_size = config.hidden_size if assistant else 0
     config.shares_target_kv = assistant
     config.has_own_kv_cache = not assistant
@@ -171,9 +174,9 @@ def configure_draft(config, *, paired_target=None, **kwargs) -> None:
     if target.model_type not in ("gemma4", "gemma4_text"):
         raise ValueError(
             "Gemma4 MTP target must use a standard Gemma4 model type")
-    if config.root_model_type != "gemma4_assistant":
+    if config.root_model_type not in _ASSISTANT_MODEL_TYPES:
         raise ValueError(
-            "Gemma4 MTP draft must use a gemma4_assistant checkpoint")
+            "Gemma4 MTP draft must use a Gemma4 assistant checkpoint")
     if target.hidden_size != config.backbone_hidden_size:
         raise ValueError(
             "Gemma4 MTP hidden size mismatch: target hidden_size="

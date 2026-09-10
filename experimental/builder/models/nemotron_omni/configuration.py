@@ -34,6 +34,50 @@ def component_config(root: dict, component: contracts.Component) -> dict:
     raise ValueError(f"Nemotron-Omni has no {component.value} configuration")
 
 
+def setup_profiles(builder, builder_config, network, args, bundle) -> bool:
+    """Install the dynamic image/video patch profile used by the C++ runner."""
+    if args.resolved_component != contracts.Component.VISUAL:
+        return False
+
+    root = bundle.root
+    image_size = int(root["force_image_size"])
+    patch_size = int(root["patch_size"])
+    ratio = float(root["downsample_ratio"])
+    scale = int(round(1.0 / ratio))
+    if (image_size <= 0 or patch_size <= 0 or image_size % patch_size
+            or scale <= 0 or not abs(scale * ratio - 1.0) < 1e-6):
+        raise ValueError("invalid Nemotron-Omni visual patch geometry")
+
+    patches_per_side = image_size // patch_size
+    max_patches = patches_per_side * patches_per_side
+    tokens_per_block = (patches_per_side // scale)**2
+    if tokens_per_block <= 0:
+        raise ValueError("Nemotron-Omni visual tile produces no tokens")
+    min_blocks = max(1, args.min_image_tokens // tokens_per_block)
+    max_blocks = max(1, args.max_image_tokens // tokens_per_block)
+    opt_blocks = (min_blocks + max_blocks) // 2
+    hidden_size = int(root["vit_hidden_size"])
+    shuffle_width = scale * scale
+
+    inputs = {
+        network.get_input(index).name: network.get_input(index)
+        for index in range(network.num_inputs)
+    }
+    if not {"input", "shuffle_indices"}.issubset(inputs):
+        raise ValueError("Nemotron-Omni visual network must define input and "
+                         "shuffle_indices")
+    profile = builder.create_optimization_profile()
+    profile.set_shape("input", (min_blocks, shuffle_width, hidden_size),
+                      (opt_blocks, max_patches, hidden_size),
+                      (max_blocks, max_patches, hidden_size))
+    output_patches = max_patches // shuffle_width
+    profile.set_shape("shuffle_indices", (1, shuffle_width),
+                      (output_patches, shuffle_width),
+                      (output_patches, shuffle_width))
+    builder_config.add_optimization_profile(profile)
+    return True
+
+
 def prepare_text_config(config: dict, root: dict,
                         component: contracts.Component,
                         model_dir: str) -> dict:

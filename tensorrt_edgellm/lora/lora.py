@@ -229,13 +229,17 @@ def _match_int4_gemm(graph: gs.Graph):
     """
     Match INT4 GEMM nodes in the graph.
 
-    The ``Int4GroupwiseGemmPlugin`` carries its weight initializer
-    directly as ``node.inputs[1]`` (no DequantizeLinear chain), so the
-    stem can be derived in one step.
+    Both ``Int4GroupwiseGemmPlugin`` (V1) and ``Int4GroupwiseGemmPluginV2``
+    (V2, the default backend) carry their weight initializer directly as
+    ``node.inputs[1]`` (no DequantizeLinear chain) and share the same
+    ``gemm_k``/``gemm_n`` attributes, so the stem can be derived in one step
+    for either. V2 must be matched too; otherwise the default INT4 backend's
+    GEMMs get no LoRA inputs and adapters are silently dropped at runtime.
     """
     int4_gemm_infos = []
     int4_gemm_nodes = [
-        node for node in graph.nodes if node.op == "Int4GroupwiseGemmPlugin"
+        node for node in graph.nodes
+        if node.op in ("Int4GroupwiseGemmPlugin", "Int4GroupwiseGemmPluginV2")
     ]
     for node in int4_gemm_nodes:
         # For AWQ, the input is smoothed by a Mul and a Cast node.
@@ -257,6 +261,35 @@ def _match_int4_gemm(graph: gs.Graph):
                      name=_synth_gemm_name(stem, node.name),
                      weight_shape=weight_shape))
     return int4_gemm_infos
+
+
+def _match_nvfp4_a16_gemm(graph: gs.Graph):
+    """
+    Match weight-only NVFP4 (W4A16) GEMM nodes in the graph.
+
+    ``Nvfp4A16GemmPlugin`` (the Marlin weight-only backend) carries its
+    packed weight initializer directly as ``node.inputs[1]`` and the GEMM
+    shape in its ``gemm_k``/``gemm_n`` attributes, mirroring the INT4
+    groupwise plugin (activation stays FP16, so there is no smoothing
+    Mul/Cast on the input). This op is distinct from ``TRT_FP4DynamicQuantize``
+    (the W4A4 QDQ path); without matching it the weight-only NVFP4 GEMMs get
+    no LoRA inputs and adapters are silently dropped at runtime.
+    """
+    nvfp4_a16_gemm_infos = []
+    nvfp4_a16_nodes = [
+        node for node in graph.nodes if node.op == "Nvfp4A16GemmPlugin"
+    ]
+    for node in nvfp4_a16_nodes:
+        input_node = node.inputs[0]
+        weight_shape = (node.attrs["gemm_k"], node.attrs["gemm_n"])
+        weight_init_name = getattr(node.inputs[1], "name", "") or ""
+        stem = _stem_from_init_name(weight_init_name)
+        nvfp4_a16_gemm_infos.append(
+            GEMMInfo(input=input_node,
+                     output=node.outputs[0],
+                     name=_synth_gemm_name(stem, node.name),
+                     weight_shape=weight_shape))
+    return nvfp4_a16_gemm_infos
 
 
 def _match_mxfp8_gemm(graph: gs.Graph):
@@ -305,6 +338,7 @@ def _match_gemm_infos(graph: gs.Graph):
     gemm_infos = []
     gemm_infos.extend(_match_fp8_gemm(graph))
     gemm_infos.extend(_match_nvfp4_gemm(graph))
+    gemm_infos.extend(_match_nvfp4_a16_gemm(graph))
     gemm_infos.extend(_match_int4_gemm(graph))
     gemm_infos.extend(_match_mxfp8_gemm(graph))
     gemm_infos.extend(_match_fp16_gemm(graph))

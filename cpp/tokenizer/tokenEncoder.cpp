@@ -99,6 +99,10 @@ bool TokenEncoder::decode(std::vector<Rank> const& tokens, std::string& output, 
 
         for (Rank token : tokens)
         {
+            if (skipSpecialTokens && mSpecialTokensDecoder.find(token) != mSpecialTokensDecoder.end())
+            {
+                continue;
+            }
             auto it = mDecoder.find(token);
             if (it != mDecoder.end())
             {

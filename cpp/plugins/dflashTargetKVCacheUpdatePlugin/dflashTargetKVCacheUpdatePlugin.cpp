@@ -19,7 +19,6 @@
 #include "common/logger.h"
 #include "common/pagedKvTypes.h"
 #include "kernels/speculative/dflashRuntimeKernels.h"
-#include "plugins/utils/pluginUtils.h"
 
 #include <NvInfer.h>
 #include <cstdint>
@@ -35,8 +34,66 @@ namespace
 {
 char const* const kPLUGIN_NAME = "DFlashTargetKVCacheUpdate";
 char const* const kPLUGIN_VERSION = "1";
-constexpr int32_t kNUM_INPUTS{6};
+constexpr int32_t kNUM_INPUTS{7};
 constexpr int32_t kNUM_OUTPUTS{1};
+
+bool haveSameShape(Dims const& lhs, Dims const& rhs)
+{
+    if (lhs.nbDims != rhs.nbDims)
+    {
+        return false;
+    }
+    for (int32_t dimIdx = 0; dimIdx < lhs.nbDims; ++dimIdx)
+    {
+        if (lhs.d[dimIdx] != rhs.d[dimIdx])
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool isPagedPoolShape(Dims const& shape, Dims const& kDelta, bool allowUnknownNumPages)
+{
+    if (shape.nbDims != 5 || kDelta.nbDims != 4)
+    {
+        return false;
+    }
+    bool const validNumPages = allowUnknownNumPages ? (shape.d[1] == -1 || shape.d[1] > 0) : shape.d[1] > 0;
+    return shape.d[0] == 2 && validNumPages && shape.d[2] == rt::kTOKENS_PER_PAGE && shape.d[3] == kDelta.d[2]
+        && shape.d[4] == kDelta.d[3];
+}
+
+bool isCompatiblePageTableShape(
+    Dims const& pageTable, Dims const& kDelta, Dims const& pastKV, bool allowUnknownDimensions)
+{
+    if (pageTable.nbDims != 3 || kDelta.nbDims != 4 || pastKV.nbDims != 5 || pageTable.d[1] != 2)
+    {
+        return false;
+    }
+    if (allowUnknownDimensions)
+    {
+        bool const matchingBatch = pageTable.d[0] == -1 || kDelta.d[0] == -1 || pageTable.d[0] == kDelta.d[0];
+        bool const validMaxPages = pageTable.d[2] == -1 || pageTable.d[2] > 0;
+        bool const maxPagesFitsPool = pageTable.d[2] == -1 || pastKV.d[1] == -1 || pageTable.d[2] <= pastKV.d[1];
+        return matchingBatch && validMaxPages && maxPagesFitsPool;
+    }
+    return pageTable.d[0] == kDelta.d[0] && pageTable.d[2] > 0 && pageTable.d[2] <= pastKV.d[1];
+}
+
+bool hasConcretePagedKVContract(Dims const& kDelta, Dims const& vDelta, Dims const& pastKV, Dims const& deltaStart,
+    Dims const& deltaLengths, Dims const& pageTable, Dims const& presentKV)
+{
+    return kDelta.nbDims == 4 && kDelta.d[0] > 0 && kDelta.d[1] > 0 && kDelta.d[2] > 0 && kDelta.d[3] > 0
+        && haveSameShape(kDelta, vDelta) && isPagedPoolShape(pastKV, kDelta, false) && deltaStart.nbDims == 1
+        && deltaStart.d[0] == kDelta.d[0] && deltaLengths.nbDims == 1 && deltaLengths.d[0] == kDelta.d[0]
+        && haveSameShape(pastKV, presentKV) && isCompatiblePageTableShape(pageTable, kDelta, pastKV, false);
+}
+
+bool isLinear(PluginTensorDesc const& tensorDesc, DataType dataType)
+{
+    return tensorDesc.type == dataType && tensorDesc.format == TensorFormat::kLINEAR;
+}
 
 bool checkExpectedIO(char const* where, int32_t nbInputs, int32_t nbOutputs)
 {
@@ -63,11 +120,7 @@ DFlashTargetKVCacheUpdatePlugin::DFlashTargetKVCacheUpdatePlugin(
     std::string const& name, PluginFieldCollection const* fc)
     : mLayerName(name)
 {
-    // pages_per_slot is absent at ONNX-parse time (export doesn't know maxKVCacheCapacity); the
-    // builder sets it via setPagesPerSlot() after parsing, before the network is built. It IS
-    // present when this constructor runs during engine deserialization (round-tripped via
-    // getFieldsToSerialize()), so parse it here for that path.
-    mPagesPerSlot = parsePluginScalarField<int32_t>("pages_per_slot", fc).value_or(0);
+    static_cast<void>(fc);
 }
 
 // IPluginV3
@@ -101,7 +154,6 @@ IPluginV3* DFlashTargetKVCacheUpdatePlugin::clone() noexcept
     {
         auto* plugin = new DFlashTargetKVCacheUpdatePlugin(mLayerName);
         plugin->setPluginNamespace(mNamespace.c_str());
-        plugin->setPagesPerSlot(mPagesPerSlot);
         return plugin;
     }
     catch (std::exception const& e)
@@ -172,10 +224,14 @@ bool DFlashTargetKVCacheUpdatePlugin::supportsFormatCombination(
     auto const& desc = inOut[pos];
     bool const isLinearFormat = (desc.desc.format == TensorFormat::kLINEAR);
 
-    if (pos == kIN_K_DELTA || pos == kIN_V_DELTA || pos == kIN_PAST_KV)
+    if (pos == kIN_K_DELTA || pos == kIN_V_DELTA)
     {
-        // K/V delta and KV cache must be FP16
         return isLinearFormat && desc.desc.type == DataType::kHALF;
+    }
+    if (pos == kIN_PAST_KV)
+    {
+        return isLinearFormat && desc.desc.type == DataType::kHALF
+            && isPagedPoolShape(desc.desc.dims, inOut[kIN_K_DELTA].desc.dims, true);
     }
     else if (pos == kIN_ROPE_COS_SIN)
     {
@@ -184,13 +240,18 @@ bool DFlashTargetKVCacheUpdatePlugin::supportsFormatCombination(
     }
     else if (pos == kIN_DELTA_START || pos == kIN_DELTA_LENGTHS)
     {
-        // delta_start_positions and delta_lengths must be INT32
         return isLinearFormat && desc.desc.type == DataType::kINT32;
+    }
+    else if (pos == kIN_KV_PAGE_TABLE)
+    {
+        return isLinearFormat && desc.desc.type == DataType::kINT32 && desc.desc.dims.nbDims == 3
+            && isCompatiblePageTableShape(
+                desc.desc.dims, inOut[kIN_K_DELTA].desc.dims, inOut[kIN_PAST_KV].desc.dims, true);
     }
     else if (pos == nbInputs + kOUT_PRESENT_KV)
     {
-        // Output must match past_key_value
-        return isLinearFormat && desc.desc.type == inOut[kIN_PAST_KV].desc.type;
+        return isLinearFormat && desc.desc.type == inOut[kIN_PAST_KV].desc.type
+            && isPagedPoolShape(desc.desc.dims, inOut[kIN_K_DELTA].desc.dims, true);
     }
     return false;
 }
@@ -203,32 +264,44 @@ int32_t DFlashTargetKVCacheUpdatePlugin::configurePlugin(
     {
         return -1;
     }
-    if (in[kIN_K_DELTA].desc.type != DataType::kHALF || in[kIN_V_DELTA].desc.type != DataType::kHALF
-        || in[kIN_PAST_KV].desc.type != DataType::kHALF)
+    if (!isLinear(in[kIN_K_DELTA].desc, DataType::kHALF) || !isLinear(in[kIN_V_DELTA].desc, DataType::kHALF)
+        || !isLinear(in[kIN_PAST_KV].desc, DataType::kHALF) || !isLinear(out[kOUT_PRESENT_KV].desc, DataType::kHALF))
     {
-        LOG_ERROR("DFlashTargetKVCacheUpdatePlugin: k_delta, v_delta, and past_key_value must be FP16");
+        LOG_ERROR("DFlashTargetKVCacheUpdatePlugin: K/V deltas and KV pool must be linear FP16");
         return -1;
     }
-    if (in[kIN_ROPE_COS_SIN].desc.type != DataType::kFLOAT)
+    if (!isLinear(in[kIN_ROPE_COS_SIN].desc, DataType::kFLOAT))
     {
-        LOG_ERROR("DFlashTargetKVCacheUpdatePlugin: rope_cos_sin must be FP32");
+        LOG_ERROR("DFlashTargetKVCacheUpdatePlugin: rope_cos_sin must be linear FP32");
         return -1;
     }
-    if (in[kIN_DELTA_START].desc.type != DataType::kINT32 || in[kIN_DELTA_LENGTHS].desc.type != DataType::kINT32)
+    if (!isLinear(in[kIN_DELTA_START].desc, DataType::kINT32) || !isLinear(in[kIN_DELTA_LENGTHS].desc, DataType::kINT32)
+        || !isLinear(in[kIN_KV_PAGE_TABLE].desc, DataType::kINT32))
     {
-        LOG_ERROR("DFlashTargetKVCacheUpdatePlugin: delta_start_positions and delta_lengths must be INT32");
+        LOG_ERROR("DFlashTargetKVCacheUpdatePlugin: index and page-table inputs must be linear INT32");
         return -1;
     }
     if (in[kIN_K_DELTA].desc.dims.nbDims != 4 || in[kIN_V_DELTA].desc.dims.nbDims != 4
         || in[kIN_PAST_KV].desc.dims.nbDims != 5 || in[kIN_ROPE_COS_SIN].desc.dims.nbDims != 3
-        || in[kIN_DELTA_START].desc.dims.nbDims != 1 || in[kIN_DELTA_LENGTHS].desc.dims.nbDims != 1)
+        || in[kIN_DELTA_START].desc.dims.nbDims != 1 || in[kIN_DELTA_LENGTHS].desc.dims.nbDims != 1
+        || in[kIN_KV_PAGE_TABLE].desc.dims.nbDims != 3)
     {
         LOG_ERROR("DFlashTargetKVCacheUpdatePlugin: invalid input ranks");
         return -1;
     }
-    if (out[kOUT_PRESENT_KV].desc.type != in[kIN_PAST_KV].desc.type || out[kOUT_PRESENT_KV].desc.dims.nbDims != 5)
+    bool const validProfiles
+        = hasConcretePagedKVContract(in[kIN_K_DELTA].min, in[kIN_V_DELTA].min, in[kIN_PAST_KV].min,
+              in[kIN_DELTA_START].min, in[kIN_DELTA_LENGTHS].min, in[kIN_KV_PAGE_TABLE].min, out[kOUT_PRESENT_KV].min)
+        && hasConcretePagedKVContract(in[kIN_K_DELTA].opt, in[kIN_V_DELTA].opt, in[kIN_PAST_KV].opt,
+            in[kIN_DELTA_START].opt, in[kIN_DELTA_LENGTHS].opt, in[kIN_KV_PAGE_TABLE].opt, out[kOUT_PRESENT_KV].opt)
+        && hasConcretePagedKVContract(in[kIN_K_DELTA].max, in[kIN_V_DELTA].max, in[kIN_PAST_KV].max,
+            in[kIN_DELTA_START].max, in[kIN_DELTA_LENGTHS].max, in[kIN_KV_PAGE_TABLE].max, out[kOUT_PRESENT_KV].max);
+    if (!validProfiles)
     {
-        LOG_ERROR("DFlashTargetKVCacheUpdatePlugin: present_key_value must be 5D and match past_key_value dtype");
+        LOG_ERROR(
+            "DFlashTargetKVCacheUpdatePlugin: KV pool must be [2, N, %d, H, D], output must match it, and "
+            "kv_page_table must be [B, 2, M] with B matching K/V deltas.",
+            rt::kTOKENS_PER_PAGE);
         return -1;
     }
     return 0;
@@ -263,6 +336,16 @@ int32_t DFlashTargetKVCacheUpdatePlugin::enqueue(PluginTensorDesc const* inputDe
             LOG_ERROR("DFlashTargetKVCacheUpdatePlugin::enqueue received null descriptors or pointers");
             return -1;
         }
+        if (!hasConcretePagedKVContract(inputDesc[kIN_K_DELTA].dims, inputDesc[kIN_V_DELTA].dims,
+                inputDesc[kIN_PAST_KV].dims, inputDesc[kIN_DELTA_START].dims, inputDesc[kIN_DELTA_LENGTHS].dims,
+                inputDesc[kIN_KV_PAGE_TABLE].dims, outputDesc[kOUT_PRESENT_KV].dims))
+        {
+            LOG_ERROR(
+                "DFlashTargetKVCacheUpdatePlugin: KV pool must be [2, N, %d, H, D], output must match it, and "
+                "kv_page_table must be [B, 2, M] with B matching K/V deltas.",
+                rt::kTOKENS_PER_PAGE);
+            return -1;
+        }
 
         // k_delta: [B, L, numKVHeads, headDim]
         auto const& kDeltaDesc = inputDesc[kIN_K_DELTA];
@@ -291,15 +374,10 @@ int32_t DFlashTargetKVCacheUpdatePlugin::enqueue(PluginTensorDesc const* inputDe
             return -1;
         }
 
-        // past_key_value is the runtime's KVCacheManager-allocated pool, bound as the same paged-pool
-        // contract as the AttentionPlugin binding: [2, numPages, kTOKENS_PER_PAGE, numKVHeads,
-        // headDim] (K/V split OUTERMOST; see kvCacheManager.h). numPages = maxBatch * pagesPerSlot,
-        // so maxBatch/cap are recovered using the build-time pagesPerSlot fact (see
-        // setPagesPerSlot()) rather than read directly off dims 1/2.
         auto const& pastKVDesc = inputDesc[kIN_PAST_KV];
         if (pastKVDesc.type != DataType::kHALF || pastKVDesc.dims.nbDims != 5 || pastKVDesc.dims.d[0] != 2
-            || pastKVDesc.dims.d[2] != rt::kTOKENS_PER_PAGE || pastKVDesc.dims.d[3] != numKVHeads
-            || pastKVDesc.dims.d[4] != headDim)
+            || pastKVDesc.dims.d[1] <= 0 || pastKVDesc.dims.d[2] != rt::kTOKENS_PER_PAGE
+            || pastKVDesc.dims.d[3] != numKVHeads || pastKVDesc.dims.d[4] != headDim)
         {
             LOG_ERROR(
                 "DFlashTargetKVCacheUpdatePlugin: past_key_value must be the paged pool "
@@ -307,32 +385,18 @@ int32_t DFlashTargetKVCacheUpdatePlugin::enqueue(PluginTensorDesc const* inputDe
                 rt::kTOKENS_PER_PAGE);
             return -1;
         }
-        if (mPagesPerSlot <= 0)
-        {
-            LOG_ERROR(
-                "DFlashTargetKVCacheUpdatePlugin: pages_per_slot was never configured (builder bug — "
-                "setPagesPerSlot() must run before the engine is built)");
-            return -1;
-        }
         int32_t const numPages = pastKVDesc.dims.d[1];
-        if (numPages % mPagesPerSlot != 0)
+
+        auto const& pageTableDesc = inputDesc[kIN_KV_PAGE_TABLE];
+        if (pageTableDesc.type != DataType::kINT32 || pageTableDesc.dims.nbDims != 3
+            || pageTableDesc.dims.d[0] != batchSize || pageTableDesc.dims.d[1] != 2 || pageTableDesc.dims.d[2] <= 0)
         {
             LOG_ERROR(
-                "DFlashTargetKVCacheUpdatePlugin: past_key_value numPages (%d) is not a multiple of "
-                "pages_per_slot (%d)",
-                numPages, mPagesPerSlot);
+                "DFlashTargetKVCacheUpdatePlugin: kv_page_table must be [B, 2, M] INT32 with B matching K/V deltas");
             return -1;
         }
-        int32_t const maxBatch = numPages / mPagesPerSlot;
-        int32_t const cap = mPagesPerSlot * rt::kTOKENS_PER_PAGE;
-        if (maxBatch < batchSize || cap <= 0)
-        {
-            LOG_ERROR(
-                "DFlashTargetKVCacheUpdatePlugin: past_key_value maxBatch (%d) must be >= active batchSize "
-                "(%d), and cap (%d) must be positive",
-                maxBatch, batchSize, cap);
-            return -1;
-        }
+        int32_t const maxPagesPerSeq = pageTableDesc.dims.d[2];
+        int32_t const cap = maxPagesPerSeq * rt::kTOKENS_PER_PAGE;
 
         // rope_cos_sin: [cosSinBatch, cosSinSeqLen, rotaryDim]
         auto const& ropeDesc = inputDesc[kIN_ROPE_COS_SIN];
@@ -395,9 +459,11 @@ int32_t DFlashTargetKVCacheUpdatePlugin::enqueue(PluginTensorDesc const* inputDe
         auto const* cosSinCache = static_cast<float const*>(inputs[kIN_ROPE_COS_SIN]);
         auto const* deltaStartPositions = static_cast<int32_t const*>(inputs[kIN_DELTA_START]);
         auto const* deltaLengths = static_cast<int32_t const*>(inputs[kIN_DELTA_LENGTHS]);
+        auto const* pageTable = static_cast<int32_t const*>(inputs[kIN_KV_PAGE_TABLE]);
 
         kernel::launchDFlashTargetKVCacheUpdate(kDelta, vDelta, kvCache, cosSinCache, deltaStartPositions, deltaLengths,
-            batchSize, deltaLen, numKVHeads, headDim, rotaryDim, cosSinBatch, cosSinSeqLen, maxBatch, cap, stream);
+            pageTable, batchSize, deltaLen, numKVHeads, headDim, rotaryDim, cosSinBatch, cosSinSeqLen, numPages,
+            maxPagesPerSeq, stream);
 
         return 0;
     }
@@ -408,9 +474,25 @@ int32_t DFlashTargetKVCacheUpdatePlugin::enqueue(PluginTensorDesc const* inputDe
     }
 }
 
-int32_t DFlashTargetKVCacheUpdatePlugin::onShapeChange(PluginTensorDesc const* /* in */, int32_t /* nbInputs */,
-    PluginTensorDesc const* /* out */, int32_t /* nbOutputs */) noexcept
+int32_t DFlashTargetKVCacheUpdatePlugin::onShapeChange(
+    PluginTensorDesc const* in, int32_t nbInputs, PluginTensorDesc const* out, int32_t nbOutputs) noexcept
 {
+    if (!checkExpectedIO("DFlashTargetKVCacheUpdatePlugin::onShapeChange", nbInputs, nbOutputs) || in == nullptr
+        || out == nullptr)
+    {
+        return -1;
+    }
+    if (!isLinear(in[kIN_K_DELTA], DataType::kHALF) || !isLinear(in[kIN_V_DELTA], DataType::kHALF)
+        || !isLinear(in[kIN_PAST_KV], DataType::kHALF) || !isLinear(out[kOUT_PRESENT_KV], DataType::kHALF)
+        || !isLinear(in[kIN_ROPE_COS_SIN], DataType::kFLOAT) || !isLinear(in[kIN_DELTA_START], DataType::kINT32)
+        || !isLinear(in[kIN_DELTA_LENGTHS], DataType::kINT32) || !isLinear(in[kIN_KV_PAGE_TABLE], DataType::kINT32)
+        || !hasConcretePagedKVContract(in[kIN_K_DELTA].dims, in[kIN_V_DELTA].dims, in[kIN_PAST_KV].dims,
+            in[kIN_DELTA_START].dims, in[kIN_DELTA_LENGTHS].dims, in[kIN_KV_PAGE_TABLE].dims,
+            out[kOUT_PRESENT_KV].dims))
+    {
+        LOG_ERROR("DFlashTargetKVCacheUpdatePlugin: invalid concrete paged-KV or page-table contract.");
+        return -1;
+    }
     return 0;
 }
 
@@ -422,7 +504,6 @@ IPluginV3* DFlashTargetKVCacheUpdatePlugin::attachToContext([[maybe_unused]] IPl
 PluginFieldCollection const* DFlashTargetKVCacheUpdatePlugin::getFieldsToSerialize() noexcept
 {
     mDataToSerialize.clear();
-    mDataToSerialize.emplace_back("pages_per_slot", &mPagesPerSlot, PluginFieldType::kINT32, 1);
     mFCToSerialize.nbFields = static_cast<int32_t>(mDataToSerialize.size());
     mFCToSerialize.fields = mDataToSerialize.data();
     return &mFCToSerialize;
@@ -431,11 +512,6 @@ PluginFieldCollection const* DFlashTargetKVCacheUpdatePlugin::getFieldsToSeriali
 void DFlashTargetKVCacheUpdatePlugin::setPluginNamespace(char const* pluginNamespace) noexcept
 {
     mNamespace = pluginNamespace;
-}
-
-void DFlashTargetKVCacheUpdatePlugin::setPagesPerSlot(int32_t pagesPerSlot) noexcept
-{
-    mPagesPerSlot = pagesPerSlot;
 }
 
 // ---------------------------------------------------------------------------
@@ -497,41 +573,3 @@ REGISTER_TENSORRT_PLUGIN(DFlashTargetKVCacheUpdatePluginCreator);
 
 } // namespace plugins
 } // namespace trt_edgellm
-
-// ---------------------------------------------------------------------------
-// Builder configuration hook (see cpp/common/trtUtils.h::loadEdgellmPluginLib)
-// ---------------------------------------------------------------------------
-//
-// The builder (edgellmBuilder/llm_build) does not link this plugin's concrete class — plugins are
-// opaque .so modules loaded via EDGELLM_PLUGIN_PATH, resolved through the generic IPluginV3
-// interface only. pages_per_slot (see DFlashTargetKVCacheUpdatePlugin::setPagesPerSlot) is a
-// builder-only fact (mBuilderConfig.maxKVCacheCapacity) with nowhere else to enter the ONNX-parsed
-// network, so the builder resolves this exported hook via dlsym on the plugin library it already
-// dlopen'd, instead of adding a new link dependency. EDGELLM_PLUGIN_EXPORT is required: the plugin
-// builds with -fvisibility=hidden, so an unannotated extern "C" symbol would not reach .dynsym.
-extern "C" EDGELLM_PLUGIN_EXPORT bool edgellm_dflash_configure_pages_per_slot(
-    nvinfer1::INetworkDefinition* network, int32_t pagesPerSlot) noexcept
-{
-    if (network == nullptr || pagesPerSlot <= 0)
-    {
-        return false;
-    }
-    bool foundAny = false;
-    for (int32_t i = 0; i < network->getNbLayers(); ++i)
-    {
-        nvinfer1::ILayer* layer = network->getLayer(i);
-        if (layer == nullptr || layer->getType() != nvinfer1::LayerType::kPLUGIN_V3)
-        {
-            continue;
-        }
-        auto* pluginLayer = static_cast<nvinfer1::IPluginV3Layer*>(layer);
-        auto* ours = dynamic_cast<trt_edgellm::plugins::DFlashTargetKVCacheUpdatePlugin*>(&pluginLayer->getPlugin());
-        if (ours == nullptr)
-        {
-            continue;
-        }
-        ours->setPagesPerSlot(pagesPerSlot);
-        foundAny = true;
-    }
-    return foundAny;
-}

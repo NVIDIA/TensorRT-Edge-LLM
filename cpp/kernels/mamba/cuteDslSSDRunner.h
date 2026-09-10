@@ -91,7 +91,8 @@ public:
     //! Returns true if this runner can handle the given configuration.
     //!
     //! SM80+: dim ∈ {64, 128}, dstate ∈ {64, 128} (SM80 cp.async kernel, runs on all GPUs).
-    //! SM100+: additionally, dim == 64 && dstate == 128 uses Blackwell TMA/wgmma persistent kernel.
+    //! SM100-110: dim == 64 uses the Blackwell persistent kernel.
+    //! SM100/101/110: dim == 80, dstate == 128 uses one persistent launch with two D64 work tiles.
     static bool canImplement(int32_t dim, int32_t dstate, int32_t smVersion);
 
     //! Load only the module selected by \p params. The plugin calls this before
@@ -122,6 +123,9 @@ private:
     static detail::LazyKernelModule<ssd_prefill_blackwell_d64_n128_Kernel_Module_t> sBlackwellD64N128Module;
     static detail::LazyKernelModule<ssd_prefill_blackwell_d64_n128_init_states_Kernel_Module_t>
         sBlackwellD64N128InitStatesModule;
+    static detail::LazyKernelModule<ssd_prefill_blackwell_d80_n128_Kernel_Module_t> sBlackwellD80N128Module;
+    static detail::LazyKernelModule<ssd_prefill_blackwell_d80_n128_init_states_Kernel_Module_t>
+        sBlackwellD80N128InitStatesModule;
     static detail::LazyKernelModule<ssd_prefill_blackwell_d64_n64_Kernel_Module_t> sBlackwellD64N64Module;
     static detail::LazyKernelModule<ssd_prefill_blackwell_d64_n64_init_states_Kernel_Module_t>
         sBlackwellD64N64InitStatesModule;

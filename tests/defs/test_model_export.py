@@ -141,8 +141,8 @@ def validate_quantization_result(config: TestConfig) -> None:
             label="KV-cache quantized model",
         )
 
-    if ((config.is_eagle or config.is_dflash) and not config.is_mtp
-            and config.draft_llm_precision
+    if ((config.is_eagle or config.is_dflash or config.is_jetspec)
+            and not config.is_mtp and config.draft_llm_precision
             and config.draft_llm_precision not in ("fp16", "int4_gptq")):
         draft_dir = config.get_quantized_draft_model_dir()
         _require_hf_quant_checkpoint(draft_dir, "Quantized draft model")
@@ -170,7 +170,7 @@ def _needs_gptqmodel_install(config: TestConfig) -> bool:
         return False
     if config.is_prequantized():
         return False
-    if config.is_dflash or config.is_eagle:
+    if config.is_dflash or config.is_jetspec or config.is_eagle:
         return False
     return True
 
@@ -200,6 +200,11 @@ class TestModelExport:
             if not os.path.exists(draft_torch_dir):
                 raise FileNotFoundError(
                     f"DFlash draft model not found: {draft_torch_dir}")
+        elif config.is_jetspec:
+            draft_torch_dir = config.get_jetspec_draft_model_dir()
+            if not os.path.exists(draft_torch_dir):
+                raise FileNotFoundError(
+                    f"JetSpec draft model not found: {draft_torch_dir}")
         elif config.is_eagle and not config.is_mtp:
             draft_torch_dir = config.get_draft_torch_model_dir()
             if not os.path.exists(draft_torch_dir):

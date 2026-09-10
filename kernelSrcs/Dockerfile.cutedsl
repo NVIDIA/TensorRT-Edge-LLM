@@ -37,10 +37,10 @@ ARG CUTE_DSL_BUILDER_VERSION=dev
 LABEL org.opencontainers.image.title="TensorRT Edge-LLM CuTe DSL Kernel Builder" \
       org.opencontainers.image.version="${CUTE_DSL_BUILDER_VERSION}"
 
-ARG CUTE_DSL_VERSION=4.6.1
-ARG CUTE_DSL_RUNTIME_LIBS_VERSION=4.6.1
-ARG CUTE_DSL_CU12_REQUIREMENT=nvidia-cutlass-dsl[cu12]==4.6.1
-ARG CUTE_DSL_CU13_REQUIREMENT=nvidia-cutlass-dsl[cu13]==4.6.1
+ARG CUTE_DSL_VERSION=4.7.0
+ARG CUTE_DSL_RUNTIME_LIBS_VERSION=4.7.0
+ARG CUTE_DSL_CU12_REQUIREMENT=nvidia-cutlass-dsl[cu12]==4.7.0
+ARG CUTE_DSL_CU13_REQUIREMENT=nvidia-cutlass-dsl[cu13]==4.7.0
 ARG CUTE_DSL_CUPY_REQUIREMENT=cupy-cuda13x==13.6.0
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -128,6 +128,6 @@ ENV HOME=/tmp/cutedsl-home \
     CUTE_DSL_KERNELS=ALL \
     CUTE_DSL_OUTPUT_DIR=/out/artifacts \
     CUTE_DSL_PREBUILT_DIR=/out \
-    CUTE_DSL_MATRIX=x86_64:sm_80:13,x86_64:sm_100:13,x86_64:sm_120:13,x86_64:sm_120:12,aarch64:sm_87:13,aarch64:sm_87:12,aarch64:sm_101:12,aarch64:sm_110:13,aarch64:sm_121:12,aarch64:sm_121:13
+    CUTE_DSL_MATRIX=x86_64:sm_80:13,x86_64:sm_86:13,x86_64:sm_90:13,x86_64:sm_100:13,x86_64:sm_120:13,x86_64:sm_120:12,aarch64:sm_87:13,aarch64:sm_90:13,aarch64:sm_101:12,aarch64:sm_110:13,aarch64:sm_121:12,aarch64:sm_121:13
 
 ENTRYPOINT ["/workspace/kernelSrcs/build_cutedsl_tarballs.sh"]

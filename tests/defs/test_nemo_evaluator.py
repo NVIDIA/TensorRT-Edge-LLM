@@ -85,7 +85,7 @@ def _resolve_repo_path(path: str, env_config: EnvironmentConfig) -> str:
 def test_nemo_eval(test_param: str, remote_config: Optional[RemoteConfig],
                    test_logger: logging.Logger, env_config: EnvironmentConfig,
                    capfd) -> None:
-    """Run NeMo Evaluator against a built LLM engine."""
+    """Run NeMo Evaluator through the checkpoint-direct server."""
     if remote_config is not None:
         pytest.skip("NeMo Evaluator CI smoke is local x86-only for now")
 
@@ -101,9 +101,11 @@ def test_nemo_eval(test_param: str, remote_config: Optional[RemoteConfig],
         pytest.fail(f"NeMo Evaluator case {case_id} must set model_param")
 
     config = TestConfig.from_param_string(model_param, ModelType.LLM,
-                                          TaskType.BUILD, env_config)
-    engine_dir = config.get_llm_engine_dir()
+                                          TaskType.CHECKPOINT_BUILD,
+                                          env_config)
+    model_dir = config.get_torch_model_dir()
     output_dir = os.path.join(env_config.test_log_dir, "nemo-results", case_id)
+    cache_dir = os.path.join(env_config.engine_dir, "server-cache")
     evaluator_config = case_config.get("evaluator", {})
     if not isinstance(evaluator_config, dict):
         pytest.fail(
@@ -117,8 +119,10 @@ def test_nemo_eval(test_param: str, remote_config: Optional[RemoteConfig],
         case_config_path,
         "--case",
         case_id,
-        "--engine-dir",
-        engine_dir,
+        "--model",
+        model_dir,
+        "--cache-dir",
+        cache_dir,
         "--output-dir",
         output_dir,
     ]

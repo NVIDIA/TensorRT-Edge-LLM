@@ -148,19 +148,29 @@ public:
     /**
      * @brief ViT FMHA: packed varlen separate Q/K/V, bidirectional.
      *
+     * Output is always FP16. Selects kernel variant based on fp8Input:
+     *   - fp8Input=false → FP16 kernels (all scales ignored)
+     *   - fp8Input=true  → FP8-input / FP16-output kernels
+     *
      * @param qPtr  Query  [total_S, H, D]
      * @param kPtr  Key    [total_S, H, D]
      * @param vPtr  Value  [total_S, H, D]
-     * @param oPtr  Output [total_S, H, D]
+     * @param oPtr  Output [total_S, H, D] (always FP16)
      * @param cuSeqLens Cumulative sequence lengths [B+1]
      * @param totalSeqLen Sum of all sequence lengths
      * @param maxSeqLen Longest individual sequence length
      * @param batchSize Number of sequences
      * @param stream CUDA stream
-     * @param attentionScale Absolute multiplier applied to QK^T before softmax
+     * @param attentionScale Absolute multiplier applied to QK^T before softmax. For FP8 input, the effective
+     *        softmax scale is attentionScale * qScale * kScale.
+     * @param fp8Input Whether Q/K/V are FP8 E4M3
+     * @param qScale Q dequant scale (quant→orig), ignored when fp8Input=false
+     * @param kScale K dequant scale (quant→orig), ignored when fp8Input=false
+     * @param vScale V dequant scale (quant→orig), applied to the attention output and ignored when fp8Input=false
      */
     bool run(void const* qPtr, void const* kPtr, void const* vPtr, void* oPtr, int32_t const* cuSeqLens,
-        int32_t totalSeqLen, int32_t maxSeqLen, int32_t batchSize, cudaStream_t stream, float attentionScale);
+        int32_t totalSeqLen, int32_t maxSeqLen, int32_t batchSize, cudaStream_t stream, float attentionScale,
+        bool fp8Input = false, float qScale = 1.0F, float kScale = 1.0F, float vScale = 1.0F);
 
 private:
     int32_t mBatchSize{};
@@ -219,11 +229,17 @@ private:
     static detail::LazyKernelModule<fmha_d256_sw_paged_fp8_Kernel_Module_t> sLLM_d256_sw_paged_fp8;
     static detail::LazyKernelModule<fmha_d512_sw_paged_fp8_Kernel_Module_t> sLLM_d512_sw_paged_fp8;
 
-    // ViT kernel modules
+    // ViT kernel modules (FP16)
     static detail::LazyKernelModule<vit_fmha_d64_Kernel_Module_t> sViT_d64;
     static detail::LazyKernelModule<vit_fmha_d72_Kernel_Module_t> sViT_d72;
     static detail::LazyKernelModule<vit_fmha_d80_Kernel_Module_t> sViT_d80;
+    static detail::LazyKernelModule<vit_fmha_d96_Kernel_Module_t> sViT_d96;
     static detail::LazyKernelModule<vit_fmha_d128_Kernel_Module_t> sViT_d128;
+
+    static detail::LazyKernelModule<vit_fmha_d64_fp8_Kernel_Module_t> sViT_d64_fp8;
+    static detail::LazyKernelModule<vit_fmha_d80_fp8_Kernel_Module_t> sViT_d80_fp8;
+    static detail::LazyKernelModule<vit_fmha_d96_fp8_Kernel_Module_t> sViT_d96_fp8;
+    static detail::LazyKernelModule<vit_fmha_d128_fp8_Kernel_Module_t> sViT_d128_fp8;
 };
 
 } // namespace trt_edgellm

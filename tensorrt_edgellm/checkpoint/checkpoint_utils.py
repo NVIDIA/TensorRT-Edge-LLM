@@ -314,6 +314,8 @@ def _determine_spec_decode_type(config) -> str:
         return "eagle3"
     if config.is_dflash_draft or config.dflash_base:
         return "dflash"
+    if config.is_jetspec_draft or config.jetspec_base:
+        return "jetspec"
     if config.is_dspark_draft or config.dspark_base:
         return "dspark"
     if config.is_mtp_draft or config.mtp_base:
@@ -324,28 +326,83 @@ def _determine_spec_decode_type(config) -> str:
 def _determine_engine_role(config) -> str:
     """Return the engine role within the speculative decoding deployment."""
     if (config.is_eagle3_draft or config.is_dflash_draft
-            or config.is_dspark_draft or config.is_mtp_draft
-            or config.gemma4_mtp_draft):
+            or config.is_jetspec_draft or config.is_dspark_draft
+            or config.is_mtp_draft or config.gemma4_mtp_draft):
         return "draft"
-    if (config.eagle_base or config.dflash_base or config.dspark_base
-            or config.mtp_base or config.gemma4_mtp_base):
+    if (config.eagle_base or config.dflash_base or config.jetspec_base
+            or config.dspark_base or config.mtp_base
+            or config.gemma4_mtp_base):
         return "base"
     return "llm"
 
 
-def build_runtime_llm_config_dict(model: "CausalLM") -> Dict[str, Any]:
+_GLOBAL_MODEL_FIELDS = (
+    "vocab_size",
+    "hidden_size",
+    "intermediate_size",
+    "num_hidden_layers",
+    "num_attention_heads",
+    "num_key_value_heads",
+    "head_dim",
+    "max_position_embeddings",
+    "rope_theta",
+    "partial_rotary_factor",
+    "num_deepstack_features",
+)
+
+_RANK_LOCAL_OVERRIDE_FIELDS = (
+    "num_attention_heads",
+    "num_key_value_heads",
+    "intermediate_size",
+)
+
+
+def _merge_rank_config(existing_rank_configs: Any,
+                       rank_config: Dict[str, Any]) -> list:
+    merged = []
+    if isinstance(existing_rank_configs, list):
+        for existing in existing_rank_configs:
+            if not isinstance(existing, dict):
+                continue
+            if existing.get("rank") == rank_config["rank"]:
+                continue
+            sanitized = dict(existing)
+            sanitized.pop("engine", None)
+            merged.append(sanitized)
+    merged.append(rank_config)
+    return sorted(merged, key=lambda item: int(item.get("rank", 0)))
+
+
+def _apply_global_model_fields(out: Dict[str, Any],
+                               global_llm_config: Any) -> None:
+    if not isinstance(global_llm_config, dict):
+        return
+    for field in _GLOBAL_MODEL_FIELDS:
+        if field in out and global_llm_config.get(field) is not None:
+            out[field] = global_llm_config[field]
+
+
+def build_runtime_llm_config_dict(
+        model: "CausalLM",
+        global_llm_config: Any = None,
+        existing_rank_configs: Any = None) -> Dict[str, Any]:
     """JSON object written as the runtime config beside the ONNX export.
 
-    Head and intermediate sizes describe the per-rank ONNX file this
-    config sits next to. When ``tp_size > 1`` the config is per-rank,
-    stamped with ``tp_size`` and ``tp_rank`` so each rank's artifact is
-    self-describing. For single-device exports no TP fields are emitted.
+    Top-level model fields describe the original/global model. Multi-rank
+    exports attach rank-local ONNX shard metadata and sharded shape overrides
+    under ``rank_configs`` so the shared ``config_world{N}.json`` stays
+    self-describing without engine-build metadata.
     """
     config = model.config
     mc = config.mamba_cfg
     rope_scaling = normalize_rope_scaling_for_runtime(config.rope_scaling)
-    tp_size = max(1, getattr(config, "tp_size", 1))
-    tp_rank = max(0, getattr(config, "tp_rank", 0))
+    mapping = getattr(config, "mapping", None)
+    tp_size = max(1, getattr(config, "tp_size", getattr(mapping, "tp_size",
+                                                        1)))
+    tp_rank = max(0, getattr(config, "tp_rank", getattr(mapping, "tp_rank",
+                                                        0)))
+    world_size = max(1, getattr(mapping, "world_size", tp_size))
+    rank = max(0, getattr(mapping, "rank", tp_rank))
 
     diffusion_engine_role = getattr(model, "diffusion_engine_role", None)
     if config.is_diffusion_gemma and diffusion_engine_role is None:
@@ -387,9 +444,10 @@ def build_runtime_llm_config_dict(model: "CausalLM") -> Dict[str, Any]:
         "use_vision_bidirectional_attention":
         bool(config.use_vision_bidirectional_attention
              and not (config.eagle_base or config.dflash_base
-                      or config.dspark_base or config.mtp_base
-                      or config.gemma4_mtp_base or config.is_eagle3_draft
-                      or config.is_dflash_draft or config.is_dspark_draft
+                      or config.jetspec_base or config.dspark_base
+                      or config.mtp_base or config.gemma4_mtp_base
+                      or config.is_eagle3_draft or config.is_dflash_draft
+                      or config.is_jetspec_draft or config.is_dspark_draft
                       or config.is_mtp_draft or config.gemma4_mtp_draft)),
         "rms_norm_eps":
         float(config.rms_norm_eps),
@@ -416,9 +474,32 @@ def build_runtime_llm_config_dict(model: "CausalLM") -> Dict[str, Any]:
             "enable_moe_block": bool(config.enable_moe_block),
         })
 
-    if tp_size > 1:
-        out["tp_size"] = tp_size
-        out["tp_rank"] = tp_rank
+    local_shape_values = {
+        field: out[field]
+        for field in _RANK_LOCAL_OVERRIDE_FIELDS if field in out
+    }
+
+    if world_size > 1 or tp_size > 1:
+        # Only TP exports need a shared world-level view. Single-device and
+        # specialized exports (for example reduced-layer validation, MTP
+        # draft, and TTS code-predictor models) must retain model.config
+        # because it describes the ONNX graph that was actually exported.
+        _apply_global_model_fields(out, global_llm_config)
+
+        config_overrides: Dict[str, Any] = {}
+        for field, local_value in local_shape_values.items():
+            if out.get(field) != local_value:
+                config_overrides[field] = local_value
+
+        rank_config: Dict[str, Any] = {
+            "rank": rank,
+        }
+        if tp_rank != rank:
+            rank_config["tp_rank"] = tp_rank
+        if config_overrides:
+            rank_config["config_overrides"] = config_overrides
+        out["rank_configs"] = _merge_rank_config(existing_rank_configs,
+                                                 rank_config)
 
     if config.is_diffusion_gemma:
         diffusion_cfg = (config.diffusion.to_dict()
@@ -717,6 +798,30 @@ def build_runtime_llm_config_dict(model: "CausalLM") -> Dict[str, Any]:
             },
         })
 
+    if config.is_jetspec_draft:
+        out.update({
+            "draft_vocab_size":
+            config.vocab_size,
+            "base_model_hidden_size":
+            len(config.jetspec_target_layer_ids) * config.hidden_size,
+            "jetspec_config": {
+                "target_layer_ids": list(config.jetspec_target_layer_ids),
+                "block_size": config.jetspec_block_size,
+                "mask_token_id": config.jetspec_mask_token_id,
+                "causal_head": bool(config.jetspec_causal_head),
+            },
+        })
+
+    if config.jetspec_base:
+        out.update({
+            "jetspec_config": {
+                "target_layer_ids": list(config.jetspec_target_layer_ids),
+                "block_size": config.jetspec_block_size,
+                "mask_token_id": config.jetspec_mask_token_id,
+                "causal_head": bool(config.jetspec_causal_head),
+            },
+        })
+
     if config.is_dspark_draft:
         dspark_cfg = {
             "target_layer_ids": list(config.dspark_target_layer_ids),
@@ -897,12 +1002,17 @@ def write_runtime_artifacts(model: "CausalLM",
                             out_dir: str,
                             fp8_embedding: bool = False,
                             reduced_vocab_dir: str = "",
-                            config_filename: str = "config.json") -> None:
+                            config_filename: str = "config.json",
+                            write_shared_artifacts: bool = True) -> None:
     """Write the runtime config, ``embedding.safetensors``, tokenizer copies, chat template.
 
     ``config_filename`` selects the filename for the runtime config. Use
     the default ``"config.json"`` for single-device exports, or
-    ``"config_tp{N}_rank{R}.json"`` for per-rank TP exports.
+    ``"config_world{N}.json"`` for multi-rank exports.
+
+    ``write_shared_artifacts`` controls whether embedding and tokenizer
+    sidecar files are emitted. TP ranks share those artifacts, so rank 0 can
+    write them once while every rank still writes the shared runtime config.
     """
     import torch
 
@@ -913,41 +1023,61 @@ def write_runtime_artifacts(model: "CausalLM",
 
     os.makedirs(out_dir, exist_ok=True)
 
-    cfg_json = build_runtime_llm_config_dict(model)
+    cfg_path = os.path.join(out_dir, config_filename)
+    existing_rank_configs = []
+    if os.path.exists(cfg_path):
+        with open(cfg_path) as f:
+            existing_cfg = json.load(f)
+        existing_rank_configs = existing_cfg.get("rank_configs", [])
+
+    root_cfg = {}
+    global_llm_config = None
+    if model_dir:
+        try:
+            root_cfg, global_llm_config = load_checkpoint_config_dicts(
+                model_dir)
+        except (OSError, ValueError, RuntimeError, ImportError) as exc:
+            logger.warning(
+                "Failed to load global checkpoint config from %s: %s",
+                model_dir, exc)
+            hf_cfg_path = os.path.join(model_dir, "config.json")
+            if os.path.exists(hf_cfg_path):
+                with open(hf_cfg_path) as _f:
+                    root_cfg = json.load(_f)
+
+    cfg_json = build_runtime_llm_config_dict(
+        model,
+        global_llm_config=global_llm_config,
+        existing_rank_configs=existing_rank_configs)
 
     # For VLM models, the C++ VLM runner (qwenViTRunner, internViTRunner)
     # reads vision_config from the LLM config.json.  Preserve it from the
     # original HF config so the runtime can find deepstack_visual_indexes,
     # num_position_embeddings, etc.
-    root_cfg = {}
-    if model_dir:
-        hf_cfg_path = os.path.join(model_dir, "config.json")
-        if os.path.exists(hf_cfg_path):
-            with open(hf_cfg_path) as _f:
-                root_cfg = json.load(_f)
-            if root_cfg.get("vision_config"):
-                cfg_json["vision_config"] = root_cfg["vision_config"]
-            # Propagate eos_token_id so the C++ runtime can stop on any EOS
-            # token (e.g. Gemma4 uses [1, 106]).  Check config.json first,
-            # then fall back to generation_config.json (some models only set
-            # eos_token_id there).
-            eos = root_cfg.get("eos_token_id")
-            if eos is None:
-                gen_cfg_path = os.path.join(model_dir,
-                                            "generation_config.json")
-                if os.path.exists(gen_cfg_path):
-                    with open(gen_cfg_path) as _gf:
-                        gen_cfg = json.load(_gf)
-                    eos = gen_cfg.get("eos_token_id")
-            if isinstance(eos, list):
-                cfg_json["eos_token_id"] = [int(x) for x in eos]
-            elif isinstance(eos, int):
-                cfg_json["eos_token_id"] = [eos]
+    if root_cfg.get("vision_config"):
+        cfg_json["vision_config"] = root_cfg["vision_config"]
+    # Propagate eos_token_id so the C++ runtime can stop on any EOS
+    # token (e.g. Gemma4 uses [1, 106]). Check config.json first,
+    # then fall back to generation_config.json (some models only set
+    # eos_token_id there).
+    eos = root_cfg.get("eos_token_id")
+    if eos is None and model_dir:
+        gen_cfg_path = os.path.join(model_dir, "generation_config.json")
+        if os.path.exists(gen_cfg_path):
+            with open(gen_cfg_path) as _gf:
+                gen_cfg = json.load(_gf)
+            eos = gen_cfg.get("eos_token_id")
+    if isinstance(eos, list):
+        cfg_json["eos_token_id"] = [int(x) for x in eos]
+    elif isinstance(eos, int):
+        cfg_json["eos_token_id"] = [eos]
 
-    cfg_path = os.path.join(out_dir, config_filename)
     with open(cfg_path, "w") as f:
         json.dump(cfg_json, f, indent=2)
     logger.info("Wrote %s to %s", config_filename, out_dir)
+
+    if not write_shared_artifacts:
+        return
 
     # EAGLE3 draft models don't need embedding.safetensors — the C++ runtime
     # uses the base model's shared embedding table (the builder already skips

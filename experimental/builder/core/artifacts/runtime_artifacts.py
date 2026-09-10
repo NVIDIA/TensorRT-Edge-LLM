@@ -145,7 +145,8 @@ def write_runtime_artifacts(cfg: DeviceConfig,
 
     config_path = contracts.component_spec(
         args.resolved_component).config_path(engine_dir,
-                                             args.resolved_spec_role)
+                                             args.resolved_spec_role,
+                                             args.tp_size)
     with open(config_path, "w") as config_file:
         json.dump(runtime_config, config_file, indent=2)
     logger.info("Wrote %s", os.path.basename(config_path))

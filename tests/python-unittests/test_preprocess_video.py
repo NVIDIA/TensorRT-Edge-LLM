@@ -14,7 +14,8 @@
 # limitations under the License.
 """
 Unit coverage for the server-side video frame sampler
-(``experimental/server/video_sampling.py``): sampling math vs the HF pipelines,
+(``experimental/server/media/video_sampling.py``): sampling math vs the HF
+pipelines,
 source resolution, PyAV decode on synthetic clips, and request-budget/estimator
 checks. Loaded standalone; only the pybind-marked tests need the C++ runtime.
 
@@ -28,7 +29,7 @@ import os
 
 import pytest
 
-import experimental.server.video_sampling as vs
+import experimental.server.media.video_sampling as vs
 
 
 def _load_edgellm_runtime():
@@ -83,13 +84,18 @@ def test_resolve_video_source(tmp_path):
     assert vs.resolve_video_source(str(f)) == (str(f), None)
     for url in (
             "data:video/mp4,rawbytes",  # non-base64 data URL
-            "http://h/v.mp4",  # remote (host locally instead)
-            "https://h/v.mp4",
             "/no/such/clip.mp4",  # missing file (ValueError -> 400, not 500)
             "   ",  # empty
     ):
         with pytest.raises(ValueError):
             vs.resolve_video_source(url)
+
+
+@pytest.mark.parametrize("url", ["http://h/v.mp4", "https://h/v.mp4"])
+def test_resolve_video_source_fetches_remote(url, monkeypatch):
+    monkeypatch.setattr(vs, "fetch_remote_media",
+                        lambda source, kind, limit: b"video")
+    assert vs.resolve_video_source(url) == ("", b"video")
 
 
 # --- parameter validation & profile clamping --------------------------------
@@ -1311,6 +1317,27 @@ def test_load_video_buffer_nemotron_rejects_do_resize_false(tmp_path):
         },
                              "nemotron",
                              frame_limits=_NEMOTRON_LIMITS)
+
+
+def test_load_video_buffer_nemotron_bounds_presampled_tubelets(
+        tmp_path, monkeypatch):
+    frame_paths = []
+    for index in range(6):
+        path = tmp_path / f"frame-{index}.png"
+        path.write_bytes(b"image")
+        frame_paths.append(str(path))
+    monkeypatch.setattr(vs, "_probe_image_size", lambda _path: (64, 64))
+    limits = dict(_NEMOTRON_LIMITS,
+                  max_image_tokens=512,
+                  video_pruning_rate=0.9)
+    with pytest.raises(ValueError, match="visual engine profile holds 2"):
+        vs.load_video_buffer(_FakeRt(), {
+            "type": "video",
+            "frames": frame_paths,
+            "fps": 1.0,
+        },
+                             "nemotron",
+                             frame_limits=limits)
 
 
 def test_mid_stream_resolution_change_rejected(tmp_path, monkeypatch):

@@ -13,6 +13,7 @@
 #pragma once
 #include "mha_stdheaders.cuh"
 #include "common/cudaMacros.h"
+#include "kernels/decodeAttentionKernels/xqaKernelTypes.h"
 
 #define STATIC_NB_K_HEADS 0
 #if STATIC_NB_K_HEADS
@@ -97,10 +98,10 @@ static_assert(SPEC_DEC, "SPEC_Q_SEQ_LEN should only be used when SPEC_DEC is ena
 
 // 0: half/bf16 based on INPUT_FP16; 1: int8_t; 2: __nv_fp8_e4m3
 #ifndef CACHE_ELEM_ENUM
-#define CACHE_ELEM_ENUM 2
+#define CACHE_ELEM_ENUM TRT_EDGELLM_XQA_CACHE_ELEM_FP8_E4M3
 #endif
 
-#if CACHE_ELEM_ENUM == 2 && !SUPPORTS_FP8
+#if CACHE_ELEM_ENUM == TRT_EDGELLM_XQA_CACHE_ELEM_FP8_E4M3 && !SUPPORTS_FP8
 #error "FP8 XQA KV cache requires CUDA FP8 support."
 #endif
 
@@ -128,7 +129,7 @@ static_assert(SPEC_DEC, "SPEC_Q_SEQ_LEN should only be used when SPEC_DEC is ena
 // don't modify
 #define USE_BEAM_SEARCH (BEAM_WIDTH > 1)
 
-#if CACHE_ELEM_ENUM == 0
+#if CACHE_ELEM_ENUM == TRT_EDGELLM_XQA_CACHE_ELEM_INPUT
 #define PRAGMA_UNROLL_FP16_ONLY _Pragma("unroll")
 #else
 #define PRAGMA_UNROLL_FP16_ONLY _Pragma("unroll(1)")
@@ -175,11 +176,13 @@ static_assert(SPEC_DEC, "SPEC_Q_SEQ_LEN should only be used when SPEC_DEC is ena
 #endif
 
 #if LOW_PREC_OUTPUT
-static_assert(CACHE_ELEM_ENUM != 0);
+static_assert(CACHE_ELEM_ENUM != TRT_EDGELLM_XQA_CACHE_ELEM_INPUT);
 #endif
 
 // true should be better if warpTile.x * cacheElemSize < 128. otherwise use false.
-#define GRP_LOAD_V (CACHE_ELEM_ENUM != 0) || (HEAD_ELEMS == 256 && TOKENS_PER_PAGE != 0 && BEAM_WIDTH > 1)
+#define GRP_LOAD_V                                                                                                    \
+    (CACHE_ELEM_ENUM != 0)                                                                                            \
+    || (HEAD_ELEMS == 256 && TOKENS_PER_PAGE != 0 && BEAM_WIDTH > 1)
 
 // use custom barrier for NVRTC to avoid pulling in many headers
 #ifndef USE_CUSTOM_BARRIER
@@ -201,9 +204,11 @@ static_assert(CACHE_ELEM_ENUM != 0);
 #include <cuda_fp16.h>
 #if SUPPORTS_FP8
 template <int32_t elemTypeEnum>
-using ElemType = mha::conditional_t<elemTypeEnum == 0, INPUT_ELEM,
-    mha::conditional_t<elemTypeEnum == 1, int8_t, mha::conditional_t<elemTypeEnum == 2, __nv_fp8_e4m3, void>>>;
+using ElemType = mha::conditional_t<elemTypeEnum == TRT_EDGELLM_XQA_CACHE_ELEM_INPUT, INPUT_ELEM,
+    mha::conditional_t<elemTypeEnum == TRT_EDGELLM_XQA_CACHE_ELEM_INT8, int8_t,
+        mha::conditional_t<elemTypeEnum == TRT_EDGELLM_XQA_CACHE_ELEM_FP8_E4M3, __nv_fp8_e4m3, void>>>;
 #else
 template <int32_t elemTypeEnum>
-using ElemType = mha::conditional_t<elemTypeEnum == 0, INPUT_ELEM, mha::conditional_t<elemTypeEnum == 1, int8_t, void>>;
+using ElemType = mha::conditional_t<elemTypeEnum == TRT_EDGELLM_XQA_CACHE_ELEM_INPUT, INPUT_ELEM,
+    mha::conditional_t<elemTypeEnum == TRT_EDGELLM_XQA_CACHE_ELEM_INT8, int8_t, void>>;
 #endif

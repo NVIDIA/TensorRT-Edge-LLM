@@ -28,13 +28,45 @@ namespace rt
 namespace dflash_utils
 {
 
-//! Return the DFlash draft block horizon used by runtime draft forward.
+enum class ProposalAttentionPolicy : int32_t
+{
+    kBidirectional,
+    kCausal,
+};
+
+enum class BlockDraftTreePolicy : int32_t
+{
+    kLinear,
+    kDDTree,
+};
+
+struct CachedBlockDraftRuntimeConfig
+{
+    SpecDecodeMode userMode{SpecDecodeMode::kNONE};
+    ProposalAttentionPolicy proposalAttention{ProposalAttentionPolicy::kBidirectional};
+    BlockDraftTreePolicy treePolicy{BlockDraftTreePolicy::kLinear};
+    int32_t blockSize{0};
+    int32_t proposalLen{0};
+    int32_t verifySize{0};
+    int32_t candidateTopK{1};
+    int32_t maskTokenId{0};
+    int32_t draftHiddenSize{0};
+    int32_t baseOutputHiddenDim{0};
+    int32_t draftVocabSize{0};
+};
+
+char const* proposalAttentionPolicyName(ProposalAttentionPolicy policy) noexcept;
+char const* blockDraftTreePolicyName(BlockDraftTreePolicy policy) noexcept;
+
+CachedBlockDraftRuntimeConfig makeCachedBlockDraftRuntimeConfig(DeploymentConfig const& deployment);
+
+//! Return the DFlash/JetSpec draft block horizon used by runtime draft forward.
 //!
-//! DeploymentConfig resolves explicit/user-supplied DFlash horizons before the
+//! DeploymentConfig resolves explicit/user-supplied DFlash/JetSpec horizons before the
 //! decoder is created, so the runtime reads one consolidated value.
 int32_t runtimeBlockSize(DeploymentConfig const& deployment);
 
-//! DFlash uses a linear-tree proposal when draftingTopK == 1 and a branching
+//! DFlash/JetSpec uses a linear-tree proposal when draftingTopK == 1 and a branching
 //! DDTree proposal when draftingTopK > 1.
 bool shouldUseDDTree(DeploymentConfig const& deployment);
 

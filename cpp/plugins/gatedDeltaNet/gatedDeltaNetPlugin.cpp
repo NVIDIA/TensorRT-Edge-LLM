@@ -20,8 +20,10 @@
 #include "common/cudaUtils.h"
 #include "common/logger.h"
 #include "plugins/utils/pluginUtils.h"
-#ifdef CUTE_DSL_GDN_ENABLED
+#if defined(CUTE_DSL_GDN_ENABLED) || defined(CUTE_DSL_GDN_BLACKWELL_GEFORCE_ENABLED)
 #include "kernels/gdnKernels/cuteDslGDNRunner.h"
+#endif
+#ifdef CUTE_DSL_GDN_ENABLED
 #include "kernels/gdnKernels/gdnKernelUtils.cuh"
 #endif
 

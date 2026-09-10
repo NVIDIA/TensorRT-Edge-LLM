@@ -54,6 +54,7 @@ public:
         catch (...)
         {
             unregisterFromPlugin();
+            static_cast<void>(abortOwnedCommunicators());
             destroyOwnedCommunicators();
             throw;
         }

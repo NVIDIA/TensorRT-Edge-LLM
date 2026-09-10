@@ -11,12 +11,12 @@ Adapted from:
 
 Local modifications:
 - **CuTe DSL port** — rewrote Triton kernels as CuTe DSL with SM80 warp MMA + cp.async, removing PyTorch/Triton dependency
-- **Multi-variant AOT compilation** -- 4 SM80 variants (D x N, each in {64, 128}) + 4 Blackwell variants (D=64, N in {64, 128}, has_init_states in {false, true}), each a compile-time specialization
+- **Multi-variant AOT compilation** -- 4 SM80 variants (D x N, each in {64, 128}) + 6 Blackwell variants ((D, N) in {(64, 64), (64, 128), (80, 128)}, has_init_states in {false, true}), each a compile-time specialization
 - **Runtime parameter flexibility** -- batch, nheads, ngroups, seq_len, `context_lengths` (per-batch) are runtime arguments
 - **End-to-end varlen support** -- kernel always-varlen at AOT (`has_varlen=True`); plugin plumbs `context_lengths` to runner; metadata (seq_idx / chunk_indices / chunk_offsets / seq_chunk_cumsum) built fully on-device (CUDA-graph friendly, no D2H sync)
 - **`has_init_states` Blackwell variants** -- accept caller-provided initial SSM state at chunk 0; powers chunked prefill / continuous batching unit tests; default zero-state variant is the production fast path
 - **Blackwell N=64 support** — fixed TMA partition shape mismatch in FlashInfer kernel to support dstate=64
-- **C++ plugin integration** — CuteDslSSDRunner with multi-module dispatch, AOT static library pattern matching FMHA/GDN
+- **C++ plugin integration** — CuteDslSSDRunner with multi-module dispatch and a Blackwell D80/N128 single-launch path, using the AOT static library pattern matching FMHA/GDN
 - **Dependency removal** — removed PyTorch; uses CuPy/NumPy for standalone testing
 
 ## Kernel Variants
@@ -42,11 +42,24 @@ SM120+ (GB10/GB20) lacks TMEM/wgmma and uses the non-Blackwell fallback.
 |---|---|---|---|---|
 | `ssd_prefill_blackwell_d64_n128` | 64 | 128 | false | Nemotron-3-Nano-4B, 30B-A3B production fast path |
 | `ssd_prefill_blackwell_d64_n128_init_states` | 64 | 128 | true | Chunked prefill / continuous batching |
+| `ssd_prefill_blackwell_d80_n128` | 80 | 128 | false | Nemotron D80 single-launch fast path |
+| `ssd_prefill_blackwell_d80_n128_init_states` | 80 | 128 | true | Chunked prefill / continuous batching |
 | `ssd_prefill_blackwell_d64_n64` | 64 | 64 | false | -- |
 | `ssd_prefill_blackwell_d64_n64_init_states` | 64 | 64 | true | Chunked prefill / continuous batching |
 
-Blackwell native kernels are limited to DIM=64 due to SM100 TMEM capacity
-(512 columns). DIM=128 models use the non-Blackwell fallback on Blackwell GPUs.
+Blackwell tensor-core work tiles are limited to physical DIM=64 due to SM100
+TMEM capacity (512 columns). Logical D80 uses two D64 work tiles; DIM=128
+models use the non-Blackwell fallback on Blackwell GPUs.
+
+D80/N128 keeps the physical tensor-core tile at D64 and adds a logical D tile
+to the persistent scheduler. On SM100, SM101, and SM110, one kernel launch
+creates two independent work tiles per `(sequence, head)`: one processes
+dimensions 0..63 and one processes dimensions 64..79 with TMA boundary fill
+and bounded stores for the unused tail. This preserves the D64 TMEM footprint,
+avoids caller-side packing, and remains CUDA-graph capture-compatible. Other
+architectures report D80 unsupported, so the Mamba plugin uses its serial
+prefill path. Once `canImplement()` reports support, module-load or execution
+failure is fatal; it never falls back after claiming the CuTe DSL route.
 
 `has_init_states` is a compile-time constexpr: `false` is the production fast
 path (state arrives zeroed); `true` adds an extra TMA pipeline stage to load
@@ -128,8 +141,9 @@ architecture, and initial-state AOT variant on its first use and keeps it
 resident for process lifetime. The plugin calls
 `ensureKernelModules(SSDParams, stream)` before its output-state copy; `run()`
 repeats that guard defensively. On SM100 through SM110, D=64 uses the
-Blackwell native kernel; all other configurations use the non-Blackwell
-implementation.
+Blackwell native kernel. D80/N128 uses the single-launch two-work-tile kernel
+only on SM100, SM101, and SM110. D128 uses the non-Blackwell implementation;
+unsupported configurations remain on the plugin's serial prefill path.
 
 Plugin (`cpp/plugins/mamba/mambaPlugin.cpp`): integrates via the SSD runner.
 

@@ -45,7 +45,7 @@ __host__ __device__ inline size_t divUp(const T1& a, const T2& n) noexcept
 }
 
 /*!
- * @brief Get CUDA compute capability version
+ * @brief Get CUDA compute capability version, cached once
  *
  * Returns the compute capability as an integer (e.g., 89 for SM 8.9).
  *
@@ -54,13 +54,17 @@ __host__ __device__ inline size_t divUp(const T1& a, const T2& n) noexcept
  */
 inline int getSMVersion()
 {
-    int device{-1};
-    CUDA_CHECK(cudaGetDevice(&device));
-    int sm_major = 0;
-    int sm_minor = 0;
-    CUDA_CHECK(cudaDeviceGetAttribute(&sm_major, cudaDevAttrComputeCapabilityMajor, device));
-    CUDA_CHECK(cudaDeviceGetAttribute(&sm_minor, cudaDevAttrComputeCapabilityMinor, device));
-    return sm_major * 10 + sm_minor;
+    // Edge-LLM runs on one target GPU per process. Query its hardware constant once, then reuse it.
+    static int const smVersion = []() {
+        int device{-1};
+        CUDA_CHECK(cudaGetDevice(&device));
+        int smMajor = 0;
+        int smMinor = 0;
+        CUDA_CHECK(cudaDeviceGetAttribute(&smMajor, cudaDevAttrComputeCapabilityMajor, device));
+        CUDA_CHECK(cudaDeviceGetAttribute(&smMinor, cudaDevAttrComputeCapabilityMinor, device));
+        return smMajor * 10 + smMinor;
+    }();
+    return smVersion;
 }
 
 /*!

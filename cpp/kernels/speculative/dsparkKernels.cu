@@ -1011,6 +1011,16 @@ __global__ void dsparkNormalizeTopKRowsKernel(float const* __restrict__ topKValu
     }
 }
 
+__global__ void dsparkStoreDraftStepTop1Kernel(int32_t const* __restrict__ top1Indices, // [B, 1]
+    int32_t* __restrict__ draftTokenIds, int32_t batchSize, int32_t step, int32_t proposalLen)
+{
+    int32_t const batchIdx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (batchIdx < batchSize)
+    {
+        draftTokenIds[batchIdx * proposalLen + step] = top1Indices[batchIdx];
+    }
+}
+
 __global__ void dsparkSampleTopKRowsAndStoreKernel(float const* __restrict__ topKValues, // [B, K]
     int32_t const* __restrict__ topKIndices,                                             // [B, K]
     float const* __restrict__ proposalUniforms,                                          // [B, P]
@@ -1260,6 +1270,7 @@ void dsparkVanillaMarkovSample(rt::Tensor const& backboneLogits, rt::Tensor cons
     int32_t batchSize, int32_t proposalLen, int32_t vocabSize, int32_t markovRank, float temperature, int32_t topK,
     float topP, cudaStream_t stream)
 {
+    check::check(probabilityScratch.reshape({batchSize, vocabSize}), "Tensor reshape failed");
     int32_t const numVocabBlocks = dsparkMarkovPartialCount(vocabSize);
     dim3 const markovGrid(numVocabBlocks, batchSize);
     int32_t const totalProbabilityElements = batchSize * vocabSize;
@@ -1335,6 +1346,17 @@ void dsparkNormalizeTopKRows(rt::Tensor const& topKValues, rt::Tensor& topKProba
     dsparkNormalizeTopKRowsKernel<<<rows, kProbabilityBlockSize, 0, stream>>>(
         static_cast<float const*>(topKValues.rawPointer()), static_cast<float*>(topKProbabilities.rawPointer()), rows,
         topK, temperature);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+void dsparkStoreDraftStepTop1(rt::Tensor const& top1Indices, rt::Tensor& draftTokenIds, int32_t batchSize, int32_t step,
+    int32_t proposalLen, cudaStream_t stream)
+{
+    int32_t constexpr threads = 256;
+    int32_t const blocks = (batchSize + threads - 1) / threads;
+    dsparkStoreDraftStepTop1Kernel<<<blocks, threads, 0, stream>>>(
+        static_cast<int32_t const*>(top1Indices.rawPointer()), static_cast<int32_t*>(draftTokenIds.rawPointer()),
+        batchSize, step, proposalLen);
     CUDA_CHECK(cudaGetLastError());
 }
 

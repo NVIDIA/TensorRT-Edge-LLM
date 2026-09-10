@@ -36,6 +36,13 @@ namespace rt
 namespace
 {
 
+void applySamplerLogitBiasRepeatedRows(
+    LogitBias const& logitBias, Tensor& logits, int32_t rowsPerSlot, cudaStream_t stream)
+{
+    ::trt_edgellm::applyLogitBiasRepeatedRows(
+        logits, logitBias.tokenIds, logitBias.values, logitBias.offsets, rowsPerSlot, stream);
+}
+
 void uploadLogitBias(LogitBias& logitBias, DecodingInferenceContext& context, cudaStream_t stream)
 {
     if (!context.hasLogitBias || !context.logitBiasGpuDirty)
@@ -136,11 +143,6 @@ bool hasLogitBias(LLMGenerationRequest const& request) noexcept
         request.requests.begin(), request.requests.end(), [](auto const& slot) { return !slot.logitBias.empty(); });
 }
 
-bool shouldRejectLogitBiasWithSpecDecode(LLMGenerationRequest const& request, bool speculativeDecoderSelected) noexcept
-{
-    return speculativeDecoderSelected && hasLogitBias(request);
-}
-
 void prepareLogitBias(
     LogitBias const& logitBias, LLMGenerationRequest const& request, DecodingInferenceContext& context)
 {
@@ -184,13 +186,31 @@ void prepareLogitBias(
 
 void applyLogitBias(LogitBias& logitBias, Tensor& logits, DecodingInferenceContext& context, cudaStream_t stream)
 {
+    applyLogitBiasRepeatedRows(logitBias, logits, context, 1, stream);
+}
+
+void applyLogitBiasRepeatedRows(
+    LogitBias& logitBias, Tensor& logits, DecodingInferenceContext& context, int32_t rowsPerSlot, cudaStream_t stream)
+{
     if (!context.hasLogitBias)
     {
         return;
     }
-
+    check::check(rowsPerSlot > 0, "Logit bias rowsPerSlot must be positive");
     uploadLogitBias(logitBias, context, stream);
-    ::trt_edgellm::applyLogitBias(logits, logitBias.tokenIds, logitBias.values, logitBias.offsets, stream);
+
+    auto const originalShape = logits.getShape();
+    if (originalShape.getNumDims() == 3)
+    {
+        check::check(originalShape[0] == context.activeBatchSize, "Spec logit bias batch size mismatch");
+        check::check(originalShape[1] == rowsPerSlot, "Spec logit bias rowsPerSlot shape mismatch");
+        check::check(logits.reshape({originalShape[0] * originalShape[1], originalShape[2]}), "Tensor reshape failed");
+        applySamplerLogitBiasRepeatedRows(logitBias, logits, rowsPerSlot, stream);
+        check::check(logits.reshape(originalShape), "Tensor reshape failed");
+        return;
+    }
+
+    applySamplerLogitBiasRepeatedRows(logitBias, logits, rowsPerSlot, stream);
 }
 
 } // namespace rt

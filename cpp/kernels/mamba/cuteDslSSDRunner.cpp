@@ -23,11 +23,87 @@
 #include "common/logger.h"
 #include "ssdVarlenMetadata.h"
 
-#include <algorithm>
 #include <cmath>
 
 namespace trt_edgellm
 {
+
+namespace
+{
+
+constexpr int32_t kCHUNK_SIZE{128};
+
+#if defined(CUTE_DSL_SSD_BLACKWELL_ENABLED)
+constexpr int32_t kD80_DIM{80};
+constexpr int32_t kD80_DSTATE{128};
+#endif
+
+bool isGenericConfiguration(int32_t dim, int32_t dstate)
+{
+    return (dim == 64 || dim == 128) && (dstate == 64 || dstate == 128);
+}
+
+#if defined(CUTE_DSL_SSD_BLACKWELL_ENABLED)
+bool isD80BlackwellSm(int32_t smVersion)
+{
+    return smVersion == 100 || smVersion == 101 || smVersion == 110;
+}
+
+bool isD80BlackwellConfiguration(int32_t dim, int32_t dstate, int32_t smVersion)
+{
+    return dim == kD80_DIM && dstate == kD80_DSTATE && isD80BlackwellSm(smVersion);
+}
+#endif
+
+bool hasCompiledConfiguration(int32_t dim, int32_t dstate)
+{
+    if (isGenericConfiguration(dim, dstate))
+    {
+        return true;
+    }
+#if defined(CUTE_DSL_SSD_BLACKWELL_ENABLED)
+    return dim == kD80_DIM && dstate == kD80_DSTATE;
+#else
+    return false;
+#endif
+}
+
+size_t getGenericWorkspaceSize(
+    int32_t batch, int32_t seqLen, int32_t nheads, int32_t dim, int32_t dstate, int32_t ngroups)
+{
+    int32_t const nchunks = (seqLen + kCHUNK_SIZE - 1) / kCHUNK_SIZE;
+    size_t size{};
+    size += static_cast<size_t>(batch) * nheads * nchunks * kCHUNK_SIZE * sizeof(float);
+    size += static_cast<size_t>(batch) * nheads * nchunks * kCHUNK_SIZE * sizeof(float);
+    size += static_cast<size_t>(batch) * nchunks * nheads * dim * dstate * sizeof(float);
+    size += static_cast<size_t>(batch) * nchunks * nheads * dim * dstate * sizeof(float);
+    size += static_cast<size_t>(batch) * nchunks * ngroups * kCHUNK_SIZE * kCHUNK_SIZE * sizeof(float);
+    size += static_cast<size_t>(batch) * sizeof(int32_t);
+    return size;
+}
+
+#if defined(CUTE_DSL_SSD_BLACKWELL_ENABLED)
+size_t getBlackwellWorkspaceSize(int32_t batch, int32_t seqLen, int32_t nheads, int32_t dim)
+{
+    int32_t const nchunks = (seqLen + kCHUNK_SIZE - 1) / kCHUNK_SIZE;
+    int32_t const totalSeq = batch * seqLen;
+    int32_t const totalChunks = (totalSeq + kCHUNK_SIZE - 1) / kCHUNK_SIZE;
+    int32_t const logicalChunksPerSeqUpper = nchunks + ((seqLen % kCHUNK_SIZE) == 0 ? 0 : 1);
+    size_t size{};
+    size += static_cast<size_t>(totalChunks) * nheads * kCHUNK_SIZE * sizeof(float);
+    size += static_cast<size_t>(totalChunks) * nheads * kCHUNK_SIZE * sizeof(__half);
+    size += static_cast<size_t>(totalChunks) * nheads * dim * kCHUNK_SIZE * sizeof(__half);
+    size += static_cast<size_t>(batch) * seqLen * sizeof(int32_t);
+    size += static_cast<size_t>(batch) * logicalChunksPerSeqUpper * sizeof(int32_t);
+    size += static_cast<size_t>(batch) * logicalChunksPerSeqUpper * sizeof(int32_t);
+    size += static_cast<size_t>(batch + 1) * sizeof(int32_t);
+    size += static_cast<size_t>(batch) * sizeof(int32_t);
+    return size;
+}
+
+#endif
+
+} // namespace
 
 detail::LazyKernelModule<ssd_prefill_d128_n128_Kernel_Module_t> CuteDslSSDRunner::sD128N128Module{};
 detail::LazyKernelModule<ssd_prefill_d64_n128_Kernel_Module_t> CuteDslSSDRunner::sD64N128Module{};
@@ -37,6 +113,9 @@ detail::LazyKernelModule<ssd_prefill_d64_n64_Kernel_Module_t> CuteDslSSDRunner::
 detail::LazyKernelModule<ssd_prefill_blackwell_d64_n128_Kernel_Module_t> CuteDslSSDRunner::sBlackwellD64N128Module{};
 detail::LazyKernelModule<ssd_prefill_blackwell_d64_n128_init_states_Kernel_Module_t>
     CuteDslSSDRunner::sBlackwellD64N128InitStatesModule{};
+detail::LazyKernelModule<ssd_prefill_blackwell_d80_n128_Kernel_Module_t> CuteDslSSDRunner::sBlackwellD80N128Module{};
+detail::LazyKernelModule<ssd_prefill_blackwell_d80_n128_init_states_Kernel_Module_t>
+    CuteDslSSDRunner::sBlackwellD80N128InitStatesModule{};
 detail::LazyKernelModule<ssd_prefill_blackwell_d64_n64_Kernel_Module_t> CuteDslSSDRunner::sBlackwellD64N64Module{};
 detail::LazyKernelModule<ssd_prefill_blackwell_d64_n64_init_states_Kernel_Module_t>
     CuteDslSSDRunner::sBlackwellD64N64InitStatesModule{};
@@ -92,13 +171,35 @@ detail::LazyKernelModule<ssd_prefill_blackwell_d64_n64_init_states_Kernel_Module
 bool CuteDslSSDRunner::canImplement(int32_t dim, int32_t dstate, int32_t smVersion)
 {
     if (smVersion < 80)
+    {
         return false;
-    return (dim == 64 || dim == 128) && (dstate == 64 || dstate == 128);
+    }
+    if (isGenericConfiguration(dim, dstate))
+    {
+        return true;
+    }
+#if defined(CUTE_DSL_SSD_BLACKWELL_ENABLED)
+    return isD80BlackwellConfiguration(dim, dstate, smVersion);
+#else
+    return false;
+#endif
 }
 
 bool CuteDslSSDRunner::ensureKernelModules(SSDParams const& params, cudaStream_t stream)
 {
 #ifdef CUTE_DSL_SSD_BLACKWELL_ENABLED
+    if (isD80BlackwellConfiguration(params.dim, params.dstate, params.smVersion))
+    {
+        if (params.has_init_states)
+        {
+            return detail::ensureModuleLoaded<ssd_prefill_blackwell_d80_n128_init_states_Kernel_Module_Load,
+                ssd_prefill_blackwell_d80_n128_init_states_Kernel_Module_Unload>(
+                sBlackwellD80N128InitStatesModule, "ssd_prefill_blackwell_d80_n128_init_states", stream);
+        }
+        return detail::ensureModuleLoaded<ssd_prefill_blackwell_d80_n128_Kernel_Module_Load,
+            ssd_prefill_blackwell_d80_n128_Kernel_Module_Unload>(
+            sBlackwellD80N128Module, "ssd_prefill_blackwell_d80_n128", stream);
+    }
     if (params.smVersion >= 100 && params.smVersion < 120 && params.dim == 64)
     {
         if (params.dstate == 128 && params.has_init_states)
@@ -158,6 +259,10 @@ int CuteDslSSDRunner::run(SSDParams const& params, cudaStream_t stream)
         return -1;
     }
 #ifdef CUTE_DSL_SSD_BLACKWELL_ENABLED
+    if (isD80BlackwellConfiguration(params.dim, params.dstate, params.smVersion))
+    {
+        return runPrefillBlackwell(params, stream);
+    }
     // SM100-110 with D=64: use Blackwell persistent kernel (TMA/wgmma/TMEM).
     // SM120+ lacks TMEM/wgmma — falls through to SM80 kernel.
     if (params.smVersion >= 100 && params.smVersion < 120 && params.dim == 64
@@ -314,7 +419,7 @@ int CuteDslSSDRunner::runPrefill(SSDParams const& params, cudaStream_t stream)
 #ifdef CUTE_DSL_SSD_BLACKWELL_ENABLED
 
 // Macro to fill tensor structs and call the Blackwell wrapper for a given variant prefix.
-// All Blackwell D=64 variants share the same struct layout: only the type name prefix differs.
+// All Blackwell variants share the same struct layout: only the type name prefix differs.
 // Relies on local variables: params, n, seq_len, nheads, dim, dstate, ngroups, nchunks, stream.
 // Plugin contract is padded [B,S,...]+context_lengths; runner reshapes to [1,B*S,...] via
 // stride change (zero data movement), passes context_lengths as valid_lens for end-of-seq clamp.
@@ -456,8 +561,16 @@ int CuteDslSSDRunner::runPrefillBlackwell(SSDParams const& params, cudaStream_t 
     int32_t const ngroups = params.ngroups;
     int32_t const nchunks = (seq_len + 127) / 128;
 
-    // Dispatch on (dstate, has_init_states).
-    if (dstate == 128)
+    // Dispatch on (dim, dstate, has_init_states).
+    if (dim == 80 && dstate == 128)
+    {
+        if (params.has_init_states)
+            CALL_SSD_PREFILL_BLACKWELL(
+                ssd_prefill_blackwell_d80_n128_init_states, sBlackwellD80N128InitStatesModule.module);
+        else
+            CALL_SSD_PREFILL_BLACKWELL(ssd_prefill_blackwell_d80_n128, sBlackwellD80N128Module.module);
+    }
+    else if (dim == 64 && dstate == 128)
     {
         if (params.has_init_states)
             CALL_SSD_PREFILL_BLACKWELL(
@@ -465,7 +578,7 @@ int CuteDslSSDRunner::runPrefillBlackwell(SSDParams const& params, cudaStream_t 
         else
             CALL_SSD_PREFILL_BLACKWELL(ssd_prefill_blackwell_d64_n128, sBlackwellD64N128Module.module);
     }
-    else if (dstate == 64)
+    else if (dim == 64 && dstate == 64)
     {
         if (params.has_init_states)
             CALL_SSD_PREFILL_BLACKWELL(
@@ -474,7 +587,7 @@ int CuteDslSSDRunner::runPrefillBlackwell(SSDParams const& params, cudaStream_t 
             CALL_SSD_PREFILL_BLACKWELL(ssd_prefill_blackwell_d64_n64, sBlackwellD64N64Module.module);
     }
 
-    LOG_ERROR("CuTe DSL SSD Blackwell prefill: unsupported dstate=%d", dstate);
+    LOG_ERROR("CuTe DSL SSD Blackwell prefill: unsupported dim=%d dstate=%d", dim, dstate);
     return -1;
 }
 
@@ -484,33 +597,21 @@ int CuteDslSSDRunner::runPrefillBlackwell(SSDParams const& params, cudaStream_t 
 size_t CuteDslSSDRunner::getWorkspaceSize(
     int32_t batch, int32_t seqLen, int32_t nheads, int32_t dim, int32_t dstate, int32_t ngroups)
 {
-    int32_t const nchunks = (seqLen + 127) / 128;
-    size_t size = 0;
-    // SM80 intermediates (cumsum, dt_proc, states, prev_states, CB)
-    size += static_cast<size_t>(batch) * nheads * nchunks * 128 * sizeof(float);          // dA_cumsum
-    size += static_cast<size_t>(batch) * nheads * nchunks * 128 * sizeof(float);          // dt_proc
-    size += static_cast<size_t>(batch) * nchunks * nheads * dim * dstate * sizeof(float); // states
-    size += static_cast<size_t>(batch) * nchunks * nheads * dim * dstate * sizeof(float); // prev_states
-    size += static_cast<size_t>(batch) * nchunks * ngroups * 128 * 128 * sizeof(float);   // CB
-    size += static_cast<size_t>(batch) * sizeof(int32_t); // cl synth fallback when context_lengths is null
+    if (!hasCompiledConfiguration(dim, dstate))
+    {
+        return 0;
+    }
 
 #ifdef CUTE_DSL_SSD_BLACKWELL_ENABLED
-    int32_t const totalSeq = batch * seqLen;
-    int32_t const totalChunks = (totalSeq + 127) / 128;
-    int32_t const logicalChunksPerSeqUpper = nchunks + ((seqLen % 128) == 0 ? 0 : 1);
-    // y_ws holds [1,C,EH,D,L] in flattened Blackwell prefill (L innermost: smem swizzle constraint).
-    size_t bwSize = 0;
-    bwSize += static_cast<size_t>(totalChunks) * nheads * 128 * sizeof(float);         // cumsum_delta
-    bwSize += static_cast<size_t>(totalChunks) * nheads * 128 * sizeof(__half);        // delta
-    bwSize += static_cast<size_t>(totalChunks) * nheads * dim * 128 * sizeof(__half);  // y_ws
-    bwSize += static_cast<size_t>(batch) * seqLen * sizeof(int32_t);                   // seq_idx
-    bwSize += static_cast<size_t>(batch) * logicalChunksPerSeqUpper * sizeof(int32_t); // chunk_indices
-    bwSize += static_cast<size_t>(batch) * logicalChunksPerSeqUpper * sizeof(int32_t); // chunk_offsets
-    bwSize += static_cast<size_t>(batch + 1) * sizeof(int32_t);                        // seq_chunk_cumsum
-    bwSize += static_cast<size_t>(batch) * sizeof(int32_t); // valid_lens (synth fallback when context_lengths is null)
-    size = std::max(size, bwSize);
+    if (dim == kD80_DIM && dstate == kD80_DSTATE)
+    {
+        return getBlackwellWorkspaceSize(batch, seqLen, nheads, dim);
+    }
+    return std::max(getGenericWorkspaceSize(batch, seqLen, nheads, dim, dstate, ngroups),
+        getBlackwellWorkspaceSize(batch, seqLen, nheads, dim));
+#else
+    return getGenericWorkspaceSize(batch, seqLen, nheads, dim, dstate, ngroups);
 #endif
-    return size;
 }
 
 } // namespace trt_edgellm

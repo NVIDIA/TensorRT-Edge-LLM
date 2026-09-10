@@ -161,7 +161,7 @@ def _build_project(env_config: EnvironmentConfig,
         test_logger.warning("Library size report failed; continuing")
 
     expected_files = [
-        'unitTest',
+        'unittests/unitTestRuntime',
         'examples/llm/llm_build',
         'examples/llm/llm_inference',
         'examples/multimodal/visual_build',
@@ -229,7 +229,12 @@ def test_unit_tests(env_config: EnvironmentConfig,
     test_logger.info(f"Starting unit tests execution in {execution_mode} mode")
 
     build_dir = env_config.build_dir
-    unit_test_cmd = ['bash', '-c', f'cd {build_dir} && ./unitTest']
+    # The unit tests are several executables, registered with ctest by
+    # unittests/CMakeLists.txt. Serial because this also runs against embedded
+    # boards, where concurrent groups would contend for device memory.
+    unit_test_cmd = [
+        'bash', '-c', f'cd {build_dir} && ctest --output-on-failure'
+    ]
     env_vars = _get_trt_env_vars(env_config)
 
     result = run_command(cmd=unit_test_cmd,

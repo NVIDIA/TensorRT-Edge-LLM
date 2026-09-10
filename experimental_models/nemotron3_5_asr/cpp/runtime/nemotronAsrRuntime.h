@@ -89,9 +89,9 @@ public:
     /*!
      * \brief Load engines, config and tokenizer.
      *
-     * \param engineDir Directory containing ``audio_encoder.engine``,
-     *        ``rnnt_step.engine`` and ``config.json`` (the HF checkpoint
-     *        config: blank_token_id, vocab_size, decoder_hidden_size, ...).
+     * \param engineDir Directory containing ``config.json`` and either the
+     *        direct-builder ``audio/audio_encoder.engine`` plus
+     *        ``rnnt/rnnt_step.engine`` layout, or both engines at its root.
      * \param tokenizerDir Directory containing ``tokenizer.json``.
      * \param stream CUDA stream used for allocations.
      * \throws std::runtime_error on missing files or engine/config mismatch.
@@ -126,6 +126,11 @@ public:
         return mDefaultPromptId;
     }
 
+    int64_t maxMelFrames() const noexcept
+    {
+        return mMaxMelFrames;
+    }
+
     tokenizer::Tokenizer const& tokenizer() const noexcept
     {
         return mTokenizer;
@@ -137,7 +142,8 @@ private:
 
     //! Run mel extraction + encoder; returns the number of encoder frames.
     //! When ``timings`` is non-null, fills melMs/encoderMs and syncs the stream.
-    int64_t runEncoder(audio::AudioPCM const& pcm, int32_t promptId, cudaStream_t stream, Timings* timings);
+    int64_t runEncoder(
+        audio::AudioPCM const& pcm, int32_t promptId, cudaStream_t stream, int64_t& numMelFrames, Timings* timings);
 
     //! Greedy transducer loop over ``numFrames`` encoder frames.
     //! When ``timings`` is non-null, fills decodeMs.
@@ -151,8 +157,10 @@ private:
     int32_t mNumDecoderLayers{2};
     int32_t mMaxSymbolsPerStep{10};
     int32_t mDefaultPromptId{101};
+    int32_t mNumPrompts{128};
 
     // -- engine bounds -------------------------------------------------------
+    int64_t mMinMelFrames{0};
     int64_t mMaxMelFrames{0};
     int64_t mMaxEncoderFrames{0};
 
@@ -185,6 +193,7 @@ private:
     // -- CUDA graph for one decode step (enqueueV3 + argmax) -------------------
     cudaGraph_t mStepGraph{nullptr};
     cudaGraphExec_t mStepGraphExec{nullptr};
+    bool mStepGraphCaptureAttempted{false};
     bool mStepBindingsSet{false};
 
     // -- host staging ----------------------------------------------------------

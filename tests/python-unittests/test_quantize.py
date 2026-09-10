@@ -515,6 +515,93 @@ def test_base_and_mtp_quantized_together(monkeypatch):
     assert any(key.startswith("mtp.") for key in seen["extra_keys"])
 
 
+def _write_index(model_dir, keys):
+    with open(os.path.join(model_dir, "model.safetensors.index.json"),
+              "w") as f:
+        json.dump({"weight_map": {k: "model.safetensors" for k in keys}}, f)
+
+
+def test_resolve_mtp_dir_distinguishes_absent_from_unreadable():
+    """Absence of ``mtp.*`` only counts when the tensor names were readable.
+
+    A directory with no safetensors at all is unknowable, not empty — callers
+    that patch loading never write one, so skipping there would silently drop
+    MTP quantization for them.
+    """
+    quantize_mod = importlib.import_module(
+        "tensorrt_edgellm.quantization.quantize")
+    with tempfile.TemporaryDirectory() as with_mtp, \
+            tempfile.TemporaryDirectory() as without_mtp, \
+            tempfile.TemporaryDirectory() as unreadable:
+        _write_index(with_mtp, ["thinker.mtp.layers.0.fc.weight", "a.weight"])
+        _write_index(without_mtp, ["thinker.model.layers.0.fc.weight"])
+
+        assert quantize_mod._has_mtp_weights(with_mtp) is True
+        assert quantize_mod._has_mtp_weights(without_mtp) is False
+        assert quantize_mod._has_mtp_weights(unreadable) is None
+
+        # Implicit: skip only on confirmed absence; proceed when unknowable.
+        assert quantize_mod._resolve_mtp_dir(None, with_mtp) == with_mtp
+        assert quantize_mod._resolve_mtp_dir(None, without_mtp) is None
+        assert quantize_mod._resolve_mtp_dir(None, unreadable) == unreadable
+
+        # Explicit --mtp_draft_dir asserts the weights are there.
+        assert quantize_mod._resolve_mtp_dir(with_mtp, without_mtp) == with_mtp
+        for bad in (without_mtp, unreadable, "/nonexistent"):
+            with pytest.raises(ValueError, match="mtp_draft_dir"):
+                quantize_mod._resolve_mtp_dir(bad, with_mtp)
+
+
+def test_mtp_moe_detected_under_either_expert_key():
+    """``num_experts`` is an attribute_map alias for ``num_local_experts`` on
+    some HF configs and absent on others, so both spellings must select the
+    sparse-MoE block — otherwise a MoE MTP head is silently built as dense.
+    """
+    mtp_mod = importlib.import_module(
+        "tensorrt_edgellm.quantization.models.mtp_draft")
+    base = dict(hidden_size=32,
+                intermediate_size=64,
+                num_attention_heads=4,
+                num_key_value_heads=2,
+                head_dim=8,
+                rms_norm_eps=1e-6,
+                vocab_size=64,
+                attention_bias=False,
+                moe_intermediate_size=16,
+                shared_expert_intermediate_size=8,
+                num_experts_per_tok=2,
+                norm_topk_prob=True,
+                rope_theta=10000.0,
+                max_position_embeddings=128)
+    for key in ("num_experts", "num_local_experts"):
+        cfg = SimpleNamespace(**{**base, key: 4})
+        mlp = mtp_mod.MtpDraftModel(cfg).layers[0].mlp
+        assert isinstance(mlp, mtp_mod.MtpSparseMoeBlock), key
+        assert mlp.num_experts == 4, key
+    dense = mtp_mod.MtpDraftModel(SimpleNamespace(**base)).layers[0].mlp
+    assert not isinstance(dense, mtp_mod.MtpSparseMoeBlock)
+
+
+def test_sub_llm_quantized_detection_covers_awq_gptq():
+    """AWQ/GPTQ pack the weight as ``qweight`` and ship no ``weight_scale``.
+
+    Keying only on ``weight_scale`` reads those sub-LLMs as fully FP16 and
+    silently drops their quantization on export.
+    """
+    export_mod = importlib.import_module("tensorrt_edgellm.scripts.export")
+    cases = {
+        "nvfp4": (["talker.mlp.down_proj.weight_scale"], True),
+        "awq": (["talker.mlp.down_proj.qweight"], True),
+        "fp16": (["talker.mlp.down_proj.weight"], False),
+        "other_submodel": (["thinker.mlp.down_proj.qweight"], False),
+    }
+    for name, (keys, expected) in cases.items():
+        with tempfile.TemporaryDirectory() as d:
+            _write_index(d, keys)
+            got = export_mod._sub_llm_has_quantized_weights(d, "talker.")
+            assert got is expected, f"{name}: expected {expected}, got {got}"
+
+
 # --------------------------------------------------------------------------- #
 # Full quantize -> export round-trip on a real HF model
 # --------------------------------------------------------------------------- #
@@ -562,3 +649,55 @@ def test_quantize_and_export_hf_checkpoint():
 def test_unsupported_methods_raise(kwargs):
     with pytest.raises(ValueError):
         build_quant_config(**kwargs)
+
+
+# --------------------------------------------------------------------------- #
+# GDN qkvzba scale sharing (hybrid NVFP4)
+# --------------------------------------------------------------------------- #
+class _TinyGdnMixer(nn.Module):
+
+    def __init__(self):
+        super().__init__()
+        self.in_proj_qkv = nn.Linear(_DIM, 3 * _DIM, bias=False)
+        self.in_proj_z = nn.Linear(_DIM, _DIM, bias=False)
+        self.in_proj_b = nn.Linear(_DIM, _DIM, bias=False)
+        self.in_proj_a = nn.Linear(_DIM, _DIM, bias=False)
+
+    def forward(self, x):
+        return (self.in_proj_qkv(x).sum() + self.in_proj_z(x).sum() +
+                self.in_proj_b(x).sum() + self.in_proj_a(x).sum())
+
+
+class _TinyGdnModel(nn.Module):
+
+    def __init__(self):
+        super().__init__()
+        self.linear_attn = _TinyGdnMixer()
+
+    def forward(self, x):
+        return self.linear_attn(x)
+
+
+def test_fuse_gdn_qkvzba_scales_unifies_group_amax():
+    from tensorrt_edgellm.quantization.quantize import _share_gdn_qkvzba_scales
+    model = _TinyGdnModel().eval()
+    cfg = build_quant_config("nvfp4", fuse_gdn_qkvzba_scales=True)
+    mtq.quantize(model, cfg, forward_loop=_calib_hidden)
+    mixer = model.linear_attn
+    projs = (mixer.in_proj_qkv, mixer.in_proj_z, mixer.in_proj_b,
+             mixer.in_proj_a)
+    for proj in (mixer.in_proj_b, mixer.in_proj_a):
+        en, bits, cal = _wq(proj)
+        assert en and cal and bits == (2, 1)
+    group_wmax = torch.max(
+        torch.stack([p.weight_quantizer.amax for p in projs]))
+    assert _share_gdn_qkvzba_scales(model) == 1
+    for proj in projs:
+        assert torch.equal(proj.weight_quantizer.amax, group_wmax)
+        assert torch.equal(proj.input_quantizer.amax,
+                           mixer.in_proj_qkv.input_quantizer.amax)
+
+
+def test_fuse_gdn_qkvzba_scales_requires_nvfp4():
+    with pytest.raises(ValueError, match="requires --quantization nvfp4"):
+        build_quant_config("fp8", fuse_gdn_qkvzba_scales=True)

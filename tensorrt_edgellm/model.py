@@ -35,8 +35,8 @@ from .checkpoint.loader import load_weights
 from .config import (QUANT_FP16, QUANT_INT4_AWQ, QUANT_INT4_AWQ_MODELOPT,
                      QUANT_INT4_GPTQ, QUANT_MXFP8, QUANT_NVFP4, ModelConfig,
                      _is_gemma4_assistant_model_type, make_dflash_draft_config,
-                     make_dspark_draft_config, make_mtp_draft_config,
-                     module_quant_type)
+                     make_dspark_draft_config, make_jetspec_draft_config,
+                     make_mtp_draft_config, module_quant_type)
 
 __all__ = [
     "AutoModel", "load_model_config", "register_attention_scale_default",
@@ -150,6 +150,10 @@ class AutoModel:
                         dflash_tree_base: bool = False,
                         dflash_draft: bool = False,
                         dflash_draft_dir: "str | None" = None,
+                        jetspec_base: bool = False,
+                        jetspec_tree_base: bool = False,
+                        jetspec_draft: bool = False,
+                        jetspec_draft_dir: "str | None" = None,
                         dspark_base: bool = False,
                         dspark_draft: bool = False,
                         dspark_draft_dir: "str | None" = None,
@@ -202,6 +206,13 @@ class AutoModel:
             dflash_draft:   When True, build the DFlash draft model.
             dflash_draft_dir:
                             Path to the DFlash draft checkpoint directory.
+            jetspec_base:   When True, export as JetSpec base model.
+            jetspec_tree_base:
+                            When True, add DDTree parent/depth metadata inputs
+                            for JetSpec branching-tree verification.
+            jetspec_draft:  When True, build the JetSpec draft model.
+            jetspec_draft_dir:
+                            Path to the JetSpec draft checkpoint directory.
             dspark_base:    When True, export as DSpark base model.
             dspark_draft:   When True, build the DSpark draft backbone model.
             dspark_draft_dir:
@@ -221,7 +232,7 @@ class AutoModel:
                             When set, truncate the model to only the first N
                             decoder layers (few-layer numeric validation).
                             Only supported for the plain default ``CausalLM``
-                            path (e.g. Qwen3); rejected for eagle/mtp/dflash/dspark
+                            path (e.g. Qwen3); rejected for eagle/mtp/dflash/jetspec/dspark
                             and registered non-default variants. The checkpoint's
                             extra-layer weights are simply skipped by the loader.
 
@@ -292,6 +303,47 @@ class AutoModel:
                                           default_mask_token_id)))
             if not config.dflash_target_layer_ids:
                 config.dflash_target_layer_ids = [1, 8, 15, 22, 29]
+        if jetspec_base:
+            config.jetspec_base = True
+        if jetspec_tree_base:
+            config.jetspec_base = True
+            config.jetspec_tree_base = True
+        elif config.jetspec_tree_base:
+            config.jetspec_base = True
+        if config.jetspec_base:
+            if not config.jetspec_target_layer_ids and jetspec_draft_dir:
+                import json
+                draft_cfg_path = os.path.join(jetspec_draft_dir, "config.json")
+                if os.path.isfile(draft_cfg_path):
+                    with open(draft_cfg_path) as f:
+                        draft_cfg = json.load(f)
+                    jetspec_cfg = (draft_cfg.get("jetspec_config")
+                                   or draft_cfg.get("dflash_config") or {})
+                    config.jetspec_target_layer_ids = list(
+                        jetspec_cfg.get("target_layer_ids",
+                                        draft_cfg.get("target_layer_ids", []))
+                        or [])
+                    config.jetspec_block_size = int(
+                        jetspec_cfg.get("block_size",
+                                        draft_cfg.get("block_size", 16)))
+                    config.jetspec_mask_token_id = int(
+                        jetspec_cfg.get("mask_token_id",
+                                        draft_cfg.get("mask_token_id",
+                                                      151669)))
+                    config.jetspec_causal_head = bool(
+                        jetspec_cfg.get("causal_head",
+                                        draft_cfg.get("causal_head", True)))
+            if not config.jetspec_target_layer_ids:
+                raise ValueError(
+                    "jetspec_base requires JetSpec target_layer_ids; pass "
+                    "jetspec_draft_dir or set jetspec_target_layer_ids.")
+            if not config.jetspec_causal_head:
+                raise ValueError(
+                    "jetspec_base requires jetspec_config.causal_head=true.")
+            config.dflash_target_layer_ids = list(
+                config.jetspec_target_layer_ids)
+            config.dflash_block_size = config.jetspec_block_size
+            config.dflash_mask_token_id = config.jetspec_mask_token_id
         if dspark_base:
             config.dspark_base = True
             if not config.dspark_target_layer_ids and dspark_draft_dir:
@@ -300,7 +352,8 @@ class AutoModel:
                 if os.path.isfile(draft_cfg_path):
                     with open(draft_cfg_path) as f:
                         draft_cfg = json.load(f)
-                    dspark_cfg = draft_cfg.get("dspark_config", {})
+                    dspark_cfg = (draft_cfg.get("dspark_config")
+                                  or draft_cfg.get("dflash_config", {}) or {})
                     config.dspark_target_layer_ids = (
                         dspark_cfg.get("target_layer_ids")
                         or draft_cfg.get("target_layer_ids", []))
@@ -343,6 +396,8 @@ class AutoModel:
                                          mtp_draft=mtp_draft,
                                          dflash_base=config.dflash_base,
                                          dflash_draft=dflash_draft,
+                                         jetspec_base=config.jetspec_base,
+                                         jetspec_draft=jetspec_draft,
                                          dspark_base=config.dspark_base,
                                          dspark_draft=dspark_draft,
                                          gemma4_mtp_base=gemma4_mtp_base,
@@ -421,6 +476,25 @@ class AutoModel:
             model_dir = dflash_draft_dir
             if key_remap is None:
                 key_remap = _dflash_key_remap
+        elif variant == "jetspec_draft":
+            if jetspec_draft_dir is None:
+                raise ValueError(
+                    "jetspec_draft requires jetspec_draft_dir to be set.")
+            from .models.dflash.modeling_dflash_draft import DFlashDraftModel
+            base_config = config
+            base_model_dir = model_dir
+            base_tie_word_embeddings = base_config.tie_word_embeddings
+            draft_has_lm_head = _checkpoint_has_dflash_lm_head(
+                jetspec_draft_dir)
+            config = make_jetspec_draft_config(
+                jetspec_draft_dir,
+                _default_attention_scale_for_model_dir(jetspec_draft_dir))
+            if not draft_has_lm_head:
+                config = _inherit_dflash_lm_head_quant(config, base_config)
+            model_class = DFlashDraftModel
+            model_dir = jetspec_draft_dir
+            if key_remap is None:
+                key_remap = _dflash_key_remap
         elif variant == "gemma4_mtp_draft":
             if not _is_gemma4_assistant_model_type(config.root_model_type):
                 raise ValueError(
@@ -483,14 +557,16 @@ class AutoModel:
         # different per-layer structure and remain out of scope.
         if num_decoder_layers is not None:
             if (eagle_base or config.eagle_base or mtp_base or config.mtp_base
-                    or dflash_base or config.dflash_base or dspark_base
-                    or config.dspark_base or mtp_draft or dflash_draft
-                    or dspark_draft or config.is_dspark_draft
-                    or gemma4_mtp_base or config.gemma4_mtp_base
-                    or gemma4_mtp_draft or config.gemma4_mtp_draft):
+                    or dflash_base or config.dflash_base or jetspec_base
+                    or config.jetspec_base or dspark_base or config.dspark_base
+                    or mtp_draft or dflash_draft or jetspec_draft
+                    or dspark_draft or config.is_jetspec_draft
+                    or config.is_dspark_draft or gemma4_mtp_base
+                    or config.gemma4_mtp_base or gemma4_mtp_draft
+                    or config.gemma4_mtp_draft):
                 raise NotImplementedError(
                     "num_decoder_layers cannot be combined with the "
-                    "eagle/mtp/dflash/dspark/gemma4-mtp speculative-decoding variants."
+                    "eagle/mtp/dflash/jetspec/dspark/gemma4-mtp speculative-decoding variants."
                 )
             if not 1 <= num_decoder_layers <= config.num_hidden_layers:
                 raise ValueError(
@@ -526,7 +602,8 @@ class AutoModel:
             else:
                 apply_reduced_vocab_after_load = True
 
-        if variant == "dflash_draft" and not draft_has_lm_head:
+        if variant in ("dflash_draft",
+                       "jetspec_draft") and not draft_has_lm_head:
             next_pre_repack_hook = pre_repack_hook
 
             def _load_pre_repack_dflash_lm_head(loaded_model: nn.Module):
@@ -550,10 +627,11 @@ class AutoModel:
         refresh_router_bias = getattr(model, "refresh_fp32_router_bias", None)
         if callable(refresh_router_bias):
             refresh_router_bias()
-        if variant == "dflash_draft":
+        if variant in ("dflash_draft", "jetspec_draft"):
             if draft_has_lm_head:
                 logging.getLogger(__name__).info(
-                    "DFlash lm_head source: draft checkpoint buffers")
+                    "%s lm_head source: draft checkpoint buffers",
+                    "JetSpec" if variant == "jetspec_draft" else "DFlash")
         if apply_reduced_vocab_after_load:
             from .vocab_reduction.onnx_export import \
                 apply_reduced_vocab_from_dir
@@ -635,6 +713,8 @@ def _resolve_model_variant(config: ModelConfig,
                            mtp_draft: bool,
                            dflash_base: bool = False,
                            dflash_draft: bool = False,
+                           jetspec_base: bool = False,
+                           jetspec_draft: bool = False,
                            dspark_base: bool = False,
                            dspark_draft: bool = False,
                            gemma4_mtp_base: bool = False,
@@ -649,32 +729,51 @@ def _resolve_model_variant(config: ModelConfig,
     if dflash_base and dflash_draft:
         raise ValueError(
             "dflash_base and dflash_draft cannot both be enabled.")
+    if jetspec_base and jetspec_draft:
+        raise ValueError(
+            "jetspec_base and jetspec_draft cannot both be enabled.")
     if dspark_base and dspark_draft:
         raise ValueError(
             "dspark_base and dspark_draft cannot both be enabled.")
-    if dflash_base and (eagle_base or mtp_base or mtp_draft or dspark_base or
-                        dspark_draft or gemma4_mtp_base or gemma4_mtp_draft):
+    if dflash_base and (eagle_base or mtp_base or mtp_draft or jetspec_base
+                        or jetspec_draft or dspark_base or dspark_draft
+                        or gemma4_mtp_base or gemma4_mtp_draft):
         raise ValueError(
             "dflash_base cannot be combined with other spec variants.")
-    if dflash_draft and (eagle_base or mtp_base or mtp_draft or dspark_base or
-                         dspark_draft or gemma4_mtp_base or gemma4_mtp_draft):
+    if dflash_draft and (eagle_base or mtp_base or mtp_draft or jetspec_base
+                         or jetspec_draft or dspark_base or dspark_draft
+                         or gemma4_mtp_base or gemma4_mtp_draft):
         raise ValueError(
             "dflash_draft cannot be combined with other spec variants.")
-    if dspark_base and (eagle_base or mtp_base or mtp_draft or dflash_base or
-                        dflash_draft or gemma4_mtp_base or gemma4_mtp_draft):
+    if jetspec_base and (eagle_base or mtp_base or mtp_draft or dflash_base
+                         or dflash_draft or dspark_base or dspark_draft
+                         or gemma4_mtp_base or gemma4_mtp_draft):
+        raise ValueError(
+            "jetspec_base cannot be combined with other spec variants.")
+    if jetspec_draft and (eagle_base or mtp_base or mtp_draft or dflash_base
+                          or dflash_draft or dspark_base or dspark_draft
+                          or gemma4_mtp_base or gemma4_mtp_draft):
+        raise ValueError(
+            "jetspec_draft cannot be combined with other spec variants.")
+    if dspark_base and (eagle_base or mtp_base or mtp_draft or dflash_base
+                        or dflash_draft or jetspec_base or jetspec_draft
+                        or gemma4_mtp_base or gemma4_mtp_draft):
         raise ValueError(
             "dspark_base cannot be combined with other spec variants.")
-    if dspark_draft and (eagle_base or mtp_base or mtp_draft or dflash_base or
-                         dflash_draft or gemma4_mtp_base or gemma4_mtp_draft):
+    if dspark_draft and (eagle_base or mtp_base or mtp_draft or dflash_base
+                         or dflash_draft or jetspec_base or jetspec_draft
+                         or gemma4_mtp_base or gemma4_mtp_draft):
         raise ValueError(
             "dspark_draft cannot be combined with other spec variants.")
     if gemma4_mtp_base and (eagle_base or mtp_base or mtp_draft or dflash_base
-                            or dflash_draft or dspark_base or dspark_draft):
+                            or dflash_draft or jetspec_base or jetspec_draft
+                            or dspark_base or dspark_draft):
         raise ValueError(
             "gemma4_mtp_base cannot be combined with other speculative variants."
         )
     if gemma4_mtp_draft and (eagle_base or mtp_base or mtp_draft or dflash_base
-                             or dflash_draft or dspark_base or dspark_draft):
+                             or dflash_draft or jetspec_base or jetspec_draft
+                             or dspark_base or dspark_draft):
         raise ValueError(
             "gemma4_mtp_draft cannot be combined with other speculative variants."
         )
@@ -693,6 +792,10 @@ def _resolve_model_variant(config: ModelConfig,
         return "dflash_draft"
     if dflash_base:
         return "dflash_base"
+    if jetspec_draft:
+        return "jetspec_draft"
+    if jetspec_base:
+        return "jetspec_base"
     if dspark_draft:
         return "dspark_draft"
     if dspark_base:
@@ -738,14 +841,17 @@ def _load_dflash_lm_head(model: nn.Module,
                          device: str,
                          *,
                          tie_word_embeddings: bool = True) -> None:
-    """Load the DFlash draft lm_head from the base model checkpoint.
+    """Load a DFlash-style draft lm_head from the base model checkpoint.
+
+    JetSpec reuses the same DFlash draft-head module and official JetSpec
+    draft checkpoints may also omit ``lm_head.*``.
 
     Deterministic source selection (matching MTP pattern):
       1. Explicit ``lm_head.weight`` from the base checkpoint.
       2. Embedding fallback *only* when ``tie_word_embeddings=True``.
       3. Otherwise fail loudly — untied models must not use embeddings.
 
-    This helper is used only for old DFlash draft checkpoints that do not carry
+    This helper is used only for DFlash-style draft checkpoints that do not carry
     ``lm_head.*`` tensors.  Quantized checkpoints, and dense checkpoints that
     explicitly save ``lm_head.weight``, are loaded by the generic checkpoint
     loader and must not be overwritten from the base embedding table.
@@ -760,7 +866,7 @@ def _load_dflash_lm_head(model: nn.Module,
     logger = logging.getLogger(__name__)
     lm_head = getattr(model, "lm_head", None)
     if lm_head is None:
-        logger.warning("DFlash draft model has no lm_head; skipping.")
+        logger.warning("DFlash-style draft model has no lm_head; skipping.")
         return
 
     from .checkpoint.loader import _build_shard_map

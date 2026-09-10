@@ -1396,9 +1396,8 @@ class DenseGemmKernel:
         # The current target only supports cluster (1,1)
         if cluster_shape_mn != (1, 1):
             return False
-        # Tile M must be divisible by 128; tile N follows 64-column warpgroup
-        # quanta, while the SF paths round narrow tiles up to full 128-element
-        # scale-factor blocks.
+        # Both tiles follow the 64-element warpgroup quanta; the SF paths round
+        # narrower tiles up to full 128-element scale-factor blocks.
         if mma_tiler_mn[0] % 64 != 0 or mma_tiler_mn[1] % 64 != 0:
             return False
         # The current target only supports FP4 (MmaMXF4NVF4Op)

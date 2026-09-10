@@ -199,7 +199,7 @@ def _format_messages(
     tokenizer: Any,
     messages: List[Message],
     add_generation_prompt: bool = False,
-    enable_thinking: Optional[bool] = None,
+    enable_thinking: Optional[bool] = False,
 ) -> str:
     message_dicts = [asdict(msg) for msg in messages]
     kwargs: Dict[str, Any] = {
@@ -498,12 +498,29 @@ def process_chat_template(model_dir: str, output_dir: str) -> None:
 
         generation_prompt_thinking = None
         try:
+            # Slice against a thinking-mode baseline, not ``user_formatted``:
+            # templates that inject reasoning instructions into the system
+            # block (Qwen3.8) render a longer prefix in thinking mode, so a
+            # non-thinking baseline offset would cut into the wrong place.
+            thinking_base = _format_messages(tokenizer,
+                                             [system_prompt, user_prompt],
+                                             enable_thinking=True)
             thinking_formatted = _format_messages(tokenizer,
                                                   [system_prompt, user_prompt],
-                                                  add_generation_prompt=True)
-            gpt = thinking_formatted[len(user_formatted):]
+                                                  add_generation_prompt=True,
+                                                  enable_thinking=True)
+            gpt = thinking_formatted[len(thinking_base):]
             if gpt != generation_prompt:
                 generation_prompt_thinking = gpt
+            if thinking_base != user_formatted:
+                logger.warning(
+                    "%s: chat template changes the conversation text (not just "
+                    "the generation prompt) when thinking is enabled; %d "
+                    "characters of thinking-only content cannot be represented "
+                    "in processed_chat_template.json and are dropped from "
+                    "enable_thinking=true prompts.",
+                    _get_model_type(model_dir),
+                    len(thinking_base) - len(user_formatted))
         except (TypeError, ValueError, KeyError):
             pass
 

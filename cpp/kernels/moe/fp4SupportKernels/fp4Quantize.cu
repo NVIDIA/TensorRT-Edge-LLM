@@ -59,7 +59,7 @@ constexpr int kThreadsPerSf = 2;  // kSfVecSize / kEltsPerThread
 // Must stay >= CuteDslNvfp4MoeSm110Runner::kMaxNumExperts (256) so the SM110
 // runner's decode setup path can serve every supported expert count; at 256 the
 // three int32 arrays use 3 KiB of static shared memory (well within limits).
-constexpr int kMaxDecodeExperts = 256;
+constexpr int kMaxDecodeExperts = 512;
 
 // Lower bound on the per-expert global scale factor used as a divisor in the
 // FP4 routed quantization kernels (fmaxf(sfScales[expert], kSfScaleEpsilon)).

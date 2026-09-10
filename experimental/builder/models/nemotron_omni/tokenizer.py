@@ -17,6 +17,7 @@
 from typing import Any, Dict
 
 IMAGE_PLACEHOLDER = "<img><image></img>"
+VIDEO_PLACEHOLDER = "<image>"
 AUDIO_PLACEHOLDER = "<so_start><so_embedding><so_end>"
 
 
@@ -25,5 +26,6 @@ def patch_chat_template(template: Dict[str, Any],
     """Preserve provider media placeholders for the C++ model runners."""
     content_types = template.setdefault("content_types", {})
     content_types.setdefault("image", {})["format"] = IMAGE_PLACEHOLDER
+    content_types.setdefault("video", {})["format"] = VIDEO_PLACEHOLDER
     content_types.setdefault("audio", {})["format"] = AUDIO_PLACEHOLDER
     _ = root_config

@@ -1,162 +1,14 @@
 # Installation
 
-TensorRT Edge-LLM has two separate components that need to be installed on different systems:
+## Choose a deployment workflow
 
-1. **Export and quantization** (runs on an x86 host; only quantization requires a GPU)
-2. **C++ Runtime** (Jetson Thor, NVIDIA DRIVE / DriveOS, NVIDIA DGX Spark, or optional x86 developer build)
+| Workflow | Use it when | Data flow |
+|---|---|---|
+| [C++ source deployment](#source-workflow-c-runtime) | The application uses the supported ONNX export, engine build, and C++ runtime workflow. | Hugging Face checkpoint → optional quantization → ONNX export → C++ engine build → C++ inference |
+| [Python from source](#optional-python-frontend) | The application uses the experimental checkpoint-direct builder or Python server from the same source and build tree. | Hugging Face checkpoint → checkpoint-direct builder → TensorRT engine → Python inference |
+| [Experimental local wheel](#experimental-local-wheel) | A developer needs to evaluate a relocatable Python installation on the current target. | Local source build → target-specific wheel → Python inference |
 
----
-
-## Part 1: Export and Quantization (x86 Host)
-
-The Python frontend exports Hugging Face checkpoints and optionally quantizes
-FP16/BF16 checkpoints before export. Export runs on CPU. Quantization requires
-an NVIDIA GPU.
-
-### System Requirements
-
-- **Platform**: x86-64 Linux system
-- **Recommended OS**: Ubuntu 22.04, 24.04
-- **GPU for quantization**: NVIDIA GPU with Compute Capability 8.0+ (Ampere or newer)
-- **CUDA for quantization**: 12.x or 13.x
-- **Python**: 3.10+
-
-#### Memory Requirements
-
-- Export: at least 1.5 times the checkpoint size in CPU memory. No GPU is
-  required.
-- Quantization: GPU memory at least equal to the FP16 checkpoint size.
-
-**Verify Your Prerequisites:**
-
-```bash
-# Check CUDA installation when quantizing
-nvcc --version
-# Should show CUDA 12.x or 13.x
-
-# Check the GPU and available memory when quantizing
-nvidia-smi
-# Look for GPU memory (e.g., "24576MiB" for 24GB)
-
-# Check Python version
-python3 --version
-# Should show Python 3.10 or higher
-```
-
-**If CUDA is not installed:**
-
-Download and install CUDA Toolkit from [NVIDIA CUDA Downloads](https://developer.nvidia.com/cuda-downloads). Choose version 12.x or 13.x for your system.
-
-After installation, verify with `nvcc --version` and `nvidia-smi`.
-
-### Installing
-
-For a containerized environment for clean installation, it is recommended to use the NVIDIA PyTorch Docker image:
-
-```bash
-# Pull the recommended Docker image
-docker pull nvcr.io/nvidia/pytorch:25.12-py3
-
-# Run the container with GPU support
-docker run --gpus all -it --rm \
-    -v $(pwd):/workspace \
-    -w /workspace \
-    nvcr.io/nvidia/pytorch:25.12-py3 \
-    bash
-```
-
-**1. Clone Repository**
-
-```bash
-git clone https://github.com/NVIDIA/TensorRT-Edge-LLM.git
-cd TensorRT-Edge-LLM
-git submodule update --init --recursive
-```
-
-**2. Install Python Dependencies**
-
-If you are not using container, it is recommended to use a virtual environment:
-```bash
-# Create virtual environment (recommended)
-python3 -m venv venv
-source venv/bin/activate
-```
-
-Install the package and its dependencies. The base install registers the CLI
-entry points (`tensorrt-edgellm-export`, `tensorrt-edgellm-quantize`, etc.) and
-pulls the core checkpoint export dependencies. Optional tool dependencies stay
-out of the base environment so export-only and server images do not pull
-quantization, audio, and LoRA-merge packages unnecessarily.
-
-```bash
-# Install the package (registers CLI entry points and core export dependencies)
-pip3 install -e .
-
-# Required for quantization, LoRA merge, vocabulary reduction, audio preprocessing,
-# and tokenizer helpers (re-installs with the tools extra)
-pip3 install -e ".[tools]"
-
-# Required only for the experimental high-level Python API and server
-pip3 install -e ".[server]"
-```
-
-The base install includes:
-- PyTorch
-- Transformers
-- ONNX
-- ONNX Script and ONNX GraphSurgeon
-
-The optional `tools` extra adds NVIDIA Model Optimizer, calibration datasets,
-audio preprocessing dependencies, LoRA merge dependencies, and tokenizer helpers.
-The optional `server` extra adds FastAPI, Uvicorn, and pybind11 for the
-experimental high-level Python API and OpenAI-compatible server.
-
-> **Note:** Accuracy evaluation dependencies live under `examples/accuracy/requirements.txt`.
-
-**3. Verify the Checkpoint Export Workflow**
-
-Use the virtual environment created in Step 2 for this checkout. Do not mix
-packages from older release branches into the same environment.
-
-Export an unquantized or supported pre-quantized Hugging Face checkpoint with
-`tensorrt-edgellm-export`. Run `tensorrt-edgellm-quantize` first only when you
-need to create a quantized checkpoint from an FP16/BF16 source checkpoint.
-
-```bash
-# Included in the base package
-tensorrt-edgellm-export --help
-
-# Available after installing the tools extra
-tensorrt-edgellm-quantize --help
-tensorrt-edgellm-merge-lora --help
-tensorrt-edgellm-reduce-vocab --help
-```
-
-**4. Configure HuggingFace Access (Optional)**
-
-Some models on HuggingFace require you to accept terms before downloading.
-
-**Models that require HuggingFace login:**
-- Llama family (Llama 3.x)
-- Phi-4-Multimodal
-- Alpamayo-R1-10B
-- Other models marked as "gated" on HuggingFace
-
-**To configure access:**
-
-```bash
-# Install HuggingFace CLI and login
-hf auth login
-# Enter your HuggingFace access token when prompted
-```
-
-> **How to get a token:** Visit [HuggingFace Settings - Tokens](https://huggingface.co/settings/tokens), create a new token (read access is sufficient), and copy it.
-
-**You're done with export pipeline setup!** You can now quantize and export models with the checkpoint-based workflow. The ONNX files will be transferred to the Edge device for runtime deployment.
-
----
-
-## Part 2: C++ Runtime (Edge Device)
+## Source workflow: C++ runtime
 
 The C++ runtime builds TensorRT engines and runs inference on the target. For
 the authoritative JetPack, DriveOS, CUDA, TensorRT, and TensorRT Edge-LLM
@@ -205,6 +57,24 @@ git clone https://github.com/NVIDIA/TensorRT-Edge-LLM.git
 cd TensorRT-Edge-LLM
 git submodule update --init --recursive
 ```
+
+#### Optional Python frontend
+
+Skip this step for the C++ and ONNX workflow. To also use the experimental
+checkpoint-direct builder or OpenAI-compatible server, create the Python
+environment and install the binding build dependency before configuring CMake:
+
+```bash
+python3 -m venv --system-site-packages .venv
+source .venv/bin/activate
+python -m pip install pybind11==3.0.4
+```
+
+Retain every argument from the complete platform command in Step 4 and append
+`-DBUILD_PYTHON_BINDINGS=ON` and
+`-Dpybind11_DIR="$(python -m pybind11 --cmakedir)"`. The directory argument is
+required because pip installs the pybind11 CMake configuration outside CMake's
+default search prefixes.
 
 **4. Configure Build**
 
@@ -292,20 +162,46 @@ cmake .. \
     -DENABLE_CUTE_DSL=ALL
 ```
 
-**JetPack 6.2+ Orin**
+**QNX Standard 8.0 (AArch64 cross-compilation)**
+
+QNX is a C++ source-deployment workflow. Install the QNX SDP 8.0 host and
+target trees, a cross-capable host CUDA Toolkit, the matching QNX CUDA target
+package, and a QNX TensorRT package. `QNX_HOST` must contain the host `qcc` and
+`q++` tools; `QNX_TARGET` is the AArch64 QNX sysroot. The TensorRT root passed
+to CMake must expose target headers and libraries under `include` and `lib`, or
+under the `include/aarch64-qnx` and `lib/aarch64-qnx` subdirectories.
 
 ```bash
-mkdir -p build
-cd build
+export QNX_HOST=/path/to/qnx800/host/linux/x86_64
+export QNX_TARGET=/path/to/qnx800/target/qnx
 
-cmake .. \
+cmake -S . -B build-qnx \
     -DCMAKE_BUILD_TYPE=Release \
-    -DTRT_PACKAGE_DIR=/usr \
-    -DCMAKE_TOOLCHAIN_FILE=cmake/aarch64_linux_toolchain.cmake \
-    -DEMBEDDED_TARGET=jetson-orin \
-    -DCUDA_CTK_VERSION=12.6 \
-    -DENABLE_CUTE_DSL=ALL
+    -DCMAKE_TOOLCHAIN_FILE=cmake/aarch64_qnx_toolchain.cmake \
+    -DTRT_PACKAGE_DIR=/path/to/tensorrt-qnx \
+    -DCUDA_CTK_VERSION=13.3 \
+    -DCUDA_TOOLKIT_ROOT=/usr/local/cuda-13.3 \
+    -DQNX_CUDA_TARGET_ROOT=/usr/local/cuda-safe-13.3 \
+    -DENABLE_CUTE_DSL=OFF
+
+cmake --build build-qnx --parallel "$(nproc)"
 ```
+
+`QNX_CUDA_TARGET_ROOT` must contain `targets/aarch64-qnx`. The toolchain also
+uses `${QNX_CUDA_TARGET_ROOT}/thor/targets/aarch64-qnx` by default; override
+`CUDA_TARGET_DIR` when that additional target tree is elsewhere. CUDA Toolkit
+13.x defaults to SM110a. CUDA Toolkit 12.7 through 12.x defaults to SM101a;
+set `CMAKE_CUDA_ARCHITECTURES` explicitly for another supported target.
+
+Deploy the cross-built binaries and libraries from `build-qnx/` with the
+matching QNX CUDA and TensorRT runtime libraries. CuTe DSL kernels are not
+available for QNX; CMake rejects `ENABLE_CUTE_DSL` values other than `OFF`.
+The standard autoregressive LLM and VLM paths require CuTe DSL FMHA for
+prefill, so their `llm_build` and `llm_inference` workflows are not supported
+by this QNX build. Components implemented entirely with TensorRT-native or
+CUDA operators can be cross-compiled, but this release does not claim a
+model-level QNX qualification for them. Python wheels and the experimental
+Python server are not part of this cross-compilation workflow.
 
 **Alternative: Building on x86 GPU Systems (Optional for Developers)**
 
@@ -334,7 +230,7 @@ cmake .. \
 | `TRT_PACKAGE_DIR` | Path to TensorRT installation. Auto-detected; manual hint to disambiguate multiple versions. | N/A |
 | `CMAKE_TOOLCHAIN_FILE` | **Required for Edge devices**: Use `cmake/aarch64_linux_toolchain.cmake` for Edge device builds. **Not needed for GPU builds** | N/A |
 | `EMBEDDED_TARGET` | **Required for Edge devices**: `jetson-thor` (Jetson Thor), `auto-thor` (DRIVE Thor / DriveOS), `gb10` (DGX Spark), or `jetson-orin` (Jetson Orin). **Not needed for GPU builds** | N/A |
-| `CUDA_CTK_VERSION` | CUDA Toolkit version. Use the platform command above to select `13.3`, `13.2`, `13.0`, or `12.6`. Do not pass `-DCUDA_VERSION`; CMake reserves that name for CUDA headers and rejects it. | target default |
+| `CUDA_CTK_VERSION` | CUDA Toolkit version. Use the platform command above to select `13.3`, `13.2`, or `13.0`. Do not pass `-DCUDA_VERSION`; CMake reserves that name for CUDA headers and rejects it. | target default |
 | `BUILD_UNIT_TESTS` | Build unit tests | OFF |
 | `ENABLE_COVERAGE` | Enable gcov code coverage instrumentation (see [Code Coverage](../../developer_guide/testing/code-coverage.md)) | OFF |
 | `ENABLE_CUTE_DSL` | Select generated CuTe DSL kernels: `fmha`, `ALL`, or a group list such as `gdn`, `gemm`, or `ssd`. Any selection also links `fmha`, which the attention plugins require. Use `ALL` for customer builds. | fmha |
@@ -361,7 +257,7 @@ the CuTe DSL package expected by `kernelSrcs/build_cutedsl.py`, then generate th
 artifact before running CMake:
 
 ```bash
-pip install 'nvidia-cutlass-dsl==4.6.1'
+pip install 'nvidia-cutlass-dsl==4.7.0'
 python kernelSrcs/build_cutedsl.py --gpu_arch sm_100
 ```
 
@@ -388,11 +284,192 @@ Build time: ~1-2 minutes depending on hardware.
 
 **You're done with C++ runtime setup!** You can now build engines and run inference on the Edge device.
 
+#### Install and launch the Python server
+
+If you enabled the optional Python frontend, install Edge-LLM and the server
+dependencies after building the native bindings. Run the install and server
+from the source checkout because the native artifacts remain in its build
+directory. The editable install ensures that the server command resolves those
+artifacts from the checkout. The server accepts a model ID or local checkpoint
+and builds its engines on first use:
+
+```bash
+cd /path/to/TensorRT-Edge-LLM
+source .venv/bin/activate
+python -m pip install -e ".[server,server-tools]"
+tensorrt-edgellm-serve Qwen/Qwen3.5-0.8B
+```
+
+See [Experimental Python API and Server](../examples/experimental-server.md)
+for server options, requests, and limitations.
+
+---
+
+## Source workflow: export and quantization
+
+The Python frontend exports Hugging Face checkpoints and optionally quantizes
+FP16/BF16 checkpoints before export. Export runs on CPU. Quantization requires
+an NVIDIA GPU.
+
+### System Requirements
+
+- **Platform**: x86-64 Linux system
+- **Recommended OS**: Ubuntu 22.04, 24.04
+- **GPU for quantization**: NVIDIA GPU with Compute Capability 8.0+ (Ampere or newer)
+- **CUDA for quantization**: 12.x or 13.x
+- **TensorRT**: matching Python package and runtime libraries
+- **Python**: 3.10+
+
+#### Memory Requirements
+
+- Export: at least 1.5 times the checkpoint size in CPU memory. No GPU is
+  required.
+- Quantization: GPU memory at least equal to the FP16 checkpoint size.
+
+**Verify Your Prerequisites:**
+
+```bash
+# Check CUDA installation when quantizing
+nvcc --version
+# Should show CUDA 12.x or 13.x
+
+# Check the GPU and available memory when quantizing
+nvidia-smi
+# Look for GPU memory (e.g., "24576MiB" for 24GB)
+
+# Check Python version
+python3 --version
+# Should show Python 3.10 or higher
+
+# Check the preinstalled TensorRT Python package
+python3 -c "import tensorrt as trt; print(trt.__version__)"
+```
+
+**If CUDA is not installed:**
+
+Download and install CUDA Toolkit from [NVIDIA CUDA Downloads](https://developer.nvidia.com/cuda-downloads). Choose version 12.x or 13.x for your system.
+
+After installation, verify with `nvcc --version` and `nvidia-smi`.
+
+### Installing
+
+For a containerized environment for clean installation, it is recommended to use the NVIDIA PyTorch Docker image:
+
+```bash
+# Pull the recommended Docker image
+docker pull nvcr.io/nvidia/pytorch:25.12-py3
+
+# Run the container with GPU support
+docker run --gpus all -it --rm \
+    -v $(pwd):/workspace \
+    -w /workspace \
+    nvcr.io/nvidia/pytorch:25.12-py3 \
+    bash
+```
+
+**1. Clone Repository**
+
+```bash
+git clone https://github.com/NVIDIA/TensorRT-Edge-LLM.git
+cd TensorRT-Edge-LLM
+git submodule update --init --recursive
+```
+
+**2. Install Python Dependencies**
+
+If you are not using container, it is recommended to use a virtual environment:
+```bash
+# Create virtual environment (recommended)
+python3 -m venv venv
+source venv/bin/activate
+```
+
+Install the dependency set for the host-side ONNX workflow:
+
+```bash
+# PyTorch/ONNX checkpoint exporter
+pip3 install -e ".[export]"
+
+# Export plus quantization, LoRA, vocabulary, and audio tools
+pip3 install -e ".[tools]"
+```
+
+The `tools` extra remains a superset of `export`. Checkpoint-direct engine build
+and Python inference use the optional Python frontend above and remain separate
+from this source-export procedure.
+
+> **Note:** Accuracy evaluation dependencies live under `examples/accuracy/requirements.txt`.
+
+**3. Verify the Checkpoint Export Workflow**
+
+Use the virtual environment created in Step 2 for this checkout. Do not mix
+packages from older release branches into the same environment.
+
+Export an unquantized or supported pre-quantized Hugging Face checkpoint with
+`tensorrt-edgellm-export`. Run `tensorrt-edgellm-quantize` first only when you
+need to create a quantized checkpoint from an FP16/BF16 source checkpoint.
+
+```bash
+# Included in the base package
+tensorrt-edgellm-export --help
+
+# Available after installing the tools extra
+tensorrt-edgellm-quantize --help
+tensorrt-edgellm-merge-lora --help
+tensorrt-edgellm-reduce-vocab --help
+```
+
+**4. Configure HuggingFace Access (Optional)**
+
+Some models on HuggingFace require you to accept terms before downloading.
+
+**Models that require HuggingFace login:**
+- Llama family (Llama 3.x)
+- Phi-4-Multimodal
+- Alpamayo-R1-10B
+- Other models marked as "gated" on HuggingFace
+
+**To configure access:**
+
+```bash
+# Install HuggingFace CLI and login
+hf auth login
+# Enter your HuggingFace access token when prompted
+```
+
+> **How to get a token:** Visit [HuggingFace Settings - Tokens](https://huggingface.co/settings/tokens), create a new token (read access is sufficient), and copy it.
+
+**You're done with export pipeline setup!** You can now quantize and export models with the checkpoint-based workflow. The ONNX files will be transferred to the Edge device for runtime deployment.
+
+---
+
+## Experimental local wheel
+
+Wheels are not published or the default installation path in 0.10.1. To
+evaluate a target-specific wheel locally, install the packaging requirements
+and run the local builder:
+
+```bash
+python -m pip install -r packaging/wheel-toolchain-requirements.txt
+python packaging/wheel_cli.py build-wheel \
+    --local \
+    --trt-package-dir /path/to/TensorRT \
+    --output-dir dist/local
+python -m pip install dist/local/tensorrt_edgellm-*.whl
+```
+
+This experimental path requires a matching unpublished CuTe DSL tarball and
+checksum under `kernelSrcs/cuteDSLPrebuilt/`; see `packaging/README.md` in the
+source checkout. The resulting wheel supports only the detected target and is
+not a general release artifact.
+
 ---
 
 ## Next Steps
 
-After installation, proceed to the [Quick Start Guide](quick-start-guide.md) for a complete end-to-end workflow, or see the [Examples](../examples/) for detailed pipeline stages and advanced use cases.
+For the maintained ONNX and C++ workflow, proceed to the
+[Quick Start Guide](quick-start-guide.md). For model-specific input and output
+contracts, see [Examples](../examples/index.md).
 
 ---
 

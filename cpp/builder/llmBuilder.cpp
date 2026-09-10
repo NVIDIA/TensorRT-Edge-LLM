@@ -22,6 +22,7 @@
 #include "common/fileUtils.h"
 #include "common/logger.h"
 #include "common/pagedKvTypes.h"
+#include "common/parallelArtifactNames.h"
 #include "common/ropeUtils.h"
 #include "common/trtUtils.h"
 #include "common/version.h"
@@ -32,6 +33,8 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <system_error>
+#include <unordered_set>
 #include <vector>
 
 using namespace trt_edgellm;
@@ -65,8 +68,8 @@ bool isSpecDecodeDraft(Json const& config, char const* type)
 
 bool isValidSpecDecodeType(std::string const& type)
 {
-    return type == "none" || type == "mtp" || type == "eagle3" || type == "dflash" || type == "dspark"
-        || type == "gemma4_mtp";
+    return type == "none" || type == "mtp" || type == "eagle3" || type == "dflash" || type == "jetspec"
+        || type == "dspark" || type == "gemma4_mtp";
 }
 
 bool isValidEngineRole(std::string const& role)
@@ -108,6 +111,160 @@ std::optional<int64_t> getStaticInputDim(
     return std::nullopt;
 }
 
+parallel_artifacts::RankArtifactContext makeArtifactContext(LLMBuilderConfig const& config)
+{
+    return parallel_artifacts::RankArtifactContext{
+        static_cast<int32_t>(config.tpSize), static_cast<int32_t>(config.tpRank)};
+}
+
+int32_t configRank(LLMBuilderConfig const& config)
+{
+    return static_cast<int32_t>(config.tpRank);
+}
+
+bool validateRankConfigs(Json const& config, LLMBuilderConfig const& builderConfig)
+{
+    if (builderConfig.tpSize < 1)
+    {
+        LOG_ERROR("tpSize must be positive, got %lld.", static_cast<long long>(builderConfig.tpSize));
+        return false;
+    }
+    if (builderConfig.tpRank < 0 || builderConfig.tpRank >= builderConfig.tpSize)
+    {
+        LOG_ERROR("tpRank must be in [0, tpSize), got tpRank=%lld tpSize=%lld.",
+            static_cast<long long>(builderConfig.tpRank), static_cast<long long>(builderConfig.tpSize));
+        return false;
+    }
+
+    if (!config.contains("rank_configs"))
+    {
+        if (builderConfig.tpSize > 1)
+        {
+            LOG_ERROR("Multi-device build requires rank_configs, but config.json has none (tpSize=%lld).",
+                static_cast<long long>(builderConfig.tpSize));
+            return false;
+        }
+        return true;
+    }
+
+    Json const& rankConfigs = config["rank_configs"];
+    if (!rankConfigs.is_array())
+    {
+        LOG_ERROR("rank_configs must be an array when present in config.json");
+        return false;
+    }
+    if (rankConfigs.size() != static_cast<size_t>(builderConfig.tpSize))
+    {
+        LOG_ERROR("rank_configs length (%zu) must match tpSize (%lld).", rankConfigs.size(),
+            static_cast<long long>(builderConfig.tpSize));
+        return false;
+    }
+
+    std::unordered_set<int64_t> ranks;
+    for (auto const& rankConfig : rankConfigs)
+    {
+        if (!rankConfig.is_object() || !rankConfig.contains("rank") || !rankConfig["rank"].is_number_integer())
+        {
+            LOG_ERROR("Each rank_configs entry must be an object with an integer rank field.");
+            return false;
+        }
+        int64_t const rank = rankConfig["rank"].get<int64_t>();
+        if (rank < 0 || rank >= builderConfig.tpSize)
+        {
+            LOG_ERROR("rank_configs rank %lld is outside [0, tpSize=%lld).", static_cast<long long>(rank),
+                static_cast<long long>(builderConfig.tpSize));
+            return false;
+        }
+        if (!ranks.insert(rank).second)
+        {
+            LOG_ERROR("rank_configs contains duplicate rank %lld.", static_cast<long long>(rank));
+            return false;
+        }
+        if (rankConfig.contains("config_overrides") && !rankConfig["config_overrides"].is_object())
+        {
+            LOG_ERROR(
+                "rank_configs[%lld].config_overrides must be an object when present.", static_cast<long long>(rank));
+            return false;
+        }
+    }
+    return true;
+}
+
+bool applyRankConfigOverrides(Json& config, int32_t rank)
+{
+    if (!config.contains("rank_configs"))
+    {
+        return true;
+    }
+    if (!config["rank_configs"].is_array())
+    {
+        LOG_ERROR("rank_configs must be an array when present in config.json");
+        return false;
+    }
+    for (auto const& rankConfig : config["rank_configs"])
+    {
+        if (!rankConfig.is_object())
+        {
+            LOG_ERROR("Each rank_configs entry must be an object.");
+            return false;
+        }
+        if (rankConfig.value("rank", -1) != rank)
+        {
+            continue;
+        }
+        Json const overrides = rankConfig.value("config_overrides", Json::object());
+        if (!overrides.is_object())
+        {
+            LOG_ERROR("rank_configs[%d].config_overrides must be an object when present.", rank);
+            return false;
+        }
+        for (auto it = overrides.begin(); it != overrides.end(); ++it)
+        {
+            config[it.key()] = it.value();
+        }
+        return true;
+    }
+    LOG_ERROR("No rank_configs entry found for rank %d.", rank);
+    return false;
+}
+
+std::string getInputConfigFileName(LLMBuilderConfig const& config)
+{
+    return parallel_artifacts::configFileName(makeArtifactContext(config));
+}
+
+std::string getOutputConfigFileName(LLMBuilderConfig const& config)
+{
+    if (config.specDraft)
+    {
+        return "draft_config.json";
+    }
+    if (config.specBase)
+    {
+        return "base_config.json";
+    }
+    return parallel_artifacts::configFileName(makeArtifactContext(config));
+}
+
+std::string getEngineFileName(LLMBuilderConfig const& config)
+{
+    if (config.specDraft)
+    {
+        return "spec_draft.engine";
+    }
+    if (config.specBase)
+    {
+        return "spec_base.engine";
+    }
+    return parallel_artifacts::engineFileName(makeArtifactContext(config));
+}
+
+std::string getOnnxFilePath(std::filesystem::path const& onnxDir, LLMBuilderConfig const& config)
+{
+    parallel_artifacts::RankArtifactContext const context = makeArtifactContext(config);
+    return (onnxDir / parallel_artifacts::onnxFileName(context)).string();
+}
+
 } // namespace
 
 LLMBuilder::LLMBuilder(
@@ -143,8 +300,9 @@ bool LLMBuilder::build()
     int64_t const kvPoolPages = mBuilderConfig.resolvedKVPoolPages();
     bool const hasExtraRetainedPages = kvPoolPages > minimumActivePages;
     std::string const mode = specDecodeType(mModelConfig);
-    bool const supportsCrossRequestRetention
-        = mNbKVCacheInputs > 0 && (mode == "none" || (mode == "eagle3" && mNumLinearAttnLayers == 0));
+    bool const attentionOnlyReusableSpec = mNumLinearAttnLayers == 0
+        && (mode == "eagle3" || mode == "gemma4_mtp" || mode == "dflash" || mode == "jetspec" || mode == "dspark");
+    bool const supportsCrossRequestRetention = mNbKVCacheInputs > 0 && (mode == "none" || attentionOnlyReusableSpec);
     if (hasExtraRetainedPages && !supportsCrossRequestRetention)
     {
         LOG_ERROR(
@@ -169,6 +327,11 @@ bool LLMBuilder::build()
         onnxFilePath = (mOnnxDir / "lora_model.onnx").string();
         LOG_INFO("Parsing LoRA-enabled ONNX model: %s", onnxFilePath.c_str());
     }
+    else if (mBuilderConfig.tpSize > 1)
+    {
+        onnxFilePath = getOnnxFilePath(mOnnxDir, mBuilderConfig);
+        LOG_INFO("Parsing rank-local ONNX model: %s", onnxFilePath.c_str());
+    }
     else
     {
         onnxFilePath = (mOnnxDir / "model.onnx").string();
@@ -180,33 +343,6 @@ bool LLMBuilder::build()
     if (!parser)
     {
         return false;
-    }
-
-    // DFlash/DSpark drafts use DFlashTargetKVCacheUpdate, which needs pages_per_slot
-    // (capPadded / kTOKENS_PER_PAGE) to split its pool-shaped past_key_value binding's
-    // numPages back into (maxBatch, cap). That fact is builder-only
-    // (mBuilderConfig.maxKVCacheCapacity), unavailable at ONNX-export time, and this
-    // plugin's concrete class is intentionally not linked into the builder (plugins are
-    // opaque .so modules, loaded via EDGELLM_PLUGIN_PATH -- see common/trtUtils.h).
-    // Resolve the plugin's exported configuration hook via dlsym on the already-loaded
-    // handle instead of adding a new link dependency.
-    if (isSpecDecodeDraft(mModelConfig, "dflash") || isSpecDecodeDraft(mModelConfig, "dspark"))
-    {
-        using ConfigurePagesPerSlotFn = bool (*)(nvinfer1::INetworkDefinition*, int32_t);
-        auto* configureFn = reinterpret_cast<ConfigurePagesPerSlotFn>(
-            dlsym(pluginHandles.get(), "edgellm_dflash_configure_pages_per_slot"));
-        if (configureFn == nullptr)
-        {
-            LOG_ERROR(
-                "Failed to resolve edgellm_dflash_configure_pages_per_slot from the plugin library: %s", dlerror());
-            return false;
-        }
-        int32_t const pagesPerSlot = rt::computeMaxPagesPerSeq(static_cast<int32_t>(mBuilderConfig.maxKVCacheCapacity));
-        if (!configureFn(network.get(), pagesPerSlot))
-        {
-            LOG_ERROR("Failed to configure DFlashTargetKVCacheUpdate plugin pages_per_slot=%d", pagesPerSlot);
-            return false;
-        }
     }
 
     // Print network information
@@ -236,35 +372,20 @@ bool LLMBuilder::build()
         return false;
     }
 
-    // Create engine directory
-    if (!std::filesystem::exists(mEngineDir))
+    std::error_code errorCode;
+    bool const createdEngineDir = std::filesystem::create_directories(mEngineDir, errorCode);
+    if (errorCode)
     {
-        if (!std::filesystem::create_directories(mEngineDir))
-        {
-            LOG_ERROR("Failed to create directory %s", mEngineDir.string().c_str());
-            return false;
-        }
+        LOG_ERROR("Failed to create directory %s: %s", mEngineDir.string().c_str(), errorCode.message().c_str());
+        return false;
+    }
+    if (createdEngineDir)
+    {
         LOG_INFO("Created directory %s for saving LLM engine.", mEngineDir.string().c_str());
     }
 
     // Determine engine file name
-    std::string engineFileName;
-    if (mBuilderConfig.specDraft)
-    {
-        engineFileName = "spec_draft.engine";
-    }
-    else if (mBuilderConfig.specBase)
-    {
-        engineFileName = "spec_base.engine";
-    }
-    else if (mIsDiffusionBackbone)
-    {
-        engineFileName = "dllm.engine";
-    }
-    else
-    {
-        engineFileName = "llm.engine";
-    }
+    std::string const engineFileName = mIsDiffusionBackbone ? "dllm.engine" : getEngineFileName(mBuilderConfig);
 
     // Build and save engine
     std::string const engineFilePath = (mEngineDir / engineFileName).string();
@@ -288,35 +409,39 @@ bool LLMBuilder::build()
         LOG_INFO("Detected %d deepstack embedding inputs in network (Qwen3VL model)", mNumDeepstackFeatures);
     }
 
-    // Copy files and save builder config
-    if (!copyConfig())
+    // The world-level config is shared across ranks. Only rank 0 writes it.
+    if ((mBuilderConfig.tpSize == 1 || mBuilderConfig.tpRank == 0) && !copyConfig())
     {
         return false;
     }
 
-    if (!copyTokenizerFiles())
+    // Shared files are identical across ranks. Only rank 0 copies them to avoid race conditions.
+    if (mBuilderConfig.tpRank == 0 || mBuilderConfig.tpSize == 1)
     {
-        return false;
-    }
+        if (!copyTokenizerFiles())
+        {
+            return false;
+        }
 
-    if (!copyEagleFiles())
-    {
-        return false;
-    }
+        if (!copyEagleFiles())
+        {
+            return false;
+        }
 
-    if (!copyDSparkFiles())
-    {
-        return false;
-    }
+        if (!copyDSparkFiles())
+        {
+            return false;
+        }
 
-    if (!copyVocabMappingFiles())
-    {
-        return false;
-    }
+        if (!copyVocabMappingFiles())
+        {
+            return false;
+        }
 
-    if (!copyEmbeddingFile())
-    {
-        return false;
+        if (!copyEmbeddingFile())
+        {
+            return false;
+        }
     }
 
     if (!copyExternalWeightFiles())
@@ -329,8 +454,18 @@ bool LLMBuilder::build()
 
 bool LLMBuilder::parseConfig()
 {
-    std::string const jsonPath = (mOnnxDir / "config.json").string();
+    std::string const jsonPath = (mOnnxDir / getInputConfigFileName(mBuilderConfig)).string();
     if (!loadJsonConfig(jsonPath, mModelConfig))
+    {
+        return false;
+    }
+    if (!validateRankConfigs(mModelConfig, mBuilderConfig))
+    {
+        return false;
+    }
+    mSharedModelConfig = mModelConfig;
+
+    if (!applyRankConfigOverrides(mModelConfig, configRank(mBuilderConfig)))
     {
         return false;
     }
@@ -343,7 +478,8 @@ bool LLMBuilder::parseConfig()
     std::string const role = engineRole(mModelConfig);
     if (!isValidSpecDecodeType(specType))
     {
-        LOG_ERROR("Invalid spec_decode_type='%s'. Expected one of: none, mtp, eagle3, dflash, dspark, gemma4_mtp.",
+        LOG_ERROR(
+            "Invalid spec_decode_type='%s'. Expected one of: none, mtp, eagle3, dflash, jetspec, dspark, gemma4_mtp.",
             specType.c_str());
         return false;
     }
@@ -391,7 +527,8 @@ bool LLMBuilder::parseConfig()
         mTargetModelOutputHiddenDim = mHiddenSize;
     }
     else if ((isSpecDecodeDraft(mModelConfig, "eagle3") || isSpecDecodeDraft(mModelConfig, "dflash")
-                 || isSpecDecodeDraft(mModelConfig, "dspark") || isSpecDecodeDraft(mModelConfig, "gemma4_mtp"))
+                 || isSpecDecodeDraft(mModelConfig, "jetspec") || isSpecDecodeDraft(mModelConfig, "dspark")
+                 || isSpecDecodeDraft(mModelConfig, "gemma4_mtp"))
         && mModelConfig.contains("base_model_hidden_size"))
     {
         mTargetModelOutputHiddenDim = mModelConfig["base_model_hidden_size"].get<int32_t>();
@@ -535,12 +672,12 @@ bool LLMBuilder::setupLLMOptimizationProfiles(
 
     bool result = true;
 
-    if (isSpecDecodeDraft(mModelConfig, "dflash"))
+    if (isSpecDecodeDraft(mModelConfig, "dflash") || isSpecDecodeDraft(mModelConfig, "jetspec"))
     {
         result &= setupDFlashDraftProfiles(*contextProfile, *generationProfile);
         if (!result)
         {
-            LOG_ERROR("Failed to setup DFlash draft optimization profiles");
+            LOG_ERROR("Failed to setup DFlash/JetSpec draft optimization profiles");
             return false;
         }
         LOG_DEBUG("%s", printOptimizationProfile(contextProfile, "context_profile", &network).c_str());
@@ -598,9 +735,9 @@ bool LLMBuilder::setupLLMOptimizationProfiles(
         result &= setupVanillaProfiles(*contextProfile, *generationProfile);
     }
 
-    // Setup hybrid state profiles for MTP/DFlash/DSpark base models.
+    // Setup hybrid state profiles for MTP/DFlash/JetSpec/DSpark base models.
     if (isSpecDecodeBase(mModelConfig, "mtp") || isSpecDecodeBase(mModelConfig, "dflash")
-        || isSpecDecodeBase(mModelConfig, "dspark"))
+        || isSpecDecodeBase(mModelConfig, "jetspec") || isSpecDecodeBase(mModelConfig, "dspark"))
     {
         result &= setupIntermediateRecurrentStateProfiles(*contextProfile, *generationProfile);
         result &= setupIntermediateConvStateProfiles(*contextProfile, *generationProfile);
@@ -925,8 +1062,7 @@ bool LLMBuilder::setupDFlashDraftProfiles(
         // kvcache_start_index: [batch]
         ok &= setOptimizationProfile(&profile, binding_names::kKVCacheStartIndex, createDims({1}),
             createDims({mBuilderConfig.maxBatchSize}), createDims({mBuilderConfig.maxBatchSize}));
-        // kv_page_table: [batch, 2, maxPagesPerSeq] int32. Proposal self-attention's page
-        // table (default identity); the draft's own KV cache above has no page table.
+        // kv_page_table: [batch, 2, maxPagesPerSeq] int32 for proposal self-attention and target-KV updates.
         int32_t const maxPagesPerSeq
             = rt::computeMaxPagesPerSeq(static_cast<int32_t>(mBuilderConfig.maxKVCacheCapacity));
         ok &= setOptimizationProfile(&profile, binding_names::kKVPageTable, createDims({1, 2, maxPagesPerSeq}),
@@ -943,12 +1079,9 @@ bool LLMBuilder::setupDFlashDraftProfiles(
         ok &= setOptimizationProfile(&profile, binding_names::kAttentionPosId, createDims({1, 1}),
             createDims({mBuilderConfig.maxBatchSize, optDraftTokens}),
             createDims({mBuilderConfig.maxBatchSize, maxDraftTokens}));
-        // KV cache per-layer: DFlash's own combined draft cache, now unified on the paged-pool
-        // contract shared with the AttentionPlugin binding: [2, numPages, kTOKENS_PER_PAGE,
+        // DFlash draft KV cache uses the paged-pool contract shared with the AttentionPlugin binding:
+        // [2, numPages, kTOKENS_PER_PAGE,
         // numKVHeads, headDim] (single fixed numPages value, same as setupKVCacheProfiles).
-        // DFlashTargetKVCacheUpdatePlugin recovers maxBatch/cap at enqueue time from numPages and
-        // the pages_per_slot attribute the builder configures via edgellm_dflash_configure_pages_per_slot
-        // (see build()); this cache still has no page table of its own.
         int64_t const numPages = mBuilderConfig.resolvedKVPoolPages();
         for (int32_t i = 0; i < mNbKVCacheInputs; ++i)
         {
@@ -1079,7 +1212,7 @@ bool LLMBuilder::setupDSparkDraftProfiles(
         ok &= setOptimizationProfile(&profile, binding_names::kKVCacheStartIndex, createDims({1}),
             createDims({mBuilderConfig.maxBatchSize}), createDims({mBuilderConfig.maxBatchSize}));
         // kv_page_table: [batch, 2, maxPagesPerSeq] int32. Proposal self-attention's page
-        // table (default identity); the draft's own KV cache above has no page table.
+        // table for proposal self-attention and target-KV updates.
         int32_t const maxPagesPerSeq
             = rt::computeMaxPagesPerSeq(static_cast<int32_t>(mBuilderConfig.maxKVCacheCapacity));
         ok &= setOptimizationProfile(&profile, binding_names::kKVPageTable, createDims({1, 2, maxPagesPerSeq}),
@@ -1098,9 +1231,6 @@ bool LLMBuilder::setupDSparkDraftProfiles(
             createDims({mBuilderConfig.maxBatchSize, maxDraftTokens}));
         // KV cache per-layer: DSpark's own combined draft cache uses the same paged-pool
         // contract as AttentionPlugin: [2, numPages, kTOKENS_PER_PAGE, numKVHeads, headDim].
-        // DFlashTargetKVCacheUpdatePlugin recovers maxBatch/cap at enqueue time from numPages
-        // and the pages_per_slot attribute configured above; this cache still has no page table
-        // of its own.
         int64_t const numPages = mBuilderConfig.resolvedKVPoolPages();
         for (int32_t i = 0; i < mNbKVCacheInputs; ++i)
         {
@@ -1514,7 +1644,8 @@ bool LLMBuilder::setupIntermediateConvStateProfiles(
         result &= setOptimizationProfile(&generationProfile, name.c_str(), minGenShape, optGenShape, maxGenShape);
     }
 
-    LOG_DEBUG("Set up intermediate conv state profiles for %d recurrent layers (MTP/DFlash)", mNumLinearAttnLayers);
+    LOG_DEBUG(
+        "Set up intermediate conv state profiles for %d recurrent layers (MTP/DFlash/JetSpec)", mNumLinearAttnLayers);
     return result;
 }
 
@@ -1528,7 +1659,7 @@ bool LLMBuilder::setupLinearAttentionSpecVerifyProfiles(nvinfer1::IOptimizationP
 
     if (!hasInputBinding(network, binding_names::kSpecVerifyPhaseMarker))
     {
-        LOG_ERROR("Hybrid MTP/DFlash base engine is missing input '%s'. Re-export the ONNX model.",
+        LOG_ERROR("Hybrid MTP/DFlash/JetSpec base engine is missing input '%s'. Re-export the ONNX model.",
             binding_names::kSpecVerifyPhaseMarker);
         return false;
     }
@@ -1582,26 +1713,34 @@ std::string externalWeightDstName(std::string const& filename, bool specDraft)
 
 bool LLMBuilder::copyConfig()
 {
-    // Determine config file name based on model type
-    std::string configFileName;
-    if (mBuilderConfig.specDraft)
-    {
-        configFileName = "draft_config.json";
-    }
-    else if (mBuilderConfig.specBase)
-    {
-        configFileName = "base_config.json";
-    }
-    else
-    {
-        configFileName = "config.json";
-    }
+    std::string const configFileName = getOutputConfigFileName(mBuilderConfig);
 
     std::string const targetConfigPath = (mEngineDir / configFileName).string();
 
-    // Create a copy of mModelConfig and add builder config
-    Json configWithBuilder = mModelConfig;
+    Json configWithBuilder = mSharedModelConfig;
     configWithBuilder["builder_config"] = mBuilderConfig.toJson();
+
+    if (configWithBuilder.contains("rank_configs"))
+    {
+        if (!configWithBuilder["rank_configs"].is_array())
+        {
+            LOG_ERROR("rank_configs must be an array when present in config.json");
+            return false;
+        }
+        int32_t const artifactWorldSize
+            = std::max<int32_t>(1, static_cast<int32_t>(configWithBuilder["rank_configs"].size()));
+        for (auto& rankConfig : configWithBuilder["rank_configs"])
+        {
+            if (!rankConfig.is_object() || !rankConfig.contains("rank"))
+            {
+                LOG_ERROR("Each rank_configs entry must be an object with a rank field.");
+                return false;
+            }
+            int32_t const rank = rankConfig["rank"].get<int32_t>();
+            parallel_artifacts::RankArtifactContext const context{artifactWorldSize, rank};
+            rankConfig["engine"] = parallel_artifacts::engineFileName(context);
+        }
+    }
 
     // Keep external weight file references in sync with the names written by
     // copyExternalWeightFiles() (draft files get the "draft_" prefix) so the runtime loads the right file.
@@ -1747,7 +1886,8 @@ bool LLMBuilder::copyTokenizerFiles()
 
 bool LLMBuilder::copyEagleFiles()
 {
-    // Copy d2t.safetensors for Eagle3 draft models only. MTP/DFlash drafts share vocab with base and have no d2t.
+    // Copy d2t.safetensors for Eagle3 draft models only. MTP/DFlash/JetSpec drafts share vocab with base and have no
+    // d2t.
     if (isSpecDecodeDraft(mModelConfig, "eagle3"))
     {
         std::string const d2tPath = (mOnnxDir / "d2t.safetensors").string();

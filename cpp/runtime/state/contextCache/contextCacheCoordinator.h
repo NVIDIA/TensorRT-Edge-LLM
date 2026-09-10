@@ -21,6 +21,7 @@
 #include "runtime/state/contextCache/contextCacheDeployment.h"
 #include "runtime/state/contextCache/contextCacheManager.h"
 #include "runtime/state/contextCache/contextCacheMetrics.h"
+#include "runtime/state/decodingInferenceContext.h"
 
 #include <cuda_runtime_api.h>
 
@@ -60,21 +61,15 @@ struct ContextCacheSequenceAdmission
     std::vector<Hash128> perPositionMediaHash;
 };
 
-//! Decoder mode selected before cache lookup. A deployment with EAGLE engines may execute either mode per request;
-//! vanilla may reuse the base side of a paired record, while EAGLE requires a paired base/draft hit.
-enum class ContextCacheExecutionMode : uint8_t
-{
-    kVanilla,
-    kEAGLE,
-};
-
 //! One serialized runtime request. Bypass still uses managed private pages but neither looks up nor publishes state.
 struct ContextCacheBatchAdmission
 {
     std::vector<ContextCacheSequenceAdmission> sequences;
-    ContextCacheExecutionMode executionMode{ContextCacheExecutionMode::kVanilla};
+    bool speculativeRequest{};
     ContextCacheLookupPolicy lookupPolicy{ContextCacheLookupPolicy::kUseCache};
     ContextCacheCommitPolicy commitPolicy{ContextCacheCommitPolicy::kIncludingGeneratedTokens};
+    //! Carried-through Hybrid+MTP replay tail length. Not consumed by this stage.
+    int32_t replayTailLength{0};
 };
 
 //! Host-visible sequence advance observed after an existing stream synchronization.
@@ -137,13 +132,14 @@ public:
     };
 
     ContextCacheCoordinator(ContextCacheConfig const& config, DeploymentConfig const& deployment,
-        ContextCacheDeploymentKind deploymentKind, ContextCachePhysicalResources resources, cudaStream_t stream,
+        ContextCacheDeploymentProfile profile, ContextCachePhysicalResources resources, cudaStream_t stream,
         StreamSynchronizer synchronizer = {});
     ~ContextCacheCoordinator() noexcept;
     ContextCacheCoordinator(ContextCacheCoordinator const&) = delete;
     ContextCacheCoordinator& operator=(ContextCacheCoordinator const&) = delete;
 
-    BeginRequestResult beginRequest(ContextCacheBatchAdmission const& admission, cudaStream_t stream);
+    BeginRequestResult beginRequest(
+        ContextCacheBatchAdmission const& admission, DecodingKvHeadroom const& headroom, cudaStream_t stream);
 
     //! Bind every admitted row and reset logical cache lengths to the selected reuse boundaries.
     ContextCacheCoordinatorStatus preparePrefill(RequestHandle& request);
@@ -154,8 +150,18 @@ public:
     ContextCacheCoordinatorStatus finalizePrefillPublication(RequestHandle& request,
         std::vector<ContextCacheSequenceAdvance> const& advances,
         std::vector<int32_t> const* commonStateLengths = nullptr);
+    //! Publish one Hybrid+MTP checkpoint at the stable predecessor boundary. This is the dedicated MTP publication
+    //! entrypoint; the runtime drives it after the folded draft prefill has materialized the boundary draft state.
+    //! It captures the recurrent state, the paired base+draft partial pages, and the successor-dependent boundary
+    //! base-hidden row, then commits the exact checkpoint. Skipped for bypass, already-published, or empty prefixes.
+    ContextCacheCoordinatorStatus publishHybridMtpEndpoint(RequestHandle& request, int32_t slot,
+        int32_t residentStateLength, Tensor const& baseHiddenStates, int32_t boundaryHiddenRow);
+    //! Restore the checkpoint's saved boundary base-hidden row into baseHiddenStates[slot, destinationRow, :] for the
+    //! runtime's fold micro-forward. No synchronization: the caller orders this within its prefill stream.
+    ContextCacheCoordinatorStatus restoreHybridMtpBoundaryHidden(
+        RequestHandle& request, int32_t slot, Tensor& baseHiddenStates, int32_t destinationRow);
     //! Grow and upload every row needed for the next decode working set before model execution.
-    ContextCacheCoordinatorStatus prepareDecodeStep(RequestHandle& request);
+    ContextCacheCoordinatorStatus prepareDecodeStep(RequestHandle& request, DecodingKvHeadroom const& headroom);
     //! Apply the post-decode sequence advance after the decoder's existing synchronization.
     //! For EAGLE, commonStateLengths excludes any unmaterialized accepted suffix and speculative lookahead.
     ContextCacheCoordinatorStatus completeDecodeStep(RequestHandle& request,
@@ -183,10 +189,42 @@ private:
 
     struct AcquireSequenceResult;
 
-    AcquireSequenceResult acquireSequence(ContextCacheSequenceAdmission const& admission,
-        ContextCacheExecutionMode executionMode, ContextCacheLookupPolicy lookupPolicy);
+    //! Per-request publication strategies (defined in the .cpp). The coordinator owns the shared lifecycle and
+    //! delegates every flavor-specific endpoint/snapshot publication to the selected policy. Nested so they reach
+    //! the coordinator's private state and primitives directly.
+    class PublicationPolicy;
+    class BaseEndpointPolicy;
+    class HybridSnapshotPolicy;
+    class HybridMtpPolicy;
+    class EagleSpecPolicy;
+    class SharedKvSpecPolicy;
+
+    std::unique_ptr<PublicationPolicy> makePublicationPolicy(bool speculativeRequest);
+
+    AcquireSequenceResult acquireSequence(ContextCacheSequenceAdmission const& admission, bool speculativeRequest,
+        ContextCacheLookupPolicy lookupPolicy, DecodingKvHeadroom const& headroom);
     ContextCacheCoordinatorStatus applyAdvances(
         RequestHandle::Impl& request, std::vector<ContextCacheSequenceAdvance> const& advances);
+    //! How far committedStateLength advances per decode step, which is the only difference between the vanilla and
+    //! MTP flavors of the committed-plus-lookahead check.
+    enum class TokensPerDecodeStep : uint8_t
+    {
+        kExactlyOne,    //!< Vanilla / hybrid decode: the single sampled token.
+        kAcceptedCount, //!< Speculative decode: everything the verification accepted this step.
+    };
+    //! Shared post-advance validation invoked by the policies, so the committed-plus-lookahead invariant math and
+    //! the completed-slot dedup live in exactly one place regardless of publication flavor. Each policy calls the
+    //! variant matching its decode flavor; PublicationPolicy::validateDecodeAdvances routes to the right one.
+    void validateEagleDecodeAdvances(RequestHandle::Impl const& request,
+        std::vector<ContextCacheSequenceAdvance> const& advances, std::vector<int32_t> const* commonStateLengths) const;
+    void validateVanillaDecodeAdvances(RequestHandle::Impl const& request,
+        std::vector<ContextCacheSequenceAdvance> const& advances, std::vector<int32_t> const* commonStateLengths) const;
+    void validateMtpDecodeAdvances(RequestHandle::Impl const& request,
+        std::vector<ContextCacheSequenceAdvance> const& advances, std::vector<int32_t> const* commonStateLengths) const;
+    void validateCommittedLookaheadAdvances(RequestHandle::Impl const& request,
+        std::vector<ContextCacheSequenceAdvance> const& advances, TokensPerDecodeStep tokensPerStep) const;
+    void assertUniqueCompletedSlots(
+        RequestHandle::Impl const& request, std::vector<int32_t> const& publishableCompletedSlots) const;
     void publishReadyEndpoint(RequestHandle::Impl& request, int32_t slot, PublicationPoint point);
     void reserveHybridCapture(RequestHandle::Impl& request, int32_t slot, int32_t exactLength, PublicationPoint point);
     void enqueueHybridCaptures(RequestHandle::Impl& request);
@@ -195,25 +233,42 @@ private:
         RequestHandle::Impl& request, int32_t slot, int32_t commonStateLength, PublicationPoint point);
     void recordPublication(PublishStatus status) noexcept;
     void publishFrozenSpecPrefill(RequestHandle::Impl& request);
-    ContextCacheCoordinatorStatus terminalizeSpecInitialization(RequestHandle& request);
     RequestHandle::Impl& checkedImpl(RequestHandle& request) const;
     bool isHybridDeployment() const noexcept;
+    bool isPureRecurrentDeployment() const noexcept;
+    bool usesCheckpointReuse() const noexcept;
     bool isSpecDeployment() const noexcept;
+    bool ownsPagedSpecState() const noexcept;
     bool isSpecRequest(RequestHandle::Impl const& request) const noexcept;
+    //! Request capability predicates. The context-cache subsystem is decoder-agnostic: the adapter collapses the
+    //! decoder identity into the per-request speculativeRequest bit at admission. Lifecycle sites
+    //! must not test that identity (== kEAGLE / == kMTP) directly -- each names the *capability* it depends on, so a
+    //! future decoder that gains or loses a capability changes one predicate body, not a scavenger hunt across call
+    //! sites. One capability owns every site that depends on it; splitting a capability across two predicates with the
+    //! same body is how those sites drift apart.
+    //!
+    //! EAGLE and Hybrid+MTP both run a paired base+draft cache working set: the lease owns a draft page path alongside
+    //! the base one, so the draft engine's page table must carry that path (uploaded at prefill, grown at decode,
+    //! compacted on eviction) and the draft cache must be reset at prefill. Leased draft pages are not reachable until
+    //! the table names them -- it is identity-mapped otherwise, and restoring snapshot *contents* into a leased page
+    //! does not publish the mapping that gets the engine there.
+    bool runsPairedDraftWorkingSet(RequestHandle::Impl const& request) const noexcept;
+    //! EAGLE's two-phase draft initialization publishes a frozen prefill endpoint after the first verification round
+    //! terminalizes the ordered draft init. Hybrid+MTP publishes via the hybrid snapshot endpoint path, no frozen
+    //! phase.
+    bool usesFrozenSpecPublication(RequestHandle::Impl const& request) const noexcept;
     bool deploymentHasAttention() const noexcept;
     ContextCacheCoordinatorStatus synchronizeRequest(RequestHandle& request);
     void abandon(std::unique_ptr<RequestHandle::Impl> request) noexcept;
     void quarantine(RequestHandle& request) noexcept;
 
-    ContextCacheDeploymentKind mDeploymentKind{};
+    ContextCacheDeploymentProfile mProfile;
     ContextCacheManager mManager;
     std::unique_ptr<HybridSnapshotStorage> mHybridSnapshots;
     HybridCacheManager& mBaseCache;
     KVPageTable& mBasePageTable;
     HybridCacheManager* mDraftCache{};
     KVPageTable* mDraftPageTable{};
-    int32_t mSpecVerifySize{};
-    int32_t mSpecDraftWorkingTokens{};
     cudaStream_t mStream{};
     StreamSynchronizer mSynchronizer;
     ContextCacheMetrics mMetrics;
@@ -222,6 +277,8 @@ private:
     bool mPoisoned{};
     //! Declared after mManager so quarantined leases are destroyed first during normal shutdown.
     std::unique_ptr<RequestHandle::Impl> mQuarantinedRequest;
+    //! Publication strategy for the in-flight request; (re)selected per request in beginRequest.
+    std::unique_ptr<PublicationPolicy> mPublicationPolicy;
 };
 
 } // namespace rt

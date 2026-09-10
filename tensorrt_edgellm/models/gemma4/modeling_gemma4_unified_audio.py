@@ -53,7 +53,12 @@ class Gemma4UnifiedAudioModel(nn.Module):
                 "Gemma4 Unified audio export requires audio_config."
                 "audio_embed_dim")
         audio_embed_dim = int(audio_embed_dim_value)
-        output_proj_dims = int(audio_config["output_proj_dims"])
+        # ``Gemma4UnifiedAudioConfig`` does not declare ``output_proj_dims``,
+        # so re-serializing the typed config tree drops it from every quantized
+        # checkpoint. The fallback is exact, not a guess: the check below
+        # rejects any checkpoint where the two differ.
+        output_proj_dims = int(
+            audio_config.get("output_proj_dims", audio_embed_dim))
         if audio_embed_dim != output_proj_dims:
             raise ValueError(
                 "Gemma4 Unified audio requires audio_embed_dim to equal "
@@ -64,6 +69,7 @@ class Gemma4UnifiedAudioModel(nn.Module):
             text_config,
             model_config,
             module_name="embed_audio.embedding_projection",
+            multimodal_hidden_size=output_proj_dims,
         )
 
     def forward(self, input_features: torch.Tensor) -> torch.Tensor:

@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version = 2
+
+# The complete x86_64 CPython 3.12 qualification wheel measured 2,067,563,217
+# compressed bytes and 3,969,749,991 unpacked bytes on 2026-08-12. The largest
+# payload measured 490,378,050 unpacked bytes. These ceilings leave reviewed
+# growth headroom while catching accidental payload or debug-artifact bloat.
+[wheel.x86_64]
+compressed_bytes = 2684354560
+unpacked_bytes = 5100273664
+
+[payload.x86_64]
+unpacked_bytes = 671088640
+
+# aarch64 has fewer payload rows than x86_64. Until its first complete matrix
+# establishes a lower baseline, it uses the measured x86_64 upper ceilings.
+[wheel.aarch64]
+compressed_bytes = 2684354560
+unpacked_bytes = 5100273664
+
+[payload.aarch64]
+unpacked_bytes = 671088640

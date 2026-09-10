@@ -14,76 +14,25 @@
 # limitations under the License.
 """Nemotron-Omni visual checkpoint-direct graph."""
 
-import math
-
-import numpy as np
 import tensorrt as trt
 
 from ...ops import Linear, Module, NetworkModule
 from ...ops import functional as F
 
 
-def _resize_position_embedding(position: np.ndarray,
-                               target_side: int) -> np.ndarray:
-    """Bilinearly resize a square RADIO patch-position embedding."""
-    stored_patches = int(position.shape[1])
-    stored_side = math.isqrt(stored_patches)
-    if stored_side * stored_side != stored_patches:
-        raise ValueError(
-            f"RADIO position embedding is not square: {stored_patches}")
-    if stored_side == target_side:
-        return np.ascontiguousarray(position.astype(np.float16))
-
-    coordinates = np.linspace(0,
-                              stored_side - 1,
-                              target_side,
-                              dtype=np.float32)
-    lower = np.floor(coordinates).astype(np.int64)
-    upper = np.minimum(lower + 1, stored_side - 1)
-    fraction = coordinates - lower
-    source = position.reshape(stored_side, stored_side,
-                              position.shape[-1]).astype(np.float32)
-    rows = (source[lower] * (1.0 - fraction[:, None, None]) +
-            source[upper] * fraction[:, None, None])
-    resized = (rows[:, lower] * (1.0 - fraction[None, :, None]) +
-               rows[:, upper] * fraction[None, :, None])
-    return np.ascontiguousarray(
-        resized.reshape(1, target_side * target_side,
-                        position.shape[-1]).astype(np.float16))
-
-
 class NemotronVisionPatchEmbeddings(Module):
-    """RADIO patch embeddings, resized position table, and register tokens."""
+    """Prepend RADIO register tokens to runtime-computed patch embeddings."""
 
-    def __init__(self, ctx, image_size: int, patch_size: int,
-                 hidden_size: int) -> None:
+    def __init__(self, ctx) -> None:
         super().__init__(ctx, "vision_model")
-        self.image_size = image_size
-        self.patch_size = patch_size
-        self.hidden_size = hidden_size
-        self.side = image_size // patch_size
-        self.num_patches = self.side * self.side
-        self.patch_key = self.weights.find_suffix(
-            "patch_generator.embedder.weight", "vision")
-        self.position_key = self.weights.find_suffix(
-            "patch_generator.pos_embed", "vision")
         self.register_key = self.weights.find_suffix(
             "patch_generator.cls_token.token", "vision")
         self.num_registers = int(self.weights.f16(self.register_key).shape[0])
 
-    def forward(self, pixels):
-        patch_weight = self.weights.f16(self.patch_key).reshape(
-            self.hidden_size, 3, self.patch_size, self.patch_size)
-        hidden = F.convolution(pixels,
-                               patch_weight,
-                               stride=(self.patch_size, self.patch_size))
-        hidden = hidden.reshape(
-            (0, self.hidden_size, self.num_patches)).transpose((0, 2, 1))
-        position = _resize_position_embedding(
-            self.weights.f32(self.position_key), self.side)
-        hidden = hidden + F.constant(position, "position_embedding")
-        registers = F.batch_token(hidden, self.weights.f16(self.register_key))
-        return F.concatenate((registers, hidden), 1)
+    def forward(self, patch_embeddings):
+        registers = F.batch_token(patch_embeddings,
+                                  self.weights.f16(self.register_key))
+        return F.concatenate((registers, patch_embeddings), 1)
 
 
 class NemotronRadioLayerNorm(Module):
@@ -209,11 +158,10 @@ class NemotronRadioBlock(Module):
 
 
 class NemotronVisionProjector(Module):
-    """Pixel unshuffle plus RADIO-to-LLM projector."""
+    """Dynamic pixel-unshuffle gather plus RADIO-to-LLM projector."""
 
-    def __init__(self, ctx, root: dict, side: int, hidden_size: int) -> None:
+    def __init__(self, ctx, root: dict, hidden_size: int) -> None:
         super().__init__(ctx, "mlp1")
-        self.side = side
         self.hidden_size = hidden_size
         self.scale = int(round(1.0 / float(root["downsample_ratio"])))
         norm_key = self.weights.find_suffix("mlp1.0.weight")
@@ -228,9 +176,13 @@ class NemotronVisionProjector(Module):
                               rank=3,
                               tensor_parallel=False)
 
-    def forward(self, hidden):
-        hidden = F.pixel_unshuffle(hidden, self.side, self.scale,
-                                   self.hidden_size)
+    def forward(self, hidden, shuffle_indices):
+        hidden = hidden.gather(shuffle_indices.reshape((-1, )), axis=1)
+        hidden_shape = F.shape_of(hidden)
+        shuffle_shape = F.shape_of(shuffle_indices)
+        hidden = F.dynamic_reshape(
+            hidden, (hidden_shape[0:1], shuffle_shape[0:1],
+                     self.hidden_size * self.scale * self.scale))
         hidden = self.linear1(self.norm(hidden)).relu()
         hidden = hidden * hidden
         return self.linear2(hidden)
@@ -250,10 +202,12 @@ class NemotronVisualEncoder(NetworkModule):
         self.image_size = int(self.root["force_image_size"])
         self.patch_size = int(self.root["patch_size"])
         self.hidden_size = int(self.root["vit_hidden_size"])
+        self.scale = int(round(1.0 / float(self.root["downsample_ratio"])))
+        if self.scale <= 0:
+            raise ValueError("downsample_ratio must define a positive scale")
         self.num_heads = int(
             self.visual.get("num_attention_heads", self.hidden_size // 80))
-        self.embeddings = NemotronVisionPatchEmbeddings(
-            ctx, self.image_size, self.patch_size, self.hidden_size)
+        self.embeddings = NemotronVisionPatchEmbeddings(ctx)
         self.blocks = [
             NemotronRadioBlock(ctx, prefix, self.hidden_size, self.num_heads)
             for prefix in self.weights.layer_prefixes((
@@ -266,21 +220,25 @@ class NemotronVisualEncoder(NetworkModule):
                 f"expected {expected_layers} RADIO blocks, found {len(self.blocks)}"
             )
         self.projector = NemotronVisionProjector(ctx, self.root,
-                                                 self.embeddings.side,
                                                  self.hidden_size)
 
     def input_tensors(self):
         return {
-            "pixels":
-            self.add_input("input", trt.float16,
-                           (-1, 3, self.image_size, self.image_size))
+            "patch_embeddings":
+            self.add_input("input", trt.float16, (-1, -1, self.hidden_size)),
+            "shuffle_indices":
+            self.add_input("shuffle_indices", trt.int64,
+                           (-1, self.scale * self.scale)),
         }
 
-    def forward(self, pixels):
-        hidden = self.embeddings(pixels)
+    def forward(self, patch_embeddings, shuffle_indices):
+        hidden = self.embeddings(patch_embeddings)
         for block in self.blocks:
             hidden = block(hidden)
-        hidden = hidden.slice_axis(1, self.embeddings.num_registers,
-                                   self.embeddings.num_patches, 3)
-        hidden = self.projector(hidden)
+        shape = F.shape_of(hidden)
+        hidden = F.dynamic_slice(
+            hidden, (0, self.embeddings.num_registers, 0),
+            (shape[0:1], shape[1:2] - self.embeddings.num_registers,
+             self.hidden_size))
+        hidden = self.projector(hidden, shuffle_indices)
         return {"output": hidden}

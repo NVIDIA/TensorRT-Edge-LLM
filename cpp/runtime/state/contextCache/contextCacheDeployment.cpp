@@ -48,9 +48,9 @@ void validateStateContract(LLMEngineConfig const& config, char const* label)
 
     if (config.numAttentionLayers > 0)
     {
-        ELLM_CHECK(config.kvCacheDtype == nvinfer1::DataType::kHALF,
-            std::string(label)
-                + " uses a KV dtype outside the supported non-identity page-table boundary (FP16 KV only).");
+        // Snapshot byte copies and page-table rebinds preserve both supported KV storage layouts.
+        ELLM_CHECK(config.kvCacheDtype == nvinfer1::DataType::kHALF || config.kvCacheDtype == nvinfer1::DataType::kFP8,
+            std::string(label) + " uses a KV dtype outside the supported context-reuse boundary (FP16 or FP8 KV).");
         // SWA changes the kernel read mask, not physical retention: context reuse requires a full logical allocation
         // for every attention layer so cached pages remain valid when rebound across requests.
         int64_t const minimumActivePages
@@ -88,69 +88,81 @@ void validateStateContract(LLMEngineConfig const& config, char const* label)
         std::string(label) + " uses vision-bidirectional attention, which is not managed by the context cache.");
 }
 
+ContextCacheModelStateKind classifyBaseState(LLMEngineConfig const& config)
+{
+    if (config.numLinearAttnLayers == 0)
+    {
+        return ContextCacheModelStateKind::kAttentionOnly;
+    }
+    if (config.numAttentionLayers == 0)
+    {
+        return ContextCacheModelStateKind::kPureRecurrent;
+    }
+    return ContextCacheModelStateKind::kHybrid;
+}
+
+void validateSpecDeploymentTuple(DeploymentConfig const& deployment)
+{
+    ELLM_CHECK(deployment.base.isSpecDecodeBase && deployment.draft.has_value() && deployment.specConfig.has_value()
+            && deployment.draft->specDecodeType == deployment.base.specDecodeType
+            && !deployment.draft->isSpecDecodeBase,
+        "Speculative context-cache deployment requires matching base-role/draft-role engines and configuration.");
+    validateStateContract(*deployment.draft, "draft engine");
+    ELLM_CHECK(deployment.specConfig->verifySize > 0 && deployment.specConfig->draftingStep > 0
+            && deployment.specConfig->draftingTopK > 0,
+        "Speculative context reuse has invalid execution geometry.");
+}
+
 } // namespace
 
-ContextCacheDeploymentKind validateContextCacheDeployment(DeploymentConfig const& deployment)
+ContextCacheDeploymentProfile validateContextCacheDeployment(DeploymentConfig const& deployment)
 {
     ELLM_CHECK(!deployment.base.isDiffusionBackbone,
         "Block Diffusion context reuse is outside the current context-reuse support boundary.");
     validateStateContract(deployment.base, "base engine");
 
-    switch (deployment.base.specDecodeType)
+    if (deployment.base.specDecodeType == SpecDecodeMode::kNONE)
     {
-    case SpecDecodeMode::kNONE:
         ELLM_CHECK(
             !deployment.base.isSpecDecodeBase && !deployment.draft.has_value() && !deployment.specConfig.has_value(),
             "Vanilla context-cache deployment requires an llm-role base and no draft/speculative configuration.");
         ELLM_CHECK(deployment.base.numAttentionLayers > 0 || deployment.base.numLinearAttnLayers > 0,
             "Context-cache deployment has no stateful layers.");
-        if (deployment.base.numLinearAttnLayers == 0)
-        {
-            return ContextCacheDeploymentKind::kVanilla;
-        }
-        if (deployment.base.numAttentionLayers == 0)
-        {
-            return ContextCacheDeploymentKind::kPureRecurrent;
-        }
-        return ContextCacheDeploymentKind::kHybrid;
+        return ContextCacheDeploymentProfile{classifyBaseState(deployment.base), std::nullopt};
+    }
 
-    case SpecDecodeMode::kEAGLE:
+    validateSpecDeploymentTuple(deployment);
+    std::optional<SpecReuseContract> const contract = resolveSpecReuseContract(deployment);
+    ELLM_CHECK(contract.has_value(), "Speculative method has no context-reuse contract.");
+
+    if (deployment.base.numLinearAttnLayers > 0)
     {
-        ELLM_CHECK(deployment.base.isSpecDecodeBase && deployment.draft.has_value() && deployment.specConfig.has_value()
-                && deployment.draft->specDecodeType == SpecDecodeMode::kEAGLE && !deployment.draft->isSpecDecodeBase,
-            "EAGLE context-cache deployment requires matching base-role/draft-role engines and speculative "
-            "configuration.");
-        validateStateContract(*deployment.draft, "draft engine");
-        ELLM_CHECK(deployment.base.numLinearAttnLayers == 0 && deployment.draft->numLinearAttnLayers == 0,
-            "Hybrid EAGLE context reuse is outside the current context-reuse support boundary.");
-        ELLM_CHECK(deployment.base.numAttentionLayers > 0 && deployment.draft->numAttentionLayers > 0,
-            "EAGLE context reuse requires page-backed base and draft KV caches.");
+        ELLM_CHECK(deployment.base.specDecodeType == SpecDecodeMode::kMTP && deployment.base.numAttentionLayers > 0,
+            "MTP context reuse requires a hybrid base with both attention and recurrent layers.");
         ELLM_CHECK(deployment.draft->hasOwnKVCache && !deployment.draft->sharesTargetKV,
-            "EAGLE context reuse requires a draft engine with its own independent KV cache.");
-        ELLM_CHECK(!deployment.base.specTargetLayerIds.empty(),
-            "EAGLE context reuse requires an explicit base conditioning-layer contract.");
-        {
-            std::vector<int32_t> sortedTargetLayers = deployment.base.specTargetLayerIds;
-            std::sort(sortedTargetLayers.begin(), sortedTargetLayers.end());
-            ELLM_CHECK(sortedTargetLayers.front() >= 0 && sortedTargetLayers.back() < deployment.base.numDecoderLayers
-                    && std::adjacent_find(sortedTargetLayers.begin(), sortedTargetLayers.end())
-                        == sortedTargetLayers.end(),
-                "EAGLE conditioning layer IDs must be unique and within the base decoder-layer range.");
-        }
-        int64_t const expectedConditioningSize = static_cast<int64_t>(deployment.base.hiddenSize)
-            * static_cast<int64_t>(deployment.base.specTargetLayerIds.size());
-        ELLM_CHECK(deployment.draft->baseModelHiddenSize == expectedConditioningSize,
-            "EAGLE base_model_hidden_size does not match the base hidden size and conditioning-layer count.");
-        return ContextCacheDeploymentKind::kEAGLE;
+            "MTP context reuse requires a draft engine with its own independent KV cache.");
+        return ContextCacheDeploymentProfile{ContextCacheModelStateKind::kHybrid, *contract};
     }
 
-    case SpecDecodeMode::kMTP:
-    case SpecDecodeMode::kDFlash:
-    case SpecDecodeMode::kGemma4MTP:
-    case SpecDecodeMode::kDSpark:
-        ELLM_CHECK(false, "Context reuse does not support MTP, DFlash, DSpark, or Gemma4 MTP deployments.");
+    ELLM_CHECK(
+        deployment.draft->numLinearAttnLayers == 0, "Hybrid speculative context reuse is supported only for MTP.");
+    ELLM_CHECK(deployment.base.specDecodeType != SpecDecodeMode::kMTP,
+        "MTP context reuse requires a hybrid base with both attention and recurrent layers.");
+    ELLM_CHECK(
+        deployment.base.numAttentionLayers > 0, "Speculative context reuse requires a page-backed base KV cache.");
+    if (contract->ownsPagedSpecState)
+    {
+        ELLM_CHECK(deployment.draft->numAttentionLayers > 0 && deployment.draft->hasOwnKVCache
+                && !deployment.draft->sharesTargetKV,
+            "Paged speculative context reuse requires a draft engine with its own independent KV cache.");
     }
-    ELLM_CHECK(false, "Unknown speculative decoding mode in context-cache deployment validation.");
+    else
+    {
+        ELLM_CHECK(deployment.draft->sharesTargetKV && !deployment.draft->hasOwnKVCache,
+            "Shared-target-KV speculative context reuse requires a read-only assistant with no independent KV cache.");
+    }
+
+    return ContextCacheDeploymentProfile{ContextCacheModelStateKind::kAttentionOnly, *contract};
 }
 
 } // namespace trt_edgellm::rt

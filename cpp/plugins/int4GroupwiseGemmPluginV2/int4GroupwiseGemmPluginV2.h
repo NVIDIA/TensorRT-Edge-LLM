@@ -134,11 +134,11 @@ public:
         nvinfer1::DynamicPluginTensorDesc const* /* out */, int32_t /* nbOutputs */) noexcept override;
 
     //! @brief Get workspace size required for execution
-    //! @param inputs Input tensor descriptors (max dims used to size the lock buffer)
+    //! @param inputs Input tensor descriptors (unused)
     //! @param nbInputs Number of inputs (not used)
     //! @param outputs Output tensor descriptors (not used)
     //! @param nbOutputs Number of outputs (not used)
-    //! @return Bytes for the serial split-K int32 lock buffer (0 when no split-K tactic applies)
+    //! @return 0; serial split-K locks use a plugin-owned runtime buffer.
     size_t getWorkspaceSize(nvinfer1::DynamicPluginTensorDesc const* inputs, int32_t /* nbInputs */,
         nvinfer1::DynamicPluginTensorDesc const* /* outputs */, int32_t /* nbOutputs */) const noexcept override;
 
@@ -147,7 +147,7 @@ public:
     //! @param outputDesc Output tensor descriptors
     //! @param inputs Input tensor pointers
     //! @param outputs Output tensor pointers
-    //! @param workspace Workspace pointer
+    //! @param workspace TensorRT workspace pointer (unused)
     //! @param stream CUDA stream
     //! @return 0 on success, non-zero on error
     int32_t enqueue(nvinfer1::PluginTensorDesc const* inputDesc, nvinfer1::PluginTensorDesc const* /* outputDesc */,
@@ -158,7 +158,7 @@ public:
     //! @param nbInputs Number of inputs (unused)
     //! @param out Output tensor descriptors (unused)
     //! @param nbOutputs Number of outputs (unused)
-    //! @details This is a no-op for this plugin type.
+    //! @details Allocates the plugin-owned serial split-K lock buffer before enqueue.
     //! @return 0 to signal success
     int32_t onShapeChange(nvinfer1::PluginTensorDesc const* /* in */, int32_t /* nbInputs */,
         nvinfer1::PluginTensorDesc const* /* out */, int32_t /* nbOutputs */) noexcept override;
@@ -201,6 +201,15 @@ private:
     //! only to prune the autotune tactic list by CTA-tile (see getValidTactics).
     //! 0 = unknown -> no pruning.
     int32_t mAutotuneM{0};
+
+    //! Serial split-K semaphore storage. This is plugin-owned so it cannot alias
+    //! TensorRT temporary workspace reused by surrounding layers.
+    int64_t mMaxLockWorkspaceBytes{};
+    void* mLockWorkspace{};
+    size_t mLockWorkspaceBytes{};
+
+    bool ensureLockWorkspace(size_t requiredBytes) noexcept;
+    void releaseLockWorkspace() noexcept;
 
     std::vector<nvinfer1::PluginField> mDataToSerialize;
     nvinfer1::PluginFieldCollection mFCToSerialize;

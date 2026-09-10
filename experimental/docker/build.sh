@@ -35,35 +35,6 @@ require_arg() {
     fi
 }
 
-retry() {
-    local attempt
-    for attempt in 1 2 3; do
-        "$@" && return 0
-        if [[ "${attempt}" -eq 3 ]]; then
-            return 1
-        fi
-        sleep $((attempt * 5))
-    done
-}
-
-ensure_submodule_checkout() {
-    local path="$1"
-    local url="$2"
-    local commit="$3"
-    local sentinel="$4"
-
-    if [[ -e "${path}/${sentinel}" ]]; then
-        return 0
-    fi
-
-    echo "Submodule content missing at ${path}; fetching ${commit} from ${url}" >&2
-    rm -rf "${path}"
-    retry git clone --no-checkout --filter=blob:none "${url}" "${path}"
-    retry git -C "${path}" fetch --depth=1 origin "${commit}" || \
-        retry git -C "${path}" fetch origin "${commit}"
-    git -C "${path}" checkout --detach "${commit}"
-}
-
 require_arg CUDA_CTK_VERSION
 require_arg EMBEDDED_TARGET
 require_arg ENABLE_CUTE_DSL
@@ -94,21 +65,16 @@ PY
 
 cd "${EDGELLM_HOME}"
 
-ensure_submodule_checkout \
-    3rdParty/NVTX \
-    https://github.com/NVIDIA/NVTX.git \
-    f71a0342a464b8580ac8573e4349086a631c3992 \
-    include/nvtx3/nvtx3.hpp
-ensure_submodule_checkout \
-    3rdParty/googletest \
-    https://github.com/google/googletest.git \
-    7917641ff965959afae189afb5f052524395525c \
-    CMakeLists.txt
-ensure_submodule_checkout \
-    3rdParty/nlohmannJson \
-    https://github.com/nlohmann/json.git \
-    22db828de4e24818599931dca17e0f111e1e895f \
-    include/nlohmann/json.hpp
+for required_file in \
+    3rdParty/NVTX/include/nvtx3/nvtx3.hpp \
+    3rdParty/googletest/CMakeLists.txt \
+    3rdParty/nlohmannJson/include/nlohmann/json.hpp; do
+    if [[ ! -f "${required_file}" ]]; then
+        echo "Missing submodule content: ${required_file}" >&2
+        echo "Run 'git submodule update --init --recursive' before building the image." >&2
+        exit 1
+    fi
+done
 
 artifact_arch="aarch64"
 artifact_root="cpp/kernels/cuteDSLArtifact/${artifact_arch}"
@@ -154,39 +120,8 @@ else
     PIP_INSTALL=(python3 -m pip install --break-system-packages)
 fi
 
-"${PIP_INSTALL[@]}" --upgrade 'setuptools<82' wheel pybind11
-
-python3 - <<'PY'
-from pathlib import Path
-
-source_files = [
-    Path("requirements.txt"),
-    Path("requirements-server.txt"),
-]
-skip_prefixes = (
-    "torch",
-    "numpy",
-)
-seen = set()
-lines = []
-
-for source in source_files:
-    for raw in source.read_text().splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        normalized = line.split(";", 1)[0].strip().lower()
-        if normalized.startswith(skip_prefixes):
-            continue
-        if line not in seen:
-            lines.append(line)
-            seen.add(line)
-
-Path("/tmp/tensorrt_edge_llm_requirements.txt").write_text("\n".join(lines) + "\n")
-PY
-
-"${PIP_INSTALL[@]}" -r /tmp/tensorrt_edge_llm_requirements.txt
-"${PIP_INSTALL[@]}" --no-deps -e .
+"${PIP_INSTALL[@]}" --upgrade 'setuptools<82' wheel
+"${PIP_INSTALL[@]}" -e ".[server,server-tools,native-build]"
 
 pybind11_dir="$(python3 -m pybind11 --cmakedir)"
 cmake_args=(

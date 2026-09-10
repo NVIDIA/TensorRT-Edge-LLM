@@ -462,14 +462,17 @@ __global__ void selective_state_update_prefill_kernel_simple(SelectiveStateUpdat
 // from the read-only committed state. The stash (replay_dA/u/B) was produced by the prefill kernel.
 // Same block/warp/lane mapping as the forward scan; the update is in-place on disjoint state elements.
 template <typename state_t, int DIM, int DSTATE, int numWarps>
-__global__ void mamba_replay_reconstruct_kernel(SelectiveStateUpdateParams params)
+__global__ void mamba_replay_reconstruct_batched_kernel(
+    MambaReplayLayerInfo const* __restrict__ layerInfos, SelectiveStateUpdateParams params)
 {
     constexpr int dstatePerLane = (DSTATE + kWARP_SIZE - 1) / kWARP_SIZE;
 
-    auto* __restrict__ state = reinterpret_cast<state_t*>(params.state);
-    auto const* __restrict__ replayDA = reinterpret_cast<float const*>(params.replay_dA);
-    auto const* __restrict__ replayU = reinterpret_cast<float const*>(params.replay_u);
-    auto const* __restrict__ replayB = reinterpret_cast<float const*>(params.replay_B);
+    int32_t const layer = blockIdx.z;
+    MambaReplayLayerInfo const& layerInfo = layerInfos[layer];
+    auto* __restrict__ state = static_cast<state_t*>(layerInfo.stateDst);
+    auto const* __restrict__ replayDA = static_cast<float const*>(layerInfo.replayDa);
+    auto const* __restrict__ replayU = static_cast<float const*>(layerInfo.replayU);
+    auto const* __restrict__ replayB = static_cast<float const*>(layerInfo.replayB);
 
     int const nheads = params.nheads;
     int const ngroups = params.ngroups;
@@ -575,6 +578,8 @@ template <typename state_t>
 struct SsmReplayReconstructLauncher
 {
     SelectiveStateUpdateParams& params;
+    MambaReplayLayerInfo const* layerInfos;
+    int32_t numLayers;
     cudaStream_t stream;
 
     template <int DIM, int DSTATE>
@@ -582,8 +587,9 @@ struct SsmReplayReconstructLauncher
     {
         constexpr int numWarps = 4;
         dim3 block(kWARP_SIZE, numWarps);
-        dim3 grid(params.batch, params.nheads);
-        mamba_replay_reconstruct_kernel<state_t, DIM, DSTATE, numWarps><<<grid, block, 0, stream>>>(params);
+        dim3 grid(params.batch, params.nheads, numLayers);
+        mamba_replay_reconstruct_batched_kernel<state_t, DIM, DSTATE, numWarps>
+            <<<grid, block, 0, stream>>>(layerInfos, params);
     }
 };
 
@@ -734,17 +740,23 @@ void invokeSelectiveStateUpdatePrefill(trt_edgellm::rt::Tensor const& x, trt_edg
 }
 
 // Public non-templated API (MTP spec-verify replay reconstruction).
-void invokeMambaReplayReconstruct(trt_edgellm::rt::Tensor& state, trt_edgellm::rt::Tensor const& replayDA,
-    trt_edgellm::rt::Tensor const& replayU, trt_edgellm::rt::Tensor const& replayB,
-    trt_edgellm::rt::Tensor const& acceptedLengths, int32_t activeBatchSize, cudaStream_t stream)
+void invokeMambaReplayReconstructBatched(MambaReplayLayerInfo const* deviceLayerInfos, int32_t numLayers,
+    trt_edgellm::rt::Tensor const& state, trt_edgellm::rt::Tensor const& replayU,
+    trt_edgellm::rt::Tensor const& replayB, trt_edgellm::rt::Tensor const& acceptedLengths, int32_t activeBatchSize,
+    cudaStream_t stream)
 {
-    if (activeBatchSize <= 0)
+    if (activeBatchSize <= 0 || numLayers <= 0)
     {
         return;
     }
+    if (deviceLayerInfos == nullptr)
+    {
+        throw std::runtime_error("invokeMambaReplayReconstructBatched: layer info must not be null.");
+    }
     if (activeBatchSize > static_cast<int32_t>(state.getShape()[0]))
     {
-        throw std::runtime_error("invokeMambaReplayReconstruct: activeBatchSize exceeds the state pool batch size.");
+        throw std::runtime_error(
+            "invokeMambaReplayReconstructBatched: activeBatchSize exceeds the state pool batch size.");
     }
 
     SelectiveStateUpdateParams params{};
@@ -760,26 +772,22 @@ void invokeMambaReplayReconstruct(trt_edgellm::rt::Tensor& state, trt_edgellm::r
     params.state_stride_head = state.getStride(1);
     params.state_stride_dim = state.getStride(2);
 
-    params.state = state.rawPointer();
-    params.replay_dA = const_cast<void*>(replayDA.rawPointer());
-    params.replay_u = const_cast<void*>(replayU.rawPointer());
-    params.replay_B = const_cast<void*>(replayB.rawPointer());
     params.replay_seq_len = replayU.getShape()[1]; // [batch, seq_len, nheads, dim]
     params.context_lengths = acceptedLengths.dataPointer<int32_t>();
 
     if (state.getDataType() == nvinfer1::DataType::kHALF)
     {
-        SsmReplayReconstructLauncher<half> launcher{params, stream};
+        SsmReplayReconstructLauncher<half> launcher{params, deviceLayerInfos, numLayers, stream};
         dispatchDimDstate(params, AllowedDims{}, AllowedDstates{}, launcher);
     }
     else if (state.getDataType() == nvinfer1::DataType::kFLOAT)
     {
-        SsmReplayReconstructLauncher<float> launcher{params, stream};
+        SsmReplayReconstructLauncher<float> launcher{params, deviceLayerInfos, numLayers, stream};
         dispatchDimDstate(params, AllowedDims{}, AllowedDstates{}, launcher);
     }
     else
     {
-        throw std::runtime_error("invokeMambaReplayReconstruct: state must be half or float.");
+        throw std::runtime_error("invokeMambaReplayReconstructBatched: state must be half or float.");
     }
 }
 

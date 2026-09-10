@@ -5,10 +5,16 @@
     "top_k": 1,
     "max_generate_length": 64,
     "context_cache_commit_policy": "prefill_state_only",
+    "system_prompt": "You are an expert visual analyst specializing in detailed image interpretation for scientific publications. When analyzing images, you must consider composition, color theory, lighting conditions, spatial relationships between subjects, emotional tone, and potential narrative elements. Your analysis should be structured with clear sections covering technical aspects such as exposure, focus depth, and framing, as well as artistic elements including mood, symbolism, and storytelling. Always provide your analysis in a professional tone suitable for academic review. Consider the cultural context and any implicit messages conveyed through visual elements. Your responses should demonstrate expertise in both photography and visual semiotics, drawing connections between observed elements and their broader significance.",
     "requests": [
         {
-            "_scenario": "First request with image A (cold start, populates cache)",
+            "_scenario": "1. Cold start with image A — no cache, ViT runs, KV + embedding stored",
+            "_expected": "cache miss, media_aware=true, encoder_cache_miss",
             "messages": [
+                {
+                    "role": "system",
+                    "content": "You are an expert visual analyst specializing in detailed image interpretation for scientific publications. When analyzing images, you must consider composition, color theory, lighting conditions, spatial relationships between subjects, emotional tone, and potential narrative elements. Your analysis should be structured with clear sections covering technical aspects such as exposure, focus depth, and framing, as well as artistic elements including mood, symbolism, and storytelling. Always provide your analysis in a professional tone suitable for academic review. Consider the cultural context and any implicit messages conveyed through visual elements. Your responses should demonstrate expertise in both photography and visual semiotics, drawing connections between observed elements and their broader significance."
+                },
                 {
                     "role": "user",
                     "content": [
@@ -25,8 +31,13 @@
             ]
         },
         {
-            "_scenario": "Same image A, different question (cache hit on image prefix)",
+            "_scenario": "2. Same image A, different question — KV cache hit (same media hash), encoder embedding cache hit (ViT skipped)",
+            "_expected": "cache hit (reuses system prompt + image prefix pages), media_aware=true, encoder_cache_hit",
             "messages": [
+                {
+                    "role": "system",
+                    "content": "You are an expert visual analyst specializing in detailed image interpretation for scientific publications. When analyzing images, you must consider composition, color theory, lighting conditions, spatial relationships between subjects, emotional tone, and potential narrative elements. Your analysis should be structured with clear sections covering technical aspects such as exposure, focus depth, and framing, as well as artistic elements including mood, symbolism, and storytelling. Always provide your analysis in a professional tone suitable for academic review. Consider the cultural context and any implicit messages conveyed through visual elements. Your responses should demonstrate expertise in both photography and visual semiotics, drawing connections between observed elements and their broader significance."
+                },
                 {
                     "role": "user",
                     "content": [
@@ -43,8 +54,13 @@
             ]
         },
         {
-            "_scenario": "Different image B, same question as request 1 (cache miss despite identical text)",
+            "_scenario": "3. Different image B — KV cache miss (different content hash at same positions), encoder cache miss",
+            "_expected": "cache miss (different media content hash), media_aware=true, encoder_cache_miss",
             "messages": [
+                {
+                    "role": "system",
+                    "content": "You are an expert visual analyst specializing in detailed image interpretation for scientific publications. When analyzing images, you must consider composition, color theory, lighting conditions, spatial relationships between subjects, emotional tone, and potential narrative elements. Your analysis should be structured with clear sections covering technical aspects such as exposure, focus depth, and framing, as well as artistic elements including mood, symbolism, and storytelling. Always provide your analysis in a professional tone suitable for academic review. Consider the cultural context and any implicit messages conveyed through visual elements. Your responses should demonstrate expertise in both photography and visual semiotics, drawing connections between observed elements and their broader significance."
+                },
                 {
                     "role": "user",
                     "content": [
@@ -61,8 +77,13 @@
             ]
         },
         {
-            "_scenario": "Image B again, different question (cache hit on image B prefix)",
+            "_scenario": "4. Same image B, different question — KV cache hit + encoder embedding cache hit",
+            "_expected": "cache hit (same media hash as req 3), media_aware=true, encoder_cache_hit",
             "messages": [
+                {
+                    "role": "system",
+                    "content": "You are an expert visual analyst specializing in detailed image interpretation for scientific publications. When analyzing images, you must consider composition, color theory, lighting conditions, spatial relationships between subjects, emotional tone, and potential narrative elements. Your analysis should be structured with clear sections covering technical aspects such as exposure, focus depth, and framing, as well as artistic elements including mood, symbolism, and storytelling. Always provide your analysis in a professional tone suitable for academic review. Consider the cultural context and any implicit messages conveyed through visual elements. Your responses should demonstrate expertise in both photography and visual semiotics, drawing connections between observed elements and their broader significance."
+                },
                 {
                     "role": "user",
                     "content": [
@@ -72,15 +93,51 @@
                         },
                         {
                             "type": "text",
-                            "text": "Is this animal in a zoo or in the wild?"
+                            "text": "Is this animal in a natural habitat or captivity?"
                         }
                     ]
                 }
             ]
         },
         {
-            "_scenario": "Multi-image request: A + B together (cache miss — different token layout)",
+            "_scenario": "5. Multi-turn with image A — user asks, assistant responds, user follows up. Tests prefix sharing across multi-turn with media tokens in the shared prefix.",
+            "_expected": "partial cache hit (system prompt + image A prefix reused), media_aware=true, encoder_cache_hit (image A still in LRU)",
             "messages": [
+                {
+                    "role": "system",
+                    "content": "You are an expert visual analyst specializing in detailed image interpretation for scientific publications. When analyzing images, you must consider composition, color theory, lighting conditions, spatial relationships between subjects, emotional tone, and potential narrative elements. Your analysis should be structured with clear sections covering technical aspects such as exposure, focus depth, and framing, as well as artistic elements including mood, symbolism, and storytelling. Always provide your analysis in a professional tone suitable for academic review. Consider the cultural context and any implicit messages conveyed through visual elements. Your responses should demonstrate expertise in both photography and visual semiotics, drawing connections between observed elements and their broader significance."
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "image": "examples/multimodal/pics/woman_and_dog.jpeg"
+                        },
+                        {
+                            "type": "text",
+                            "text": "What is in this photo?"
+                        }
+                    ]
+                },
+                {
+                    "role": "assistant",
+                    "content": "A woman sitting on a beach with a dog."
+                },
+                {
+                    "role": "user",
+                    "content": "What breed might the dog be?"
+                }
+            ]
+        },
+        {
+            "_scenario": "6. Two images A+B in one request — tests multi-image media-aware hashing (both images get distinct content hashes at their respective positions)",
+            "_expected": "cache miss (new token layout with 2 images), media_aware=true, encoder_cache_hit (both A and B in LRU)",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are an expert visual analyst specializing in detailed image interpretation for scientific publications. When analyzing images, you must consider composition, color theory, lighting conditions, spatial relationships between subjects, emotional tone, and potential narrative elements. Your analysis should be structured with clear sections covering technical aspects such as exposure, focus depth, and framing, as well as artistic elements including mood, symbolism, and storytelling. Always provide your analysis in a professional tone suitable for academic review. Consider the cultural context and any implicit messages conveyed through visual elements. Your responses should demonstrate expertise in both photography and visual semiotics, drawing connections between observed elements and their broader significance."
+                },
                 {
                     "role": "user",
                     "content": [
@@ -101,8 +158,13 @@
             ]
         },
         {
-            "_scenario": "Same multi-image A + B again, different question (cache hit on multi-image prefix)",
+            "_scenario": "7. Same two images A+B again, different question — KV cache hit (identical content hashes at identical positions)",
+            "_expected": "cache hit (same multi-image layout as req 6), media_aware=true, encoder_cache_hit",
             "messages": [
+                {
+                    "role": "system",
+                    "content": "You are an expert visual analyst specializing in detailed image interpretation for scientific publications. When analyzing images, you must consider composition, color theory, lighting conditions, spatial relationships between subjects, emotional tone, and potential narrative elements. Your analysis should be structured with clear sections covering technical aspects such as exposure, focus depth, and framing, as well as artistic elements including mood, symbolism, and storytelling. Always provide your analysis in a professional tone suitable for academic review. Consider the cultural context and any implicit messages conveyed through visual elements. Your responses should demonstrate expertise in both photography and visual semiotics, drawing connections between observed elements and their broader significance."
+                },
                 {
                     "role": "user",
                     "content": [
@@ -116,15 +178,20 @@
                         },
                         {
                             "type": "text",
-                            "text": "Which image shows an outdoor scene?"
+                            "text": "Which image shows an animal?"
                         }
                     ]
                 }
             ]
         },
         {
-            "_scenario": "Reversed image order B + A (cache miss — different content hash positions)",
+            "_scenario": "8. Reversed order B+A — tests that image position matters (different content hash at each position compared to A+B)",
+            "_expected": "cache miss (B is at position where A was, different hash), media_aware=true, encoder_cache_hit",
             "messages": [
+                {
+                    "role": "system",
+                    "content": "You are an expert visual analyst specializing in detailed image interpretation for scientific publications. When analyzing images, you must consider composition, color theory, lighting conditions, spatial relationships between subjects, emotional tone, and potential narrative elements. Your analysis should be structured with clear sections covering technical aspects such as exposure, focus depth, and framing, as well as artistic elements including mood, symbolism, and storytelling. Always provide your analysis in a professional tone suitable for academic review. Consider the cultural context and any implicit messages conveyed through visual elements. Your responses should demonstrate expertise in both photography and visual semiotics, drawing connections between observed elements and their broader significance."
+                },
                 {
                     "role": "user",
                     "content": [
@@ -145,8 +212,36 @@
             ]
         },
         {
-            "_scenario": "Text-only request (no media hash, tests text-only path still works)",
+            "_scenario": "9. Third image C (never seen) — confirms encoder embedding cache miss for new content",
+            "_expected": "cache miss, media_aware=true, encoder_cache_miss (new image bytes)",
             "messages": [
+                {
+                    "role": "system",
+                    "content": "You are an expert visual analyst specializing in detailed image interpretation for scientific publications. When analyzing images, you must consider composition, color theory, lighting conditions, spatial relationships between subjects, emotional tone, and potential narrative elements. Your analysis should be structured with clear sections covering technical aspects such as exposure, focus depth, and framing, as well as artistic elements including mood, symbolism, and storytelling. Always provide your analysis in a professional tone suitable for academic review. Consider the cultural context and any implicit messages conveyed through visual elements. Your responses should demonstrate expertise in both photography and visual semiotics, drawing connections between observed elements and their broader significance."
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "image": "examples/multimodal/pics/giant_panda.jpeg"
+                        },
+                        {
+                            "type": "text",
+                            "text": "What animal is in this photo?"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "_scenario": "10. Text-only request — no media hash used, tests that text-only path is unaffected by media-aware feature",
+            "_expected": "text-only prefix sharing (system prompt), media_aware=false",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are an expert visual analyst specializing in detailed image interpretation for scientific publications. When analyzing images, you must consider composition, color theory, lighting conditions, spatial relationships between subjects, emotional tone, and potential narrative elements. Your analysis should be structured with clear sections covering technical aspects such as exposure, focus depth, and framing, as well as artistic elements including mood, symbolism, and storytelling. Always provide your analysis in a professional tone suitable for academic review. Consider the cultural context and any implicit messages conveyed through visual elements. Your responses should demonstrate expertise in both photography and visual semiotics, drawing connections between observed elements and their broader significance."
+                },
                 {
                     "role": "user",
                     "content": "What is the capital of France? Answer in one word."
@@ -154,11 +249,30 @@
             ]
         }
     ],
-    "_comment": "Multi-turn VLM context reuse test exercising: single-image hit/miss, multi-image hit/miss, image-order sensitivity, and text-only fallback. Cache hits: req2 (same img A), req4 (same img B), req6 (same A+B pair), plus system-prompt prefix hits on req7 (reversed B+A shares system tokens) and req8 (text-only shares system tokens). media_aware=7 confirms all VLM requests use content-hash-augmented block hashing while the text-only request does not.",
+    "_design_notes": {
+        "functionalities_tested": [
+            "1. Media-aware block hashing: same image + same position = same block hash (req 2,4,7 hit)",
+            "2. Media-aware block hashing: different image + same position = different block hash (req 3 miss)",
+            "3. Media-aware block hashing: same images + different positions = different block hash (req 8 miss vs req 6)",
+            "4. Encoder embedding cache: ViT skipped on repeated image bytes (req 2,4,5,6,7,8 hit)",
+            "5. Encoder embedding cache: ViT runs on new image bytes (req 1,3,9 miss)",
+            "6. Encoder embedding LRU: earlier images remain cached across multiple intervening requests (req 5 uses A after B)",
+            "7. Media boundary page trimming: multi-turn req 5 has image in prefix, trimming ensures correct suffix prefill",
+            "8. Multi-image content hashing: each image gets unique hash at its token positions (req 6,7,8)",
+            "9. Image order sensitivity: swapping image order produces different hashes (req 8 vs req 6)",
+            "10. Text-only backward compatibility: text requests use standard token hashing (req 10)"
+        ],
+        "expected_metrics": {
+            "admitted_sequences": 10,
+            "hit_sequences_min": 4,
+            "media_aware_sequences": 9,
+            "reused_tokens_gt": 0
+        }
+    },
     "expected_context_cache": {
-        "admitted_sequences": 8,
+        "admitted_sequences": 10,
         "hit_sequences": 5,
-        "media_aware_sequences": 7,
-        "reused_tokens": 2432
+        "media_aware_sequences": 9,
+        "reused_tokens": 3200
     }
 }

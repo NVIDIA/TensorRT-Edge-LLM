@@ -435,9 +435,10 @@ struct alignas(128) SharedMem
     }
 };
 
-CUBIN_EXPORT __device__ constexpr uint32_t smemSize = sizeof(SharedMem);
+constexpr uint32_t kSmemSize = sizeof(SharedMem);
+CUBIN_EXPORT __device__ uint32_t smemSize = kSmemSize;
 #ifdef __CUDA_ARCH__
-static_assert(smemSize < kMAX_SMEM_SIZE);
+static_assert(kSmemSize < kMAX_SMEM_SIZE);
 #endif
 
 #if 0
@@ -1266,11 +1267,12 @@ __device__ inline void smemXVPartGemm(Warp const& warp, WarpAcc& acc, bool skipX
         VSlice const vSlice = [&]()
         {
             VSlice ret;
-            if constexpr (mha::is_same_v<InputElem, VElemType>)
-            {
-                ret = vSliceOrig;
-            }
-            else if constexpr (isLowPrecCacheElem<VElemType>)
+// NVRTC still type-checks the direct-copy branch for low-precision cache kernels,
+// where VSlice and vSliceOrig intentionally have different element widths.
+#if CACHE_ELEM_ENUM == TRT_EDGELLM_XQA_CACHE_ELEM_INPUT
+            ret = vSliceOrig;
+#else
+            if constexpr (isLowPrecCacheElem<VElemType>)
             {
 #pragma unroll
                 for (uint32_t m = 0; m < ret.rows; m++)
@@ -1302,6 +1304,7 @@ __device__ inline void smemXVPartGemm(Warp const& warp, WarpAcc& acc, bool skipX
                 assert(!"not implemented");
                 trap();
             }
+#endif
             return ret;
         }();
 // compute
@@ -1983,14 +1986,14 @@ CUBIN_EXPORT __global__
 
         bool qBarParityNext = false;
         auto& qBar = smem.qBarrier[warpIdx.y];
-#if CACHE_ELEM_ENUM != 0
+#if CACHE_ELEM_ENUM != TRT_EDGELLM_XQA_CACHE_ELEM_INPUT
         constexpr bool reorderForKCache = (useKVCache && inputElemSize == 2 && cacheElemSize == 1);
 #endif
         if constexpr (persistentQ)
         {
             qBar.wait_parity(qBarParityNext);
             qBarParityNext = !qBarParityNext;
-#if CACHE_ELEM_ENUM != 0
+#if CACHE_ELEM_ENUM != TRT_EDGELLM_XQA_CACHE_ELEM_INPUT
             if constexpr (reorderForKCache)
             {
                 reorder16bQHeadsToMatch8bKCache<ctaShapeInWarps.x, qkSwizzle, true>(warpIdx.x, smem.q[warpIdx.y][0]);
@@ -2102,7 +2105,7 @@ CUBIN_EXPORT __global__
                 ldgsts::commitGroup();
                 qBar.wait_parity(qBarParityNext);
                 qBarParityNext = !qBarParityNext;
-#if CACHE_ELEM_ENUM != 0
+#if CACHE_ELEM_ENUM != TRT_EDGELLM_XQA_CACHE_ELEM_INPUT
                 if constexpr (reorderForKCache)
                 {
                     reorder16bQHeadsToMatch8bKCache<ctaShapeInWarps.x, qkSwizzle, true>(warpIdx.x,
@@ -2794,7 +2797,7 @@ CUBIN_EXPORT __global__
                 __syncthreads();
                 // store to shared memory, then merge groups.
                 using PostProcSMem = SharedMem::XSmemBuffer[ctaShapeInWarps.y][gemm1WarpsPerGrp][gemm1NbWarpGrps];
-                static_assert(sizeof(PostProcSMem) <= smemSize);
+                static_assert(sizeof(PostProcSMem) <= kSmemSize);
                 SharedMem::XSmemBuffer(&postSMem)[gemm1NbWarpGrps]
                     = reinterpret_cast<PostProcSMem&>(smem)[warpIdx.y][warpIdxInGrp];
                 storeGemmOutTile(warp, postSMem[warpGrpIdx], tile, reorder);
@@ -2862,7 +2865,7 @@ CUBIN_EXPORT __global__
                 MBBuf storage[ctaShapeInWarps.y];
             };
 
-            static_assert(sizeof(MultiBlockSMem) <= smemSize);
+            static_assert(sizeof(MultiBlockSMem) <= kSmemSize);
             MultiBlockSMem& mbsmem = reinterpret_cast<MultiBlockSMem&>(smem);
             // increase the semaphore by 1
             if (warpIdx.y == 0 && warpGrpIdx == 0 && warpIdxInGrp == 0 && laneId() == 0)

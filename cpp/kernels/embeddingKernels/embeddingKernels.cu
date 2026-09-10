@@ -329,35 +329,52 @@ void launchGemma4PleGather(int32_t const* inputIds, T const* pleTable, T* output
 // order (they are not reset per row), matching the host reference. The scan is inherently sequential, so
 // a single thread performs it; the buffer is a prefill-length row of ints and this runs once per prefill,
 // avoiding any device<->host copy to build the indices.
-__global__ void generateMultimodalIndicesKernel(
-    int32_t const* inputIds, int32_t* multimodalIndices, int64_t total, int32_t imageTokenId, int32_t audioTokenId)
+//
+// When KV cache prefix reuse trims media tokens from the beginning of a sequence, the embedding tensor
+// still contains rows for those prefix media items. Per-batch-item base offsets (imageBaseOffsets,
+// audioBaseOffsets) shift the counters so suffix tokens index past the prefix rows. At each batch
+// boundary (every seqLen positions), the counter resets to that batch item's base offset.
+__global__ void generateMultimodalIndicesKernel(int32_t const* inputIds, int32_t* multimodalIndices, int64_t seqLen,
+    int32_t batchSize, int32_t imageTokenId, int32_t audioTokenId, int32_t const* imageBaseOffsets,
+    int32_t const* audioBaseOffsets)
 {
     if (blockIdx.x != 0 || threadIdx.x != 0)
     {
         return;
     }
-    int32_t imageIndex = 0;
-    int32_t audioIndex = 0;
-    for (int64_t pos = 0; pos < total; ++pos)
+    int32_t imageIndex = (imageBaseOffsets != nullptr) ? imageBaseOffsets[0] : 0;
+    int32_t audioIndex = (audioBaseOffsets != nullptr) ? audioBaseOffsets[0] : 0;
+    for (int32_t batch = 0; batch < batchSize; ++batch)
     {
-        int32_t const tokenId = inputIds[pos];
-        if (audioTokenId >= 0 && tokenId == audioTokenId)
+        if (batch > 0)
         {
-            multimodalIndices[pos] = audioIndex++;
+            imageIndex = (imageBaseOffsets != nullptr) ? imageBaseOffsets[batch] : imageIndex;
+            audioIndex = (audioBaseOffsets != nullptr) ? audioBaseOffsets[batch] : audioIndex;
         }
-        else if (imageTokenId >= 0 && tokenId == imageTokenId)
+        int64_t const rowStart = static_cast<int64_t>(batch) * seqLen;
+        for (int64_t col = 0; col < seqLen; ++col)
         {
-            multimodalIndices[pos] = imageIndex++;
-        }
-        else
-        {
-            multimodalIndices[pos] = 0;
+            int64_t const pos = rowStart + col;
+            int32_t const tokenId = inputIds[pos];
+            if (audioTokenId >= 0 && tokenId == audioTokenId)
+            {
+                multimodalIndices[pos] = audioIndex++;
+            }
+            else if (imageTokenId >= 0 && tokenId == imageTokenId)
+            {
+                multimodalIndices[pos] = imageIndex++;
+            }
+            else
+            {
+                multimodalIndices[pos] = 0;
+            }
         }
     }
 }
 
 void generateMultimodalIndices(rt::Tensor const& inputIds, rt::Tensor& multimodalIndices,
-    std::optional<int32_t> imageTokenId, std::optional<int32_t> audioTokenId, cudaStream_t stream)
+    std::optional<int32_t> imageTokenId, std::optional<int32_t> audioTokenId, cudaStream_t stream,
+    int32_t const* imageBaseOffsets, int32_t const* audioBaseOffsets)
 {
     auto const inputShape = inputIds.getShape();
     check::check(inputShape.getNumDims() == 2, "inputIds must be 2D tensor [batchSize, seqLen]");
@@ -366,9 +383,11 @@ void generateMultimodalIndices(rt::Tensor const& inputIds, rt::Tensor& multimoda
     check::check(inputIds.getDataType() == nvinfer1::DataType::kINT32, "inputIds must be INT32");
     check::check(multimodalIndices.getDataType() == nvinfer1::DataType::kINT32, "multimodalIndices must be INT32");
 
-    int64_t const total = inputShape.volume();
+    int32_t const batchSize = static_cast<int32_t>(inputShape[0]);
+    int64_t const seqLen = inputShape[1];
     generateMultimodalIndicesKernel<<<1, 1, 0, stream>>>(inputIds.dataPointer<int32_t>(),
-        multimodalIndices.dataPointer<int32_t>(), total, imageTokenId.value_or(-1), audioTokenId.value_or(-1));
+        multimodalIndices.dataPointer<int32_t>(), seqLen, batchSize, imageTokenId.value_or(-1),
+        audioTokenId.value_or(-1), imageBaseOffsets, audioBaseOffsets);
 }
 
 void assembleDeepstackEmbedding(rt::Tensor const& inputIds, rt::Tensor const& deepstackFeatures,

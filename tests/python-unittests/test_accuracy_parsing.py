@@ -76,3 +76,25 @@ def test_parse_mmlu_pro_rejected_option_is_not_answer():
     text = "Option I is tempting, but it contradicts the premise; option J is also wrong."
 
     assert _parse(text) == clean_text(text)
+
+
+def test_parse_answer_marker_with_both_is_and_colon():
+    assert _parse("The correct answer is: B") == "B"
+    assert _parse("The answer is: D<eos>") == "D"
+    assert _parse("Result is: C") == "C"
+    assert _parse("Option is: J") == "J"
+
+
+def test_parse_answer_marker_with_interposed_question_reference():
+    assert _parse(
+        "The answer to the final question is:\n\n**C. Bitcoin**") == "C"
+    assert _parse("The correct answer for the final question is: **A**") == "A"
+    assert _parse("The answer to the last question is B") == "B"
+
+
+def test_parse_qualifier_does_not_swallow_unrelated_clauses():
+    # Guards the qualifier against being widened to a wildcard span, which
+    # would match "... or there is a ..." and score that "a" as the answer.
+    text = "Answer: None of the above (or there is a stronger counterexample)"
+
+    assert _parse(text) == clean_text(text)

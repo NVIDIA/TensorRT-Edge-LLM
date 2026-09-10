@@ -17,6 +17,7 @@
 | **GPU memory** | Peak GPU memory usage during inference (MB) |
 | **MTP** | Multi-token prediction speculative decoding |
 | **DFlash** | z-lab paired-draft speculative decoding with a dedicated external draft checkpoint |
+| **JetSpec** | JetSpec paired-draft speculative decoding with causal proposal attention and branching tree verification |
 
 ### Precision Key
 
@@ -36,7 +37,7 @@ basic inference:
 - [Quick Start Guide](../getting_started/quick-start-guide.md) for LLM and VLM
   export, component engine builds, `llm_inference`, and `llm_bench`.
 - [Speculative Decoding](../examples/speculative-decoding.md) for EAGLE3, MTP,
-  and DFlash export/build layouts.
+  DFlash, and JetSpec export/build layouts.
 - [Input Format Guide](../format/input-format.md) for the Edge-LLM JSON request
   format and chat-template behavior.
 
@@ -96,6 +97,8 @@ and decoding mode. Use these benchmark-specific build parameters:
 | MTP draft engine | Vanilla LLM parameters plus `--specDraft --maxDraftTreeSize 4` |
 | DFlash base engine | Vanilla LLM parameters plus `--specBase --maxVerifyTreeSize 16` |
 | DFlash draft engine | Vanilla LLM parameters plus `--specDraft --maxDraftTreeSize 16` |
+| JetSpec tree base engine | Vanilla LLM parameters plus `--specBase --maxVerifyTreeSize 128` |
+| JetSpec draft engine | Vanilla LLM parameters plus `--specDraft --maxDraftTreeSize 128` |
 
 Use the batch size shown in the benchmark row. Thor and Jetson AGX Orin rows may
 use batch `1` or `8`; Jetson Orin NX and Orin Nano rows are generally batch `1`.
@@ -106,8 +109,10 @@ For INT4 runs on Orin, follow the export docs but use externalized INT4 weights:
 For speculative decoding, follow the exact export layouts in
 [Speculative Decoding](../examples/speculative-decoding.md): EAGLE3 uses a base
 and draft export, MTP uses the MTP base and `mtp_draft` export, and DFlash uses
-the paired DFlash base and draft export. For DFlash, use the linear DFlash base
-export for `--specDraftTopK 1`; use the tree-base export only for DDTree runs.
+the paired DFlash base and draft export. JetSpec uses the paired JetSpec
+tree-base and draft export. For DFlash, use the linear DFlash base export for
+`--specDraftTopK 1`; use the tree-base export only for DDTree runs. For JetSpec,
+use the tree-base export with `--specDraftTopK > 1`.
 
 ### 3. Runtime Benchmark Specs
 
@@ -124,10 +129,12 @@ the profile JSON. Use these common runtime settings:
 | MTP runtime | Common settings plus `--specDecode --specDraftTopK 1 --specDraftStep 3 --specVerifySize 4` |
 | DFlash linear runtime | Common settings plus `--specDecode --specDraftTopK 1 --specDraftStep 1 --specVerifySize 16` |
 | DFlash DDTree runtime | Follow the DFlash guide; use `--specDraftTopK > 1` with the tree-base export |
+| JetSpec tree runtime | Common settings plus `--specDecode --specDraftTopK 7 --specDraftStep 1 --specVerifySize 128 --jetspecBlockSize 16` |
 
-For Qwen3.5 DFlash inputs, set `"enable_thinking": true`; for Qwen3 DFlash
-inputs, set `"enable_thinking": false`. These settings match the paired
-HuggingFace generation behavior used for DFlash validation.
+For Qwen3.5 DFlash inputs, set `"enable_thinking": true`; for Qwen3 DFlash and
+Qwen3 JetSpec inputs, set `"enable_thinking": false`. These settings match the
+paired HuggingFace generation behavior used for speculative decoding
+validation.
 
 For synthetic component timing, run `llm_bench` on the same engines:
 
@@ -141,8 +148,666 @@ For synthetic component timing, run `llm_bench` on the same engines:
 | Spec verify | `--mode spec_verify --batchSize <batch> --verifyTreeSize <verify_tree_size> --pastKVLen 2048 --warmup 3 --iterations 10 --profile` |
 
 Use `draftTreeSize` / `verifyTreeSize` values of `60` for EAGLE3, `4` for MTP,
-and `16` for linear DFlash.
+`16` for linear DFlash, and `128` for JetSpec tree runs.
 
+## v0.10.0 Results
+
+> **SDK Version:** TensorRT Edge-LLM 0.10.0 &nbsp;|&nbsp; **Jetson:** JetPack 7.2, CUDA 13.2, TensorRT 10.16 &nbsp;|&nbsp; **DGX Spark:** CUDA 13.0, TensorRT 10.16
+
+> **Decode throughput:** Runtime `Decode (tok/s)` reports generated tokens per second for vanilla decoding and overall accepted-token throughput for speculative decoding. `llm_bench` BS=8 decode throughput is reported as aggregate batch throughput.
+
+### v0.10.0 `llm_bench` Component Performance
+
+These rows report fixed-length `llm_bench` prefill and decode measurements at the batch sizes shown. Batch-8 decode is shown as aggregate throughput (`per-sequence tok/s x batch size`).
+
+| Platform | Model | Kind | Mode | Precision | Batch | Prefill Seq Len | Prefill E2E (ms) | Prefill (tok/s) | Decode Past KV Len | Decode (tok/s) |
+|----------|-------|------|------|-----------|:-----:|----------------:|-----------------:|----------------:|-------------------:|---------------:|
+| Jetson AGX Thor | gemma-4-12B-it | VLM | Vanilla | FP16 / FP16 | 1 | 2,048 | 622.8 | 3,288.6 | 2,048 | 10.1 |
+| Jetson AGX Thor | gemma-4-12B-it | VLM | Vanilla | FP16 / FP16 | 8 | 2,048 | 7,291.6 | 280.9 | 2,048 | 74.4 |
+| Jetson AGX Thor | gemma-4-31B-it | VLM | Vanilla | FP8 / FP16 | 1 | 2,048 | 1,036.4 | 1,976.1 | 2,048 | 7.4 |
+| Jetson AGX Thor | gemma-4-31B-it | VLM | Vanilla | FP8 / FP16 | 8 | 2,048 | 9,171.5 | 223.3 | 2,048 | 48.0 |
+| Jetson AGX Thor | gemma-4-31B-it | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 2,048 | 2,899.5 | 706.3 | 2,048 | 12.8 |
+| Jetson AGX Thor | gemma-4-31B-it | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,048 | 36,592.2 | 56.0 | 2,048 | 74.4 |
+| Jetson AGX Thor | nvidia-Gemma-4-26B-A4B | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 187.9 | 10,901.7 | 2,048 | 41.8 |
+| Jetson AGX Thor | nvidia-Gemma-4-26B-A4B | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 1,718.1 | 1,192.0 | 2,048 | 193.6 |
+| Jetson AGX Thor | nvidia-Gemma-4-31B-IT | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 786.9 | 2,602.5 | 2,048 | 7.7 |
+| Jetson AGX Thor | nvidia-Gemma-4-31B-IT | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 10,663.3 | 192.1 | 2,048 | 54.4 |
+| Jetson AGX Thor | NVIDIA-Nemotron-3-Nano-30B-A3B | LLM | Vanilla | NVFP4 | 1 | 2,048 | 168.7 | 12,138.6 | 2,048 | 76.2 |
+| Jetson AGX Thor | NVIDIA-Nemotron-3-Nano-30B-A3B | LLM | Vanilla | NVFP4 | 8 | 2,048 | 1,033.3 | 1,982.0 | 2,048 | 275.2 |
+| Jetson AGX Thor | NVIDIA-Nemotron-3-Nano-4B | LLM | Vanilla | NVFP4 | 1 | 2,048 | 1,228.4 | 1,667.3 | 2,048 | 66.8 |
+| Jetson AGX Thor | NVIDIA-Nemotron-3-Nano-4B | LLM | Vanilla | NVFP4 | 8 | 2,048 | 5,724.6 | 357.8 | 2,048 | 423.2 |
+| Jetson AGX Thor | NVIDIA-Nemotron-3.5-Lightning-30B-A3B | LLM | Vanilla | NVFP4 | 1 | 2,048 | 376.5 | 5,439.0 | 2,048 | 80.7 |
+| Jetson AGX Thor | NVIDIA-Nemotron-3.5-Lightning-30B-A3B | LLM | Vanilla | NVFP4 | 8 | 2,048 | 2,885.1 | 709.9 | 2,048 | 282.4 |
+| Jetson AGX Thor | Qwen2.5-VL-7B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 83.1 | 24,637.4 | 2,048 | 59.2 |
+| Jetson AGX Thor | Qwen2.5-VL-7B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 961.9 | 2,129.2 | 2,048 | 382.4 |
+| Jetson AGX Thor | Qwen3-0.6B | LLM | Vanilla | INT4 AWQ | 1 | 2,048 | 54.8 | 37,350.2 | 2,048 | 253.1 |
+| Jetson AGX Thor | Qwen3-0.6B | LLM | Vanilla | INT4 AWQ | 8 | 2,048 | 658.4 | 3,110.6 | 2,048 | 718.4 |
+| Jetson AGX Thor | Qwen3-0.6B | LLM | Vanilla | NVFP4 | 1 | 2,048 | 17.9 | 114,242.2 | 2,048 | 244.3 |
+| Jetson AGX Thor | Qwen3-0.6B | LLM | Vanilla | NVFP4 | 8 | 2,048 | 209.3 | 9,785.5 | 2,048 | 740.0 |
+| Jetson AGX Thor | Qwen3-1.7B | LLM | Vanilla | INT4 AWQ | 1 | 2,048 | 145.4 | 14,082.4 | 2,048 | 135.1 |
+| Jetson AGX Thor | Qwen3-1.7B | LLM | Vanilla | INT4 AWQ | 8 | 2,048 | 1,777.8 | 1,152.0 | 2,048 | 547.2 |
+| Jetson AGX Thor | Qwen3-1.7B | LLM | Vanilla | NVFP4 | 1 | 2,048 | 27.7 | 73,858.3 | 2,048 | 135.5 |
+| Jetson AGX Thor | Qwen3-1.7B | LLM | Vanilla | NVFP4 | 8 | 2,048 | 314.4 | 6,514.6 | 2,048 | 532.8 |
+| Jetson AGX Thor | Qwen3-30B-A3B | LLM | Vanilla | INT4 GPTQ | 1 | 2,048 | 490.6 | 4,174.4 | 2,048 | 76.7 |
+| Jetson AGX Thor | Qwen3-30B-A3B | LLM | Vanilla | INT4 GPTQ | 8 | 2,048 | 4,264.1 | 480.3 | 2,048 | 233.6 |
+| Jetson AGX Thor | Qwen3-30B-A3B | LLM | Vanilla | NVFP4 | 1 | 2,048 | 137.7 | 14,869.9 | 2,048 | 84.1 |
+| Jetson AGX Thor | Qwen3-30B-A3B | LLM | Vanilla | NVFP4 | 8 | 2,048 | 964.5 | 2,123.4 | 2,048 | 251.2 |
+| Jetson AGX Thor | Qwen3-4B-Instruct-2507 | LLM | Vanilla | INT4 AWQ | 1 | 2,048 | 364.6 | 5,617.3 | 2,048 | 76.5 |
+| Jetson AGX Thor | Qwen3-4B-Instruct-2507 | LLM | Vanilla | INT4 AWQ | 8 | 2,048 | 4,671.1 | 438.4 | 2,048 | 350.4 |
+| Jetson AGX Thor | Qwen3-4B-Instruct-2507 | LLM | Vanilla | NVFP4 | 1 | 2,048 | 62.0 | 33,029.8 | 2,048 | 73.4 |
+| Jetson AGX Thor | Qwen3-4B-Instruct-2507 | LLM | Vanilla | NVFP4 | 8 | 2,048 | 746.3 | 2,744.4 | 2,048 | 356.0 |
+| Jetson AGX Thor | Qwen3-8B | LLM | Vanilla | INT4 AWQ | 1 | 2,048 | 663.4 | 3,087.2 | 2,048 | 46.4 |
+| Jetson AGX Thor | Qwen3-8B | LLM | Vanilla | INT4 AWQ | 8 | 2,048 | 8,266.6 | 247.7 | 2,048 | 250.4 |
+| Jetson AGX Thor | Qwen3-8B | LLM | Vanilla | NVFP4 | 1 | 2,048 | 104.9 | 19,516.9 | 2,048 | 44.6 |
+| Jetson AGX Thor | Qwen3-8B | LLM | Vanilla | NVFP4 | 8 | 2,048 | 1,144.7 | 1,789.1 | 2,048 | 254.4 |
+| Jetson AGX Thor | Qwen3-VL-2B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 2,048 | 145.3 | 14,091.7 | 2,048 | 135.3 |
+| Jetson AGX Thor | Qwen3-VL-2B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,048 | 1,846.1 | 1,109.4 | 2,048 | 541.6 |
+| Jetson AGX Thor | Qwen3-VL-2B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 28.0 | 73,082.5 | 2,048 | 136.0 |
+| Jetson AGX Thor | Qwen3-VL-2B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 317.7 | 6,446.4 | 2,048 | 564.0 |
+| Jetson AGX Thor | Qwen3-VL-4B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 2,048 | 364.4 | 5,620.4 | 2,048 | 76.3 |
+| Jetson AGX Thor | Qwen3-VL-4B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,048 | 4,658.7 | 439.6 | 2,048 | 353.6 |
+| Jetson AGX Thor | Qwen3-VL-4B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 62.2 | 32,915.8 | 2,048 | 72.9 |
+| Jetson AGX Thor | Qwen3-VL-4B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 750.5 | 2,728.8 | 2,048 | 358.4 |
+| Jetson AGX Thor | Qwen3-VL-8B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 2,048 | 662.2 | 3,092.9 | 2,048 | 46.2 |
+| Jetson AGX Thor | Qwen3-VL-8B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,048 | 7,897.8 | 259.3 | 2,048 | 249.6 |
+| Jetson AGX Thor | Qwen3-VL-8B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 104.5 | 19,604.5 | 2,048 | 44.4 |
+| Jetson AGX Thor | Qwen3-VL-8B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 1,149.5 | 1,781.7 | 2,048 | 254.4 |
+| Jetson AGX Thor | Qwen3.5-0.8B | LLM | Vanilla | INT4 AWQ | 1 | 2,048 | 72.5 | 28,237.7 | 2,048 | 232.5 |
+| Jetson AGX Thor | Qwen3.5-0.8B | LLM | Vanilla | INT4 AWQ | 8 | 2,048 | 821.0 | 2,494.5 | 2,048 | 1,183.2 |
+| Jetson AGX Thor | Qwen3.5-0.8B | LLM | Vanilla | NVFP4 | 1 | 2,048 | 32.7 | 62,644.7 | 2,048 | 229.6 |
+| Jetson AGX Thor | Qwen3.5-0.8B | LLM | Vanilla | NVFP4 | 8 | 2,048 | 327.0 | 6,263.0 | 2,048 | 1,212.8 |
+| Jetson AGX Thor | Qwen3.5-0.8B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 2,048 | 72.4 | 28,286.9 | 2,048 | 232.6 |
+| Jetson AGX Thor | Qwen3.5-0.8B | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,048 | 800.9 | 2,557.2 | 2,048 | 1,172.8 |
+| Jetson AGX Thor | Qwen3.5-0.8B | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 32.7 | 62,606.0 | 2,048 | 229.6 |
+| Jetson AGX Thor | Qwen3.5-0.8B | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 327.1 | 6,261.2 | 2,048 | 1,217.6 |
+| Jetson AGX Thor | Qwen3.5-27B | LLM | Vanilla | INT4 AWQ | 1 | 2,048 | 2,353.1 | 870.3 | 2,048 | 15.2 |
+| Jetson AGX Thor | Qwen3.5-27B | LLM | Vanilla | INT4 AWQ | 8 | 2,048 | 30,171.7 | 67.9 | 2,048 | 100.8 |
+| Jetson AGX Thor | Qwen3.5-27B | LLM | Vanilla | NVFP4 | 1 | 2,048 | 448.7 | 4,563.9 | 2,048 | 14.7 |
+| Jetson AGX Thor | Qwen3.5-27B | LLM | Vanilla | NVFP4 | 8 | 2,048 | 4,234.7 | 483.6 | 2,048 | 95.2 |
+| Jetson AGX Thor | Qwen3.5-27B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 2,048 | 2,311.9 | 885.9 | 2,048 | 15.0 |
+| Jetson AGX Thor | Qwen3.5-27B | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,048 | 29,907.2 | 68.5 | 2,048 | 101.6 |
+| Jetson AGX Thor | Qwen3.5-27B | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 447.3 | 4,578.5 | 2,048 | 14.5 |
+| Jetson AGX Thor | Qwen3.5-27B | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 4,213.9 | 486.0 | 2,048 | 95.2 |
+| Jetson AGX Thor | Qwen3.5-2B | LLM | Vanilla | INT4 AWQ | 1 | 2,048 | 152.4 | 13,440.9 | 2,048 | 122.5 |
+| Jetson AGX Thor | Qwen3.5-2B | LLM | Vanilla | INT4 AWQ | 8 | 2,048 | 1,858.5 | 1,101.9 | 2,048 | 738.4 |
+| Jetson AGX Thor | Qwen3.5-2B | LLM | Vanilla | NVFP4 | 1 | 2,048 | 42.9 | 47,716.2 | 2,048 | 122.4 |
+| Jetson AGX Thor | Qwen3.5-2B | LLM | Vanilla | NVFP4 | 8 | 2,048 | 423.5 | 4,835.8 | 2,048 | 752.8 |
+| Jetson AGX Thor | Qwen3.5-2B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 2,048 | 151.7 | 13,499.3 | 2,048 | 122.8 |
+| Jetson AGX Thor | Qwen3.5-2B | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,048 | 1,869.2 | 1,095.7 | 2,048 | 736.8 |
+| Jetson AGX Thor | Qwen3.5-2B | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 43.3 | 47,327.5 | 2,048 | 122.5 |
+| Jetson AGX Thor | Qwen3.5-2B | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 419.4 | 4,883.7 | 2,048 | 772.8 |
+| Jetson AGX Thor | Qwen3.5-35B-A3B | LLM | Vanilla | INT4 GPTQ | 1 | 2,048 | 358.0 | 5,721.4 | 2,048 | 47.3 |
+| Jetson AGX Thor | Qwen3.5-35B-A3B | LLM | Vanilla | INT4 GPTQ | 8 | 2,048 | 2,898.8 | 706.5 | 2,048 | 212.0 |
+| Jetson AGX Thor | Qwen3.5-35B-A3B | VLM | Vanilla | INT4 GPTQ / FP16 | 1 | 2,048 | 360.0 | 5,688.9 | 2,048 | 46.7 |
+| Jetson AGX Thor | Qwen3.5-35B-A3B | VLM | Vanilla | INT4 GPTQ / FP16 | 8 | 2,048 | 2,891.7 | 708.2 | 2,048 | 212.8 |
+| Jetson AGX Thor | Qwen3.5-4B | LLM | Vanilla | INT4 AWQ | 1 | 2,048 | 370.2 | 5,531.9 | 2,048 | 69.8 |
+| Jetson AGX Thor | Qwen3.5-4B | LLM | Vanilla | INT4 AWQ | 8 | 2,048 | 4,771.8 | 429.2 | 2,048 | 384.8 |
+| Jetson AGX Thor | Qwen3.5-4B | LLM | Vanilla | NVFP4 | 1 | 2,048 | 96.1 | 21,316.3 | 2,048 | 67.9 |
+| Jetson AGX Thor | Qwen3.5-4B | LLM | Vanilla | NVFP4 | 8 | 2,048 | 943.0 | 2,171.8 | 2,048 | 397.6 |
+| Jetson AGX Thor | Qwen3.5-4B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 2,048 | 371.4 | 5,515.0 | 2,048 | 69.5 |
+| Jetson AGX Thor | Qwen3.5-4B | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,048 | 4,693.0 | 436.4 | 2,048 | 388.0 |
+| Jetson AGX Thor | Qwen3.5-4B | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 95.2 | 21,507.3 | 2,048 | 67.9 |
+| Jetson AGX Thor | Qwen3.5-4B | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 941.3 | 2,175.7 | 2,048 | 392.0 |
+| Jetson AGX Thor | Qwen3.5-9B | LLM | Vanilla | INT4 AWQ | 1 | 2,048 | 677.9 | 3,020.9 | 2,048 | 41.3 |
+| Jetson AGX Thor | Qwen3.5-9B | LLM | Vanilla | INT4 AWQ | 8 | 2,048 | 7,979.9 | 256.6 | 2,048 | 260.0 |
+| Jetson AGX Thor | Qwen3.5-9B | LLM | Vanilla | NVFP4 | 1 | 2,048 | 134.7 | 15,205.2 | 2,048 | 40.1 |
+| Jetson AGX Thor | Qwen3.5-9B | LLM | Vanilla | NVFP4 | 8 | 2,048 | 1,390.4 | 1,473.0 | 2,048 | 259.2 |
+| Jetson AGX Thor | Qwen3.5-9B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 2,048 | 690.5 | 2,966.2 | 2,048 | 41.3 |
+| Jetson AGX Thor | Qwen3.5-9B | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,048 | 8,068.1 | 253.8 | 2,048 | 256.8 |
+| Jetson AGX Thor | Qwen3.5-9B | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 135.3 | 15,139.5 | 2,048 | 40.1 |
+| Jetson AGX Thor | Qwen3.5-9B | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 1,365.3 | 1,500.1 | 2,048 | 259.2 |
+| Jetson AGX Thor | Qwen3.6-35B-A3B | LLM | Vanilla | NVFP4 | 1 | 2,048 | 187.0 | 10,950.3 | 2,048 | 84.5 |
+| Jetson AGX Thor | Qwen3.6-35B-A3B | LLM | Vanilla | NVFP4 | 8 | 2,048 | 1,194.2 | 1,715.0 | 2,048 | 264.8 |
+| Jetson AGX Thor | Qwen3.6-35B-A3B | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 188.5 | 10,865.8 | 2,048 | 85.0 |
+| Jetson AGX Thor | Qwen3.6-35B-A3B | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 1,200.8 | 1,705.5 | 2,048 | 264.0 |
+| Jetson AGX Orin (64GB) | Qwen3-0.6B | LLM | Vanilla | INT4 AWQ | 1 | 2,048 | 118.5 | 17,277.3 | 2,048 | 162.5 |
+| Jetson AGX Orin (64GB) | Qwen3-1.7B | LLM | Vanilla | INT4 AWQ | 1 | 2,048 | 308.3 | 6,643.9 | 2,048 | 89.5 |
+| Jetson AGX Orin (64GB) | Qwen3-4B-Instruct-2507 | LLM | Vanilla | INT4 AWQ | 1 | 2,048 | 761.9 | 2,687.9 | 2,048 | 50.7 |
+| Jetson AGX Orin (64GB) | Qwen3-8B | LLM | Vanilla | INT4 AWQ | 1 | 2,048 | 1,384.1 | 1,479.7 | 2,048 | 30.6 |
+| Jetson AGX Orin (64GB) | Qwen3-VL-2B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 2,048 | 298.4 | 6,863.4 | 2,048 | 88.7 |
+| Jetson AGX Orin (64GB) | Qwen3-VL-4B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 2,048 | 757.7 | 2,702.9 | 2,048 | 50.8 |
+| Jetson AGX Orin (64GB) | Qwen3-VL-8B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 2,048 | 1,388.1 | 1,475.5 | 2,048 | 30.6 |
+| Jetson AGX Orin (64GB) | Qwen3.5-0.8B | LLM | Vanilla | INT4 AWQ | 1 | 2,048 | 559.8 | 3,658.6 | 2,048 | 153.7 |
+| Jetson AGX Orin (64GB) | Qwen3.5-0.8B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 2,048 | 559.9 | 3,657.9 | 2,048 | 153.3 |
+| Jetson AGX Orin (64GB) | Qwen3.5-27B | LLM | Vanilla | INT4 AWQ | 1 | 2,048 | 6,352.6 | 322.4 | 2,048 | 10.5 |
+| Jetson AGX Orin (64GB) | Qwen3.5-27B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 2,048 | 6,319.5 | 324.1 | 2,048 | 10.5 |
+| Jetson AGX Orin (64GB) | Qwen3.5-2B | LLM | Vanilla | INT4 AWQ | 1 | 2,048 | 730.9 | 2,802.2 | 2,048 | 81.8 |
+| Jetson AGX Orin (64GB) | Qwen3.5-2B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 2,048 | 721.4 | 2,839.0 | 2,048 | 81.7 |
+| Jetson AGX Orin (64GB) | Qwen3.5-4B | LLM | Vanilla | INT4 AWQ | 1 | 2,048 | 1,374.4 | 1,490.1 | 2,048 | 46.2 |
+| Jetson AGX Orin (64GB) | Qwen3.5-4B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 2,048 | 1,369.8 | 1,495.1 | 2,048 | 46.1 |
+| Jetson AGX Orin (64GB) | Qwen3.5-9B | LLM | Vanilla | INT4 AWQ | 1 | 2,048 | 2,016.5 | 1,015.6 | 2,048 | 27.6 |
+| Jetson AGX Orin (64GB) | Qwen3.5-9B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 2,048 | 2,140.5 | 956.8 | 2,048 | 27.5 |
+| Jetson Orin NX (16GB) | Qwen3-0.6B | LLM | Vanilla | INT4 AWQ | 1 | 2,048 | 268.8 | 7,618.8 | 2,048 | 98.9 |
+| Jetson Orin NX (16GB) | Qwen3-1.7B | LLM | Vanilla | INT4 AWQ | 1 | 2,048 | 674.0 | 3,038.8 | 2,048 | 52.2 |
+| Jetson Orin NX (16GB) | Qwen3-4B-Instruct-2507 | LLM | Vanilla | INT4 AWQ | 1 | 2,048 | 1,880.5 | 1,089.1 | 2,048 | 29.2 |
+| Jetson Orin NX (16GB) | Qwen3-8B | LLM | Vanilla | INT4 AWQ | 1 | 2,048 | 2,944.1 | 695.6 | 2,048 | 17.5 |
+| Jetson Orin NX (16GB) | Qwen3-VL-2B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 2,048 | 760.3 | 2,693.8 | 2,048 | 52.6 |
+| Jetson Orin NX (16GB) | Qwen3-VL-4B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 2,048 | 1,740.8 | 1,176.4 | 2,048 | 29.4 |
+| Jetson Orin NX (16GB) | Qwen3-VL-8B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 2,048 | 3,106.2 | 659.3 | 2,048 | 17.4 |
+| Jetson Orin NX (16GB) | Qwen3.5-0.8B | LLM | Vanilla | INT4 AWQ | 1 | 2,048 | 840.8 | 2,435.8 | 2,048 | 92.8 |
+| Jetson Orin NX (16GB) | Qwen3.5-0.8B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 2,048 | 787.2 | 2,601.6 | 2,048 | 94.1 |
+| Jetson Orin NX (16GB) | Qwen3.5-2B | LLM | Vanilla | INT4 AWQ | 1 | 2,048 | 1,160.8 | 1,764.2 | 2,048 | 47.0 |
+| Jetson Orin NX (16GB) | Qwen3.5-2B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 2,048 | 1,173.4 | 1,745.3 | 2,048 | 47.3 |
+| Jetson Orin NX (16GB) | Qwen3.5-4B | LLM | Vanilla | INT4 AWQ | 1 | 2,048 | 2,557.7 | 800.7 | 2,048 | 26.6 |
+| Jetson Orin NX (16GB) | Qwen3.5-4B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 2,048 | 2,775.8 | 737.8 | 2,048 | 26.8 |
+| Jetson Orin Nano (8GB) | Qwen3-0.6B | LLM | Vanilla | INT4 AWQ | 1 | 2,048 | 445.2 | 4,600.5 | 2,048 | 61.0 |
+| Jetson Orin Nano (8GB) | Qwen3-1.7B | LLM | Vanilla | INT4 AWQ | 1 | 2,048 | 1,021.0 | 2,005.9 | 2,048 | 32.3 |
+| Jetson Orin Nano (8GB) | Qwen3-VL-2B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 2,048 | 1,017.0 | 2,013.7 | 2,048 | 32.3 |
+| Jetson Orin Nano (8GB) | Qwen3.5-0.8B | LLM | Vanilla | INT4 AWQ | 1 | 2,048 | 1,380.8 | 1,483.2 | 2,048 | 57.5 |
+| Jetson Orin Nano (8GB) | Qwen3.5-0.8B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 2,048 | 1,381.5 | 1,482.4 | 2,048 | 57.4 |
+| Jetson Orin Nano (8GB) | Qwen3.5-2B | LLM | Vanilla | INT4 AWQ | 1 | 2,048 | 1,885.2 | 1,086.4 | 2,048 | 29.0 |
+| Jetson Orin Nano (8GB) | Qwen3.5-2B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 2,048 | 1,885.6 | 1,086.1 | 2,048 | 29.1 |
+| DGX Spark (GB10) | gemma-4-12B-it | VLM | Vanilla | FP16 / FP16 | 1 | 2,048 | 835.5 | 2,451.2 | 2,048 | 9.1 |
+| DGX Spark (GB10) | gemma-4-12B-it | VLM | Vanilla | FP16 / FP16 | 8 | 2,048 | 5,711.0 | 358.6 | 2,048 | 68.8 |
+| DGX Spark (GB10) | gemma-4-31B-it | VLM | Vanilla | FP8 / FP16 | 1 | 2,048 | 1,001.9 | 2,044.0 | 2,048 | 6.2 |
+| DGX Spark (GB10) | gemma-4-31B-it | VLM | Vanilla | FP8 / FP16 | 8 | 2,048 | 8,025.5 | 255.2 | 2,048 | 40.0 |
+| DGX Spark (GB10) | gemma-4-31B-it | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 2,048 | 1,683.7 | 1,216.4 | 2,048 | 11.8 |
+| DGX Spark (GB10) | gemma-4-31B-it | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,048 | 41,137.9 | 49.8 | 2,048 | 68.8 |
+| DGX Spark (GB10) | nvidia-Gemma-4-26B-A4B | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 360.4 | 5,682.1 | 2,048 | 37.1 |
+| DGX Spark (GB10) | nvidia-Gemma-4-26B-A4B | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 2,536.5 | 807.4 | 2,048 | 164.0 |
+| DGX Spark (GB10) | nvidia-Gemma-4-31B-IT | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 1,146.3 | 1,786.7 | 2,048 | 6.5 |
+| DGX Spark (GB10) | nvidia-Gemma-4-31B-IT | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 8,194.9 | 249.9 | 2,048 | 51.2 |
+| DGX Spark (GB10) | NVIDIA-Nemotron-3-Nano-30B-A3B | LLM | Vanilla | NVFP4 | 1 | 2,048 | 313.3 | 6,536.3 | 2,048 | 71.6 |
+| DGX Spark (GB10) | NVIDIA-Nemotron-3-Nano-30B-A3B | LLM | Vanilla | NVFP4 | 8 | 2,048 | 2,174.9 | 941.7 | 2,048 | 258.4 |
+| DGX Spark (GB10) | NVIDIA-Nemotron-3-Nano-4B | LLM | Vanilla | NVFP4 | 1 | 2,048 | 666.6 | 3,072.5 | 2,048 | 61.4 |
+| DGX Spark (GB10) | NVIDIA-Nemotron-3-Nano-4B | LLM | Vanilla | NVFP4 | 8 | 2,048 | 2,894.6 | 707.5 | 2,048 | 400.0 |
+| DGX Spark (GB10) | NVIDIA-Nemotron-3.5-Lightning-30B-A3B | LLM | Vanilla | NVFP4 | 1 | 2,048 | 280.0 | 7,314.8 | 2,048 | 74.3 |
+| DGX Spark (GB10) | NVIDIA-Nemotron-3.5-Lightning-30B-A3B | LLM | Vanilla | NVFP4 | 8 | 2,048 | 1,977.7 | 1,035.6 | 2,048 | 268.0 |
+| DGX Spark (GB10) | Qwen2.5-VL-7B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 167.8 | 12,202.9 | 2,048 | 51.9 |
+| DGX Spark (GB10) | Qwen2.5-VL-7B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 1,271.3 | 1,610.9 | 2,048 | 350.4 |
+| DGX Spark (GB10) | Qwen3-0.6B | LLM | Vanilla | INT4 AWQ | 1 | 2,048 | 42.2 | 48,474.3 | 2,048 | 251.4 |
+| DGX Spark (GB10) | Qwen3-0.6B | LLM | Vanilla | INT4 AWQ | 8 | 2,048 | 747.5 | 2,739.9 | 2,048 | 703.2 |
+| DGX Spark (GB10) | Qwen3-0.6B | LLM | Vanilla | NVFP4 | 1 | 2,048 | 29.9 | 68,558.9 | 2,048 | 214.0 |
+| DGX Spark (GB10) | Qwen3-0.6B | LLM | Vanilla | NVFP4 | 8 | 2,048 | 265.5 | 7,714.8 | 2,048 | 674.4 |
+| DGX Spark (GB10) | Qwen3-1.7B | LLM | Vanilla | INT4 AWQ | 1 | 2,048 | 98.7 | 20,750.1 | 2,048 | 133.9 |
+| DGX Spark (GB10) | Qwen3-1.7B | LLM | Vanilla | INT4 AWQ | 8 | 2,048 | 2,069.0 | 989.9 | 2,048 | 525.6 |
+| DGX Spark (GB10) | Qwen3-1.7B | LLM | Vanilla | NVFP4 | 1 | 2,048 | 55.5 | 36,909.8 | 2,048 | 116.6 |
+| DGX Spark (GB10) | Qwen3-1.7B | LLM | Vanilla | NVFP4 | 8 | 2,048 | 454.5 | 4,505.9 | 2,048 | 520.8 |
+| DGX Spark (GB10) | Qwen3-30B-A3B | LLM | Vanilla | INT4 GPTQ | 1 | 2,048 | 285.0 | 7,187.2 | 2,048 | 81.1 |
+| DGX Spark (GB10) | Qwen3-30B-A3B | LLM | Vanilla | INT4 GPTQ | 8 | 2,048 | 2,949.8 | 694.3 | 2,048 | 235.2 |
+| DGX Spark (GB10) | Qwen3-30B-A3B | LLM | Vanilla | NVFP4 | 1 | 2,048 | 282.4 | 7,251.0 | 2,048 | 74.7 |
+| DGX Spark (GB10) | Qwen3-30B-A3B | LLM | Vanilla | NVFP4 | 8 | 2,048 | 2,039.9 | 1,004.0 | 2,048 | 224.0 |
+| DGX Spark (GB10) | Qwen3-4B-Instruct-2507 | LLM | Vanilla | INT4 AWQ | 1 | 2,048 | 224.4 | 9,128.4 | 2,048 | 73.9 |
+| DGX Spark (GB10) | Qwen3-4B-Instruct-2507 | LLM | Vanilla | INT4 AWQ | 8 | 2,048 | 5,254.9 | 389.7 | 2,048 | 343.2 |
+| DGX Spark (GB10) | Qwen3-4B-Instruct-2507 | LLM | Vanilla | NVFP4 | 1 | 2,048 | 124.2 | 16,494.0 | 2,048 | 63.1 |
+| DGX Spark (GB10) | Qwen3-4B-Instruct-2507 | LLM | Vanilla | NVFP4 | 8 | 2,048 | 989.4 | 2,069.9 | 2,048 | 313.6 |
+| DGX Spark (GB10) | Qwen3-8B | LLM | Vanilla | INT4 AWQ | 1 | 2,048 | 386.4 | 5,300.6 | 2,048 | 43.5 |
+| DGX Spark (GB10) | Qwen3-8B | LLM | Vanilla | INT4 AWQ | 8 | 2,048 | 10,819.0 | 189.3 | 2,048 | 240.8 |
+| DGX Spark (GB10) | Qwen3-8B | LLM | Vanilla | NVFP4 | 1 | 2,048 | 182.2 | 11,238.1 | 2,048 | 38.4 |
+| DGX Spark (GB10) | Qwen3-8B | LLM | Vanilla | NVFP4 | 8 | 2,048 | 1,381.9 | 1,482.0 | 2,048 | 227.2 |
+| DGX Spark (GB10) | Qwen3-VL-2B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 2,048 | 98.0 | 20,899.1 | 2,048 | 133.9 |
+| DGX Spark (GB10) | Qwen3-VL-2B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,048 | 2,113.6 | 969.0 | 2,048 | 522.4 |
+| DGX Spark (GB10) | Qwen3-VL-2B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 54.8 | 37,386.8 | 2,048 | 119.9 |
+| DGX Spark (GB10) | Qwen3-VL-2B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 475.5 | 4,307.3 | 2,048 | 512.8 |
+| DGX Spark (GB10) | Qwen3-VL-4B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 2,048 | 226.1 | 9,056.7 | 2,048 | 73.6 |
+| DGX Spark (GB10) | Qwen3-VL-4B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,048 | 5,434.3 | 376.9 | 2,048 | 340.0 |
+| DGX Spark (GB10) | Qwen3-VL-4B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 122.2 | 16,753.2 | 2,048 | 61.3 |
+| DGX Spark (GB10) | Qwen3-VL-4B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 956.6 | 2,141.0 | 2,048 | 321.6 |
+| DGX Spark (GB10) | Qwen3-VL-8B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 2,048 | 380.9 | 5,377.4 | 2,048 | 42.4 |
+| DGX Spark (GB10) | Qwen3-VL-8B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,048 | 9,981.0 | 205.2 | 2,048 | 252.8 |
+| DGX Spark (GB10) | Qwen3-VL-8B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 185.1 | 11,067.2 | 2,048 | 39.5 |
+| DGX Spark (GB10) | Qwen3-VL-8B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 1,393.8 | 1,469.4 | 2,048 | 239.2 |
+| DGX Spark (GB10) | Qwen3.5-0.8B | LLM | Vanilla | INT4 AWQ | 1 | 2,048 | 54.5 | 37,597.5 | 2,048 | 228.0 |
+| DGX Spark (GB10) | Qwen3.5-0.8B | LLM | Vanilla | INT4 AWQ | 8 | 2,048 | 902.6 | 2,269.1 | 2,048 | 1,173.6 |
+| DGX Spark (GB10) | Qwen3.5-0.8B | LLM | Vanilla | NVFP4 | 1 | 2,048 | 38.0 | 53,842.3 | 2,048 | 207.4 |
+| DGX Spark (GB10) | Qwen3.5-0.8B | LLM | Vanilla | NVFP4 | 8 | 2,048 | 364.4 | 5,620.4 | 2,048 | 1,063.2 |
+| DGX Spark (GB10) | Qwen3.5-0.8B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 2,048 | 53.7 | 38,104.1 | 2,048 | 237.7 |
+| DGX Spark (GB10) | Qwen3.5-0.8B | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,048 | 883.5 | 2,318.2 | 2,048 | 1,166.4 |
+| DGX Spark (GB10) | Qwen3.5-0.8B | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 39.1 | 52,318.4 | 2,048 | 204.6 |
+| DGX Spark (GB10) | Qwen3.5-0.8B | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 352.5 | 5,809.5 | 2,048 | 1,078.4 |
+| DGX Spark (GB10) | Qwen3.5-27B | LLM | Vanilla | INT4 AWQ | 1 | 2,048 | 1,329.5 | 1,540.4 | 2,048 | 13.9 |
+| DGX Spark (GB10) | Qwen3.5-27B | LLM | Vanilla | INT4 AWQ | 8 | 2,048 | 32,867.1 | 62.3 | 2,048 | 94.4 |
+| DGX Spark (GB10) | Qwen3.5-27B | LLM | Vanilla | NVFP4 | 1 | 2,048 | 594.0 | 3,447.7 | 2,048 | 12.7 |
+| DGX Spark (GB10) | Qwen3.5-27B | LLM | Vanilla | NVFP4 | 8 | 2,048 | 4,572.0 | 447.9 | 2,048 | 83.2 |
+| DGX Spark (GB10) | Qwen3.5-27B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 2,048 | 1,326.1 | 1,544.3 | 2,048 | 14.3 |
+| DGX Spark (GB10) | Qwen3.5-27B | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,048 | 32,850.6 | 62.3 | 2,048 | 94.4 |
+| DGX Spark (GB10) | Qwen3.5-27B | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 606.9 | 3,374.3 | 2,048 | 13.1 |
+| DGX Spark (GB10) | Qwen3.5-27B | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 4,550.8 | 450.0 | 2,048 | 84.8 |
+| DGX Spark (GB10) | Qwen3.5-2B | LLM | Vanilla | INT4 AWQ | 1 | 2,048 | 103.8 | 19,730.0 | 2,048 | 118.4 |
+| DGX Spark (GB10) | Qwen3.5-2B | LLM | Vanilla | INT4 AWQ | 8 | 2,048 | 2,032.1 | 1,007.8 | 2,048 | 716.8 |
+| DGX Spark (GB10) | Qwen3.5-2B | LLM | Vanilla | NVFP4 | 1 | 2,048 | 61.0 | 33,579.6 | 2,048 | 109.5 |
+| DGX Spark (GB10) | Qwen3.5-2B | LLM | Vanilla | NVFP4 | 8 | 2,048 | 529.3 | 3,869.2 | 2,048 | 674.4 |
+| DGX Spark (GB10) | Qwen3.5-2B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 2,048 | 105.5 | 19,407.4 | 2,048 | 115.7 |
+| DGX Spark (GB10) | Qwen3.5-2B | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,048 | 2,152.4 | 951.5 | 2,048 | 711.2 |
+| DGX Spark (GB10) | Qwen3.5-2B | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 61.1 | 33,491.5 | 2,048 | 108.9 |
+| DGX Spark (GB10) | Qwen3.5-2B | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 519.4 | 3,943.0 | 2,048 | 690.4 |
+| DGX Spark (GB10) | Qwen3.5-35B-A3B | LLM | Vanilla | INT4 GPTQ | 1 | 2,048 | 277.1 | 7,390.7 | 2,048 | 47.3 |
+| DGX Spark (GB10) | Qwen3.5-35B-A3B | LLM | Vanilla | INT4 GPTQ | 8 | 2,048 | 1,918.1 | 1,067.7 | 2,048 | 198.4 |
+| DGX Spark (GB10) | Qwen3.5-35B-A3B | VLM | Vanilla | INT4 GPTQ / FP16 | 1 | 2,048 | 277.6 | 7,376.6 | 2,048 | 42.7 |
+| DGX Spark (GB10) | Qwen3.5-35B-A3B | VLM | Vanilla | INT4 GPTQ / FP16 | 8 | 2,048 | 1,914.0 | 1,070.0 | 2,048 | 201.6 |
+| DGX Spark (GB10) | Qwen3.5-4B | LLM | Vanilla | INT4 AWQ | 1 | 2,048 | 238.4 | 8,590.6 | 2,048 | 65.9 |
+| DGX Spark (GB10) | Qwen3.5-4B | LLM | Vanilla | INT4 AWQ | 8 | 2,048 | 5,263.1 | 389.1 | 2,048 | 367.2 |
+| DGX Spark (GB10) | Qwen3.5-4B | LLM | Vanilla | NVFP4 | 1 | 2,048 | 130.9 | 15,641.8 | 2,048 | 60.7 |
+| DGX Spark (GB10) | Qwen3.5-4B | LLM | Vanilla | NVFP4 | 8 | 2,048 | 1,050.9 | 1,948.7 | 2,048 | 345.6 |
+| DGX Spark (GB10) | Qwen3.5-4B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 2,048 | 236.7 | 8,651.6 | 2,048 | 66.3 |
+| DGX Spark (GB10) | Qwen3.5-4B | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,048 | 5,407.9 | 378.7 | 2,048 | 368.0 |
+| DGX Spark (GB10) | Qwen3.5-4B | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 130.1 | 15,743.5 | 2,048 | 61.8 |
+| DGX Spark (GB10) | Qwen3.5-4B | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 1,045.0 | 1,959.8 | 2,048 | 341.6 |
+| DGX Spark (GB10) | Qwen3.5-9B | LLM | Vanilla | INT4 AWQ | 1 | 2,048 | 402.4 | 5,089.9 | 2,048 | 38.0 |
+| DGX Spark (GB10) | Qwen3.5-9B | LLM | Vanilla | INT4 AWQ | 8 | 2,048 | 10,605.7 | 193.1 | 2,048 | 245.6 |
+| DGX Spark (GB10) | Qwen3.5-9B | LLM | Vanilla | NVFP4 | 1 | 2,048 | 195.6 | 10,468.2 | 2,048 | 35.4 |
+| DGX Spark (GB10) | Qwen3.5-9B | LLM | Vanilla | NVFP4 | 8 | 2,048 | 1,505.4 | 1,360.4 | 2,048 | 228.0 |
+| DGX Spark (GB10) | Qwen3.5-9B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 2,048 | 402.8 | 5,084.7 | 2,048 | 35.5 |
+| DGX Spark (GB10) | Qwen3.5-9B | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,048 | 12,123.8 | 168.9 | 2,048 | 247.2 |
+| DGX Spark (GB10) | Qwen3.5-9B | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 197.9 | 10,347.2 | 2,048 | 34.0 |
+| DGX Spark (GB10) | Qwen3.5-9B | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 1,506.5 | 1,359.4 | 2,048 | 232.0 |
+| DGX Spark (GB10) | Qwen3.6-35B-A3B | LLM | Vanilla | NVFP4 | 1 | 2,048 | 273.9 | 7,477.0 | 2,048 | 67.1 |
+| DGX Spark (GB10) | Qwen3.6-35B-A3B | LLM | Vanilla | NVFP4 | 8 | 2,048 | 1,852.3 | 1,105.7 | 2,048 | 220.0 |
+| DGX Spark (GB10) | Qwen3.6-35B-A3B | VLM | Vanilla | NVFP4 / FP16 | 1 | 2,048 | 270.5 | 7,570.2 | 2,048 | 66.5 |
+| DGX Spark (GB10) | Qwen3.6-35B-A3B | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,048 | 1,840.3 | 1,112.8 | 2,048 | 220.8 |
+
+### v0.10.0 Runtime Performance Dashboard
+
+Every row contains end-to-end decode throughput: generated-token throughput for vanilla decoding and accepted-token throughput for speculative decoding.
+
+#### v0.10.0 Jetson AGX Thor
+
+| Model | Kind | Mode | Precision | Batch | Prefill Seq Len | Prefill Time (ms) | Prefill (tok/s) | ViT Time (ms) | ViT Tok/Run | ViT (tok/s) | Decode (tok/s) | Accept Rate | GPU Mem (MB) |
+|-------|------|------|-----------|:-----:|----------------:|------------------:|----------------:|--------------:|------------:|------------:|---------------:|------------:|-------------:|
+| gemma-4-12B-it | VLM | MTP | FP16 / FP16 / FP16 | 1 | 292 | 133.0 | 2,198.7 | 1.1 | 263 | 239,342.2 | 25.4 | 2.80 | 2,229 |
+| gemma-4-12B-it | VLM | MTP | FP16 / FP16 / FP16 | 8 | 2,089 | 617.8 | 3,380.8 | 6.8 | 1,882 | 277,517.9 | 131.3 | 2.79 | 2,242 |
+| gemma-4-12B-it | VLM | Vanilla | FP16 / FP16 | 1 | 292 | 146.8 | 1,992.3 | 1.1 | 264 | 240,083.8 | 10.2 | - | 2,240 |
+| gemma-4-12B-it | VLM | Vanilla | FP16 / FP16 | 8 | 2,089 | 654.2 | 3,192.9 | 6.8 | 1,882 | 277,109.2 | 37.3 | - | 2,254 |
+| gemma-4-31B-it | VLM | Vanilla | FP8 / FP16 | 1 | 292 | 220.5 | 1,326.4 | 83.8 | 263 | 3,143.1 | 7.6 | - | 3,002 |
+| gemma-4-31B-it | VLM | Vanilla | FP8 / FP16 | 8 | 2,089 | 1,300.8 | 1,605.7 | 595.9 | 1,882 | 3,157.7 | 33.0 | - | 3,028 |
+| gemma-4-31B-it | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 292 | 504.1 | 580.1 | 83.2 | 263 | 3,166.2 | 13.3 | - | 2,997 |
+| gemma-4-31B-it | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,089 | 3,368.7 | 620.0 | 598.6 | 1,882 | 3,143.0 | 60.0 | - | 3,038 |
+| gemma-4-E2B-it | VLM | MTP | FP16 / FP16 / FP16 | 1 | 292 | 36.5 | 8,020.2 | 16.7 | 263 | 15,768.6 | 86.7 | 1.99 | 5,032 |
+| gemma-4-E2B-it | VLM | MTP | FP16 / FP16 / FP16 | 8 | 2,089 | 124.8 | 16,735.6 | 146.2 | 1,882 | 12,872.4 | 476.9 | 1.98 | 5,008 |
+| gemma-4-E2B-it | VLM | MTP | FP8 / FP8 / FP16 | 1 | 292 | 28.3 | 10,335.0 | 16.7 | 263 | 15,756.1 | 121.7 | 1.95 | 5,061 |
+| gemma-4-E2B-it | VLM | MTP | FP8 / FP8 / FP16 | 8 | 2,089 | 102.2 | 20,433.9 | 146.3 | 1,882 | 12,861.7 | 613.1 | 1.97 | 5,029 |
+| gemma-4-E2B-it | VLM | MTP | NVFP4 / NVFP4 / FP16 | 1 | 292 | 25.3 | 11,544.6 | 16.8 | 263 | 15,679.2 | 142.7 | 1.89 | 5,032 |
+| gemma-4-E2B-it | VLM | MTP | NVFP4 / NVFP4 / FP16 | 8 | 2,089 | 93.8 | 22,269.3 | 146.2 | 1,882 | 12,865.4 | 681.5 | 1.89 | 5,032 |
+| gemma-4-E2B-it | VLM | Vanilla | FP16 / FP16 | 1 | 292 | 36.6 | 7,988.9 | 16.6 | 263 | 15,823.3 | 50.3 | - | 4,988 |
+| gemma-4-E2B-it | VLM | Vanilla | FP16 / FP16 | 8 | 2,089 | 122.5 | 17,049.5 | 146.0 | 1,882 | 12,886.3 | 327.7 | - | 4,974 |
+| gemma-4-E2B-it | VLM | Vanilla | FP8 / FP16 | 1 | 292 | 28.6 | 10,217.3 | 16.8 | 263 | 15,685.9 | 79.0 | - | 5,024 |
+| gemma-4-E2B-it | VLM | Vanilla | FP8 / FP16 | 8 | 2,089 | 97.9 | 21,332.0 | 145.5 | 1,882 | 12,934.4 | 485.1 | - | 5,043 |
+| gemma-4-E2B-it | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 292 | 47.7 | 6,136.0 | 16.7 | 263 | 15,775.4 | 110.9 | - | 4,996 |
+| gemma-4-E2B-it | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,089 | 226.0 | 9,240.5 | 145.8 | 1,882 | 12,904.6 | 636.0 | - | 4,987 |
+| gemma-4-E2B-it | VLM | Vanilla | NVFP4 / FP16 | 1 | 292 | 24.8 | 11,770.5 | 16.7 | 263 | 15,816.3 | 101.4 | - | 5,052 |
+| gemma-4-E2B-it | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,089 | 94.3 | 22,157.1 | 146.3 | 1,882 | 12,862.9 | 551.5 | - | 5,011 |
+| gemma-4-E4B-it | VLM | MTP | FP16 / FP16 / FP16 | 1 | 292 | 59.8 | 4,887.9 | 16.9 | 263 | 15,604.5 | 45.9 | 1.95 | 5,894 |
+| gemma-4-E4B-it | VLM | MTP | FP16 / FP16 / FP16 | 8 | 2,089 | 226.9 | 9,203.9 | 145.6 | 1,882 | 12,926.6 | 242.3 | 1.98 | 5,932 |
+| gemma-4-E4B-it | VLM | MTP | FP8 / FP8 / FP16 | 1 | 292 | 44.4 | 6,589.3 | 16.9 | 263 | 15,589.2 | 72.9 | 1.97 | 5,938 |
+| gemma-4-E4B-it | VLM | MTP | FP8 / FP8 / FP16 | 8 | 2,089 | 156.1 | 13,377.5 | 145.8 | 1,882 | 12,901.9 | 376.8 | 1.97 | 5,954 |
+| gemma-4-E4B-it | VLM | MTP | NVFP4 / NVFP4 / FP16 | 1 | 292 | 36.1 | 8,111.1 | 16.9 | 263 | 15,573.9 | 96.4 | 1.99 | 5,926 |
+| gemma-4-E4B-it | VLM | MTP | NVFP4 / NVFP4 / FP16 | 8 | 2,089 | 140.2 | 14,894.4 | 146.1 | 1,882 | 12,875.0 | 469.1 | 2.03 | 5,926 |
+| gemma-4-E4B-it | VLM | Vanilla | FP16 / FP16 | 1 | 292 | 61.0 | 4,790.4 | 16.7 | 263 | 15,797.1 | 25.4 | - | 5,877 |
+| gemma-4-E4B-it | VLM | Vanilla | FP16 / FP16 | 8 | 2,089 | 225.6 | 9,259.9 | 145.3 | 1,882 | 12,951.3 | 147.5 | - | 5,891 |
+| gemma-4-E4B-it | VLM | Vanilla | FP8 / FP16 | 1 | 292 | 45.1 | 6,487.7 | 16.7 | 263 | 15,805.1 | 42.7 | - | 5,939 |
+| gemma-4-E4B-it | VLM | Vanilla | FP8 / FP16 | 8 | 2,089 | 157.9 | 13,228.0 | 145.5 | 1,882 | 12,931.6 | 245.5 | - | 5,960 |
+| gemma-4-E4B-it | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 292 | 84.8 | 3,447.3 | 16.8 | 263 | 15,692.8 | 61.9 | - | 5,916 |
+| gemma-4-E4B-it | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,089 | 456.1 | 4,579.2 | 145.2 | 1,882 | 12,960.3 | 363.6 | - | 5,919 |
+| gemma-4-E4B-it | VLM | Vanilla | NVFP4 / FP16 | 1 | 292 | 36.1 | 8,109.9 | 16.6 | 263 | 15,858.9 | 59.3 | - | 5,940 |
+| gemma-4-E4B-it | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,089 | 138.9 | 15,042.1 | 145.4 | 1,882 | 12,941.4 | 350.0 | - | 5,972 |
+| nvidia-Gemma-4-26B-A4B | VLM | MTP | NVFP4 / NVFP4 / FP16 | 1 | 292 | 74.2 | 3,941.9 | 83.3 | 263 | 3,161.5 | 72.4 | 2.80 | 1,730 |
+| nvidia-Gemma-4-26B-A4B | VLM | MTP | NVFP4 / NVFP4 / FP16 | 8 | 2,089 | 245.7 | 8,502.8 | 586.2 | 1,882 | 3,209.9 | 224.9 | 2.81 | 1,720 |
+| nvidia-Gemma-4-26B-A4B | VLM | Vanilla | NVFP4 / FP16 | 1 | 292 | 74.2 | 3,940.4 | 80.9 | 263 | 3,254.9 | 43.2 | - | 1,725 |
+| nvidia-Gemma-4-26B-A4B | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,089 | 245.8 | 8,496.8 | 580.4 | 1,882 | 3,241.7 | 142.5 | - | 1,805 |
+| nvidia-Gemma-4-31B-IT | VLM | Vanilla | NVFP4 / FP16 | 1 | 292 | 173.5 | 1,685.9 | 81.6 | 263 | 3,228.4 | 8.0 | - | 2,995 |
+| nvidia-Gemma-4-31B-IT | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,089 | 979.2 | 2,133.1 | 585.4 | 1,882 | 3,214.1 | 31.7 | - | 3,021 |
+| NVIDIA-Nemotron-3-Nano-30B-A3B | LLM | Vanilla | NVFP4 | 1 | 66 | 75.6 | 870.8 | - | - | - | 77.1 | - | 966 |
+| NVIDIA-Nemotron-3-Nano-30B-A3B | LLM | Vanilla | NVFP4 | 8 | 470 | 162.5 | 2,894.9 | - | - | - | 225.1 | - | 932 |
+| NVIDIA-Nemotron-3-Nano-4B | LLM | Vanilla | NVFP4 | 1 | 66 | 39.0 | 1,686.9 | - | - | - | 67.1 | - | 1,071 |
+| NVIDIA-Nemotron-3-Nano-4B | LLM | Vanilla | NVFP4 | 8 | 470 | 165.2 | 2,846.2 | - | - | - | 371.4 | - | 1,061 |
+| NVIDIA-Nemotron-3.5-Lightning-30B-A3B | LLM | DFlash | NVFP4 / NVFP4 | 1 | 66 | 75.0 | 878.4 | - | - | - | 58.7 | 2.22 | 945 |
+| NVIDIA-Nemotron-3.5-Lightning-30B-A3B | LLM | DFlash | NVFP4 / NVFP4 | 8 | 470 | 237.9 | 1,977.1 | - | - | - | 146.9 | 2.22 | 966 |
+| NVIDIA-Nemotron-3.5-Lightning-30B-A3B | LLM | MTP | NVFP4 / NVFP4 | 1 | 66 | 75.3 | 874.4 | - | - | - | 95.3 | 2.69 | 1,031 |
+| NVIDIA-Nemotron-3.5-Lightning-30B-A3B | LLM | MTP | NVFP4 / NVFP4 | 8 | 470 | 236.5 | 1,988.5 | - | - | - | 229.4 | 2.69 | 1,028 |
+| NVIDIA-Nemotron-3.5-Lightning-30B-A3B | LLM | Vanilla | NVFP4 | 1 | 66 | 74.7 | 881.9 | - | - | - | 81.6 | - | 984 |
+| NVIDIA-Nemotron-3.5-Lightning-30B-A3B | LLM | Vanilla | NVFP4 | 8 | 470 | 237.2 | 1,982.4 | - | - | - | 236.0 | - | 935 |
+| Qwen2.5-VL-7B-Instruct | VLM | EAGLE3 | NVFP4 / NVFP4 / FP16 | 1 | 376 | 25.2 | 14,909.4 | 23.3 | 349 | 14,965.7 | 177.3 | 4.72 | 1,350 |
+| Qwen2.5-VL-7B-Instruct | VLM | EAGLE3 | NVFP4 / NVFP4 / FP16 | 8 | 2,688 | 180.3 | 14,907.0 | 178.0 | 2,495 | 14,015.8 | 525.2 | 4.65 | 1,349 |
+| Qwen2.5-VL-7B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 1 | 376 | 25.0 | 15,033.9 | 23.4 | 349 | 14,928.8 | 61.0 | - | 1,422 |
+| Qwen2.5-VL-7B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,688 | 179.4 | 14,984.3 | 177.4 | 2,495 | 14,062.5 | 307.9 | - | 1,446 |
+| Qwen3-0.6B | LLM | Vanilla | INT4 AWQ | 1 | 61 | 8.2 | 7,425.0 | - | - | - | 319.7 | - | 614 |
+| Qwen3-0.6B | LLM | Vanilla | INT4 AWQ | 8 | 437 | 27.6 | 15,839.0 | - | - | - | 1,624.8 | - | 680 |
+| Qwen3-0.6B | LLM | Vanilla | NVFP4 | 1 | 61 | 6.6 | 9,278.1 | - | - | - | 306.4 | - | 620 |
+| Qwen3-0.6B | LLM | Vanilla | NVFP4 | 8 | 437 | 14.9 | 29,434.0 | - | - | - | 1,680.5 | - | 682 |
+| Qwen3-1.7B | LLM | EAGLE3 | NVFP4 / NVFP4 | 1 | 61 | 8.7 | 7,046.1 | - | - | - | 336.9 | 3.02 | 870 |
+| Qwen3-1.7B | LLM | EAGLE3 | NVFP4 / NVFP4 | 8 | 437 | 22.1 | 19,786.5 | - | - | - | 917.7 | 3.01 | 855 |
+| Qwen3-1.7B | LLM | Vanilla | INT4 AWQ | 1 | 61 | 14.6 | 4,205.4 | - | - | - | 154.1 | - | 867 |
+| Qwen3-1.7B | LLM | Vanilla | INT4 AWQ | 8 | 437 | 70.1 | 6,240.1 | - | - | - | 903.2 | - | 903 |
+| Qwen3-1.7B | LLM | Vanilla | NVFP4 | 1 | 61 | 10.3 | 5,962.7 | - | - | - | 153.6 | - | 902 |
+| Qwen3-1.7B | LLM | Vanilla | NVFP4 | 8 | 437 | 24.0 | 18,187.9 | - | - | - | 862.2 | - | 867 |
+| Qwen3-30B-A3B | LLM | Vanilla | INT4 GPTQ | 1 | 61 | 72.7 | 841.4 | - | - | - | 84.4 | - | 14,115 |
+| Qwen3-30B-A3B | LLM | Vanilla | INT4 GPTQ | 8 | 437 | 244.7 | 1,786.7 | - | - | - | 261.4 | - | 14,119 |
+| Qwen3-30B-A3B | LLM | Vanilla | NVFP4 | 1 | 61 | 56.0 | 1,093.7 | - | - | - | 89.8 | - | 865 |
+| Qwen3-30B-A3B | LLM | Vanilla | NVFP4 | 8 | 437 | 97.1 | 4,503.7 | - | - | - | 252.3 | - | 880 |
+| Qwen3-4B-Instruct-2507 | LLM | DFlash | NVFP4 / NVFP4 | 1 | 57 | 18.7 | 3,056.7 | - | - | - | 104.6 | 2.26 | 1,008 |
+| Qwen3-4B-Instruct-2507 | LLM | DFlash | NVFP4 / NVFP4 | 8 | 409 | 45.0 | 9,084.2 | - | - | - | 468.7 | 2.24 | 1,003 |
+| Qwen3-4B-Instruct-2507 | LLM | Vanilla | INT4 AWQ | 1 | 57 | 30.8 | 1,857.8 | - | - | - | 83.3 | - | 1,006 |
+| Qwen3-4B-Instruct-2507 | LLM | Vanilla | INT4 AWQ | 8 | 409 | 165.4 | 2,470.2 | - | - | - | 515.0 | - | 1,034 |
+| Qwen3-4B-Instruct-2507 | LLM | Vanilla | NVFP4 | 1 | 57 | 18.6 | 3,070.6 | - | - | - | 79.8 | - | 1,012 |
+| Qwen3-4B-Instruct-2507 | LLM | Vanilla | NVFP4 | 8 | 409 | 45.1 | 9,049.2 | - | - | - | 513.1 | - | 1,038 |
+| Qwen3-8B | LLM | DFlash | NVFP4 / NVFP4 | 1 | 61 | 28.0 | 2,188.4 | - | - | - | 90.0 | 3.26 | 1,466 |
+| Qwen3-8B | LLM | DFlash | NVFP4 / NVFP4 | 8 | 437 | 65.2 | 6,702.0 | - | - | - | 409.8 | 3.16 | 1,549 |
+| Qwen3-8B | LLM | EAGLE3 | NVFP4 / NVFP4 | 1 | 61 | 24.1 | 2,539.4 | - | - | - | 153.7 | 4.16 | 1,485 |
+| Qwen3-8B | LLM | EAGLE3 | NVFP4 / NVFP4 | 8 | 437 | 60.6 | 7,214.6 | - | - | - | 474.5 | 4.08 | 1,459 |
+| Qwen3-8B | LLM | Vanilla | INT4 AWQ | 1 | 61 | 52.2 | 1,173.1 | - | - | - | 49.0 | - | 1,521 |
+| Qwen3-8B | LLM | Vanilla | INT4 AWQ | 8 | 437 | 313.7 | 1,393.5 | - | - | - | 307.9 | - | 1,452 |
+| Qwen3-8B | LLM | Vanilla | NVFP4 | 1 | 61 | 27.7 | 2,208.9 | - | - | - | 47.3 | - | 1,469 |
+| Qwen3-8B | LLM | Vanilla | NVFP4 | 8 | 437 | 65.0 | 6,724.9 | - | - | - | 300.3 | - | 1,468 |
+| Qwen3-VL-2B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 292 | 29.3 | 9,982.1 | 11.7 | 265 | 22,706.7 | 151.1 | - | 916 |
+| Qwen3-VL-2B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,089 | 176.4 | 11,841.7 | 74.8 | 1,896 | 25,331.1 | 831.8 | - | 920 |
+| Qwen3-VL-2B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 1 | 292 | 12.7 | 23,095.3 | 11.4 | 265 | 23,282.7 | 151.9 | - | 939 |
+| Qwen3-VL-2B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,089 | 50.5 | 41,358.4 | 75.0 | 1,896 | 25,290.1 | 779.0 | - | 916 |
+| Qwen3-VL-4B-Instruct | VLM | EAGLE3 | NVFP4 / NVFP4 / FP16 | 1 | 292 | 19.8 | 14,796.4 | 11.8 | 265 | 22,506.9 | 254.0 | 4.56 | 1,069 |
+| Qwen3-VL-4B-Instruct | VLM | EAGLE3 | NVFP4 / NVFP4 / FP16 | 8 | 2,089 | 96.3 | 21,688.9 | 75.7 | 1,896 | 25,063.7 | 643.7 | 4.49 | 1,065 |
+| Qwen3-VL-4B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 292 | 64.5 | 4,535.6 | 11.8 | 265 | 22,592.3 | 82.8 | - | 1,069 |
+| Qwen3-VL-4B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,089 | 448.4 | 4,658.5 | 75.8 | 1,896 | 25,013.2 | 492.2 | - | 1,087 |
+| Qwen3-VL-4B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 1 | 292 | 22.3 | 13,112.6 | 11.6 | 265 | 22,946.2 | 79.2 | - | 1,059 |
+| Qwen3-VL-4B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,089 | 98.4 | 21,226.0 | 75.5 | 1,896 | 25,100.7 | 374.4 | - | 1,070 |
+| Qwen3-VL-8B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 292 | 115.1 | 2,541.4 | 15.7 | 266 | 16,956.4 | 48.5 | - | 1,550 |
+| Qwen3-VL-8B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,089 | 874.5 | 2,388.7 | 109.1 | 1,896 | 17,378.5 | 297.0 | - | 1,507 |
+| Qwen3-VL-8B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 1 | 292 | 32.1 | 9,109.7 | 15.7 | 266 | 16,880.5 | 47.1 | - | 1,510 |
+| Qwen3-VL-8B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,089 | 168.3 | 12,410.5 | 108.5 | 1,896 | 17,472.3 | 244.2 | - | 1,495 |
+| Qwen3.5-0.8B | LLM | Vanilla | INT4 AWQ | 1 | 62 | 11.4 | 5,414.9 | - | - | - | 240.0 | - | 755 |
+| Qwen3.5-0.8B | LLM | Vanilla | INT4 AWQ | 8 | 441 | 40.8 | 10,825.3 | - | - | - | 1,087.8 | - | 765 |
+| Qwen3.5-0.8B | LLM | Vanilla | NVFP4 | 1 | 62 | 10.5 | 5,867.1 | - | - | - | 236.0 | - | 751 |
+| Qwen3.5-0.8B | LLM | Vanilla | NVFP4 | 8 | 441 | 27.6 | 15,971.3 | - | - | - | 1,219.9 | - | 833 |
+| Qwen3.5-0.8B | VLM | MTP | NVFP4 / NVFP4 / FP16 | 1 | 296 | 12.5 | 23,747.3 | 3.8 | 266 | 69,946.2 | 325.6 | 2.06 | 812 |
+| Qwen3.5-0.8B | VLM | MTP | NVFP4 / NVFP4 / FP16 | 8 | 2,118 | 53.5 | 39,546.7 | 26.5 | 1,896 | 71,618.2 | 1,047.8 | 2.07 | 863 |
+| Qwen3.5-0.8B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 296 | 18.7 | 15,830.9 | 3.8 | 266 | 70,242.4 | 239.8 | - | 868 |
+| Qwen3.5-0.8B | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,118 | 95.4 | 22,193.2 | 26.4 | 1,896 | 71,874.2 | 996.3 | - | 802 |
+| Qwen3.5-0.8B | VLM | Vanilla | NVFP4 / FP16 | 1 | 296 | 13.2 | 22,394.0 | 3.8 | 265 | 69,231.2 | 235.5 | - | 840 |
+| Qwen3.5-0.8B | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,118 | 54.9 | 38,557.7 | 26.5 | 1,896 | 71,514.0 | 1,063.7 | - | 802 |
+| Qwen3.5-27B | LLM | Vanilla | INT4 AWQ | 1 | 62 | 165.7 | 372.6 | - | - | - | 15.4 | - | 2,692 |
+| Qwen3.5-27B | LLM | Vanilla | INT4 AWQ | 8 | 441 | 1,125.9 | 391.8 | - | - | - | 95.1 | - | 2,705 |
+| Qwen3.5-27B | LLM | Vanilla | NVFP4 | 1 | 62 | 93.2 | 662.3 | - | - | - | 14.8 | - | 2,714 |
+| Qwen3.5-27B | LLM | Vanilla | NVFP4 | 8 | 441 | 284.6 | 1,550.2 | - | - | - | 88.0 | - | 2,701 |
+| Qwen3.5-27B | VLM | DFlash | NVFP4 / NVFP4 / FP16 | 1 | 296 | 118.0 | 2,511.5 | 14.5 | 265 | 18,280.1 | 21.6 | 2.56 | 2,806 |
+| Qwen3.5-27B | VLM | DFlash | NVFP4 / NVFP4 / FP16 | 8 | 2,118 | 675.8 | 3,133.3 | 103.7 | 1,896 | 18,281.9 | 60.4 | 2.49 | 2,759 |
+| Qwen3.5-27B | VLM | MTP | NVFP4 / NVFP4 / FP16 | 1 | 296 | 110.4 | 2,684.1 | 14.4 | 265 | 18,417.1 | 35.0 | 2.82 | 2,754 |
+| Qwen3.5-27B | VLM | MTP | NVFP4 / NVFP4 / FP16 | 8 | 2,118 | 664.8 | 3,185.4 | 103.2 | 1,896 | 18,364.6 | 145.9 | 2.78 | 2,823 |
+| Qwen3.5-27B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 296 | 394.2 | 752.0 | 14.5 | 266 | 18,323.0 | 15.4 | - | 2,758 |
+| Qwen3.5-27B | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,118 | 2,991.2 | 707.9 | 103.1 | 1,896 | 18,384.7 | 90.6 | - | 2,739 |
+| Qwen3.5-27B | VLM | Vanilla | NVFP4 / FP16 | 1 | 296 | 117.5 | 2,523.5 | 14.4 | 265 | 18,382.9 | 14.8 | - | 2,747 |
+| Qwen3.5-27B | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,118 | 670.0 | 3,160.5 | 103.4 | 1,896 | 18,345.5 | 74.9 | - | 2,760 |
+| Qwen3.5-2B | LLM | Vanilla | INT4 AWQ | 1 | 62 | 18.7 | 3,308.4 | - | - | - | 123.6 | - | 1,237 |
+| Qwen3.5-2B | LLM | Vanilla | INT4 AWQ | 8 | 441 | 79.5 | 5,546.5 | - | - | - | 635.6 | - | 1,241 |
+| Qwen3.5-2B | LLM | Vanilla | NVFP4 | 1 | 62 | 15.1 | 4,103.1 | - | - | - | 124.9 | - | 1,279 |
+| Qwen3.5-2B | LLM | Vanilla | NVFP4 | 8 | 441 | 36.1 | 12,210.7 | - | - | - | 736.4 | - | 1,239 |
+| Qwen3.5-2B | VLM | MTP | NVFP4 / NVFP4 / FP16 | 1 | 296 | 15.8 | 18,767.1 | 10.9 | 265 | 24,286.8 | 216.0 | 2.40 | 1,284 |
+| Qwen3.5-2B | VLM | MTP | NVFP4 / NVFP4 / FP16 | 8 | 2,118 | 71.7 | 29,522.3 | 72.4 | 1,896 | 26,174.8 | 620.2 | 2.40 | 1,300 |
+| Qwen3.5-2B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 296 | 33.8 | 8,759.0 | 10.9 | 265 | 24,447.4 | 124.5 | - | 1,287 |
+| Qwen3.5-2B | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,118 | 193.3 | 10,955.7 | 72.6 | 1,896 | 26,111.0 | 608.6 | - | 1,279 |
+| Qwen3.5-2B | VLM | Vanilla | NVFP4 / FP16 | 1 | 296 | 18.2 | 16,324.2 | 10.9 | 265 | 24,307.3 | 125.4 | - | 1,305 |
+| Qwen3.5-2B | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,118 | 73.4 | 28,839.3 | 72.2 | 1,896 | 26,249.4 | 444.2 | - | 1,282 |
+| Qwen3.5-35B-A3B | LLM | Vanilla | INT4 GPTQ | 1 | 62 | 66.5 | 929.3 | - | - | - | 48.2 | - | 15,666 |
+| Qwen3.5-35B-A3B | LLM | Vanilla | INT4 GPTQ | 8 | 441 | 217.5 | 2,028.0 | - | - | - | 199.0 | - | 15,652 |
+| Qwen3.5-35B-A3B | VLM | Vanilla | INT4 GPTQ / FP16 | 1 | 296 | 116.4 | 2,547.0 | 14.3 | 265 | 18,510.3 | 47.5 | - | 15,683 |
+| Qwen3.5-35B-A3B | VLM | Vanilla | INT4 GPTQ / FP16 | 8 | 2,118 | 473.0 | 4,476.8 | 101.8 | 1,896 | 18,627.2 | 189.7 | - | 15,720 |
+| Qwen3.5-4B | LLM | Vanilla | INT4 AWQ | 1 | 62 | 36.9 | 1,675.4 | - | - | - | 70.9 | - | 1,488 |
+| Qwen3.5-4B | LLM | Vanilla | INT4 AWQ | 8 | 441 | 193.7 | 2,277.3 | - | - | - | 377.0 | - | 1,522 |
+| Qwen3.5-4B | LLM | Vanilla | NVFP4 | 1 | 62 | 25.2 | 2,448.5 | - | - | - | 69.4 | - | 1,480 |
+| Qwen3.5-4B | LLM | Vanilla | NVFP4 | 8 | 441 | 72.6 | 6,078.8 | - | - | - | 388.6 | - | 1,536 |
+| Qwen3.5-4B | VLM | DFlash | NVFP4 / NVFP4 / FP16 | 1 | 296 | 32.1 | 9,246.2 | 10.9 | 266 | 24,269.1 | 74.2 | 2.27 | 1,530 |
+| Qwen3.5-4B | VLM | DFlash | NVFP4 / NVFP4 / FP16 | 8 | 2,118 | 151.8 | 13,951.8 | 73.1 | 1,896 | 25,936.5 | 179.1 | 2.24 | 1,595 |
+| Qwen3.5-4B | VLM | MTP | NVFP4 / NVFP4 / FP16 | 1 | 296 | 28.5 | 10,400.6 | 10.9 | 265 | 24,257.5 | 126.6 | 2.46 | 1,583 |
+| Qwen3.5-4B | VLM | MTP | NVFP4 / NVFP4 / FP16 | 8 | 2,118 | 148.3 | 14,279.1 | 72.8 | 1,896 | 26,061.8 | 412.1 | 2.51 | 1,527 |
+| Qwen3.5-4B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 296 | 72.6 | 4,085.9 | 11.0 | 265 | 24,210.6 | 71.2 | - | 1,554 |
+| Qwen3.5-4B | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,118 | 488.2 | 4,337.7 | 72.7 | 1,896 | 26,065.9 | 319.7 | - | 1,529 |
+| Qwen3.5-4B | VLM | Vanilla | NVFP4 / FP16 | 1 | 296 | 31.6 | 9,379.1 | 10.9 | 265 | 24,348.3 | 69.5 | - | 1,538 |
+| Qwen3.5-4B | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,118 | 151.2 | 14,005.8 | 72.8 | 1,896 | 26,042.9 | 311.2 | - | 1,523 |
+| Qwen3.5-9B | LLM | Vanilla | INT4 AWQ | 1 | 62 | 58.8 | 1,050.1 | - | - | - | 41.4 | - | 2,208 |
+| Qwen3.5-9B | LLM | Vanilla | INT4 AWQ | 8 | 441 | 344.0 | 1,282.5 | - | - | - | 242.3 | - | 2,259 |
+| Qwen3.5-9B | LLM | Vanilla | NVFP4 | 1 | 62 | 36.8 | 1,677.9 | - | - | - | 40.7 | - | 2,273 |
+| Qwen3.5-9B | LLM | Vanilla | NVFP4 | 8 | 441 | 96.1 | 4,589.4 | - | - | - | 240.4 | - | 2,231 |
+| Qwen3.5-9B | VLM | DFlash | NVFP4 / NVFP4 / FP16 | 1 | 296 | 44.6 | 6,653.0 | 14.4 | 265 | 18,462.4 | 47.0 | 2.40 | 2,312 |
+| Qwen3.5-9B | VLM | DFlash | NVFP4 / NVFP4 / FP16 | 8 | 2,118 | 221.3 | 9,569.1 | 101.6 | 1,896 | 18,666.0 | 139.9 | 2.35 | 2,267 |
+| Qwen3.5-9B | VLM | MTP | NVFP4 / NVFP4 / FP16 | 1 | 296 | 39.3 | 7,541.7 | 14.4 | 265 | 18,404.3 | 88.0 | 2.69 | 2,310 |
+| Qwen3.5-9B | VLM | MTP | NVFP4 / NVFP4 / FP16 | 8 | 2,118 | 214.1 | 9,889.8 | 102.0 | 1,896 | 18,586.0 | 346.7 | 2.70 | 2,296 |
+| Qwen3.5-9B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 296 | 124.4 | 2,383.0 | 14.4 | 265 | 18,424.2 | 41.9 | - | 2,260 |
+| Qwen3.5-9B | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,118 | 902.2 | 2,347.2 | 101.6 | 1,896 | 18,670.4 | 215.4 | - | 2,277 |
+| Qwen3.5-9B | VLM | Vanilla | NVFP4 / FP16 | 1 | 296 | 44.0 | 6,743.0 | 14.5 | 266 | 18,348.3 | 40.9 | - | 2,270 |
+| Qwen3.5-9B | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,118 | 219.4 | 9,651.0 | 101.3 | 1,896 | 18,722.3 | 191.1 | - | 2,267 |
+| Qwen3.6-27B | VLM | MTP | NVFP4 / NVFP4 / FP16 | 1 | 296 | 109.6 | 2,703.8 | 14.6 | 266 | 18,212.4 | 34.4 | 2.75 | 2,764 |
+| Qwen3.6-27B | VLM | MTP | NVFP4 / NVFP4 / FP16 | 8 | 2,118 | 662.3 | 3,197.3 | 103.2 | 1,896 | 18,381.6 | 135.7 | 2.76 | 2,782 |
+| Qwen3.6-35B-A3B | LLM | MTP | NVFP4 / NVFP4 | 1 | 62 | 55.7 | 1,109.7 | - | - | - | 109.3 | 2.93 | 1,327 |
+| Qwen3.6-35B-A3B | LLM | MTP | NVFP4 / NVFP4 | 8 | 441 | 136.8 | 3,224.0 | - | - | - | 293.6 | 2.94 | 1,292 |
+| Qwen3.6-35B-A3B | LLM | Vanilla | NVFP4 | 1 | 62 | 55.7 | 1,108.0 | - | - | - | 86.6 | - | 1,286 |
+| Qwen3.6-35B-A3B | LLM | Vanilla | NVFP4 | 8 | 441 | 136.9 | 3,221.8 | - | - | - | 252.7 | - | 1,232 |
+| Qwen3.6-35B-A3B | VLM | DFlash | NVFP4 / NVFP4 / FP16 | 1 | 296 | 96.7 | 3,066.9 | 14.4 | 265 | 18,450.1 | 60.9 | 2.37 | 1,287 |
+| Qwen3.6-35B-A3B | VLM | DFlash | NVFP4 / NVFP4 / FP16 | 8 | 2,118 | 241.9 | 8,754.6 | 101.8 | 1,896 | 18,625.9 | 129.5 | 2.32 | 1,336 |
+| Qwen3.6-35B-A3B | VLM | MTP | NVFP4 / NVFP4 / FP16 | 1 | 296 | 96.0 | 3,089.3 | 14.4 | 266 | 18,439.1 | 102.5 | 2.73 | 1,293 |
+| Qwen3.6-35B-A3B | VLM | MTP | NVFP4 / NVFP4 / FP16 | 8 | 2,118 | 244.3 | 8,666.6 | 101.2 | 1,896 | 18,728.7 | 290.3 | 2.76 | 1,331 |
+| Qwen3.6-35B-A3B | VLM | Vanilla | NVFP4 / FP16 | 1 | 296 | 96.7 | 3,067.2 | 14.4 | 265 | 18,462.2 | 86.6 | - | 1,292 |
+| Qwen3.6-35B-A3B | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,118 | 242.4 | 8,736.4 | 101.7 | 1,896 | 18,653.9 | 268.3 | - | 1,312 |
+
+#### v0.10.0 Jetson AGX Orin (64GB)
+
+| Model | Kind | Mode | Precision | Batch | Prefill Seq Len | Prefill Time (ms) | Prefill (tok/s) | ViT Time (ms) | ViT Tok/Run | ViT (tok/s) | Decode (tok/s) | Accept Rate | GPU Mem (MB) |
+|-------|------|------|-----------|:-----:|----------------:|------------------:|----------------:|--------------:|------------:|------------:|---------------:|------------:|-------------:|
+| Qwen3-0.6B | LLM | Vanilla | INT4 AWQ | 1 | 61 | 12.8 | 4,766.7 | - | - | - | 200.5 | - | 1,943 |
+| Qwen3-1.7B | LLM | Vanilla | INT4 AWQ | 1 | 61 | 24.3 | 2,523.2 | - | - | - | 99.8 | - | 2,978 |
+| Qwen3-4B-Instruct-2507 | LLM | Vanilla | INT4 AWQ | 1 | 57 | 49.9 | 1,146.6 | - | - | - | 55.3 | - | 4,619 |
+| Qwen3-8B | LLM | Vanilla | INT4 AWQ | 1 | 61 | 74.7 | 819.8 | - | - | - | 32.2 | - | 7,199 |
+| Qwen3-VL-2B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 292 | 45.7 | 6,393.8 | 36.2 | 265 | 7,333.7 | 98.9 | - | 4,554 |
+| Qwen3-VL-4B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 292 | 105.7 | 2,767.5 | 36.5 | 265 | 7,270.5 | 54.7 | - | 6,076 |
+| Qwen3-VL-8B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 292 | 178.3 | 1,640.7 | 53.0 | 265 | 5,009.5 | 32.1 | - | 9,004 |
+| Qwen3.5-0.8B | LLM | Vanilla | INT4 AWQ | 1 | 62 | 23.6 | 2,617.2 | - | - | - | 158.3 | - | 2,226 |
+| Qwen3.5-0.8B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 296 | 83.5 | 3,552.4 | 12.2 | 266 | 21,709.2 | 157.8 | - | 2,783 |
+| Qwen3.5-27B | LLM | Vanilla | INT4 AWQ | 1 | 62 | 291.9 | 211.6 | - | - | - | 10.6 | - | 18,652 |
+| Qwen3.5-27B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 296 | 843.8 | 351.3 | 49.7 | 265 | 5,344.4 | 10.6 | - | 19,899 |
+| Qwen3.5-2B | LLM | Vanilla | INT4 AWQ | 1 | 62 | 33.4 | 1,846.8 | - | - | - | 83.3 | - | 3,669 |
+| Qwen3.5-2B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 296 | 106.7 | 2,777.6 | 34.3 | 265 | 7,735.8 | 83.2 | - | 4,751 |
+| Qwen3.5-4B | LLM | Vanilla | INT4 AWQ | 1 | 62 | 67.6 | 913.6 | - | - | - | 47.2 | - | 5,447 |
+| Qwen3.5-4B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 296 | 197.5 | 1,500.8 | 34.3 | 265 | 7,735.8 | 47.3 | - | 6,458 |
+| Qwen3.5-9B | LLM | Vanilla | INT4 AWQ | 1 | 62 | 93.4 | 661.0 | - | - | - | 27.9 | - | 8,614 |
+| Qwen3.5-9B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 296 | 275.3 | 1,076.9 | 49.7 | 265 | 5,345.8 | 27.9 | - | 9,849 |
+
+#### v0.10.0 Jetson Orin NX (16GB)
+
+| Model | Kind | Mode | Precision | Batch | Prefill Seq Len | Prefill Time (ms) | Prefill (tok/s) | ViT Time (ms) | ViT Tok/Run | ViT (tok/s) | Decode (tok/s) | Accept Rate | GPU Mem (MB) |
+|-------|------|------|-----------|:-----:|----------------:|------------------:|----------------:|--------------:|------------:|------------:|---------------:|------------:|-------------:|
+| Qwen3-0.6B | LLM | Vanilla | INT4 AWQ | 1 | 61 | 17.6 | 3,478.1 | - | - | - | 124.9 | - | 1,914 |
+| Qwen3-1.7B | LLM | Vanilla | INT4 AWQ | 1 | 61 | 39.5 | 1,551.2 | - | - | - | 59.0 | - | 2,999 |
+| Qwen3-4B-Instruct-2507 | LLM | Vanilla | INT4 AWQ | 1 | 57 | 78.4 | 729.5 | - | - | - | 32.2 | - | 4,605 |
+| Qwen3-8B | LLM | Vanilla | INT4 AWQ | 1 | 61 | 134.5 | 455.1 | - | - | - | 18.4 | - | 7,167 |
+| Qwen3-VL-2B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 292 | 93.5 | 3,129.2 | 77.1 | 265 | 3,444.3 | 58.5 | - | 4,533 |
+| Qwen3-VL-4B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 292 | 217.2 | 1,346.2 | 77.4 | 265 | 3,428.0 | 31.7 | - | 6,023 |
+| Qwen3-VL-8B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 292 | 400.5 | 730.3 | 110.5 | 265 | 2,402.1 | 18.4 | - | 8,929 |
+| Qwen3.5-0.8B | LLM | Vanilla | INT4 AWQ | 1 | 62 | 35.5 | 1,740.9 | - | - | - | 95.8 | - | 2,204 |
+| Qwen3.5-0.8B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 296 | 121.0 | 2,450.0 | 25.1 | 265 | 10,597.9 | 95.3 | - | 2,744 |
+| Qwen3.5-2B | LLM | Vanilla | INT4 AWQ | 1 | 62 | 56.2 | 1,099.5 | - | - | - | 47.9 | - | 3,657 |
+| Qwen3.5-2B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 296 | 170.6 | 1,737.9 | 72.6 | 265 | 3,658.7 | 48.3 | - | 4,718 |
+| Qwen3.5-4B | LLM | Vanilla | INT4 AWQ | 1 | 62 | 120.1 | 514.2 | - | - | - | 27.0 | - | 5,418 |
+| Qwen3.5-4B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 296 | 371.1 | 798.8 | 73.3 | 265 | 3,623.6 | 27.0 | - | 6,433 |
+
+#### v0.10.0 Jetson Orin Nano (8GB)
+
+| Model | Kind | Mode | Precision | Batch | Prefill Seq Len | Prefill Time (ms) | Prefill (tok/s) | ViT Time (ms) | ViT Tok/Run | ViT (tok/s) | Decode (tok/s) | Accept Rate | GPU Mem (MB) |
+|-------|------|------|-----------|:-----:|----------------:|------------------:|----------------:|--------------:|------------:|------------:|---------------:|------------:|-------------:|
+| Qwen3-0.6B | LLM | Vanilla | INT4 AWQ | 1 | 61 | 30.7 | 1,992.7 | - | - | - | 77.0 | - | 1,917 |
+| Qwen3-1.7B | LLM | Vanilla | INT4 AWQ | 1 | 61 | 69.8 | 876.9 | - | - | - | 36.5 | - | 2,992 |
+| Qwen3-VL-2B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 292 | 167.2 | 1,749.6 | 141.3 | 265 | 1,879.2 | 36.1 | - | 4,486 |
+| Qwen3.5-0.8B | LLM | Vanilla | INT4 AWQ | 1 | 62 | 63.2 | 977.2 | - | - | - | 59.1 | - | 2,127 |
+| Qwen3.5-0.8B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 296 | 215.6 | 1,375.0 | 45.4 | 265 | 5,851.3 | 59.0 | - | 2,760 |
+| Qwen3.5-2B | LLM | Vanilla | INT4 AWQ | 1 | 62 | 101.4 | 609.0 | - | - | - | 29.6 | - | 3,642 |
+| Qwen3.5-2B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 296 | 306.8 | 966.4 | 133.4 | 265 | 1,989.9 | 29.6 | - | 4,692 |
+
+#### v0.10.0 DGX Spark (GB10)
+
+| Model | Kind | Mode | Precision | Batch | Prefill Seq Len | Prefill Time (ms) | Prefill (tok/s) | ViT Time (ms) | ViT Tok/Run | ViT (tok/s) | Decode (tok/s) | Accept Rate | GPU Mem (MB) |
+|-------|------|------|-----------|:-----:|----------------:|------------------:|----------------:|--------------:|------------:|------------:|---------------:|------------:|-------------:|
+| gemma-4-12B-it | VLM | MTP | FP16 / FP16 / FP16 | 1 | 292 | 160.9 | 1,816.9 | 1.3 | 263 | 205,732.6 | 23.6 | 2.80 | 2,375 |
+| gemma-4-12B-it | VLM | MTP | FP16 / FP16 / FP16 | 8 | 2,089 | 677.0 | 3,085.3 | 6.3 | 1,882 | 297,851.7 | 118.7 | 2.80 | 2,364 |
+| gemma-4-12B-it | VLM | Vanilla | FP16 / FP16 | 1 | 292 | 183.5 | 1,593.4 | 1.2 | 263 | 226,656.3 | 9.4 | - | 2,380 |
+| gemma-4-12B-it | VLM | Vanilla | FP16 / FP16 | 8 | 2,089 | 704.9 | 2,963.3 | 6.2 | 1,880 | 300,845.1 | 35.9 | - | 2,382 |
+| gemma-4-31B-it | VLM | Vanilla | FP8 / FP16 | 1 | 292 | 241.3 | 1,211.7 | 101.8 | 263 | 2,588.2 | 6.6 | - | 3,146 |
+| gemma-4-31B-it | VLM | Vanilla | FP8 / FP16 | 8 | 2,089 | 997.8 | 2,093.2 | 772.2 | 1,882 | 2,436.5 | 26.6 | - | 3,147 |
+| gemma-4-31B-it | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 292 | 277.6 | 1,053.5 | 105.8 | 263 | 2,489.0 | 12.7 | - | 3,143 |
+| gemma-4-31B-it | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,089 | 1,783.8 | 1,170.9 | 787.9 | 1,882 | 2,388.2 | 51.0 | - | 3,134 |
+| gemma-4-E2B-it | VLM | MTP | FP16 / FP16 / FP16 | 1 | 292 | 38.8 | 7,535.7 | 20.6 | 263 | 12,787.0 | 87.8 | 1.98 | 5,191 |
+| gemma-4-E2B-it | VLM | MTP | FP16 / FP16 / FP16 | 8 | 2,089 | 138.1 | 15,124.0 | 161.9 | 1,882 | 11,619.6 | 488.8 | 1.98 | 5,213 |
+| gemma-4-E2B-it | VLM | MTP | FP8 / FP8 / FP16 | 1 | 292 | 25.4 | 11,495.6 | 20.6 | 263 | 12,757.7 | 117.6 | 1.95 | 5,134 |
+| gemma-4-E2B-it | VLM | MTP | FP8 / FP8 / FP16 | 8 | 2,089 | 95.8 | 21,805.2 | 162.2 | 1,882 | 11,603.7 | 615.8 | 1.93 | 5,133 |
+| gemma-4-E2B-it | VLM | MTP | NVFP4 / NVFP4 / FP16 | 1 | 292 | 23.6 | 12,408.1 | 20.8 | 263 | 12,666.0 | 136.9 | 1.91 | 5,170 |
+| gemma-4-E2B-it | VLM | MTP | NVFP4 / NVFP4 / FP16 | 8 | 2,089 | 95.4 | 21,895.3 | 161.5 | 1,882 | 11,652.3 | 711.6 | 1.88 | 5,175 |
+| gemma-4-E2B-it | VLM | Vanilla | FP16 / FP16 | 1 | 292 | 38.9 | 7,518.7 | 19.4 | 263 | 13,601.5 | 50.9 | - | 5,220 |
+| gemma-4-E2B-it | VLM | Vanilla | FP16 / FP16 | 8 | 2,089 | 143.0 | 14,609.1 | 161.9 | 1,882 | 11,623.1 | 322.1 | - | 5,159 |
+| gemma-4-E2B-it | VLM | Vanilla | FP8 / FP16 | 1 | 292 | 25.5 | 11,484.7 | 20.7 | 263 | 12,738.5 | 74.8 | - | 5,108 |
+| gemma-4-E2B-it | VLM | Vanilla | FP8 / FP16 | 8 | 2,089 | 96.5 | 21,638.7 | 161.5 | 1,882 | 11,650.2 | 468.2 | - | 5,131 |
+| gemma-4-E2B-it | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 292 | 27.8 | 10,528.3 | 20.8 | 263 | 12,665.6 | 111.4 | - | 5,114 |
+| gemma-4-E2B-it | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,089 | 161.2 | 12,954.3 | 160.6 | 1,882 | 11,716.0 | 661.1 | - | 5,118 |
+| gemma-4-E2B-it | VLM | Vanilla | NVFP4 / FP16 | 1 | 292 | 22.5 | 13,007.5 | 20.8 | 263 | 12,650.3 | 93.7 | - | 5,161 |
+| gemma-4-E2B-it | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,089 | 94.3 | 22,143.0 | 162.1 | 1,882 | 11,605.5 | 538.0 | - | 5,107 |
+| gemma-4-E4B-it | VLM | MTP | FP16 / FP16 / FP16 | 1 | 292 | 69.9 | 4,184.3 | 19.6 | 263 | 13,468.1 | 42.8 | 1.98 | 6,147 |
+| gemma-4-E4B-it | VLM | MTP | FP16 / FP16 / FP16 | 8 | 2,089 | 265.4 | 7,870.8 | 159.8 | 1,882 | 11,774.5 | 232.5 | 1.96 | 6,059 |
+| gemma-4-E4B-it | VLM | MTP | FP8 / FP8 / FP16 | 1 | 292 | 43.8 | 6,674.8 | 21.2 | 263 | 12,418.3 | 67.9 | 1.99 | 6,047 |
+| gemma-4-E4B-it | VLM | MTP | FP8 / FP8 / FP16 | 8 | 2,089 | 169.9 | 12,296.2 | 160.0 | 1,882 | 11,759.2 | 344.0 | 1.97 | 6,031 |
+| gemma-4-E4B-it | VLM | MTP | NVFP4 / NVFP4 / FP16 | 1 | 292 | 37.9 | 7,709.2 | 21.1 | 263 | 12,460.3 | 89.5 | 1.98 | 5,999 |
+| gemma-4-E4B-it | VLM | MTP | NVFP4 / NVFP4 / FP16 | 8 | 2,089 | 157.9 | 13,229.9 | 158.4 | 1,882 | 11,879.8 | 499.8 | 2.00 | 6,091 |
+| gemma-4-E4B-it | VLM | Vanilla | FP16 / FP16 | 1 | 292 | 71.2 | 4,108.4 | 21.2 | 263 | 12,448.3 | 24.0 | - | 6,134 |
+| gemma-4-E4B-it | VLM | Vanilla | FP16 / FP16 | 8 | 2,089 | 264.0 | 7,912.7 | 162.0 | 1,882 | 11,617.7 | 146.4 | - | 6,070 |
+| gemma-4-E4B-it | VLM | Vanilla | FP8 / FP16 | 1 | 292 | 44.6 | 6,558.8 | 20.9 | 263 | 12,578.3 | 37.7 | - | 6,026 |
+| gemma-4-E4B-it | VLM | Vanilla | FP8 / FP16 | 8 | 2,089 | 169.7 | 12,311.2 | 162.3 | 1,882 | 11,594.4 | 215.0 | - | 6,041 |
+| gemma-4-E4B-it | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 292 | 47.8 | 6,121.7 | 21.1 | 263 | 12,490.3 | 60.7 | - | 6,033 |
+| gemma-4-E4B-it | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,089 | 337.0 | 6,197.8 | 162.5 | 1,882 | 11,581.5 | 359.0 | - | 6,040 |
+| gemma-4-E4B-it | VLM | Vanilla | NVFP4 / FP16 | 1 | 292 | 36.1 | 8,100.1 | 19.6 | 263 | 13,458.1 | 54.0 | - | 6,042 |
+| gemma-4-E4B-it | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,089 | 152.8 | 13,669.1 | 163.7 | 1,882 | 11,493.8 | 319.6 | - | 6,091 |
+| nvidia-Gemma-4-26B-A4B | VLM | MTP | NVFP4 / NVFP4 / FP16 | 1 | 292 | 107.6 | 2,717.0 | 110.3 | 263 | 2,387.9 | 66.6 | 2.91 | 1,849 |
+| nvidia-Gemma-4-26B-A4B | VLM | MTP | NVFP4 / NVFP4 / FP16 | 8 | 2,089 | 367.7 | 5,679.8 | 762.1 | 1,882 | 2,468.9 | 194.6 | 2.83 | 1,850 |
+| nvidia-Gemma-4-26B-A4B | VLM | Vanilla | NVFP4 / FP16 | 1 | 292 | 101.7 | 2,874.5 | 105.6 | 263 | 2,493.8 | 38.9 | - | 1,854 |
+| nvidia-Gemma-4-26B-A4B | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,089 | 368.1 | 5,674.1 | 777.8 | 1,882 | 2,419.1 | 105.0 | - | 1,854 |
+| nvidia-Gemma-4-31B-IT | VLM | Vanilla | NVFP4 / FP16 | 1 | 292 | 239.8 | 1,219.2 | 108.7 | 263 | 2,423.5 | 6.9 | - | 3,149 |
+| nvidia-Gemma-4-31B-IT | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,089 | 1,087.2 | 1,921.1 | 767.6 | 1,882 | 2,451.1 | 31.6 | - | 3,118 |
+| NVIDIA-Nemotron-3-Nano-30B-A3B | LLM | Vanilla | NVFP4 | 1 | 66 | 75.9 | 867.8 | - | - | - | 73.9 | - | 1,061 |
+| NVIDIA-Nemotron-3-Nano-30B-A3B | LLM | Vanilla | NVFP4 | 8 | 470 | 186.3 | 2,523.9 | - | - | - | 216.4 | - | 1,063 |
+| NVIDIA-Nemotron-3-Nano-4B | LLM | Vanilla | NVFP4 | 1 | 66 | 29.3 | 2,248.9 | - | - | - | 63.5 | - | 1,185 |
+| NVIDIA-Nemotron-3-Nano-4B | LLM | Vanilla | NVFP4 | 8 | 470 | 99.7 | 4,717.6 | - | - | - | 342.9 | - | 1,170 |
+| NVIDIA-Nemotron-3.5-Lightning-30B-A3B | LLM | DFlash | NVFP4 / NVFP4 | 1 | 66 | 68.6 | 960.3 | - | - | - | 61.5 | 2.23 | 1,052 |
+| NVIDIA-Nemotron-3.5-Lightning-30B-A3B | LLM | DFlash | NVFP4 / NVFP4 | 8 | 470 | 164.4 | 2,860.2 | - | - | - | 149.2 | 1.66 | 1,051 |
+| NVIDIA-Nemotron-3.5-Lightning-30B-A3B | LLM | MTP | NVFP4 / NVFP4 | 1 | 66 | 68.6 | 959.7 | - | - | - | 93.2 | 2.70 | 1,068 |
+| NVIDIA-Nemotron-3.5-Lightning-30B-A3B | LLM | MTP | NVFP4 / NVFP4 | 8 | 470 | 162.0 | 2,903.6 | - | - | - | 185.0 | 1.82 | 1,078 |
+| NVIDIA-Nemotron-3.5-Lightning-30B-A3B | LLM | Vanilla | NVFP4 | 1 | 66 | 67.5 | 976.0 | - | - | - | 75.6 | - | 1,084 |
+| NVIDIA-Nemotron-3.5-Lightning-30B-A3B | LLM | Vanilla | NVFP4 | 8 | 470 | 162.6 | 2,892.4 | - | - | - | 244.9 | - | 1,072 |
+| Qwen2.5-VL-7B-Instruct | VLM | EAGLE3 | NVFP4 / NVFP4 / FP16 | 1 | 376 | 37.5 | 10,025.8 | 33.2 | 349 | 10,522.7 | 154.9 | 4.72 | 1,495 |
+| Qwen2.5-VL-7B-Instruct | VLM | EAGLE3 | NVFP4 / NVFP4 / FP16 | 8 | 2,688 | 262.8 | 10,227.5 | 243.5 | 2,495 | 10,246.7 | 452.5 | 4.62 | 1,496 |
+| Qwen2.5-VL-7B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 1 | 376 | 37.7 | 9,970.3 | 32.9 | 349 | 10,604.7 | 55.6 | - | 1,482 |
+| Qwen2.5-VL-7B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,688 | 262.0 | 10,258.2 | 243.9 | 2,495 | 10,229.1 | 294.7 | - | 1,483 |
+| Qwen3-0.6B | LLM | Vanilla | INT4 AWQ | 1 | 61 | 6.7 | 9,198.4 | - | - | - | 319.3 | - | 722 |
+| Qwen3-0.6B | LLM | Vanilla | INT4 AWQ | 8 | 437 | 17.7 | 24,694.6 | - | - | - | 1,788.2 | - | 760 |
+| Qwen3-0.6B | LLM | Vanilla | NVFP4 | 1 | 61 | 5.8 | 10,564.7 | - | - | - | 283.2 | - | 756 |
+| Qwen3-0.6B | LLM | Vanilla | NVFP4 | 8 | 437 | 13.8 | 31,670.5 | - | - | - | 1,725.8 | - | 805 |
+| Qwen3-1.7B | LLM | EAGLE3 | NVFP4 / NVFP4 | 1 | 61 | 8.7 | 7,037.3 | - | - | - | 291.3 | 2.96 | 1,005 |
+| Qwen3-1.7B | LLM | EAGLE3 | NVFP4 / NVFP4 | 8 | 437 | 23.3 | 18,723.3 | - | - | - | 883.3 | 3.01 | 1,002 |
+| Qwen3-1.7B | LLM | Vanilla | INT4 AWQ | 1 | 61 | 10.7 | 5,710.5 | - | - | - | 152.1 | - | 1,005 |
+| Qwen3-1.7B | LLM | Vanilla | INT4 AWQ | 8 | 437 | 45.1 | 9,690.8 | - | - | - | 939.3 | - | 1,007 |
+| Qwen3-1.7B | LLM | Vanilla | NVFP4 | 1 | 61 | 10.3 | 5,958.8 | - | - | - | 136.5 | - | 1,007 |
+| Qwen3-1.7B | LLM | Vanilla | NVFP4 | 8 | 437 | 24.8 | 17,597.0 | - | - | - | 902.2 | - | 975 |
+| Qwen3-30B-A3B | LLM | Vanilla | INT4 GPTQ | 1 | 61 | 63.1 | 970.4 | - | - | - | 85.2 | - | 14,236 |
+| Qwen3-30B-A3B | LLM | Vanilla | INT4 GPTQ | 8 | 437 | 147.7 | 2,960.0 | - | - | - | 268.8 | - | 13,715 |
+| Qwen3-30B-A3B | LLM | Vanilla | NVFP4 | 1 | 61 | 62.9 | 973.6 | - | - | - | 82.1 | - | 983 |
+| Qwen3-30B-A3B | LLM | Vanilla | NVFP4 | 8 | 437 | 148.5 | 2,943.4 | - | - | - | 226.5 | - | 987 |
+| Qwen3-4B-Instruct-2507 | LLM | DFlash | NVFP4 / NVFP4 | 1 | 57 | 18.8 | 3,043.6 | - | - | - | 98.6 | 2.28 | 1,140 |
+| Qwen3-4B-Instruct-2507 | LLM | DFlash | NVFP4 / NVFP4 | 8 | 409 | 52.5 | 7,779.0 | - | - | - | 421.9 | 2.19 | 1,150 |
+| Qwen3-4B-Instruct-2507 | LLM | Vanilla | INT4 AWQ | 1 | 57 | 20.1 | 2,850.3 | - | - | - | 80.2 | - | 1,144 |
+| Qwen3-4B-Instruct-2507 | LLM | Vanilla | INT4 AWQ | 8 | 409 | 110.9 | 3,684.3 | - | - | - | 528.8 | - | 1,154 |
+| Qwen3-4B-Instruct-2507 | LLM | Vanilla | NVFP4 | 1 | 57 | 19.1 | 3,000.5 | - | - | - | 70.5 | - | 1,140 |
+| Qwen3-4B-Instruct-2507 | LLM | Vanilla | NVFP4 | 8 | 409 | 51.6 | 7,916.5 | - | - | - | 455.1 | - | 1,130 |
+| Qwen3-8B | LLM | DFlash | NVFP4 / NVFP4 | 1 | 61 | 31.7 | 1,928.3 | - | - | - | 77.2 | 3.19 | 1,598 |
+| Qwen3-8B | LLM | DFlash | NVFP4 / NVFP4 | 8 | 437 | 81.9 | 5,335.8 | - | - | - | 347.5 | 3.05 | 1,592 |
+| Qwen3-8B | LLM | EAGLE3 | NVFP4 / NVFP4 | 1 | 61 | 27.6 | 2,220.3 | - | - | - | 127.5 | 3.99 | 1,599 |
+| Qwen3-8B | LLM | EAGLE3 | NVFP4 / NVFP4 | 8 | 437 | 77.4 | 5,647.2 | - | - | - | 417.9 | 4.11 | 1,600 |
+| Qwen3-8B | LLM | Vanilla | INT4 AWQ | 1 | 61 | 31.7 | 1,931.3 | - | - | - | 45.6 | - | 1,595 |
+| Qwen3-8B | LLM | Vanilla | INT4 AWQ | 8 | 437 | 185.9 | 2,351.8 | - | - | - | 309.3 | - | 1,589 |
+| Qwen3-8B | LLM | Vanilla | NVFP4 | 1 | 61 | 29.8 | 2,056.4 | - | - | - | 41.2 | - | 1,598 |
+| Qwen3-8B | LLM | Vanilla | NVFP4 | 8 | 437 | 81.3 | 5,380.0 | - | - | - | 265.2 | - | 1,594 |
+| Qwen3-VL-2B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 292 | 18.5 | 15,836.3 | 14.3 | 265 | 18,612.3 | 150.0 | - | 1,052 |
+| Qwen3-VL-2B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,089 | 125.2 | 16,688.8 | 91.8 | 1,896 | 20,650.7 | 847.1 | - | 1,043 |
+| Qwen3-VL-2B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 1 | 292 | 13.2 | 22,167.6 | 14.2 | 266 | 18,659.2 | 137.1 | - | 1,054 |
+| Qwen3-VL-2B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,089 | 65.6 | 31,839.5 | 94.6 | 1,896 | 20,052.6 | 654.2 | - | 1,053 |
+| Qwen3-VL-4B-Instruct | VLM | EAGLE3 | NVFP4 / NVFP4 / FP16 | 1 | 292 | 26.0 | 11,256.5 | 14.0 | 266 | 18,994.3 | 227.2 | 4.54 | 1,201 |
+| Qwen3-VL-4B-Instruct | VLM | EAGLE3 | NVFP4 / NVFP4 / FP16 | 8 | 2,089 | 134.8 | 15,502.5 | 90.0 | 1,896 | 21,057.2 | 628.2 | 4.45 | 1,202 |
+| Qwen3-VL-4B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 292 | 39.4 | 7,422.9 | 14.1 | 265 | 18,882.4 | 80.6 | - | 1,186 |
+| Qwen3-VL-4B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,089 | 329.8 | 6,334.9 | 90.1 | 1,896 | 21,050.5 | 493.3 | - | 1,202 |
+| Qwen3-VL-4B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 1 | 292 | 26.7 | 10,967.5 | 14.6 | 266 | 18,235.9 | 67.4 | - | 1,204 |
+| Qwen3-VL-4B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,089 | 143.1 | 14,600.6 | 91.9 | 1,896 | 20,639.7 | 340.1 | - | 1,201 |
+| Qwen3-VL-8B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 292 | 66.0 | 4,429.9 | 21.5 | 266 | 12,367.1 | 44.0 | - | 1,649 |
+| Qwen3-VL-8B-Instruct | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,089 | 506.4 | 4,124.9 | 138.8 | 1,896 | 13,659.0 | 303.4 | - | 1,633 |
+| Qwen3-VL-8B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 1 | 292 | 40.8 | 7,174.8 | 21.3 | 265 | 12,469.9 | 42.2 | - | 1,626 |
+| Qwen3-VL-8B-Instruct | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,089 | 234.6 | 8,905.5 | 138.3 | 1,896 | 13,712.2 | 238.3 | - | 1,632 |
+| Qwen3.5-0.8B | LLM | Vanilla | INT4 AWQ | 1 | 62 | 8.7 | 7,099.0 | - | - | - | 235.1 | - | 899 |
+| Qwen3.5-0.8B | LLM | Vanilla | INT4 AWQ | 8 | 441 | 25.2 | 17,534.7 | - | - | - | 1,150.8 | - | 897 |
+| Qwen3.5-0.8B | LLM | Vanilla | NVFP4 | 1 | 62 | 8.2 | 7,519.7 | - | - | - | 224.6 | - | 885 |
+| Qwen3.5-0.8B | LLM | Vanilla | NVFP4 | 8 | 441 | 21.8 | 20,207.1 | - | - | - | 1,130.8 | - | 890 |
+| Qwen3.5-0.8B | VLM | MTP | NVFP4 / NVFP4 / FP16 | 1 | 296 | 9.7 | 30,463.3 | 4.9 | 265 | 54,464.5 | 299.4 | 2.06 | 929 |
+| Qwen3.5-0.8B | VLM | MTP | NVFP4 / NVFP4 / FP16 | 8 | 2,118 | 51.9 | 40,806.1 | 29.9 | 1,896 | 63,461.6 | 1,006.8 | 2.08 | 1,028 |
+| Qwen3.5-0.8B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 296 | 12.6 | 23,528.1 | 4.8 | 266 | 54,754.3 | 233.4 | - | 945 |
+| Qwen3.5-0.8B | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,118 | 66.6 | 31,806.4 | 29.9 | 1,896 | 63,331.4 | 884.1 | - | 947 |
+| Qwen3.5-0.8B | VLM | Vanilla | NVFP4 / FP16 | 1 | 296 | 11.1 | 26,762.0 | 4.8 | 266 | 55,010.8 | 224.1 | - | 947 |
+| Qwen3.5-0.8B | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,118 | 54.1 | 39,161.6 | 30.0 | 1,896 | 63,138.6 | 912.0 | - | 947 |
+| Qwen3.5-27B | LLM | Vanilla | INT4 AWQ | 1 | 62 | 106.6 | 579.6 | - | - | - | 14.2 | - | 2,839 |
+| Qwen3.5-27B | LLM | Vanilla | INT4 AWQ | 8 | 441 | 628.2 | 702.3 | - | - | - | 88.6 | - | 2,836 |
+| Qwen3.5-27B | LLM | Vanilla | NVFP4 | 1 | 62 | 99.7 | 619.2 | - | - | - | 12.6 | - | 2,836 |
+| Qwen3.5-27B | LLM | Vanilla | NVFP4 | 8 | 441 | 304.3 | 1,449.6 | - | - | - | 78.1 | - | 2,836 |
+| Qwen3.5-27B | VLM | DFlash | NVFP4 / NVFP4 / FP16 | 1 | 296 | 133.2 | 2,224.9 | 20.2 | 265 | 13,133.9 | 21.0 | 2.56 | 2,880 |
+| Qwen3.5-27B | VLM | DFlash | NVFP4 / NVFP4 / FP16 | 8 | 2,118 | 886.7 | 2,388.1 | 137.9 | 1,896 | 13,750.6 | 65.2 | 2.52 | 2,877 |
+| Qwen3.5-27B | VLM | MTP | NVFP4 / NVFP4 / FP16 | 1 | 296 | 126.0 | 2,353.6 | 20.3 | 265 | 13,091.4 | 32.2 | 2.82 | 2,880 |
+| Qwen3.5-27B | VLM | MTP | NVFP4 / NVFP4 / FP16 | 8 | 2,118 | 833.4 | 2,541.0 | 131.0 | 1,896 | 14,473.9 | 124.3 | 2.81 | 2,885 |
+| Qwen3.5-27B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 296 | 224.9 | 1,318.0 | 20.3 | 265 | 13,064.7 | 14.6 | - | 2,886 |
+| Qwen3.5-27B | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,118 | 1,657.2 | 1,277.8 | 131.3 | 1,896 | 14,445.2 | 82.7 | - | 2,875 |
+| Qwen3.5-27B | VLM | Vanilla | NVFP4 / FP16 | 1 | 296 | 131.6 | 2,252.0 | 20.3 | 266 | 13,079.8 | 13.6 | - | 2,860 |
+| Qwen3.5-27B | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,118 | 842.1 | 2,514.7 | 131.7 | 1,896 | 14,398.7 | 68.4 | - | 2,875 |
+| Qwen3.5-2B | LLM | Vanilla | INT4 AWQ | 1 | 62 | 13.0 | 4,751.4 | - | - | - | 119.5 | - | 1,384 |
+| Qwen3.5-2B | LLM | Vanilla | INT4 AWQ | 8 | 441 | 50.0 | 8,817.0 | - | - | - | 611.5 | - | 1,367 |
+| Qwen3.5-2B | LLM | Vanilla | NVFP4 | 1 | 62 | 12.6 | 4,901.5 | - | - | - | 117.6 | - | 1,383 |
+| Qwen3.5-2B | LLM | Vanilla | NVFP4 | 8 | 441 | 34.5 | 12,780.3 | - | - | - | 683.7 | - | 1,383 |
+| Qwen3.5-2B | VLM | MTP | NVFP4 / NVFP4 / FP16 | 1 | 296 | 14.9 | 19,911.1 | 13.4 | 265 | 19,762.1 | 205.1 | 2.45 | 1,416 |
+| Qwen3.5-2B | VLM | MTP | NVFP4 / NVFP4 / FP16 | 8 | 2,118 | 78.0 | 27,159.0 | 90.1 | 1,896 | 21,054.9 | 613.7 | 2.38 | 1,420 |
+| Qwen3.5-2B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 296 | 21.4 | 13,829.8 | 13.3 | 265 | 19,967.5 | 119.0 | - | 1,432 |
+| Qwen3.5-2B | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,118 | 132.8 | 15,940.4 | 90.7 | 1,896 | 20,903.7 | 538.8 | - | 1,427 |
+| Qwen3.5-2B | VLM | Vanilla | NVFP4 / FP16 | 1 | 296 | 16.3 | 18,177.3 | 13.7 | 265 | 19,342.8 | 115.8 | - | 1,430 |
+| Qwen3.5-2B | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,118 | 79.6 | 26,603.6 | 88.8 | 1,896 | 21,347.5 | 411.1 | - | 1,420 |
+| Qwen3.5-35B-A3B | LLM | Vanilla | INT4 GPTQ | 1 | 62 | 61.0 | 1,012.4 | - | - | - | 47.9 | - | 15,740 |
+| Qwen3.5-35B-A3B | LLM | Vanilla | INT4 GPTQ | 8 | 441 | 160.1 | 2,755.9 | - | - | - | 191.2 | - | 15,773 |
+| Qwen3.5-35B-A3B | VLM | Vanilla | INT4 GPTQ / FP16 | 1 | 296 | 103.7 | 2,859.1 | 17.9 | 266 | 14,866.2 | 43.0 | - | 15,810 |
+| Qwen3.5-35B-A3B | VLM | Vanilla | INT4 GPTQ / FP16 | 8 | 2,118 | 329.4 | 6,429.1 | 128.7 | 1,896 | 14,729.6 | 182.0 | - | 15,067 |
+| Qwen3.5-4B | LLM | Vanilla | INT4 AWQ | 1 | 62 | 23.5 | 2,626.5 | - | - | - | 67.2 | - | 1,623 |
+| Qwen3.5-4B | LLM | Vanilla | INT4 AWQ | 8 | 441 | 127.5 | 3,459.4 | - | - | - | 352.0 | - | 1,626 |
+| Qwen3.5-4B | LLM | Vanilla | NVFP4 | 1 | 62 | 23.0 | 2,680.9 | - | - | - | 63.4 | - | 1,626 |
+| Qwen3.5-4B | LLM | Vanilla | NVFP4 | 8 | 441 | 72.3 | 6,104.1 | - | - | - | 356.1 | - | 1,626 |
+| Qwen3.5-4B | VLM | DFlash | NVFP4 / NVFP4 / FP16 | 1 | 296 | 34.3 | 8,637.5 | 13.3 | 265 | 20,000.9 | 73.7 | 2.25 | 1,675 |
+| Qwen3.5-4B | VLM | DFlash | NVFP4 / NVFP4 / FP16 | 8 | 2,118 | 172.0 | 12,309.1 | 85.8 | 1,896 | 22,112.5 | 196.3 | 2.26 | 1,672 |
+| Qwen3.5-4B | VLM | MTP | NVFP4 / NVFP4 / FP16 | 1 | 296 | 30.4 | 9,763.1 | 13.4 | 265 | 19,854.0 | 121.2 | 2.55 | 1,674 |
+| Qwen3.5-4B | VLM | MTP | NVFP4 / NVFP4 / FP16 | 8 | 2,118 | 169.5 | 12,491.8 | 87.2 | 1,896 | 21,740.1 | 385.5 | 2.49 | 1,659 |
+| Qwen3.5-4B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 296 | 43.7 | 6,784.0 | 13.3 | 266 | 20,026.3 | 68.0 | - | 1,673 |
+| Qwen3.5-4B | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,118 | 374.2 | 5,658.9 | 86.2 | 1,896 | 22,010.9 | 313.9 | - | 1,675 |
+| Qwen3.5-4B | VLM | Vanilla | NVFP4 / FP16 | 1 | 296 | 33.2 | 8,929.7 | 13.2 | 265 | 20,076.2 | 65.1 | - | 1,652 |
+| Qwen3.5-4B | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,118 | 171.8 | 12,327.6 | 86.1 | 1,896 | 22,023.7 | 263.6 | - | 1,670 |
+| Qwen3.5-9B | LLM | Vanilla | INT4 AWQ | 1 | 62 | 36.6 | 1,687.9 | - | - | - | 38.3 | - | 2,340 |
+| Qwen3.5-9B | LLM | Vanilla | INT4 AWQ | 8 | 441 | 199.8 | 2,207.4 | - | - | - | 235.9 | - | 2,354 |
+| Qwen3.5-9B | LLM | Vanilla | NVFP4 | 1 | 62 | 36.6 | 1,689.0 | - | - | - | 36.5 | - | 2,351 |
+| Qwen3.5-9B | LLM | Vanilla | NVFP4 | 8 | 441 | 99.9 | 4,416.2 | - | - | - | 221.7 | - | 2,353 |
+| Qwen3.5-9B | VLM | DFlash | NVFP4 / NVFP4 / FP16 | 1 | 296 | 48.9 | 6,063.5 | 20.5 | 265 | 12,972.6 | 43.5 | 2.36 | 2,402 |
+| Qwen3.5-9B | VLM | DFlash | NVFP4 / NVFP4 / FP16 | 8 | 2,118 | 270.7 | 7,821.7 | 131.1 | 1,896 | 14,462.1 | 148.5 | 2.39 | 2,400 |
+| Qwen3.5-9B | VLM | MTP | NVFP4 / NVFP4 / FP16 | 1 | 296 | 44.3 | 6,692.9 | 20.1 | 265 | 13,204.3 | 79.3 | 2.69 | 2,403 |
+| Qwen3.5-9B | VLM | MTP | NVFP4 / NVFP4 / FP16 | 8 | 2,118 | 258.9 | 8,179.9 | 130.5 | 1,896 | 14,525.9 | 334.5 | 2.74 | 2,384 |
+| Qwen3.5-9B | VLM | Vanilla | INT4 AWQ / FP16 | 1 | 296 | 72.5 | 4,086.9 | 17.7 | 265 | 15,010.6 | 35.1 | - | 2,400 |
+| Qwen3.5-9B | VLM | Vanilla | INT4 AWQ / FP16 | 8 | 2,118 | 533.0 | 3,972.6 | 130.4 | 1,896 | 14,539.7 | 213.5 | - | 2,401 |
+| Qwen3.5-9B | VLM | Vanilla | NVFP4 / FP16 | 1 | 296 | 49.0 | 6,054.0 | 19.9 | 265 | 13,304.5 | 35.0 | - | 2,402 |
+| Qwen3.5-9B | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,118 | 266.5 | 7,947.1 | 132.0 | 1,896 | 14,369.2 | 180.0 | - | 2,390 |
+| Qwen3.6-27B | VLM | MTP | NVFP4 / NVFP4 / FP16 | 1 | 296 | 126.6 | 2,342.4 | 20.6 | 265 | 12,898.2 | 31.4 | 2.74 | 2,885 |
+| Qwen3.6-27B | VLM | MTP | NVFP4 / NVFP4 / FP16 | 8 | 2,118 | 823.3 | 2,572.1 | 131.3 | 1,896 | 14,443.7 | 126.3 | 2.76 | 2,869 |
+| Qwen3.6-35B-A3B | LLM | MTP | NVFP4 / NVFP4 | 1 | 62 | 67.6 | 913.9 | - | - | - | 102.3 | 2.94 | 1,361 |
+| Qwen3.6-35B-A3B | LLM | MTP | NVFP4 / NVFP4 | 8 | 441 | 166.3 | 2,652.0 | - | - | - | 239.0 | 2.89 | 1,359 |
+| Qwen3.6-35B-A3B | LLM | Vanilla | NVFP4 | 1 | 62 | 66.9 | 923.8 | - | - | - | 70.2 | - | 1,359 |
+| Qwen3.6-35B-A3B | LLM | Vanilla | NVFP4 | 8 | 441 | 164.4 | 2,683.9 | - | - | - | 216.4 | - | 1,356 |
+| Qwen3.6-35B-A3B | VLM | MTP | NVFP4 / NVFP4 / FP16 | 1 | 296 | 120.1 | 2,469.1 | 20.7 | 265 | 12,810.5 | 96.7 | 2.74 | 1,408 |
+| Qwen3.6-35B-A3B | VLM | MTP | NVFP4 / NVFP4 / FP16 | 8 | 2,118 | 330.2 | 6,413.3 | 129.4 | 1,896 | 14,647.5 | 249.2 | 2.72 | 1,409 |
+| Qwen3.6-35B-A3B | VLM | Vanilla | NVFP4 / FP16 | 1 | 296 | 119.0 | 2,491.3 | 17.5 | 265 | 15,176.9 | 69.1 | - | 1,412 |
+| Qwen3.6-35B-A3B | VLM | Vanilla | NVFP4 / FP16 | 8 | 2,118 | 332.3 | 6,372.0 | 128.2 | 1,896 | 14,786.4 | 226.2 | - | 1,408 |
+
+### v0.10.0 Collection Method
+
+- Engines were built from exported v0.10.0 ONNX artifacts using the build limits in [Export and Build Specs](#2-export-and-build-specs).
+- Runtime throughput was collected with `llm_inference --warmup 10 --dumpProfile --profileOutputFile <profile.json>` using benchmark JSON inputs for each model family.
+- Synthetic component timing was collected with `llm_bench --warmup 3 --iterations 10`; prefill uses `--inputLen 2048` and decode uses `--pastKVLen 2048`.
+- Jetson AGX Thor and DGX Spark runs include the supported NVFP4 and INT4 entries. Jetson AGX Orin, Orin NX, and Orin Nano run the externalized INT4 entries supported by each memory target.
+
+---
 ## v0.9.0 Results
 
 > **SDK Version:** TensorRT Edge-LLM 0.9.0 &nbsp;|&nbsp; **JetPack:** 7.2 &nbsp;|&nbsp; **DGX Spark:** CUDA 13.0, TensorRT 10.16.1.11 &nbsp;|&nbsp; **Devices:** Jetson AGX Thor, Jetson AGX Orin 64GB, Jetson Orin NX 16GB, Jetson Orin Nano 8GB, DGX Spark (GB10)

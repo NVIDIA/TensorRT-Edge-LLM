@@ -19,13 +19,16 @@ import pytest
 from conftest import EnvironmentConfig
 from defs.config import ModelType, TaskType, TestConfig
 from defs.utils.command_execution import (
-    _check_context_reuse_cold_hit_equivalence, _read_context_reuse_profile)
+    _check_context_reuse_cold_hit_equivalence,
+    _check_spec_prefill_evict_equivalence, _read_context_reuse_profile)
 from defs.utils.command_generation import (generate_build_commands,
                                            generate_inference_commands)
 
 _BUILD_PARAM = ("Qwen3.5-4B-nvfp4-mxsl1024-mxbs1-mxil1024-mxkvp64")
 _INFERENCE_PARAM = (f"{_BUILD_PARAM}-ctxreuse-ccrsb67108864-ccpkvsb67108864-"
                     "llm_context_reuse")
+_GEMMA4_MTP_BUILD_PARAM = (
+    "gemma-4-E2B-it-fp16-mxsl2048-mtp-mxbs2-mxil1024-mxkvp64")
 _KV_PAGE_SIZE = 128
 
 
@@ -66,6 +69,15 @@ def test_context_reuse_build_and_inference_commands_share_engine(tmp_path):
     assert any(
         option.startswith("--profileOutputFile=")
         for option in inference_command)
+
+
+def test_spec_build_commands_apply_kv_pool_pages_to_base_and_draft(tmp_path):
+    config = _config(_GEMMA4_MTP_BUILD_PARAM, TaskType.BUILD, tmp_path)
+
+    commands = generate_build_commands(config, {"llm_build": "llm_build"})
+
+    assert len(commands) == 2
+    assert all("--maxKVPoolPages=64" in command for command, _ in commands)
 
 
 def test_context_reuse_snapshot_budgets_require_enable_token(tmp_path):
@@ -113,3 +125,35 @@ def test_context_reuse_cold_and_hit_outputs_are_token_identical(tmp_path):
         json.dump({"responses": [response, {}, response]}, f)
 
     _check_context_reuse_cold_hit_equivalence(config)
+
+
+def test_spec_prefill_evict_fixture_and_survivor_equivalence(tmp_path):
+    param = f"{_BUILD_PARAM}-ctxreuse-llm_spec_prefill_evict"
+    config = _config(param, TaskType.INFERENCE, tmp_path)
+    with open(config.get_test_case_file(), encoding="utf-8") as f:
+        requests = json.load(f)["requests"]
+    assert len(requests) == 4
+    assert requests[0]["stop"] == "OK"
+    assert requests[1]["messages"] == requests[2]["messages"]
+    assert requests[2]["context_cache_lookup_policy"] == "bypass"
+
+    stopped = {
+        "output_text": "",
+        "finish_reason": "stop-words",
+        "logprobs": [[{
+            "token_id": 1
+        }]],
+    }
+    survivor = {
+        "output_text": "stable",
+        "finish_reason": "max-length",
+        "logprobs": [[{
+            "token_id": 2
+        }], [{
+            "token_id": 3
+        }]],
+    }
+    with open(config.get_output_json_file(), "w", encoding="utf-8") as f:
+        json.dump({"responses": [stopped, survivor, survivor, {}]}, f)
+
+    _check_spec_prefill_evict_equivalence(config)

@@ -144,6 +144,24 @@ void applyLogitBias(rt::Tensor& logits, rt::Tensor const& tokenIds, rt::Tensor c
     rt::Tensor const& offsets, cudaStream_t stream);
 
 /*!
+ * \brief Apply sparse per-slot additive logit biases to repeated logits rows.
+ *
+ * This variant is used by speculative verification tensors where each active
+ * request slot owns multiple contiguous logits rows. Row `r` consumes the CSR
+ * bias entries for slot `r / rowsPerSlot`.
+ *
+ * \param[in,out] logits Logits tensor [GPU, Float] with shape [batch-size * rowsPerSlot, vocab-size]
+ * \param[in] tokenIds Flattened biased token IDs [GPU, Int32] with shape [num-biased-tokens]
+ * \param[in] biasValues Flattened bias values [GPU, Float] with shape [num-biased-tokens]
+ * \param[in] offsets Per-slot CSR offsets [GPU, Int32] with shape [batch-size + 1]
+ * \param[in] rowsPerSlot Number of contiguous logits rows for each active request slot
+ * \param[in] stream CUDA stream to execute the kernel
+ * \throws std::runtime_error If tensor validation or CUDA launch fails
+ */
+void applyLogitBiasRepeatedRows(rt::Tensor& logits, rt::Tensor const& tokenIds, rt::Tensor const& biasValues,
+    rt::Tensor const& offsets, int32_t rowsPerSlot, cudaStream_t stream);
+
+/*!
  * \brief Select all top-K elements from input tensor.
  *
  * Returns topK indices and raw values from input with no transformations applied.

@@ -20,6 +20,7 @@
 #include "runtime/config/deploymentConfig.h"
 #include "runtime/decoding/decodingStrategy.h"
 #include "runtime/exec/engineExecutor.h"
+#include "runtime/state/externalWeightManager.h"
 
 #include <filesystem>
 #include <memory>
@@ -32,10 +33,14 @@ namespace rt
 
 struct DecoderRegistryInit
 {
+    //! Still needed by the decoders that read their own strategy-specific sidecars (EAGLE's d2t table, DSpark's
+    //! head weights, DFlash's draft vocab map). Draft engine weights arrive via `draftWeights` instead.
     std::filesystem::path engineDir;
     std::optional<SpecDecodeDraftingConfig> draftingConfig;
     //! Validated draft executor whose ownership is consumed by the selected speculative decoder.
     std::unique_ptr<EngineExecutor> draftExecutor;
+    //! Loaded and engine-validated draft weights, consumed by the selected speculative decoder.
+    ExternalWeightManager draftWeights;
     cudaStream_t stream{};
 };
 

@@ -44,6 +44,7 @@ from safetensors import safe_open
 
 from ..config import Mapping
 from ..models.linear import LinearBase, TPMode
+from .fused_weights import split_fused_moe_experts
 from .repacking import apply_all_repacking
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,16 @@ logger = logging.getLogger(__name__)
 __all__ = ["load_weights", "load_submodule_weights"]
 
 _FUSED_INPUT_CHANNEL_ATTRS = {"pre_quant_scale"}
+
+
+def _splits_unchanged(attr_suffix: str, tensor: torch.Tensor) -> bool:
+    """True when an attribute is invariant to an output-dim split.
+
+    Per-input-channel vectors (AWQ ``pre_quant_scale``) and per-tensor
+    scalars (NVFP4 ``weight_scale_2`` / ``input_scale``) carry no output
+    dimension, so both halves take the same tensor.
+    """
+    return attr_suffix in _FUSED_INPUT_CHANNEL_ATTRS or tensor.dim() == 0
 
 
 def _is_awq_prepacked_weight(tensor: torch.Tensor, attr_suffix: str,
@@ -279,16 +290,23 @@ def _detect_key_prefix(keys: list) -> Tuple[str, str]:
 
 
 def _resolve_shard(model_dir: str, shard: str) -> str:
-    """Return the absolute shard path, asserting it stays inside model_dir."""
+    """Return the shard path, asserting the index-declared location stays
+    inside model_dir. The containment check is lexical (it does NOT follow the
+    final-component symlink) so a Hugging Face cache layout -- where
+    ``snapshots/<rev>/x.safetensors`` is a symlink into ``../../blobs/<hash>``
+    -- is accepted, while a genuine ``..``/absolute path-escape encoded in the
+    checkpoint index is still rejected."""
     base = pathlib.Path(model_dir).resolve()
-    resolved = (base / shard).resolve()
+    # os.path.join lets an absolute ``shard`` override base (caught below);
+    # normpath collapses ``..`` lexically WITHOUT dereferencing symlinks.
+    candidate = pathlib.Path(os.path.normpath(os.path.join(str(base), shard)))
     try:
-        resolved.relative_to(base)
+        candidate.relative_to(base)
     except ValueError:
         raise ValueError(
             f"Shard path {shard!r} in checkpoint index escapes model_dir "
             f"{model_dir!r}. This may indicate a malformed checkpoint.")
-    return str(resolved)
+    return str(candidate)
 
 
 def _build_shard_map(model_dir: str) -> Dict[str, str]:
@@ -644,7 +662,7 @@ def _try_split_fused_tensor(model: nn.Module,
         per_head_qkvz = 2 * head_k_dim + 2 * head_v_dim * gqa
         expected_N = num_k_heads * per_head_qkvz
 
-        if attr_suffix in _FUSED_INPUT_CHANNEL_ATTRS:
+        if _splits_unchanged(attr_suffix, tensor):
             ok = _set_tensor(model,
                              f"{prefix}.linear_attn.in_proj_qkv.{attr_suffix}",
                              tensor,
@@ -729,7 +747,7 @@ def _try_split_fused_tensor(model: nn.Module,
         per_head_ba = 2 * gqa
         expected_N = num_k_heads * per_head_ba
 
-        if attr_suffix in _FUSED_INPUT_CHANNEL_ATTRS:
+        if _splits_unchanged(attr_suffix, tensor):
             ok = _set_tensor(model,
                              f"{prefix}.linear_attn.in_proj_b.{attr_suffix}",
                              tensor,
@@ -783,39 +801,14 @@ def _try_split_fused_tensor(model: nn.Module,
         return ok
 
     # --- 6. Fused MoE expert split -------------------------------------------
-    # Fused 3-D expert tensors (gate rows first, then up):
-    #   mlp.experts.gate_up_proj [E, 2*I, H] / mlp.experts.down_proj [E, H, I]
-    # Split into the per-expert Linear weights held by Qwen3MoEExperts.
-    if key.endswith(".mlp.experts.gate_up_proj") and tensor.dim() == 3:
-        prefix = key[:-len("gate_up_proj")]
-        inter = tensor.shape[1] // 2
+    expert_weights = split_fused_moe_experts(key, tensor)
+    if expert_weights is not None:
         ok = True
-        for expert in range(tensor.shape[0]):
-            ok &= _set_tensor(model,
-                              f"{prefix}{expert}.gate_proj.weight",
-                              tensor[expert, :inter, :],
-                              mapping=mapping)
-            ok &= _set_tensor(model,
-                              f"{prefix}{expert}.up_proj.weight",
-                              tensor[expert, inter:, :],
-                              mapping=mapping)
+        for split_key, split_tensor in expert_weights:
+            ok &= _set_tensor(model, split_key, split_tensor, mapping=mapping)
         if ok:
-            logger.debug(
-                "Split fused experts.gate_up_proj -> %d gate/up pairs "
-                "for prefix %r", tensor.shape[0], prefix)
-        return ok
-    if key.endswith(".mlp.experts.down_proj") and tensor.dim() == 3:
-        prefix = key[:-len("down_proj")]
-        ok = True
-        for expert in range(tensor.shape[0]):
-            ok &= _set_tensor(model,
-                              f"{prefix}{expert}.down_proj.weight",
-                              tensor[expert],
-                              mapping=mapping)
-        if ok:
-            logger.debug(
-                "Split fused experts.down_proj -> %d down weights "
-                "for prefix %r", tensor.shape[0], prefix)
+            logger.debug("Split fused %r into %d per-expert weights", key,
+                         len(expert_weights))
         return ok
 
     return False

@@ -113,9 +113,7 @@ public:
 
     //! @brief True only if the table's current contents were last set by `setIdentity()` (and never
     //!        touched by `setRow()` since). Conservative: any `setRow()` call clears this even if the
-    //!        supplied ids happen to describe an identity mapping, so callers that gate identity-only
-    //!        consumers (e.g. the Alpamayo action runner) fail closed rather than
-    //!        risk a false positive.
+    //!        supplied ids happen to describe an identity mapping, so identity-only fast paths fail closed.
     bool isIdentity() const
     {
         return mIsIdentity;

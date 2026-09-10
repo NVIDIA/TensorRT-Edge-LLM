@@ -70,9 +70,6 @@ def build_runtime_config(cfg: DeviceConfig, args) -> Dict[str, Any]:
         "kv_cache_dtype": cfg.kv_cache_dtype,
     }
 
-    if cfg.tp_size > 1:
-        out["tp_size"] = cfg.tp_size
-        out["tp_rank"] = cfg.tp_rank
     if cfg.reduced_vocab_size:
         out["reduced_vocab_size"] = cfg.reduced_vocab_size
     if cfg.original_max_position_embeddings is not None:
@@ -177,7 +174,7 @@ def build_runtime_config(cfg: DeviceConfig, args) -> Dict[str, Any]:
             out["base_model_hidden_size"] = target_hidden * len(target_layers)
         elif args.spec_type == "mtp":
             out["base_model_hidden_size"] = cfg.hidden_size
-        elif args.spec_type == "dflash":
+        elif args.spec_type in ("dflash", "jetspec"):
             targets = cfg.dflash_target_layer_ids or [1, 8, 15, 22, 29]
             out["base_model_hidden_size"] = len(targets) * cfg.hidden_size
             out["block_size"] = cfg.dflash_block_size
@@ -223,6 +220,14 @@ def build_runtime_config(cfg: DeviceConfig, args) -> Dict[str, Any]:
             "mask_token_id": cfg.dflash_mask_token_id,
         }
         out["dflash_tree_base"] = cfg.dflash_tree_base
+    if args.spec_type == "jetspec":
+        out["jetspec_config"] = {
+            "target_layer_ids": cfg.dflash_target_layer_ids,
+            "block_size": cfg.dflash_block_size,
+            "mask_token_id": cfg.dflash_mask_token_id,
+            "causal_head": True,
+        }
+        out["jetspec_tree_base"] = cfg.dflash_tree_base
     if args.spec_type == "mtp":
         out["mtp_tree_base"] = cfg.mtp_tree_base
     if args.spec_type == "dspark":
@@ -244,6 +249,7 @@ def build_runtime_config(cfg: DeviceConfig, args) -> Dict[str, Any]:
     max_kv_pool_pages = args.max_batch_size * (
         (args.max_kv_cache_capacity + KV_PAGE_SIZE - 1) // KV_PAGE_SIZE)
     out["builder_config"] = {
+        "tp_size": args.tp_size,
         "max_input_len": args.max_input_len,
         "spec_draft": args.resolved_spec_role == contracts.SpecRole.DRAFT,
         "spec_base": args.resolved_spec_role == contracts.SpecRole.BASE,
@@ -254,6 +260,31 @@ def build_runtime_config(cfg: DeviceConfig, args) -> Dict[str, Any]:
         "max_verify_tree_size": args.max_verify_tree_size,
         "max_draft_tree_size": args.max_draft_tree_size,
     }
+    if args.tp_size > 1:
+        dimensions = {
+            "num_attention_heads": cfg.num_attention_heads,
+            "num_key_value_heads": cfg.num_key_value_heads,
+            "intermediate_size": cfg.intermediate_size,
+        }
+        invalid = {
+            name: value
+            for name, value in dimensions.items() if value % args.tp_size
+        }
+        if invalid:
+            details = ", ".join(f"{name}={value}"
+                                for name, value in sorted(invalid.items()))
+            raise ValueError(
+                f"TP size {args.tp_size} does not divide runtime dimensions: {details}"
+            )
+        overrides = {
+            name: value // args.tp_size
+            for name, value in dimensions.items()
+        }
+        out["rank_configs"] = [{
+            "rank": rank,
+            "engine": f"llm_world{args.tp_size}_rank{rank}.engine",
+            "config_overrides": dict(overrides),
+        } for rank in range(args.tp_size)]
     return out
 
 

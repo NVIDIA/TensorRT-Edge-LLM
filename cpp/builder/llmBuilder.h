@@ -78,6 +78,9 @@ struct LLMBuilderConfig
         return maxKVPoolPages == 0 ? minimumActivePages : maxKVPoolPages;
     }
 
+    int64_t tpSize{1}; //!< Tensor parallel size
+    int64_t tpRank{0}; //!< Tensor parallel rank
+
     //! Convert configuration to JSON format for serialization.
     //! @return JSON object containing all configuration parameters
     Json toJson() const
@@ -90,6 +93,7 @@ struct LLMBuilderConfig
         json["max_lora_rank"] = maxLoraRank;
         json["max_kv_cache_capacity"] = maxKVCacheCapacity;
         json["max_kv_pool_pages"] = resolvedKVPoolPages();
+        json["tp_size"] = tpSize;
         // Only include speculative-decoding limits for the engine role that owns them.
         if (specBase)
         {
@@ -153,6 +157,10 @@ struct LLMBuilderConfig
         {
             config.maxDraftTreeSize = json["max_draft_tree_size"];
         }
+        if (json.contains("tp_size"))
+        {
+            config.tpSize = json["tp_size"];
+        }
         return config;
     }
 
@@ -169,6 +177,8 @@ struct LLMBuilderConfig
         oss << "  maxLoraRank: " << maxLoraRank << "\n";
         oss << "  maxKVCacheCapacity: " << maxKVCacheCapacity << "\n";
         oss << "  maxKVPoolPages: " << resolvedKVPoolPages() << "\n";
+        oss << "  tpSize: " << tpSize << "\n";
+        oss << "  tpRank: " << tpRank << "\n";
         // Only show speculative-decoding limits for the engine role that owns them.
         if (specBase)
         {
@@ -370,7 +380,7 @@ private:
 
     //! Set up optimization profiles for MTP intermediate recurrent state output tensors.
     //! These are per-step checkpoints of GDN recurrent states during tree verification.
-    //! Only needed for hybrid MTP/DFlash/DSpark base verification engines.
+    //! Only needed for hybrid MTP/DFlash/JetSpec/DSpark base verification engines.
     //! @param contextProfile Optimization profile for context processing
     //! @param generationProfile Optimization profile for generation processing
     //! @return true if setup was successful, false otherwise
@@ -379,7 +389,7 @@ private:
 
     //! Set up optimization profiles for MTP intermediate conv state output tensors.
     //! These are per-step checkpoints of conv1d states during tree verification.
-    //! Only needed for hybrid MTP/DFlash/DSpark base verification engines.
+    //! Only needed for hybrid MTP/DFlash/JetSpec/DSpark base verification engines.
     //! @param contextProfile Optimization profile for context processing
     //! @param generationProfile Optimization profile for generation processing
     //! @return true if setup was successful, false otherwise
@@ -450,6 +460,7 @@ private:
     int32_t mConvDim{0};                //!< Conv state dimension
     int32_t mConvKernel{0};             //!< Conv kernel size (d_conv)
     Json mModelConfig;                  //!< Parsed model configuration
+    Json mSharedModelConfig;            //!< Shared runtime config before rank-local overrides
     bool mIsDiffusionBackbone{false};   //!< Whether this builder builds the DiffusionGemma DLLM engine
     int64_t mDiffusionCanvasLength{0};  //!< DiffusionGemma fixed canvas/block length
 };

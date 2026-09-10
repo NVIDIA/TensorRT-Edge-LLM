@@ -45,6 +45,7 @@ class DSparkProposalAttention(TreeAttention):
                                                rope,
                                                cache_start,
                                                delta_lengths,
+                                               kv_page_table,
                                                pages_per_slot=pages_per_slot)
 
         query = self.q_proj(hidden).reshape(

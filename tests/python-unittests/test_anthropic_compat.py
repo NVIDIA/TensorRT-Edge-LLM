@@ -17,16 +17,18 @@
 import json
 import os
 import sys
+from itertools import chain
 
 _REPO_ROOT = os.path.normpath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from experimental.server.anthropic_compat import (build_content_blocks,
-                                                  convert_request,
-                                                  convert_stop_reason,
-                                                  stream_events)
+from experimental.server.api.anthropic_compat import (build_content_blocks,
+                                                      content_tail_events,
+                                                      convert_request,
+                                                      convert_stop_reason,
+                                                      message_start_events)
 
 
 def test_converts_request():
@@ -191,7 +193,9 @@ def test_stream_event_grammar():
         },
     }])
     events = []
-    for raw in stream_events("msg_1", "m", 10, blocks, "tool_use", 5):
+    raw_events = chain(message_start_events("msg_1", "m", 10),
+                       content_tail_events(blocks, "tool_use", 5))
+    for raw in raw_events:
         etype, data = raw.split("\n", 1)
         events.append((etype.removeprefix("event: "),
                        json.loads(data.removeprefix("data: "))))

@@ -36,33 +36,33 @@ EmbeddingPreprocessor::EmbeddingPreprocessor(EmbeddingData const& embedding, LLM
 }
 
 void EmbeddingPreprocessor::embed(Tensor const& tokenIds, OptionalInputTensor visionEmbeds,
-    OptionalInputTensor audioEmbeds, PipelineIO& io, cudaStream_t stream)
+    OptionalInputTensor audioEmbeds, PipelineIO& io, cudaStream_t stream, OptionalInputTensor precomputedIndices,
+    int32_t const* imageBaseOffsets, int32_t const* audioBaseOffsets)
 {
-    // Prefill embeds every modality through the single embeddingLookup kernel:
-    // image/audio embeddings are inserted at the imageTokenId / audioTokenId
-    // positions using multimodalIndices, and text tokens use the embedding table.
     if (visionEmbeds.has_value() || audioEmbeds.has_value())
     {
-
         std::optional<int32_t> audioTokenOpt
             = (mConfig.audioTokenId >= 0) ? std::optional{mConfig.audioTokenId} : std::nullopt;
         std::optional<int32_t> imageTokenOpt
             = (mConfig.imageTokenId >= 0) ? std::optional{mConfig.imageTokenId} : std::nullopt;
 
-        // Generate the multimodal indices on-device, directly from the GPU token IDs, entirely on
-        // `stream`. No device-to-host or host-to-device copy is involved: the kernel is ordered after
-        // the caller's async token upload (same stream), so it always sees the current tokens, and the
-        // result stays on-device for embeddingLookup. Cached in `mMultimodalIndices` and reused by a
-        // following assembleDeepstack() for these same tokens (no recomputation).
-        mMultimodalIndices = Tensor(tokenIds.getShape(), DeviceType::kGPU, tokenIds.getDataType());
-        kernel::generateMultimodalIndices(tokenIds, mMultimodalIndices, imageTokenOpt, audioTokenOpt, stream);
+        if (precomputedIndices.has_value())
+        {
+            mIndicesPtr = &precomputedIndices.value().get();
+        }
+        else
+        {
+            mOwnedIndices = Tensor(tokenIds.getShape(), DeviceType::kGPU, tokenIds.getDataType());
+            kernel::generateMultimodalIndices(
+                tokenIds, mOwnedIndices, imageTokenOpt, audioTokenOpt, stream, imageBaseOffsets, audioBaseOffsets);
+            mIndicesPtr = &mOwnedIndices;
+        }
 
         kernel::embeddingLookup(tokenIds, mEmbedding.table, mEmbedding.scalesAsOptional(), io.inputsEmbeds, stream,
-            std::optional{std::ref(mMultimodalIndices)}, imageTokenOpt, visionEmbeds, audioTokenOpt, audioEmbeds);
+            std::optional{std::ref(*mIndicesPtr)}, imageTokenOpt, visionEmbeds, audioTokenOpt, audioEmbeds);
     }
     else
     {
-        // Text-only request: the same kernel with no image/audio inputs.
         kernel::embeddingLookup(tokenIds, mEmbedding.table, mEmbedding.scalesAsOptional(), io.inputsEmbeds, stream);
     }
 }
@@ -81,13 +81,9 @@ OptionalInputTensors EmbeddingPreprocessor::assembleDeepstack(
     int64_t const activeBatchSize = inputShape[0];
     int64_t const seqLen = inputShape[1];
 
-    // Reuse the multimodal indices already computed by embed() for these exact tokens. Deepstack is
-    // only ever assembled in the base prefill immediately after embed() ran on the same tokenIds, so
-    // there is nothing to recompute and no device round-trip. Each image position maps to its own
-    // deepstack feature row via these indices.
-    check::check(mMultimodalIndices.getShape().volume() == inputShape.volume(),
+    check::check(mIndicesPtr != nullptr && mIndicesPtr->getShape().volume() == inputShape.volume(),
         "assembleDeepstack requires embed() to have computed multimodal indices for the same tokens first");
-    OptionalInputTensor deepstackMultimodalIndices{std::ref(mMultimodalIndices)};
+    OptionalInputTensor deepstackMultimodalIndices{std::ref(*mIndicesPtr)};
 
     for (int32_t idx = 0; idx < static_cast<int32_t>(features.size()); ++idx)
     {

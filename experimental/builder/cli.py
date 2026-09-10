@@ -17,7 +17,11 @@
 import argparse
 import logging
 import os
+from dataclasses import replace
 from typing import Iterable, Optional, Sequence, Tuple, Union
+
+from tensorrt_edgellm._native import NativeManifestNotFoundError
+from tensorrt_edgellm._native.load import resolve_payload
 
 LOGGER = logging.getLogger("experimental.builder")
 
@@ -93,6 +97,15 @@ def _resolve_build_selection(args: argparse.Namespace) -> Tuple[object, Tuple]:
     if not components:
         raise ValueError(f"{bundle.root_model_type!r} has no buildable "
                          "components")
+    if args.tp_size > 1:
+        if components != (contracts.Component.LLM, ):
+            raise ValueError(
+                "tensor-parallel direct builds currently support only the llm component"
+            )
+        if args.spec_type != "none":
+            raise ValueError(
+                "tensor-parallel speculative decoding is not supported; omit --spec-type"
+            )
     configuration = model_registry.configuration_module_for(
         bundle.root_model_type)
     validate_build = getattr(configuration, "validate_build", None)
@@ -143,7 +156,8 @@ def _speculative_build_plan(args: argparse.Namespace, bundle, components):
             args,
             spec_role=contracts.SpecRole.BASE.value,
             draft_model_dir=(draft_model_dir if args.spec_type
-                             in ("eagle3", "dflash", "dspark") else None),
+                             in ("eagle3", "dflash", "jetspec",
+                                 "dspark") else None),
             target_model_dir=None,
         )
         draft_args = _copy_args(
@@ -186,19 +200,28 @@ def _build_one(args: argparse.Namespace, bundle, component,
                           cfg,
                           bundle=bundle,
                           plugin_handle=plugin_handle)
+    if build_args.tp_size > 1 and build_args.tp_rank != 0:
+        return result.engine_path
+
+    artifact_cfg = cfg
+    if build_args.tp_size > 1:
+        artifact_cfg = load_device_config(
+            replace(build_args, tp_size=1, tp_rank=0))
     artifact_writer = model_registry.artifact_writer_for(
         bundle.root_model_type, build_args.spec_type,
         build_args.resolved_spec_role)
-    artifact_writer.write_artifacts(bundle, cfg, build_args, args.engine_dir)
+    artifact_writer.write_artifacts(bundle, artifact_cfg, build_args,
+                                    args.engine_dir)
     if result.checkpoint_weight_bindings:
         from .core.artifacts import patch_external_weight_config
         config_path = contracts.component_spec(component).config_path(
-            args.engine_dir, build_args.resolved_spec_role)
+            args.engine_dir, build_args.resolved_spec_role, build_args.tp_size)
         patch_external_weight_config(
             config_path,
             result.checkpoint_weight_bindings,
             result.checkpoint_identity,
-            checkpoint_dir=result.checkpoint_dir,
+            checkpoint_dir=(result.checkpoint_dir
+                            or os.path.abspath(build_args.model_dir)),
         )
     return result.engine_path
 
@@ -206,8 +229,15 @@ def _build_one(args: argparse.Namespace, bundle, component,
 def _build(args: argparse.Namespace) -> None:
     from .core.builder import load_plugin_library
 
+    plugin_path = args.plugin_path
+    if plugin_path is None:
+        try:
+            plugin_path = str(resolve_payload().plugin)
+        except NativeManifestNotFoundError:
+            plugin_path = "build/libNvInfer_edgellm_plugin.so"
+    args = _copy_args(args, plugin_path=plugin_path)
     bundle, components = _resolve_build_selection(args)
-    plugin_handle = load_plugin_library(args.plugin_path)
+    plugin_handle = load_plugin_library(plugin_path)
     plan = _build_plan(args, bundle, components)
     LOGGER.info("Building %s engines for %s: %s", len(plan),
                 bundle.root_model_type, ", ".join(label for label, *_ in plan))
@@ -225,8 +255,10 @@ def _build(args: argparse.Namespace) -> None:
 
 def _add_common_engine_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--engine-dir", required=True)
-    parser.add_argument("--plugin-path",
-                        default="build/libNvInfer_edgellm_plugin.so")
+    parser.add_argument(
+        "--plugin-path",
+        help=("Plugin DSO override. By default, use the payload selected from "
+              "the installed TensorRT Edge-LLM wheel."))
     parser.add_argument("--verbose", action="store_true")
 
 
@@ -242,10 +274,11 @@ def _add_build_args(parser: argparse.ArgumentParser) -> None:
               ", ".join(contracts.component_build_order()) + "."))
     parser.add_argument(
         "--spec-type",
-        choices=("none", "eagle3", "mtp", "dflash", "dspark", "gemma4_mtp"),
+        choices=("none", "eagle3", "mtp", "dflash", "jetspec", "dspark",
+                 "gemma4_mtp"),
         default="none",
         help=("Build both speculative engines in this single invocation. "
-              "EAGLE3, DFlash, dSpark, and Gemma4 MTP also require "
+              "EAGLE3, DFlash, JetSpec, dSpark, and Gemma4 MTP also require "
               "--draft-model-dir."))
     parser.add_argument("--dense",
                         choices=("auto", "nvfp4-qdq", "fp16"),
@@ -287,7 +320,9 @@ def _add_build_args(parser: argparse.ArgumentParser) -> None:
         action="append",
         choices=weight_policy.EXTERNAL_WEIGHT_CHOICES,
         help=("Limit which weights leave the engine, repeatable. Defaults to "
-              "every kind. FP8 and MXFP8 weights are always baked in."))
+              "every supported kind, except that TP builds keep small FP16 "
+              "parameters baked for runtime performance. FP8 and MXFP8 "
+              "weights are always baked in."))
     parser.add_argument("--profiling-detailed", action="store_true")
     parser.set_defaults(spec_role=contracts.SpecRole.NONE.value,
                         target_model_dir=None)

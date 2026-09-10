@@ -22,11 +22,10 @@
  * encoder engine → greedy transducer loop over the RNN-T step engine →
  * transcript.
  *
- * Engine directory layout (engines built from the ONNX exported by
- * tensorrt_edgellm, e.g. via trtexec):
- *   audio_encoder.engine   FastConformer encoder (dynamic mel length)
- *   rnnt_step.engine       fused LSTM + joint single-step engine
- *   config.json            HF checkpoint config (blank_token_id, ...)
+ * Engine directory layout:
+ *   Direct builder: audio/audio_encoder.engine + rnnt/rnnt_step.engine
+ *   ONNX builder:   audio_encoder.engine + rnnt_step.engine at the root
+ *   Both layouts:   config.json and tokenizer.json at the root
  */
 
 #include "common/checkMacros.h"
@@ -42,6 +41,8 @@
 #include <getopt.h>
 #include <iomanip>
 #include <iostream>
+#include <limits>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -68,8 +69,7 @@ void printUsage(char const* programName)
     std::cerr << "Usage: " << programName << " [OPTIONS]\n\n"
               << "Options:\n"
               << "  --help                  Display this help message\n"
-              << "  --engineDir=<path>      Directory with audio_encoder.engine, rnnt_step.engine,\n"
-              << "                          config.json. Required.\n"
+              << "  --engineDir=<path>      Direct component bundle or flat ONNX-built bundle.\n"
               << "  --tokenizerDir=<path>   Directory with tokenizer.json. Defaults to --engineDir.\n"
               << "  --audioFile=<path>      Audio file to transcribe (wav/mp3/flac). Required.\n"
               << "  --promptId=<int>        Language prompt index. Default: config default_prompt_id\n"
@@ -94,6 +94,18 @@ enum OptionId : int
     WARMUP
 };
 
+int32_t parseInt32(char const* text, char const* name)
+{
+    size_t parsed = 0;
+    long long const value = std::stoll(text, &parsed);
+    if (text[parsed] != '\0' || value < std::numeric_limits<int32_t>::min()
+        || value > std::numeric_limits<int32_t>::max())
+    {
+        throw std::invalid_argument(std::string(name) + " must be a signed 32-bit integer");
+    }
+    return static_cast<int32_t>(value);
+}
+
 bool parseArgs(Args& args, int argc, char* argv[])
 {
     static struct option options[]
@@ -104,21 +116,29 @@ bool parseArgs(Args& args, int argc, char* argv[])
             {"iters", required_argument, 0, OptionId::ITERS}, {"warmup", required_argument, 0, OptionId::WARMUP},
             {0, 0, 0, 0}};
 
-    int opt;
-    while ((opt = getopt_long(argc, argv, "", options, nullptr)) != -1)
+    try
     {
-        switch (opt)
+        int opt;
+        while ((opt = getopt_long(argc, argv, "", options, nullptr)) != -1)
         {
-        case OptionId::HELP: args.help = true; return true;
-        case OptionId::ENGINE_DIR: args.engineDir = optarg; break;
-        case OptionId::TOKENIZER_DIR: args.tokenizerDir = optarg; break;
-        case OptionId::AUDIO_FILE: args.audioFile = optarg; break;
-        case OptionId::PROMPT_ID: args.promptId = std::stoi(optarg); break;
-        case OptionId::BENCHMARK: args.benchmark = true; break;
-        case OptionId::ITERS: args.iters = std::stoi(optarg); break;
-        case OptionId::WARMUP: args.warmup = std::stoi(optarg); break;
-        default: return false;
+            switch (opt)
+            {
+            case OptionId::HELP: args.help = true; return true;
+            case OptionId::ENGINE_DIR: args.engineDir = optarg; break;
+            case OptionId::TOKENIZER_DIR: args.tokenizerDir = optarg; break;
+            case OptionId::AUDIO_FILE: args.audioFile = optarg; break;
+            case OptionId::PROMPT_ID: args.promptId = parseInt32(optarg, "--promptId"); break;
+            case OptionId::BENCHMARK: args.benchmark = true; break;
+            case OptionId::ITERS: args.iters = parseInt32(optarg, "--iters"); break;
+            case OptionId::WARMUP: args.warmup = parseInt32(optarg, "--warmup"); break;
+            default: return false;
+            }
         }
+    }
+    catch (std::exception const& error)
+    {
+        std::cerr << "Invalid numeric option: " << error.what() << std::endl;
+        return false;
     }
     if (args.engineDir.empty() || args.audioFile.empty())
     {
@@ -128,6 +148,11 @@ bool parseArgs(Args& args, int argc, char* argv[])
     if (args.tokenizerDir.empty())
     {
         args.tokenizerDir = args.engineDir;
+    }
+    if (args.promptId < -1 || args.iters < 1 || args.warmup < 0)
+    {
+        std::cerr << "--promptId must be >= -1, --iters must be >= 1, and --warmup must be >= 0." << std::endl;
+        return false;
     }
     return true;
 }

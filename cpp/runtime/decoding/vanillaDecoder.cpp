@@ -109,7 +109,12 @@ bool VanillaDecoder::decodeStep(DecodingInferenceContext& context)
         return false;
     }
 
-    applyLogitBias(mRuntime.logitBias, mRuntime.base.pipelineIO.outputLogits, context, context.stream);
+    // GCOVR_EXCL_START
+    if (context.hasLogitBias)
+    {
+        applyLogitBias(mRuntime.logitBias, mRuntime.base.pipelineIO.outputLogits, context, context.stream);
+    }
+    // GCOVR_EXCL_STOP
 
     check::check(mRuntime.sampling.indices.reshape({activeBatchSize, 1}), "Tensor reshape failed");
     if (shouldUseNonGreedySampling(context.temperature, context.topK, context.topP))
@@ -129,6 +134,13 @@ bool VanillaDecoder::decodeStep(DecodingInferenceContext& context)
     if (mRuntime.deployment.base.reducedVocabSize > 0)
     {
         mapReducedVocabToFullVocab(mRuntime.sampling.indices, mRuntime.sampling.baseVocabMappingTable, context.stream);
+    }
+
+    if (mRuntime.tokenBroadcast
+        && !mRuntime.tokenBroadcast(mRuntime.sampling.indices.rawPointer(), activeBatchSize, context.stream))
+    {
+        LOG_ERROR("Failed to broadcast vanilla decode sampled tokens for parallel rank %d.", mRuntime.parallelRank);
+        return false;
     }
 
     // Enqueue logprobs extraction + D2H before the round's single synchronization so the

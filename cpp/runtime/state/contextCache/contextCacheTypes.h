@@ -35,6 +35,20 @@ using PageId = int32_t;
 //! Host cache-record identity.
 using RecordId = uint64_t;
 
+//! Reserved substrate taxonomy for future speculative-state backends.
+//! The current record stores paged state directly; add a discriminator only when a second substrate exists.
+enum class SpecStateStorageKind : uint8_t
+{
+    kPaged,
+};
+
+//! Immutable contract between a speculative decoder and context reuse.
+struct SpecReuseContract
+{
+    bool ownsPagedSpecState{};
+    int32_t futureDependencyTokens{};
+};
+
 enum class ResourceType : uint8_t
 {
     //! One host-addressed K/V page pair produced by the base model.

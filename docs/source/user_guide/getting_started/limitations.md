@@ -4,7 +4,7 @@ This page documents the known limitations and issues for each release version of
 
 ## 0.10.0
 
-- `Int4GroupwiseGemmPluginV2` may cause accuracy degradation. For ONNX export, use `--int4-gemm-plugin-version 1` to select the V1 plugin as a fallback.
+- Fixed in 0.10.1: `Int4GroupwiseGemmPluginV2` may cause accuracy degradation. For ONNX export, use `--int4-gemm-plugin-version 1` to select the V1 plugin as a fallback.
 
 ## 0.9.0
 

@@ -59,11 +59,12 @@ import torch.nn.functional as F
 
 from ...config import LAYER_GDN, GdnConfig, ModelConfig
 from ..default.modeling_default import MLP, OnnxSpec, RMSNorm
-from ..linear import (FP16Linear, NVFP4LinearMethod, ReplicatedLinear,
-                      is_nvfp4_linear, make_linear)
+from ..linear import (AWQLinear, FP16Linear, GPTQLinear,
+                      ModelOptAWQPrepackedLinear, NVFP4LinearMethod,
+                      ReplicatedLinear, TPMode, is_nvfp4_linear, make_linear)
 from ..ops import (KV_PAGE_SIZE, attention_plugin, causal_conv1d,
                    causal_conv1d_with_intermediate, gated_delta_net,
-                   gated_delta_net_with_intermediate)
+                   gated_delta_net_with_intermediate, int4_gemm_plugin_version)
 
 __all__ = ["Qwen3_5CausalLM"]
 
@@ -216,6 +217,11 @@ class GdnMixer(nn.Module):
         if hasattr(self, "in_proj_fused"):
             fused_out = self.in_proj_fused(hidden_states)
             mixed_qkv, z, b, a = fused_out.split(self._fused_splits, dim=-1)
+        elif hasattr(self, "in_proj_qkvz"):
+            qkvz_out = self.in_proj_qkvz(hidden_states)
+            mixed_qkv, z = qkvz_out.split(self._fused_splits[:2], dim=-1)
+            ba_out = self.in_proj_ba(hidden_states)
+            b, a = ba_out.split(self._fused_splits[2:], dim=-1)
         else:
             mixed_qkv = self.in_proj_qkv(hidden_states)
             z = self.in_proj_z(hidden_states)
@@ -259,11 +265,11 @@ class GdnMixer(nn.Module):
         # 3. Split into Q, K, V and reshape to head dims
         query, key, value = mixed_qkv.split(
             [self.key_dim, self.key_dim, self.value_dim], dim=-1)
-        query = query.reshape(batch_size, seq_len, self.num_k_heads,
-                              self.k_dim)
-        key = key.reshape(batch_size, seq_len, self.num_k_heads, self.k_dim)
-        value = value.reshape(batch_size, seq_len, self.num_v_heads,
-                              self.v_dim)
+        # Unflatten only the head dim: naming batch/seq_len here makes
+        # torch.export add a ``seq_len != 1`` guard and reject decode shapes.
+        query = query.unflatten(-1, (self.num_k_heads, self.k_dim))
+        key = key.unflatten(-1, (self.num_k_heads, self.k_dim))
+        value = value.unflatten(-1, (self.num_v_heads, self.v_dim))
 
         # 4. GDN plugin (handles g/beta, QK L2 norm, H/HV head mapping)
         A_log_f32 = self.A_log.to(torch.float32)
@@ -346,17 +352,23 @@ class GatedAttention(nn.Module):
                                   hidden_size,
                                   num_heads * head_dim * 2,
                                   bias=config.attention_bias,
-                                  module_name=f"{module_prefix}.q_proj")
+                                  module_name=f"{module_prefix}.q_proj",
+                                  tp_mode=TPMode.COL)
         self.k_proj = make_linear(config,
                                   hidden_size,
                                   num_kv_heads * head_dim,
                                   bias=config.attention_bias,
-                                  module_name=f"{module_prefix}.k_proj")
+                                  module_name=f"{module_prefix}.k_proj",
+                                  tp_mode=TPMode.COL)
         self.v_proj = make_linear(config,
                                   hidden_size,
                                   num_kv_heads * head_dim,
                                   bias=config.attention_bias,
-                                  module_name=f"{module_prefix}.v_proj")
+                                  module_name=f"{module_prefix}.v_proj",
+                                  tp_mode=TPMode.COL)
+        self._materialize_int4_v = (isinstance(
+            self.v_proj, (AWQLinear, GPTQLinear, ModelOptAWQPrepackedLinear))
+                                    and int4_gemm_plugin_version() == 2)
 
         if self.enable_fp8_kv_cache:
             self.q_proj.register_buffer("q_scale", torch.ones(1))
@@ -366,7 +378,8 @@ class GatedAttention(nn.Module):
         self.o_proj = make_linear(config,
                                   num_heads * head_dim,
                                   hidden_size,
-                                  module_name=f"{module_prefix}.o_proj")
+                                  module_name=f"{module_prefix}.o_proj",
+                                  tp_mode=TPMode.ROW)
 
         # Qwen3.5 full attention always has QK norm (residual-weight convention)
         self.q_norm = Qwen3_5RMSNorm(head_dim, eps=config.rms_norm_eps)
@@ -394,6 +407,14 @@ class GatedAttention(nn.Module):
 
         key_states = self.k_proj(hidden_states)
         value_states = self.v_proj(hidden_states)
+
+        if self._materialize_int4_v:
+            # A direct V2 plugin -> Concat edge lets TRT virtualize the plugin
+            # output as a strided slice, although the plugin's LINEAR output is
+            # contiguous.  This live-row mask is exactly one for valid requests
+            # and gives TRT a native producer that can honor the Concat stride.
+            active_rows = (context_lengths > 0).to(value_states.dtype)
+            value_states = value_states * active_rows.reshape(batch_size, 1, 1)
 
         # QK norm (on reshaped per-head tensors)
         query_states = self.q_norm(query_states)
@@ -650,14 +671,20 @@ def _is_dflash_base_export(config: ModelConfig) -> bool:
     return bool(getattr(config, "dflash_base", False))
 
 
+def _is_dspark_base_export(config: ModelConfig) -> bool:
+    """Return True when exporting the Qwen3.5 hybrid base for DSpark verify."""
+    return bool(getattr(config, "dspark_base", False))
+
+
 def _is_spec_tree_base_export(config: ModelConfig) -> bool:
     """Return True when exporting DDTree metadata for Qwen3.5 hybrid state.
 
-    Both the DFlash DDTree base and the MTP tree base consume the same
+    DFlash, JetSpec, and MTP tree bases consume the same
     ``tree_parent_ids`` / ``tree_depths`` verify inputs.
     """
-    return bool(getattr(config, "dflash_tree_base", False)) or bool(
-        getattr(config, "mtp_tree_base", False))
+    return (bool(getattr(config, "dflash_tree_base", False))
+            or bool(getattr(config, "jetspec_tree_base", False))
+            or bool(getattr(config, "mtp_tree_base", False)))
 
 
 def _make_flat_wrapper_hybrid(model: nn.Module,
@@ -795,6 +822,45 @@ def fuse_gdn_input_projections(model: nn.Module) -> int:
             pass  # always fusible
         elif is_nvfp4_linear(first_proj):
             if not _can_fuse_nvfp4_scales(mixer):
+                # Mixed layout (NVFP4 qkv/z + unquantized FP16 b/a): fuse
+                # same-dtype pairs only — qkv+z into one NVFP4 GEMM, b+a
+                # into one FP16 GEMM.  Pure concatenation, no re-quantization.
+                qkv, zp = mixer.in_proj_qkv, mixer.in_proj_z
+                bp, ap = mixer.in_proj_b, mixer.in_proj_a
+                pairable = (is_nvfp4_linear(zp) and isinstance(bp, FP16Linear)
+                            and isinstance(ap, FP16Linear) and all(
+                                torch.equal(getattr(qkv, s), getattr(zp, s))
+                                for s in _NVFP4_SCALAR_SCALE_SUFFIXES))
+                if pairable:
+                    splits = mixer._fused_splits
+                    method = NVFP4LinearMethod(
+                        group_size=qkv.quant_method.group_size)
+                    qkvz = ReplicatedLinear(qkv.in_features,
+                                            splits[0] + splits[1],
+                                            bias=False,
+                                            dtype=torch.float16,
+                                            mapping=qkv.mapping,
+                                            quant_method=method)
+                    qkvz._buffers["weight"] = torch.cat(
+                        [qkv.weight, zp.weight], dim=0)
+                    qkvz._buffers["weight_scale"] = torch.cat(
+                        [qkv.weight_scale, zp.weight_scale], dim=0)
+                    qkvz._buffers["weight_scale_2"] = \
+                        qkv.weight_scale_2.clone()
+                    qkvz._buffers["input_scale"] = qkv.input_scale.clone()
+                    ba = FP16Linear(qkv.in_features, splits[2] + splits[3])
+                    ba.weight = nn.Parameter(torch.cat(
+                        [bp.weight.data, ap.weight.data], dim=0),
+                                             requires_grad=False)
+                    mixer.in_proj_qkvz = qkvz
+                    mixer.in_proj_ba = ba
+                    for proj_name in _GDN_PROJ_NAMES:
+                        delattr(mixer, proj_name)
+                    fused_count += 1
+                    logger.debug(
+                        "Pair-fused GDN projections (NVFP4 qkvz + FP16 ba) "
+                        "for %s", name)
+                    continue
                 logger.warning(
                     "GDN fusion skipped for %s: NVFP4 scalar scales "
                     "differ across projections. Re-quantize with "
@@ -912,6 +978,8 @@ class Qwen3_5CausalLM(nn.Module):
             "Qwen3.5 requires gdn_cfg when any layer is GDN")
         mtp_base = _is_mtp_base_export(config)
         dflash_base = _is_dflash_base_export(config)
+        dspark_base = _is_dspark_base_export(config)
+        target_hidden_base = dflash_base or dspark_base
         spec_tree_base = _is_spec_tree_base_export(config)
         device = next(itertools.chain(self.parameters(),
                                       self.buffers())).device
@@ -953,7 +1021,7 @@ class Qwen3_5CausalLM(nn.Module):
                                     1,
                                     dtype=torch.int32,
                                     device=device)
-        spec_base = mtp_base or dflash_base
+        spec_base = mtp_base or target_hidden_base
         select_len = 2 if spec_base else 1
         last_token_ids = torch.zeros(batch_size,
                                      select_len,
@@ -1074,7 +1142,7 @@ class Qwen3_5CausalLM(nn.Module):
                                             Na,
                                             Ng,
                                             mtp_base=mtp_base,
-                                            dflash_base=dflash_base,
+                                            dflash_base=target_hidden_base,
                                             dflash_tree_base=spec_tree_base)
         wrapped.eval()
 
@@ -1103,8 +1171,11 @@ class Qwen3_5CausalLM(nn.Module):
     ) -> Tuple:
         mtp_base = _is_mtp_base_export(self.config)
         dflash_base = _is_dflash_base_export(self.config)
-        dflash_target_ids = (self.config.dflash_target_layer_ids
-                             if dflash_base else None)
+        dspark_base = _is_dspark_base_export(self.config)
+        target_hidden_base = dflash_base or dspark_base
+        target_layer_ids = (
+            self.config.dspark_target_layer_ids if dspark_base else
+            self.config.dflash_target_layer_ids if dflash_base else None)
         (hidden_states, present_key_values, present_conv_states,
          present_recurrent_states, intermediate_conv_states,
          intermediate_recurrent_states, dflash_hidden_concat) = self.model(
@@ -1121,15 +1192,15 @@ class Qwen3_5CausalLM(nn.Module):
              spec_verify_phase_marker=spec_verify_phase_marker,
              tree_parent_ids=tree_parent_ids,
              tree_depths=tree_depths,
-             collect_intermediate_states=(mtp_base or dflash_base),
-             dflash_target_layer_ids=dflash_target_ids,
+             collect_intermediate_states=(mtp_base or target_hidden_base),
+             dflash_target_layer_ids=target_layer_ids,
          )
         # Select hidden states for specified token positions before lm_head.
         selected_hidden_states = torch.ops.trt.gather_nd(
             hidden_states, last_token_ids)
 
         logits = self.lm_head(selected_hidden_states).to(torch.float32)
-        if dflash_base:
+        if target_hidden_base:
             return (logits, dflash_hidden_concat, present_key_values,
                     present_conv_states, present_recurrent_states,
                     intermediate_conv_states, intermediate_recurrent_states)

@@ -45,6 +45,13 @@ bool hasNegativePage(std::vector<PageId> const& pages) noexcept
     return false;
 }
 
+void validateSpecState(SpecPagedStateRecord const& state, size_t basePathSize)
+{
+    ELLM_CHECK(!state.pagePath.empty(), "Paged context-cache spec state requires at least one page");
+    ELLM_CHECK(state.pagePath.size() == basePathSize, "Paged context-cache spec state must cover its full base path");
+    ELLM_CHECK(!hasNegativePage(state.pagePath), "Context cache spec state page IDs must be non-negative");
+}
+
 void validateRecord(CacheRecord const& record)
 {
     bool const hasHybridIdentity = record.exactCheckpointLength.has_value();
@@ -66,10 +73,11 @@ void validateRecord(CacheRecord const& record)
     ELLM_CHECK((hasHybridIdentity && record.basePagePath.empty())
             || record.basePagePath.size() == record.logicalBlockHashes.size(),
         "Context cache record base page path must cover its logical path");
-    ELLM_CHECK(record.draftPagePath.empty() || record.draftPagePath.size() == record.basePagePath.size(),
-        "Context cache record draft page path must be absent or cover its full base path");
-    ELLM_CHECK(!hasNegativePage(record.basePagePath) && !hasNegativePage(record.draftPagePath),
-        "Context cache record page IDs must be non-negative");
+    ELLM_CHECK(!hasNegativePage(record.basePagePath), "Context cache record page IDs must be non-negative");
+    if (record.specState.has_value())
+    {
+        validateSpecState(*record.specState, record.basePagePath.size());
+    }
     ELLM_CHECK((!record.recurrentSnapshotSlot.has_value() || *record.recurrentSnapshotSlot >= 0)
             && (!record.partialKvSnapshotSlot.has_value() || *record.partialKvSnapshotSlot >= 0),
         "Context cache record snapshot slot IDs must be non-negative");
@@ -82,16 +90,19 @@ void validateRecord(CacheRecord const& record)
 std::vector<ResourceId> CacheRecord::resources() const
 {
     std::vector<ResourceId> recordResources;
-    recordResources.reserve(basePagePath.size() + draftPagePath.size()
-        + static_cast<size_t>(recurrentSnapshotSlot.has_value())
+    size_t const specPageCount = specState.has_value() ? specState->pagePath.size() : 0U;
+    recordResources.reserve(basePagePath.size() + specPageCount + static_cast<size_t>(recurrentSnapshotSlot.has_value())
         + static_cast<size_t>(partialKvSnapshotSlot.has_value()));
     for (PageId const page : basePagePath)
     {
         recordResources.push_back(ResourceId{ResourceType::kBaseKvPage, page});
     }
-    for (PageId const page : draftPagePath)
+    if (specState.has_value())
     {
-        recordResources.push_back(ResourceId{ResourceType::kDraftKvPage, page});
+        for (PageId const page : specState->pagePath)
+        {
+            recordResources.push_back(ResourceId{ResourceType::kDraftKvPage, page});
+        }
     }
     if (recurrentSnapshotSlot.has_value())
     {
@@ -240,16 +251,22 @@ bool CacheRecordStore::contains(RecordId id) const noexcept
     return mRecords.find(id) != mRecords.end();
 }
 
-void CacheRecordStore::setDraftState(RecordId id, std::vector<PageId> draftPagePath)
+void CacheRecordStore::setSpecState(RecordId id, SpecPagedStateRecord state)
 {
     auto const record = mRecords.find(id);
     ELLM_CHECK(record != mRecords.end(), "Context cache record ID does not exist");
-    ELLM_CHECK(record->second.record.draftPagePath.empty(), "Context cache record already has paired draft state");
-    ELLM_CHECK(!draftPagePath.empty() && draftPagePath.size() == record->second.record.basePagePath.size(),
-        "Context cache draft state must cover the full base path");
-    ELLM_CHECK(!hasNegativePage(draftPagePath), "Context cache draft state page IDs must be non-negative");
+    if (record->second.record.specState.has_value())
+    {
+        ELLM_CHECK(*record->second.record.specState == state, "Context cache record already has different spec state");
+        touch(id);
+        return;
+    }
 
-    record->second.record.draftPagePath = std::move(draftPagePath);
+    CacheRecord upgraded = record->second.record;
+    upgraded.specState = state;
+    validateRecord(upgraded);
+
+    record->second.record.specState = std::move(state);
     touch(id);
 }
 

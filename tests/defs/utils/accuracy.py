@@ -46,7 +46,7 @@ def check_accuracy_with_dataset(output_json_file,
     # Datasets that use ROUGE score (with "reference" field)
     ROUGE_DATASETS = [
         "gsm8k", "gsm8k_10", "mmstar", "llm_basic", "llm_lora",
-        "llm_context_reuse", "vlm_basic", "vlm_lora"
+        "llm_context_reuse", "vlm_basic", "vlm_lora", "cosmos3_reasoner"
     ]
 
     # Datasets that use correctness/accuracy (with "answer" field)
@@ -67,7 +67,7 @@ def check_accuracy_with_dataset(output_json_file,
         "tts_language", "tts_instruct"
     ]
 
-    # Dataset-specific thresholds for ROUGE scores (rouge1, rougeL). Current thresholds are set to 25% for ROUGE-1 and 20% for ROUGE-L.
+    # Dataset-specific ROUGE thresholds (rouge1, rougeL).
     ROUGE_THRESHOLDS = {
         "gsm8k": (0.25, 0.20),
         "gsm8k_10": (0.25, 0.20),
@@ -77,6 +77,7 @@ def check_accuracy_with_dataset(output_json_file,
         "llm_context_reuse": (0.25, 0.20),
         "vlm_basic": (0.25, 0.20),
         "vlm_lora": (0.25, 0.20),
+        "cosmos3_reasoner": (0.40, 0.25),
     }
 
     # Dataset-specific thresholds for accuracy/correctness

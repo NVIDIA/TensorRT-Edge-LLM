@@ -22,8 +22,10 @@
 #include "runtime/state/contextCache/evictionPlanner.h"
 #include "runtime/state/contextCache/resourcePools.h"
 #include "runtime/state/contextCache/reusePlan.h"
+#include "runtime/state/contextCache/specStatePlan.h"
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <vector>
 
@@ -52,7 +54,7 @@ public:
 
     //! Ordered host binding list of base-model logical K-page IDs; the adapter expands it to a kernel [K, V] row.
     std::vector<PageId> const& basePages() const noexcept;
-    //! Ordered host binding list of EAGLE draft logical K-page IDs; empty for a vanilla lease.
+    //! Ordered host binding list of paged spec-state logical K-page IDs; Phase 1 binds EAGLE draft KV pages.
     std::vector<PageId> const& draftPages() const noexcept;
     std::optional<int32_t> recurrentSnapshotSlot() const noexcept;
     std::optional<int32_t> partialKvSnapshotSlot() const noexcept;
@@ -74,7 +76,7 @@ private:
 
     //! Ordered physical bindings: the shared prefix followed by request-private pages.
     std::vector<PageId> mBasePages;
-    std::vector<PageId> mDraftPages;
+    std::vector<PageId> mSpecPages;
     std::optional<SpecReplayDependency> mSpecReplayDependency;
     bool mHybridHasAttention{false};
     std::optional<int32_t> mRecurrentSnapshotBinding;
@@ -159,26 +161,31 @@ struct ContextCacheManagerMetrics
 //! The lifecycle is acquire -> model execution -> publish or release. Each acquire method plans and pins the selected
 //! hit as one serialized manager operation before eviction and request-private allocation. Publication atomically
 //! adds cache ownership, canonical base-block mappings, and one complete record. ResourcePools owns capacity/refcounts,
-//! BaseBlockIndex owns canonical base lookup, DraftPathIndex owns coherent EAGLE-path lookup, CacheRecordStore owns
+//! BaseBlockIndex owns canonical base lookup, SpecStateIndex owns coherent spec-state lookup, CacheRecordStore owns
 //! endpoints/LRU, and EvictionPlanner selects record victims without mutation.
 class ContextCacheManager
 {
 public:
-    ContextCacheManager(int32_t pageSize, ResourceDemand capacities, int32_t maxRecords);
+    ContextCacheManager(int32_t pageSize, ResourceDemand capacities, int32_t maxRecords,
+        std::optional<SpecReuseContract> specReuseContract = std::nullopt);
 
     AcquireResult acquireVanilla(std::vector<BlockHash> const& inputFullBlockHashes, int32_t inputTokenCount,
         ContextCacheLookupPolicy lookupPolicy = ContextCacheLookupPolicy::kUseCache);
     AcquireResult acquireHybrid(std::vector<HybridCheckpointCandidate> const& candidates,
         std::vector<BlockHash> const& inputFullBlockHashes, int32_t inputTokenCount, bool hasAttention,
         ContextCacheLookupPolicy lookupPolicy = ContextCacheLookupPolicy::kUseCache);
+    //! Acquire a combined hybrid base + MTP draft lease at an exact recurrent/partial-KV checkpoint. A hit rebinds both
+    //! the cached base pages and the equally long coherent draft page path. MTP always retains a private partial page.
+    AcquireResult acquireHybridMtp(std::vector<HybridCheckpointCandidate> const& candidates,
+        std::vector<BlockHash> const& inputFullBlockHashes, int32_t inputTokenCount,
+        ContextCacheLookupPolicy lookupPolicy = ContextCacheLookupPolicy::kUseCache);
     std::vector<int32_t> hybridCandidateLengths(int32_t inputTokenCount) const;
-    //! The caller must first select greedy, non-hybrid EAGLE on a supported full-attention or full-allocation SWA
-    //! deployment; the manager cannot infer sampling policy or model topology.
+    //! The caller must first select a supported speculative context-reuse handler for this deployment.
     AcquireResult acquireSpec(std::vector<BlockHash> const& inputFullBlockHashes, int32_t inputTokenCount,
         ContextCacheLookupPolicy lookupPolicy = ContextCacheLookupPolicy::kUseCache);
     //! Atomically append private base pages; false leaves the lease and cache metadata unchanged.
     bool growBasePages(CacheRequestLease& lease, int32_t count);
-    //! Atomically append EAGLE base and draft pages; false leaves the lease and cache metadata unchanged.
+    //! Atomically append base and paged spec-state pages; false leaves the lease and cache metadata unchanged.
     bool growSpecPages(CacheRequestLease& lease, int32_t baseCount, int32_t draftCount);
     //! Reserve unpublished hybrid snapshot storage. Failure is retention pressure and leaves the lease unchanged.
     std::optional<HybridSnapshotReservation> reserveHybridSnapshots(
@@ -187,15 +194,21 @@ public:
     void releaseRestoredHybridSnapshots(CacheRequestLease& lease);
     //! Release producer ownership after capture is terminal and publication has committed.
     void retireHybridSnapshotReservation(CacheRequestLease& lease, HybridSnapshotReservation const& reservation);
-    //! Commit ready full blocks after validating that the acquired prefix still describes this producer. EAGLE
-    //! publication retains base and draft state through one common materialized boundary.
+    //! Commit ready full blocks after validating that the acquired prefix still describes this producer.
     PublishResult publish(CacheRequestLease& lease, PublishRequest const& request);
     //! Commit one already-captured exact hybrid checkpoint. The caller must make snapshot writes terminal first.
     PublishResult publishHybrid(CacheRequestLease& lease, HybridPublishRequest const& request);
+    //! Commit one already-captured exact hybrid+MTP checkpoint, retaining both the base path and the equally long
+    //! coherent draft path through the (exactLength - 1) boundary. The caller must make snapshot writes terminal first.
+    PublishResult publishHybridMtp(CacheRequestLease& lease, HybridPublishRequest const& request);
+
+    //! Acquire resources for an externally-constructed reuse plan. The caller may trim or adjust the plan (e.g. media
+    //! boundary trimming) before committing it to lease allocation.
+    AcquireResult acquire(ReusePlan plan);
 
     ResourcePools const& pools() const noexcept;
     BaseBlockIndex const& baseIndex() const noexcept;
-    DraftPathIndex const& draftIndex() const noexcept;
+    SpecStateIndex const& specIndex() const noexcept;
     CacheRecordStore const& records() const noexcept;
     ContextCacheManagerMetrics const& metrics() const noexcept;
 
@@ -205,7 +218,6 @@ private:
     struct PreparedPublication;
 
     void releaseLease(CacheRequestLease& lease) noexcept;
-    AcquireResult acquire(ReusePlan plan);
     bool growPages(CacheRequestLease& lease, ResourceDemand const& demand);
     PublishResult commitPreparedPublication(PreparedPublication publication);
     void evictRecord(RecordId id);
@@ -215,7 +227,8 @@ private:
     int32_t mPageSize{};
     ResourcePools mPools;
     BaseBlockIndex mBaseIndex;
-    DraftPathIndex mDraftIndex;
+    SpecStateIndex mSpecIndex;
+    std::optional<SpecReuseContract> mSpecReuseContract;
     CacheRecordStore mRecords;
     ContextCacheManagerMetrics mMetrics;
 };

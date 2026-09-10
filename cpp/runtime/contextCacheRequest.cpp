@@ -20,7 +20,6 @@
 #include "common/checkMacros.h"
 #include "common/logger.h"
 #include "runtime/audioUtils.h"
-#include "runtime/decoding/decodingStrategy.h"
 #include "runtime/imageUtils.h"
 #include "runtime/llmRuntimeUtils.h"
 #include "runtime/state/contextCache/blockHash.h"
@@ -28,6 +27,7 @@
 #include "runtime/streaming.h"
 
 #include <algorithm>
+#include <exception>
 #include <limits>
 #include <string>
 #include <string_view>
@@ -116,12 +116,18 @@ std::vector<Hash128> buildPerPositionMediaHash(std::vector<int32_t> const& token
                 }
             }
 
-            if (token == imageTokenId && imageIdx < imageHashes.size())
+            if (token == imageTokenId)
             {
+                ELLM_CHECK(imageIdx < imageHashes.size(),
+                    "Image token placeholder at position " + std::to_string(i) + " exceeds provided image count ("
+                        + std::to_string(imageHashes.size()) + ")");
                 perPositionHash[i] = imageHashes[imageIdx];
             }
-            else if (token == audioTokenId && audioIdx < audioHashes.size())
+            else if (token == audioTokenId)
             {
+                ELLM_CHECK(audioIdx < audioHashes.size(),
+                    "Audio token placeholder at position " + std::to_string(i) + " exceeds provided audio count ("
+                        + std::to_string(audioHashes.size()) + ")");
                 perPositionHash[i] = audioHashes[audioIdx];
             }
             previousWasMedia = true;
@@ -184,20 +190,17 @@ bool contextCacheOperationSucceeded(ContextCacheCoordinatorStatus status, char c
 } // namespace
 
 std::optional<ContextCacheRequest> ContextCacheRequest::begin(ContextCacheCoordinator& coordinator,
-    LLMGenerationRequest const& request, DecodingInferenceContext const& context, DecodingStrategyKind strategyKind,
-    std::vector<int32_t> const& mediaTokenIds)
+    LLMGenerationRequest const& request, DecodingInferenceContext const& context, bool speculativeRequest,
+    DecodingKvHeadroom const& headroom, std::vector<int32_t> const& mediaTokenIds)
 {
-    ELLM_CHECK(strategyKind == DecodingStrategyKind::kVanilla || strategyKind == DecodingStrategyKind::kEAGLE,
-        "Context cache supports only vanilla or EAGLE request execution.");
-
     static std::vector<imageUtils::ImageData> const kEmptyImageBuffers;
     static std::vector<audioUtils::AudioData> const kEmptyAudioBuffers;
 
     ContextCacheBatchAdmission admission;
-    admission.executionMode = strategyKind == DecodingStrategyKind::kEAGLE ? ContextCacheExecutionMode::kEAGLE
-                                                                           : ContextCacheExecutionMode::kVanilla;
+    admission.speculativeRequest = speculativeRequest;
     admission.lookupPolicy = contextCacheLookupPolicy(request, context.outputThinkerEmbeddings);
     admission.commitPolicy = request.contextCacheCommitPolicy;
+    admission.replayTailLength = request.contextCacheReplayTailLength;
     admission.sequences.reserve(context.rawBatchedInputIds.size());
     for (size_t seqIdx = 0; seqIdx < context.rawBatchedInputIds.size(); ++seqIdx)
     {
@@ -209,7 +212,8 @@ std::optional<ContextCacheRequest> ContextCacheRequest::begin(ContextCacheCoordi
             context.rawBatchedInputIds[seqIdx], context.loraWeightsName, mediaTokenIds, images, audio));
     }
 
-    ContextCacheCoordinator::BeginRequestResult admitted = coordinator.beginRequest(admission, context.stream);
+    ContextCacheCoordinator::BeginRequestResult admitted
+        = coordinator.beginRequest(admission, headroom, context.stream);
     if (!contextCacheOperationSucceeded(admitted.status, "admission") || !admitted.admission.has_value())
     {
         return std::nullopt;
@@ -230,6 +234,25 @@ std::vector<int32_t> const& ContextCacheRequest::prefillStarts() const noexcept
     return mPrefillStarts;
 }
 
+int32_t ContextCacheRequest::reuseTokenLength(int32_t slot) const noexcept
+{
+    return mPrefillStarts[static_cast<size_t>(slot)];
+}
+
+bool ContextCacheRequest::publishHybridMtpEndpoint(
+    int32_t slot, int32_t residentStateLength, Tensor const& baseHiddenStates, int32_t boundaryHiddenRow)
+{
+    return contextCacheOperationSucceeded(
+        mCoordinator.publishHybridMtpEndpoint(mRequest, slot, residentStateLength, baseHiddenStates, boundaryHiddenRow),
+        "Hybrid+MTP endpoint publication");
+}
+
+bool ContextCacheRequest::restoreHybridMtpBoundaryHidden(int32_t slot, Tensor& baseHiddenStates, int32_t destinationRow)
+{
+    return contextCacheOperationSucceeded(
+        mCoordinator.restoreHybridMtpBoundaryHidden(mRequest, slot, baseHiddenStates, destinationRow),
+        "Hybrid+MTP boundary-hidden restore");
+}
 bool ContextCacheRequest::preparePrefill()
 {
     return contextCacheOperationSucceeded(mCoordinator.preparePrefill(mRequest), "prefill preparation");
@@ -258,11 +281,11 @@ bool ContextCacheRequest::completePrefill(
         mCoordinator.finalizePrefillPublication(mRequest, progress, commonStateLengthsPtr), "prefill publication");
 }
 
-bool ContextCacheRequest::prepareDecodeStep(DecodingInferenceContext const& context)
+bool ContextCacheRequest::prepareDecodeStep(DecodingInferenceContext const& context, DecodingKvHeadroom const& headroom)
 {
     ELLM_CHECK(!mTokenCountsBeforeDecode.has_value(),
         "Managed context-cache decode preparation cannot overlap a pending decode step.");
-    if (!contextCacheOperationSucceeded(mCoordinator.prepareDecodeStep(mRequest), "decode preparation"))
+    if (!contextCacheOperationSucceeded(mCoordinator.prepareDecodeStep(mRequest, headroom), "decode preparation"))
     {
         return false;
     }

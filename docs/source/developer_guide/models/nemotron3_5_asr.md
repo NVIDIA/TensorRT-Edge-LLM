@@ -6,11 +6,11 @@ FastConformer encoder plus an LSTM prediction network and a joint network.
 Decoding is a greedy transducer loop, not autoregressive LLM generation, so it
 does not reuse the LLM inference runtime.
 
-Its Python export stays in the core package (`tensorrt_edgellm.models.nemotron3_5_asr`);
-the C++ inference runtime lives under `experimental_models/nemotron3_5_asr/` and
-builds only with `-DBUILD_EXPERIMENTAL_MODELS=ON`. The engine build itself uses
-the shared `audio_build` tool — the encoder is a standard audio encoder — so
-there is no dedicated builder here.
+Its maintained Python export stays in the core package
+(`tensorrt_edgellm.models.nemotron3_5_asr`). The checkpoint-direct definitions
+live under `experimental/builder/models/nemotron3_5_asr`, and the C++ inference
+runtime lives under `experimental_models/nemotron3_5_asr/`. The runtime builds
+only with `-DBUILD_EXPERIMENTAL_MODELS=ON`.
 
 ## Architecture
 
@@ -44,7 +44,35 @@ The mel front-end is the CPU `MelExtractor` (`nemotron_asr` config: nFFT 512,
 hop 160, win 400, 128 mel bins, natural-log mel, no normalization), auto-selected
 from the engine's `config.json`.
 
-## 1. Export (x86 host, CPU-only)
+## 1. Checkpoint-direct build
+
+The experimental builder emits the complete runtime bundle in one command:
+
+```bash
+tensorrt-edgellm-build \
+    --model-dir "$CHECKPOINT_DIR" \
+    --engine-dir "$ENGINE_DIR" \
+    --max-time-steps 8192
+```
+
+This writes `audio/audio_encoder.engine`, `rnnt/rnnt_step.engine`, the provider
+config, processor metadata, and tokenizer artifacts. Both engines retain their
+weights because this model-specific runtime does not use the LLM external
+weight loader.
+
+The experimental ASR server only loads a complete model bundle; it never
+downloads checkpoints or builds engines. It is a source module, not an
+installed console command:
+
+```bash
+PYTHONPATH="$BUILD_DIR/pybind${PYTHONPATH:+:$PYTHONPATH}" \
+python -m experimental.nemotron3_5_asr.server "$ENGINE_DIR" \
+    --served-model-name nemotron-3.5-asr-streaming-0.6b
+```
+
+## 2. Maintained ONNX export and build
+
+Export on an x86 host; model execution is not required during export:
 
 ```bash
 tensorrt-edgellm-export "nvidia/nemotron-3.5-asr-streaming-0.6b" "$ONNX_DIR"
@@ -53,8 +81,6 @@ tensorrt-edgellm-export "nvidia/nemotron-3.5-asr-streaming-0.6b" "$ONNX_DIR"
 Produces `$ONNX_DIR/audio/` (encoder ONNX + `config.json` + tokenizer) and
 `$ONNX_DIR/rnnt_decoder/` (step ONNX + a `config.json` carrying the
 `rnnt_decoder_config` build marker).
-
-## 2. Build engines
 
 `audio_build` auto-detects the build type from each `config.json`
 (`encoder_config` -> audio encoder; `rnnt_decoder_config` -> static RNN-T step):
@@ -72,20 +98,53 @@ Then assemble one self-contained runtime dir:
 ```bash
 mkdir -p "$RUN_DIR"
 cp "$ENGINE_DIR/audio/audio_encoder.engine" "$ENGINE_DIR/rnnt_decoder/rnnt_step.engine" "$RUN_DIR/"
-cp "$ONNX_DIR/audio/config.json" "$ONNX_DIR/audio/tokenizer.json" "$ONNX_DIR/audio/tokenizer_config.json" "$RUN_DIR/"
+cp "$ONNX_DIR/audio/config.json" "$ONNX_DIR/audio/tokenizer.json" \
+   "$ONNX_DIR/audio/processor_config.json" "$RUN_DIR/"
+test ! -f "$ONNX_DIR/audio/tokenizer_config.json" || \
+   cp "$ONNX_DIR/audio/tokenizer_config.json" "$RUN_DIR/"
 ```
 
-## 3. Run
+The same isolated module consumes that assembled ONNX bundle:
+
+```bash
+PYTHONPATH="$BUILD_DIR/pybind${PYTHONPATH:+:$PYTHONPATH}" \
+python -m experimental.nemotron3_5_asr.server "$RUN_DIR" \
+    --served-model-name nemotron-3.5-asr-streaming-0.6b
+```
+
+## 3. Inference contracts
+
+The dedicated server intentionally exposes only health, model discovery, and
+OpenAI-compatible transcription. It does not advertise chat, sampling,
+streaming generation, tool calls, or batching:
+
+```bash
+curl -s http://localhost:8000/v1/audio/transcriptions \
+    -F file=@"$AUDIO" \
+    -F model=nemotron-3.5-asr-streaming-0.6b \
+    -F language=en-US \
+    -F response_format=json
+```
+
+Omit `language` to use automatic language detection. The provider prompt
+dictionary supplies accepted language keys. `prompt` and nonzero `temperature`
+are rejected because this runtime performs deterministic greedy RNN-T decode.
+
+The C++ executable accepts either the direct component layout or the flat ONNX
+bundle:
 
 ```bash
 "$BUILD_DIR/experimental_models/nemotron3_5_asr/examples/nemotron_asr_inference" \
-    --engineDir "$RUN_DIR" --audioFile "$AUDIO"     # wav / mp3 / flac, mono
+    --engineDir "$ASR_BUNDLE" --audioFile "$AUDIO"  # wav / mp3 / flac, mono
 # --promptId <N> overrides the language prompt (default = automatic detection).
 # --benchmark reports the mel / encoder / decode phase breakdown and RTF.
 ```
 
 Output is the transcript with the emitted `<xx-XX>` language tag, plus frame /
 step / token counts.
+
+`$ASR_BUNDLE` is the direct `$ENGINE_DIR` or the flat `$RUN_DIR` assembled by
+the ONNX workflow. Both server launch modes call this same native runtime.
 
 ## Runtime design notes
 

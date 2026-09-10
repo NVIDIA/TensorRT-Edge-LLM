@@ -17,8 +17,10 @@
 
 #pragma once
 
-#include <cuda.h>
 #include <cuda_runtime.h>
+
+#if defined(CUTE_DSL_FMHA_ENABLED)
+#include <cuda.h>
 
 #if CUDA_VERSION >= 12000 && CUDA_VERSION < 12080
 typedef CUlibrary cudaLibrary_t;
@@ -33,6 +35,7 @@ extern "C" cudaError_t cudaLibraryUnload(cudaLibrary_t library);
 #define CUTE_DSL_CUDA_ERROR_CHECK(error) ::trt_edgellm::detail::recordCuteDslCudaError(static_cast<cudaError_t>(error))
 #include "cutedsl_all.h"
 #undef CUTE_DSL_CUDA_ERROR_CHECK
+#endif // defined(CUTE_DSL_FMHA_ENABLED)
 
 #include <NvInferRuntime.h>
 #include <climits>
@@ -124,6 +127,7 @@ private:
     int32_t mHeadDim{};
     bool mUseSmallD64{true};
 
+#if defined(CUTE_DSL_FMHA_ENABLED)
     static detail::LazyKernelModule<fmha_v2_d64_Kernel_Module_t> sLLM_d64;
     static detail::LazyKernelModule<fmha_v2_d64_small_Kernel_Module_t> sLLM_d64Small;
     static detail::LazyKernelModule<fmha_v2_d128_Kernel_Module_t> sLLM_d128;
@@ -150,6 +154,7 @@ private:
     static detail::LazyKernelModule<fmha_v2_vit_d72_Kernel_Module_t> sViT_d72;
     static detail::LazyKernelModule<fmha_v2_vit_d80_Kernel_Module_t> sViT_d80;
     static detail::LazyKernelModule<fmha_v2_vit_d128_Kernel_Module_t> sViT_d128;
+#endif // defined(CUTE_DSL_FMHA_ENABLED)
 };
 
 } // namespace trt_edgellm

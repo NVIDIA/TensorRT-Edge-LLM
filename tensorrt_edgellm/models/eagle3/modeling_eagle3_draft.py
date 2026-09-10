@@ -55,8 +55,8 @@ from ..gemma4.modeling_gemma4_text import (Gemma4MLP, Gemma4RMSNorm,
                                            _rotary_dim_from_rope_config,
                                            _uses_attention_k_eq_v)
 # yapf: enable
-from ..linear import make_linear
-from ..ops import KV_PAGE_SIZE, attention_plugin
+from ..linear import is_int4_linear, make_linear
+from ..ops import KV_PAGE_SIZE, attention_plugin, qkv_concat
 
 __all__ = ["Eagle3DraftModel"]
 
@@ -122,6 +122,11 @@ class Eagle3Attention(nn.Module):
                                       qkv_in_features,
                                       self.num_kv_heads * self.head_dim,
                                       bias=config.attention_bias)
+        qkv_projections = [self.q_proj, self.k_proj]
+        if not self.attention_k_eq_v:
+            qkv_projections.append(self.v_proj)
+        self._uses_int4_qkv = any(
+            is_int4_linear(proj) for proj in qkv_projections)
         self.o_proj = make_linear(config, self.num_heads * self.head_dim,
                                   hidden_size)
 
@@ -173,8 +178,11 @@ class Eagle3Attention(nn.Module):
                                          batch_size, seq_len,
                                          self.num_kv_heads * self.head_dim)
 
+        qkv = (qkv_concat(query_states, key_states, value_states)
+               if self._uses_int4_qkv else torch.cat(
+                   [query_states, key_states, value_states], dim=-1))
         attn_output, present_key_value = attention_plugin(
-            torch.cat([query_states, key_states, value_states], dim=-1),
+            qkv,
             past_key_value,
             context_lengths,
             rope_rotary_cos_sin,

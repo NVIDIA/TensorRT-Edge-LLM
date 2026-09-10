@@ -19,52 +19,36 @@
 
 #include <atomic>
 #include <future>
+#include <memory>
 #include <thread>
 
-//! Memory monitor for examples
-//! Automatically detects iGPU vs dGPU on start() and adjusts monitoring accordingly:
-//! - iGPU: Monitors unified memory using CPU memory (RSS)
-//! - dGPU: Monitors both GPU memory and CPU memory
+class MemoryBackend;
+
+//! Memory monitor for examples.
 class MemoryMonitor
 {
 public:
-    MemoryMonitor()
-        : mActive(false)
-        , mPeakGpuMemory(0)
-        , mBaselineGpuFreeMemory(0)
-        , mIsIGPU(false)
-    {
-    }
-
-    ~MemoryMonitor()
-    {
-        stop();
-    }
+    MemoryMonitor();
+    ~MemoryMonitor();
 
     void start();
     void stop();
 
-    //! Get peak GPU memory in bytes (returns 0 for iGPU)
+    //! Get the peak value reported by the selected GPU memory backend.
     size_t getPeakGpuMemory() const;
 
-    //! Get peak CPU memory (RSS) in bytes
+    //! Get peak CPU-visible process memory from the RSS high-water mark.
     size_t getPeakCpuMemory() const;
 
-    //! Get peak unified memory in bytes (for iGPU systems)
-    size_t getPeakUnifiedMemory() const;
-
-    //! Check if device is integrated GPU
-    bool isIntegratedGPU() const
-    {
-        return mIsIGPU;
-    }
+    //! Get the selected GPU memory metric identifier.
+    char const* getGpuMemoryMetric() const;
 
 private:
     void monitor();
 
     std::atomic_bool mActive{false};
+    std::atomic_bool mSampleFailed{false};
     std::future<void> mTask;
     std::atomic<size_t> mPeakGpuMemory{0};
-    size_t mBaselineGpuFreeMemory{0};
-    bool mIsIGPU{false};
+    std::unique_ptr<MemoryBackend> mBackend;
 };

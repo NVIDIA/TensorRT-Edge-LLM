@@ -24,8 +24,10 @@
 namespace trt_edgellm
 {
 
-// Global profiling control flag implementation
-static bool gProfilingEnabled = false;
+// Thread-local profiling control flag implementation.
+// Multi-device threaded inference enables profiling only on rank 0. Keeping this
+// flag thread-local prevents peer ranks from entering the shared timer.
+static thread_local bool gProfilingEnabled = false;
 
 bool getProfilingEnabled() noexcept
 {

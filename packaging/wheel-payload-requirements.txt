@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Native payload configuration, build, and dependency audit.
+auditwheel==6.4.2
+cmake==3.31.6
+ninja==1.13.0
+pybind11==3.0.4
+tomli==2.2.1; python_version < "3.11"

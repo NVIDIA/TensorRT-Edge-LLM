@@ -37,6 +37,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -49,8 +50,8 @@ namespace
 constexpr int32_t kDecodeProfile{1};
 } // namespace
 
-Gemma4MTPDecoder::Gemma4MTPDecoder(DecodingRuntimeContext& runtime, std::filesystem::path const& engineDir,
-    SpecDecodeDraftingConfig const& draftingConfig, std::unique_ptr<EngineExecutor> draftExecutor, cudaStream_t stream)
+Gemma4MTPDecoder::Gemma4MTPDecoder(DecodingRuntimeContext& runtime, SpecDecodeDraftingConfig const& draftingConfig,
+    std::unique_ptr<EngineExecutor> draftExecutor, ExternalWeightManager draftWeights, cudaStream_t /* stream */)
     : mRuntime(runtime)
     , mDraftExecutor(std::move(draftExecutor))
 {
@@ -67,9 +68,7 @@ Gemma4MTPDecoder::Gemma4MTPDecoder(DecodingRuntimeContext& runtime, std::filesys
     buildTensorMapForGemma4MTPDraft(
         mDraftTensorMap, mRuntime.base.pipelineIO, mRuntime.base.sharedResources, mRuntime.deployment);
 
-    mDraftExternalWeightManager.load(
-        engineDir, engineDir / "draft_config.json", stream, mRuntime.draftCheckpointDir, mRuntime.checkpointDir);
-    mDraftExternalWeightManager.validateAgainstEngine(*mDraftExecutor, "gemma4_mtp_draft");
+    mDraftExternalWeightManager = std::move(draftWeights);
     mDraftExternalWeightManager.registerTensorMapEntries(mDraftTensorMap);
 
     int32_t const maxRuntimeBatchSize = mRuntime.maxRuntimeBatchSize;
@@ -102,11 +101,25 @@ Gemma4MTPDecoder::Gemma4MTPDecoder(DecodingRuntimeContext& runtime, std::filesys
         {maxRuntimeBatchSize * maxAcceptDepth}, DeviceType::kGPU, nvinfer1::DataType::kINT32, "Gemma4MTP::argmax");
 }
 
+DecodingKvHeadroom Gemma4MTPDecoder::requiredKvHeadroom() const
+{
+    int32_t const draftingStep = mRuntime.deployment.specConfig->draftingStep;
+    ELLM_CHECK(draftingStep > 0 && draftingStep < std::numeric_limits<int32_t>::max(),
+        "Gemma4 MTP KV headroom is outside the supported range");
+    return {draftingStep + 1, 0};
+}
+
 bool Gemma4MTPDecoder::decodeStep(DecodingInferenceContext& context)
 {
     NVTX_SCOPED_RANGE(nvtx_gemma4_mtp_decode, "Gemma4MTPDecoder::decodeStep", nvtx_colors::GREEN);
-    return prepareSeed(context) && runAssistantDraftChain(context) && runBaseVerification(context)
-        && acceptAndCommit(context) && updateNextSeed(context);
+    return runDraftProposal(context) && runBaseVerification(context) && acceptAndCommit(context)
+        && updateNextSeed(context);
+}
+
+bool Gemma4MTPDecoder::runDraftProposal(DecodingInferenceContext& context)
+{
+    TIME_STAGE(metrics::StageNames::kSPEC_DECODE_DRAFT_PROPOSAL, context.stream);
+    return prepareSeed(context) && runAssistantDraftChain(context);
 }
 
 bool Gemma4MTPDecoder::captureCudaGraphs(cudaStream_t stream)
@@ -258,11 +271,8 @@ void Gemma4MTPDecoder::resetForNewSequences(Tensor&, cudaStream_t)
 }
 
 void Gemma4MTPDecoder::onBatchEvict(std::vector<int32_t> const& batchMapping, int32_t oldActiveBatch,
-    int32_t newActiveBatch, Tensor& deviceBatchMapping, cudaStream_t stream, BatchCompactionMode mode)
+    int32_t newActiveBatch, Tensor& deviceBatchMapping, cudaStream_t stream)
 {
-    ELLM_CHECK(mode == BatchCompactionMode::kLegacyPhysicalKv,
-        "Gemma4 MTP does not support managed context-cache batch compaction.");
-
     if (newActiveBatch <= 0)
     {
         return;
@@ -319,7 +329,6 @@ void Gemma4MTPDecoder::onBatchEvict(std::vector<int32_t> const& batchMapping, in
 
 bool Gemma4MTPDecoder::prepareSeed(DecodingInferenceContext& context)
 {
-    TIME_STAGE(metrics::StageNames::kSPEC_DECODE_DRAFT_PROPOSAL, context.stream);
     int32_t const activeBatchSize = context.activeBatchSize;
     int32_t const baseHiddenSize = mRuntime.deployment.specConfig->baseOutputHiddenDim;
     int32_t const draftingStep = mRuntime.deployment.specConfig->draftingStep;
@@ -409,7 +418,6 @@ bool Gemma4MTPDecoder::prepareSeed(DecodingInferenceContext& context)
 
 bool Gemma4MTPDecoder::runAssistantDraftChain(DecodingInferenceContext& context)
 {
-    TIME_STAGE(metrics::StageNames::kSPEC_DECODE_DRAFT_PROPOSAL, context.stream);
     NVTX_SCOPED_RANGE(nvtx_gemma4_mtp_draft, "Gemma4MTPDecoder::runAssistantDraftChain", nvtx_colors::DARK_ORANGE);
 
     if (!mDraftExecutor)

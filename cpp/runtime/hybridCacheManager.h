@@ -109,16 +109,11 @@ public:
     //! @return The layer's type.
     LayerType getLayerType(int32_t absLayerIdx) const;
 
-    //! Get the combined KV cache for a given absolute layer index (must be an attention layer).
+    //! Get the combined KV-cache page pool for a given absolute layer index (must be an attention layer).
     //! @param absLayerIdx Absolute decoder-layer index.
-    //! @return Reference to the per-layer NHD tensor [2, maxBatch, capPadded, numKVHeads, headDim].
+    //! @return Reference to the page pool [2, numPages, kTOKENS_PER_PAGE, numKVHeads, headDim].
     rt::Tensor& getCombinedKVCache(int32_t absLayerIdx);
-
-    //! Get the pool-shaped view of a given attention layer's combined KV cache — the tensor to bind
-    //! to the engine's past/present_key_values_i inputs; see KVCacheManager::getCombinedKVCachePoolView().
-    //! @param absLayerIdx Absolute decoder-layer index.
-    //! @return Reference to the pool-view tensor [2, numPages, kTOKENS_PER_PAGE, numKVHeads, headDim].
-    rt::Tensor& getCombinedKVCachePoolView(int32_t absLayerIdx);
+    rt::Tensor const& getCombinedKVCache(int32_t absLayerIdx) const;
 
     //! Get the K-half and V-half of a given attention layer's pool as separate tensor views.
     //! @param absLayerIdx Absolute decoder-layer index.
@@ -142,6 +137,7 @@ public:
     //! @brief Direct access to the KV cache sub-manager.
     //! @return Reference to the KVCacheManager.
     KVCacheManager& getKVCacheManager() noexcept;
+    KVCacheManager const& getKVCacheManager() const noexcept;
 
     //! @brief Direct access to the Mamba state sub-manager.
     //! @return Reference to the MambaCacheManager.

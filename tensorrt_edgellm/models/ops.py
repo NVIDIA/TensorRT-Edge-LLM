@@ -138,17 +138,14 @@ def attention_plugin(
     +-----------------------+--------------------+----------------------------+
 
     ``kv_page_table`` is a required ``[batch, 2, max_pages_per_seq]`` int32
-    per-request page table (K page ids then derived V page ids); the runtime
-    feeds an identity table by default (bit-equivalent to the non-paged path).
+    per-request page table (K page ids then derived V page ids).
 
     ``past_key_value`` / ``present_key_value`` are the same paged-pool
     allocation, in-place aliased by the TRT plugin (no growth per call —
     the pool is a fixed-size allocation and writes land at page-table
     positions). ``present_key_value`` therefore always has the exact same
-    shape as ``past_key_value``, whatever that is (all models — including
-    DFlash's combined draft cache — declare the pool shape ``[2, num_pages,
-    kTOKENS_PER_PAGE, num_kv_heads, head_size]``; DFlash recovers its logical
-    ``[2, max_batch, cap_padded, num_kv_heads, head_size]`` view at enqueue).
+    shape as ``past_key_value``. All models declare the pool shape
+    ``[2, num_pages, kTOKENS_PER_PAGE, num_kv_heads, head_size]``.
 
     ``enable_tree_attention``, ``enable_fp8_kv_cache``,
     ``enable_context_mask_selector``, ``enable_vision_block_attention``,
@@ -235,6 +232,70 @@ def _(
 # Custom op: trt::vit_attention_plugin  (ViT ragged self-attention)
 # ---------------------------------------------------------------------------
 
+# Head dims with an FP8 ViT FMHA kernel (build_cutedsl.py
+# ``vit_fmha_d{64,80,96,128}_fp8``; mirrored by ViTAttentionPlugin's runtime
+# check). d80 pads the MMA tiler K to 96 inside the kernel. d72 is blocked
+# by TMA 16-byte stride alignment (72 FP8 bytes) and has no direct kernel;
+# d72 models (Phi-4 SigLIP) widen their q/k/v projections to d=80 with zero
+# weight rows at load time instead (see Phi4MMVisionAttention) and gate on
+# the padded dim. Visual models gate ``enable_fp8_mha`` on this.
+FP8_VIT_HEAD_DIMS = (64, 80, 96, 128)
+
+
+def init_fp8_mha(attn: torch.nn.Module,
+                 model_config,
+                 head_dim: int,
+                 *,
+                 k_proj: Optional[torch.nn.Module] = None,
+                 v_proj: Optional[torch.nn.Module] = None) -> bool:
+    """Gate the FP8 ViT MHA path and register its dequant-scale buffers.
+
+    Returns True when the checkpoint requests FP8 visual MHA
+    (``quant.visual_mha_quant == "fp8"``) and *head_dim* has an FP8 kernel
+    (``FP8_VIT_HEAD_DIMS``). On True, registers per-tensor scale buffers at
+    the exact paths modelopt's calibration frontend writes:
+
+    - ``<attn>.q_scale`` — module-level (modelopt has no q_bmm rename; see
+      ``_surface_visual_q_scales`` in ``tensorrt_edgellm/quantization``),
+    - ``<attn>.k_proj.k_scale`` / ``<attn>.v_proj.v_scale`` — on the real
+      *k_proj* / *v_proj* linears when passed (separate-projection
+      attentions), else on synthetic ``nn.Module()`` placeholders created
+      here (fused-qkv attentions) so ``load_state_dict`` still picks the
+      buffers up.
+
+    ``setup_fp8_qkv_scales_for_export`` reads these at export time and
+    stores ``_qkv_scales_float`` on *attn*, which
+    :func:`quantize_qkv_for_fp8_mha` threads to the ViT attention plugin.
+    """
+    enabled = (getattr(model_config.quant, "visual_mha_quant", None) == "fp8"
+               and head_dim in FP8_VIT_HEAD_DIMS)
+    if not enabled:
+        return False
+    attn.register_buffer("q_scale", torch.ones((), dtype=torch.float16))
+    if k_proj is None:
+        k_proj = torch.nn.Module()
+        attn.k_proj = k_proj
+    if v_proj is None:
+        v_proj = torch.nn.Module()
+        attn.v_proj = v_proj
+    k_proj.register_buffer("k_scale", torch.ones((), dtype=torch.float16))
+    v_proj.register_buffer("v_scale", torch.ones((), dtype=torch.float16))
+    return True
+
+
+def quantize_qkv_for_fp8_mha(
+    attn: torch.nn.Module, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, List[float]]:
+    """FP8-quantize FP16 q/k/v with the calibrated per-tensor scales when
+    *attn*'s FP8 MHA gate is on; pass-through otherwise. Returns
+    ``(q, k, v, qkv_scales)`` ready for the vit_attention_plugin call."""
+    qkv_scales = getattr(attn, "_qkv_scales_float", [1.0, 1.0, 1.0])
+    if attn.enable_fp8_mha:
+        q = fp8_quantize(q, attn.q_scale)
+        k = fp8_quantize(k, attn.k_proj.k_scale)
+        v = fp8_quantize(v, attn.v_proj.v_scale)
+    return q, k, v, qkv_scales
+
 
 @torch.library.custom_op("trt::vit_attention_plugin", mutates_args=())
 def vit_attention_plugin(
@@ -246,6 +307,7 @@ def vit_attention_plugin(
     num_heads: int,
     head_size: int,
     attention_scale: float,
+    qkv_scales: "list[float] | None" = None,
 ) -> torch.Tensor:
     """ViT ragged self-attention.
 
@@ -256,9 +318,22 @@ def vit_attention_plugin(
     Unlike AttentionPlugin, ViT attention has no KV cache and takes ragged
     input with cu_seqlens instead of context_lengths.  RoPE is applied before
     this call.
+
+    FP8 mode is carried by the tensors themselves: when Q/K/V arrive as
+    float8_e4m3fn (quantized by preceding QuantizeLinear nodes in the graph),
+    the plugin runs the FP8 FMHA kernel and ``qkv_scales`` carries the
+    per-tensor dequant scales it folds into the softmax/output scaling.
+    Output stays FP16.
     """
     import torch.nn.functional as F
-    out = torch.empty_like(query_states)
+    if query_states.dtype == torch.float8_e4m3fn:
+        # Eager reference: dequantize back to FP16 with the per-tensor scales,
+        # mirroring the plugin's internal fold.
+        scales = qkv_scales or [1.0, 1.0, 1.0]
+        query_states = query_states.to(torch.float16) * scales[0]
+        key_states = key_states.to(torch.float16) * scales[1]
+        value_states = value_states.to(torch.float16) * scales[2]
+    out = torch.empty_like(query_states, dtype=torch.float16)
     seqlens = cu_seqlens.tolist()
     for i in range(len(seqlens) - 1):
         start, end = int(seqlens[i]), int(seqlens[i + 1])
@@ -275,9 +350,18 @@ def vit_attention_plugin(
 
 
 @vit_attention_plugin.register_fake
-def _(query_states, key_states, value_states, cu_seqlens, max_seqlen_carrier,
-      num_heads, head_size, attention_scale):
-    return torch.empty_like(query_states)
+def _(query_states,
+      key_states,
+      value_states,
+      cu_seqlens,
+      max_seqlen_carrier,
+      num_heads,
+      head_size,
+      attention_scale,
+      qkv_scales=None):
+    # The plugin always emits FP16 (FP8 inputs are dequantized internally),
+    # so the fake must not inherit an FP8 input dtype.
+    return torch.empty_like(query_states, dtype=torch.float16)
 
 
 # ---------------------------------------------------------------------------
@@ -351,6 +435,7 @@ def dflash_target_kv_cache_update(
     rope_cos_sin: torch.Tensor,
     delta_start_positions: torch.Tensor,
     delta_lengths: torch.Tensor,
+    kv_page_table: torch.Tensor,
 ) -> torch.Tensor:
     """Update the draft combined KV cache with target-hidden-derived K/V delta.
 
@@ -358,13 +443,12 @@ def dflash_target_kv_cache_update(
     v_delta: [B, L, numKVHeads, headDim] FP16.
     past_key_value: [2, num_pages, KV_PAGE_SIZE, numKVHeads, headDim] FP16 —
         the paged KV pool (same contract as the AttentionPlugin kv_cache
-        binding). maxBatch/capPadded are recovered at enqueue time from
-        num_pages and the builder-configured pages_per_slot attribute (see
-        DFlashTargetKVCacheUpdatePlugin::setPagesPerSlot); this cache has no
-        page table of its own.
+        binding).
     rope_cos_sin: [ropeBatch, cosSinSeqLen, rotaryDim] FP32, cosSinSeqLen <= capPadded.
     delta_start_positions: [B] INT32, old committed draft target cache length.
     delta_lengths: [B] INT32, per-batch delta lengths.
+    kv_page_table: [B, 2, maxPagesPerSeq] INT32 with canonical K page ids in
+        [0, num_pages) and V page ids in [num_pages, 2 * num_pages).
 
     Applies RoPE to k_delta and writes k_rope + v_delta into the KV cache at
     positions [delta_start, delta_start + t) for each batch element, where
@@ -376,7 +460,7 @@ def dflash_target_kv_cache_update(
 
 @dflash_target_kv_cache_update.register_fake
 def _(k_delta, v_delta, past_key_value, rope_cos_sin, delta_start_positions,
-      delta_lengths):
+      delta_lengths, kv_page_table):
     return torch.empty_like(past_key_value)
 
 
@@ -841,6 +925,28 @@ def _(hidden_states, qweight, scales, gemm_n, gemm_k, group_size):
                        gemm_n,
                        dtype=hidden_states.dtype,
                        device=hidden_states.device)
+
+
+# ---------------------------------------------------------------------------
+# Custom op: trt::qkv_concat
+# ---------------------------------------------------------------------------
+
+
+@torch.library.custom_op("trt::qkv_concat", mutates_args=())
+def qkv_concat(q: torch.Tensor, k: torch.Tensor,
+               v: torch.Tensor) -> torch.Tensor:
+    """Pack contiguous Q/K/V projections without exposing an ONNX Concat."""
+    return torch.cat((q, k, v), dim=-1)
+
+
+@qkv_concat.register_fake
+def _(q, k, v):
+    if q.shape[:-1] != k.shape[:-1] or q.shape[:-1] != v.shape[:-1]:
+        raise ValueError("Q, K, and V must have identical leading shapes")
+    return torch.empty(*q.shape[:-1],
+                       q.shape[-1] + k.shape[-1] + v.shape[-1],
+                       dtype=q.dtype,
+                       device=q.device)
 
 
 # ---------------------------------------------------------------------------

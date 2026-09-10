@@ -52,8 +52,11 @@ _SAFETENSORS_DTYPE = {
     np.dtype(np.bool_): "BOOL",
 }
 
+_PLUGIN_RESOURCE_DTYPES = frozenset(("U8", "F8_E4M3"))
+
 _OPERATION_CREATORS = {
     "all_reduce": "AllReducePlugin",
+    "fused_nvfp4_gemm_all_reduce": "FusedNvfp4GemmAllReducePlugin",
     "attention": "AttentionPlugin",
     "dflash_target_cache_update": "DFlashTargetKVCacheUpdate",
     "gemma4_attention": "Gemma4AudioAttentionPlugin",
@@ -92,6 +95,7 @@ class Net:
         self._weight_refs: List[np.ndarray] = []  # keep numpy alive for TRT
         self._inputs = {}
         self._weight_bindings: Dict[str, Dict[str, object]] = {}
+        self._next_plugin_resource_id = 0
         self._n = 0
 
     # -- low level ----------------------------------------------------------
@@ -179,7 +183,29 @@ class Net:
             return self.const(value, name.rsplit(".", 1)[-1])
         return self.weight_input(name, value, kind, recipe=recipe)
 
-    def _record_binding(self, name: str, shape: Sequence[int], dtype: np.dtype,
+    def plugin_resource(self, name: str, value: ParameterSpec, kind: str,
+                        recipe: Mapping[str, object], *, resource_id: int,
+                        resource_kind: str, storage_dtype: str) -> None:
+        """Record a persistent plugin resource without an engine binding."""
+        if not self.policy.externalizes_parameter(kind, name):
+            raise ValueError(f"plugin resource {name!r} is not externalized")
+        if not isinstance(value, ParameterSpec):
+            raise ValueError(
+                f"plugin resource {name!r} was materialized during engine build"
+            )
+        if storage_dtype not in _PLUGIN_RESOURCE_DTYPES:
+            raise TypeError(f"unsupported plugin resource storage dtype "
+                            f"{storage_dtype}")
+        resource_recipe = dict(recipe)
+        extra = dict(resource_recipe.get("extra", {}))
+        extra.update({
+            "plugin_resource_id": int(resource_id),
+            "plugin_resource_kind": resource_kind,
+        })
+        resource_recipe["extra"] = extra
+        self._record_binding(name, value.shape, storage_dtype, resource_recipe)
+
+    def _record_binding(self, name: str, shape: Sequence[int], dtype,
                         recipe: Mapping[str, object]) -> None:
         checkpoint_keys = recipe.get("checkpoint_keys")
         assemble = recipe.get("assemble")
@@ -191,11 +217,13 @@ class Net:
             ("checkpoint_keys", "source_layout", "assemble", "extra"))
         if unknown:
             raise ValueError(f"unknown checkpoint recipe fields: {unknown}")
+        storage_dtype = (dtype if isinstance(dtype, str) else
+                         _SAFETENSORS_DTYPE[np.dtype(dtype)])
         binding: Dict[str, object] = {
             "engine_name": name,
             "checkpoint_keys": list(checkpoint_keys or ()),
             "source_layout": recipe.get("source_layout", "plugin"),
-            "dtype": _SAFETENSORS_DTYPE[np.dtype(dtype)],
+            "dtype": storage_dtype,
             "shape": [int(dim) for dim in shape],
         }
         if assemble:
@@ -1453,3 +1481,79 @@ class Net:
             b = self.const(bias.astype(np.float16).reshape(bshape), "b")
             out = self.elementwise(out, b, trt.ElementWiseOperation.SUM)
         return out
+
+    def fused_nvfp4_gemm_all_reduce(self,
+                                    x: "trt.ITensor",
+                                    linear_weights,
+                                    bias,
+                                    tp_size: int,
+                                    rank: int = 3,
+                                    name: str = "",
+                                    bias_recipe=None) -> "trt.ITensor":
+        """Row-parallel NVFP4 GEMM fused with the TP all-reduce."""
+        x = self._unwrap(x)
+        input_scale = self.const(
+            np.array(linear_weights.input_scale, dtype=np.float32),
+            "act_scale")
+        dynamic_quantize = self.network.add_dynamic_quantize(
+            x, rank - 1, 16, trt.DataType.FP4, trt.DataType.FP8)
+        dynamic_quantize.set_input(1, input_scale)
+        activation = dynamic_quantize.get_output(0)
+        activation_scale = self.network.add_dequantize(
+            dynamic_quantize.get_output(1), input_scale,
+            trt.float32).get_output(0)
+
+        packed = linear_weights.weight
+        out_features = int(linear_weights.out_features)
+        in_features = int(linear_weights.in_features)
+        attributes = {"tp_size": tp_size}
+        if isinstance(packed, ParameterSpec):
+            resource_id = self._next_plugin_resource_id
+            self._next_plugin_resource_id += 1
+            self.plugin_resource(
+                name + ".weight",
+                packed,
+                "nvfp4_tp",
+                linear_weights.weight_recipe,
+                resource_id=resource_id,
+                resource_kind="weight",
+                storage_dtype="U8",
+            )
+            self.plugin_resource(
+                name + ".weight_scale",
+                linear_weights.weight_scale,
+                "nvfp4_tp",
+                linear_weights.scale_recipe,
+                resource_id=resource_id,
+                resource_kind="scale",
+                storage_dtype="F8_E4M3",
+            )
+            scale_shape = linear_weights.weight_scale.shape
+            attributes.update({
+                "external_weight_resource_id": resource_id,
+                "weight_out_features": out_features,
+                "weight_in_features": in_features,
+                "weight_scale_cols": int(scale_shape[1]),
+            })
+        else:
+            weight = self.const_fp4(packed, (out_features, in_features),
+                                    "w_fp4")
+            weight_scale = self.const_fp8(
+                linear_weights.weight_scale,
+                (out_features, in_features // linear_weights.group_size),
+                "w_scales")
+        weight_scale_2 = self.const(
+            np.array(linear_weights.weight_scale_2, dtype=np.float32),
+            "w_scale_2")
+        inputs = ([activation, activation_scale, weight_scale_2] if isinstance(
+            packed, ParameterSpec) else [
+                activation, activation_scale, weight, weight_scale,
+                weight_scale_2
+            ])
+        layer = self.operation("fused_nvfp4_gemm_all_reduce", attributes,
+                               inputs)
+        return self._add_bias(layer.get_output(0),
+                              bias,
+                              rank,
+                              name=name,
+                              recipe=bias_recipe)

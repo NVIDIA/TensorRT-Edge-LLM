@@ -537,8 +537,11 @@ class SSDKernel:
         tma_atom_initial_states = None
         tma_tensor_initial_states = init_states
         if cutlass.const_expr(self.has_init_states):
-            init_states_cta_v_layout = cute.slice_(
-                cute.make_identity_layout(init_states.shape), (None, None, 0, 0)
+            init_states_cta_v_layout = cute.make_identity_layout(
+                (
+                    self.tile_shape_mnk_inter2[2],
+                    self.tile_shape_mnk_inter2[1],
+                )
             )
             p_smem_layout_istate = cute.slice_(self.p_smem_layout_load, (None, None, 0))
             tma_atom_initial_states, tma_tensor_initial_states = (
@@ -563,8 +566,11 @@ class SSDKernel:
         )
 
         # TMA store for fstate(p)
-        p_cta_v_layout = cute.slice_(
-            cute.make_identity_layout(fstate.shape), (None, None, 0, 0)
+        p_cta_v_layout = cute.make_identity_layout(
+            (
+                self.tile_shape_mnk_inter2[2],
+                self.tile_shape_mnk_inter2[1],
+            )
         )
         p_smem_layout_store = cute.slice_(self.p_smem_layout_store, (None, None, 0))
         tma_atom_p, tma_tensor_p = cpasync.make_tiled_tma_atom(
@@ -1393,13 +1399,13 @@ class SSDKernel:
         )
 
         while work_tile.is_valid_tile:
-            b_idx, eh_idx, g_idx, seq_id, first_chunk, C = (
+            b_idx, eh_idx, g_idx, d_tile_idx, seq_id, first_chunk, C = (
                 self.resolve_varlen_tile_info(work_tile, seq_chunk_cumsum, C)
             )
 
             # Slice global tensor to current tile idx
             # ((ATOM_V, REST_V))
-            bSG_gP = bSG_gP_pre_slice[(None, 0, 0, eh_idx, b_idx)]
+            bSG_gP = bSG_gP_pre_slice[(None, 0, d_tile_idx, eh_idx, b_idx)]
 
             # Reset count for pipeline state
             b_consumer_state.reset_count()
@@ -1631,7 +1637,9 @@ class SSDKernel:
                             space="cta",
                         )
                         if local_warp_idx == 0:
-                            bSG_gP_seq = bSG_gP_pre_slice[(None, 0, 0, eh_idx, seq_id)]
+                            bSG_gP_seq = bSG_gP_pre_slice[
+                                (None, 0, d_tile_idx, eh_idx, seq_id)
+                            ]
                             cute.copy(
                                 tma_atom_p,
                                 bSG_sP[(None, inter2_p_producer_state.index)],
@@ -1716,7 +1724,9 @@ class SSDKernel:
             if local_warp_idx == 0:
                 # TMA store fstate (state_dtype)
                 if cutlass.const_expr(self.has_varlen):
-                    bSG_gP_final = bSG_gP_pre_slice[(None, 0, 0, eh_idx, seq_id)]
+                    bSG_gP_final = bSG_gP_pre_slice[
+                        (None, 0, d_tile_idx, eh_idx, seq_id)
+                    ]
                 else:
                     bSG_gP_final = bSG_gP
                 cute.copy(
@@ -1781,6 +1791,7 @@ class SSDKernel:
     ):
         # (L, D, INPUT_STAGE)
         sDeltaA = self.epilog_make_delta(smem_cumsum_delta)
+        logical_d = cute.size(y_gmem, mode=[1])
 
         # Make tmem tensor for INTRA2_ACC/INTER2_ACC
         # (MMA, MMA_M, MMA_K, INTERNAL_STAGE)
@@ -1902,12 +1913,14 @@ class SSDKernel:
             )
 
         while work_tile.is_valid_tile:
-            b_idx, eh_idx, g_idx, seq_id, first_chunk, C = (
+            b_idx, eh_idx, g_idx, d_tile_idx, seq_id, first_chunk, C = (
                 self.resolve_varlen_tile_info(work_tile, seq_chunk_cumsum, C)
             )
 
             # Slice global tensor to current tile idx
-            bSG_gY = bSG_gY_pre_slice[(None, None, None, 0, 0, None, eh_idx, b_idx)]
+            bSG_gY = bSG_gY_pre_slice[
+                (None, None, None, 0, d_tile_idx, None, eh_idx, b_idx)
+            ]
             if cutlass.const_expr(self.has_d and not self.d_has_hdim):
                 tRS_rD = tma_tensor_d[0, eh_idx]
 
@@ -2076,16 +2089,23 @@ class SSDKernel:
 
                         # Z gating: y *= z * sigmoid(z) = y *= silu(z)
                         if cutlass.const_expr(self.has_z):
-                            z_d_off = epi_n * epi_tile[1]
+                            z_d_off = (
+                                d_tile_idx * self.tile_shape_mnk_inter2[1]
+                                + epi_n * epi_tile[1]
+                            )
                             for reg_idx in cutlass.range(
                                 cute.size(tRS_rZ), unroll_full=True
                             ):
                                 coord = tYCoord[reg_idx]
                                 z_l = coord[0]
                                 z_d = coord[1]
-                                tRS_rZ[reg_idx] = z_gmem[
-                                    z_d_off + z_d, z_l, chunk, eh_idx, b_idx
-                                ].to(self.acc_dtype)
+                                z_global_d = z_d_off + z_d
+                                if z_global_d < logical_d:
+                                    tRS_rZ[reg_idx] = z_gmem[
+                                        z_global_d, z_l, chunk, eh_idx, b_idx
+                                    ].to(self.acc_dtype)
+                                else:
+                                    tRS_rZ[reg_idx] = 0.0
                             for reg_idx in range(0, cute.size(tRS_rCompute), 2):
                                 z0 = tRS_rZ[reg_idx]
                                 z1 = tRS_rZ[reg_idx + 1]
@@ -2144,7 +2164,10 @@ class SSDKernel:
                         # Store Y to global memory
                         l_coord = 0
                         d_coord = 0
-                        d_off = epi_n * epi_tile[1]
+                        d_off = (
+                            d_tile_idx * self.tile_shape_mnk_inter2[1]
+                            + epi_n * epi_tile[1]
+                        )
                         if chunk_size_limit < L or chunk_offset > 0:
                             for reg_idx in cutlass.range(
                                 cute.size(tRS_rY), unroll_full=True
@@ -2152,13 +2175,15 @@ class SSDKernel:
                                 coord = tYCoord[reg_idx]
                                 l_coord = coord[0]
                                 d_coord = coord[1]
+                                d_global = d_off + d_coord
                                 if (
                                     l_coord >= chunk_offset
                                     and l_coord < chunk_size_limit
+                                    and d_global < logical_d
                                 ):
                                     y_gmem[
                                         l_coord,
-                                        d_off + d_coord,
+                                        d_global,
                                         chunk,
                                         eh_idx,
                                         b_idx,
@@ -2319,7 +2344,7 @@ class SSDKernel:
         )
 
         while work_tile.is_valid_tile:
-            _, _, _, seq_id, first_chunk, C = self.resolve_varlen_tile_info(
+            _, _, _, _, seq_id, first_chunk, C = self.resolve_varlen_tile_info(
                 work_tile, seq_chunk_cumsum, C
             )
 
@@ -2511,7 +2536,7 @@ class SSDKernel:
         )
 
         while work_tile.is_valid_tile:
-            _, _, _, _, first_chunk, C = self.resolve_varlen_tile_info(
+            _, _, _, _, _, first_chunk, C = self.resolve_varlen_tile_info(
                 work_tile, seq_chunk_cumsum, C
             )
 
@@ -2813,13 +2838,13 @@ class SSDKernel:
             )
 
         while work_tile.is_valid_tile:
-            b_idx, eh_idx, g_idx, seq_id, first_chunk, C = (
+            b_idx, eh_idx, g_idx, d_tile_idx, seq_id, first_chunk, C = (
                 self.resolve_varlen_tile_info(work_tile, seq_chunk_cumsum, C)
             )
 
             # Slice global tensor to current tile idx
             # ((ATOM_V, REST_V), C)
-            tXgX = tXgX_pre_slice[None, 0, None, eh_idx, b_idx]
+            tXgX = tXgX_pre_slice[None, d_tile_idx, None, eh_idx, b_idx]
             tDeltagDelta = tDeltagDelta_pre_slice[None, 0, None, eh_idx, b_idx]
             tDeltagCumsumDelta = tDeltagCumsumDelta_pre_slice[
                 None, 0, None, eh_idx, b_idx
@@ -2853,7 +2878,7 @@ class SSDKernel:
                 else:
                     first_seq_id = b_idx
                 tIstategIstate = tIstategIstate_pre_slice[
-                    None, 0, 0, eh_idx, first_seq_id
+                    None, 0, d_tile_idx, eh_idx, first_seq_id
                 ]
 
                 # Wait for initial states buffer empty
@@ -2899,7 +2924,7 @@ class SSDKernel:
                     seq_id = cutlass.Int32(seq_idx[0, chunk * L + chunk_offset])
                     if seq_id != prev_seq_id:
                         tIstategIstate = tIstategIstate_pre_slice[
-                            None, 0, 0, eh_idx, seq_id
+                            None, 0, d_tile_idx, eh_idx, seq_id
                         ]
                         init_states_pipeline.producer_acquire(istate_producer_state)
                         cute.copy(
@@ -3030,7 +3055,7 @@ class SSDKernel:
         )
 
         while work_tile.is_valid_tile:
-            b_idx, eh_idx, g_idx, seq_id, first_chunk, C = (
+            b_idx, eh_idx, g_idx, _, seq_id, first_chunk, C = (
                 self.resolve_varlen_tile_info(work_tile, seq_chunk_cumsum, C)
             )
 
@@ -3173,7 +3198,7 @@ class SSDKernel:
         )
 
         while work_tile.is_valid_tile:
-            _, _, _, _, first_chunk, C = self.resolve_varlen_tile_info(
+            _, _, _, _, _, first_chunk, C = self.resolve_varlen_tile_info(
                 work_tile, seq_chunk_cumsum, C
             )
 
@@ -3288,14 +3313,19 @@ class SSDKernel:
         EH = cute.size(y, mode=[3])
         G = cute.size(b, mode=[2])
         NGROUP_RATIO = EH // G
+        logical_d = cute.size(y, mode=[1])
+        tile_d = self.tile_shape_mnk_inter2[1]
+        num_d_tiles = cute.ceil_div(logical_d, tile_d)
         # In varlen mode, launch num_seqs * EH CTAs so each CTA handles
         # one (sequence, head) pair instead of all sequences serially.
         if cutlass.const_expr(self.has_varlen):
-            num_blocks = num_seqs * EH
+            num_blocks = num_seqs * EH * num_d_tiles
         else:
-            num_blocks = B * EH
+            num_blocks = B * EH * num_d_tiles
 
-        tile_sched_params = Mamba2SSDTileSchedulerParams(num_blocks, EH, NGROUP_RATIO)
+        tile_sched_params = Mamba2SSDTileSchedulerParams(
+            num_blocks, EH, NGROUP_RATIO, num_d_tiles
+        )
         grid = Mamba2SSDTileScheduler.get_grid_shape(
             tile_sched_params, max_active_clusters
         )
@@ -3862,10 +3892,10 @@ class SSDKernel:
     def resolve_varlen_tile_info(self, work_tile, seq_chunk_cumsum, C):
         """Resolve tile info, handling varlen seq_id → b_idx remapping.
 
-        Returns (b_idx, eh_idx, g_idx, seq_id, first_chunk, C).
+        Returns (b_idx, eh_idx, g_idx, d_tile_idx, seq_id, first_chunk, C).
         In non-varlen mode, seq_id=0, first_chunk=0, C unchanged.
         """
-        b_idx, eh_idx, g_idx = work_tile.tile_idx
+        b_idx, eh_idx, g_idx, d_tile_idx = work_tile.tile_idx
         seq_id = cutlass.Int32(0)
         first_chunk = cutlass.Int32(0)
         if cutlass.const_expr(self.has_varlen):
@@ -3873,7 +3903,7 @@ class SSDKernel:
             b_idx = cutlass.Int32(0)
             first_chunk = seq_chunk_cumsum[seq_id]
             C = seq_chunk_cumsum[seq_id + 1] - first_chunk
-        return b_idx, eh_idx, g_idx, seq_id, first_chunk, C
+        return b_idx, eh_idx, g_idx, d_tile_idx, seq_id, first_chunk, C
 
     @cute.jit
     def resolve_physical_chunk(self, first_chunk, count, chunk_indices, chunk_offsets):
@@ -4382,7 +4412,7 @@ _compiled_cache = {}
 
 def _compile_ssd_blackwell_aot(L, D, N, nheads, ngroups, batch, nchunks,
                                 stream, gpu_arch="", has_d=True, has_z=False,
-                                has_init_states=False):
+                                has_init_states=False, logical_dim=None):
     """Compile for AOT C++ export (GDN-style: row-major placeholders).
 
     has_init_states=False (default): chunk 0 starts from a zero SSM state.
@@ -4394,7 +4424,10 @@ def _compile_ssd_blackwell_aot(L, D, N, nheads, ngroups, batch, nchunks,
     an SSM state across calls (continuous batching / multi-call prefill) and
     by the SsdCuteDslBlackwellChunkedPrefill unit test.
     """
-    key = ("aot", L, D, N, has_d, has_z, has_init_states)
+    logical_D = D if logical_dim is None else logical_dim
+    assert logical_D >= D
+    assert logical_D % 8 == 0
+    key = ("aot", L, D, logical_D, N, has_d, has_z, has_init_states)
     if key in _compiled_cache:
         return _compiled_cache[key]
 
@@ -4450,7 +4483,11 @@ def _compile_ssd_blackwell_aot(L, D, N, nheads, ngroups, batch, nchunks,
 
     TRANSPOSE_THREADS = 256
     VEC = 8                # 8 fp16 = 16 bytes = uint128 = b128 PTX instr
-    D_SPAD = D + 1         # break smem bank conflicts on column writes (phase 1)
+    D_SPAD = logical_D + 1  # break smem bank conflicts on column writes (phase 1)
+    L_VECS = L // VEC
+    D_VECS = logical_D // VEC
+    TRANSPOSE_ITEMS = L * D_VECS
+    TRANSPOSE_ITERS = (TRANSPOSE_ITEMS + TRANSPOSE_THREADS - 1) // TRANSPOSE_THREADS
 
     @cute.kernel
     def _transpose_y_kernel(
@@ -4505,50 +4542,52 @@ def _compile_ssd_blackwell_aot(L, D, N, nheads, ngroups, batch, nchunks,
             cute.make_layout(1),
         )
 
+        chunk_start = cutlass.Int32(c) * L
+        valid_rows = seq_len - chunk_start
+        if valid_rows > L:
+            valid_rows = L
+
         # ===== Phase 1: gmem y_ws -> sY [L, D_SPAD] (gmem L-contig, smem strided) =====
-        # Map: 16 thr d-base x 16 thr l-vec. 256 thr x 4 dd = 1024 vec = 64 d x 16 lv [x]
-        tidx_d = tidx // 16
-        tidx_lv = tidx % 16
+        # One item is an eight-element vector along L for one D lane.
+        for item_iter in cutlass.range(TRANSPOSE_ITERS, unroll_full=True):
+            item = tidx + item_iter * TRANSPOSE_THREADS
+            if item < logical_D * L_VECS:
+                d_idx = item // L_VECS
+                l_base = (item % L_VECS) * VEC
 
-        for dd in cutlass.range(4, unroll_full=True):
-            d_idx = tidx_d * 4 + dd
-            l_base = tidx_lv * VEC
+                if l_base < valid_rows:
+                    # 1x ld.global.b128 -> scratch (1x st.shared.b128)
+                    gmem_off = block_off + d_idx * DC_str + l_base
+                    gmem_u128_src = cute.make_tensor(
+                        cute.recast_ptr(y_ws.iterator + gmem_off, dtype=Uint128),
+                        cute.make_layout(1),
+                    )
+                    scratch_u128[0] = gmem_u128_src[0]
 
-            # 1x ld.global.b128 -> scratch (1x st.shared.b128)
-            gmem_off = block_off + d_idx * DC_str + l_base
-            gmem_u128_src = cute.make_tensor(
-                cute.recast_ptr(y_ws.iterator + gmem_off, dtype=Uint128),
-                cute.make_layout(1),
-            )
-            scratch_u128[0] = gmem_u128_src[0]
-
-            # 8x st.shared.b16 strided along L: sY[l_base+v, d_idx] steps
-            # by D_SPAD each v (D is stride 1, so iterating L is the strided axis).
-            for v in cutlass.range(VEC, unroll_full=True):
-                sY[l_base + v, d_idx] = sScratch[tidx, v]
+                    # 8x st.shared.b16 strided along L: sY[l_base+v, d_idx]
+                    # steps by D_SPAD each v.
+                    for v in cutlass.range(VEC, unroll_full=True):
+                        sY[l_base + v, d_idx] = sScratch[tidx, v]
 
         cute.arch.barrier()
 
         # ===== Phase 2: sY -> gmem output (BOTH D-contig -- direct b128) =====
-        # Map: 32 thr l x 8 thr d-vec. 256 thr x 4 ll = 1024 vec = 128 l x 8 dv [x]
-        tidx_l = tidx // 8
-        tidx_dv = tidx % 8
+        # One item is an eight-element vector along D for one sequence lane.
+        if valid_rows > 0:
+            valid_items = valid_rows * D_VECS
+            for item in cutlass.range(
+                tidx, valid_items, TRANSPOSE_THREADS, unroll=1
+            ):
+                l_idx = item // D_VECS
+                d_base = (item % D_VECS) * VEC
+                s = chunk_start + l_idx
 
-        for ll in cutlass.range(4, unroll_full=True):
-            l_idx = tidx_l * 4 + ll
-            d_base = tidx_dv * VEC
-            s = cutlass.Int32(c) * L + l_idx
-
-            if s < seq_len:
-                # 1x ld.shared.b128: sY[l_idx, d_base..d_base+7] is contig (D stride 1).
                 smem_off_y = l_idx * D_SPAD + d_base
                 smem_u128_src = cute.make_tensor(
                     cute.recast_ptr(sY.iterator + smem_off_y, dtype=Uint128),
                     cute.make_layout(1),
                 )
-                # 1x st.global.b128: output[b, s, eh, d_base..d_base+7]
-                gmem_off_o = (b * out_B + s * out_S
-                              + eh * out_EH + d_base)
+                gmem_off_o = b * out_B + s * out_S + eh * out_EH + d_base
                 gmem_u128_dst = cute.make_tensor(
                     cute.recast_ptr(output.iterator + gmem_off_o, dtype=Uint128),
                     cute.make_layout(1),
@@ -4601,8 +4640,9 @@ def _compile_ssd_blackwell_aot(L, D, N, nheads, ngroups, batch, nchunks,
         # zero-fill the final partial physical chunk instead of relying on a
         # padded source allocation.
         x_real = cute.make_tensor(x.iterator, cute.make_layout(
-            (D, seq_len_val, n_eh, n_batch),
-            stride=(1, n_eh * D, D, seq_len_val * n_eh * D)))
+            (logical_D, seq_len_val, n_eh, n_batch),
+            stride=(1, n_eh * logical_D, logical_D,
+                    seq_len_val * n_eh * logical_D)))
         b_real = cute.make_tensor(B.iterator, cute.make_layout(
             (seq_len_val, N, n_g, n_batch),
             stride=(n_g * N, 1, N, seq_len_val * n_g * N)))
@@ -4623,15 +4663,16 @@ def _compile_ssd_blackwell_aot(L, D, N, nheads, ngroups, batch, nchunks,
         # y_perm aliases y_ws ([B,C,EH,D,L] row-major; L stride 1 required by
         # smem swizzle / TMA descriptor). Post-kernel transpose remaps to [B,S,EH,D].
         y_perm = cute.make_tensor(y_ws.iterator, cute.make_layout(
-            (L, D, n_c, n_eh, n_batch),
-            stride=(1, L, n_eh * D * L, D * L, n_c * n_eh * D * L)))
+            (L, logical_D, n_c, n_eh, n_batch),
+            stride=(1, L, n_eh * logical_D * L, logical_D * L,
+                    n_c * n_eh * logical_D * L)))
 
         # fstate aliases caller's state buffer ([B,EH,D,N] fp16 row-major) reshaped
         # to (N,D,EH,B): kernel reads init at start, overwrites with final state in
         # place. init_perm == fs_perm (same trick as SM80 path).
         fs_perm = cute.make_tensor(state.iterator, cute.make_layout(
-            (N, D, n_eh, num_seqs_val),
-            stride=(1, N, D * N, n_eh * D * N)))
+            (N, logical_D, n_eh, num_seqs_val),
+            stride=(1, N, logical_D * N, n_eh * logical_D * N)))
         init_perm = fs_perm
 
         d_perm = cute.make_tensor(Dvec.iterator, cute.make_layout(
@@ -4672,7 +4713,7 @@ def _compile_ssd_blackwell_aot(L, D, N, nheads, ngroups, batch, nchunks,
 
     seq_len_ph = nchunks * L
     # Primary inputs (plugin contract: fp16 x/B/C/D/state, fp32 A/dt_bias)
-    ph_x = _mark_nd(cp.zeros((batch, seq_len_ph, nheads, D), dtype=cp.float16), 3)
+    ph_x = _mark_nd(cp.zeros((batch, seq_len_ph, nheads, logical_D), dtype=cp.float16), 3)
     ph_dt = _mark_nd(cp.zeros((batch, seq_len_ph, nheads), dtype=cp.float16), 2)
     ph_A = _fdl(cp.zeros((nheads,), dtype=cp.float32), assumed_align=16)
     ph_A = ph_A.mark_compact_shape_dynamic(mode=0, stride_order=(0,))
@@ -4682,12 +4723,12 @@ def _compile_ssd_blackwell_aot(L, D, N, nheads, ngroups, batch, nchunks,
     ph_Dvec = ph_Dvec.mark_compact_shape_dynamic(mode=0, stride_order=(0,))
     ph_dtb = _fdl(cp.zeros((nheads,), dtype=cp.float16), assumed_align=16)
     ph_dtb = ph_dtb.mark_compact_shape_dynamic(mode=0, stride_order=(0,))
-    ph_out = _mark_nd(cp.zeros((batch, seq_len_ph, nheads, D), dtype=cp.float16), 3)
-    ph_state = _mark_nd(cp.zeros((batch, nheads, D, N), dtype=cp.float16), 2)
+    ph_out = _mark_nd(cp.zeros((batch, seq_len_ph, nheads, logical_D), dtype=cp.float16), 3)
+    ph_state = _mark_nd(cp.zeros((batch, nheads, logical_D, N), dtype=cp.float16), 2)
     # Workspace buffers: cumsum + dt_proc + y_ws ([B, C, EH, ...] row-major).
     ph_cumsum = _mark_nd(cp.zeros((batch, nchunks, nheads, L), dtype=cp.float32), 3)
     ph_dtproc = _mark_nd(cp.zeros((batch, nchunks, nheads, L), dtype=cp.float16), 3)
-    ph_y = _mark_nd(cp.zeros((batch, nchunks, nheads, D, L), dtype=cp.float16), 4)
+    ph_y = _mark_nd(cp.zeros((batch, nchunks, nheads, logical_D, L), dtype=cp.float16), 4)
 
     # Varlen metadata placeholders (always-varlen AOT mode)
     # Upper-bound logical chunks at batch * nchunks (one chunk per (batch, c) cell).
@@ -4868,10 +4909,11 @@ def run_test(n, nheads, dim, dstate, ngroups, seq_len,
     # Compile AOT JIT with packed-view shape (n_batch=1, total_chunks).
     # Pass `batch=1, nchunks=total_chunks` to placeholder shapes -- at runtime we
     # supply tensors of the same packed shape.
+    tile_dim = 64 if dim == 80 else dim
     compiled = _compile_ssd_blackwell_aot(
-        CHUNK_SIZE, dim, dstate, nheads, ngroups,
+        CHUNK_SIZE, tile_dim, dstate, nheads, ngroups,
         batch=1, nchunks=total_chunks, stream=stream,
-        gpu_arch=gpu_arch, has_d=True, has_z=False)
+        gpu_arch=gpu_arch, has_d=True, has_z=False, logical_dim=dim)
     print(f"  Compilation: {time.time() - t0:.2f}s")
 
     # Allocate row-major cupy arrays in C++ packed-view layout.
@@ -5080,10 +5122,11 @@ def export_ssd_prefill_blackwell(output_dir, file_name, function_prefix, gpu_arc
           f"has_init_states={has_init_states} gpu_arch={gpu_arch or 'auto'}")
     t0 = time.time()
     nchunks = AOT_SEQLEN // CHUNK_SIZE
+    tile_dim = 64 if aot_dim == 80 else aot_dim
     compiled = _compile_ssd_blackwell_aot(
-        CHUNK_SIZE, aot_dim, aot_dstate, AOT_NHEADS, AOT_NGROUPS,
+        CHUNK_SIZE, tile_dim, aot_dstate, AOT_NHEADS, AOT_NGROUPS,
         AOT_N, nchunks, stream, gpu_arch=gpu_arch,
-        has_init_states=has_init_states)
+        has_init_states=has_init_states, logical_dim=aot_dim)
     print(f"[ssd_prefill_blackwell] Compilation: {time.time() - t0:.2f}s")
 
     os.makedirs(output_dir, exist_ok=True)

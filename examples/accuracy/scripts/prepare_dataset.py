@@ -45,6 +45,7 @@ from example_datasets.gsm8k import convert_gsm8k_dataset
 from example_datasets.humaneval import convert_humaneval_dataset
 from example_datasets.librispeech import convert_librispeech_dataset
 from example_datasets.math500 import convert_math500_dataset
+from example_datasets.mmbench import convert_mmbench_dataset
 from example_datasets.mmlu import convert_mmlu_dataset
 from example_datasets.mmlu_pro import convert_mmlu_pro_dataset
 from example_datasets.mmmu import (convert_mmmu_dataset,
@@ -68,6 +69,7 @@ DEFAULT_DATASETS = {
     "MMMU": "MMMU/MMMU",
     "MMMU_VLMEvalkit": "MMMU/MMMU",
     "MMMU_Pro": "MMMU/MMMU_Pro",
+    "MMBench": "lmms-lab/MMBench_EN",
     "MMStar": "Lin-Chen/MMStar",
     "MTBench": "philschmid/mt-bench",
     "MiniMaxMultilingual": "MiniMaxAI/TTS-Multilingual-Test-Set",
@@ -96,6 +98,7 @@ DEFAULT_MAX_GENERATE_LENGTHS = {
     "MMMU": 20,
     "MMMU_VLMEvalkit": 8192,
     "MMMU_Pro": 1,
+    "MMBench": 20,
     "MMStar": 512,
     "MTBench": 512,
     "SeedTTSEval": 2048,
@@ -172,10 +175,10 @@ def main():
                         required=True,
                         choices=[
                             "AIME", "COCO", "GSM8K", "HumanEval",
-                            "LibriSpeech", "MATH500", "MMLU", "MMLU_Pro",
-                            "MMMU", "MMMU_VLMEvalkit", "MMMU_Pro", "MMStar",
-                            "MTBench", "SeedTTSEval", "MiniMaxMultilingual",
-                            "OmniBench"
+                            "LibriSpeech", "MATH500", "MMBench", "MMLU",
+                            "MMLU_Pro", "MMMU", "MMMU_VLMEvalkit", "MMMU_Pro",
+                            "MMStar", "MTBench", "SeedTTSEval",
+                            "MiniMaxMultilingual", "OmniBench"
                         ],
                         help="Dataset type to convert")
 
@@ -330,6 +333,11 @@ def main():
 
         elif args.dataset == "MATH500":
             convert_math500_dataset(config=config,
+                                    dataset_name_or_dir=dataset_path,
+                                    output_dir=args.output_dir)
+
+        elif args.dataset == "MMBench":
+            convert_mmbench_dataset(config=config,
                                     dataset_name_or_dir=dataset_path,
                                     output_dir=args.output_dir)
 

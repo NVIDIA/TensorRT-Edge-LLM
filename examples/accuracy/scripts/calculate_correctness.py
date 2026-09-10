@@ -137,12 +137,22 @@ def parse_multi_choice_response(text):
     if len(text) == 1 and text in MULTI_CHOICE_LETTERS:
         return text
 
+    # A qualifier may sit between the answer noun and the copula: "the answer
+    # *to the final question* is: C". Spelled out rather than a wildcard span,
+    # which would also match "... (or there is a ...)" and score that "a".
+    _QUALIFIER = (r"(?:\s+(?:to|for|of)\s+(?:the\s+)?"
+                  r"(?:final|last|above|following)\s+question)?")
+
+    # ``is`` and ``:`` are independently optional: ``(?:is|:)?`` makes them
+    # mutually exclusive and drops "The correct answer is: B".
     explicit_answer_patterns = [
-        r"\b(?:final\s+answer|answer|correct\s+(?:answer|option)|correct\s+choice|letter|matches?\s+option)\s*(?:is|:)?\s*\(?([A-J])\b",
-        r"\boption\s*(?:is|:)\s*\(?([A-J])\b",
+        r"\b(?:final\s+answer|answer|correct\s+(?:answer|option)|correct\s+choice|letter|matches?\s+option)"
+        + _QUALIFIER + r"\s*(?:is)?\s*:?\s*\(?([A-J])\b",
+        r"\boption\s*(?:is\s*:?|:)\s*\(?([A-J])\b",
         r"\boption\s+\(?([A-J])\)?(?:[\.\)]\s*|$)",
-        r"\b(?:the\s+)?(?:answer|letter)\s+is\s+\(?([A-J])\b",
-        r"\bresult\s*(?:is|:)?\s*\(?([A-J])\b",
+        r"\b(?:the\s+)?(?:answer|letter)" + _QUALIFIER +
+        r"\s+is\s*:?\s*\(?([A-J])\b",
+        r"\bresult\s*(?:is)?\s*:?\s*\(?([A-J])\b",
     ]
     for pattern in explicit_answer_patterns:
         matches = list(re.finditer(pattern, text,

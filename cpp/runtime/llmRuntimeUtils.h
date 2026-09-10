@@ -27,9 +27,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
-#ifndef __CUDACC__
 #include <nlohmann/json.hpp>
-#endif // !__CUDACC__
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -127,11 +125,12 @@ struct LLMGenerationRequest
     //! \endcond
     std::vector<Request> requests; //!< Vector of requests for a batch
     mutable std::vector<FormattedRequest>
-        formattedRequests;                 //!< Formatted requests (mutable to allow runtime modification)
-    float temperature;                     //!< Temperature parameter for sampling
-    float topP;                            //!< Top-p (nucleus) sampling parameter
-    int64_t topK;                          //!< Top-k sampling parameter
-    int64_t maxGenerateLength;             //!< Max length of the generated tokens
+        formattedRequests; //!< Formatted requests (mutable to allow runtime modification)
+    std::vector<std::vector<int32_t>> preTokenizedInputIds; //!< Optional pre-tokenized text inputs, one per request.
+    float temperature;                                      //!< Temperature parameter for sampling
+    float topP;                                             //!< Top-p (nucleus) sampling parameter
+    int64_t topK;                                           //!< Top-k sampling parameter
+    int64_t maxGenerateLength;                              //!< Max length of the generated tokens
     int32_t diffusionMaxDenoisingSteps{0}; //!< Optional DiffusionGemma denoise-step override (0 = runtime default)
     std::string loraWeightsName{""};       //!< Name of the LoRA weights. Default to empty string for no LoRA weights
 
@@ -174,6 +173,13 @@ struct LLMGenerationRequest
 
     //! Ready endpoints to retain when the context cache is enabled.
     ContextCacheCommitPolicy contextCacheCommitPolicy{ContextCacheCommitPolicy::kIncludingGeneratedTokens};
+
+    //! Hybrid+MTP boundary-replay tail length carried into the context cache. Not consumed yet.
+    int32_t contextCacheReplayTailLength{0};
+
+    //! Periodic recurrent-state capture interval (0 disables). Hybrid+MTP endpoint reuse requires this to be 0 so the
+    //! recurrent snapshot lands only at the stable predecessor boundary (mirrors reference request validation).
+    int32_t recurrentCaptureInterval{0};
 };
 
 /*! \brief LLM Generation Response structure
@@ -243,7 +249,6 @@ struct RopeConfig
     std::optional<YarnParams> yarn{};         //!< YaRN specific parameters
 };
 
-#ifndef __CUDACC__
 /*! \brief Collect rope configuration from the model config
  *
  *  Parses the common RoPE fields as well as LongRoPE-specific parameters when the
@@ -255,7 +260,6 @@ struct RopeConfig
  *  \throws nlohmann::json::type_error if JSON value types don't match expected types
  */
 RopeConfig collectRopeConfig(nlohmann::json const& config);
-#endif // !__CUDACC__
 
 /*! \brief Initialize the rope cos/sin cache tensor for persistent type of RoPE (default, longrope)
  *

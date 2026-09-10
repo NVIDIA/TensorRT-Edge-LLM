@@ -1,0 +1,25 @@
+{
+    "batch_size": 2,
+    "temperature": 1.0,
+    "top_p": 1.0,
+    "top_k": 1,
+    "num_logprobs": 1,
+    "max_generate_length": 64,
+    "context_cache_commit_policy": "prefill_state_only",
+    "requests": [
+        {
+            "messages": [{"role": "user", "content": "Reply with exactly: OK /no_think"}],
+            "stop": "OK"
+        },
+        {
+            "messages": [{"role": "user", "content": "Managed paged KV cache context: logical token positions resolve through the active sequence page-table row, retained physical pages keep stable ownership, K and V mappings remain paired, stream ordering protects every dependent write, batch compaction moves slot metadata without copying retained page contents, publication records one coherent logical endpoint, rollback releases index entries and resource references together, and unmapped pages never poison the CUDA context. Repeat this context exactly: logical token positions resolve through the active sequence page-table row, retained physical pages keep stable ownership, K and V mappings remain paired, stream ordering protects every dependent write, batch compaction moves slot metadata without copying retained page contents, publication records one coherent logical endpoint, rollback releases index entries and resource references together, and unmapped pages never poison the CUDA context. Repeat once more: logical token positions resolve through the active sequence page-table row, retained physical pages keep stable ownership, K and V mappings remain paired, stream ordering protects every dependent write, batch compaction moves slot metadata without copying retained page contents, publication records one coherent logical endpoint, rollback releases index entries and resource references together, and unmapped pages never poison the CUDA context. Repeat again: logical token positions resolve through the active sequence page-table row, retained physical pages keep stable ownership, K and V mappings remain paired, stream ordering protects every dependent write, batch compaction moves slot metadata without copying retained page contents, publication records one coherent logical endpoint, rollback releases index entries and resource references together, and unmapped pages never poison the CUDA context. Explain four invariants of managed paged KV cache batch compaction. /no_think"}]
+        },
+        {
+            "messages": [{"role": "user", "content": "Managed paged KV cache context: logical token positions resolve through the active sequence page-table row, retained physical pages keep stable ownership, K and V mappings remain paired, stream ordering protects every dependent write, batch compaction moves slot metadata without copying retained page contents, publication records one coherent logical endpoint, rollback releases index entries and resource references together, and unmapped pages never poison the CUDA context. Repeat this context exactly: logical token positions resolve through the active sequence page-table row, retained physical pages keep stable ownership, K and V mappings remain paired, stream ordering protects every dependent write, batch compaction moves slot metadata without copying retained page contents, publication records one coherent logical endpoint, rollback releases index entries and resource references together, and unmapped pages never poison the CUDA context. Repeat once more: logical token positions resolve through the active sequence page-table row, retained physical pages keep stable ownership, K and V mappings remain paired, stream ordering protects every dependent write, batch compaction moves slot metadata without copying retained page contents, publication records one coherent logical endpoint, rollback releases index entries and resource references together, and unmapped pages never poison the CUDA context. Repeat again: logical token positions resolve through the active sequence page-table row, retained physical pages keep stable ownership, K and V mappings remain paired, stream ordering protects every dependent write, batch compaction moves slot metadata without copying retained page contents, publication records one coherent logical endpoint, rollback releases index entries and resource references together, and unmapped pages never poison the CUDA context. Explain four invariants of managed paged KV cache batch compaction. /no_think"}],
+            "context_cache_lookup_policy": "bypass"
+        },
+        {
+            "messages": [{"role": "user", "content": "Reply with exactly: done /no_think"}]
+        }
+    ]
+}

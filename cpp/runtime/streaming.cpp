@@ -371,6 +371,7 @@ void emitChunks(DecodingInferenceContext& context, tokenizer::Tokenizer const& t
         }
 
         StreamChunk chunk;
+        chunk.promptTokenCount = static_cast<int32_t>(context.rawBatchedInputIds[i].size());
         // Delta tokens span [lastEmittedTokenCount, sentTokenCount) — accumulates
         // across prior iterations where pendingEmitText was held back.
         size_t const snapLastEmitted = s.lastEmittedTokenCount;
@@ -474,6 +475,10 @@ StreamChannelFinalizer::~StreamChannelFinalizer() noexcept
         try
         {
             StreamChunk chunk;
+            if (i < mCtx.rawBatchedInputIds.size())
+            {
+                chunk.promptTokenCount = static_cast<int32_t>(mCtx.rawBatchedInputIds[i].size());
+            }
 
             // Any tokens generated but not yet pushed (held by streamInterval
             // or appended just before the aborting exit path).

@@ -236,7 +236,7 @@ inline void fillDFlashDraftInputs(rt::PipelineIO& io, rt::HybridCacheManager& dr
     kernel::launchDFlashPrepareProposalInputs(draftCacheManager.getKVCacheLengths().dataPointer<int32_t>(),
         scratch.dflashDeltaLengths.dataPointer<int32_t>(), params.blockSize,
         io.packedAttentionMask.dataPointer<int32_t>(), io.specDecodePositionIds.dataPointer<int32_t>(),
-        io.contextLengths.dataPointer<int32_t>(), params.batchSize, stream);
+        io.contextLengths.dataPointer<int32_t>(), false, params.batchSize, stream);
     CUDA_CHECK(cudaStreamSynchronize(stream));
 }
 

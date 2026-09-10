@@ -74,6 +74,18 @@ PERF_HIGHER_IS_BETTER = {
     'spec_decode_overall_tokens_per_second (tokens/s)',
 }
 
+PEAK_GPU_MEMORY_COLUMN = 'memory_usage_peak_gpu_memory (MB)'
+
+# Fallback metric, selected only when per-process accounting is unavailable.
+FALLBACK_GPU_MEMORY_METRICS = frozenset({'cuda_free_memory_delta'})
+
+# ...and on these compute capabilities it measures system memory pressure rather
+# than this process. Elsewhere the same fallback is a usable measurement, so this
+# is a denylist: an unlisted board keeps its regression check.
+UNTRUSTED_GPU_MEMORY_SM = frozenset({87})  # Jetson Orin family
+
+_GPU_MEMORY_METRIC_PATTERN = r'GPU Memory Metric:\s+(\S+)'
+
 # Maps stdout profile output patterns to CSV column names
 _STDOUT_PERF_PATTERNS = [
     (r'=== LLM Prefill ===.*?Average Time per Run:\s+([\d.]+)\s+ms',
@@ -90,11 +102,11 @@ _STDOUT_PERF_PATTERNS = [
      ),
     (r'Peak GPU Memory:\s+([\d.]+)\s+MB', 'memory_usage_peak_gpu_memory (MB)'),
     (r'Peak CPU Memory:\s+([\d.]+)\s+MB', 'memory_usage_peak_cpu_memory (MB)'),
-    (r'=== (?:Eagle|MTP|DFlash|DSpark|SpecDecode) Generation ===.*?Average Acceptance Rate:\s+([\d.]+)',
+    (r'=== (?:Eagle|MTP|DFlash|JetSpec|DSpark|SpecDecode) Generation ===.*?Average Acceptance Rate:\s+([\d.]+)',
      'spec_decode_avg_acceptance_rate'),
-    (r'=== (?:Eagle|MTP|DFlash|DSpark|SpecDecode) Generation ===.*?Average Tokens per Run:\s+([\d.]+)',
+    (r'=== (?:Eagle|MTP|DFlash|JetSpec|DSpark|SpecDecode) Generation ===.*?Average Tokens per Run:\s+([\d.]+)',
      'spec_decode_avg_tokens_per_run'),
-    (r'=== (?:Eagle|MTP|DFlash|DSpark|SpecDecode) Generation ===.*?Overall Tokens/Second \(excluding base prefill\):\s+([\d.]+)',
+    (r'=== (?:Eagle|MTP|DFlash|JetSpec|DSpark|SpecDecode) Generation ===.*?Overall Tokens/Second \(excluding base prefill\):\s+([\d.]+)',
      'spec_decode_overall_tokens_per_second (tokens/s)'),
     (r'Draft Model Prefill - Total Runs:.*?Average:\s+([\d.]+)\s+ms',
      'spec_decode_draft_model_prefill_avg_time (ms)'),
@@ -107,13 +119,38 @@ _STDOUT_PERF_PATTERNS = [
 ]
 
 
-def parse_perf_from_output(output: str) -> Dict[str, float]:
+def gpu_memory_metric_from_output(output: str) -> Optional[str]:
+    """Which GPU-memory backend the runtime selected for this run, if it said."""
+    match = re.search(_GPU_MEMORY_METRIC_PATTERN, output)
+    return match.group(1) if match else None
+
+
+def peak_gpu_memory_is_comparable(output: str,
+                                  compute_capability: Optional[int] = None
+                                  ) -> bool:
+    """False when the run's peak GPU memory does not measure this process.
+
+    Needs both the metric and the board: the fallback metric is meaningless on
+    Orin but validated on DRIVE Thor. An unknown compute capability keeps the
+    check rather than dropping it, so coverage is never lost silently.
+    """
+    if gpu_memory_metric_from_output(
+            output) not in FALLBACK_GPU_MEMORY_METRICS:
+        return True
+    return compute_capability not in UNTRUSTED_GPU_MEMORY_SM
+
+
+def parse_perf_from_output(
+        output: str,
+        compute_capability: Optional[int] = None) -> Dict[str, float]:
     """Extract perf metrics from llm_inference/llm_build stdout (--dumpProfile output)."""
     metrics = {}
     for pattern, col_name in _STDOUT_PERF_PATTERNS:
         match = re.search(pattern, output, re.DOTALL)
         if match:
             metrics[col_name] = float(match.group(1))
+    if not peak_gpu_memory_is_comparable(output, compute_capability):
+        metrics.pop(PEAK_GPU_MEMORY_COLUMN, None)
     return metrics
 
 

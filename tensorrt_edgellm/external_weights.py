@@ -109,11 +109,11 @@ def _is_dense_ffn_int4_weight_name(
         name: str, layer_types: "list[str] | tuple[str, ...]") -> bool:
     """Return True when ``name`` belongs to a dense FFN int4 plugin input.
 
-    The attention Q/K/V/O projections also use Int4GroupwiseGemmPlugin; keep
-    them embedded in ONNX for now.  Dense decoder FFNs use ``*.mlp.*`` names in
-    the default loader path.  Nemotron-H uses ``backbone.layers.N.mixer`` for
-    both attention and MLP-only layers, so check ``layer_types`` before marking
-    those weights external.
+    The attention Q/K/V/O projections also use an INT4 groupwise GEMM plugin;
+    keep them embedded in ONNX for now.  Dense decoder FFNs use ``*.mlp.*``
+    names in the default loader path.  Nemotron-H uses
+    ``backbone.layers.N.mixer`` for both attention and MLP-only layers, so check
+    ``layer_types`` before marking those weights external.
     """
     normalized = name.replace("/", ".").lower()
     ffn_projections = (".gate_proj.", ".up_proj.", ".down_proj.")
@@ -132,14 +132,16 @@ def _is_dense_ffn_int4_weight_name(
 
 
 def _find_int4_ffn_weight_initializers(onnx_model, model) -> "list[str]":
-    """Return dense FFN Int4GroupwiseGemmPlugin qweight/scale initializers."""
+    """Return dense FFN INT4 groupwise GEMM qweight/scale initializers."""
     initializers = {init.name for init in onnx_model.graph.initializer}
     layer_types = tuple(getattr(model.config, "layer_types", ()))
 
     external_names: list[str] = []
     external_name_set: set[str] = set()
     for node in onnx_model.graph.node:
-        if node.domain != "trt_edgellm" or node.op_type != "Int4GroupwiseGemmPlugin":
+        if (node.domain != "trt_edgellm"
+                or node.op_type not in ("Int4GroupwiseGemmPlugin",
+                                        "Int4GroupwiseGemmPluginV2")):
             continue
         if len(node.input) < 3:
             continue
@@ -563,9 +565,9 @@ def externalize_model_weights(
             if not names:
                 logger.warning(
                     "External int4_ffn weights requested, but no dense FFN "
-                    "Int4GroupwiseGemmPlugin initializers were found")
+                    "INT4 groupwise GEMM initializers were found")
                 continue
-            add_external_weight_file("FFN Int4GroupwiseGemmPlugin",
+            add_external_weight_file("FFN INT4 groupwise GEMM",
                                      "external_int4_ffn_weights.safetensors",
                                      names, "int4_ffn_weights")
             continue

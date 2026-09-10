@@ -24,7 +24,7 @@ namespace trt_edgellm
 {
 
 //! \cond INTERNAL
-//! Global profiling control flag accessors (defined in timer.cpp)
+//! Thread-local profiling control flag accessors (defined in timer.cpp)
 //! When false, no profiling data (metrics or timing) will be recorded
 bool getProfilingEnabled() noexcept;
 void setProfilingEnabled(bool enabled) noexcept;
@@ -101,11 +101,13 @@ class LLMPrefillMetrics : public BaseMetrics
 public:
     int64_t reusedTokens{0};   //!< Number of reused tokens from cache
     int64_t computedTokens{0}; //!< Number of newly computed tokens
+    int64_t prunedTokens{0};   //!< Number of prompt tokens removed by visual-token pruning
 
     //! @brief Record a prefill run
     //! @param reused Number of reused tokens
     //! @param computed Number of computed tokens
-    void recordRun(int64_t reused, int64_t computed) noexcept
+    //! @param pruned Number of tokens removed by visual-token pruning (neither reused nor computed)
+    void recordRun(int64_t reused, int64_t computed, int64_t pruned = 0) noexcept
     {
         if (!getProfilingEnabled())
         {
@@ -114,6 +116,7 @@ public:
         totalRuns++;
         reusedTokens += reused;
         computedTokens += computed;
+        prunedTokens += pruned;
     }
 };
 

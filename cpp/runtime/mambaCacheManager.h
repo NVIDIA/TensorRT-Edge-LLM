@@ -212,6 +212,7 @@ private:
     std::vector<rt::Tensor> mReplayBStates;
 
     rt::Tensor mDeviceMtpLayerInfos;
+    rt::Tensor mDeviceMambaReplayLayerInfos;
 };
 
 } // namespace rt

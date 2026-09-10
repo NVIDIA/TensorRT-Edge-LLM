@@ -2,8 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # L0 Export - Qwen3.5-0.8B int4_awq ONNX for the TRT-RTX A30 pipeline.
 # The gemmv1 modifier exports the legacy AWQ Int4GroupwiseGemmPlugin (V1); the
-# TRT-RTX ONNX parser does not import the default cuteDSL V2 op. Its consumer
-# job l0_a30_trtrtx is currently removed, so this export has no downstream
-# consumer until that job is restored.
+# TRT-RTX ONNX parser does not import the default cuteDSL V2 op. Consumed by
+# l0_a30_trtrtx.
 tests:
   - tests/defs/test_checkpoint_export.py::test_checkpoint_export[Qwen3.5-0.8B-int4_awq-gemmv1]
