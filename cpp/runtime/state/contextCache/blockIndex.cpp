@@ -110,17 +110,35 @@ size_t BaseBlockIndex::size() const noexcept
     return mForward.size();
 }
 
-void DraftPathIndex::insert(CacheRecord const& record)
+namespace
 {
-    ELLM_CHECK(record.id != 0, "Cannot index draft state without a context cache record ID");
-    ELLM_CHECK(!record.draftPagePath.empty(), "Cannot index a context cache record without paired draft state");
-    ELLM_CHECK(record.draftPagePath.size() == record.logicalBlockHashes.size(),
-        "Context cache draft path must cover its full logical path");
 
-    size_t const pathCount = record.draftPagePath.size();
+SpecPagedStateRecord const* getPagedState(CacheRecord const& record) noexcept
+{
+    if (!record.specState.has_value())
+    {
+        return nullptr;
+    }
+    return &*record.specState;
+}
+
+} // namespace
+
+void SpecPagedStateIndex::insert(CacheRecord const& record)
+{
+    SpecPagedStateRecord const* const paged = getPagedState(record);
+    if (paged == nullptr)
+    {
+        return;
+    }
+    ELLM_CHECK(record.id != 0, "Cannot index spec state without a context cache record ID");
+    ELLM_CHECK(paged->pagePath.size() == record.logicalBlockHashes.size(),
+        "Context cache spec path must cover its full logical path");
+
+    size_t const pathCount = paged->pagePath.size();
     mForward.reserve(mForward.size() + pathCount);
     std::vector<BlockHash> createdKeys;
-    std::vector<std::pair<BlockHash, DraftPathMatch>> insertedMatches;
+    std::vector<std::pair<BlockHash, SpecPagedStateMatch>> insertedMatches;
     createdKeys.reserve(pathCount);
     insertedMatches.reserve(pathCount);
     try
@@ -128,10 +146,10 @@ void DraftPathIndex::insert(CacheRecord const& record)
         for (size_t index = 0; index < pathCount; ++index)
         {
             BlockHash const terminalHash = record.logicalBlockHashes[index];
-            DraftPathMatch const match{record.id, static_cast<int32_t>(index + 1)};
+            SpecPagedStateMatch const match{record.id, static_cast<int32_t>(index + 1)};
             auto const [entry, inserted] = mForward.try_emplace(terminalHash);
             ELLM_CHECK(std::find(entry->second.begin(), entry->second.end(), match) == entry->second.end(),
-                "Context cache draft path record is already indexed");
+                "Context cache spec path record is already indexed");
             if (inserted)
             {
                 createdKeys.push_back(terminalHash);
@@ -169,18 +187,18 @@ void DraftPathIndex::insert(CacheRecord const& record)
     }
 }
 
-std::optional<DraftPathMatch> DraftPathIndex::lookupLongest(
+std::optional<SpecPagedStateMatch> SpecPagedStateIndex::lookupLongest(
     std::vector<BlockHash> const& hashes, int32_t maxBlockCount) const
 {
     ELLM_CHECK(maxBlockCount >= 0 && static_cast<size_t>(maxBlockCount) <= hashes.size(),
-        "Context cache draft lookup block count exceeds its hash path");
+        "Context cache spec lookup block count exceeds its hash path");
     for (int32_t blockCount = maxBlockCount; blockCount > 0; --blockCount)
     {
         auto const entry = mForward.find(hashes[static_cast<size_t>(blockCount - 1)]);
         if (entry != mForward.end() && !entry->second.empty())
         {
             auto const match = std::find_if(entry->second.rbegin(), entry->second.rend(),
-                [blockCount](DraftPathMatch const& candidate) { return candidate.pathBlockCount == blockCount; });
+                [blockCount](SpecPagedStateMatch const& candidate) { return candidate.pathBlockCount == blockCount; });
             if (match != entry->second.rend())
             {
                 return *match;
@@ -190,33 +208,44 @@ std::optional<DraftPathMatch> DraftPathIndex::lookupLongest(
     return std::nullopt;
 }
 
-bool DraftPathIndex::contains(BlockHash const& terminalHash, DraftPathMatch const& match) const
+bool SpecPagedStateIndex::contains(BlockHash const& terminalHash, SpecPagedStateMatch const& match) const
 {
     auto const entry = mForward.find(terminalHash);
     return entry != mForward.end()
         && std::find(entry->second.begin(), entry->second.end(), match) != entry->second.end();
 }
 
-void DraftPathIndex::erase(CacheRecord const& record)
+void SpecPagedStateIndex::erase(CacheRecord const& record)
 {
-    if (record.draftPagePath.empty())
+    SpecPagedStateRecord const* const paged = getPagedState(record);
+    if (paged == nullptr)
     {
         return;
     }
-    for (int32_t blockCount = 1; blockCount <= static_cast<int32_t>(record.draftPagePath.size()); ++blockCount)
+    for (int32_t blockCount = 1; blockCount <= static_cast<int32_t>(paged->pagePath.size()); ++blockCount)
     {
         BlockHash const terminalHash = record.logicalBlockHashes[static_cast<size_t>(blockCount - 1)];
         auto entry = mForward.find(terminalHash);
-        ELLM_CHECK(entry != mForward.end(), "Context cache draft path index is missing a record boundary");
-        DraftPathMatch const match{record.id, blockCount};
+        ELLM_CHECK(entry != mForward.end(), "Context cache spec path index is missing a record boundary");
+        SpecPagedStateMatch const match{record.id, blockCount};
         auto const candidate = std::find(entry->second.begin(), entry->second.end(), match);
-        ELLM_CHECK(candidate != entry->second.end(), "Context cache draft path index is missing a record candidate");
+        ELLM_CHECK(candidate != entry->second.end(), "Context cache spec path index is missing a record candidate");
         entry->second.erase(candidate);
         if (entry->second.empty())
         {
             mForward.erase(entry);
         }
     }
+}
+
+SpecPagedStateIndex const& SpecStateIndex::paged() const noexcept
+{
+    return mPaged;
+}
+
+SpecPagedStateIndex& SpecStateIndex::paged() noexcept
+{
+    return mPaged;
 }
 
 } // namespace rt

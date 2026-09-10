@@ -1,7 +1,7 @@
 # Speculative Decoding
 
-TensorRT Edge-LLM supports MTP, EAGLE3, DFlash, and DSpark. Each method uses a
-different draft architecture and checkpoint contract. Use only a base/draft
+TensorRT Edge-LLM supports MTP, EAGLE3, DFlash, DSpark, and JetSpec. Each method
+uses a different draft architecture and checkpoint contract. Use only a base/draft
 pair listed under [Speculative Draft Checkpoints](../getting_started/supported-models.md#speculative-draft-checkpoints).
 
 The examples below follow the supported ONNX workflow:
@@ -31,6 +31,7 @@ cd "$REPO_DIR"
 | EAGLE3 | `Qwen/Qwen3-1.7B` | `AngelSlim/Qwen3-1.7B_eagle3` | 6 draft steps, top-10 tree, 60 verification positions |
 | DFlash | `Qwen/Qwen3.5-4B` | `z-lab/Qwen3.5-4B-DFlash` | One block-16 draft pass |
 | DSpark | `Qwen/Qwen3-4B` | `deepseek-ai/dspark_qwen3_4b_block7` | Seven proposed tokens, eight verification positions |
+| JetSpec | `Qwen/Qwen3-8B` | `JetSpec/jetspec-qwen3-8b` | Block-16 draft, top-7 branching tree verification |
 
 ## MTP
 
@@ -328,6 +329,124 @@ engine with a larger verification profile, such as `--maxVerifyTreeSize 16`,
 use a greedy input (`"temperature": 0.0`, `"top_k": 1`), and run with
 `--specDraftTopK 4 --specVerifySize 16`. Tree mode accepts
 `--dsparkScheduler off` or `threshold`; `sps` applies only to chain mode.
+
+## JetSpec
+
+JetSpec is a paired-draft speculative decoding method that uses a dedicated
+external draft checkpoint and branching tree verification. TensorRT Edge-LLM
+validates JetSpec with [Qwen/Qwen3-8B](https://huggingface.co/Qwen/Qwen3-8B)
+and the [JetSpec/jetspec-qwen3-8b](https://huggingface.co/JetSpec/jetspec-qwen3-8b)
+draft checkpoint.
+
+JetSpec shares the cached-draft runtime contract with DFlash, but the draft uses
+causal proposal attention. Use `--jetspec-tree-base` for the base export,
+`--jetspec-draft` for the draft export, and run with `--specDraftTopK > 1`.
+`--jetspecBlockSize` is an alias of `--dflashBlockSize`; both flags configure
+the proposal block size read from the same runtime field.
+
+Set `"enable_thinking": false` in the input JSON for Qwen3-8B JetSpec
+validation. This matches the Qwen3 chat-template behavior used by the validated
+greedy accuracy and throughput runs.
+
+### Example
+
+**Example model:** [Qwen/Qwen3-8B](https://huggingface.co/Qwen/Qwen3-8B) with
+[JetSpec/jetspec-qwen3-8b](https://huggingface.co/JetSpec/jetspec-qwen3-8b)
+
+#### Step 1: Export (x86 Host)
+
+```bash
+export WORKSPACE_DIR=$HOME/tensorrt-edgellm-workspace
+export MODEL_NAME=Qwen3-8B
+mkdir -p $WORKSPACE_DIR
+cd $WORKSPACE_DIR
+
+# Download JetSpec draft model to workspace
+git clone https://huggingface.co/JetSpec/jetspec-qwen3-8b
+cd jetspec-qwen3-8b && git lfs pull && cd ..
+
+# Export JetSpec tree base model
+tensorrt-edgellm-export \
+  Qwen/Qwen3-8B \
+  $MODEL_NAME/onnx/tree_base_export \
+  --jetspec-tree-base \
+  --jetspec-draft-dir jetspec-qwen3-8b
+
+# Export JetSpec draft model
+tensorrt-edgellm-export \
+  Qwen/Qwen3-8B \
+  $MODEL_NAME/onnx/draft_export \
+  --jetspec-draft \
+  --jetspec-draft-dir jetspec-qwen3-8b
+
+# Put outputs in the layout used by the build steps below
+mkdir -p $MODEL_NAME/onnx/tree_base $MODEL_NAME/onnx/draft
+cp -a $MODEL_NAME/onnx/tree_base_export/llm/. $MODEL_NAME/onnx/tree_base/
+cp -a $MODEL_NAME/onnx/draft_export/jetspec_draft/. $MODEL_NAME/onnx/draft/
+```
+
+This produces:
+- `$WORKSPACE_DIR/$MODEL_NAME/onnx/tree_base/` - JetSpec base model with target hidden-state outputs and tree-attention inputs
+- `$WORKSPACE_DIR/$MODEL_NAME/onnx/draft/` - JetSpec draft model
+
+#### Step 2: Transfer to Device
+
+```bash
+scp -r $WORKSPACE_DIR/$MODEL_NAME/onnx \
+  <device_user>@<device_ip>:~/tensorrt-edgellm-workspace/$MODEL_NAME/
+```
+
+#### Step 3: Build Engines (Thor Device)
+
+```bash
+export WORKSPACE_DIR=$HOME/tensorrt-edgellm-workspace
+export MODEL_NAME=Qwen3-8B
+cd /path/to/TensorRT-Edge-LLM
+
+# Build JetSpec base engine
+./build/examples/llm/llm_build \
+  --onnxDir $WORKSPACE_DIR/$MODEL_NAME/onnx/tree_base \
+  --engineDir $WORKSPACE_DIR/$MODEL_NAME/engines \
+  --maxBatchSize 1 \
+  --maxInputLen 2048 \
+  --maxKVCacheCapacity 4096 \
+  --maxVerifyTreeSize 128 \
+  --specBase
+
+# Build JetSpec draft engine
+./build/examples/llm/llm_build \
+  --onnxDir $WORKSPACE_DIR/$MODEL_NAME/onnx/draft \
+  --engineDir $WORKSPACE_DIR/$MODEL_NAME/engines \
+  --maxBatchSize 1 \
+  --maxInputLen 2048 \
+  --maxKVCacheCapacity 4096 \
+  --maxDraftTreeSize 128 \
+  --specDraft
+```
+
+#### Step 4: Run Inference (Thor Device)
+
+```bash
+cd /path/to/TensorRT-Edge-LLM
+
+./build/examples/llm/llm_inference \
+  --engineDir $WORKSPACE_DIR/$MODEL_NAME/engines \
+  --inputFile $WORKSPACE_DIR/input.json \
+  --outputFile $WORKSPACE_DIR/output_jetspec.json \
+  --specDecode \
+  --specDraftTopK 7 \
+  --specDraftStep 1 \
+  --specVerifySize 128 \
+  --jetspecBlockSize 16
+```
+
+**Key differences from EAGLE3 and DFlash:**
+- `--jetspec-tree-base` exports the base model for JetSpec tree verification
+- `--jetspec-draft` exports the dedicated JetSpec draft model into `jetspec_draft/`
+- `--specDraftTopK 7` matches the validated JetSpec Qwen3-8B tree configuration
+- `--specVerifySize 128` is the validated tree verification budget including the root token
+- `--jetspecBlockSize 16` controls the draft proposal horizon; `--dflashBlockSize 16` is equivalent
+- Qwen3-8B JetSpec validation uses thinking mode disabled
 
 ## ONNX-less Alternative
 

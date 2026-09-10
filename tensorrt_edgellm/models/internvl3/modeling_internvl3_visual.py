@@ -40,6 +40,7 @@ import torch.nn.functional as F
 
 from ... import config as config_module
 from ..linear import make_linear
+from ..ops import init_fp8_mha, quantize_qkv_for_fp8_mha, vit_attention_plugin
 
 if TYPE_CHECKING:
     from ...config import ModelConfig
@@ -146,19 +147,33 @@ class InternVL3VisionAttention(nn.Module):
             hidden_size,
             bias=True,
             module_name=f"{name_prefix}.proj" if name_prefix else "")
+        # Fused-qkv attention: init_fp8_mha creates synthetic k_proj/v_proj
+        # placeholders for the modelopt scale paths (see its docstring).
+        # InternViT-300M d64 / InternViT-6B d128 both have FP8 kernels.
+        self.enable_fp8_mha = init_fp8_mha(self, model_config, self.head_dim)
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+    def forward(self, hidden_states: torch.Tensor, cu_seqlens: torch.Tensor,
+                max_seqlen_carrier: torch.Tensor) -> torch.Tensor:
         B, N, _ = hidden_states.shape
-        qkv = self.qkv(hidden_states).reshape(B, N, 3, self.num_heads,
-                                              self.head_dim).permute(
-                                                  2, 0, 3, 1, 4)
-        q, k, v = qkv.unbind(0)  # each [B, num_heads, N, head_dim]
-        scores = torch.matmul(q, k.transpose(-2, -1))
-        if self.attention_scale != 1.0:
-            scores = scores * self.attention_scale
-        attn = F.softmax(scores, dim=-1)
-        out = torch.matmul(attn, v).transpose(1, 2).contiguous().reshape(
-            B, N, self.embed_dim)
+        q, k, v = self.qkv(hidden_states).reshape(
+            B * N, 3 * self.num_heads, self.head_dim).split(self.num_heads,
+                                                            dim=1)
+        q = q.to(torch.float16)
+        k = k.to(torch.float16)
+        v = v.to(torch.float16)
+        q, k, v, qkv_scales = quantize_qkv_for_fp8_mha(self, q, k, v)
+        attn_output = vit_attention_plugin(
+            q,
+            k,
+            v,
+            cu_seqlens,
+            max_seqlen_carrier,
+            num_heads=self.num_heads,
+            head_size=self.head_dim,
+            attention_scale=self.attention_scale,
+            qkv_scales=qkv_scales,
+        )
+        out = attn_output.reshape(B, N, self.embed_dim)
         return self.proj(out)
 
 
@@ -245,9 +260,10 @@ class InternVL3VisionLayer(nn.Module):
             name_prefix=f"{name_prefix}.mlp" if name_prefix else "")
         self.ls2 = nn.Parameter(torch.ones(hidden_size))
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+    def forward(self, hidden_states: torch.Tensor, cu_seqlens: torch.Tensor,
+                max_seqlen_carrier: torch.Tensor) -> torch.Tensor:
         hidden_states = hidden_states + self.ls1 * self.attn(
-            self.norm1(hidden_states))
+            self.norm1(hidden_states), cu_seqlens, max_seqlen_carrier)
         hidden_states = hidden_states + self.ls2 * self.mlp(
             self.norm2(hidden_states))
         return hidden_states
@@ -291,8 +307,21 @@ class InternVL3VisionEncoder(nn.Module):
         ])
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        B, N, _ = hidden_states.shape
+        # Uniform-length ragged descriptors for the ViT attention plugin: every
+        # image contributes exactly N tokens, so cu_seqlens is a static-stride
+        # ramp and the max-seqlen carrier is shape-only (its length N is what
+        # the plugin reads; contents are never touched).
+        cu_seqlens = torch.arange(0, (B + 1) * N,
+                                  N,
+                                  dtype=torch.int32,
+                                  device=hidden_states.device)
+        max_seqlen_carrier = torch.zeros(N,
+                                         dtype=torch.int32,
+                                         device=hidden_states.device)
         for layer in self.layers:
-            hidden_states = layer(hidden_states)
+            hidden_states = layer(hidden_states, cu_seqlens,
+                                  max_seqlen_carrier)
         return hidden_states
 
 

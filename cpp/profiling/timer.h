@@ -31,7 +31,7 @@
 namespace trt_edgellm
 {
 
-//! Global profiling control flag
+//! Thread-local profiling control flag
 //! When false, no profiling data (metrics or timing) will be recorded
 //! This is useful to exclude warmup runs from benchmark statistics
 bool getProfilingEnabled() noexcept;

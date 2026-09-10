@@ -35,7 +35,7 @@ build_cutedsl = importlib.util.module_from_spec(_SPEC)
 sys.modules[_SPEC.name] = build_cutedsl
 _SPEC.loader.exec_module(build_cutedsl)
 
-_FMHA_V2_SUPPORTED_SMS = [80, 86, 87, 89, 100, 101, 110, 120, 121]
+_FMHA_V2_SUPPORTED_SMS = [80, 86, 87, 89, 90, 100, 101, 110, 120, 121]
 _FMHA_V2_DENSE_VARIANTS = {
     "fmha_v2_d64",
     "fmha_v2_d64_small",
@@ -69,6 +69,10 @@ _FMHA_V2_SPECIAL_VARIANTS = {
 }
 _FMHA_V2_VARIANTS = (_FMHA_V2_DENSE_VARIANTS | _FMHA_V2_PAGED_VARIANTS
                      | _FMHA_V2_SPECIAL_VARIANTS)
+_RMSNORM_SUPPORTED_SMS = [80, 86, 87, 90, 100, 101, 110, 120, 121]
+_RMSNORM_HIDDEN_SIZES = {4096, 5120, 7168, 8192}
+_RMSNORM_DTYPES = {"fp16", "bf16"}
+_RMSNORM_WEIGHT_BEFORE_CAST_MODES = {0, 1}
 
 
 def _write_fake_elf(path: Path, machine: int) -> None:
@@ -89,15 +93,15 @@ def _write_fake_archive(path: Path, machine: int) -> Path:
 
 
 def test_cutlass_dsl_version_accepts_pinned_dev_and_local_versions():
-    assert build_cutedsl._cutlass_dsl_version_matches("4.6.1")
-    assert build_cutedsl._cutlass_dsl_version_matches("4.6.1+local")
-    assert build_cutedsl._cutlass_dsl_version_matches("4.6.1.dev0")
+    assert build_cutedsl._cutlass_dsl_version_matches("4.7.0")
+    assert build_cutedsl._cutlass_dsl_version_matches("4.7.0+local")
+    assert build_cutedsl._cutlass_dsl_version_matches("4.7.0.dev0")
     assert build_cutedsl._cutlass_dsl_version_matches(
-        "4.6.1.dev20260630+local")
+        "4.7.0.dev20260630+local")
 
     assert not build_cutedsl._cutlass_dsl_version_matches("4.5.2")
-    assert not build_cutedsl._cutlass_dsl_version_matches("4.6.0")
-    assert not build_cutedsl._cutlass_dsl_version_matches("4.6.1rc1")
+    assert not build_cutedsl._cutlass_dsl_version_matches("4.6.1")
+    assert not build_cutedsl._cutlass_dsl_version_matches("4.7.0rc1")
 
 
 def test_find_static_runtime_archive_prefers_cuda_variant_layout(tmp_path):
@@ -141,7 +145,7 @@ def test_resolve_static_runtime_archive_uses_installed_matching_archive(
         "x86_64",
         pkg_dir,
         "13.0",
-        "4.6.1",
+        "4.7.0",
         tmp_path / "staging",
     )
     assert resolved == archive
@@ -155,7 +159,7 @@ def test_resolve_static_runtime_archive_cross_downloads_target_wheel(
         build_cutedsl._ELF_MACHINE["x86_64"],
     )
 
-    wheel = tmp_path / "nvidia_cutlass_dsl_libs_cu13-4.6.1-cp312-cp312-manylinux_2_28_aarch64.whl"
+    wheel = tmp_path / "nvidia_cutlass_dsl_libs_cu13-4.7.0-cp312-cp312-manylinux_2_28_aarch64.whl"
     archive_in_wheel = tmp_path / "wheel_src" / "nvidia_cutlass_dsl" / "cu13" / "lib" / "libcuda_dialect_runtime_static.a"
     _write_fake_archive(archive_in_wheel,
                         build_cutedsl._ELF_MACHINE["aarch64"])
@@ -173,7 +177,7 @@ def test_resolve_static_runtime_archive_cross_downloads_target_wheel(
         "x86_64",
         pkg_dir,
         "13.0",
-        "4.6.1",
+        "4.7.0",
         tmp_path / "staging",
     )
     assert resolved.name == "libcuda_dialect_runtime_static.a"
@@ -194,7 +198,7 @@ def test_download_runtime_libs_wheel_uses_configured_wheelhouse(
         destination = Path(cmd[cmd.index("-d") + 1])
         destination.mkdir(parents=True, exist_ok=True)
         wheel = destination / (
-            "nvidia_cutlass_dsl_libs_cu12-4.6.1-cp312-cp312-"
+            "nvidia_cutlass_dsl_libs_cu12-4.7.0-cp312-cp312-"
             "manylinux_2_28_aarch64.whl")
         wheel.write_bytes(b"wheel")
         return subprocess.CompletedProcess(cmd, 0, "", "")
@@ -202,8 +206,8 @@ def test_download_runtime_libs_wheel_uses_configured_wheelhouse(
     monkeypatch.setattr(build_cutedsl.subprocess, "run", fake_run)
 
     wheel = build_cutedsl._download_runtime_libs_wheel("aarch64", "12",
-                                                       "4.6.1", download_dir)
-    assert wheel.name.startswith("nvidia_cutlass_dsl_libs_cu12-4.6.1")
+                                                       "4.7.0", download_dir)
+    assert wheel.name.startswith("nvidia_cutlass_dsl_libs_cu12-4.7.0")
 
 
 def test_tarball_builder_lists_mixed_cuda_matrix():
@@ -228,7 +232,7 @@ def test_tarball_builder_lists_mixed_cuda_matrix():
 
 
 @pytest.mark.parametrize("cuda_major", ["12", "13"])
-def test_tarball_builder_default_matrix_includes_a30(cuda_major):
+def test_tarball_builder_default_matrix_includes_expected_targets(cuda_major):
     script = _REPO_ROOT / "kernelSrcs" / "build_cutedsl_tarballs.sh"
     env = os.environ.copy()
     env.pop("CUTE_DSL_MATRIX", None)
@@ -241,8 +245,10 @@ def test_tarball_builder_default_matrix_includes_a30(cuda_major):
                             text=True,
                             env=env)
 
-    assert f"cutedsl_x86_64_sm_80_cuda{cuda_major}.tar.gz" in (
-        result.stdout.splitlines())
+    tarballs = result.stdout.splitlines()
+    assert f"cutedsl_x86_64_sm_80_cuda{cuda_major}.tar.gz" in tarballs
+    if cuda_major == "13":
+        assert "cutedsl_aarch64_sm_90_cuda13.tar.gz" in tarballs
 
 
 def test_tarball_builder_docker_matrix_matches_ci_targets():
@@ -255,11 +261,13 @@ def test_tarball_builder_docker_matrix_matches_ci_targets():
 
     assert matrix.split(",") == [
         "x86_64:sm_80:13",
+        "x86_64:sm_86:13",
+        "x86_64:sm_90:13",
         "x86_64:sm_100:13",
         "x86_64:sm_120:13",
         "x86_64:sm_120:12",
         "aarch64:sm_87:13",
-        "aarch64:sm_87:12",
+        "aarch64:sm_90:13",
         "aarch64:sm_101:12",
         "aarch64:sm_110:13",
         "aarch64:sm_121:12",
@@ -267,9 +275,10 @@ def test_tarball_builder_docker_matrix_matches_ci_targets():
     ]
 
 
-@pytest.mark.parametrize(
-    ("sm", "expected"), [(80, "sm_80"), (87, "sm_87"), (100, "sm_100a"),
-                         (110, "sm_110a"), (120, "sm_120a"), (121, "sm_121a")])
+@pytest.mark.parametrize(("sm", "expected"),
+                         [(80, "sm_80"), (87, "sm_87"), (90, "sm_90"),
+                          (100, "sm_100a"), (110, "sm_110a"), (120, "sm_120a"),
+                          (121, "sm_121a")])
 def test_default_compile_gpu_arch_is_derived_from_target_sm(sm, expected):
     assert build_cutedsl.default_compile_gpu_arch(sm) == expected
 
@@ -379,10 +388,50 @@ def test_fmha_v2_d512_registry_uses_32x32_tiles_and_two_warps():
                                    1] == "64"
 
 
-@pytest.mark.parametrize("sm", [90, 103])
+@pytest.mark.parametrize("sm", [103])
 def test_fmha_registry_rejects_unsupported_sms(sm):
     with pytest.raises(ValueError, match="No variants"):
         build_cutedsl.select_variants(sm, "fmha")
+
+
+@pytest.mark.parametrize("sm", _RMSNORM_SUPPORTED_SMS)
+def test_rmsnorm_registry_has_all_compile_time_variants(sm):
+    variants = build_cutedsl.select_variants(sm, "rmsnorm")
+
+    assert len(variants) == (len(_RMSNORM_DTYPES) *
+                             len(_RMSNORM_HIDDEN_SIZES) *
+                             len(_RMSNORM_WEIGHT_BEFORE_CAST_MODES))
+    assert all(variant.group == "rmsnorm" for variant in variants)
+    assert all(variant.supported_sms == _RMSNORM_SUPPORTED_SMS
+               for variant in variants)
+    assert all(variant.script == "rmsnorm_cutedsl/rmsnorm.py"
+               for variant in variants)
+
+    configurations = set()
+    for variant in variants:
+        dtype = variant.script_args[variant.script_args.index("--dtype") + 1]
+        hidden_size = int(
+            variant.script_args[variant.script_args.index("--hidden_size") +
+                                1])
+        weight_before_cast = int(variant.script_args[
+            variant.script_args.index("--weight_before_cast") + 1])
+        configurations.add((dtype, hidden_size, weight_before_cast))
+        assert variant.name == (f"rmsnorm_{dtype}_h{hidden_size}"
+                                f"_wbc{weight_before_cast}")
+        assert "--export_only" in variant.script_args
+
+    assert configurations == {
+        (dtype, hidden_size, weight_before_cast)
+        for dtype in _RMSNORM_DTYPES
+        for hidden_size in _RMSNORM_HIDDEN_SIZES
+        for weight_before_cast in _RMSNORM_WEIGHT_BEFORE_CAST_MODES
+    }
+
+
+@pytest.mark.parametrize("sm", [89, 103])
+def test_rmsnorm_registry_rejects_unqualified_sms(sm):
+    with pytest.raises(ValueError, match="No variants"):
+        build_cutedsl.select_variants(sm, "rmsnorm")
 
 
 def test_fmha_v2_per_variant_compile_definitions_are_absent():
@@ -437,7 +486,7 @@ _BASE_METADATA = {
     "compile_gpu_arch": "sm_100a",
     "host_target": "",
     "cuda_package_variant": "cu12",
-    "cutlass_dsl_version": "4.6.1",
+    "cutlass_dsl_version": "4.7.0",
     "groups": ["gdn"],
     "variants": ["gdn_decode", "gdn_prefill"],
 }

@@ -24,7 +24,7 @@ is caught.
 
 Both prefill code paths are exercised:
   * single-step loop      (2 <= seq_len < 128)
-  * CuTeDSL SSD chunk-scan (seq_len >= 128, dim in {64,128}, dstate in {64,128})
+  * CuTeDSL SSD chunk-scan (seq_len >= 128; generic dim in {64,128}, plus Blackwell D80/N128)
 
 Nemotron-realistic dims: head_dim=64, ssm_state=128, n_groups=8. bs kept <= 4.
 Run:
@@ -126,11 +126,24 @@ def selective_scan_ref(
 SSD_CHUNK = 128  # CuTeDSL SSD chunk size; seq_len >= 128 selects that path
 
 
+def _supports_d80_blackwell():
+    if not DEPENDENCIES_AVAILABLE or not torch.cuda.is_available():
+        return False
+    major, minor = torch.cuda.get_device_capability()
+    return major * 10 + minor in (100, 101, 110)
+
+
+REQUIRES_D80_BLACKWELL = pytest.mark.skipif(
+    not _supports_d80_blackwell(),
+    reason=
+    "D80 SSD requires compiled Blackwell artifacts on SM100, SM101, or SM110")
+
+
 @dataclass
 class MambaConfig:
     nheads: int = 8
-    head_dim: int = 64  # "dim"   (must be 64 or 128 for the SSD path)
-    dstate: int = 128  # "dstate"(must be 64 or 128 for the SSD path)
+    head_dim: int = 64  # "dim"   (64/128 generic; 80 with N=128 on supported Blackwell GPUs)
+    dstate: int = 128  # "dstate" (must be 64 or 128 for the SSD path)
     ngroups: int = 2
     dt_softplus: bool = True
     max_batch: int = 4
@@ -218,7 +231,8 @@ class MambaRunner:
             dt_bias,
             state,
             context_lengths,
-            state_start_index=None):
+            state_start_index=None,
+            synchronize=True):
         out = torch.empty_like(x)
         state_out = torch.empty_like(state)
         input_shapes = None
@@ -240,7 +254,9 @@ class MambaRunner:
             "output": out,
             "state_out": state_out,
         }
-        self.runner.execute(bindings, input_shapes=input_shapes)
+        self.runner.execute(bindings,
+                            input_shapes=input_shapes,
+                            synchronize=synchronize)
         return out, state_out
 
 
@@ -488,6 +504,119 @@ def test_ssd_group_sweep(nheads, ngroups):
                       max_batch=2,
                       max_seq=256)
     _ssd_prefill_check(cfg, seq=256, batch=2, seed=1800 + nheads + ngroups)
+
+
+def _d80_cfg(max_seq):
+    return MambaConfig(nheads=8,
+                       head_dim=80,
+                       dstate=128,
+                       ngroups=1,
+                       max_batch=2,
+                       max_seq=max_seq)
+
+
+def _nemotron_d80_cfg(max_seq):
+    return MambaConfig(nheads=96,
+                       head_dim=80,
+                       dstate=128,
+                       ngroups=8,
+                       max_batch=1,
+                       max_seq=max_seq)
+
+
+@REQUIRES_D80_BLACKWELL
+def test_d80_prefill_routing_boundary():
+    cfg = _d80_cfg(max_seq=129)
+    runner = MambaRunner(cfg, prefill=True)
+    for seq in (127, 128, 129):
+        gen = torch.Generator().manual_seed(8000 + seq)
+        x, A, B, C, D, dt, dt_bias = _rand_inputs(cfg, 1, seq, gen)
+        state0 = torch.zeros(1,
+                             cfg.nheads,
+                             cfg.head_dim,
+                             cfg.dstate,
+                             dtype=torch.float16,
+                             device=DEV)
+        ctx = torch.full((1, ), seq, dtype=torch.int32, device=DEV)
+        out, state_out = runner.run(x, A, B, C, D, dt, dt_bias, state0.clone(),
+                                    ctx)
+        ref_y, ref_state = selective_scan_ref(x, A, B, C, dt, dt_bias, D,
+                                              state0, cfg.ngroups, True, ctx)
+        _check(cfg, out, state_out, ref_y, ref_state, ctx, 6e-2, 6e-2)
+
+
+@REQUIRES_D80_BLACKWELL
+def test_nemotron_d80_prefill_decode_handoff():
+    prefill_len = 128
+    cfg = _nemotron_d80_cfg(max_seq=prefill_len)
+    gen = torch.Generator().manual_seed(8100)
+    x, A, B, C, D, dt, dt_bias = _rand_inputs(cfg, 1, prefill_len + 1, gen)
+    state0 = torch.zeros(1,
+                         cfg.nheads,
+                         cfg.head_dim,
+                         cfg.dstate,
+                         dtype=torch.float16,
+                         device=DEV)
+    ref_y, ref_state = selective_scan_ref(x, A, B, C, dt, dt_bias, D, state0,
+                                          cfg.ngroups, True)
+
+    prefill = MambaRunner(cfg, prefill=True)
+    decode = MambaRunner(cfg, prefill=False)
+    prefill_ctx = torch.full((1, ), prefill_len, dtype=torch.int32, device=DEV)
+    prefill_out, state = prefill.run(x[:, :prefill_len].contiguous(), A,
+                                     B[:, :prefill_len].contiguous(),
+                                     C[:, :prefill_len].contiguous(), D,
+                                     dt[:, :prefill_len].contiguous(), dt_bias,
+                                     state0.clone(), prefill_ctx)
+    assert_close("d80-prefill-output", ref_y[:, :prefill_len], prefill_out,
+                 6e-2, 6e-2)
+
+    decode_ctx = torch.ones(1, dtype=torch.int32, device=DEV)
+    decode_out, state = decode.run(x[:, prefill_len].contiguous(), A,
+                                   B[:, prefill_len].contiguous(),
+                                   C[:, prefill_len].contiguous(), D,
+                                   dt[:, prefill_len].contiguous(), dt_bias,
+                                   state, decode_ctx)
+    assert_close("d80-decode-output", ref_y[:, prefill_len], decode_out, 6e-2,
+                 6e-2)
+    assert_close("d80-handoff-state", ref_state, state, 6e-2, 6e-2)
+
+
+@REQUIRES_D80_BLACKWELL
+def test_d80_prefill_cuda_graph():
+    seq = 128
+    cfg = _d80_cfg(max_seq=seq)
+    gen = torch.Generator().manual_seed(8200)
+    x, A, B, C, D, dt, dt_bias = _rand_inputs(cfg, 1, seq, gen)
+    state0 = torch.zeros(1,
+                         cfg.nheads,
+                         cfg.head_dim,
+                         cfg.dstate,
+                         dtype=torch.float16,
+                         device=DEV)
+    ctx = torch.full((1, ), seq, dtype=torch.int32, device=DEV)
+    runner = MambaRunner(cfg, prefill=True)
+
+    runner.run(x, A, B, C, D, dt, dt_bias, state0.clone(), ctx)
+    torch.cuda.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        graph_out, graph_state = runner.run(x,
+                                            A,
+                                            B,
+                                            C,
+                                            D,
+                                            dt,
+                                            dt_bias,
+                                            state0.clone(),
+                                            ctx,
+                                            synchronize=False)
+    graph.replay()
+    torch.cuda.synchronize()
+
+    ref_y, ref_state = selective_scan_ref(x, A, B, C, dt, dt_bias, D, state0,
+                                          cfg.ngroups, True, ctx)
+    _check(cfg, graph_out, graph_state, ref_y, ref_state, ctx, 6e-2, 6e-2)
 
 
 # Exact NemotronH Nano mamba config (from the model config.json): 64 heads,

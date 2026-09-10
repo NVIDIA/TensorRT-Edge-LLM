@@ -47,28 +47,11 @@ void incrementLengthTensor(rt::Tensor& lengthTensor, int32_t increment, cudaStre
 //! \throws std::runtime_error if tensor has wrong location, shape or data type
 void incrementLengthTensor(rt::Tensor& lengthTensor, rt::Tensor const& newIncrementTensor, cudaStream_t stream);
 
-//! \brief Single-layer variant: instantiate KV cache for one layer from a saved tensor.
-//!
-//! \param[in,out] dstKVCacheLayer  [maxBatchSize, 2, numKVHeads, maxSequenceLength, headDim]
-//! \param[in] srcKVCacheTensor     [2, numKVHeads, sequenceLength, headDim]
-//! \param[in] batchIdx Target batch index in the destination buffer
-//! \param[in] stream CUDA stream
-void instantiateKVCacheLayerFromTensor(
-    rt::Tensor& dstKVCacheLayer, rt::Tensor const& srcKVCacheTensor, int32_t batchIdx, cudaStream_t stream);
-
-//! \brief Single-layer variant: save KV cache for one layer into a tensor.
-//!
-//! \param[out] dstKVCacheTensor    [2, numKVHeads, sequenceLength, headDim]
-//! \param[in] srcKVCacheLayer      [maxBatchSize, 2, numKVHeads, maxSequenceLength, headDim]
-//! \param[in] batchIdx Source batch index in the buffer
-//! \param[in] stream CUDA stream
-void saveKVCacheLayerIntoTensor(
-    rt::Tensor& dstKVCacheTensor, rt::Tensor const& srcKVCacheLayer, int32_t batchIdx, cudaStream_t stream);
-
 /// @brief Batched save: copy multiple layers' KV cache into per-layer tensors in a single launch.
-/// All layers must share the same headDim. srcLayerInfos[i].data points to a two-pool NHD
-/// [2, maxBatch, capPadded, numKVHeads_i, headDim] pool; dstLayerInfos[i].data points to a
-/// [2, seqLen, numKVHeads_i, headDim] saved tensor (K plane then V plane).
+/// All layers must share the same headDim. srcLayerInfos[i].data points to the canonical
+/// [2, numPages, kTOKENS_PER_PAGE, numKVHeads_i, headDim] page pool; active-slot rows have
+/// capPadded tokens. dstLayerInfos[i].data points to a [2, seqLen, numKVHeads_i, headDim]
+/// saved tensor (K plane then V plane).
 /// @param srcLayerInfos  [numLayers] GPU array — source cache pools
 /// @param dstLayerInfos  [numLayers] GPU array — destination saved tensors
 /// @param numLayers      Number of layers in this batch
@@ -82,8 +65,8 @@ void saveKVCacheBatched(KVLayerInfo const* srcLayerInfos, KVLayerInfo const* dst
 
 /// @brief Batched restore: load multiple layers' KV cache from per-layer tensors in a single launch.
 /// All layers must share the same headDim. srcLayerInfos[i].data points to a [2, seqLen, numKVHeads_i,
-/// headDim] saved tensor (K plane then V plane); dstLayerInfos[i].data points to a two-pool NHD
-/// [2, maxBatch, capPadded, numKVHeads_i, headDim] pool.
+/// headDim] saved tensor (K plane then V plane); dstLayerInfos[i].data points to the canonical
+/// [2, numPages, kTOKENS_PER_PAGE, numKVHeads_i, headDim] page pool.
 /// @param dstLayerInfos  [numLayers] GPU array — destination cache pools
 /// @param srcLayerInfos  [numLayers] GPU array — source saved tensors
 /// @param numLayers      Number of layers in this batch
@@ -100,8 +83,8 @@ void instantiateKVCacheBatched(KVLayerInfo const* dstLayerInfos, KVLayerInfo con
 //! [B, seqLen, H, D] FP16 view. The destination is ALWAYS FP16 (half): an FP8 pool is dequantized with the
 //! K/V scales, so downstream `dataPointer<half>()` consumers never reinterpret FP8 bytes as half.
 //!
-//! `pool` is a single flat page array (the Task-1 [2, maxBatch, capPadded, H, D] allocation
-//! reinterpreted as pages); per KVPageTable's convention, V page ids are always K page id + numPages,
+//! `pool` is a single flat page array representing the canonical [2, numPages, 128, H, D] pool;
+//! per KVPageTable's convention, V page ids are always K page id + numPages,
 //! so both halves index directly into the same `pool` base -- there is no separate V-half pointer.
 //!
 //! Bad-page semantics: any page-table entry of -1 (unmapped) zero-fills its destination span, whether
@@ -132,6 +115,13 @@ void instantiateKVCacheBatched(KVLayerInfo const* dstLayerInfos, KVLayerInfo con
 void gatherPagedKVToSplit(void const* pool, void* kDst, void* vDst, int32_t const* pageTable, int32_t const* kvSeqLens,
     int32_t maxPagesPerSeq, int32_t batchSize, int32_t seqLen, int32_t numKVHeads, int32_t headDim, size_t elemSize,
     bool dequantFp8, float kScale, float vScale, cudaStream_t stream);
+
+//! Gather a paged NHD K/V pool into the head-major [B,H,S,D] layout consumed by action engines.
+//! Tokens at or beyond each slot's live length are zero-filled, including the tail of a partial page.
+//! Element bytes are copied without conversion, preserving FP16 and one-byte FP8 storage semantics.
+void gatherPagedKVToHeadMajor(void const* pool, void* kDst, void* vDst, int32_t const* pageTable,
+    int32_t const* kvSeqLens, int32_t maxPagesPerSeq, int32_t batchSize, int32_t seqLen, int32_t numKVHeads,
+    int32_t headDim, size_t elemSize, cudaStream_t stream);
 
 } // namespace kernel
 } // namespace trt_edgellm

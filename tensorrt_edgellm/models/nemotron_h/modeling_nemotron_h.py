@@ -36,7 +36,7 @@ Forward-pass conventions
 ``NemotronHCausalLM.forward``:
 
     inputs_embeds        [batch, seq_len, hidden_size]              float16
-    past_key_values      tuple of [batch, 2, num_kv_heads, past, head_dim] per attn-layer
+    past_key_values      tuple of [2, num_pages, page_size, num_kv_heads, head_dim] per attn-layer
     rope_rotary_cos_sin  [batch, max_pos, rotary_dim]               float32
     context_lengths      [batch]                                    int32
     kvcache_start_index  [batch]                                    int32

@@ -76,9 +76,11 @@ inline std::unique_ptr<void, DlDeleter> loadEdgellmPluginLib(void) noexcept
         pluginPath = "build/libNvInfer_edgellm_plugin.so";
     }
 
-    // RTLD_NODELETE: TensorRT engines keep using plugin code after dlclose, so the
-    // library must stay mapped for the process lifetime to avoid teardown crashes.
-    auto handle = std::unique_ptr<void, DlDeleter>(dlopen(pluginPath, RTLD_LAZY | RTLD_NODELETE));
+    // RTLD_GLOBAL exposes plugin registration entry points to runtime resource
+    // registration through dlsym(RTLD_DEFAULT, ...), avoiding build-time plugin
+    // linkage and duplicate CUDA device code. RTLD_NODELETE keeps TensorRT plugin
+    // code mapped through engine teardown.
+    auto handle = std::unique_ptr<void, DlDeleter>(dlopen(pluginPath, RTLD_LAZY | RTLD_GLOBAL | RTLD_NODELETE));
     if (!handle)
     {
         LOG_ERROR("Cannot open plugin library: %s", dlerror());

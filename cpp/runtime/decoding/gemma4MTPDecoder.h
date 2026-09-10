@@ -38,9 +38,8 @@ namespace rt
 class Gemma4MTPDecoder final : public DecodingStrategy
 {
 public:
-    Gemma4MTPDecoder(DecodingRuntimeContext& runtime, std::filesystem::path const& engineDir,
-        SpecDecodeDraftingConfig const& draftingConfig, std::unique_ptr<EngineExecutor> draftExecutor,
-        cudaStream_t stream);
+    Gemma4MTPDecoder(DecodingRuntimeContext& runtime, SpecDecodeDraftingConfig const& draftingConfig,
+        std::unique_ptr<EngineExecutor> draftExecutor, ExternalWeightManager draftWeights, cudaStream_t stream);
 
     DecodingStrategyKind kind() const noexcept override
     {
@@ -57,6 +56,8 @@ public:
         return true;
     }
 
+    DecodingKvHeadroom requiredKvHeadroom() const override;
+
     bool decodeStep(DecodingInferenceContext& context) override;
     bool captureCudaGraphs(cudaStream_t stream) override;
 
@@ -71,9 +72,11 @@ public:
 
     void resetForNewSequences(Tensor& reuseLengths, cudaStream_t stream) override;
     void onBatchEvict(std::vector<int32_t> const& batchMapping, int32_t oldActiveBatch, int32_t newActiveBatch,
-        Tensor& deviceBatchMapping, cudaStream_t stream, BatchCompactionMode mode) override;
+        Tensor& deviceBatchMapping, cudaStream_t stream) override;
 
 private:
+    //! Seed preparation + assistant draft chain, timed as one draft-proposal stage.
+    bool runDraftProposal(DecodingInferenceContext& context);
     bool prepareSeed(DecodingInferenceContext& context);
     bool runAssistantDraftChain(DecodingInferenceContext& context);
     bool runBaseVerification(DecodingInferenceContext& context);

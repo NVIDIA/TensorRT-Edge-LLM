@@ -1,9 +1,12 @@
 build/
-build*
+/build*/
 engines/
-onnx*
+*.onnx
+*.onnx.data
+
 feature-spec/
 dist/
+/artifacts/
 *.egg-info
 *_engine/
 *.engine
@@ -25,9 +28,11 @@ docs/source/cpp_api/
 docs/source/cpp_api.rst
 docs/source/python_api.rst
 cpp/kernels/cuteDSLArtifact/
+/kernelSrcs/cuteDSLPrebuilt/
 ci-artifacts/
 # Virtual environment
 venv*/
+.venv*/
 # .claude project commands are tracked; ignore only personal/local overrides
 CLAUDE.local.md
 .claude/settings.local.json

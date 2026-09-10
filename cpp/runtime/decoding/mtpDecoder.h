@@ -36,9 +36,8 @@ namespace rt
 class MTPDecoder final : public DecodingStrategy
 {
 public:
-    MTPDecoder(DecodingRuntimeContext& runtime, std::filesystem::path const& engineDir,
-        SpecDecodeDraftingConfig const& draftingConfig, std::unique_ptr<EngineExecutor> draftExecutor,
-        cudaStream_t stream);
+    MTPDecoder(DecodingRuntimeContext& runtime, SpecDecodeDraftingConfig const& draftingConfig,
+        std::unique_ptr<EngineExecutor> draftExecutor, ExternalWeightManager draftWeights, cudaStream_t stream);
 
     DecodingStrategyKind kind() const noexcept override
     {
@@ -55,8 +54,14 @@ public:
         return true;
     }
 
+    DecodingKvHeadroom requiredKvHeadroom() const override;
+
     bool decodeStep(DecodingInferenceContext& context) override;
     bool captureCudaGraphs(cudaStream_t stream) override;
+
+    //! Hybrid+MTP endpoint reuse runs the draft prefill pre-publication (mirrors EagleDecoder). Default MTP keeps its
+    //! decode-round-0 draft prefill: this override is a no-op unless context.hybridMtpEndpointReuse is set.
+    bool initializeForGeneration(DecodingInferenceContext& context) override;
 
     int64_t getRequiredContextMemorySize() const noexcept override;
     void setContextMemory(Tensor& memory) override;
@@ -69,7 +74,7 @@ public:
 
     void resetForNewSequences(Tensor& reuseLengths, cudaStream_t stream) override;
     void onBatchEvict(std::vector<int32_t> const& batchMapping, int32_t oldActiveBatch, int32_t newActiveBatch,
-        Tensor& deviceBatchMapping, cudaStream_t stream, BatchCompactionMode mode) override;
+        Tensor& deviceBatchMapping, cudaStream_t stream) override;
 
 private:
     bool runDraftModelPrefill(DecodingInferenceContext& context);

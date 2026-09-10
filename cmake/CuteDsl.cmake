@@ -48,6 +48,9 @@
 #   CUTE_DSL_GDN_ENABLED   — set when the gdn group is active
 #   CUTE_DSL_F16_MOE_ENABLED — set when the f16_moe group is active
 #   CUTE_DSL_SSD_ENABLED   — set when the ssd group is active
+#   CUTE_DSL_RMSNORM_ENABLED — set when the rmsnorm group is active
+#   CUTE_DSL_NVFP4_A16_BLACKWELL_GEMM_ENABLED — set when the SM110 dense W4A16
+#                                                GEMM group is active
 #   CUTE_DSL_GEMM_ENABLED  — set when any gemm variant is active
 # ---------------------------------------------------------------------------
 # cmake-format: on
@@ -56,7 +59,7 @@ set(ENABLE_CUTE_DSL
     "fmha"
     CACHE
       STRING
-      "CuTe DSL kernels: OFF, ALL, or semicolon-separated group list (fmha;gdn)"
+      "CuTe DSL kernels: OFF, ALL, or semicolon-separated group list (fmha;gdn;rmsnorm)"
 )
 
 set(CUTE_DSL_ARTIFACT_TAG
@@ -285,6 +288,7 @@ function(cute_dsl_setup)
         "Artifacts are generated locally under:\n"
         "  cpp/kernels/cuteDSLArtifact/<arch>/<artifact_tag>/")
   endif()
+  set_property(GLOBAL PROPERTY EDGELLM_CUTE_DSL_STATIC_LIBRARY "${_static_lib}")
 
   if(NOT EXISTS "${_metadata}")
     message(FATAL_ERROR "metadata.json not found in ${_artifact_dir}/\n"
@@ -322,10 +326,9 @@ function(cute_dsl_setup)
 
   if(_n_groups EQUAL 0)
     message(
-      WARNING
+      FATAL_ERROR
         "CuTe DSL: metadata.json has empty 'groups' array in ${_artifact_dir}/. "
         "Re-run build_cutedsl.py to regenerate artifacts.")
-    return()
   endif()
 
   math(EXPR _last_idx "${_n_groups} - 1")
@@ -348,10 +351,9 @@ function(cute_dsl_setup)
 
   if(NOT _active_groups)
     message(
-      WARNING
+      FATAL_ERROR
         "CuTe DSL: ENABLE_CUTE_DSL='${ENABLE_CUTE_DSL}' matched no groups in "
-        "${_metadata} (available: ${_meta_json}). Nothing will be linked.")
-    return()
+        "${_metadata} (available: ${_meta_json}).")
   endif()
 
   # Shim / --wrap branches follow the toolkit version the project uses:
@@ -440,15 +442,15 @@ function(cute_dsl_setup)
     endforeach()
   endif()
 
-  # The FP16 MoE runner links one exact-SM artifact. Parse the artifact SM for
-  # its compile-time exact-SM guard.
-  if("f16_moe" IN_LIST _active_groups)
+  # The FP16 MoE and RMSNorm runners link one exact-SM artifact. Parse the
+  # artifact SM for their compile-time guards.
+  if("f16_moe" IN_LIST _active_groups OR "rmsnorm" IN_LIST _active_groups)
     if(NOT _meta_gpu_arch_err AND _meta_gpu_arch MATCHES "^sm_([0-9]+)$")
       set(_meta_sm "${CMAKE_MATCH_1}")
     else()
       message(
         FATAL_ERROR
-          "CuTe DSL f16_moe metadata gpu_arch must have form sm_<NN>, got '${_meta_gpu_arch}' in ${_metadata}."
+          "CuTe DSL exact-SM metadata gpu_arch must have form sm_<NN>, got '${_meta_gpu_arch}' in ${_metadata}."
       )
     endif()
   endif()
@@ -476,9 +478,10 @@ function(cute_dsl_setup)
     endforeach()
   endif()
 
-  # Check for Blackwell GDN variant specifically and set a clean define.
+  # Variant-specific GDN paths require the runner enabled by the gdn group;
+  # artifact availability alone must not activate them.
   list(FIND _variants "gdn_prefill_blackwell" _bw_idx)
-  if(NOT ${_bw_idx} EQUAL -1)
+  if(NOT ${_bw_idx} EQUAL -1 AND "gdn" IN_LIST _active_groups)
     foreach(_tgt ${ARG_TARGETS} ${ARG_LINK_TARGETS})
       target_compile_definitions(${_tgt}
                                  PRIVATE "CUTE_DSL_GDN_BLACKWELL_ENABLED")
@@ -492,7 +495,8 @@ function(cute_dsl_setup)
   # Check for the Blackwell GeForce GDN prefill variant.
   list(FIND _variants "gdn_prefill_blackwell_geforce"
        _gdn_blackwell_geforce_idx)
-  if(NOT ${_gdn_blackwell_geforce_idx} EQUAL -1)
+  if(NOT ${_gdn_blackwell_geforce_idx} EQUAL -1 AND "gdn" IN_LIST
+                                                    _active_groups)
     foreach(_tgt ${ARG_TARGETS} ${ARG_LINK_TARGETS})
       target_compile_definitions(
         ${_tgt} PRIVATE "CUTE_DSL_GDN_BLACKWELL_GEFORCE_ENABLED")
@@ -503,13 +507,21 @@ function(cute_dsl_setup)
     )
   endif()
 
-  # Check for Blackwell SSD variants and set a clean define.
-  set(_ssd_bw_found FALSE)
-  foreach(_ssd_bw_name "ssd_prefill_blackwell_d64_n128"
-                       "ssd_prefill_blackwell_d64_n64")
+  # The Blackwell SSD runner references the full variant set under one define.
+  # Keep the path disabled when an older or incomplete artifact pack is used.
+  set(_ssd_bw_found TRUE)
+  foreach(
+    _ssd_bw_name
+    "ssd_prefill_blackwell_d64_n128"
+    "ssd_prefill_blackwell_d64_n128_init_states"
+    "ssd_prefill_blackwell_d80_n128"
+    "ssd_prefill_blackwell_d80_n128_init_states"
+    "ssd_prefill_blackwell_d64_n64"
+    "ssd_prefill_blackwell_d64_n64_init_states")
     list(FIND _variants "${_ssd_bw_name}" _ssd_bw_idx)
-    if(NOT ${_ssd_bw_idx} EQUAL -1)
-      set(_ssd_bw_found TRUE)
+    if(${_ssd_bw_idx} EQUAL -1)
+      set(_ssd_bw_found FALSE)
+      break()
     endif()
   endforeach()
   if(_ssd_bw_found)
@@ -529,6 +541,12 @@ function(cute_dsl_setup)
     foreach(_tgt ${ARG_TARGETS} ${ARG_LINK_TARGETS})
       target_compile_definitions(
         ${_tgt} PRIVATE "CUTE_DSL_F16_MOE_ARTIFACT_SM=${_meta_sm}")
+    endforeach()
+  endif()
+  if("rmsnorm" IN_LIST _active_groups)
+    foreach(_tgt ${ARG_TARGETS} ${ARG_LINK_TARGETS})
+      target_compile_definitions(
+        ${_tgt} PRIVATE "CUTE_DSL_RMSNORM_ARTIFACT_SM=${_meta_sm}")
     endforeach()
   endif()
 
@@ -985,6 +1003,42 @@ function(cute_dsl_setup)
       STATUS
         "CuTe DSL: gemm_blackwell_nvfp4_ws_fp8_tn128 — CUTE_DSL_GEMM_BLACKWELL_NVFP4_WS_FP8_TN128_ENABLED set"
     )
+  endif()
+
+  # Dense SM110 W4A16 variants. The group supports both IO dtypes and dispatch
+  # relies on all six token tiles, so an active group must provide both complete
+  # sets. An inactive group must not leak variant-derived feature guards.
+  if("nvfp4_a16_blackwell_gemm" IN_LIST _active_groups)
+    set(_nvfp4_a16_tiles 8 16 32 64 128 256)
+    list(LENGTH _nvfp4_a16_tiles _nvfp4_a16_expected_count)
+    foreach(_nvfp4_a16_dtype fp16 bf16)
+      string(TOUPPER "${_nvfp4_a16_dtype}" _nvfp4_a16_dtype_upper)
+      set(_nvfp4_a16_found_variants)
+      set(_nvfp4_a16_missing_variants)
+      foreach(_nvfp4_a16_tile ${_nvfp4_a16_tiles})
+        set(_nvfp4_a16_variant
+            "nvfp4_a16_blackwell_gemm_${_nvfp4_a16_dtype}_tm128_tn${_nvfp4_a16_tile}_tk64"
+        )
+        list(FIND _variants "${_nvfp4_a16_variant}" _nvfp4_a16_idx)
+        if(NOT ${_nvfp4_a16_idx} EQUAL -1)
+          list(APPEND _nvfp4_a16_found_variants "${_nvfp4_a16_variant}")
+        else()
+          list(APPEND _nvfp4_a16_missing_variants "${_nvfp4_a16_variant}")
+        endif()
+      endforeach()
+
+      list(LENGTH _nvfp4_a16_found_variants _nvfp4_a16_found_count)
+      if(NOT _nvfp4_a16_found_count EQUAL _nvfp4_a16_expected_count)
+        message(
+          FATAL_ERROR
+            "CuTe DSL: incomplete ${_nvfp4_a16_dtype_upper} dense W4A16 artifact set in ${_metadata}.\n"
+            "Found: ${_nvfp4_a16_found_variants}\n"
+            "Missing: ${_nvfp4_a16_missing_variants}\n"
+            "Regenerate the nvfp4_a16_blackwell_gemm group with both dtypes and all token tiles."
+        )
+      endif()
+
+    endforeach()
   endif()
 
   # Umbrella CUTE_DSL_GEMM_ENABLED — set if ANY gemm variant was found. Source

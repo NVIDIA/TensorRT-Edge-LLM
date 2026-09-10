@@ -15,7 +15,7 @@ operands/output and FP32 accumulation. The same module is invoked for FC1 and
 FC2. Activation and route reduction are intentionally separate CUDA kernels.
 The Blackwell datacenter implementation is adapted from the CUTLASS 4.4.2
 CuTe DSL grouped-GEMM example and retains its BSD-3-Clause notice; the repository
-exports all three variants with its existing `nvidia-cutlass-dsl==4.6.1`
+exports all three variants with its existing `nvidia-cutlass-dsl==4.7.0`
 toolchain rather than adding a second C++ GEMM backend.
 
 ## Device descriptor ABI

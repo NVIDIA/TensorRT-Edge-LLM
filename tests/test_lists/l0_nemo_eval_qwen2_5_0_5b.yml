@@ -3,6 +3,5 @@
 
 tests:
   - tests/defs/test_common.py::test_build_project
-  - tests/defs/test_llm_pipeline.py::test_engine_build[Qwen2.5-0.5B-Instruct-fp16-mxsl8192-mxbs4-mxil2048]
   - tests/defs/test_server_pipeline.py::test_build_pybind
   - tests/defs/test_nemo_evaluator.py::test_nemo_eval[Qwen2.5-0.5B-Instruct]

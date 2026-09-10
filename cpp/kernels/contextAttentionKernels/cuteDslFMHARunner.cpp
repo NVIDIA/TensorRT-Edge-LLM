@@ -101,7 +101,12 @@ detail::LazyKernelModule<fmha_d512_sw_paged_fp8_Kernel_Module_t> CuteDslFMHARunn
 detail::LazyKernelModule<vit_fmha_d64_Kernel_Module_t> CuteDslFMHARunner::sViT_d64{};
 detail::LazyKernelModule<vit_fmha_d72_Kernel_Module_t> CuteDslFMHARunner::sViT_d72{};
 detail::LazyKernelModule<vit_fmha_d80_Kernel_Module_t> CuteDslFMHARunner::sViT_d80{};
+detail::LazyKernelModule<vit_fmha_d96_Kernel_Module_t> CuteDslFMHARunner::sViT_d96{};
 detail::LazyKernelModule<vit_fmha_d128_Kernel_Module_t> CuteDslFMHARunner::sViT_d128{};
+detail::LazyKernelModule<vit_fmha_d64_fp8_Kernel_Module_t> CuteDslFMHARunner::sViT_d64_fp8{};
+detail::LazyKernelModule<vit_fmha_d80_fp8_Kernel_Module_t> CuteDslFMHARunner::sViT_d80_fp8{};
+detail::LazyKernelModule<vit_fmha_d96_fp8_Kernel_Module_t> CuteDslFMHARunner::sViT_d96_fp8{};
+detail::LazyKernelModule<vit_fmha_d128_fp8_Kernel_Module_t> CuteDslFMHARunner::sViT_d128_fp8{};
 
 bool CuteDslFMHARunner::canImplement(int32_t headSize, int32_t smVersion)
 {
@@ -112,7 +117,7 @@ bool CuteDslFMHARunner::canImplement(int32_t headSize, int32_t smVersion)
 bool CuteDslFMHARunner::canImplementViT(int32_t headSize, int32_t smVersion)
 {
     return isSupportedBlackwellFmha(smVersion)
-        && (headSize == 64 || headSize == 72 || headSize == 80 || headSize == 128);
+        && (headSize == 64 || headSize == 72 || headSize == 80 || headSize == 96 || headSize == 128);
 }
 
 bool CuteDslFMHARunner::preflightLlm(
@@ -319,6 +324,9 @@ bool CuteDslFMHARunner::preflightViT(cudaStream_t stream)
     case 80:
         return preflightVariant<vit_fmha_d80_Kernel_Module_Load, vit_fmha_d80_Kernel_Module_Unload>(
             sViT_d80, "vit_fmha_d80", stream);
+    case 96:
+        return preflightVariant<vit_fmha_d96_Kernel_Module_Load, vit_fmha_d96_Kernel_Module_Unload>(
+            sViT_d96, "vit_fmha_d96", stream);
     case 128:
         return preflightVariant<vit_fmha_d128_Kernel_Module_Load, vit_fmha_d128_Kernel_Module_Unload>(
             sViT_d128, "vit_fmha_d128", stream);
@@ -849,11 +857,15 @@ bool CuteDslFMHARunner::runPaged(void const* qPtr, void const* pagedKVPoolPtr, i
 // =====================================================================
 
 bool CuteDslFMHARunner::run(void const* qPtr, void const* kPtr, void const* vPtr, void* oPtr, int32_t const* cuSeqLens,
-    int32_t totalSeqLen, int32_t maxSeqLen, int32_t batchSize, cudaStream_t stream, float attentionScale)
+    int32_t totalSeqLen, int32_t maxSeqLen, int32_t batchSize, cudaStream_t stream, float attentionScale, bool fp8Input,
+    float qScale, float kScale, float vScale)
 {
     validateAttentionScale(attentionScale);
 
     int32_t const headDim = mHeadDim;
+
+    // FP8 dequant scales fold into the softmax scale (q*k) and the output scale (v).
+    float const softmaxScale = attentionScale * qScale * kScale;
 
     VitFmhaParams params{};
     params.qPtr = qPtr;
@@ -866,37 +878,73 @@ bool CuteDslFMHARunner::run(void const* qPtr, void const* kPtr, void const* vPtr
     params.headDim = headDim;
     params.maxSeqLen = maxSeqLen;
     params.batchSize = batchSize;
-    params.scaleSoftmaxLog2 = attentionScale * static_cast<float>(M_LOG2E);
-    params.attentionScale = attentionScale;
-    params.scaleOutput = 1.0F;
+    params.scaleSoftmaxLog2 = softmaxScale * static_cast<float>(M_LOG2E);
+    params.attentionScale = softmaxScale;
+    params.scaleOutput = vScale;
     params.stream = stream;
 
     int32_t ret = -1;
 
-    switch (headDim)
+    if (fp8Input)
     {
-    case 64:
-        ret = callVitFmha<cute_dsl_vit_fmha_d64_wrapper, vit_fmha_d64_Kernel_Module_Load,
-            vit_fmha_d64_Kernel_Module_Unload>(sViT_d64, "vit_fmha_d64", params);
-        break;
-    case 72:
-        ret = callVitFmha<cute_dsl_vit_fmha_d72_wrapper, vit_fmha_d72_Kernel_Module_Load,
-            vit_fmha_d72_Kernel_Module_Unload>(sViT_d72, "vit_fmha_d72", params);
-        break;
-    case 80:
-        ret = callVitFmha<cute_dsl_vit_fmha_d80_wrapper, vit_fmha_d80_Kernel_Module_Load,
-            vit_fmha_d80_Kernel_Module_Unload>(sViT_d80, "vit_fmha_d80", params);
-        break;
-    case 128:
-        ret = callVitFmha<cute_dsl_vit_fmha_d128_wrapper, vit_fmha_d128_Kernel_Module_Load,
-            vit_fmha_d128_Kernel_Module_Unload>(sViT_d128, "vit_fmha_d128", params);
-        break;
-    default: LOG_ERROR("CuTe DSL ViT FMHA: unsupported head_dim=%d", headDim); return false;
+        switch (headDim)
+        {
+        case 64:
+            ret = callVitFmha<cute_dsl_vit_fmha_d64_fp8_wrapper, vit_fmha_d64_fp8_Kernel_Module_Load,
+                vit_fmha_d64_fp8_Kernel_Module_Unload>(sViT_d64_fp8, "vit_fmha_d64_fp8", params);
+            break;
+        case 80:
+            ret = callVitFmha<cute_dsl_vit_fmha_d80_fp8_wrapper, vit_fmha_d80_fp8_Kernel_Module_Load,
+                vit_fmha_d80_fp8_Kernel_Module_Unload>(sViT_d80_fp8, "vit_fmha_d80_fp8", params);
+            break;
+        case 96:
+            ret = callVitFmha<cute_dsl_vit_fmha_d96_fp8_wrapper, vit_fmha_d96_fp8_Kernel_Module_Load,
+                vit_fmha_d96_fp8_Kernel_Module_Unload>(sViT_d96_fp8, "vit_fmha_d96_fp8", params);
+            break;
+        case 128:
+            ret = callVitFmha<cute_dsl_vit_fmha_d128_fp8_wrapper, vit_fmha_d128_fp8_Kernel_Module_Load,
+                vit_fmha_d128_fp8_Kernel_Module_Unload>(sViT_d128_fp8, "vit_fmha_d128_fp8", params);
+            break;
+        default:
+            // d=72 has no direct kernel: SM100 TMA requires 16-byte-aligned innermost
+            // GMEM strides, and 72 FP8 elements are 72 bytes. Callers zero-pad to
+            // d=80 and pass the real softmax scale, then dispatch case 80 above.
+            LOG_ERROR("CuTe DSL ViT FP8 FMHA: unsupported head_dim=%d (supported: 64, 80, 96, 128)", headDim);
+            return false;
+        }
+    }
+    else
+    {
+        switch (headDim)
+        {
+        case 64:
+            ret = callVitFmha<cute_dsl_vit_fmha_d64_wrapper, vit_fmha_d64_Kernel_Module_Load,
+                vit_fmha_d64_Kernel_Module_Unload>(sViT_d64, "vit_fmha_d64", params);
+            break;
+        case 72:
+            ret = callVitFmha<cute_dsl_vit_fmha_d72_wrapper, vit_fmha_d72_Kernel_Module_Load,
+                vit_fmha_d72_Kernel_Module_Unload>(sViT_d72, "vit_fmha_d72", params);
+            break;
+        case 80:
+            ret = callVitFmha<cute_dsl_vit_fmha_d80_wrapper, vit_fmha_d80_Kernel_Module_Load,
+                vit_fmha_d80_Kernel_Module_Unload>(sViT_d80, "vit_fmha_d80", params);
+            break;
+        case 96:
+            ret = callVitFmha<cute_dsl_vit_fmha_d96_wrapper, vit_fmha_d96_Kernel_Module_Load,
+                vit_fmha_d96_Kernel_Module_Unload>(sViT_d96, "vit_fmha_d96", params);
+            break;
+        case 128:
+            ret = callVitFmha<cute_dsl_vit_fmha_d128_wrapper, vit_fmha_d128_Kernel_Module_Load,
+                vit_fmha_d128_Kernel_Module_Unload>(sViT_d128, "vit_fmha_d128", params);
+            break;
+        default: LOG_ERROR("CuTe DSL ViT FMHA: unsupported head_dim=%d", headDim); return false;
+        }
     }
 
     if (ret != 0)
     {
-        LOG_ERROR("CuTe DSL ViT FMHA kernel (d=%d) failed with error code: %d", headDim, ret);
+        LOG_ERROR("CuTe DSL ViT FMHA kernel (d=%d, fp8in=%s) failed with error code: %d", headDim,
+            fp8Input ? "true" : "false", ret);
     }
     return ret == 0;
 }

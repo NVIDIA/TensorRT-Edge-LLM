@@ -33,6 +33,12 @@ namespace rt
 {
 namespace decoder_utils
 {
+void zeroActiveRegion(Tensor& tensor, cudaStream_t stream)
+{
+    auto const bytes = static_cast<size_t>(tensor.getShape().volume()) * utils::getTypeSize(tensor.getDataType());
+    CUDA_CHECK(cudaMemsetAsync(tensor.rawPointer(), 0, bytes, stream));
+}
+
 std::unique_ptr<EngineExecutor> loadDraftEngine(
     std::filesystem::path const& engineDir, DeploymentConfig const& deployment)
 {
@@ -71,6 +77,11 @@ void appendAcceptedTokens(DecodingInferenceContext& context, Tensor& hostAcceptL
 
     for (int32_t batchIdx = 0; batchIdx < activeBatchSize; ++batchIdx)
     {
+        if (context.finishedStates[batchIdx])
+        {
+            hostAcceptLengthsData[batchIdx] = 0;
+            continue;
+        }
         int32_t const acceptLength = hostAcceptLengthsData[batchIdx];
         int32_t appended = 0;
         for (int32_t i = 0; i < acceptLength; i++)

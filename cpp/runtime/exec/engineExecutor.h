@@ -40,11 +40,9 @@ namespace rt
 {
 
 /*!
- * @brief Thin TRT wrapper with prepare/execute split.
+ * @brief Engine execution interface with a prepare/execute split.
  *
- * EngineExecutor owns a TRT runtime, engine, and execution context. It replaces both
- * LLMEngineRunner and EagleDraftEngineRunner with a single model-agnostic
- * wrapper (~300 LOC).
+ * The production implementation owns a TRT runtime, engine, and execution context:
  *
  *  - @c prepare() sets the optimization profile and delegates binding to
  *    TensorRegistry::bindAll().
@@ -52,13 +50,17 @@ namespace rt
  *    otherwise falls back to enqueueV3.
  *  - @c captureGraph() captures a new CUDA graph for the current bindings.
  *
- * EngineExecutor knows nothing about models, phases, or features.
+ * EngineExecutor knows nothing about models, phases, or features. It is abstract so callers can be exercised without a
+ * serialized engine on disk; the factories below are the only way to obtain the TRT-backed implementation.
+ *
+ * Implementations divide into two roles. `prepare`/`execute`/`captureGraph`/`setContextMemory`/`setProfiler`/
+ * `getRequiredContextMemorySize` run per request and a substitute must implement them. The introspection accessors
+ * (`getEngine` and the binding queries) run once, during startup validation, and a substitute may reject them.
  */
 class EngineExecutor
 {
 public:
-    //! @brief Destructor — destroys all captured CUDA graphs.
-    ~EngineExecutor() noexcept;
+    virtual ~EngineExecutor() = default;
 
     //! Build an EngineExecutor for a vanilla single-engine LLM or a SpecDecode
     //! base engine. The factory builds the TensorRegistry internally via
@@ -83,7 +85,8 @@ public:
      * @param stream CUDA stream for the async profile switch
      * @return True on success
      */
-    bool prepare(int32_t profileIndex, InferenceDims const& dims, TensorMap const& map, cudaStream_t stream);
+    virtual bool prepare(int32_t profileIndex, InferenceDims const& dims, TensorMap const& map, cudaStream_t stream)
+        = 0;
 
     /*!
      * @brief Execute inference.
@@ -94,7 +97,7 @@ public:
      * @param stream CUDA stream
      * @return True on success
      */
-    bool execute(cudaStream_t stream);
+    virtual bool execute(cudaStream_t stream) = 0;
 
     /*!
      * @brief Capture a CUDA graph for the current binding state (after prepare()).
@@ -106,13 +109,13 @@ public:
      * @param stream CUDA stream (must not be the default stream)
      * @return True if capture succeeded
      */
-    bool captureGraph(cudaStream_t stream);
+    virtual bool captureGraph(cudaStream_t stream) = 0;
 
     /*!
      * @brief Query required device memory for the execution context.
      * @return Required memory size in bytes
      */
-    int64_t getRequiredContextMemorySize() const;
+    virtual int64_t getRequiredContextMemorySize() const = 0;
 
     /*!
      * @brief Provide shared device memory for the execution context.
@@ -120,32 +123,33 @@ public:
      * @param sharedMem Tensor whose memory will back the TRT context
      * @return True on success
      */
-    bool setContextMemory(Tensor& sharedMem);
+    virtual bool setContextMemory(Tensor& sharedMem) = 0;
 
     //! @brief Return the number of I/O tensors in the engine.
-    int32_t getNumIOTensors() const;
+    virtual int32_t getNumIOTensors() const = 0;
 
     //! @brief Return the name of the i-th I/O tensor.
-    char const* getIOTensorName(int32_t index) const;
+    virtual char const* getIOTensorName(int32_t index) const = 0;
 
     //! @brief Return whether the engine exposes a named I/O tensor.
-    bool hasIOTensor(char const* name) const;
+    virtual bool hasIOTensor(char const* name) const = 0;
 
     //! @brief Return the data type of a named binding.
-    nvinfer1::DataType getBindingDataType(char const* name) const;
+    virtual nvinfer1::DataType getBindingDataType(char const* name) const = 0;
 
     //! @brief Return a profile shape (min/opt/max) for a named binding.
-    nvinfer1::Dims getProfileShape(char const* name, int32_t profileIndex, nvinfer1::OptProfileSelector selector) const;
+    virtual nvinfer1::Dims getProfileShape(
+        char const* name, int32_t profileIndex, nvinfer1::OptProfileSelector selector) const = 0;
 
     //! @brief Attach a TRT profiler to the execution context.
     //!
     //! The profiler receives per-layer timing callbacks during enqueueV3.
     //! Must be called before execute() for the profiler to receive data.
     //! Passing nullptr detaches any previously set profiler.
-    void setProfiler(nvinfer1::IProfiler* profiler) noexcept;
+    virtual void setProfiler(nvinfer1::IProfiler* profiler) noexcept = 0;
 
     //! @brief Access the underlying TRT engine for generic introspection.
-    nvinfer1::ICudaEngine const& getEngine() const noexcept;
+    virtual nvinfer1::ICudaEngine const& getEngine() const noexcept = 0;
 
     //! @brief Snapshot of binding addresses and shapes — used for graph-cache verification.
     struct BindingSnapshot
@@ -155,44 +159,8 @@ public:
         bool operator==(BindingSnapshot const& rhs) const noexcept;
     };
 
-private:
-    /*!
-     * @brief Construct a EngineExecutor from a serialized TRT engine file.
-     *
-     * Reads the engine, creates an IRuntime, deserializes the engine,
-     * and creates an IExecutionContext with USER_MANAGED allocation.
-     *
-     * Private — use `createForLLM` / `createForDraft` factories.
-     *
-     * @param enginePath Path to the serialized TRT engine file
-     * @param registry TensorRegistry describing the binding layout
-     * @throws std::runtime_error On I/O or deserialization failure
-     */
-    EngineExecutor(std::filesystem::path const& enginePath, TensorRegistry registry);
-
-    AuxStreamSet mAuxStreams{};
-    std::unique_ptr<nvinfer1::IRuntime> mRuntime;
-    std::unique_ptr<nvinfer1::ICudaEngine> mEngine;
-    std::unique_ptr<nvinfer1::IExecutionContext> mContext;
-    TensorRegistry mRegistry;
-    int32_t mCurrentProfileIndex{-1};
-
-    //! A captured CUDA graph together with its binding snapshot for verification.
-    struct CapturedGraph
-    {
-        cudaGraph_t graph{nullptr};
-        cudaGraphExec_t exec{nullptr};
-        BindingSnapshot snapshot;
-    };
-
-    //! Graph cache keyed by a hash of all binding addresses + shapes.
-    std::unordered_map<size_t, CapturedGraph> mGraphs;
-
-    //! Hash the current binding addresses and shapes into a single key.
-    size_t computeBindingHash() const;
-
-    //! Build a full snapshot of the current binding state.
-    BindingSnapshot snapshotBindings() const;
+protected:
+    EngineExecutor() = default;
 };
 
 } // namespace rt

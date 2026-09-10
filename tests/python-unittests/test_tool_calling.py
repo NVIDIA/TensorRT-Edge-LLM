@@ -17,11 +17,9 @@ import json
 
 import pytest
 
-from experimental.server.api_server import (_build_message_body,
-                                            _generate_stream_sse)
-from experimental.server.engine import StreamDelta
-from experimental.server.tool_calling import (parse_assistant_output,
-                                              validate_tool_request)
+from experimental.server.parsing.tool_calling import (parse_assistant_output,
+                                                      stream_assistant_output,
+                                                      validate_tool_request)
 
 
 def _tools():
@@ -35,18 +33,23 @@ def _tools():
                 "properties": {
                     "city": {
                         "type": "string"
-                    },
+                    }
                 },
             },
         },
     }]
 
 
-def _tool_config(tool_choice="auto"):
-    return validate_tool_request([{
-        "role": "user",
-        "content": "Weather?"
-    }], _tools(), tool_choice)
+def _config(tool_choice="auto", parallel=True):
+    return validate_tool_request(
+        [{
+            "role": "user",
+            "content": "Weather?"
+        }],
+        _tools(),
+        tool_choice,
+        parallel,
+    )
 
 
 def test_validates_tool_request():
@@ -60,7 +63,7 @@ def test_validates_tool_request():
             "type": "function",
             "function": {
                 "name": "get_weather",
-                "arguments": "{\"city\":\"Paris\"}",
+                "arguments": '{"city":"Paris"}',
             },
         }],
     }, {
@@ -70,67 +73,53 @@ def test_validates_tool_request():
             "temperature": 22
         },
     }]
-
-    config = validate_tool_request(messages, _tools(), "auto")
-
-    assert config.tool_choice == "auto"
+    config = validate_tool_request(messages, _tools(), "required", False)
+    assert config.tool_choice == "required"
+    assert not config.parallel_tool_calls
 
     with pytest.raises(ValueError, match="Unknown forced tool name"):
-        validate_tool_request([{
-            "role": "user",
-            "content": "hi"
-        }], _tools(), {
+        validate_tool_request(messages, _tools(), {
             "type": "function",
             "function": {
                 "name": "missing"
             },
         })
-
-    with pytest.raises(ValueError, match="'tools' must be an array"):
-        validate_tool_request([{
-            "role": "user",
-            "content": "hi"
-        }], {"type": "function"})
-
     with pytest.raises(ValueError, match="Dangling tool_call_id"):
         validate_tool_request([{
             "role": "tool",
-            "tool_call_id": "call_missing",
+            "tool_call_id": "missing",
             "content": "42",
         }])
 
 
-def test_parses_tool_calls(tmp_path):
-    json_text = ("Let me check.\n"
-                 "<tool_call>{\"name\":\"get_weather\","
-                 "\"arguments\":{\"city\":\"Paris\"}}</tool_call>")
-
-    parsed = parse_assistant_output(json_text, _tool_config(), str(tmp_path))
-
-    assert parsed.content == "Let me check.\n"
-    assert len(parsed.tool_calls) == 1
-    assert parsed.tool_calls[0].name == "get_weather"
-    assert json.loads(parsed.tool_calls[0].arguments) == {"city": "Paris"}
-
-    qwen_text = (
+def test_parses_reasoning_and_multiple_tool_calls(tmp_path):
+    text = (
         "<think>plan</think>Before"
         "<function=get_weather><parameter=city>Paris</parameter></function>"
-        "After")
-
-    parsed = parse_assistant_output(qwen_text, _tool_config(), str(tmp_path))
-
-    assert [event["type"] for event in parsed.events
-            ] == ["reasoning", "content", "tool_call", "content"]
+        '<tool_call>{"name":"get_weather","arguments":{"city":"Tokyo"}}'
+        "</tool_call>After")
+    parsed = parse_assistant_output(text,
+                                    _config(),
+                                    str(tmp_path),
+                                    reasoning_parser="qwen3")
     assert parsed.reasoning == "plan"
     assert parsed.content == "BeforeAfter"
-    assert json.loads(parsed.tool_calls[0].arguments) == {"city": "Paris"}
+    assert [json.loads(call.arguments)["city"]
+            for call in parsed.tool_calls] == ["Paris", "Tokyo"]
+
+
+def test_normal_output_is_content_without_reasoning_parser(tmp_path):
+    parsed = parse_assistant_output("ordinary answer", _config("none"),
+                                    str(tmp_path))
+    assert parsed.content == "ordinary answer"
+    assert parsed.reasoning == ""
 
 
 def test_filters_forced_tool(tmp_path):
-    text = "<tool_call>{\"name\":\"other\",\"arguments\":{}}</tool_call>"
+    text = '<tool_call>{"name":"other","arguments":{}}</tool_call>'
     parsed = parse_assistant_output(
         text,
-        _tool_config({
+        _config({
             "type": "function",
             "function": {
                 "name": "get_weather"
@@ -138,151 +127,41 @@ def test_filters_forced_tool(tmp_path):
         }),
         str(tmp_path),
     )
-
     assert parsed.tool_calls == []
     assert parsed.content == text
 
 
-class _FakeLLM:
+def test_streams_content_reasoning_and_tools_across_chunk_boundaries(tmp_path):
+    parser = stream_assistant_output(_config(),
+                                     str(tmp_path),
+                                     reasoning_parser="qwen3")
+    events = []
+    for chunk in (
+            "<th",
+            "ink>plan</think>Before<tool_",
+            'call>{"name":"get_weather","arguments":{"city":',
+            '"Paris"}}</tool_call>After',
+    ):
+        events.extend(parser.feed(chunk))
+    events.extend(parser.flush())
 
-    def __init__(self, model_dir):
-        self.model_dir = str(model_dir)
-        self._model_id = "fake-model"
-
-    def _make_generation_request(self, messages, params, **kw):
-        return object()  # the streaming path prebuilds (and reuses) a request
-
-    def generate_stream(self,
-                        messages,
-                        params,
-                        *,
-                        tools=None,
-                        tool_choice=None,
-                        prebuilt_request=None,
-                        admission_handoff=None):
-        yield StreamDelta(text="<think>plan</think>", finished=False)
-        yield StreamDelta(
-            text="<tool_call>{\"name\":\"get_weather\","
-            "\"arguments\":{\"city\":\"Paris\"}}</tool_call>",
-            finished=True,
-            finish_reason="stop",
-        )
-
-
-def test_builds_tool_response_shapes(tmp_path):
-    config = _tool_config()
-    message, has_tool_calls = _build_message_body(
-        "<tool_call>{\"name\":\"get_weather\","
-        "\"arguments\":{\"city\":\"Paris\"}}</tool_call>",
-        config,
-        str(tmp_path),
-    )
-
-    assert has_tool_calls
-    assert message["content"] is None
-    assert message["tool_calls"][0]["function"]["name"] == "get_weather"
-    chunks = list(
-        _generate_stream_sse(
-            _FakeLLM(tmp_path),
-            [{
-                "role": "user",
-                "content": "Weather?"
-            }],
-            object(),
-            "chatcmpl-test",
-            False,
-            tool_config=config,
-        ))
-    payloads = [
-        json.loads(chunk.removeprefix("data: ")) for chunk in chunks
-        if chunk.startswith("data: {")
+    assert "".join(event["text"] for event in events
+                   if event["type"] == "reasoning") == "plan"
+    assert "".join(event["text"] for event in events
+                   if event["type"] == "content") == "BeforeAfter"
+    calls = [
+        event["tool_call"] for event in events if event["type"] == "tool_call"
     ]
-
-    assert payloads[1]["choices"][0]["delta"]["reasoning"] == "plan"
-    assert "tool_calls" in payloads[2]["choices"][0]["delta"]
-    assert payloads[3]["choices"][0]["delta"]["tool_calls"][0]["function"][
-        "arguments"] == '{"city": "Paris"}'
-    assert payloads[-1]["choices"][0]["finish_reason"] == "tool_calls"
+    assert len(calls) == 1
+    assert calls[0].name == "get_weather"
+    assert json.loads(calls[0].arguments) == {"city": "Paris"}
 
 
-class _FakeTokenLLM:
-    """Fake LLM whose deltas carry token ids, for usage accounting tests."""
+def test_stream_parser_flushes_untagged_provider_format(tmp_path):
+    parser = stream_assistant_output(_config(), str(tmp_path))
+    events = list(parser.feed('get_weather(city="Paris")'))
+    events.extend(parser.flush())
 
-    def __init__(self, model_dir):
-        self.model_dir = str(model_dir)
-        self._model_id = "fake-model"
-
-    def _make_generation_request(self, messages, params, **kw):
-        return object()
-
-    def generate_stream(self,
-                        messages,
-                        params,
-                        *,
-                        tools=None,
-                        tool_choice=None,
-                        prebuilt_request=None,
-                        admission_handoff=None):
-        yield StreamDelta(text="Hello ", token_ids=[1, 2, 3], finished=False)
-        yield StreamDelta(text="world",
-                          token_ids=[4, 5],
-                          finished=True,
-                          finish_reason="stop")
-
-
-def test_stream_usage_chunk(tmp_path):
-    """include_usage adds exactly one final usage chunk; absent otherwise."""
-
-    def run(**kwargs):
-        return list(
-            _generate_stream_sse(
-                _FakeTokenLLM(tmp_path),
-                [{
-                    "role": "user",
-                    "content": "Hi"
-                }],
-                object(),
-                "chatcmpl-run",
-                False,
-                tool_config=None,
-                **kwargs,
-            ))
-
-    chunks = run(include_usage=True, prompt_tokens=7)
-    assert chunks[-1] == "data: [DONE]\n\n"
-    usage_payload = json.loads(chunks[-2].removeprefix("data: "))
-    assert usage_payload["choices"] == []
-    assert usage_payload["usage"] == {
-        "prompt_tokens": 7,
-        "completion_tokens": 5,
-        "total_tokens": 12,
-    }
-
-    plain = [
-        json.loads(c.removeprefix("data: ")) for c in run()
-        if c.startswith("data: {")
-    ]
-    assert all("usage" not in payload for payload in plain)
-
-
-def test_tool_stream_usage_chunk(tmp_path):
-    config = _tool_config()
-    chunks = list(
-        _generate_stream_sse(
-            _FakeLLM(tmp_path),
-            [{
-                "role": "user",
-                "content": "Weather?"
-            }],
-            object(),
-            "chatcmpl-toolusage",
-            False,
-            tool_config=config,
-            include_usage=True,
-            prompt_tokens=100,
-        ))
-    assert chunks[-1] == "data: [DONE]\n\n"
-    usage_payload = json.loads(chunks[-2].removeprefix("data: "))
-    assert usage_payload["usage"]["prompt_tokens"] == 100
-    assert usage_payload["usage"]["total_tokens"] == (
-        100 + usage_payload["usage"]["completion_tokens"])
+    assert len(events) == 1
+    assert events[0]["type"] == "tool_call"
+    assert json.loads(events[0]["tool_call"].arguments) == {"city": "Paris"}

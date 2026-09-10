@@ -208,8 +208,10 @@ def test_llm_export_hybrid_block_is_gated_on_num_linear_attn_layers():
     ), "Hybrid dtype block must be gated on `num_linear_attn_layers > 0`."
 
 
-def test_current_export_schema_uses_simple_tp_mapping_only():
+def test_current_export_schema_uses_simple_tp_mapping():
     config_src = _load_config_source()
+    # Mapping is the exporter's in-memory shard coordinate. The serialized
+    # world config intentionally omits a top-level parallel_mapping object.
     mapping_match = re.search(
         r"@dataclass\s+class Mapping:.*?(?=\n\n@dataclass)",
         config_src,
@@ -225,14 +227,52 @@ def test_current_export_schema_uses_simple_tp_mapping_only():
     assert mapping_fields == ["world_size", "rank", "tp_size", "tp_rank"]
 
 
-def test_runtime_config_writer_stamps_tp_rank_fields_for_multi_rank_export():
+def test_runtime_config_writer_emits_rank_configs_for_multi_rank_export():
     export_src = _load_source()
-    assert re.search(r"tp_size\s*=\s*max\(1,\s*getattr\(config, ['\"]tp_size",
-                     export_src)
-    assert re.search(r"tp_rank\s*=\s*max\(0,\s*getattr\(config, ['\"]tp_rank",
-                     export_src)
-    assert re.search(
-        r"if\s+tp_size\s*>\s*1\s*:\s*out\[['\"]tp_size['\"]\]\s*=\s*tp_size\s*"
-        r"out\[['\"]tp_rank['\"]\]\s*=\s*tp_rank",
+    writer_match = re.search(
+        r"def build_runtime_llm_config_dict\(.*?(?=\n\ndef )",
         export_src,
+        re.DOTALL,
     )
+    assert writer_match is not None, (
+        "Expected build_runtime_llm_config_dict in checkpoint_utils.py.")
+    writer_src = writer_match.group(0)
+
+    assert re.search(
+        r"if\s+world_size\s*>\s*1\s+or\s+tp_size\s*>\s*1\s*:",
+        writer_src,
+    )
+    assert re.search(
+        r"if\s+world_size\s*>\s*1\s+or\s+tp_size\s*>\s*1\s*:\s*"
+        r"(?:\#.*\s*)*"
+        r"_apply_global_model_fields\(\s*out\s*,\s*global_llm_config\s*\)",
+        writer_src,
+    ), ("Global checkpoint fields must only replace rank-local values for "
+        "multi-rank exports.")
+    assert re.search(
+        r"rank_config\s*:\s*Dict\[str,\s*Any\]\s*=\s*\{\s*"
+        r"[\"']rank[\"']\s*:\s*rank\s*,?\s*\}",
+        writer_src,
+    )
+    assert re.search(
+        r"if\s+tp_rank\s*!=\s*rank\s*:\s*"
+        r"rank_config\[[\"']tp_rank[\"']\]\s*=\s*tp_rank",
+        writer_src,
+    )
+    assert re.search(
+        r"out\[[\"']rank_configs[\"']\]\s*=\s*_merge_rank_config\(\s*"
+        r"existing_rank_configs\s*,\s*rank_config\s*\)",
+        writer_src,
+    )
+
+
+def test_tp_export_rejects_unsupported_artifact_modes():
+    script_path = os.path.normpath(
+        os.path.join(_THIS_DIR, "..", "..", "tensorrt_edgellm", "scripts",
+                     "export.py"))
+    with open(script_path, "r", encoding="utf-8") as f:
+        script_src = f.read()
+
+    assert "if args.tp_size > 1 and externalize_weights:" in script_src
+    assert "--externalize-weights is not supported with --tp-size > 1" in script_src
+    assert "Tensor-parallel speculative decoding export is not supported" in script_src

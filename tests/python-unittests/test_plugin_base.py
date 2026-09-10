@@ -347,12 +347,15 @@ class PluginRunner:
 
     def execute(self,
                 tensors: Dict[str, "torch.Tensor"],
-                input_shapes: Optional[Dict[str, Tuple[int, ...]]] = None):
+                input_shapes: Optional[Dict[str, Tuple[int, ...]]] = None,
+                synchronize: bool = True):
         """Bind torch tensors to every IO tensor and run.
 
         Input shapes default to each input tensor's own shape. Aliased outputs
         are handled by passing the same torch tensor under both binding names.
         All tensors must be CUDA tensors with matching dtype/layout.
+        Set ``synchronize=False`` only when the caller supplies the required
+        stream ordering, such as inside CUDA graph capture.
         """
         ctx = self.context
         for i in range(self.engine.num_io_tensors):
@@ -371,7 +374,8 @@ class PluginRunner:
         # be synchronized with them and could read partially-written inputs.
         stream = torch.cuda.current_stream()
         ok = ctx.execute_async_v3(stream.cuda_stream)
-        stream.synchronize()
+        if synchronize:
+            stream.synchronize()
         if not ok:
             raise RuntimeError("execute_async_v3 returned False")
 

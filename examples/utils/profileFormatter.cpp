@@ -299,6 +299,10 @@ void outputPrefillProfile(std::ostream& output, metrics::LLMPrefillMetrics const
         output << "=== LLM Prefill ===" << std::endl;
         output << "Reused Tokens: " << prefillMetrics.reusedTokens << std::endl;
         output << "Computed Tokens: " << prefillMetrics.computedTokens << std::endl;
+        if (prefillMetrics.prunedTokens > 0)
+        {
+            output << "Pruned Tokens (visual-token pruning): " << prefillMetrics.prunedTokens << std::endl;
+        }
         output << "Average Tokens per Run: " << std::fixed << std::setprecision(2)
                << getPrefillAverageTokensPerRun(prefillMetrics) << std::endl;
         output << "Average Time per Run: " << std::fixed << std::setprecision(4)
@@ -481,37 +485,26 @@ void outputOmniProfile(std::ostream& output, metrics::OmniTalkerMetrics const& t
 void outputMemoryProfile(std::ostream& output, MemoryMonitor const& memoryMonitor)
 {
     output << "=== Memory Usage ===" << std::endl;
-
-    if (memoryMonitor.isIntegratedGPU())
-    {
-        // iGPU: Only show unified memory
-        size_t peakUnifiedMemoryBytes = memoryMonitor.getPeakUnifiedMemory();
-        output << "Peak Unified Memory: " << std::fixed << std::setprecision(2)
-               << rt::utils::toMB(peakUnifiedMemoryBytes) << " MB (" << peakUnifiedMemoryBytes << " bytes)"
-               << std::endl;
-    }
-    else
-    {
-        // dGPU: Show both GPU and CPU memory
-        size_t peakGpuMemoryBytes = memoryMonitor.getPeakGpuMemory();
-        size_t peakCpuMemoryBytes = memoryMonitor.getPeakCpuMemory();
-        output << "Peak GPU Memory: " << std::fixed << std::setprecision(2) << rt::utils::toMB(peakGpuMemoryBytes)
-               << " MB (" << peakGpuMemoryBytes << " bytes)" << std::endl;
-        output << "Peak CPU Memory: " << std::fixed << std::setprecision(2) << rt::utils::toMB(peakCpuMemoryBytes)
-               << " MB (" << peakCpuMemoryBytes << " bytes)" << std::endl;
-    }
+    size_t const peakGpuMemoryBytes = memoryMonitor.getPeakGpuMemory();
+    size_t const peakCpuMemoryBytes = memoryMonitor.getPeakCpuMemory();
+    output << "Peak GPU Memory: " << std::fixed << std::setprecision(2) << rt::utils::toMB(peakGpuMemoryBytes)
+           << " MB (" << peakGpuMemoryBytes << " bytes)" << std::endl;
+    output << "Peak CPU Memory: " << std::fixed << std::setprecision(2) << rt::utils::toMB(peakCpuMemoryBytes)
+           << " MB (" << peakCpuMemoryBytes << " bytes)" << std::endl;
+    output << "GPU Memory Metric: " << memoryMonitor.getGpuMemoryMetric() << std::endl;
 }
 
 void addJsonPrefillSummary(nlohmann::json& summary, metrics::LLMPrefillMetrics const& prefillMetrics)
 {
     if (prefillMetrics.getTotalRuns() > 0)
     {
-        summary["prefill"] = {{"total_runs", prefillMetrics.getTotalRuns()},
-            {"reused_tokens", prefillMetrics.reusedTokens}, {"computed_tokens", prefillMetrics.computedTokens},
-            {"average_tokens_per_run", getPrefillAverageTokensPerRun(prefillMetrics)},
-            {"average_time_per_run_ms", getPrefillAverageTimePerRun(prefillMetrics)},
-            {"tokens_per_second", getPrefillTokensPerSecond(prefillMetrics)},
-            {"average_time_per_token_ms", getPrefillAverageTimePerToken(prefillMetrics)}};
+        summary["prefill"]
+            = {{"total_runs", prefillMetrics.getTotalRuns()}, {"reused_tokens", prefillMetrics.reusedTokens},
+                {"computed_tokens", prefillMetrics.computedTokens}, {"pruned_tokens", prefillMetrics.prunedTokens},
+                {"average_tokens_per_run", getPrefillAverageTokensPerRun(prefillMetrics)},
+                {"average_time_per_run_ms", getPrefillAverageTimePerRun(prefillMetrics)},
+                {"tokens_per_second", getPrefillTokensPerSecond(prefillMetrics)},
+                {"average_time_per_token_ms", getPrefillAverageTimePerToken(prefillMetrics)}};
     }
 }
 
@@ -700,23 +693,53 @@ void addJsonTimingStages(nlohmann::json& summary)
 
 void addJsonMemorySummary(nlohmann::json& summary, MemoryMonitor const& memoryMonitor)
 {
-    if (memoryMonitor.isIntegratedGPU())
+    size_t const peakGpuMemoryBytes = memoryMonitor.getPeakGpuMemory();
+    size_t const peakCpuMemoryBytes = memoryMonitor.getPeakCpuMemory();
+    summary["peak_gpu_memory_bytes"] = peakGpuMemoryBytes;
+    summary["peak_gpu_memory_mb"] = rt::utils::toMB(peakGpuMemoryBytes);
+    summary["peak_cpu_memory_bytes"] = peakCpuMemoryBytes;
+    summary["peak_cpu_memory_mb"] = rt::utils::toMB(peakCpuMemoryBytes);
+    summary["gpu_memory_metric"] = memoryMonitor.getGpuMemoryMetric();
+}
+
+void addJsonMemorySummary(nlohmann::json& summary, MemoryMonitor const& memoryMonitor, int32_t tpSize,
+    std::string const& launchMode, std::vector<RankMemorySummary> const& rankMemory)
+{
+    addJsonMemorySummary(summary, memoryMonitor);
+
+    nlohmann::json memoryJson{
+        {"launch_mode", launchMode}, {"tp_size", tpSize}, {"gpu_memory_metric", memoryMonitor.getGpuMemoryMetric()}};
+    nlohmann::json rankMemoryJson = nlohmann::json::array();
+    size_t totalRankGpuMemoryBytes = 0;
+    size_t maxRankGpuMemoryBytes = 0;
+    size_t totalRankCpuMemoryBytes = 0;
+    size_t maxRankCpuMemoryBytes = 0;
+    for (RankMemorySummary const& rank : rankMemory)
     {
-        // iGPU: Only add unified memory
-        size_t peakUnifiedMemoryBytes = memoryMonitor.getPeakUnifiedMemory();
-        summary["peak_unified_memory_bytes"] = peakUnifiedMemoryBytes;
-        summary["peak_unified_memory_mb"] = rt::utils::toMB(peakUnifiedMemoryBytes);
+        rankMemoryJson.push_back(
+            {{"rank", rank.rank}, {"device", rank.device}, {"peak_gpu_memory_bytes", rank.peakGpuMemoryBytes},
+                {"peak_gpu_memory_mb", rt::utils::toMB(rank.peakGpuMemoryBytes)},
+                {"peak_cpu_memory_bytes", rank.peakCpuMemoryBytes},
+                {"peak_cpu_memory_mb", rt::utils::toMB(rank.peakCpuMemoryBytes)}});
+        totalRankGpuMemoryBytes += rank.peakGpuMemoryBytes;
+        maxRankGpuMemoryBytes = std::max(maxRankGpuMemoryBytes, rank.peakGpuMemoryBytes);
+        totalRankCpuMemoryBytes += rank.peakCpuMemoryBytes;
+        maxRankCpuMemoryBytes = std::max(maxRankCpuMemoryBytes, rank.peakCpuMemoryBytes);
     }
-    else
+
+    if (!rankMemoryJson.empty())
     {
-        // dGPU: Add both GPU and CPU memory
-        size_t peakGpuMemoryBytes = memoryMonitor.getPeakGpuMemory();
-        size_t peakCpuMemoryBytes = memoryMonitor.getPeakCpuMemory();
-        summary["peak_gpu_memory_bytes"] = peakGpuMemoryBytes;
-        summary["peak_gpu_memory_mb"] = rt::utils::toMB(peakGpuMemoryBytes);
-        summary["peak_cpu_memory_bytes"] = peakCpuMemoryBytes;
-        summary["peak_cpu_memory_mb"] = rt::utils::toMB(peakCpuMemoryBytes);
+        memoryJson["rank_memory"] = std::move(rankMemoryJson);
+        memoryJson["peak_total_rank_gpu_memory_bytes"] = totalRankGpuMemoryBytes;
+        memoryJson["peak_total_rank_gpu_memory_mb"] = rt::utils::toMB(totalRankGpuMemoryBytes);
+        memoryJson["peak_max_rank_gpu_memory_bytes"] = maxRankGpuMemoryBytes;
+        memoryJson["peak_max_rank_gpu_memory_mb"] = rt::utils::toMB(maxRankGpuMemoryBytes);
+        memoryJson["peak_total_rank_cpu_memory_bytes"] = totalRankCpuMemoryBytes;
+        memoryJson["peak_total_rank_cpu_memory_mb"] = rt::utils::toMB(totalRankCpuMemoryBytes);
+        memoryJson["peak_max_rank_cpu_memory_bytes"] = maxRankCpuMemoryBytes;
+        memoryJson["peak_max_rank_cpu_memory_mb"] = rt::utils::toMB(maxRankCpuMemoryBytes);
     }
+    summary["memory"] = std::move(memoryJson);
 }
 
 /**

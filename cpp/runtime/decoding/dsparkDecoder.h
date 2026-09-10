@@ -19,6 +19,7 @@
 
 #include "common/hashUtils.h"
 #include "runtime/decoding/decodingStrategy.h"
+#include "runtime/decoding/specCommonStateTracker.h"
 #include "runtime/state/externalWeightManager.h"
 
 #include <filesystem>
@@ -34,7 +35,7 @@ class DSparkDecoder final : public DecodingStrategy
 public:
     DSparkDecoder(DecodingRuntimeContext& runtime, std::filesystem::path const& engineDir,
         SpecDecodeDraftingConfig const& draftingConfig, std::unique_ptr<EngineExecutor> draftExecutor,
-        cudaStream_t stream);
+        ExternalWeightManager draftWeights, cudaStream_t stream);
 
     DecodingStrategyKind kind() const noexcept override
     {
@@ -51,8 +52,12 @@ public:
         return true;
     }
 
+    DecodingKvHeadroom requiredKvHeadroom() const override;
+
     bool decodeStep(DecodingInferenceContext& context) override;
     bool captureCudaGraphs(cudaStream_t stream) override;
+    bool initializeForGeneration(DecodingInferenceContext& context) override;
+    std::vector<int32_t> const& commonMaterializedStateLengths() const noexcept override;
 
     int64_t getRequiredContextMemorySize() const noexcept override;
     void setContextMemory(Tensor& memory) override;
@@ -65,13 +70,15 @@ public:
 
     void resetForNewSequences(Tensor& reuseLengths, cudaStream_t stream) override;
     void onBatchEvict(std::vector<int32_t> const& batchMapping, int32_t oldActiveBatch, int32_t newActiveBatch,
-        Tensor& deviceBatchMapping, cudaStream_t stream, BatchCompactionMode mode) override;
+        Tensor& deviceBatchMapping, cudaStream_t stream) override;
 
 private:
     bool runDraftForward(DecodingInferenceContext& context);
     bool runBaseVerification(DecodingInferenceContext& context);
     bool buildTreeVerifyInputs(int32_t activeBatchSize, cudaStream_t stream, bool useConfidence);
     void commitAcceptedTreePath(DecodingInferenceContext& context, int32_t verifySize, int32_t maxAcceptLength);
+    void dsparkBiasMarkovGreedy(DecodingInferenceContext& context, int32_t activeBatchSize, int32_t proposalLen);
+    void dsparkBiasMarkovSample(DecodingInferenceContext& context, int32_t activeBatchSize, int32_t proposalLen);
     void loadHeadSidecars(std::filesystem::path const& engineDir, cudaStream_t stream);
 
     DecodingRuntimeContext& mRuntime;
@@ -97,12 +104,14 @@ private:
     Tensor mDraftDeltaLens;           //!< [B] INT32
 
     //! Draft/verify/accepted tokens
-    Tensor mDraftTokenIds;          //!< [B, proposalLen] INT32
-    Tensor mVerifyTokenIds;         //!< [B, verifyLen] INT32, verifyLen = proposalLen + 1
-    Tensor mAcceptedTokenIds;       //!< [B, verifyLen] INT32
-    Tensor mAcceptLength;           //!< [B] INT32
-    Tensor mHostAcceptLengths;      //!< [B] INT32 (CPU)
-    Tensor mHostAcceptedTokenIds;   //!< [B, verifyLen] INT32 (CPU)
+    Tensor mDraftTokenIds;        //!< [B, proposalLen] INT32
+    Tensor mVerifyTokenIds;       //!< [B, verifyLen] INT32, verifyLen = proposalLen + 1
+    Tensor mAcceptedTokenIds;     //!< [B, verifyLen] INT32
+    Tensor mAcceptLength;         //!< [B] INT32
+    Tensor mHostAcceptLengths;    //!< [B] INT32 (CPU)
+    Tensor mHostAcceptedTokenIds; //!< [B, verifyLen] INT32 (CPU)
+
+    SpecCommonStateTracker mCommonStateTracker;
     Tensor mHostDraftInputIds;      //!< [B, proposalLen] INT32 (CPU)
     Tensor mHostLastAcceptedTokens; //!< [B] INT32 (CPU)
     Tensor mHostDeltaLens;          //!< [B] INT32 (CPU)

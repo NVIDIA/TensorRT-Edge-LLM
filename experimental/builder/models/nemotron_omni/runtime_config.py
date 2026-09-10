@@ -17,6 +17,12 @@
 from typing import Any, Dict
 
 from ...core import contracts
+from ...core.artifacts.tokenizer import find_token_id
+
+
+def _video_config(root: Dict[str, Any], key: str, default):
+    visual = root.get("vision_config") or {}
+    return visual.get(key, root.get(key, default))
 
 
 def component_runtime_config(bundle, component: contracts.Component, args):
@@ -50,10 +56,36 @@ def component_runtime_config(bundle, component: contracts.Component, args):
         llm_config = root.get("llm_config", {})
         if "vocab_size" in llm_config:
             result["llm_config"] = {"vocab_size": llm_config["vocab_size"]}
-        for key in ("img_context_token_id", "img_start_token_id",
-                    "img_end_token_id", "force_image_size", "norm_mean",
-                    "norm_std", "patch_size", "downsample_ratio"):
+        token_ids = {
+            "img_context_token_id":
+            root.get("img_context_token_id")
+            or find_token_id(bundle.model_dir, "<image>"),
+            "img_start_token_id":
+            root.get("img_start_token_id")
+            or find_token_id(bundle.model_dir, "<img>"),
+            "img_end_token_id":
+            root.get("img_end_token_id")
+            or find_token_id(bundle.model_dir, "</img>"),
+        }
+        if not isinstance(token_ids["img_context_token_id"], int):
+            raise ValueError("Nemotron-Omni tokenizer does not define <image>")
+        result.update({
+            key: value
+            for key, value in token_ids.items() if isinstance(value, int)
+        })
+        for key in ("force_image_size", "norm_mean", "norm_std", "patch_size",
+                    "downsample_ratio", "vit_hidden_size"):
             if key in root:
                 result[key] = root[key]
+        result.update({
+            "video_temporal_patch_size":
+            int(_video_config(root, "video_temporal_patch_size", 2)),
+            "video_target_num_patches":
+            int(_video_config(root, "video_target_num_patches", 1024)),
+            "video_maintain_aspect_ratio":
+            bool(_video_config(root, "video_maintain_aspect_ratio", True)),
+            "video_pruning_rate":
+            float(_video_config(root, "video_pruning_rate", 0.0)),
+        })
         return result
     return None

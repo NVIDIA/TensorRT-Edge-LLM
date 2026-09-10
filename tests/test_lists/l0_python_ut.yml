@@ -10,6 +10,9 @@
 tests:
   - tests/defs/test_common.py::test_build_project_with_pybind
 
+  # Package import and introspection contracts
+  - tests/python-unittests/test_package_api.py
+
   # ONNX-less builder checkpoint contracts
   - tests/python-unittests/test_direct_builder_checkpoint_contract.py
 
@@ -110,11 +113,17 @@ tests:
   - tests/python-unittests/test_nvfp4_a16_moe_plugin.py::test_build_rejects_wrong_hidden_state_dtype
   - tests/python-unittests/test_nvfp4_a16_moe_plugin.py::test_build_rejects_nonpositive_sigmoid_routed_scaling_factor
   - tests/python-unittests/test_nvfp4_a16_moe_plugin.py::test_build_rejects_misaligned_dimensions
+  - tests/python-unittests/test_nvfp4_a16_moe_plugin.py::test_build_rejects_unsupported_num_experts
+  - tests/python-unittests/test_nvfp4_a16_moe_plugin.py::test_create_plugin_accepts_256_experts
 
   # Marlin dense NVFP4 (W4A16) GEMM plugin tests
   - tests/python-unittests/test_nvfp4_a16_gemm_plugin.py::test_dense_nvfp4_a16_gemm_decode_and_prefill
   - tests/python-unittests/test_nvfp4_a16_gemm_plugin.py::test_dense_nvfp4_a16_gemm_auto_max_m
   - tests/python-unittests/test_nvfp4_a16_gemm_plugin.py::test_build_rejects_misaligned_dimensions
+  - tests/python-unittests/test_nvfp4_a16_official_lm_head.py::test_mixed_precision_w4a16_lm_head_is_nvfp4_a16
+  - tests/python-unittests/test_nvfp4_a16_official_lm_head.py::test_parse_quant_keeps_excluded_fp16_lm_head
+  - tests/python-unittests/test_nvfp4_a16_official_lm_head.py::test_parse_quant_does_not_invent_lm_head_override
+  - tests/python-unittests/test_nvfp4_a16_official_lm_head.py::test_repack_nvfp4_a16_gated_moe_shapes
 
   # FP16 MoE plugin tests (softmax + sigmoid-group-topk routing)
   - tests/python-unittests/test_fp16_moe_plugin.py::test_fp16_moe_decode_and_prefill_dynamic_engine
@@ -124,7 +133,6 @@ tests:
   - tests/python-unittests/test_vit_attention_plugin.py::test_window_partition
   - tests/python-unittests/test_vit_attention_plugin.py::test_head_sweep
   - tests/python-unittests/test_vit_attention_plugin.py::test_batch_invariance
-
 
   # Gemma4 audio attention plugin tests
   - tests/python-unittests/test_gemma4_audio_attention_plugin.py::test_prefill
@@ -136,38 +144,16 @@ tests:
   - tests/python-unittests/test_chat_template_json.py::test_qwen3_omni_media_wrapped_with_boundary_tokens
   - tests/python-unittests/test_chat_template_json.py::test_qwen3asr_audio_wrapped_with_boundary_tokens
 
-  # Experimental Server Tool Calling Tests
-  - tests/python-unittests/test_tool_chat_template.py::test_needs_tool_template
-  - tests/python-unittests/test_tool_chat_template.py::test_formats_tool_template
-  - tests/python-unittests/test_tool_chat_template.py::test_normalize_converts_video_url_spelling
-  - tests/python-unittests/test_tool_chat_template.py::test_flatten_content_blocks
-  - tests/python-unittests/test_anthropic_compat.py::test_converts_request
-  - tests/python-unittests/test_anthropic_compat.py::test_flags_tool_result_error
-  - tests/python-unittests/test_anthropic_compat.py::test_maps_stop_reasons
-  - tests/python-unittests/test_anthropic_compat.py::test_builds_content_blocks
-  - tests/python-unittests/test_anthropic_compat.py::test_stream_event_grammar
-  - tests/python-unittests/test_batching.py::test_overflow_and_pending
-  - tests/python-unittests/test_batching.py::test_worker_survives_bad_request
-  - tests/python-unittests/test_batching.py::test_admission_queue
-  - tests/python-unittests/test_batching.py::test_video_request_is_unbatchable
-  - tests/python-unittests/test_batching.py::test_batcher_runs_video_requests_alone
-  - tests/python-unittests/test_tool_calling.py::test_validates_tool_request
-  - tests/python-unittests/test_tool_calling.py::test_parses_tool_calls
-  - tests/python-unittests/test_tool_calling.py::test_builds_tool_response_shapes
-  - tests/python-unittests/test_tool_calling.py::test_stream_usage_chunk
-  - tests/python-unittests/test_tool_calling.py::test_tool_stream_usage_chunk
-
-  # Experimental Server Logit Bias Validation Tests
-  - tests/python-unittests/test_experimental_server_logit_bias.py::test_normalize_logit_bias_accepts_integer_like_keys_and_boundaries
-  - tests/python-unittests/test_experimental_server_logit_bias.py::test_normalize_logit_bias_rejects_too_many_entries
-  - tests/python-unittests/test_experimental_server_logit_bias.py::test_normalize_logit_bias_rejects_non_integer_token_ids
-  - tests/python-unittests/test_experimental_server_logit_bias.py::test_normalize_logit_bias_rejects_token_ids_outside_nonnegative_int32
-  - tests/python-unittests/test_experimental_server_logit_bias.py::test_normalize_logit_bias_rejects_invalid_bias_values
-  - tests/python-unittests/test_experimental_server_logit_bias.py::test_validate_logit_bias_spec_decode_accepts_compatible_states
-  - tests/python-unittests/test_experimental_server_logit_bias.py::test_validate_logit_bias_spec_decode_rejects_active_spec_decode
-  - tests/python-unittests/test_experimental_server_logit_bias.py::test_hlapi_generate_rejects_logit_bias_with_active_spec_decode
-  - tests/python-unittests/test_experimental_server_logit_bias.py::test_api_rejects_logit_bias_with_active_spec_decode
-  - tests/python-unittests/test_experimental_server_logit_bias.py::test_api_rejects_overflowing_logit_bias
+  # Experimental checkpoint-direct server
+  - tests/python-unittests/test_server_config.py
+  - tests/python-unittests/test_server_model_cache.py
+  - tests/python-unittests/test_server_requests.py
+  - tests/python-unittests/test_server_runtime.py
+  - tests/python-unittests/test_tool_chat_template.py
+  - tests/python-unittests/test_tool_calling.py
+  - tests/python-unittests/test_anthropic_compat.py
+  - tests/python-unittests/test_experimental_server_audio.py
+  - tests/python-unittests/test_experimental_server_logit_bias.py
 
   # Audio preprocessing (C++ mel FE vs HF transformers; skips without the
   # pybind runtime / transformers / soundfile)
@@ -250,89 +236,10 @@ tests:
   - tests/python-unittests/test_preprocess_video.py::test_raw_per_group_token_cap
   - tests/python-unittests/test_preprocess_video.py::test_resolve_video_cfg_precedence
 
-  # Server request-parsing chains + audio endpoints (real HTTP endpoint ->
-  # real engine conversion/resolution; stubs only at the C++-binding and
-  # video-decode boundaries)
-  - tests/python-unittests/test_server_requests.py::test_chat_video_request_end_to_end
-  - tests/python-unittests/test_server_requests.py::test_chat_text_request_parses
-  - tests/python-unittests/test_server_requests.py::test_chat_video_frames_request_parses_to_ordered_buffers
-  - tests/python-unittests/test_server_requests.py::test_chat_rejects_bad_media_via_api
-  - tests/python-unittests/test_server_requests.py::test_chat_audio_request_parses_to_bytes
-  - tests/python-unittests/test_server_requests.py::test_chat_audio_data_url_over_cap_returns_400
-  - tests/python-unittests/test_server_requests.py::test_audio_transcriptions_endpoint
-  - tests/python-unittests/test_server_requests.py::test_audio_transcriptions_rejects_empty
-  - tests/python-unittests/test_server_requests.py::test_audio_transcriptions_protocol
-  - tests/python-unittests/test_server_requests.py::test_video_model_family_resolution
-  - tests/python-unittests/test_server_requests.py::test_video_model_family_nemotron
-  - tests/python-unittests/test_server_requests.py::test_load_image_buffers_request_wide_internvl_minimum
-  - tests/python-unittests/test_server_requests.py::test_load_image_buffers_nemotron_minimum
-  - tests/python-unittests/test_server_requests.py::test_load_image_buffers_nemotron_minimum_uses_raw_tubelets
-  - tests/python-unittests/test_server_requests.py::test_load_image_buffers_request_wide_qwen_minimum
-  - tests/python-unittests/test_server_requests.py::test_audio_transcriptions_limits
-  - tests/python-unittests/test_server_requests.py::test_content_length_parsing
-  - tests/python-unittests/test_server_requests.py::test_audio_transcriptions_requires_audio_engine
-  - tests/python-unittests/test_server_requests.py::test_stream_disconnect_before_first_byte_releases_admission
-  - tests/python-unittests/test_server_requests.py::test_admission_busy_returns_503
-  - tests/python-unittests/test_server_requests.py::test_admission_spans_decode_and_infer
-  - tests/python-unittests/test_server_requests.py::test_stream_disconnect_keeps_gate_until_worker_exits
-  - tests/python-unittests/test_server_requests.py::test_stream_close_cancels_channel
-  - tests/python-unittests/test_server_requests.py::test_video_frame_limits_carry_recorded_cu_capacity
-  - tests/python-unittests/test_server_requests.py::test_load_image_buffers_budget_order_independent
-  - tests/python-unittests/test_server_requests.py::test_load_image_buffers_nemotron_rejects_multiple_and_mixed
-  - tests/python-unittests/test_server_requests.py::test_cli_parser_builds
-  - tests/python-unittests/test_server_requests.py::test_video_frame_limits_from_engine_config
-  - tests/python-unittests/test_server_requests.py::test_chat_streaming_invalid_video_returns_400
-  - tests/python-unittests/test_server_requests.py::test_audio_transcriptions_prompt_is_user_context
-  - tests/python-unittests/test_server_requests.py::test_audio_transcriptions_duration_limit
-  - tests/python-unittests/test_server_requests.py::test_audio_transcriptions_error_stage_mapping
-  - tests/python-unittests/test_server_requests.py::test_completions_non_stream
-  - tests/python-unittests/test_server_requests.py::test_completions_raw_prompt_chain
-  - tests/python-unittests/test_server_requests.py::test_completions_stream
-  - tests/python-unittests/test_server_requests.py::test_completions_rejects_bad_prompt
-  - tests/python-unittests/test_server_requests.py::test_local_media_rejected_when_unset
-  - tests/python-unittests/test_server_requests.py::test_local_media_every_accepted_spelling_is_policed
-  - tests/python-unittests/test_server_requests.py::test_media_count_mismatch_is_client_error
-  - tests/python-unittests/test_server_requests.py::test_media_count_mismatch_returns_400_over_http
-  - tests/python-unittests/test_experimental_server_engine_dir_routing.py::test_cached_onnx_still_gets_multimodal_token_ids
-  - tests/python-unittests/test_experimental_server_engine_dir_routing.py::test_server_classification_matches_exporter
-  - tests/python-unittests/test_server_requests.py::test_local_media_allowed_inside_root
-  - tests/python-unittests/test_server_requests.py::test_local_media_escape_rejected
-  - tests/python-unittests/test_server_requests.py::test_data_and_http_refs_bypass_local_policy
-  - tests/python-unittests/test_server_requests.py::test_sampling_params_rejected
-  - tests/python-unittests/test_server_requests.py::test_sampling_params_defaults
-  - tests/python-unittests/test_server_requests.py::test_usage_uses_runtime_prompt_token_counts
-  - tests/python-unittests/test_server_requests.py::test_stream_usage_chunk_when_requested
-  - tests/python-unittests/test_server_requests.py::test_stream_usage_absent_by_default
-  - tests/python-unittests/test_server_requests.py::test_serve_forwards_allowed_local_media_path
-  - tests/python-unittests/test_server_requests.py::test_batch_slice_carries_prompt_token_counts
-  - tests/python-unittests/test_server_requests.py::test_cli_main_wires_through_to_app
-  - tests/python-unittests/test_server_requests.py::test_oversized_json_body_rejected
-  - tests/python-unittests/test_server_requests.py::test_normal_body_still_accepted
-  - tests/python-unittests/test_server_requests.py::test_tool_stream_usage_chunk_when_requested
-  - tests/python-unittests/test_server_requests.py::test_local_media_frames_rejected_when_unset
-  - tests/python-unittests/test_server_requests.py::test_integer_params_reject_floats
-  - tests/python-unittests/test_server_requests.py::test_include_usage_rejects_non_bool
-  - tests/python-unittests/test_experimental_server_engine_dir_routing.py::test_detect_engine_type
-  - tests/python-unittests/test_experimental_server_engine_dir_routing.py::test_validate_spec_decode_engine_dir_requires_both
-  - tests/python-unittests/test_experimental_server_engine_dir_routing.py::test_find_multimodal_engine_dir
-  - tests/python-unittests/test_experimental_server_engine_dir_routing.py::test_init_from_engine_routes_spec_decode_dir
-  - tests/python-unittests/test_experimental_server_engine_dir_routing.py::test_init_from_engine_ignores_visual_dir_for_spec_decode
-  - tests/python-unittests/test_experimental_server_engine_dir_routing.py::test_init_from_engine_spec_decode_missing_draft_engine
-  - tests/python-unittests/test_experimental_server_engine_dir_routing.py::test_init_from_engine_vanilla_llm_still_works
-  - tests/python-unittests/test_experimental_server_engine_dir_routing.py::test_init_from_engine_unknown_dir_raises
-  - tests/python-unittests/test_experimental_server_engine_dir_routing.py::test_init_from_model_asr_builds_audio_engine
-  - tests/python-unittests/test_experimental_server_engine_dir_routing.py::test_init_from_model_asr_reuses_cached_artifacts
-  - tests/python-unittests/test_experimental_server_engine_dir_routing.py::test_init_from_model_vlm_still_builds_visual
-  - tests/python-unittests/test_experimental_server_engine_dir_routing.py::test_init_from_onnx_builds_visual_and_audio_into_shared_root
-  - tests/python-unittests/test_experimental_server_engine_dir_routing.py::test_init_from_model_omni_builds_visual_and_audio
-  - tests/python-unittests/test_experimental_server_engine_dir_routing.py::test_init_from_model_prebuilt_multimodal_skips_encoder_export
-  - tests/python-unittests/test_experimental_server_engine_dir_routing.py::test_audio_onnx_dir_rejected_without_onnx_dir
-  - tests/python-unittests/test_experimental_server_engine_dir_routing.py::test_bad_multimodal_engine_dir_rejected_before_llm_export
-  - tests/python-unittests/test_experimental_server_engine_dir_routing.py::test_init_from_model_text_only_has_no_multimodal_dir
-
   # Context-reuse pipeline configuration tests
   - tests/python-unittests/test_pipeline_context_reuse.py::test_context_reuse_build_and_inference_commands_share_engine
   - tests/python-unittests/test_pipeline_context_reuse.py::test_context_reuse_snapshot_budgets_require_enable_token
   - tests/python-unittests/test_pipeline_context_reuse.py::test_context_reuse_profile_requires_positive_reused_tokens
   - tests/python-unittests/test_pipeline_context_reuse.py::test_context_reuse_fixture_has_strict_prefix_seed
   - tests/python-unittests/test_pipeline_context_reuse.py::test_context_reuse_cold_and_hit_outputs_are_token_identical
+  - tests/python-unittests/test_pipeline_context_reuse.py::test_spec_prefill_evict_fixture_and_survivor_equivalence

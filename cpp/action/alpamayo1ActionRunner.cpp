@@ -20,7 +20,9 @@
 #include "common/bindingNames.h"
 #include "common/checkMacros.h"
 #include "common/logger.h"
+#include "common/pagedKvTypes.h"
 #include "common/trtUtils.h"
+#include "kernels/kvCacheUtilKernels/kvCacheUtilsKernels.h"
 #include "kernels/posEncoding/initializeCosSinCache.h"
 #include "profiling/metrics.h"
 #include "profiling/nvtx_wrapper.h"
@@ -50,8 +52,10 @@ bool Alpamayo1ActionRunner::preprocess(LLMGenerationRequest const& request,
     std::vector<std::vector<int32_t>>& batchedInputIds, tokenizer::Tokenizer const* tokenizer)
 {
     tokenizer::TokenToRanks const& specialTokens = tokenizer->getSpecialTokensEncoder();
-    int32_t activeBatchSize = request.requests.size();
-    for (int32_t i = 0; i < activeBatchSize; ++i)
+    int32_t const requestBatchSize = static_cast<int32_t>(request.requests.size());
+    int32_t const actionBatchSize = static_cast<int32_t>(std::count_if(request.requests.begin(), request.requests.end(),
+        [](auto const& req) { return req.pastTrajectory.has_value(); }));
+    for (int32_t i = 0; i < requestBatchSize; ++i)
     {
         std::vector<int32_t>& tokenIds = batchedInputIds[i];
         LLMGenerationRequest::Request const& req = request.requests[i];
@@ -116,15 +120,15 @@ bool Alpamayo1ActionRunner::preprocess(LLMGenerationRequest const& request,
         }
     }
 
-    if (activeBatchSize > mMaxActionBatchSize)
+    if (actionBatchSize > mMaxActionBatchSize)
     {
-        LOG_ERROR("request batch size %d exceeds engine max batch size %d", activeBatchSize, mMaxActionBatchSize);
+        LOG_ERROR("action batch size %d exceeds engine max batch size %d", actionBatchSize, mMaxActionBatchSize);
         return false;
     }
 
     try
     {
-        initializeNoiseTrajectory(mNoiseSeed, activeBatchSize);
+        initializeNoiseTrajectory(mNoiseSeed, actionBatchSize);
     }
     catch (std::exception const& e)
     {
@@ -135,18 +139,9 @@ bool Alpamayo1ActionRunner::preprocess(LLMGenerationRequest const& request,
 }
 
 Alpamayo1ActionRunner::Alpamayo1ActionRunner(std::string const& engineDir, std::string const& checkpointDir,
-    cudaStream_t stream, KVCacheManager::Config const& kvCacheConfig, bool basePageTableIsIdentity)
+    cudaStream_t stream, KVCacheManager::Config const& kvCacheConfig)
     : mStream(stream)
 {
-    // Identity-only opt-out: getSeparateKVCacheForDecoderLayer() reads physical slot
-    // row `b` directly and has no page-table-aware gather. Fail construction now, at model-load
-    // time, rather than silently mis-reading unrelated physical pages once non-identity base-cache
-    // reuse exists.
-    ELLM_CHECK(basePageTableIsIdentity,
-        "Alpamayo1ActionRunner requires the base KV cache to use an identity page table: action KV "
-        "consumption reads physical slot rows directly and is not page-table-aware. Refusing to load "
-        "the action expert for a base cache manager with non-identity paging enabled.");
-
     LOG_DEBUG("Loading action runner from %s", engineDir.c_str());
 
     std::string actionEnginePath = engineDir + "/action.engine";
@@ -207,54 +202,6 @@ bool Alpamayo1ActionRunner::setContextMemory(rt::Tensor& sharedContextMemory)
     return true;
 }
 
-std::pair<rt::Tensor&, rt::Tensor&> Alpamayo1ActionRunner::getSeparateKVCacheForDecoderLayer(
-    cudaStream_t stream, HybridCacheManager& kvcache, int32_t decoderLayerIdx, int32_t activeBatchSize)
-{
-    KVCacheManager::Config const& config = kvcache.getKVCacheManager().getConfig();
-    int32_t const H = mConfig.numKVHeads;
-    int32_t const S = static_cast<int32_t>(config.maxSequenceLength);
-    int32_t const D = mConfig.headDim;
-    // The KVCacheManager pads the per-slot token capacity to a multiple of the paged-KV page size
-    // (kTOKENS_PER_PAGE); use its own accessor rather than recomputing the padding locally.
-    int32_t const capPadded = kvcache.getKVCacheManager().maxCapPadded();
-    size_t const elemSize = rt::utils::getTypeSize(config.kvCacheType);
-
-    // Source = the manager's two-pool NHD pool, K-half and V-half each [maxBatch, capPadded, H, D]:
-    //   Within a slot it is token-major: (b, t, h, d) -> b*capPadded*H*D + t*H*D + h*D + d.
-    // Dest mK/mVCacheLayers = the engine's head-major layout [maxBatch, H, S, D]:
-    //   (b, h, t, d) -> (b*H + h)*S*D + t*D + d.
-    // This is a token-major -> head-major transpose, so copy each (b, h) head as S strided rows
-    // of D elements: source row pitch = H*D (NHD token stride), dest row pitch = D (contiguous).
-    // K-half/V-half base pointers come from getSeparateKVCache() rather than a fixed
-    // maxBatch*capPadded*H*D offset from a single combined pointer, so this stays correct if the
-    // pool has extra retained pages beyond the minimum active pages (see KVCacheManager::numPages()).
-    size_t const srcSlotStride = static_cast<size_t>(capPadded) * H * D * elemSize; // per request, within a half
-    size_t const srcRowPitch = static_cast<size_t>(H) * D * elemSize;               // NHD token stride
-    size_t const dstRowPitch = static_cast<size_t>(D) * elemSize;
-    size_t const rowBytes = static_cast<size_t>(D) * elemSize;
-    size_t const headBlockBytes = static_cast<size_t>(S) * D * elemSize; // dest per-(b,h) block
-
-    auto [kSrcView, vSrcView] = kvcache.getSeparateKVCache(decoderLayerIdx);
-    char const* kSrc = static_cast<char const*>(kSrcView.rawPointer());
-    char const* vSrc = static_cast<char const*>(vSrcView.rawPointer());
-    char* dstK = static_cast<char*>(mKCacheLayers[decoderLayerIdx].rawPointer());
-    char* dstV = static_cast<char*>(mVCacheLayers[decoderLayerIdx].rawPointer());
-
-    for (int32_t b = 0; b < activeBatchSize; ++b)
-    {
-        for (int32_t h = 0; h < H; ++h)
-        {
-            size_t const srcHeadOff = static_cast<size_t>(b) * srcSlotStride + static_cast<size_t>(h) * D * elemSize;
-            size_t const dstHeadOff = (static_cast<size_t>(b) * H + h) * headBlockBytes;
-            CUDA_CHECK(cudaMemcpy2DAsync(dstK + dstHeadOff, dstRowPitch, kSrc + srcHeadOff, srcRowPitch, rowBytes,
-                static_cast<size_t>(S), cudaMemcpyDeviceToDevice, stream));
-            CUDA_CHECK(cudaMemcpy2DAsync(dstV + dstHeadOff, dstRowPitch, vSrc + srcHeadOff, srcRowPitch, rowBytes,
-                static_cast<size_t>(S), cudaMemcpyDeviceToDevice, stream));
-        }
-    }
-    return {mKCacheLayers[decoderLayerIdx], mVCacheLayers[decoderLayerIdx]};
-}
-
 void Alpamayo1ActionRunner::setDynamicInputShapes(int32_t activeBatchSize)
 {
     Dims const kvCacheStartIndexShape = {1, {activeBatchSize}};
@@ -282,24 +229,18 @@ void Alpamayo1ActionRunner::setDynamicInputShapes(int32_t activeBatchSize)
     }
 }
 
-std::vector<std::vector<FutureTrajectoryPoint>> Alpamayo1ActionRunner::sampleTrajectory(cudaStream_t stream,
-    int32_t activeBatchSize, HybridCacheManager& kvcache, std::vector<int64_t> const& vlmOutputsRopeDeltas)
+std::vector<std::vector<FutureTrajectoryPoint>> Alpamayo1ActionRunner::sampleTrajectory(
+    cudaStream_t stream, HybridCacheManager const& kvcache, ActionKvBatchView const& batch)
 {
+    int32_t const activeBatchSize = batch.batchSize;
     TIME_STAGE(metrics::StageNames::kACTION_INFERENCE, stream);
     NVTX_SCOPED_RANGE(nvtx_action_sample,
         ("ACTION_SAMPLE_TRAJECTORY[BS=" + std::to_string(activeBatchSize) + "]").c_str(), nvtx_colors::PURPLE);
 
     std::vector<std::vector<FutureTrajectoryPoint>> result;
-    if (static_cast<int32_t>(vlmOutputsRopeDeltas.size()) != activeBatchSize)
+    if (activeBatchSize <= 0 || activeBatchSize > mMaxActionBatchSize)
     {
-        LOG_ERROR("vlmOutputsRopeDeltas size %zu != activeBatchSize %d", vlmOutputsRopeDeltas.size(), activeBatchSize);
-        return result;
-    }
-
-    // Ensure the KV cache is valid
-    if (kvcache.getKVCacheAllEmpty())
-    {
-        LOG_ERROR("KV cache is empty; LLM generation may not have completed/committed lengths yet.");
+        LOG_ERROR("Invalid action batch size %d (maximum %d)", activeBatchSize, mMaxActionBatchSize);
         return result;
     }
 
@@ -309,13 +250,32 @@ std::vector<std::vector<FutureTrajectoryPoint>> Alpamayo1ActionRunner::sampleTra
         return result;
     }
 
-    // Bind inputs for inference (dynamic shapes + addresses)
-    mKvcacheActualLengthsDevice = static_cast<int32_t*>(kvcache.getKVCacheLengths().rawPointer());
+    if (batch.kvLengthsHost.getDeviceType() != DeviceType::kCPU
+        || batch.kvLengthsDevice.getDeviceType() != DeviceType::kGPU
+        || batch.kvLengthsHost.getDataType() != DataType::kINT32
+        || batch.kvLengthsDevice.getDataType() != DataType::kINT32
+        || batch.kvLengthsHost.getShape().volume() < activeBatchSize
+        || batch.kvLengthsDevice.getShape().volume() < activeBatchSize
+        || static_cast<int32_t>(batch.mropeDeltas.size()) != activeBatchSize)
+    {
+        LOG_ERROR("Invalid action KV batch view for batch size %d", activeBatchSize);
+        return result;
+    }
+    int32_t const* const lengthsHost = batch.kvLengthsHost.dataPointer<int32_t>();
+    for (int32_t b = 0; b < activeBatchSize; ++b)
+    {
+        if (lengthsHost[b] <= 0 || lengthsHost[b] > mMaxSequenceLength)
+        {
+            LOG_ERROR("Invalid action KV cache length for row %d: %d", b, lengthsHost[b]);
+            return result;
+        }
+    }
 
     setDynamicInputShapes(activeBatchSize);
 
     bool setEngineIOStatus{true};
-    setEngineIOStatus &= mContext->setTensorAddress(binding_names::kKVCacheStartIndex, mKvcacheActualLengthsDevice);
+    setEngineIOStatus &= mContext->setTensorAddress(
+        binding_names::kKVCacheStartIndex, const_cast<void*>(batch.kvLengthsDevice.rawPointer()));
     setEngineIOStatus
         &= mContext->setTensorAddress(binding_names::kNoiseTrajectory, mNoiseTrajectoryDevice.rawPointer());
     setEngineIOStatus &= mContext->setTensorAddress(binding_names::kTimeStepsT0, mTimeStepsT0Device.rawPointer());
@@ -325,10 +285,16 @@ std::vector<std::vector<FutureTrajectoryPoint>> Alpamayo1ActionRunner::sampleTra
     setEngineIOStatus &= mContext->setTensorAddress(binding_names::kRopeCosSin, mRopeCosSinDevice.rawPointer());
     setEngineIOStatus &= mContext->setTensorAddress(binding_names::kAttentionPosId, mPositionIdsDevice.rawPointer());
 
-    // Bind full KV cache (all layers): inputs and outputs (present_* write in-place to same buffer)
+    KVCacheManager::Config const& kvConfig = kvcache.getKVCacheManager().getConfig();
+    size_t const elemSize = rt::utils::getTypeSize(kvConfig.kvCacheType);
     for (int32_t i = 0; i < mConfig.numDecoderLayers; ++i)
     {
-        auto [kCacheBlock, vCacheBlock] = getSeparateKVCacheForDecoderLayer(mStream, kvcache, i, activeBatchSize);
+        rt::Tensor& kCacheBlock = mKCacheLayers[static_cast<size_t>(i)];
+        rt::Tensor& vCacheBlock = mVCacheLayers[static_cast<size_t>(i)];
+        kernel::gatherPagedKVToHeadMajor(kvcache.getCombinedKVCache(i).rawPointer(), kCacheBlock.rawPointer(),
+            vCacheBlock.rawPointer(), batch.pageTable.kernelView().dataPointer<int32_t>(),
+            batch.kvLengthsDevice.dataPointer<int32_t>(), batch.pageTable.maxPagesPerSeq(), activeBatchSize,
+            mMaxSequenceLength, mConfig.numKVHeads, mConfig.headDim, elemSize, stream);
         setEngineIOStatus
             &= mContext->setTensorAddress(binding_names::formatKCacheName(i, true).c_str(), kCacheBlock.rawPointer());
         setEngineIOStatus
@@ -354,18 +320,6 @@ std::vector<std::vector<FutureTrajectoryPoint>> Alpamayo1ActionRunner::sampleTra
         t1Host[i] = static_cast<float>(i + 1) / kNumDenoiseSteps;
     }
 
-    // Get KV cache lengths from device
-    int32_t const* lengthsHost = getActualKVLengths(stream, activeBatchSize);
-    for (int32_t b = 0; b < activeBatchSize; ++b)
-    {
-        int32_t const len = lengthsHost[b];
-        if (len <= 0 || len > mMaxSequenceLength)
-        {
-            LOG_ERROR("Invalid KV cache length for batch %d: %d (expected in [1, %d])", b, len, mMaxSequenceLength);
-            return result;
-        }
-    }
-
     // Initialize indices for indexing into the rope table
     int32_t* positionIdsPtr = static_cast<int32_t*>(mPositionIdsHost.rawPointer());
     for (int32_t b = 0; b < activeBatchSize; ++b)
@@ -380,7 +334,7 @@ std::vector<std::vector<FutureTrajectoryPoint>> Alpamayo1ActionRunner::sampleTra
     int64_t* mropePosPtr = static_cast<int64_t*>(mRopePositionIdsHost.rawPointer());
     for (int32_t b = 0; b < activeBatchSize; ++b)
     {
-        int64_t const basePos = vlmOutputsRopeDeltas[b] + static_cast<int64_t>(lengthsHost[b]);
+        int64_t const basePos = batch.mropeDeltas[static_cast<size_t>(b)] + static_cast<int64_t>(lengthsHost[b]);
         for (int32_t dim = 0; dim < 3; ++dim)
         {
             for (int32_t w = 0; w < mNumWaypoints; ++w)
@@ -516,15 +470,6 @@ bool Alpamayo1ActionRunner::parseModelConfig(std::string const& configPath)
     return true;
 }
 
-int32_t const* Alpamayo1ActionRunner::getActualKVLengths(cudaStream_t stream, int32_t activeBatchSize)
-{
-    CUDA_CHECK(cudaMemcpyAsync(mKvcacheActualLengthsHost.rawPointer(), mKvcacheActualLengthsDevice,
-        static_cast<size_t>(activeBatchSize) * sizeof(int32_t), cudaMemcpyDeviceToHost, stream));
-    CUDA_CHECK(cudaStreamSynchronize(stream));
-
-    return static_cast<int32_t const*>(mKvcacheActualLengthsHost.rawPointer());
-}
-
 void Alpamayo1ActionRunner::allocateTensors(KVCacheManager::Config const& kvCacheConfig)
 {
     Dims const maxNoise = mEngine->getProfileShape(binding_names::kNoiseTrajectory, 0, OptProfileSelector::kMAX);
@@ -566,9 +511,6 @@ void Alpamayo1ActionRunner::allocateTensors(KVCacheManager::Config const& kvCach
     mPositionIdsDevice = rt::Tensor({maxBatch, mNumWaypoints}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32,
         "Alpamayo1ActionRunner::mPositionIdsDevice");
 
-    mKvcacheActualLengthsHost = rt::Tensor(std::vector<int64_t>{maxBatch}, rt::DeviceType::kCPU,
-        nvinfer1::DataType::kINT32, "Alpamayo1ActionRunner::mKvcacheActualLengthsHost");
-
     mRopePositionIdsHost = rt::Tensor({maxBatch, 3, mNumWaypoints}, rt::DeviceType::kCPU, nvinfer1::DataType::kINT64,
         "Alpamayo1ActionRunner::mRopePositionIdsHost");
     mRopePositionIdsDevice = rt::Tensor({maxBatch, 3, mNumWaypoints}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT64,
@@ -598,7 +540,6 @@ bool Alpamayo1ActionRunner::reshapeActionTensorsForActiveBatch(int32_t activeBat
     ok &= mRopeCosSinDevice.reshape({activeBatchSize, mNumWaypoints, mRopeHeadDim});
     ok &= mPositionIdsHost.reshape({activeBatchSize, mNumWaypoints});
     ok &= mPositionIdsDevice.reshape({activeBatchSize, mNumWaypoints});
-    ok &= mKvcacheActualLengthsHost.reshape({activeBatchSize});
     ok &= mRopePositionIdsHost.reshape({activeBatchSize, 3, mNumWaypoints});
     ok &= mRopePositionIdsDevice.reshape({activeBatchSize, 3, mNumWaypoints});
     if (!ok)

@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
@@ -37,6 +39,74 @@ def test_resolve_externalize_all_includes_nvfp4_moe():
     assert external_weights.EXTERNAL_WEIGHT_NVFP4_MOE in (
         external_weights.resolve_externalize_weights(
             external_weights.EXTERNAL_WEIGHT_ALL))
+
+
+@pytest.mark.parametrize("plugin_op", [
+    "Int4GroupwiseGemmPlugin",
+    "Int4GroupwiseGemmPluginV2",
+])
+def test_externalize_int4_ffn_plugin_initializers(tmp_path, plugin_op):
+    onnx_path = tmp_path / "model.onnx"
+    plugin_inputs = [
+        "hidden_states",
+        "model.layers.0.mlp.gate_proj.qweight",
+        "model.layers.0.mlp.gate_proj.scale",
+    ]
+    expected_external_names = plugin_inputs[1:]
+    initializers = [
+        _make_initializer(expected_external_names[0],
+                          np.arange(16, dtype=np.int8).reshape(2, 8)),
+        _make_initializer(expected_external_names[1],
+                          np.ones((2, 2), dtype=np.float16)),
+    ]
+    node = onnx.helper.make_node(
+        plugin_op,
+        plugin_inputs,
+        ["gemm_output"],
+        domain="trt_edgellm",
+    )
+    graph = onnx.helper.make_graph(
+        [node],
+        "int4_ffn_external_weight_test",
+        [_make_float_value_info("hidden_states")],
+        [_make_float_value_info("gemm_output")],
+        initializers,
+    )
+    model = onnx.helper.make_model(
+        graph,
+        opset_imports=[
+            onnx.helper.make_opsetid("", 24),
+            onnx.helper.make_opsetid("trt_edgellm", 1),
+        ],
+    )
+    onnx.save_model(model, onnx_path)
+
+    manifest = external_weights.externalize_model_weights(
+        str(onnx_path),
+        SimpleNamespace(config=SimpleNamespace()),
+        externalize_weights=["int4_ffn"],
+    )
+
+    assert manifest == [{
+        "file": "external_int4_ffn_weights.safetensors",
+        "kind": "int4_ffn_weights",
+        "tensors": expected_external_names,
+    }]
+    saved_tensors = safetensors_torch.load_file(
+        str(tmp_path / "external_int4_ffn_weights.safetensors"))
+    assert set(saved_tensors) == set(expected_external_names)
+
+    patched_model = onnx.load(onnx_path, load_external_data=False)
+    graph_inputs = {
+        graph_input.name
+        for graph_input in patched_model.graph.input
+    }
+    remaining_initializers = {
+        initializer.name
+        for initializer in patched_model.graph.initializer
+    }
+    assert set(expected_external_names).issubset(graph_inputs)
+    assert set(expected_external_names).isdisjoint(remaining_initializers)
 
 
 def test_externalize_nvfp4_moe_plugin_initializers(tmp_path):

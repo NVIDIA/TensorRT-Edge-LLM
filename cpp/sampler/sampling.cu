@@ -750,8 +750,28 @@ __global__ void applyLogitBiasKernel(
     }
 }
 
-void applyLogitBias(rt::Tensor& logits, rt::Tensor const& tokenIds, rt::Tensor const& biasValues,
-    rt::Tensor const& offsets, cudaStream_t stream)
+__global__ void applyLogitBiasRepeatedRowsKernel(float* logits, int32_t const* tokenIds, float const* biasValues,
+    int32_t const* offsets, int32_t vocabSize, int32_t rowsPerSlot)
+{
+    int32_t const rowId = static_cast<int32_t>(blockIdx.x);
+    int32_t const slotId = rowId / rowsPerSlot;
+    int32_t const begin = offsets[slotId];
+    int32_t const end = offsets[slotId + 1];
+    float* rowLogits = logits + static_cast<int64_t>(rowId) * vocabSize;
+
+    for (int32_t entryIdx = begin + static_cast<int32_t>(threadIdx.x); entryIdx < end;
+        entryIdx += static_cast<int32_t>(blockDim.x))
+    {
+        int32_t const tokenId = tokenIds[entryIdx];
+        if (tokenId >= 0 && tokenId < vocabSize)
+        {
+            rowLogits[tokenId] += biasValues[entryIdx];
+        }
+    }
+}
+
+void validateLogitBiasInputs(rt::Tensor const& logits, rt::Tensor const& tokenIds, rt::Tensor const& biasValues,
+    rt::Tensor const& offsets, int32_t rowsPerSlot)
 {
     check::check(logits.getDeviceType() == rt::DeviceType::kGPU && tokenIds.getDeviceType() == rt::DeviceType::kGPU
             && biasValues.getDeviceType() == rt::DeviceType::kGPU && offsets.getDeviceType() == rt::DeviceType::kGPU,
@@ -771,7 +791,18 @@ void applyLogitBias(rt::Tensor& logits, rt::Tensor const& tokenIds, rt::Tensor c
             && offsetsShape.getNumDims() == 1,
         "Invalid tensor dimensions");
     check::check(tokenIdsShape[0] == biasValuesShape[0], "Logit bias token/value shape mismatch");
-    check::check(offsetsShape[0] == logitsShape[0] + 1, "Logit bias offsets shape mismatch");
+    check::check(rowsPerSlot > 0, "Logit bias rowsPerSlot must be positive");
+    check::check(logitsShape[0] % rowsPerSlot == 0, "Logit bias repeated-row logits shape mismatch");
+    check::check(offsetsShape[0] == logitsShape[0] / rowsPerSlot + 1, "Logit bias offsets shape mismatch");
+}
+
+void applyLogitBias(rt::Tensor& logits, rt::Tensor const& tokenIds, rt::Tensor const& biasValues,
+    rt::Tensor const& offsets, cudaStream_t stream)
+{
+    validateLogitBiasInputs(logits, tokenIds, biasValues, offsets, 1);
+
+    auto const logitsShape = logits.getShape();
+    auto const tokenIdsShape = tokenIds.getShape();
 
     int32_t const batchSize = static_cast<int32_t>(logitsShape[0]);
     int32_t const vocabSize = static_cast<int32_t>(logitsShape[1]);
@@ -784,6 +815,28 @@ void applyLogitBias(rt::Tensor& logits, rt::Tensor const& tokenIds, rt::Tensor c
     constexpr int32_t kBLOCK_SIZE = 256;
     applyLogitBiasKernel<<<batchSize, kBLOCK_SIZE, 0, stream>>>(logits.dataPointer<float>(),
         tokenIds.dataPointer<int32_t>(), biasValues.dataPointer<float>(), offsets.dataPointer<int32_t>(), vocabSize);
+}
+
+void applyLogitBiasRepeatedRows(rt::Tensor& logits, rt::Tensor const& tokenIds, rt::Tensor const& biasValues,
+    rt::Tensor const& offsets, int32_t rowsPerSlot, cudaStream_t stream)
+{
+    validateLogitBiasInputs(logits, tokenIds, biasValues, offsets, rowsPerSlot);
+
+    auto const logitsShape = logits.getShape();
+    auto const tokenIdsShape = tokenIds.getShape();
+
+    int32_t const totalRows = static_cast<int32_t>(logitsShape[0]);
+    int32_t const vocabSize = static_cast<int32_t>(logitsShape[1]);
+    int64_t const numBiasedTokens = tokenIdsShape[0];
+    if (totalRows == 0 || vocabSize == 0 || numBiasedTokens == 0)
+    {
+        return;
+    }
+
+    constexpr int32_t kBLOCK_SIZE = 256;
+    applyLogitBiasRepeatedRowsKernel<<<totalRows, kBLOCK_SIZE, 0, stream>>>(logits.dataPointer<float>(),
+        tokenIds.dataPointer<int32_t>(), biasValues.dataPointer<float>(), offsets.dataPointer<int32_t>(), vocabSize,
+        rowsPerSlot);
 }
 
 // Initialize ID values and offsets for top-p sampling

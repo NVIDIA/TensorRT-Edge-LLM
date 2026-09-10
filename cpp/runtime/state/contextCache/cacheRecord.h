@@ -59,6 +59,17 @@ inline bool operator==(HybridCheckpointKey const& lhs, HybridCheckpointKey const
     return lhs.exactPrefixDigest == rhs.exactPrefixDigest && lhs.exactLength == rhs.exactLength;
 }
 
+//! Full-page speculative state retained by one published record.
+struct SpecPagedStateRecord
+{
+    std::vector<PageId> pagePath;
+};
+
+inline bool operator==(SpecPagedStateRecord const& lhs, SpecPagedStateRecord const& rhs) noexcept
+{
+    return lhs.pagePath == rhs.pagePath;
+}
+
 } // namespace rt
 } // namespace trt_edgellm
 
@@ -101,7 +112,7 @@ namespace rt
 
 //! Complete reusable state retained at one publication endpoint.
 //!
-//! A record stores a full base path, an optional equally long coherent draft path, and any recurrent or partial-page
+//! A record stores a full base path, optional method-specific speculative state, and any recurrent or partial-page
 //! snapshots. ContextCacheManager gives each listed resource one cache reference, so evicting a branch releases only
 //! that record's ownership while shared ancestors remain resident through other records.
 struct CacheRecord
@@ -110,7 +121,7 @@ struct CacheRecord
     CacheRecordKey key{};
     std::vector<BlockHash> logicalBlockHashes;
     std::vector<PageId> basePagePath;
-    std::vector<PageId> draftPagePath;
+    std::optional<SpecPagedStateRecord> specState;
     std::optional<int32_t> recurrentSnapshotSlot;
     std::optional<int32_t> partialKvSnapshotSlot;
     std::optional<int32_t> exactCheckpointLength;
@@ -148,8 +159,8 @@ public:
     std::vector<int32_t> hybridCandidateLengths(int32_t inputTokenCount) const;
     CacheRecord const& get(RecordId id) const;
     bool contains(RecordId id) const noexcept;
-    //! Attach coherent draft state to a base-only record without changing base identity or record ownership.
-    void setDraftState(RecordId id, std::vector<PageId> draftPagePath);
+    //! Attach coherent speculative state to a base-only record without changing base identity or record ownership.
+    void setSpecState(RecordId id, SpecPagedStateRecord state);
     void touch(RecordId id);
     CacheRecord erase(RecordId id);
     std::vector<RecordId> lruToMru() const;

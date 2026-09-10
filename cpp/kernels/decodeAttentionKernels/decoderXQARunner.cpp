@@ -18,14 +18,19 @@
 #include "decoderXQARunner.h"
 #include "common/checkMacros.h"
 #include "common/cudaMacros.h"
-#include "xqa_kernel_cubin.h"
+#include "xqaKernelTypes.h"
 
 #include <algorithm>
+#include <array>
 #include <cuda.h>
+#include <cuda_runtime.h>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
+#include <string>
+#include <type_traits>
 #include <unordered_map>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -45,6 +50,10 @@ constexpr uint32_t kSPLIT_HEAD_DIM_512_CTA_DIM_Z{2U};
 constexpr uint32_t kDEFAULT_XQA_CTA_DIM_Z{2U};
 constexpr uint32_t kDEFAULT_XQA_CTA_DIM_X{128U};
 constexpr uint32_t kHEAD_DIM_512_CTA_DIM_X{256U};
+// Max vanilla XQA kernel argument count. No-sliding kernels use one fewer argument.
+constexpr size_t kXQA_KERNEL_PARAM_COUNT{12U};
+// Max spec-decode XQA kernel argument count. No-sliding kernels use one fewer argument.
+constexpr size_t kSPEC_DECODE_XQA_KERNEL_PARAM_COUNT{16U};
 
 //! @throws std::runtime_error if datatype is unsupported
 XQADataType trtToXqaDataType(nvinfer1::DataType type)
@@ -67,11 +76,12 @@ struct XQAKernelLoadHashKey
     int32_t sm;
     bool specDecode;
     bool pagedKVCache;
+    int32_t deviceId; //!< CUDA device ID for per-device kernel isolation.
 
     bool operator==(XQAKernelLoadHashKey const& other) const noexcept
     {
         return data_type == other.data_type && kv_data_type == other.kv_data_type && sm == other.sm
-            && specDecode == other.specDecode && pagedKVCache == other.pagedKVCache;
+            && specDecode == other.specDecode && pagedKVCache == other.pagedKVCache && deviceId == other.deviceId;
     }
 };
 
@@ -88,6 +98,7 @@ struct XQAKernelLoadHasher
         key ^= s.specDecode;
         key <<= 4;
         key ^= s.pagedKVCache;
+        key ^= (static_cast<size_t>(s.deviceId) << 24);
         return key;
     }
 };
@@ -124,6 +135,23 @@ XQAKernelRuntimeHashKey getRuntimeHashKeyFromXQAParamsSpecDecode(XQALaunchParams
     constexpr int32_t kQHEAD_PER_KV = 0; // Tree attention kernel supports any ratio of Q/KV heads.
     return {trtToXqaDataType(xqaParams.dataType), trtToXqaDataType(xqaParams.kvDataType), xqaParams.headSize,
         kQHEAD_PER_KV, kBEAM_SIZE, xqaParams.slidingWinSize > 0, static_cast<int32_t>(xqaParams.kvCache.tokensPerPage)};
+}
+
+std::string formatMissingXQAKernelMessage(char const* kernelName, XQAKernelRuntimeHashKey const& hashKey,
+    XQALaunchParams const& params, int32_t smVersion, bool specDecode)
+{
+    return format::fmtstr(
+        "No available cubin for %s. Runtime key: sm=%d, q_dtype=%d, kv_dtype=%d, head_size=%d, "
+        "q_heads_per_kv=%d, beam_size=%d, sliding_window=%d. Launch params: q_heads=%d, kv_heads=%d, batch_size=%d, "
+        "kv_cache_capacity=%u, q_seq_len=%d, head_group_size=%d, trt_dtype=%d, trt_kv_dtype=%d. "
+        "Expected JIT cubin key: sm=%d, data_type=%d, kv_data_type=%d, head_size=%d, q_heads_per_kv=%d, "
+        "sliding_window=%d, spec_decode=%d.",
+        kernelName, smVersion, static_cast<int32_t>(hashKey.q_data_type), static_cast<int32_t>(hashKey.kv_data_type),
+        hashKey.head_size, hashKey.num_q_heads_per_kv, hashKey.beam_size, static_cast<int32_t>(hashKey.sliding_window),
+        params.numQheads, params.numKVheads, params.batchSize, params.kvCache.capacity, params.qSeqLen,
+        params.headGroupSize, static_cast<int32_t>(params.dataType), static_cast<int32_t>(params.kvDataType), smVersion,
+        static_cast<int32_t>(params.dataType), static_cast<int32_t>(params.kvDataType), hashKey.head_size,
+        hashKey.num_q_heads_per_kv, static_cast<int32_t>(hashKey.sliding_window), static_cast<int32_t>(specDecode));
 }
 
 struct XQAKernelRuntimeHasher
@@ -239,16 +267,6 @@ XQADeviceCapability getDeviceCapability()
     return {static_cast<uint32_t>(maxSharedMemPerBlockOptin), supportsClusterLaunch, supportsClusterLaunch};
 }
 
-bool isKernelSupportedByBuild(XQAKernelMetaInfo const& kernelMeta) noexcept
-{
-#if SUPPORTS_CLUSTER_LAUNCH
-    (void) kernelMeta;
-    return true;
-#else
-    return !kernelMeta.mRequiresClusterLaunch && !kernelMeta.mRequiresDistributedSharedMemory;
-#endif // SUPPORTS_CLUSTER_LAUNCH
-}
-
 bool isKernelCompatibleWithDevice(
     XQAKernelFuncInfo const& kernelInfo, XQADeviceCapability const& deviceCapability) noexcept
 {
@@ -287,6 +305,42 @@ uint32_t getCtaDimX(XQAKernelFuncInfo const& kernelInfo) noexcept
                                                                                       : kDEFAULT_XQA_CTA_DIM_X;
 }
 
+XQAKernelVariant getJitKernelVariant(XQAJitKey const& key) noexcept
+{
+    if (key.headSize != static_cast<int32_t>(kHEAD_DIM_512))
+    {
+        return XQAKernelMetaInfo::KERNEL_VARIANT_STANDARD;
+    }
+    if (key.sm == 80 || key.sm == 87)
+    {
+        return XQAKernelMetaInfo::KERNEL_VARIANT_FULL_SMEM_HEAD_DIM512_ROW_MAX_METHOD4;
+    }
+    if (key.sm == 86 || key.sm == 89)
+    {
+        return XQAKernelMetaInfo::KERNEL_VARIANT_TILED_QKV_STAGING_HEAD_DIM512;
+    }
+    if (key.sm == 120 || key.sm == 121)
+    {
+        return XQAKernelMetaInfo::KERNEL_VARIANT_2CTA_HEAD_DIM512;
+    }
+    return XQAKernelMetaInfo::KERNEL_VARIANT_FULL_SMEM_HEAD_DIM512;
+}
+
+bool jitRequiresClusterLaunch(XQAJitKey const& key) noexcept
+{
+    return getJitKernelVariant(key) == XQAKernelMetaInfo::KERNEL_VARIANT_2CTA_HEAD_DIM512;
+}
+
+bool isJitKernelSupportedByBuild(XQAJitKey const& key) noexcept
+{
+#if SUPPORTS_CLUSTER_LAUNCH
+    (void) key;
+    return true;
+#else
+    return !jitRequiresClusterLaunch(key);
+#endif // SUPPORTS_CLUSTER_LAUNCH
+}
+
 #if SUPPORTS_CLUSTER_LAUNCH
 void launch2CtaHeadDim512ClusterKernel(XQAKernelFuncInfo const& kernelInfo, dim3 const& dimGrid, dim3 const& dimCta,
     cudaStream_t const& stream, void** kernelParams)
@@ -313,142 +367,173 @@ void launch2CtaHeadDim512ClusterKernel(XQAKernelFuncInfo const& kernelInfo, dim3
 }
 #endif // SUPPORTS_CLUSTER_LAUNCH
 
-bool hasHeadDim512KernelsForSM(
-    int32_t smVersion, XQADataType kvDataType, int32_t headRatio, bool usePagedKVCache) noexcept
+uint32_t getXQAKernelGridDimX(XQAKernelFuncInfo const& kernelInfo) noexcept
 {
-    bool hasDecodeKernel{false};
-    bool hasSpecDecodeKernel{false};
-    for (auto const& kernelMeta : xqa::kernels::sXqaKernelMetaInfo)
+    return kernelInfo.mRequiresClusterLaunch ? kSPLIT_HEAD_DIM_512_CLUSTER_SIZE : 1U;
+}
+
+dim3 getXQAKernelCtaDim(XQAKernelFuncInfo const& kernelInfo) noexcept
+{
+    return dim3{getCtaDimX(kernelInfo), 1U,
+        kernelInfo.mRequiresClusterLaunch ? kSPLIT_HEAD_DIM_512_CTA_DIM_Z : kDEFAULT_XQA_CTA_DIM_Z};
+}
+
+void launchXQAKernel(XQAKernelFuncInfo const& kernelInfo, dim3 const& dimGrid, dim3 const& dimCta,
+    cudaStream_t const& stream, void** kernelParams)
+{
+    bool const useClusterLaunch = kernelInfo.mRequiresClusterLaunch;
+#if SUPPORTS_CLUSTER_LAUNCH
+    // Keep the cluster and regular launch paths shared by decode and spec-decode dispatch.
+    if (useClusterLaunch)
     {
-        if (kernelMeta.mSM != static_cast<unsigned int>(smVersion)
-            || kernelMeta.mDataType != XQADataType::DATA_TYPE_FP16 || kernelMeta.mKVDataType != kvDataType
-            || kernelMeta.mHeadDim != kHEAD_DIM_512 || kernelMeta.mPagedKVCache != usePagedKVCache
-            || !isKernelSupportedByBuild(kernelMeta))
+        launch2CtaHeadDim512ClusterKernel(kernelInfo, dimGrid, dimCta, stream, kernelParams);
+        return;
+    }
+#else
+    check::check(!useClusterLaunch, "XQA head_dim=512 2CTA cluster kernel is unavailable.");
+#endif // SUPPORTS_CLUSTER_LAUNCH
+    CUDA_DRIVER_CHECK(cuLaunchKernel(kernelInfo.mDeviceFunction, dimGrid.x, dimGrid.y, dimGrid.z, dimCta.x, dimCta.y,
+        dimCta.z, kernelInfo.mSharedMemBytes, stream, kernelParams, nullptr));
+}
+
+struct CudaModuleDeleter
+{
+    void operator()(std::remove_pointer_t<CUmodule>* module) const noexcept
+    {
+        if (module != nullptr)
         {
-            continue;
-        }
-        if (kernelMeta.mMultiQueryTokens)
-        {
-            // Spec-decode tree attention kernels support any Q/KV head ratio.
-            hasSpecDecodeKernel = true;
-        }
-        else if (kernelMeta.mNumQHeadsOverKV == static_cast<unsigned int>(headRatio))
-        {
-            hasDecodeKernel = true;
+            (void) cuModuleUnload(module);
         }
     }
-    return hasDecodeKernel && hasSpecDecodeKernel;
+};
+
+using CudaModulePtr = std::unique_ptr<std::remove_pointer_t<CUmodule>, CudaModuleDeleter>;
+
+using XQAKernelParams = std::array<void*, kXQA_KERNEL_PARAM_COUNT>;
+using SpecDecodeXQAKernelParams = std::array<void*, kSPEC_DECODE_XQA_KERNEL_PARAM_COUNT>;
+
+XQAKernelParams makeXQAKernelParams(XQALaunchParams& params, bool const slidingWindow, void* const kvCacheArg)
+{
+    XQAKernelParams kernelParams{};
+    size_t idx{0U};
+    kernelParams[idx++] = &params.numKVheads;
+    if (slidingWindow)
+    {
+        kernelParams[idx++] = &params.slidingWinSize;
+    }
+    kernelParams[idx++] = &params.attentionScale;
+    kernelParams[idx++] = &params.output;
+    kernelParams[idx++] = &params.qInputPtr;
+    kernelParams[idx++] = &params.attentionSinks;
+    kernelParams[idx++] = kvCacheArg;
+    kernelParams[idx++] = &params.batchSize;
+    kernelParams[idx++] = &params.kScale;
+    kernelParams[idx++] = &params.vScale;
+    kernelParams[idx++] = &params.semaphores;
+    kernelParams[idx++] = &params.scratch;
+    return kernelParams;
+}
+
+SpecDecodeXQAKernelParams makeSpecDecodeXQAKernelParams(
+    XQALaunchParams& params, bool const slidingWindow, void* const kvCacheArg)
+{
+    SpecDecodeXQAKernelParams kernelParams{};
+    size_t idx{0U};
+    kernelParams[idx++] = &params.qSeqLen;
+    kernelParams[idx++] = &params.numKVheads;
+    kernelParams[idx++] = &params.headGroupSize;
+    kernelParams[idx++] = &params.qCuSeqLen;
+    if (slidingWindow)
+    {
+        kernelParams[idx++] = &params.slidingWinSize;
+    }
+    kernelParams[idx++] = &params.attentionScale;
+    kernelParams[idx++] = &params.output;
+    kernelParams[idx++] = &params.qInputPtr;
+    kernelParams[idx++] = &params.treeAttnMask;
+    kernelParams[idx++] = &params.attentionSinks;
+    kernelParams[idx++] = kvCacheArg;
+    kernelParams[idx++] = &params.batchSize;
+    kernelParams[idx++] = &params.kScale;
+    kernelParams[idx++] = &params.vScale;
+    kernelParams[idx++] = &params.semaphores;
+    kernelParams[idx++] = &params.scratch;
+    return kernelParams;
 }
 
 class XQAKernelList
 {
-    using TKernelMetaInfo = xqa::kernels::XQAKernelMetaInfo;
-
 public:
-    XQAKernelList(
-        XQADataType dataType, XQADataType kvDataType, uint32_t sm, bool specDecode, bool pagedKVCache) noexcept
-        : mKernelMeta(nullptr)
-        , mKernelMetaCount(0)
-        , mSMVersion(sm)
-        , mSpecDecode(specDecode)
-        , mPagedKVCache(pagedKVCache)
-        , mDataType(dataType)
-        , mKVDataType(kvDataType)
-    {
-        mKernelMeta = &(xqa::kernels::sXqaKernelMetaInfo[0]);
-        mKernelMetaCount = sizeof(xqa::kernels::sXqaKernelMetaInfo) / sizeof(xqa::kernels::sXqaKernelMetaInfo[0]);
-    }
+    XQAKernelList() noexcept = default;
+    ~XQAKernelList() noexcept = default;
 
     //! @throws std::runtime_error if a CUDA driver error occurs
-    void loadXQAKernels()
+    bool loadJitKernel(XQAJitKey const& key, void const* cubinData, size_t cubinSize)
     {
-        if (mLoaded)
+        check::check(cubinData != nullptr && cubinSize > 0, "Invalid XQA JIT cubin data.");
+        if (!isJitKernelSupportedByBuild(key))
         {
-            return;
+            return false;
         }
+
+        constexpr int32_t kBEAM_SIZE{1};
+        XQAKernelRuntimeHashKey const hashKey{trtToXqaDataType(key.dataType), trtToXqaDataType(key.kvDataType),
+            key.headSize, key.specDecode ? 0 : key.qHeadsPerKv, kBEAM_SIZE, key.slidingWindow, key.tokensPerPage};
+
+        std::lock_guard<std::mutex> lock(mMutex);
+        auto const findIter = mFunctions.find(hashKey);
+        if (findIter != mFunctions.end() && !findIter->second.empty())
+        {
+            // Reuse the loaded module when plugin clone or deserialization loads the same JIT key again.
+            return true;
+        }
+
+        // Driver module loading requires a current CUDA context on this thread.
+        CUDA_CHECK(cudaFree(nullptr));
+
+        CUmodule hModule{};
+        CUDA_DRIVER_CHECK(cuModuleLoadData(&hModule, cubinData));
+        CudaModulePtr moduleGuard{hModule};
+
+        XQAKernelFuncInfo funcInfo{};
+        CUDA_DRIVER_CHECK(cuModuleGetFunction(&funcInfo.mDeviceFunction, moduleGuard.get(), "kernel_mha"));
+        funcInfo.mHeadDim = static_cast<uint32_t>(key.headSize);
+        funcInfo.mMTileSize = static_cast<uint32_t>(getXQAJitMTileSize(key));
+        funcInfo.mSMVersion = static_cast<uint32_t>(key.sm);
+        funcInfo.mKernelVariant = getJitKernelVariant(key);
+        funcInfo.mRequiresClusterLaunch = jitRequiresClusterLaunch(key);
+        funcInfo.mRequiresDistributedSharedMemory = funcInfo.mRequiresClusterLaunch;
+        funcInfo.mSlidingWindow = key.slidingWindow;
+
+        uint32_t* deviceSmemSize{nullptr};
+        size_t dataSize{0};
+        CUDA_DRIVER_CHECK(cuModuleGetGlobal(
+            reinterpret_cast<CUdeviceptr*>(&deviceSmemSize), &dataSize, moduleGuard.get(), "smemSize"));
+        CUDA_CHECK(cudaMemcpy(&funcInfo.mSharedMemBytes, deviceSmemSize, dataSize, cudaMemcpyDeviceToHost));
+
         XQADeviceCapability const deviceCapability = getDeviceCapability();
-        for (int32_t i = 0; i < mKernelMetaCount; ++i)
+        if (!isKernelCompatibleWithDevice(funcInfo, deviceCapability))
         {
-            auto const& kernelMeta = mKernelMeta[i];
-            if (kernelMeta.mDataType != mDataType || kernelMeta.mKVDataType != mKVDataType
-                || kernelMeta.mSM != mSMVersion || kernelMeta.mCubin == nullptr)
-            {
-                continue;
-            }
-            // Filter out kernel that irrelevant to this project.
-            if (kernelMeta.mPagedKVCache != mPagedKVCache || kernelMeta.mBeamWidth != 1)
-            {
-                continue;
-            }
-            if (kernelMeta.mMultiQueryTokens != mSpecDecode)
-            {
-                continue;
-            }
-            if (!isKernelSupportedByBuild(kernelMeta))
-            {
-                continue;
-            }
-            // load CUmodule
-            CUmodule hModule;
-            auto findModuleIter = mModules.find(kernelMeta.mCubin);
-            if (findModuleIter != mModules.end())
-            {
-                hModule = findModuleIter->second;
-            }
-            else
-            {
-                CUDA_DRIVER_CHECK(cuModuleLoadData(&hModule, kernelMeta.mCubin));
-                mModules.insert(std::make_pair(kernelMeta.mCubin, hModule));
-            }
-
-            XQAKernelFuncInfo funcInfo{};
-            CUDA_DRIVER_CHECK(cuModuleGetFunction(&funcInfo.mDeviceFunction, hModule, kernelMeta.mFuncName));
-            funcInfo.mHeadDim = kernelMeta.mHeadDim;
-            funcInfo.mMTileSize = kernelMeta.mMTileSize;
-            funcInfo.mSMVersion = kernelMeta.mSM;
-            funcInfo.mKernelVariant = kernelMeta.mKernelVariant;
-            funcInfo.mRequiresClusterLaunch = kernelMeta.mRequiresClusterLaunch;
-            funcInfo.mRequiresDistributedSharedMemory = kernelMeta.mRequiresDistributedSharedMemory;
-            funcInfo.mSlidingWindow = kernelMeta.mSlidingWindow;
-
-            uint32_t* deviceSmemSize{nullptr};
-            size_t dataSize{0};
-            CUDA_DRIVER_CHECK(
-                cuModuleGetGlobal(reinterpret_cast<CUdeviceptr*>(&deviceSmemSize), &dataSize, hModule, "smemSize"));
-            // Use of default stream is inevitable and justified here because it is called during kernel loading phase,
-            // not runtime.
-            CUDA_CHECK(cudaMemcpy(&funcInfo.mSharedMemBytes, deviceSmemSize, dataSize, cudaMemcpyDeviceToHost));
-
-            if (!isKernelCompatibleWithDevice(funcInfo, deviceCapability))
-            {
-                continue;
-            }
-
-            // Set 46KB threshold here because we have to take static/driver shared memory into consideration.
-            // Default value for shared memory is 48KB.
-            if (funcInfo.mSharedMemBytes >= 46 * 1024)
-            {
-                CUDA_DRIVER_CHECK(cuFuncSetAttribute(funcInfo.mDeviceFunction,
-                    CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, funcInfo.mSharedMemBytes));
-            }
-            XQAKernelRuntimeHashKey hashKey{kernelMeta.mDataType, kernelMeta.mKVDataType,
-                static_cast<int32_t>(kernelMeta.mHeadDim), static_cast<int32_t>(kernelMeta.mNumQHeadsOverKV),
-                static_cast<int32_t>(kernelMeta.mBeamWidth), kernelMeta.mSlidingWindow,
-                static_cast<int32_t>(kernelMeta.mTokensPerPage)};
-            mFunctions[hashKey].push_back(funcInfo);
+            return false;
         }
-        mLoaded = true;
-    }
 
-    bool hasKernels() const noexcept
-    {
-        return !mFunctions.empty();
+        if (funcInfo.mSharedMemBytes >= 46 * 1024)
+        {
+            CUDA_DRIVER_CHECK(cuFuncSetAttribute(
+                funcInfo.mDeviceFunction, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, funcInfo.mSharedMemBytes));
+        }
+
+        mFunctions[hashKey].clear();
+        mFunctions[hashKey].push_back(funcInfo);
+        mJitModules.emplace_back(std::move(moduleGuard));
+        return true;
     }
 
     XQAKernelFuncInfo findKernelFunction(XQAKernelRuntimeHashKey const& key) const
     {
+        std::lock_guard<std::mutex> lock(mMutex);
         auto const findIter = mFunctions.find(key);
-        if (findIter == mFunctions.end())
+        if (findIter == mFunctions.end() || findIter->second.empty())
         {
             // Return empty function info.
             return XQAKernelFuncInfo{};
@@ -463,15 +548,9 @@ public:
     }
 
 protected:
-    TKernelMetaInfo const* mKernelMeta;
-    int32_t mKernelMetaCount;
-    uint32_t mSMVersion;
-    bool mSpecDecode;
-    bool mPagedKVCache;
-    XQADataType mDataType;
-    XQADataType mKVDataType;
-    bool mLoaded{false};
-    std::unordered_map<unsigned long long const*, CUmodule> mModules;
+    mutable std::mutex mMutex;
+
+    std::vector<CudaModulePtr> mJitModules;
 
     std::unordered_map<XQAKernelRuntimeHashKey, std::vector<XQAKernelFuncInfo>, XQAKernelRuntimeHasher> mFunctions;
 };
@@ -482,19 +561,17 @@ class XQAKernelLoader
 public:
     //! @throws std::runtime_error if a CUDA driver error occurs
     XQAKernelList* getXQAKernelList(
-        XQADataType dataType, XQADataType kvDataType, int32_t sm, bool specDecode, bool pagedKVCache)
+        XQADataType dataType, XQADataType kvDataType, int32_t sm, bool specDecode, bool pagedKVCache, int32_t deviceId)
     {
         static std::mutex s_mutex;
         std::lock_guard<std::mutex> lg(s_mutex);
 
-        XQAKernelLoadHashKey hash_key{dataType, kvDataType, sm, specDecode, pagedKVCache};
+        XQAKernelLoadHashKey hash_key{dataType, kvDataType, sm, specDecode, pagedKVCache, deviceId};
 
         auto findIter = mKernels.find(hash_key);
         if (findIter == mKernels.end())
         {
-            std::unique_ptr<XQAKernelList> newKernel
-                = std::make_unique<XQAKernelList>(dataType, kvDataType, sm, specDecode, pagedKVCache);
-            newKernel->loadXQAKernels();
+            std::unique_ptr<XQAKernelList> newKernel = std::make_unique<XQAKernelList>();
             mKernels.insert(std::make_pair(hash_key, std::move(newKernel)));
             findIter = mKernels.find(hash_key);
         }
@@ -517,7 +594,9 @@ private:
 inline XQAKernelList* getXQAKernels(
     XQADataType dataType, XQADataType kvDataType, int32_t sm, bool specDecode, bool pagedKVCache)
 {
-    return XQAKernelLoader::Get().getXQAKernelList(dataType, kvDataType, sm, specDecode, pagedKVCache);
+    int32_t deviceId = 0;
+    CUDA_CHECK(cudaGetDevice(&deviceId));
+    return XQAKernelLoader::Get().getXQAKernelList(dataType, kvDataType, sm, specDecode, pagedKVCache, deviceId);
 }
 
 } // namespace
@@ -548,50 +627,11 @@ XQALaunchParams DecoderXQARunner::initXQAParams() noexcept
     return params;
 }
 
-bool DecoderXQARunner::canImplement(int32_t numQHeads, int32_t numKVHeads, int32_t headSize, int32_t smVersion,
-    DataType dataType, DataType kvDataType, bool usePagedKVCache) noexcept
+bool DecoderXQARunner::loadDecodeXQAKernelFromCubin(XQAJitKey const& key, void const* cubinData, size_t cubinSize)
 {
-    bool const checkHeadNumbers = numQHeads % numKVHeads == 0;
-    bool const checkType = dataType == DataType::kHALF;
-    // FP8 XQA cubins exist only for FP8-capable devices (sm89+).
-    bool const checkKVType = kvDataType == DataType::kHALF || (kvDataType == DataType::kFP8 && smVersion >= 89);
-    std::vector<int32_t> allowedSMVersions{80, 86, 87, 89, 100, 101, 120, 121};
-    bool const checkSMVersion
-        = std::find(allowedSMVersions.begin(), allowedSMVersions.end(), smVersion) != allowedSMVersions.end();
-
-    // Current kernel list supports
-    // (1) Head ratio 1-8 for head_dim {32, 64, 128}
-    // (2) Head ratio 16 for head_dim 128 only (NemotronH).
-    // (3) Head ratio 2, 4, 6, 8 for head_dim 256
-    //     (4/6/8 for Qwen3.5-MoE / Qwen3.5-Omni Thinker+Talker;
-    //      2 for Qwen3.5-Omni Talker decode attention — 16 Q heads / 8 KV heads).
-    // (4) Head ratio 2, 4, 8, 16 for head_dim 512 where matching cubins are present.
-    //     (2 for Gemma4 E4B assistant: 4 Q heads / 2 KV heads;
-    //      4 for Gemma4 E4B: 8 Q heads / 2 KV heads;
-    //      8 for Gemma4 E2B: 8 Q heads / 1 KV head;
-    //      16 for Gemma4 Unified 12B global attention: 16 Q heads / 1 KV head,
-    //      generated for SM100/SM120-family only).
-    int32_t const headRatio = numQHeads / numKVHeads;
-    XQADataType const xqaKVDataType
-        = kvDataType == DataType::kFP8 ? XQADataType::DATA_TYPE_E4M3 : XQADataType::DATA_TYPE_FP16;
-    bool const checkHeadDim512SM
-        = headSize == 512 && hasHeadDim512KernelsForSM(smVersion, xqaKVDataType, headRatio, usePagedKVCache);
-    bool const checkQHeadPerKV
-        = ((headSize == 32 || headSize == 64 || headSize == 128) && headRatio >= 1 && headRatio <= 8)
-        || (headSize == 128 && headRatio == 16)
-        || (headSize == 256 && (headRatio == 2 || headRatio == 4 || headRatio == 6 || headRatio == 8))
-        || (headSize == 512 && checkHeadDim512SM
-            && (headRatio == 2 || headRatio == 4 || headRatio == 8 || headRatio == 16));
-
-    return checkHeadNumbers && checkType && checkKVType && checkSMVersion && checkQHeadPerKV;
-}
-
-bool DecoderXQARunner::loadDecodeXQAKernels(
-    int32_t smVersion, DataType dataType, DataType kvDataType, bool useSpecDecodeKernels, bool usePagedKVCache)
-{
-    XQAKernelList* xqaKernelList = getXQAKernels(
-        trtToXqaDataType(dataType), trtToXqaDataType(kvDataType), smVersion, useSpecDecodeKernels, usePagedKVCache);
-    return xqaKernelList != nullptr && xqaKernelList->hasKernels();
+    XQAKernelList* xqaKernelList = getXQAKernels(trtToXqaDataType(key.dataType), trtToXqaDataType(key.kvDataType),
+        key.sm, key.specDecode, key.tokensPerPage != 0);
+    return xqaKernelList != nullptr && xqaKernelList->loadJitKernel(key, cubinData, cubinSize);
 }
 
 void DecoderXQARunner::dispatchXQAKernel(XQALaunchParams& params, cudaStream_t const& stream)
@@ -608,38 +648,21 @@ void DecoderXQARunner::dispatchXQAKernel(XQALaunchParams& params, cudaStream_t c
     XQAKernelList* xqaKernelList = getXQAKernels(
         trtToXqaDataType(mDataType), trtToXqaDataType(mKVDataType), mSmVersion, useSpecDecode, usePagedKV);
     XQAKernelFuncInfo kernelInfo = xqaKernelList->findKernelFunction(hashKey);
-    check::check(kernelInfo.mSharedMemBytes != 0, "No available kernel available for the GQA");
+    ELLM_CHECK(
+        kernelInfo.mSharedMemBytes != 0, formatMissingXQAKernelMessage("GQA", hashKey, params, mSmVersion, false));
 
     KernelKVCacheArg kernelKVCacheArg = makeKernelKVCacheArg(params.kvCache, usePagedKV);
     void* const kvCacheArg = getKernelKVCacheArg(kernelKVCacheArg);
 
-    void* kernelParamsNoSliding[]
-        = {&params.numKVheads, &params.attentionScale, &params.output, &params.qInputPtr, &params.attentionSinks,
-            kvCacheArg, &params.batchSize, &params.kScale, &params.vScale, &params.semaphores, &params.scratch};
-    void* kernelParamsSliding[] = {&params.numKVheads, &params.slidingWinSize, &params.attentionScale, &params.output,
-        &params.qInputPtr, &params.attentionSinks, kvCacheArg, &params.batchSize, &params.kScale, &params.vScale,
-        &params.semaphores, &params.scratch};
-    void** kernelParams = kernelInfo.mSlidingWindow ? kernelParamsSliding : kernelParamsNoSliding;
+    auto kernelParams = makeXQAKernelParams(params, kernelInfo.mSlidingWindow, kvCacheArg);
 
     // The multi-block kernel launch is mainly for long sequence.
     // TODO: Add multiple block launch logic. The launch configuration highly depends on usecase and performance
     // context. Current measured workload doesn't get performance gain from multi-block launch.
-    bool const useClusterLaunch = kernelInfo.mRequiresClusterLaunch;
-    dim3 const dimGrid{useClusterLaunch ? kSPLIT_HEAD_DIM_512_CLUSTER_SIZE : 1U, static_cast<uint32_t>(mNumKVHeads),
-        static_cast<uint32_t>(mBatchSize)};
-    dim3 const dimCta{
-        getCtaDimX(kernelInfo), 1U, useClusterLaunch ? kSPLIT_HEAD_DIM_512_CTA_DIM_Z : kDEFAULT_XQA_CTA_DIM_Z};
-#if SUPPORTS_CLUSTER_LAUNCH
-    if (useClusterLaunch)
-    {
-        launch2CtaHeadDim512ClusterKernel(kernelInfo, dimGrid, dimCta, stream, kernelParams);
-        return;
-    }
-#else
-    check::check(!useClusterLaunch, "XQA head_dim=512 2CTA cluster kernel is unavailable.");
-#endif // SUPPORTS_CLUSTER_LAUNCH
-    CUDA_DRIVER_CHECK(cuLaunchKernel(kernelInfo.mDeviceFunction, dimGrid.x, dimGrid.y, dimGrid.z, dimCta.x, dimCta.y,
-        dimCta.z, kernelInfo.mSharedMemBytes, stream, kernelParams, nullptr));
+    dim3 const dimGrid{
+        getXQAKernelGridDimX(kernelInfo), static_cast<uint32_t>(mNumKVHeads), static_cast<uint32_t>(mBatchSize)};
+    dim3 const dimCta = getXQAKernelCtaDim(kernelInfo);
+    launchXQAKernel(kernelInfo, dimGrid, dimCta, stream, kernelParams.data());
 }
 
 void DecoderXQARunner::dispatchSpecDecodeXQAKernel(XQALaunchParams& params, cudaStream_t const& stream)
@@ -656,36 +679,18 @@ void DecoderXQARunner::dispatchSpecDecodeXQAKernel(XQALaunchParams& params, cuda
     XQAKernelList* xqaKernelList = getXQAKernels(
         trtToXqaDataType(mDataType), trtToXqaDataType(mKVDataType), mSmVersion, useSpecDecode, usePagedKV);
     XQAKernelFuncInfo kernelInfo = xqaKernelList->findKernelFunction(hashKey);
-    check::check(kernelInfo.mSharedMemBytes != 0, "No available kernel available for the Spec-DecodeGQA");
+    ELLM_CHECK(kernelInfo.mSharedMemBytes != 0,
+        formatMissingXQAKernelMessage("Spec-DecodeGQA", hashKey, params, mSmVersion, true));
 
     KernelKVCacheArg kernelKVCacheArg = makeKernelKVCacheArg(params.kvCache, usePagedKV);
     void* const kvCacheArg = getKernelKVCacheArg(kernelKVCacheArg);
 
-    void* kernelParamsNoSliding[] = {&params.qSeqLen, &params.numKVheads, &params.headGroupSize, &params.qCuSeqLen,
-        &params.attentionScale, &params.output, &params.qInputPtr, &params.treeAttnMask, &params.attentionSinks,
-        kvCacheArg, &params.batchSize, &params.kScale, &params.vScale, &params.semaphores, &params.scratch};
-    void* kernelParamsSliding[]
-        = {&params.qSeqLen, &params.numKVheads, &params.headGroupSize, &params.qCuSeqLen, &params.slidingWinSize,
-            &params.attentionScale, &params.output, &params.qInputPtr, &params.treeAttnMask, &params.attentionSinks,
-            kvCacheArg, &params.batchSize, &params.kScale, &params.vScale, &params.semaphores, &params.scratch};
-    void** kernelParams = kernelInfo.mSlidingWindow ? kernelParamsSliding : kernelParamsNoSliding;
+    auto kernelParams = makeSpecDecodeXQAKernelParams(params, kernelInfo.mSlidingWindow, kvCacheArg);
     int32_t const ctaTileY = static_cast<int32_t>(kernelInfo.mMTileSize);
     check::check(ctaTileY > 0, format::fmtstr("Invalid spec-decode ctaTileY %d in XQA kernel metadata.", ctaTileY));
     int32_t const tokenBlockPerGroup = (params.qSeqLen * params.headGroupSize - 1) / ctaTileY + 1;
-    bool const useClusterLaunch = kernelInfo.mRequiresClusterLaunch;
-    dim3 const dimGrid{useClusterLaunch ? kSPLIT_HEAD_DIM_512_CLUSTER_SIZE : 1U,
-        static_cast<uint32_t>(mNumKVHeads * tokenBlockPerGroup), static_cast<uint32_t>(mBatchSize)};
-    dim3 const dimCta{
-        getCtaDimX(kernelInfo), 1U, useClusterLaunch ? kSPLIT_HEAD_DIM_512_CTA_DIM_Z : kDEFAULT_XQA_CTA_DIM_Z};
-#if SUPPORTS_CLUSTER_LAUNCH
-    if (useClusterLaunch)
-    {
-        launch2CtaHeadDim512ClusterKernel(kernelInfo, dimGrid, dimCta, stream, kernelParams);
-        return;
-    }
-#else
-    check::check(!useClusterLaunch, "XQA head_dim=512 2CTA cluster kernel is unavailable.");
-#endif // SUPPORTS_CLUSTER_LAUNCH
-    CUDA_DRIVER_CHECK(cuLaunchKernel(kernelInfo.mDeviceFunction, dimGrid.x, dimGrid.y, dimGrid.z, dimCta.x, dimCta.y,
-        dimCta.z, kernelInfo.mSharedMemBytes, stream, kernelParams, nullptr));
+    dim3 const dimGrid{getXQAKernelGridDimX(kernelInfo), static_cast<uint32_t>(mNumKVHeads * tokenBlockPerGroup),
+        static_cast<uint32_t>(mBatchSize)};
+    dim3 const dimCta = getXQAKernelCtaDim(kernelInfo);
+    launchXQAKernel(kernelInfo, dimGrid, dimCta, stream, kernelParams.data());
 }

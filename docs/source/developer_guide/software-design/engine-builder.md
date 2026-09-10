@@ -162,7 +162,7 @@ The Engine Builder consists of two main components designed to handle different 
 
 | Component | Description |
 |-----------|-------------|
-| **LLM Builder** | Converts language model ONNX files into optimized TensorRT engines. Supporting: Standard LLMs, EAGLE3/MTP/DFlash speculative decoding, VLM language components, LoRA adaptations |
+| **LLM Builder** | Converts language model ONNX files into optimized TensorRT engines. Supporting: Standard LLMs, EAGLE3/MTP/DFlash/JetSpec speculative decoding, VLM language components, LoRA adaptations |
 | **Visual Encoder Builder** | Converts visual encoder ONNX files into optimized TensorRT engines for multimodal models. Supporting: Dynamic image token generation, Multiple multimodal architectures, Variable resolution support |
 
 

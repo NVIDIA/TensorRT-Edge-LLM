@@ -32,8 +32,6 @@ namespace rt
 {
 
 class BaseBlockIndex;
-class DraftPathIndex;
-
 //! Classification of a valid reuse plan; no value represents acquisition failure.
 enum class ReusePlanKind : uint8_t
 {
@@ -48,6 +46,8 @@ enum class ReusePlanMode : uint8_t
     kVanilla,
     //! Exact atomic recurrent/conv and optional partial-KV checkpoint reuse.
     kHybrid,
+    //! Hybrid base paired with a coherent MTP spec path at an exact recurrent/partial-KV checkpoint.
+    kHybridMtp,
     //! Initial speculative implementation: greedy, non-hybrid EAGLE.
     kSpec,
 };
@@ -66,15 +66,11 @@ enum class SpecReplayMode : uint8_t
     kFullPage,
 };
 
-//! Original coherent draft boundary required by EAGLE full-page replay.
-//!
-//! Full-page replay binds one fewer page than the original draft match, but the last retained draft slot still
-//! depends on the first token in this boundary. Publication checks this boundary hash before retaining the replayed
-//! path.
+//! Original coherent state boundary required by full-page replay.
 struct SpecReplayDependency
 {
-    BlockHash terminalHash{};
     int32_t pathBlockCount{};
+    BlockHash terminalHash{};
 };
 
 //! Side-effect-free proposal for binding cached pages and allocating request-private state.
@@ -91,8 +87,8 @@ struct ReusePlan
     int32_t reuseTokenLength{};
     std::vector<BlockHash> matchedBlockHashes;
     std::vector<PageId> basePageBindings;
-    std::optional<RecordId> draftRecord;
-    std::vector<PageId> draftPageBindings;
+    std::optional<RecordId> specRecord;
+    std::vector<PageId> specPageBindings;
     std::optional<SpecReplayDependency> specReplayDependency;
     bool hybridHasAttention{false};
     std::optional<HybridCheckpointKey> hybridCheckpoint;
@@ -117,12 +113,9 @@ ReusePlan makeHybridReusePlan(std::vector<HybridCheckpointCandidate> const& cand
     std::vector<BlockHash> const& inputFullBlockHashes, int32_t inputTokenCount, int32_t pageSize, bool hasAttention,
     CacheRecordStore const& records, ContextCacheLookupPolicy lookupPolicy = ContextCacheLookupPolicy::kUseCache);
 
-//! Build a speculative reuse plan without mutating cache metadata.
-//!
-//! Build plans for greedy, non-hybrid EAGLE. A hit requires one coherent draft record path; base-only state is
-//! intentionally ignored because it cannot reconstruct historical EAGLE draft KV.
-ReusePlan makeSpecReusePlan(std::vector<BlockHash> const& inputFullBlockHashes, int32_t inputTokenCount,
-    int32_t pageSize, BaseBlockIndex const& baseIndex, DraftPathIndex const& draftIndex,
+//! Build an exact hybrid+MTP reuse plan while retaining the successor-dependent boundary token privately.
+ReusePlan makeHybridMtpReusePlan(std::vector<HybridCheckpointCandidate> const& candidates,
+    std::vector<BlockHash> const& inputFullBlockHashes, int32_t inputTokenCount, int32_t pageSize,
     CacheRecordStore const& records, ContextCacheLookupPolicy lookupPolicy = ContextCacheLookupPolicy::kUseCache);
 
 } // namespace rt

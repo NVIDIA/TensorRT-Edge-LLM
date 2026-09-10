@@ -12,494 +12,164 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""
-Server request-parsing coverage for every media modality, no engine / C++
-runtime: OpenAI chat requests flow through the real HTTP endpoint and engine
-conversion with stubs only at the C++-binding and video-decode boundaries,
-plus the ``/v1/audio/transcriptions`` endpoint (FastAPI TestClient).
-"""
-from __future__ import annotations
+"""End-to-end protocol tests over the modular server and a fake HLAPI."""
 
 import asyncio
+import base64
 import json
-import os
-import tempfile
-import time
-import types
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
-                                         ".."))
-
-# Only genuinely optional external dependencies may turn an ImportError into
-# a skip; a project-internal import failure must fail the test, not go green.
-_OPTIONAL_TOP_MODULES = {
-    "fastapi", "httpx", "av", "torch", "_edgellm_runtime", "python_multipart",
-    "multipart", "librosa", "numpy", "soundfile", "uvicorn"
-}
+from experimental.server.api.errors import ServerOverloadedError
+from experimental.server.config import ApiConfig
+from experimental.server.runtime.engine import (CompletionOutput, LogprobEntry,
+                                                SamplingParams, StreamDelta)
 
 
-def _skip_or_raise(exc: ImportError, what: str):
-    top = (getattr(exc, "name", None) or "").split(".")[0]
-    if top in _OPTIONAL_TOP_MODULES:
-        pytest.skip(f"{what} unavailable: {exc}")
-    raise exc
+def _create_app(llm, config=None):
+    from experimental.server.api.app import create_app
+    from experimental.server.runtime.engine_client import EngineClient
+
+    config = config or ApiConfig()
+    return create_app(EngineClient(llm, config), config)
 
 
-# ---------------------------------------------------------------------------
-# Stub runtime module (no C++): only what engine.py's message/buffer helpers use
-# ---------------------------------------------------------------------------
+class _FakeLLM:
+    runtime_kind = "chat"
+    video_capable = False
+    has_draft_model = False
+    max_batch_size = 1
 
+    def __init__(self, root: Path):
+        self.model_dir = str(root / "qwen3")
+        self.bundle_dir = str(root / "engines")
+        self.model_id = "fake-model"
+        self.prepared_messages = None
+        self.prepare_count = 0
+        self.close_count = 0
+        self.last_audio_params = None
+        self.last_sampling_params = None
+        self.next_text = "answer"
+        Path(self.model_dir).mkdir(parents=True)
+        visual = Path(self.bundle_dir) / "visual"
+        visual.mkdir(parents=True)
+        (visual / "visual.engine").touch()
+        audio = Path(self.bundle_dir) / "audio"
+        audio.mkdir(parents=True)
+        (audio / "audio_encoder.engine").touch()
+        (audio / "config.json").write_text('{"model_type":"qwen3_asr"}',
+                                           encoding="utf-8")
+        (Path(self.bundle_dir) / "config.json").write_text(
+            json.dumps({
+                "builder_config": {
+                    "max_input_len": 32,
+                    "max_batch_size": 1,
+                    "max_kv_cache_capacity": 128,
+                },
+                "kv_cache_dtype": "fp16",
+            }),
+            encoding="utf-8",
+        )
+        for component, engine in (("talker", "llm.engine"), ("code_predictor",
+                                                             "llm.engine"),
+                                  ("code2wav", "code2wav.engine")):
+            directory = Path(self.bundle_dir) / component
+            directory.mkdir()
+            (directory / engine).touch()
+        from experimental.server.runtime.engine_layout import inspect_bundle
+        self.bundle_layout = inspect_bundle(self.bundle_dir)
 
-class _FakeBuffer(tuple):
-    """Tuple-comparable stub buffer that also accepts attribute writes (e.g. do_resize)."""
+    def _make_generation_request(self, messages, params, **_kwargs):
+        self.prepared_messages = messages
+        self.last_sampling_params = params
+        self.prepare_count += 1
+        return object()
 
-    def __new__(cls, *items):
-        return super().__new__(cls, items)
+    def _count_prepared_prompt_tokens(self, _request):
+        return 7
 
+    def _complete_prepared_request(self, _request, _params, tool_config,
+                                   **_kwargs):
+        if tool_config.parse_output:
+            return CompletionOutput(
+                token_ids=[1, 2],
+                prompt_tokens=7,
+                finish_reason="tool_calls",
+                tool_calls=[{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": '{"city":"Paris"}',
+                    },
+                }],
+            )
+        return CompletionOutput(text=self.next_text,
+                                reasoning="plan",
+                                token_ids=[1, 2, 3],
+                                prompt_tokens=7,
+                                finish_reason="stop")
 
-class _Content:
+    def generate_stream(self, _messages, _params, *, tools=None, **_kwargs):
+        if tools:
+            yield StreamDelta(text="Before<tool_",
+                              token_ids=[1],
+                              prompt_tokens=7)
+            yield StreamDelta(text=('call>{"name":"get_weather",'
+                                    '"arguments":{"city":"Paris"}}'
+                                    '</tool_call>'),
+                              token_ids=[2])
+            yield StreamDelta(text="After",
+                              finished=True,
+                              finish_reason="stop")
+            return
+        yield StreamDelta(text="hello",
+                          token_ids=[1, 2],
+                          prompt_tokens=7,
+                          finished=True,
+                          finish_reason="stop")
 
-    def __init__(self, ctype, data=""):
-        self.type = ctype
-        self.data = data
+    def generate_stream_with_audio(self, _messages, _params, **_kwargs):
+        self.last_audio_params = _kwargs.get("audio_params")
+        yield StreamDelta(text="spoken",
+                          token_ids=[1],
+                          prompt_tokens=7,
+                          audio_bytes=b"\x01\x00")
+        yield StreamDelta(audio_bytes=b"\x02\x00",
+                          prompt_tokens=7,
+                          finished=True,
+                          finish_reason="stop")
 
+    def generate_speech_stream(self, _text, _params):
+        self.last_audio_params = _params
+        yield StreamDelta(audio_bytes=b"\x01\x00\x02\x00")
 
-class _Message:
+    def list_voices(self):
+        return ["Ryan"]
 
-    def __init__(self):
-        self.role = ""
-        self.contents = []
-
-
-class _StubRt:
-    """Records which load_* binding each visual buffer used."""
-
-    def MessageContent(self, ctype, data=""):
-        return _Content(ctype, data)
-
-    def Message(self):
-        return _Message()
-
-    def load_image_from_path(self, path):
-        return _FakeBuffer("image", path)
-
-    def load_video_from_array(self, frames, fps, timestamps=()):
-        return _FakeBuffer("video_array", fps)
-
-    def load_video_from_paths(self, paths, fps, timestamps=()):
-        return _FakeBuffer("video_paths", list(paths), fps)
+    def close(self):
+        self.close_count += 1
 
 
 def _engine():
-    try:
-        from experimental.server import engine
-    except ImportError as exc:  # skip only for missing external deps
-        _skip_or_raise(exc, "engine import")
+    from experimental.server.runtime import engine
     return engine
 
 
 # ---------------------------------------------------------------------------
-# engine.py: video content -> MessageContent("video") + ordered image_buffers
+# Nemotron-Omni video model-family + engine-minimum accounting
+# (ported to the modular runtime.engine / media.video_sampling API)
 # ---------------------------------------------------------------------------
 
 
-# ---------------------------------------------------------------------------
-# OpenAI HTTP layer (FastAPI TestClient + stub LLM)
-# ---------------------------------------------------------------------------
-def _make_stub_llm():
+class _FakeVideoBuffer:
+    """ImageData stand-in exposing the fields the min-profile check reads."""
 
-    class _Resp:
-        output_texts = ["a caption"]
-        output_ids = [[1, 2, 3]]
-        finish_reasons = []  # -> endpoint defaults finish_reason to "stop"
-
-    class _RT:
-        _resp_text = None  # tests may override the canned output
-
-        def handle_request(self, request):
-            resp = _Resp()
-            if self._resp_text is not None:
-                resp.output_texts = [self._resp_text]
-            return resp
-
-    class _LLM:
-        model_dir = "/fake/qwen3_vl"
-        _model_id = "qwen3-vl"
-        _rt = None
-        has_draft_model = False
-        _audio_buffers = ()  # tests may inject decoded-audio stubs
-
-        def __init__(self):
-            self._runtime = _RT()
-            self.captured = None
-            # Advertise ASR capability (the endpoint probes for an audio/
-            # engine subdir with an ASR-typed config).
-            self._multimodal_engine_dir = tempfile.mkdtemp()
-            audio_dir = os.path.join(self._multimodal_engine_dir, "audio")
-            os.makedirs(audio_dir, exist_ok=True)
-            with open(os.path.join(audio_dir, "config.json"),
-                      "w",
-                      encoding="utf-8") as f:
-                f.write('{"model_type": "qwen3_asr"}')
-
-        def _handle_request(self, request):
-            return self._runtime.handle_request(request)
-
-        def _admission(self):
-            import threading
-            sem = self.__dict__.get("_admission_sem")
-            if sem is None:
-                sem = self.__dict__.setdefault("_admission_sem",
-                                               threading.Semaphore(1))
-            return sem
-
-        def _make_generation_request(self,
-                                     messages,
-                                     params,
-                                     *,
-                                     tools=None,
-                                     tool_choice=None,
-                                     tool_config=None):
-            self.captured = messages
-            req = types.SimpleNamespace(
-                audio_buffers=list(self._audio_buffers))
-            return types.SimpleNamespace(requests=[req])
-
-        def count_prompt_tokens(self, messages, **kw):
-            return 7
-
-        def generate_stream(self, messages, params, **kw):
-            from experimental.server.engine import StreamDelta
-            yield StreamDelta(text="hi",
-                              token_ids=[1, 2],
-                              finished=True,
-                              finish_reason="stop")
-
-    return _LLM()
-
-
-@pytest.fixture
-def client_and_llm():
-    pytest.importorskip("fastapi")
-    pytest.importorskip("httpx")  # fastapi.testclient needs httpx
-    try:
-        from fastapi.testclient import TestClient
-
-        from experimental.server.api_server import _create_app
-    except ImportError as exc:  # skip only for missing external deps
-        _skip_or_raise(exc, "api_server / fastapi TestClient")
-    llm = _make_stub_llm()
-    # Local media is opt-in; these cases exercise the media pipeline itself.
-    return TestClient(_create_app(llm, allowed_local_media_path="/")), llm
-
-
-@pytest.mark.parametrize("response_format,expect_json", [("json", True),
-                                                         ("text", False)])
-def test_audio_transcriptions_endpoint(client_and_llm, response_format,
-                                       expect_json):
-    client, llm = client_and_llm
-    resp = client.post(
-        "/v1/audio/transcriptions",
-        files={"file": ("clip.wav", b"RIFF0000WAVEfmt ", "audio/wav")},
-        data={
-            "model": "asr",
-            "response_format": response_format
-        })
-    assert resp.status_code == 200, resp.text
-    if expect_json:
-        assert resp.json()["text"] == "a caption"
-    else:
-        assert resp.text == "a caption"
-    forwarded = llm.captured[0]["content"]
-    assert any(c.get("type") == "input_audio" for c in forwarded)
-
-
-def test_audio_transcriptions_rejects_empty(client_and_llm):
-    client, _ = client_and_llm
-    resp = client.post("/v1/audio/transcriptions",
-                       files={"file": ("e.wav", b"", "audio/wav")},
-                       data={"model": "asr"})
-    assert resp.status_code == 400
-
-
-def test_audio_transcriptions_protocol(client_and_llm):
-    # Qwen3-ASR protocol: `language` becomes a system turn, the user turn
-    # carries the audio, and the "language <LANG><asr_text><text>" output
-    # splits on the delimiter.
-    client, llm = client_and_llm
-    llm._runtime._resp_text = "language English<asr_text>Hello world"
-    resp = client.post(
-        "/v1/audio/transcriptions",
-        files={"file": ("clip.wav", b"RIFF0000WAVEfmt ", "audio/wav")},
-        data={
-            "model": "asr",
-            "language": "en"
-        })
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["text"] == "Hello world"
-    assert body["language"] == "English"
-    assert [m["role"] for m in llm.captured] == ["system", "user"]
-    # HF empty-audio sentinel: "language None" prefix yields no language key.
-    llm._runtime._resp_text = "language None<asr_text>"
-    resp = client.post(
-        "/v1/audio/transcriptions",
-        files={"file": ("clip.wav", b"RIFF0000WAVEfmt ", "audio/wav")},
-        data={"model": "asr"})
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["text"] == ""
-    assert "language" not in body
-    # No <asr_text> tag: the whole string is the transcription (HF semantics).
-    llm._runtime._resp_text = "language None"
-    resp = client.post(
-        "/v1/audio/transcriptions",
-        files={"file": ("clip.wav", b"RIFF0000WAVEfmt ", "audio/wav")},
-        data={"model": "asr"})
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["text"] == "language None"
-    resp = client.post(
-        "/v1/audio/transcriptions",
-        files={"file": ("clip.wav", b"RIFF0000WAVEfmt ", "audio/wav")},
-        data={
-            "model": "asr",
-            "language": "klingon"
-        })
-    assert resp.status_code == 400
-    # Languages beyond the original short list validate too (official set).
-    for code in ("tr", "vi", "hi"):
-        resp = client.post(
-            "/v1/audio/transcriptions",
-            files={"file": ("clip.wav", b"RIFF0000WAVEfmt ", "audio/wav")},
-            data={
-                "model": "asr",
-                "language": code
-            })
-        assert resp.status_code == 200, resp.text
-        assert [m["role"] for m in llm.captured] == ["system", "user"]
-
-
-def test_audio_transcriptions_prompt_is_user_context(client_and_llm):
-    # Qwen3-ASR semantics: `language` is the system turn, and the user turn
-    # carries the audio followed by the context prompt.
-    client, llm = client_and_llm
-    resp = client.post(
-        "/v1/audio/transcriptions",
-        files={"file": ("clip.wav", b"RIFF0000WAVEfmt ", "audio/wav")},
-        data={
-            "model": "asr",
-            "prompt": "NVIDIA TensorRT jargon",
-            "language": "en"
-        })
-    assert resp.status_code == 200, resp.text
-    roles = [m["role"] for m in llm.captured]
-    assert roles == ["system", "user"]
-    assert llm.captured[0]["content"] == "English"
-    user_types = [c.get("type") for c in llm.captured[1]["content"]]
-    assert user_types == ["input_audio", "text"]
-
-
-def test_audio_transcriptions_duration_limit(client_and_llm):
-    # Decoded PCM longer than the engine's audio profile (builder
-    # max_time_steps / 100 s; default 30 s without a config) is a 413 before
-    # inference, carrying the actual duration and the cap.
-    client, llm = client_and_llm
-    llm._audio_buffers = [
-        types.SimpleNamespace(num_samples=31 * 16000, sample_rate=16000)
-    ]
-    resp = client.post(
-        "/v1/audio/transcriptions",
-        files={"file": ("clip.wav", b"RIFF0000WAVEfmt ", "audio/wav")},
-        data={"model": "asr"})
-    assert resp.status_code == 413, resp.text
-    assert "31.0" in resp.json()["error"]
-    assert "30.0" in resp.json()["error"]
-    llm._audio_buffers = [
-        types.SimpleNamespace(num_samples=29 * 16000, sample_rate=16000)
-    ]
-    resp = client.post(
-        "/v1/audio/transcriptions",
-        files={"file": ("clip.wav", b"RIFF0000WAVEfmt ", "audio/wav")},
-        data={"model": "asr"})
-    assert resp.status_code == 200, resp.text
-    # A recorded builder profile overrides the default cap (1000 steps = 10s).
-    audio_dir = os.path.join(llm._multimodal_engine_dir, "audio")
-    with open(os.path.join(audio_dir, "config.json"), "w",
-              encoding="utf-8") as f:
-        f.write('{"model_type": "qwen3_asr", '
-                '"builder_config": {"max_time_steps": 1000}}')
-    llm._audio_buffers = [
-        types.SimpleNamespace(num_samples=11 * 16000, sample_rate=16000)
-    ]
-    resp = client.post(
-        "/v1/audio/transcriptions",
-        files={"file": ("clip.wav", b"RIFF0000WAVEfmt ", "audio/wav")},
-        data={"model": "asr"})
-    assert resp.status_code == 413, resp.text
-    assert "10.0" in resp.json()["error"]
-
-
-def test_audio_transcriptions_error_stage_mapping(client_and_llm):
-    # Prepare failures (incl. C++ decode RuntimeError) are client errors;
-    # infer-stage failures are 500 except the input-too-long marker (413).
-    client, llm = client_and_llm
-
-    def _post():
-        return client.post(
-            "/v1/audio/transcriptions",
-            files={"file": ("clip.wav", b"RIFF0000WAVEfmt ", "audio/wav")},
-            data={"model": "asr"})
-
-    def _prepare_boom(*args, **kwargs):
-        raise RuntimeError("Audio decode failed (corrupt bytes)")
-
-    orig_prepare = llm._make_generation_request
-    llm._make_generation_request = _prepare_boom
-    resp = _post()
-    assert resp.status_code == 400
-    assert "Invalid audio" in resp.json()["error"]
-    llm._make_generation_request = orig_prepare
-
-    def _infer_oom(request):
-        raise RuntimeError("CUDA error: out of memory")
-
-    llm._handle_request = _infer_oom
-    resp = _post()
-    assert resp.status_code == 500
-
-    def _infer_too_long(request):
-        raise RuntimeError("EDGELLM_INPUT_TOO_LONG: rebuild with larger "
-                           "--maxInputLen")
-
-    llm._handle_request = _infer_too_long
-    resp = _post()
-    assert resp.status_code == 413
-
-
-def test_media_count_mismatch_is_client_error():
-    """A placeholder/media count mismatch is malformed input, so it must stay a
-    400 with the runner's diagnostic rather than a generic 500."""
-    from experimental.server.api_server import _inference_error_response
-    exc = RuntimeError(
-        "EDGELLM_BAD_MEDIA_COUNT: QwenViTRunner::textPreprocess()"
-        " pad count exceeds this request's media count")
-    resp = _inference_error_response(exc)
-    assert resp.status_code == 400
-    assert b"EDGELLM_BAD_MEDIA_COUNT" in resp.body
-
-
-def test_media_count_mismatch_returns_400_over_http(client_and_llm):
-    """The marker reaches the client as a 400 through the route, not just
-    through the mapper. The C++ -> pybind hop is not covered here."""
-    client, llm = client_and_llm
-
-    def _boom(request):
-        raise RuntimeError(
-            "EDGELLM_BAD_MEDIA_COUNT: QwenViTRunner::textPreprocess() pad count"
-            " exceeds this request's media count")
-
-    llm._handle_request = _boom
-    resp = client.post("/v1/chat/completions",
-                       json={"messages": [{
-                           "role": "user",
-                           "content": "hi"
-                       }]})
-    assert resp.status_code == 400, resp.text
-    assert "EDGELLM_BAD_MEDIA_COUNT" in resp.text
-
-
-def test_content_length_parsing():
-    # Malformed Content-Length (proxy-injected lists, floats) must map to a
-    # clean 400, never an unhandled ValueError in the middleware.
-    from experimental.server.api_server import _parse_content_length
-    assert _parse_content_length(None) is None
-    assert _parse_content_length("1024") == 1024
-    assert _parse_content_length("abc") == -1
-    assert _parse_content_length("1.5") == -1
-    assert _parse_content_length("10, 20") == -1
-
-
-def test_audio_transcriptions_requires_audio_engine(client_and_llm):
-    # A model without an audio encoder must reject transcription up front.
-    client, llm = client_and_llm
-    saved = llm._multimodal_engine_dir
-    llm._multimodal_engine_dir = ""
-    try:
-        resp = client.post(
-            "/v1/audio/transcriptions",
-            files={"file": ("clip.wav", b"RIFF0000WAVEfmt ", "audio/wav")},
-            data={"model": "asr"})
-        assert resp.status_code == 400
-        assert "audio" in resp.json()["error"]
-    finally:
-        llm._multimodal_engine_dir = saved
-
-
-def test_audio_transcriptions_limits(client_and_llm, monkeypatch):
-    # Uploads are buffered in memory (plus a base64 copy): oversize is 413,
-    # and unsupported response_format values are rejected instead of being
-    # silently served as JSON.
-    client, _ = client_and_llm
-    from experimental.server import api_server
-    monkeypatch.setattr(api_server, "MAX_AUDIO_UPLOAD_BYTES", 16)
-    resp = client.post("/v1/audio/transcriptions",
-                       files={"file": ("big.wav", b"x" * 17, "audio/wav")},
-                       data={"model": "asr"})
-    assert resp.status_code == 413
-    resp = client.post(
-        "/v1/audio/transcriptions",
-        files={"file": ("clip.wav", b"RIFF0000WAVEfmt ", "audio/wav")},
-        data={
-            "model": "asr",
-            "response_format": "srt"
-        })
-    assert resp.status_code == 400
-
-
-# ---------------------------------------------------------------------------
-# Model-family detection
-# ---------------------------------------------------------------------------
-
-
-def test_video_model_family_resolution(tmp_path):
-    """All model_type -> family branches of LLM._video_model_family:
-    accepted families, rejected model types, and the nested-layout priority
-    (the C++ runtime loads <root>/visual first)."""
-    eng = _engine()
-
-    def family_for(model_type, nested=None, visual=True, sub=None):
-        root = tmp_path / (sub or model_type or "empty")
-        root.mkdir(exist_ok=True)
-        if visual:
-            (root / "visual").mkdir(exist_ok=True)
-        if model_type is not None:
-            (root / "config.json").write_text('{"model_type": "%s"}' %
-                                              model_type)
-        if nested is not None:
-            (root / "visual" / "config.json").write_text(
-                '{"model_type": "%s"}' % nested)
-        llm = eng.LLM.__new__(eng.LLM)
-        llm._multimodal_engine_dir = str(root)
-        return llm._video_model_family()
-
-    assert family_for("internvl") == "internvl"
-    assert family_for("qwen3_vl") == "qwen"
-    # Nested <root>/visual/config.json wins over a legacy flat config.json.
-    assert family_for("qwen3_vl", nested="internvl_chat",
-                      sub="nested") == "internvl"
-    # No visual engine at all: video must be rejected, not defaulted to qwen.
-    with pytest.raises(ValueError, match="not supported"):
-        family_for(None, visual=False, sub="none")
-    # Model families without a video preprocessing path (phi4mm reads only
-    # the first frame) must be rejected up front.
-    with pytest.raises(ValueError, match="not supported"):
-        family_for("phi4mm")
-    # Audio-side omni/asr types share the qwen prefix but have no video path.
-    for mt in ("qwen3_omni_audio_encoder", "qwen3_omni_code2wav", "qwen3_asr"):
-        with pytest.raises(ValueError, match="not supported"):
-            family_for(mt)
+    def __init__(self, video, frames):
+        self.video = video
+        self.frames = frames
 
 
 def test_video_model_family_nemotron(tmp_path):
@@ -511,17 +181,18 @@ def test_video_model_family_nemotron(tmp_path):
     (root / "visual").mkdir()
     (root / "visual" / "config.json"
      ).write_text('{"model_type": "nemotron_omni_vision_encoder"}')
+    (root / "visual" / "visual.engine").touch()
     llm = eng.LLM.__new__(eng.LLM)
-    llm._multimodal_engine_dir = str(root)
+    llm._media_dir = str(root)
     assert llm._video_model_family() == "nemotron"
 
-
-class _FakeVideoBuffer:
-    """ImageData stand-in exposing the fields the min-profile check reads."""
-
-    def __init__(self, video, frames):
-        self.video = video
-        self.frames = frames
+    (root / "visual" / "config.json").write_text(
+        '{"model_type": "nemotron_omni_vision_encoder", '
+        '"supports_video": false}')
+    image_only = eng.LLM.__new__(eng.LLM)
+    image_only._media_dir = str(root)
+    with pytest.raises(ValueError, match="video input is not supported"):
+        image_only._video_model_family()
 
 
 def test_load_image_buffers_nemotron_minimum():
@@ -549,7 +220,7 @@ def test_load_image_buffers_nemotron_minimum():
         # 8 frames = 4 tubelets (T=2), 4*256 EVS tokens, no cu_seqlens groups.
         return _FakeVideoBuffer(item["video"], frames=8), 4 * 256, 0, 0
 
-    import experimental.server.video_sampling as vs_mod
+    import experimental.server.media.video_sampling as vs_mod
     orig = vs_mod.load_video_buffer
     vs_mod.load_video_buffer = fake_load_video_buffer
     try:
@@ -592,7 +263,7 @@ def test_load_image_buffers_nemotron_minimum_uses_raw_tubelets():
         # 8 frames = 4 tubelets: raw 1024 >= min, but EVS(0.7) prunes to ~307.
         return _FakeVideoBuffer(item["video"], frames=8), 307, 0, 0
 
-    import experimental.server.video_sampling as vs_mod
+    import experimental.server.media.video_sampling as vs_mod
     orig = vs_mod.load_video_buffer
     vs_mod.load_video_buffer = fake_load_video_buffer
     try:
@@ -642,222 +313,139 @@ def test_load_image_buffers_nemotron_rejects_multiple_and_mixed():
         eng._load_image_buffers(None, mixed, lambda: "nemotron", lambda: {})
 
 
-def test_load_image_buffers_request_wide_internvl_minimum():
-    # Two 2-frame videos jointly reach the 4-block engine minimum; one alone
-    # must be rejected AFTER accumulation (the bound is request-wide).
-    eng = _engine()
-    limits = {
-        "model_type": "internvl",
-        "min_image_tokens": 1024,
-        "max_image_tokens": 4096,
-        "max_image_tokens_per_image": 512,
+@pytest.fixture
+def client_and_llm(tmp_path):
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+
+    llm = _FakeLLM(tmp_path)
+    config = ApiConfig(enable_auto_tool_choice=True,
+                       allowed_local_media_path=str(tmp_path))
+    return TestClient(_create_app(llm, config)), llm
+
+
+def _tool():
+    return {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Get weather",
+            "parameters": {
+                "type": "object"
+            },
+        },
     }
 
-    def fake_load_video_buffer(rt,
-                               item,
-                               family,
-                               frame_limits=None,
-                               budget=None,
-                               pixel_budget=None,
-                               cu_budget=None):
-        return ("video", item["video"]), 2 * 256, 0, 2  # 2 frames = 2 blocks
 
-    import experimental.server.video_sampling as vs_mod
-    orig = vs_mod.load_video_buffer
-    vs_mod.load_video_buffer = fake_load_video_buffer
-    try:
-        two = eng._load_image_buffers(None, [{
-            "role":
-            "user",
-            "content": [{
-                "type": "video",
-                "video": "a.mp4"
-            }, {
-                "type": "video",
-                "video": "b.mp4"
-            }]
-        }], lambda: "internvl", lambda: limits)
-        assert len(two) == 2
-        # Missing image files are skipped and must NOT count toward the
-        # minimum (they produce no buffer, so no blocks).
-        with pytest.raises(ValueError, match="at least 1024"):
-            eng._load_image_buffers(None, [{
-                "role":
-                "user",
-                "content": [{
-                    "type": "video",
-                    "video": "a.mp4"
-                }] + [{
-                    "type": "image",
-                    "image": f"/no/such/img{i}.jpg"
-                } for i in range(3)]
-            }], lambda: "internvl", lambda: limits)
-        with pytest.raises(ValueError, match="at least 1024"):
-            eng._load_image_buffers(
-                None, [{
-                    "role": "user",
-                    "content": [{
-                        "type": "video",
-                        "video": "a.mp4"
-                    }]
-                }], lambda: "internvl", lambda: limits)
-    finally:
-        vs_mod.load_video_buffer = orig
+def _sse_payloads(response):
+    return [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines() if line.startswith("data: {")
+    ]
 
 
-def test_load_image_buffers_request_wide_qwen_minimum(tmp_path, monkeypatch):
-    # The engine minimum is request-wide for Qwen too: resized media are
-    # floored per item, but do_resize=false media can undershoot and the C++
-    # runner checks the accumulated totalSeqLength against the profile MIN.
-    eng = _engine()
-    limits = {
-        "model_type": "qwen3_vl",
-        "min_image_tokens": 128,
-        "max_image_tokens": 4096,
-        "max_image_tokens_per_image": 4096,
-        "patch_size": 16,
-        "merge_size": 2,
-        "temporal_patch_size": 2,
-    }
-    est_by_source = {"tiny.mp4": 8, "a.mp4": 64, "b.mp4": 64}
+def test_engine_client_releases_single_runtime_slot(tmp_path):
+    from experimental.server.runtime.engine import SamplingParams
+    from experimental.server.runtime.engine_client import EngineClient
 
-    def fake_load_video_buffer(rt,
-                               item,
-                               family,
-                               frame_limits=None,
-                               budget=None,
-                               pixel_budget=None,
-                               cu_budget=None):
-        est = est_by_source[item["video"]]
-        return ("video", item["video"]), est, 0, 1
-
-    import experimental.server.video_sampling as vs_mod
-    monkeypatch.setattr(vs_mod, "load_video_buffer", fake_load_video_buffer)
-
-    def _load(content):
-        return eng._load_image_buffers(_StubRt(), [{
+    async def exercise():
+        client = EngineClient(_FakeLLM(tmp_path),
+                              ApiConfig(max_queued_requests=0))
+        first = await client.prepare_request([{
             "role": "user",
-            "content": content
-        }], lambda: "qwen", lambda: limits)
+            "content": "first"
+        }], SamplingParams())
+        assert client.active_requests == 1
+        with pytest.raises(ServerOverloadedError):
+            await client.prepare_request([{
+                "role": "user",
+                "content": "second"
+            }], SamplingParams())
 
-    # A single raw video far below the minimum -> 400 up front, not a C++
-    # runtime failure.
-    with pytest.raises(ValueError, match="at least 128"):
-        _load([{"type": "video", "video": "tiny.mp4"}])
-    # Two raw media jointly reaching the minimum pass.
-    assert len(
-        _load([{
-            "type": "video",
-            "video": "a.mp4"
-        }, {
-            "type": "video",
-            "video": "b.mp4"
-        }])) == 2
-    # image + video still short of the minimum -> 400.
-    img = tmp_path / "small.jpg"
-    img.write_bytes(b"x")
-    monkeypatch.setattr(vs_mod,
-                        "estimate_image_tokens",
-                        lambda path, family, lim, do_resize=True: 32)
-    with pytest.raises(ValueError, match="at least 128"):
-        _load([{
-            "type": "image",
-            "image": str(img)
-        }, {
-            "type": "video",
-            "video": "a.mp4"
-        }])
-
-
-def test_load_image_buffers_budget_order_independent(tmp_path, monkeypatch):
-    # The video sampler must see the same remaining budget whether the image
-    # appears before or after the video, so both orders produce identical
-    # buffers (images are probed and reserved up front, phase 1).
-    eng = _engine()
-    limits = {
-        "model_type": "qwen2_5_vl",
-        "min_image_tokens": 4,
-        "max_image_tokens": 4096,
-        "max_image_tokens_per_image": 4096,
-        "patch_size": 14,
-        "merge_size": 2,
-        "temporal_patch_size": 2,
-    }
-    av = pytest.importorskip("av")
-    np = pytest.importorskip("numpy")
-    img = tmp_path / "a.mp4"
-    container = av.open(str(img), mode="w")
-    stream = container.add_stream("mpeg4", rate=1)
-    stream.width = stream.height = 64
-    stream.pix_fmt = "yuv420p"
-    frame = av.VideoFrame.from_ndarray(np.zeros((64, 64, 3), dtype=np.uint8),
-                                       format="rgb24")
-    for packet in stream.encode(frame):
-        container.mux(packet)
-    for packet in stream.encode():
-        container.mux(packet)
-    container.close()
-
-    # The REAL estimator is used for the phase-1 reservation (it must accept
-    # do_resize=...; a dropped parameter once surfaced as TypeError).
-    import experimental.server.video_sampling as vs_mod
-    image_est = vs_mod.estimate_image_tokens(str(img), "qwen", limits)
-    assert image_est > 0
-    seen_budgets = []
-
-    def fake_load_video_buffer(rt,
-                               item,
-                               family,
-                               frame_limits=None,
-                               budget=None,
-                               pixel_budget=None,
-                               cu_budget=None):
-        # The sampler clamps to the remaining budget: consume min(cap, need).
-        seen_budgets.append(budget)
-        need = 4000
-        if budget is not None and budget < need:
-            return ("video", budget), budget, 0, 1
-        return ("video", need), need, 0, 1
-
-    monkeypatch.setattr(vs_mod, "load_video_buffer", fake_load_video_buffer)
-
-    def items(order):
-        content = [{
-            "type": "image",
-            "image": str(img)
-        }, {
-            "type": "video",
-            "video": "v.mp4"
-        }]
-        return [{
+        first.release()
+        second = await client.prepare_request([{
             "role": "user",
-            "content": content if order == "iv" else content[::-1]
-        }]
+            "content": "second"
+        }], SamplingParams())
+        second.release()
+        assert client.active_requests == 0
 
-    rt = _StubRt()
-    results = {}
-    for order in ("iv", "vi"):
-        buffers = eng._load_image_buffers(rt, items(order), lambda: "qwen",
-                                          lambda: limits)
-        video_buf = next(b for b in buffers if b[0] == "video")
-        results[order] = video_buf
-    # Identical remaining budget in both orders -> identical video buffer.
-    assert seen_budgets[0] == seen_budgets[1] == 4096 - image_est
-    assert results["iv"] == results["vi"]
+    asyncio.run(exercise())
 
 
-def test_stream_disconnect_before_first_byte_releases_admission(
-        client_and_llm):
-    # A disconnect before the first body frame means the SSE generator never
-    # starts, so its finally cannot run; the ASGI-call finally must release.
-    client, llm = client_and_llm
-    app = client.app
+def test_stream_lease_is_held_until_iterator_cleanup_finishes(tmp_path):
+    import threading
+
+    from experimental.server.runtime.engine import SamplingParams
+    from experimental.server.runtime.engine_client import EngineClient
+
+    llm = _FakeLLM(tmp_path)
+    cleanup_entered = threading.Event()
+    cleanup_may_finish = threading.Event()
+
+    def blocking_stream(*_args, **_kwargs):
+        try:
+            yield StreamDelta(text="first", token_ids=[1])
+        finally:
+            cleanup_entered.set()
+            cleanup_may_finish.wait()
+
+    llm.generate_stream = blocking_stream
+
+    async def exercise():
+        client = EngineClient(llm, ApiConfig(max_queued_requests=0))
+        prepared = await client.prepare_request([{
+            "role": "user",
+            "content": "first"
+        }], SamplingParams())
+        stream = client.stream([{
+            "role": "user",
+            "content": "first"
+        }],
+                               SamplingParams(),
+                               prepared=prepared)
+        assert (await anext(stream)).text == "first"
+
+        closing = asyncio.create_task(stream.aclose())
+        assert await asyncio.to_thread(cleanup_entered.wait, 1.0)
+        assert client.active_requests == 1
+        with pytest.raises(ServerOverloadedError):
+            await client.prepare_request([{
+                "role": "user",
+                "content": "second"
+            }], SamplingParams())
+
+        cleanup_may_finish.set()
+        await closing
+        assert client.active_requests == 0
+
+    asyncio.run(exercise())
+
+
+def test_app_shutdown_closes_runtime_exactly_once(tmp_path):
+    from fastapi.testclient import TestClient
+
+    llm = _FakeLLM(tmp_path)
+    app = _create_app(llm)
+    with TestClient(app) as client:
+        assert client.get("/health/ready").status_code == 200
+        assert llm.close_count == 0
+    assert llm.close_count == 1
+
+    asyncio.run(app.state.engine_client.close())
+    assert llm.close_count == 1
+
+
+def test_stream_disconnect_before_headers_releases_admission(tmp_path):
+    llm = _FakeLLM(tmp_path)
+    app = _create_app(llm)
     body = json.dumps({
         "messages": [{
             "role": "user",
             "content": "hi"
         }],
-        "stream": True
+        "stream": True,
     }).encode()
     scope = {
         "type":
@@ -881,1064 +469,1325 @@ def test_stream_disconnect_before_first_byte_releases_admission(
         "client": ("test", 1),
         "server": ("test", 80),
     }
+    received = False
 
     async def receive():
-        return {"type": "http.request", "body": body, "more_body": False}
+        nonlocal received
+        if not received:
+            received = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        return {"type": "http.disconnect"}
 
-    class _Disconnect(Exception):
+    class Disconnect(Exception):
         pass
 
-    async def send(message):
-        raise _Disconnect()  # abort on the headers frame
+    async def send(_message):
+        raise Disconnect()
 
     async def run():
-        try:
+        with pytest.raises(Disconnect):
             await app(scope, receive, send)
-        except _Disconnect:
-            pass
 
     asyncio.run(run())
-    assert llm._admission().acquire(blocking=False), "admission gate leaked"
-    llm._admission().release()
+    client = app.state.engine_client
+    assert client.active_requests == 0
+    assert client.queued_requests == 0
 
 
-def test_admission_busy_returns_503(client_and_llm):
-    # A held runtime slot must fail fast (503 overloaded + Retry-After), never
-    # park a server pool thread on acquire: a parked thread starves the sync
-    # SSE generator that has to release the slot.
+@pytest.mark.parametrize("path,anthropic", [
+    ("/v1/chat/completions", False),
+    ("/v1/messages", True),
+])
+def test_invalid_json_returns_protocol_error_without_inference(
+        client_and_llm, path, anthropic):
     client, llm = client_and_llm
-    assert llm._admission().acquire(blocking=False)
-    try:
-        body = {"messages": [{"role": "user", "content": "hi"}]}
-        resp = client.post("/v1/chat/completions", json=body)
-        assert resp.status_code == 503
-        assert resp.headers.get("retry-after") == "1"
-        resp = client.post("/v1/chat/completions",
-                           json={
-                               **body, "stream": True
-                           })
-        assert resp.status_code == 503
-        resp = client.post(
-            "/v1/audio/transcriptions",
-            files={"file": ("c.wav", b"RIFF0000WAVEfmt ", "audio/wav")},
-            data={"model": "asr"})
-        assert resp.status_code == 503
-    finally:
-        llm._admission().release()
-    # Gate released: the same request now succeeds.
-    resp = client.post("/v1/chat/completions",
-                       json={"messages": [{
-                           "role": "user",
-                           "content": "hi"
-                       }]})
-    assert resp.status_code == 200
-
-
-def test_admission_spans_decode_and_infer():
-    # The admission gate must already be held while media decodes, not just
-    # around handle_request: concurrent requests may not stack decoded
-    # buffers while queueing on the inference lock.
-    eng = _engine()
-    llm = eng.LLM.__new__(eng.LLM)
-    llm._rt = None
-    seen = {}
-
-    def fake_build(messages, params, **kw):
-        seen["held_during_build"] = llm._admission()._value == 0
-        return "req"
-
-    def fake_handle(request):
-        seen["held_during_infer"] = llm._admission()._value == 0
-
-        class _R:
-            output_texts = ["ok"]
-            output_ids = [[1]]
-            finish_reasons = []
-            logprobs = []
-
-        return _R()
-
-    llm._make_generation_request = fake_build
-    llm._handle_request = fake_handle
-    llm._parse_generation_output = (
-        lambda text, ids, reason, cfg: eng.CompletionOutput(
-            text=text, token_ids=ids, finish_reason=reason))
-    out = llm.generate(["hi"], eng.SamplingParams(max_tokens=4))
-    assert out and seen["held_during_build"] and seen["held_during_infer"]
-    assert llm._admission()._value == 1  # released afterwards
-
-
-def test_stream_disconnect_keeps_gate_until_worker_exits(monkeypatch):
-    # A join timeout after disconnect must NOT release admission: the C++
-    # worker may still be inside prefill holding the inference lock. The
-    # gate transfers to the worker and frees only when it really exits.
-    eng = _engine()
-    monkeypatch.setattr(eng, "_STREAM_JOIN_TIMEOUT_S", 0.05)
-    llm = eng.LLM.__new__(eng.LLM)
-    import threading as _t
-    worker_may_exit = _t.Event()
-    state = {"cancelled": False}
-
-    class _Chunk:
-        text = "t"
-        token_ids = [1]
-        finished = False
-        reason = None
-        logprobs = []
-
-    class _Channel:
-
-        def set_skip_special_tokens(self, flag):
-            pass
-
-        def wait_pop(self, timeout_ms=0):
-            return None if state["cancelled"] else _Chunk()
-
-        def is_finished(self):
-            return False
-
-        def is_cancelled(self):
-            return state["cancelled"]
-
-        def cancel(self):
-            state["cancelled"] = True
-
-    class _RT:
-
-        class StreamChannel:
-
-            @staticmethod
-            def create():
-                return _Channel()
-
-    llm._rt = _RT()
-    llm._handle_request = lambda request: worker_may_exit.wait(timeout=10)
-
-    sem = llm._admission()
-    assert sem.acquire(blocking=False)
-    from experimental.server import api_server
-    handoff = api_server._AdmissionHandoff(sem)
-
-    class _Req:
-        stream_channels = None
-
-    gen = llm.generate_stream([],
-                              eng.SamplingParams(),
-                              prebuilt_request=_Req(),
-                              admission_handoff=handoff)
-    next(gen)  # worker started
-    gen.close()  # disconnect: cancel + join times out; worker still runs
-    assert not sem.acquire(blocking=False), "gate released while worker alive"
-    worker_may_exit.set()
-    deadline = time.time() + 5
-    while time.time() < deadline:
-        if sem.acquire(blocking=False):
-            sem.release()
-            break
-        time.sleep(0.01)
+    response = client.post(path,
+                           content=b'{"messages":',
+                           headers={"content-type": "application/json"})
+    assert response.status_code == 400
+    payload = response.json()
+    if anthropic:
+        assert payload["type"] == "error"
+        assert payload["error"]["type"] == "invalid_request_error"
     else:
-        raise AssertionError("worker exit did not release the gate")
+        assert payload["error"]["type"] == "invalid_request_error"
+    assert llm.prepare_count == 0
 
 
-def test_stream_close_cancels_channel():
-    # Closing the generator early (client disconnect) must cancel the
-    # channel so the worker releases the inference lock.
-    eng = _engine()
-    llm = eng.LLM.__new__(eng.LLM)
-    state = {"cancelled": False}
-
-    class _Chunk:
-        text = "t"
-        token_ids = [1]
-        finished = False
-        reason = None
-        logprobs = []
-
-    class _Channel:
-
-        def set_skip_special_tokens(self, flag):
-            pass
-
-        def wait_pop(self, timeout_ms=0):
-            return None if state["cancelled"] else _Chunk()
-
-        def is_finished(self):
-            return False
-
-        def is_cancelled(self):
-            return state["cancelled"]
-
-        def cancel(self):
-            state["cancelled"] = True
-
-    class _RT:
-
-        class StreamChannel:
-
-            @staticmethod
-            def create():
-                return _Channel()
-
-    llm._rt = _RT()
-    llm._handle_request = lambda request: None
-
-    class _Req:
-        stream_channels = None
-
-    gen = llm.generate_stream([],
-                              eng.SamplingParams(max_tokens=4),
-                              prebuilt_request=_Req())
-    first = next(gen)
-    assert first.text == "t"
-    gen.close()
-    assert state["cancelled"]
-
-
-def test_cli_parser_builds():
-    # Guards against duplicate argparse registrations (a rebase once left two
-    # --multimodal-engine-dir definitions and the server could not start;
-    # the Jedha CI --help smoke failed on exactly this).
-    import subprocess
-    import sys
-    r = subprocess.run(
-        [sys.executable, "-m", "experimental.server.api_server", "--help"],
-        capture_output=True,
-        text=True,
-        cwd=REPO_ROOT,
-        env={
-            **os.environ, "PYTHONPATH": REPO_ROOT
-        })
-    assert r.returncode == 0, r.stderr[-500:]
-    assert "--multimodal-engine-dir" in r.stdout
-
-
-def test_video_frame_limits_from_engine_config(tmp_path):
-    # builder_config token bounds + preprocessor geometry feed the sampler's
-    # profile clamping.
-    eng = _engine()
-    (tmp_path / "visual").mkdir()
-    (tmp_path / "visual" / "config.json").write_text(
-        '{"model_type": "qwen2_5_vl", "builder_config": '
-        '{"min_image_tokens": 128, "max_image_tokens": 4096, '
-        '"max_image_tokens_per_image": 4096}}')
-    (tmp_path / "visual" / "preprocessor_config.json").write_text(
-        '{"patch_size": 14, "merge_size": 2, "temporal_patch_size": 2}')
-    llm = eng.LLM.__new__(eng.LLM)
-    llm._multimodal_engine_dir = str(tmp_path)
-    limits = llm._video_frame_limits()
-    assert limits["max_image_tokens"] == 4096
-    assert limits["patch_size"] == 14
-    assert limits["model_type"] == "qwen2_5_vl"
-
-
-def test_video_frame_limits_carry_recorded_cu_capacity(tmp_path):
-    # config/server wiring: a cu_seqlens capacity recorded by the builder in
-    # builder_config must reach the limits dict the sampler and the engine
-    # budget consume, taking precedence over the fallback formula.
-    eng = _engine()
-    (tmp_path / "visual").mkdir()
-    (tmp_path / "visual" / "config.json").write_text(
-        '{"model_type": "qwen3_vl", "builder_config": '
-        '{"min_image_tokens": 4096, "max_image_tokens": 8192, '
-        '"max_cu_seqlen_groups": 512}}')
-    (tmp_path / "visual" / "preprocessor_config.json").write_text(
-        '{"patch_size": 16, "merge_size": 2, "temporal_patch_size": 2}')
-    llm = eng.LLM.__new__(eng.LLM)
-    llm._multimodal_engine_dir = str(tmp_path)
-    limits = llm._video_frame_limits()
-    assert limits["max_cu_seqlen_groups"] == 512
-
-
-def test_chat_streaming_invalid_video_returns_400(chain_client):
-    # The streaming path must reject invalid video BEFORE the SSE response
-    # starts; without prevalidation the same input is a 400 non-streaming but
-    # a 200 SSE with an in-band error.
-    client, _ = chain_client
-    resp = client.post("/v1/chat/completions",
-                       json={
-                           "messages": [{
-                               "role":
-                               "user",
-                               "content": [{
-                                   "type": "video_url",
-                                   "video_url": {
-                                       "url": "file:///no/such/clip.mp4"
-                                   }
-                               }]
-                           }],
-                           "stream":
-                           True,
-                           "max_tokens":
-                           8
-                       })
-    assert resp.status_code == 400, resp.text
-
-
-# ---------------------------------------------------------------------------
-# Request-parsing chains: OpenAI JSON in -> parsed generation request out,
-# asserting on buffer order, placeholder sequence, and decoded bytes.
-# ---------------------------------------------------------------------------
-
-
-class _CapturingRt:
-    """Stub of the pybind module at the C++ boundary; records buffer loads."""
-
-    class Message:
-
-        def __init__(self):
-            self.role = ""
-            self.contents = []
-
-    class LLMGenerationRequest:
-        pass
-
-    class Request:
-
-        def __init__(self, messages=None):
-            self.messages = messages
-
-    @staticmethod
-    def MessageContent(ctype, data=""):
-        c = _Content(ctype, data)
-        return c
-
-    @staticmethod
-    def load_image_from_path(path):
-        return _FakeBuffer("image", path)
-
-    @staticmethod
-    def load_video_from_paths(paths, fps, timestamps=()):
-        return _FakeBuffer("video_paths", list(paths), fps, list(timestamps))
-
-    @staticmethod
-    def load_video_from_array(frames, fps, timestamps=()):
-        return _FakeBuffer("video_array", frames, fps, list(timestamps))
-
-    @staticmethod
-    def load_audio_buffer_from_bytes(raw):
-        return ("audio_bytes", raw)
-
-
-@pytest.fixture
-def chain_client(tmp_path):
-    """TestClient over a real _create_app + a real-code LLM whose only stubs
-    are the pybind module and the engine runtime (captures the request)."""
-    pytest.importorskip("fastapi")
-    pytest.importorskip("httpx")
-    try:
-        from fastapi.testclient import TestClient
-
-        from experimental.server.api_server import _create_app
-        from experimental.server.engine import LLM
-    except ImportError as exc:  # skip only for missing external deps
-        _skip_or_raise(exc, "server imports")
-
-    captured = {}
-
-    class _RT:
-
-        @staticmethod
-        def has_draft_model():
-            return False
-
-        def handle_request(self, request):
-            captured["request"] = request
-
-            class _Resp:
-                output_texts = ["ok"]
-                output_ids = [[1]]
-                finish_reasons = []
-
-            return _Resp()
-
-    llm = LLM.__new__(LLM)  # bypass __init__: no engine on a unit host
-    llm._rt = _CapturingRt()
-    llm._runtime = _RT()
-    llm._model_dir = str(tmp_path)
-    llm._model_id = "chain-test"
-    visual_dir = tmp_path / "mm" / "visual"
-    visual_dir.mkdir(parents=True)
-    (visual_dir / "config.json").write_text('{"model_type": "qwen3_vl"}')
-    llm._multimodal_engine_dir = str(tmp_path / "mm")
-    llm._tool_template_formatter = None
-    return TestClient(_create_app(llm, allowed_local_media_path="/")), captured
-
-
-def test_chat_text_request_parses(chain_client):
-    client, captured = chain_client
-    resp = client.post("/v1/chat/completions",
-                       json={
-                           "messages": [{
-                               "role": "user",
-                               "content": "Hello there"
-                           }],
-                           "max_tokens": 8,
-                       })
-    assert resp.status_code == 200, resp.text
-    req = captured["request"].requests[0]
-    assert [c.type for c in req.messages[0].contents] == ["text"]
-    assert req.image_buffers == [] and req.audio_buffers == []
-
-
-def test_chat_video_frames_request_parses_to_ordered_buffers(
-        chain_client, tmp_path):
-    client, captured = chain_client
-    img = tmp_path / "a.jpg"
-    img.write_bytes(b"x")
-    f0, f1 = tmp_path / "f0.jpg", tmp_path / "f1.jpg"
-    f0.write_bytes(b"x")
-    f1.write_bytes(b"x")
-    resp = client.post("/v1/chat/completions",
-                       json={
-                           "messages": [{
-                               "role":
-                               "user",
-                               "content": [
-                                   {
-                                       "type": "image",
-                                       "image": str(img)
-                                   },
-                                   {
-                                       "type": "video",
-                                       "frames": [str(f0), str(f1)],
-                                       "fps": 1.0
-                                   },
-                                   {
+def test_chat_prepares_multimodal_request_once(client_and_llm):
+    client, llm = client_and_llm
+    image = base64.b64encode(b"image").decode()
+    response = client.post("/v1/chat/completions",
+                           json={
+                               "model":
+                               "fake-model",
+                               "messages": [{
+                                   "role":
+                                   "user",
+                                   "content": [{
+                                       "type": "image_url",
+                                       "image_url": {
+                                           "url":
+                                           f"data:image/png;base64,{image}"
+                                       },
+                                   }, {
                                        "type": "text",
-                                       "text": "describe"
-                                   },
-                               ],
-                           }],
-                           "max_tokens":
-                           8,
-                       })
-    assert resp.status_code == 200, resp.text
-    req = captured["request"].requests[0]
-    # Buffers arrive in message order (the C++ runner pairs them positionally
-    # with the visual placeholders).
-    assert req.image_buffers == [("image", str(img)),
-                                 ("video_paths", [str(f0),
-                                                  str(f1)], 1.0, [0.0, 1.0])]
-    # The chat-template message carries the placeholder sequence.
-    types = [c.type for c in req.messages[0].contents]
-    assert types == ["image", "video", "text"]
-
-
-def test_chat_video_request_end_to_end(chain_client, monkeypatch):
-    # One streaming request covers the whole chain: the generation request is
-    # built before the SSE response and reused in the generator (exactly one
-    # decode); sampler args and buffer + timestamps arrive untouched.
-    client, captured = chain_client
-    from experimental.server import video_sampling
-    sentinel = object()
-    calls = {"n": 0}
-    seen = {}
-
-    def fake_sample_video(source, **kw):
-        calls["n"] += 1
-        seen["source"] = source
-        seen["kw"] = kw
-        return sentinel, 2.0, [0.0, 0.5], 0, 0
-
-    monkeypatch.setattr(video_sampling, "sample_video", fake_sample_video)
-    resp = client.post("/v1/chat/completions",
-                       json={
-                           "messages": [{
-                               "role":
-                               "user",
-                               "content": [{
-                                   "type": "video",
-                                   "video": "/clips/x.mp4",
-                                   "nframes": 8
-                               }, {
-                                   "type": "text",
-                                   "text": "describe"
-                               }]
-                           }],
-                           "stream":
-                           True,
-                           "max_tokens":
-                           8
-                       })
-    assert resp.status_code == 200, resp.text
-    assert calls["n"] == 1
-    assert seen["source"] == "/clips/x.mp4" and seen["kw"]["nframes"] == 8
-    assert seen["kw"]["family"] == "qwen"
-    # The streaming stub short-circuits before the C++ request; a non-stream
-    # round-trip checks the buffer + timestamps reach it untouched.
-    resp = client.post("/v1/chat/completions",
-                       json={
-                           "messages": [{
-                               "role":
-                               "user",
-                               "content": [{
-                                   "type": "video",
-                                   "video": "/clips/x.mp4",
-                                   "nframes": 8
+                                       "text": "Describe it",
+                                   }],
                                }],
-                           }],
-                           "max_tokens":
-                           8,
-                       })
-    assert resp.status_code == 200, resp.text
-    req = captured["request"].requests[0]
-    assert req.image_buffers == [("video_array", sentinel, 2.0, [0.0, 0.5])]
+                               "max_tokens":
+                               8,
+                           })
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["choices"][0]["message"]["content"] == "answer"
+    assert body["usage"] == {
+        "prompt_tokens": 7,
+        "completion_tokens": 3,
+        "total_tokens": 10,
+    }
+    assert llm.prepare_count == 1
 
 
-@pytest.mark.parametrize("content", [
-    {
-        "type": "video_url",
-        "video_url": {
-            "url": "https://evil/clip.mp4"
-        }
-    },
-    {
-        "type": "video_url",
-        "video_url": {
-            "url": "file:///no/such/clip.mp4"
-        }
-    },
-    {
-        "type": "input_audio",
-        "input_audio": {}
-    },
-])
-def test_chat_rejects_bad_media_via_api(chain_client, content):
-    # The security/validation boundary holds through the full request chain:
-    # remote video URLs and malformed audio come back as 400, not 500.
-    client, _ = chain_client
-    resp = client.post("/v1/chat/completions",
-                       json={
-                           "messages": [{
-                               "role": "user",
-                               "content": [content]
-                           }],
-                           "max_tokens": 8
-                       })
-    assert resp.status_code == 400, resp.text
-
-
-def test_chat_audio_request_parses_to_bytes(chain_client):
-    import base64
-    client, captured = chain_client
-    raw = b"RIFF0000WAVEfmt "
-    resp = client.post("/v1/chat/completions",
-                       json={
-                           "messages": [{
-                               "role":
-                               "user",
-                               "content": [{
-                                   "type": "input_audio",
-                                   "input_audio": {
-                                       "data": base64.b64encode(raw).decode(),
-                                       "format": "wav"
-                                   },
-                               }],
-                           }],
-                           "max_tokens":
-                           8,
-                       })
-    assert resp.status_code == 200, resp.text
-    req = captured["request"].requests[0]
-    assert req.audio_buffers == [("audio_bytes", raw)]
-
-
-def test_chat_audio_data_url_over_cap_returns_400(chain_client, monkeypatch):
-    # Chat audio shares the transcription upload cap: an oversized data: URL
-    # is rejected as a 400 before it is buffered/decoded.
-    import base64
-    client, _ = chain_client
-    from experimental.server import audio_preprocess
-    monkeypatch.setattr(audio_preprocess, "MAX_AUDIO_UPLOAD_BYTES", 16)
-    payload = base64.b64encode(b"x" * 17).decode()
-    resp = client.post("/v1/chat/completions",
-                       json={
-                           "messages": [{
-                               "role":
-                               "user",
-                               "content": [{
-                                   "type": "audio_url",
-                                   "audio_url": {
-                                       "url":
-                                       "data:audio/wav;base64," + payload
-                                   },
-                               }],
-                           }],
-                           "max_tokens":
-                           8,
-                       })
-    assert resp.status_code == 400, resp.text
-    assert "exceeds" in resp.json()["error"]
-
-
-# ---------------------------------------------------------------------------
-# /v1/completions: OpenAI legacy text-completions endpoint
-# ---------------------------------------------------------------------------
-
-
-def test_completions_non_stream(client_and_llm):
+def test_chat_forwards_context_cache_request_policies(client_and_llm):
     client, llm = client_and_llm
-    llm._runtime._resp_text = "a completion"
-    resp = client.post("/v1/completions",
-                       json={
-                           "prompt": "Once upon a time",
-                           "max_tokens": 8
-                       })
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["object"] == "text_completion"
-    assert body["id"].startswith("cmpl-")
-    choice = body["choices"][0]
-    assert choice["text"] == "a completion"
-    assert choice["finish_reason"] == "stop"
-    assert choice["logprobs"] is None
-    assert body["usage"]["completion_tokens"] == 3
-    # The prompt reaches the request builder as a single verbatim user turn.
-    assert llm.captured == [{"role": "user", "content": "Once upon a time"}]
+    response = client.post("/v1/chat/completions",
+                           json={
+                               "messages": [{
+                                   "role":
+                                   "user",
+                                   "content":
+                                   "Do not reuse this prefix"
+                               }],
+                               "reuse_context":
+                               False,
+                               "cache_generated_tokens":
+                               False,
+                           })
+
+    assert response.status_code == 200, response.text
+    assert not llm.last_sampling_params.reuse_context
+    assert not llm.last_sampling_params.cache_generated_tokens
 
 
-def test_completions_raw_prompt_chain(chain_client):
-    # Legacy completions must NOT apply the chat template: the prompt text
-    # reaches the C++ request verbatim with templating disabled.
-    client, captured = chain_client
-    resp = client.post("/v1/completions",
-                       json={
-                           "prompt": "2+2=",
-                           "max_tokens": 8
-                       })
-    assert resp.status_code == 200, resp.text
-    request = captured["request"]
-    assert request.apply_chat_template is False
-    assert request.add_generation_prompt is False
-    contents = request.requests[0].messages[0].contents
-    assert [c.type for c in contents] == ["text"]
-    assert contents[0].data == "2+2="
-
-
-def test_completions_stream(client_and_llm):
-    import json
-
-    client, llm = client_and_llm
-    deltas = [
-        types.SimpleNamespace(text="Hello", finished=False,
-                              finish_reason=None),
-        types.SimpleNamespace(text=" world",
-                              finished=True,
-                              finish_reason="stop"),
-    ]
-
-    def fake_stream(messages, params, prebuilt_request=None, **kw):
-        assert prebuilt_request is not None
-        yield from deltas
-
-    llm.generate_stream = fake_stream
-    resp = client.post("/v1/completions",
-                       json={
-                           "prompt": "Hi",
-                           "stream": True,
-                           "max_tokens": 8
-                       })
-    assert resp.status_code == 200, resp.text
-    lines = [l for l in resp.text.splitlines() if l.startswith("data: ")]
-    assert lines[-1] == "data: [DONE]"
-    chunks = [json.loads(l[len("data: "):]) for l in lines[:-1]]
-    assert all(c["object"] == "text_completion" for c in chunks)
-    assert [c["choices"][0]["text"] for c in chunks] == ["Hello", " world", ""]
-    assert chunks[-1]["choices"][0]["finish_reason"] == "stop"
-    # Admission released once the stream drains.
-    assert llm._admission().acquire(blocking=False)
-    llm._admission().release()
-
-
-def test_completions_rejects_bad_prompt(client_and_llm):
+def test_openai_tools_and_reasoning_fields(client_and_llm):
     client, _ = client_and_llm
-    resp = client.post("/v1/completions", json={"max_tokens": 8})
-    assert resp.status_code == 400
-    assert "error" in resp.json()
-    resp = client.post("/v1/completions", json={"prompt": ["a", "b"]})
-    assert resp.status_code == 400
-    assert "batch" in resp.json()["error"]
+    response = client.post("/v1/chat/completions",
+                           json={
+                               "messages": [{
+                                   "role": "user",
+                                   "content": "Weather?"
+                               }],
+                               "tools": [_tool()],
+                               "tool_choice":
+                               "required",
+                               "parallel_tool_calls":
+                               False,
+                               "max_tokens":
+                               8,
+                           })
+    assert response.status_code == 200, response.text
+    choice = response.json()["choices"][0]
+    assert choice["finish_reason"] == "tool_calls"
+    assert choice["message"]["tool_calls"][0]["function"]["name"] == (
+        "get_weather")
 
 
-# ---------------------------------------------------------------------------
-# Local-media policy, sampling validation, usage
-# ---------------------------------------------------------------------------
-
-
-def _msgs(ref):
-    return [{"role": "user", "content": [{"type": "audio", "audio": ref}]}]
-
-
-def test_local_media_rejected_when_unset():
-    from experimental.server.api_server import enforce_local_media_policy
-    with pytest.raises(PermissionError):
-        enforce_local_media_policy(_msgs("/etc/passwd"), None)
-    with pytest.raises(PermissionError):
-        enforce_local_media_policy(_msgs("file:///etc/passwd"), None)
-
-
-def test_local_media_every_accepted_spelling_is_policed():
-    """The policy reads every media key in both spellings, so no form the
-    loaders accept -- notably video's {"url": ...} -- can slip past it."""
-    from experimental.server.api_server import enforce_local_media_policy
-    items = [
-        {
-            "type": "video",
-            "video": "/etc/passwd.mp4"
-        },
-        {
-            "type": "video",
-            "video": {
-                "url": "/etc/passwd.mp4"
-            }
-        },
-        {
-            "type": "video_url",
-            "video_url": {
-                "url": "/etc/passwd.mp4"
-            }
-        },
-        {
-            "type": "video",
-            "frames": ["/etc/passwd.png"]
-        },
-        {
-            "type": "image",
-            "image": {
-                "url": "/etc/passwd.png"
-            }
-        },
-        {
-            "type": "audio",
-            "audio": {
-                "url": "/etc/passwd.wav"
-            }
-        },
-    ]
-    for item in items:
-        messages = [{"role": "user", "content": [item]}]
-        with pytest.raises(PermissionError):
-            enforce_local_media_policy(messages, None)
-
-
-def test_local_media_allowed_inside_root(tmp_path):
-    from experimental.server.api_server import enforce_local_media_policy
-    media = tmp_path / "clip.wav"
-    media.write_bytes(b"")
-    enforce_local_media_policy(_msgs(str(media)), str(tmp_path))
-
-
-def test_local_media_escape_rejected(tmp_path):
-    from experimental.server.api_server import enforce_local_media_policy
-    root = tmp_path / "root"
-    root.mkdir()
-    outside = tmp_path / "outside.wav"
-    outside.write_bytes(b"")
-    with pytest.raises(PermissionError):
-        enforce_local_media_policy(_msgs(str(root / ".." / "outside.wav")),
-                                   str(root))
-
-
-def test_data_and_http_refs_bypass_local_policy():
-    from experimental.server.api_server import enforce_local_media_policy
-    enforce_local_media_policy(_msgs("data:audio/wav;base64,AAAA"), None)
-    enforce_local_media_policy(_msgs("https://example.com/a.wav"), None)
-
-
-@pytest.mark.parametrize("body", [
-    {
-        "temperature": "hot"
-    },
-    {
-        "max_tokens": 0
-    },
-    {
-        "top_p": 2.0
-    },
-    {
-        "top_k": -1
-    },
-    {
-        "temperature": float("inf")
-    },
-])
-def test_sampling_params_rejected(body):
-    from experimental.server.api_server import parse_sampling_params
-    with pytest.raises(ValueError):
-        parse_sampling_params(body, default_max_tokens=16)
-
-
-def test_sampling_params_defaults():
-    from experimental.server.api_server import parse_sampling_params
-    out = parse_sampling_params({}, default_max_tokens=16)
-    assert out["max_tokens"] == 16 and out["top_k"] == 50
-
-
-def test_usage_uses_runtime_prompt_token_counts():
-    """The runtime count wins over the HF-template estimate, which undercounts
-    multimodal placeholders; the estimate is the fallback when it is absent."""
-    from experimental.server.api_server import _runtime_prompt_tokens
-
-    class _Resp:
-        prompt_token_counts = [7, 9]
-
-    assert _runtime_prompt_tokens(_Resp(), 1, 4) == 9
-    assert _runtime_prompt_tokens(object(), 0, 4) == 4
-
-
-def test_stream_usage_chunk_when_requested(client_and_llm):
-    """stream_options.include_usage adds a final choices-less usage chunk."""
-
-    client, llm = client_and_llm
-
-    resp = client.post(
-        "/v1/chat/completions",
-        json={
-            "messages": [{
-                "role": "user",
-                "content": "hi"
-            }],
-            "stream": True,
-            "stream_options": {
-                "include_usage": True
-            },
-        },
-    )
-    assert resp.status_code == 200
+def test_streaming_usage_and_done_marker(client_and_llm):
+    client, _ = client_and_llm
+    response = client.post("/v1/chat/completions",
+                           json={
+                               "messages": [{
+                                   "role": "user",
+                                   "content": "Hello"
+                               }],
+                               "stream": True,
+                               "stream_options": {
+                                   "include_usage": True
+                               },
+                               "max_tokens": 8,
+                           })
+    assert response.status_code == 200
     chunks = [
-        json.loads(line[len("data: "):]) for line in resp.text.splitlines()
-        if line.startswith("data: ") and "[DONE]" not in line
+        line.removeprefix("data: ") for line in response.text.splitlines()
+        if line.startswith("data: ")
     ]
-    usage_chunks = [c for c in chunks if c.get("usage")]
+    assert chunks[-1] == "[DONE]"
+    usage = json.loads(chunks[-2])["usage"]
+    assert usage["prompt_tokens"] == 7
+    assert usage["completion_tokens"] == 2
+
+
+def test_streaming_omits_usage_by_default(client_and_llm):
+    client, _ = client_and_llm
+    response = client.post("/v1/chat/completions",
+                           json={
+                               "messages": [{
+                                   "role": "user",
+                                   "content": "Hello"
+                               }],
+                               "stream": True,
+                           })
+    assert response.status_code == 200
+    assert all(
+        payload.get("usage") is None for payload in _sse_payloads(response))
+
+
+def test_streaming_tool_call_and_usage_share_one_contract(client_and_llm):
+    client, _ = client_and_llm
+    response = client.post("/v1/chat/completions",
+                           json={
+                               "messages": [{
+                                   "role": "user",
+                                   "content": "Weather?"
+                               }],
+                               "tools": [_tool()],
+                               "tool_choice":
+                               "required",
+                               "stream":
+                               True,
+                               "stream_options": {
+                                   "include_usage": True
+                               },
+                           })
+    assert response.status_code == 200, response.text
+    payloads = _sse_payloads(response)
+    tool_chunks = [
+        payload for payload in payloads if payload.get("choices")
+        and payload["choices"][0]["delta"].get("tool_calls")
+    ]
+    choices = [
+        payload["choices"][0] for payload in payloads if payload.get("choices")
+    ]
+    usage_chunks = [payload for payload in payloads if payload.get("usage")]
+    initial_call = tool_chunks[0]["choices"][0]["delta"]["tool_calls"][0]
+    assert initial_call["index"] == 0
+    assert initial_call["type"] == "function"
+    assert initial_call["function"] == {
+        "name": "get_weather",
+        "arguments": "",
+    }
+    argument_delta = tool_chunks[1]["choices"][0]["delta"]["tool_calls"][0]
+    assert argument_delta["index"] == 0
+    assert json.loads(argument_delta["function"]["arguments"]) == {
+        "city": "Paris"
+    }
+    tool_position = next(i for i, choice in enumerate(choices)
+                         if choice["delta"].get("tool_calls"))
+    trailing_content = next(i for i, choice in enumerate(choices)
+                            if choice["delta"].get("content") == "After")
+    assert tool_position < trailing_content
+    assert choices[-1]["finish_reason"] == "tool_calls"
     assert len(usage_chunks) == 1
     assert usage_chunks[0]["choices"] == []
     assert usage_chunks[0]["usage"]["prompt_tokens"] == 7
 
 
-def test_stream_usage_absent_by_default(client_and_llm):
-    client, _ = client_and_llm
-    resp = client.post(
-        "/v1/chat/completions",
-        json={
-            "messages": [{
-                "role": "user",
-                "content": "hi"
-            }],
-            "stream": True
-        },
-    )
-    assert resp.status_code == 200
-    assert '"usage"' not in resp.text
+def test_tool_call_delta_does_not_wait_for_native_stream_end(tmp_path):
+    from experimental.server.api.protocol import ChatCompletionRequest
+    from experimental.server.api.serving_chat import (OpenAIServingChat,
+                                                      PreparedChatRequest)
+    from experimental.server.parsing.tool_calling import validate_tool_request
 
+    release_finish = asyncio.Event()
 
-def test_serve_forwards_allowed_local_media_path(monkeypatch):
-    """LLM.serve must accept and forward every run_server kwarg the CLI passes."""
-    import inspect
+    class BlockingClient:
+        llm = SimpleNamespace(model_dir=str(tmp_path))
+        model_name = "fake-model"
 
-    from experimental.server import api_server
-    from experimental.server.engine import LLM
+        async def stream(self, *_args, **_kwargs):
+            yield StreamDelta(
+                text=('<tool_call>{"name":"get_weather","arguments":'
+                      '{"city":"Paris"}}</tool_call>'),
+                token_ids=[1],
+                prompt_tokens=7,
+            )
+            await release_finish.wait()
+            yield StreamDelta(finished=True, finish_reason="stop")
 
-    serve_params = inspect.signature(LLM.serve).parameters
-    run_params = inspect.signature(api_server.run_server).parameters
-    for name in run_params:
-        if name in ("llm_instance", "host", "port"):
-            continue
-        assert name in serve_params, f"LLM.serve is missing {name}"
-
-
-def test_batch_slice_carries_prompt_token_counts():
-    """Batched rows must keep their own prompt length, or usage reports 0."""
-    from experimental.server.batching import _copy_response_rows
-
-    class _Resp:
-        output_texts = ["a", "b", "c"]
-        output_ids = [[1], [2, 3], [4]]
-        finish_reasons = ["stop"] * 3
-        logprobs = [[], [], []]
-        prompt_token_counts = [10, 615, 59]
-
-    sliced = _copy_response_rows(_Resp(), 1, 2)
-    assert sliced.prompt_token_counts == [615, 59]
-
-
-def test_cli_main_wires_through_to_app(monkeypatch):
-    """Chain test for the CLI layer: argv -> main() -> LLM.serve() ->
-    run_server() -> _create_app(). The other tests enter at _create_app, so
-    only this one catches a kwarg dropped in an intermediate layer."""
-    import sys
-
-    from experimental.server import api_server
-    from experimental.server.engine import LLM
-
-    captured = {}
-
-    def _fake_llm_init(self, **kwargs):
-        self._eagle_engine_dir = ""
-        self._tool_template_formatter = None
-        self._model_id = "test"
-        self._multimodal_engine_dir = ""
-        self._runtime = None
-        self._rt = None
-        captured["llm"] = kwargs
-
-    def _fake_uvicorn_run(app, **kwargs):
-        captured["served"] = kwargs
-
-    monkeypatch.setattr(LLM, "__init__", _fake_llm_init)
-    monkeypatch.setattr(api_server, "_create_app",
-                        lambda llm, **kw: captured.setdefault("app", kw))
-    fake_uvicorn = type("_U", (), {"run": staticmethod(_fake_uvicorn_run)})
-    monkeypatch.setitem(sys.modules, "uvicorn", fake_uvicorn)
-    monkeypatch.setattr(sys, "argv", [
-        "prog", "--model", "hf/model", "--port", "9",
-        "--allowed-local-media-path", "/srv/media"
-    ])
-
-    api_server.main()
-
-    # The flag survived every layer down to the app factory.
-    assert captured["app"]["allowed_local_media_path"] == "/srv/media"
-    assert captured["served"]["port"] == 9
-
-
-def test_oversized_json_body_rejected(client_and_llm, monkeypatch):
-    """Chat bodies are capped by bytes received, not by Content-Length."""
-    from experimental.server import api_server
-
-    client, _ = client_and_llm
-    monkeypatch.setattr(api_server, "MAX_REQUEST_BODY_BYTES", 512)
-    resp = client.post(
-        "/v1/chat/completions",
-        json={"messages": [{
+    request = ChatCompletionRequest(
+        messages=[{
             "role": "user",
-            "content": "x" * 4096
-        }]},
+            "content": "Weather?"
+        }],
+        tools=[_tool()],
+        tool_choice="required",
+        stream=True,
     )
-    assert resp.status_code == 413
-
-
-def test_normal_body_still_accepted(client_and_llm):
-    client, _ = client_and_llm
-    resp = client.post(
-        "/v1/chat/completions",
-        json={"messages": [{
-            "role": "user",
-            "content": "hi"
-        }]},
+    prepared = PreparedChatRequest(
+        sampling=SamplingParams(),
+        tool_config=validate_tool_request(request.messages, request.tools,
+                                          request.tool_choice),
+        reasoning_parser="none",
     )
-    assert resp.status_code == 200
+
+    async def exercise():
+        handler = OpenAIServingChat(BlockingClient(),
+                                    ApiConfig(enable_auto_tool_choice=True))
+        chunks = handler._stream_tools(request, prepared, "chatcmpl-test", 0,
+                                       False, None)
+        first = await anext(chunks)
+        assert not release_finish.is_set()
+        payload = json.loads(first.removeprefix("data: "))
+        call = payload["choices"][0]["delta"]["tool_calls"][0]
+        assert call["function"]["name"] == "get_weather"
+        release_finish.set()
+        tail = [chunk async for chunk in chunks]
+        assert tail[-1] == "data: [DONE]\n\n"
+
+    asyncio.run(exercise())
 
 
-def test_tool_stream_usage_chunk_when_requested(client_and_llm):
-    """The tool-calling stream is a separate generator; it must emit usage too."""
-
-    from experimental.server.engine import StreamDelta
-
+def test_streaming_with_tools_keeps_plain_text_incremental(client_and_llm):
+    # #719 regression: tools + tool_choice=auto + stream must not buffer a
+    # plain-text answer until generation ends.
     client, llm = client_and_llm
 
-    def fake_stream(messages, params, **kw):
-        yield StreamDelta(text="ok",
-                          token_ids=[1],
-                          finished=True,
-                          finish_reason="stop")
+    def word_stream(_messages, _params, **_kwargs):
+        words = ["The ", "weather ", "looks ", "fine ", "today."]
+        for i, word in enumerate(words):
+            last = i == len(words) - 1
+            yield StreamDelta(text=word,
+                              token_ids=[i],
+                              prompt_tokens=7,
+                              finished=last,
+                              finish_reason="stop" if last else None)
 
-    llm.generate_stream = fake_stream
-    resp = client.post(
+    llm.generate_stream = word_stream
+    response = client.post("/v1/chat/completions",
+                           json={
+                               "messages": [{
+                                   "role": "user",
+                                   "content": "Weather?"
+                               }],
+                               "tools": [_tool()],
+                               "tool_choice":
+                               "auto",
+                               "stream":
+                               True,
+                           })
+    assert response.status_code == 200, response.text
+    payloads = _sse_payloads(response)
+    contents = [
+        payload["choices"][0]["delta"]["content"] for payload in payloads
+        if payload.get("choices")
+        and payload["choices"][0]["delta"].get("content")
+    ]
+    assert len(contents) > 1  # exactly 1 before the fix
+    assert "".join(contents) == "The weather looks fine today."
+    finish = [
+        payload["choices"][0]["finish_reason"] for payload in payloads if
+        payload.get("choices") and payload["choices"][0].get("finish_reason")
+    ]
+    assert finish == ["stop"]
+
+
+def test_streaming_tool_call_wire_format_and_assembly(client_and_llm):
+    # OpenAI wire contract: head chunk carries index/id/type/name with empty
+    # arguments; later chunks carry only argument fragments; the documented
+    # client-side assembly must reproduce the call.
+    client, llm = client_and_llm
+
+    def tool_stream(_messages, _params, **_kwargs):
+        pieces = [
+            "Sure. ",
+            '<tool_call>{"name": "get_weather", "arguments": {"city": "Par',
+            'is"}}</tool_call>',
+        ]
+        for i, piece in enumerate(pieces):
+            last = i == len(pieces) - 1
+            yield StreamDelta(text=piece,
+                              token_ids=[i],
+                              prompt_tokens=7,
+                              finished=last,
+                              finish_reason="stop" if last else None)
+
+    llm.generate_stream = tool_stream
+    response = client.post("/v1/chat/completions",
+                           json={
+                               "messages": [{
+                                   "role": "user",
+                                   "content": "Weather?"
+                               }],
+                               "tools": [_tool()],
+                               "tool_choice":
+                               "auto",
+                               "stream":
+                               True,
+                           })
+    assert response.status_code == 200, response.text
+    payloads = _sse_payloads(response)
+    deltas = [
+        payload["choices"][0]["delta"] for payload in payloads
+        if payload.get("choices")
+    ]
+    tool_deltas = [d["tool_calls"][0] for d in deltas if d.get("tool_calls")]
+    head, *fragments = tool_deltas
+    assert head["id"].startswith("call_") and head["type"] == "function"
+    assert head["function"] == {"name": "get_weather", "arguments": ""}
+    assert len(fragments) >= 2  # argument bytes streamed, not one late blob
+    for fragment in fragments:
+        assert set(fragment["function"]) == {"arguments"}
+        assert "id" not in fragment
+        assert fragment["index"] == head["index"]
+    assembled = "".join(f["function"]["arguments"] for f in fragments)
+    assert json.loads(assembled) == {"city": "Paris"}
+    contents = [d["content"] for d in deltas if d.get("content")]
+    assert "".join(contents) == "Sure. "
+    finish = [
+        payload["choices"][0]["finish_reason"] for payload in payloads if
+        payload.get("choices") and payload["choices"][0].get("finish_reason")
+    ]
+    assert finish == ["tool_calls"]
+
+
+def test_streaming_parallel_tool_calls_keep_stable_indices(client_and_llm):
+    client, llm = client_and_llm
+
+    def two_calls(_messages, _params, **_kwargs):
+        yield StreamDelta(
+            text=('<tool_call>{"name": "get_weather", "arguments": '
+                  '{"city": "A"}}</tool_call> then '),
+            token_ids=[1],
+            prompt_tokens=7)
+        yield StreamDelta(
+            text=('<tool_call>{"name": "get_weather", "arguments": '
+                  '{"city": "B"}}</tool_call>'),
+            token_ids=[2],
+            prompt_tokens=7,
+            finished=True,
+            finish_reason="stop")
+
+    llm.generate_stream = two_calls
+    response = client.post("/v1/chat/completions",
+                           json={
+                               "messages": [{
+                                   "role": "user",
+                                   "content": "Weather?"
+                               }],
+                               "tools": [_tool()],
+                               "tool_choice":
+                               "auto",
+                               "stream":
+                               True,
+                           })
+    assert response.status_code == 200, response.text
+    calls = {}
+    for payload in _sse_payloads(response):
+        for choice in payload.get("choices") or []:
+            for tc in choice["delta"].get("tool_calls") or []:
+                slot = calls.setdefault(tc["index"], {"id": None, "args": ""})
+                if tc.get("id"):
+                    slot["id"] = tc["id"]
+                slot["args"] += tc.get("function", {}).get("arguments", "")
+    assert sorted(calls) == [0, 1]
+    assert calls[0]["id"] != calls[1]["id"]
+    assert json.loads(calls[0]["args"]) == {"city": "A"}
+    assert json.loads(calls[1]["args"]) == {"city": "B"}
+
+
+def test_streaming_tool_call_truncation_keeps_length_finish_reason(
+        client_and_llm):
+    # Design R2: a call cut off by max_tokens must not be re-labelled
+    # "tool_calls"; the client needs "length" to treat it as truncated.
+    client, llm = client_and_llm
+
+    def truncated(_messages, _params, **_kwargs):
+        yield StreamDelta(
+            text='<tool_call>{"name": "get_weather", "arguments": {"city": "tr',
+            token_ids=[1],
+            prompt_tokens=7,
+            finished=True,
+            finish_reason="length")
+
+    llm.generate_stream = truncated
+    response = client.post("/v1/chat/completions",
+                           json={
+                               "messages": [{
+                                   "role": "user",
+                                   "content": "Weather?"
+                               }],
+                               "tools": [_tool()],
+                               "tool_choice":
+                               "auto",
+                               "stream":
+                               True,
+                           })
+    payloads = _sse_payloads(response)
+    finish = [
+        payload["choices"][0]["finish_reason"] for payload in payloads if
+        payload.get("choices") and payload["choices"][0].get("finish_reason")
+    ]
+    assert finish == ["length"]
+    args = "".join(
+        tc.get("function", {}).get("arguments", "") for payload in payloads
+        for choice in payload.get("choices") or []
+        for tc in choice["delta"].get("tool_calls") or [])
+    assert args == '{"city": "tr'
+
+
+def test_streaming_tools_with_thinking_splits_reasoning(client_and_llm):
+    # D5 mainstream case: reasoning closes, then the tool call follows.
+    client, llm = client_and_llm
+
+    def thinking_then_tool(_messages, _params, **_kwargs):
+        for i, piece in enumerate([
+                "plan it</think>",
+                "ok ",
+                '<tool_call>{"name": "get_weather", "arguments": {}}'
+                "</tool_call>",
+        ]):
+            yield StreamDelta(text=piece,
+                              token_ids=[i],
+                              prompt_tokens=7,
+                              finished=piece.endswith("</tool_call>"),
+                              finish_reason="stop"
+                              if piece.endswith("</tool_call>") else None)
+
+    llm.generate_stream = thinking_then_tool
+    response = client.post("/v1/chat/completions",
+                           json={
+                               "messages": [{
+                                   "role": "user",
+                                   "content": "Weather?"
+                               }],
+                               "tools": [_tool()],
+                               "tool_choice":
+                               "auto",
+                               "stream":
+                               True,
+                               "enable_thinking":
+                               True,
+                           })
+    assert response.status_code == 200, response.text
+    deltas = [
+        payload["choices"][0]["delta"] for payload in _sse_payloads(response)
+        if payload.get("choices")
+    ]
+    reasoning = "".join(d.get("reasoning_content") or "" for d in deltas)
+    contents = "".join(d.get("content") or "" for d in deltas)
+    heads = [
+        tc for d in deltas for tc in d.get("tool_calls") or [] if tc.get("id")
+    ]
+    assert reasoning == "plan it"
+    assert contents == "ok "
+    assert len(heads) == 1 and heads[0]["function"]["name"] == "get_weather"
+
+
+def _stream_with_logprobs(pieces):
+    """One delta per piece, each carrying its own single-token logprob step."""
+
+    def stream(_messages, _params, **_kwargs):
+        for i, piece in enumerate(pieces):
+            last = i == len(pieces) - 1
+            yield StreamDelta(text=piece,
+                              token_ids=[i],
+                              prompt_tokens=7,
+                              logprobs=[[
+                                  LogprobEntry(token_id=i,
+                                               logprob=-0.5,
+                                               token=piece,
+                                               bytes=list(piece.encode()))
+                              ]],
+                              finished=last,
+                              finish_reason="stop" if last else None)
+
+    return stream
+
+
+# Deltas short enough that the tool and reasoning parsers withhold them, which
+# is the normal shape of token-by-token streaming.
+_LOGPROB_CASES = {
+    "plain": ["Sun", "ny", " today", "."],
+    "thinking": ["The", " sky", " is", "</think>", "Sun", "ny."],
+    "tools": [
+        "Sure. ",
+        "<tool_",
+        'call>{"name": "get_weather", "arguments": {"city": "Par',
+        'is"}}</tool_call>',
+    ],
+    "tools+thinking": [
+        "plan",
+        " it</think>",
+        "ok ",
+        '<tool_call>{"name": "get_weather", "arguments": {}}</tool_call>',
+    ],
+}
+
+
+def _stream_logprob_request(client, case, extra):
+    body = {
+        "messages": [{
+            "role": "user",
+            "content": "Weather?"
+        }],
+        "stream": True,
+        "enable_thinking": "thinking" in case,
+        **extra,
+    }
+    if "tools" in case:
+        body["tools"] = [_tool()]
+        body["tool_choice"] = "auto"
+    return client.post("/v1/chat/completions", json=body)
+
+
+@pytest.mark.parametrize("case", sorted(_LOGPROB_CASES))
+@pytest.mark.parametrize("extra", [{}, {
+    "logprobs": True
+}, {
+    "logprobs": True,
+    "top_logprobs": 2
+}],
+                         ids=["off", "on", "on+top"])
+def test_streaming_logprobs_hold_across_tool_and_thinking_combos(
+        client_and_llm, case, extra):
+    # #719 follow-up: both streaming paths dropped the logprobs of any delta
+    # whose bytes the tool or reasoning parser withheld, while the
+    # non-streaming path returned them for the same request.
+    client, llm = client_and_llm
+    pieces = _LOGPROB_CASES[case]
+    llm.generate_stream = _stream_with_logprobs(pieces)
+
+    response = _stream_logprob_request(client, case, extra)
+    assert response.status_code == 200, response.text
+    choices = [
+        payload["choices"][0] for payload in _sse_payloads(response)
+        if payload.get("choices")
+    ]
+    entries = [
+        entry for choice in choices if choice["logprobs"]
+        for entry in choice["logprobs"]["content"]
+    ]
+    if extra:
+        # Concatenating the chunks reproduces the generated token sequence:
+        # every delta delivers its logprobs exactly once, in order.
+        assert [entry["token_id"]
+                for entry in entries] == list(range(len(pieces)))
+        assert all(
+            bool(entry["top_logprobs"]) == ("top_logprobs" in extra)
+            for entry in entries)
+    else:
+        assert entries == []
+    assert choices[-1]["finish_reason"] == ("tool_calls"
+                                            if "tools" in case else "stop")
+
+
+def test_streaming_tools_carry_logprobs_on_head_and_empty_chunks(
+        client_and_llm):
+    # A delta reaches the wire in one of two shapes, and both must carry the
+    # logprobs: as the first of the chunks it expands into, or -- when the
+    # parser withheld all of its bytes -- as an otherwise empty delta.
+    client, llm = client_and_llm
+    llm.generate_stream = _stream_with_logprobs(_LOGPROB_CASES["tools"])
+
+    response = _stream_logprob_request(client, "tools", {"logprobs": True})
+    assert response.status_code == 200, response.text
+    carried = [
+        choice["delta"] for payload in _sse_payloads(response)
+        if payload.get("choices") for choice in [payload["choices"][0]]
+        if choice["logprobs"]
+    ]
+    assert carried[0]["content"] == "Sure. "
+    assert not any(carried[1][field] for field in ("content", "tool_calls"))
+    assert carried[2]["tool_calls"][0]["function"]["name"] == "get_weather"
+    assert carried[3]["tool_calls"][0]["function"]["arguments"]
+
+
+def test_streaming_audio_orders_text_pcm_usage_and_done(client_and_llm):
+    client, _ = client_and_llm
+    response = client.post("/v1/chat/completions",
+                           json={
+                               "messages": [{
+                                   "role": "user",
+                                   "content": "Say hello"
+                               }],
+                               "modalities": ["text", "audio"],
+                               "audio": {
+                                   "voice": "Ryan",
+                                   "format": "pcm16"
+                               },
+                               "stream":
+                               True,
+                               "stream_options": {
+                                   "include_usage": True
+                               },
+                           })
+    assert response.status_code == 200, response.text
+    payloads = _sse_payloads(response)
+    choices = [
+        payload["choices"][0] for payload in payloads if payload.get("choices")
+    ]
+    text_index = next(i for i, choice in enumerate(choices)
+                      if choice["delta"].get("content") == "spoken")
+    audio_chunks = [(i, choice["delta"]["audio"]["data"])
+                    for i, choice in enumerate(choices)
+                    if choice["delta"].get("audio")]
+    assert text_index < audio_chunks[-1][0]
+    assert b"".join(base64.b64decode(data)
+                    for _, data in audio_chunks) == b"\x01\x00\x02\x00"
+    assert len([payload for payload in payloads if payload.get("usage")]) == 1
+    assert response.text.rstrip().endswith("data: [DONE]")
+
+
+def test_streaming_input_error_is_returned_before_sse_headers(client_and_llm):
+    client, llm = client_and_llm
+
+    def reject(*_args, **_kwargs):
+        raise ValueError("invalid media payload")
+
+    llm._make_generation_request = reject
+    response = client.post("/v1/chat/completions",
+                           json={
+                               "messages": [{
+                                   "role": "user",
+                                   "content": "bad media"
+                               }],
+                               "stream":
+                               True,
+                           })
+    assert response.status_code == 400
+    assert response.headers["content-type"].startswith("application/json")
+    assert "invalid media payload" in response.json()["error"]["message"]
+
+
+def test_anthropic_claude_code_tools_images_and_count(client_and_llm):
+    client, llm = client_and_llm
+    image = base64.b64encode(b"image").decode()
+    body = {
+        "model":
+        "fake-model",
+        "max_tokens":
+        16,
+        "messages": [{
+            "role":
+            "user",
+            "content": [{
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": image,
+                },
+            }, {
+                "type": "text",
+                "text": "Weather?"
+            }],
+        }],
+        "tools": [{
+            "name": "get_weather",
+            "description": "Get weather",
+            "input_schema": {
+                "type": "object"
+            },
+        }],
+        "tool_choice": {
+            "type": "any"
+        },
+    }
+    response = client.post("/v1/messages", json=body)
+    assert response.status_code == 200, response.text
+    assert response.json()["content"][0]["type"] == "tool_use"
+    content = llm.prepared_messages[-1]["content"]
+    assert content[0]["type"] == "image_url"
+
+    count_body = dict(body)
+    count_body.pop("max_tokens")
+    count = client.post("/v1/messages/count_tokens", json=count_body)
+    assert count.status_code == 200
+    assert count.json() == {"input_tokens": 7}
+
+
+def test_anthropic_stream_uses_valid_event_order(client_and_llm):
+    client, _ = client_and_llm
+    response = client.post("/v1/messages",
+                           json={
+                               "model": "fake-model",
+                               "max_tokens": 8,
+                               "stream": True,
+                               "messages": [{
+                                   "role": "user",
+                                   "content": "Hello"
+                               }],
+                           })
+    assert response.status_code == 200
+    events = [
+        line.removeprefix("event: ") for line in response.text.splitlines()
+        if line.startswith("event: ")
+    ]
+    assert events[0] == "message_start"
+    assert events[-1] == "message_stop"
+    assert events.index("content_block_start") < events.index(
+        "content_block_stop")
+
+
+def test_anthropic_stream_orders_tool_and_following_content(client_and_llm):
+    client, _ = client_and_llm
+    response = client.post(
+        "/v1/messages",
+        json={
+            "model":
+            "fake-model",
+            "max_tokens":
+            8,
+            "stream":
+            True,
+            "messages": [{
+                "role": "user",
+                "content": "Weather?"
+            }],
+            "tools": [{
+                "name": "get_weather",
+                "description": "Get weather",
+                "input_schema": {
+                    "type": "object"
+                },
+            }],
+            "tool_choice": {
+                "type": "any"
+            },
+        },
+    )
+    assert response.status_code == 200, response.text
+    events = []
+    for frame in response.text.strip().split("\n\n"):
+        lines = frame.splitlines()
+        if len(lines) == 2 and lines[0].startswith("event: "):
+            events.append((lines[0].removeprefix("event: "),
+                           json.loads(lines[1].removeprefix("data: "))))
+
+    deltas = [(index, data["delta"])
+              for index, (event, data) in enumerate(events)
+              if event == "content_block_delta"]
+    tool_index, tool_delta = next(item for item in deltas
+                                  if item[1]["type"] == "input_json_delta")
+    after_index, _ = next(item for item in deltas
+                          if item[1].get("text") == "After")
+    assert json.loads(tool_delta["partial_json"]) == {"city": "Paris"}
+    assert tool_index < after_index
+    message_delta = next(data for event, data in events
+                         if event == "message_delta")
+    assert message_delta["delta"]["stop_reason"] == "tool_use"
+
+
+def test_anthropic_x_api_key_auth(tmp_path):
+    from fastapi.testclient import TestClient
+    llm = _FakeLLM(tmp_path)
+    client = TestClient(_create_app(llm, ApiConfig(api_key="secret")))
+    body = {
+        "model": "fake-model",
+        "max_tokens": 8,
+        "messages": [{
+            "role": "user",
+            "content": "Hello"
+        }],
+    }
+    assert client.post("/v1/messages", json=body).status_code == 401
+    assert client.post("/v1/messages",
+                       json=body,
+                       headers={
+                           "x-api-key": "secret"
+                       }).status_code == 200
+
+
+def test_asr_and_omni_audio_routes(client_and_llm):
+    client, llm = client_and_llm
+    llm.next_text = "language English<asr_text>Hello world"
+    response = client.post(
+        "/v1/audio/transcriptions",
+        files={"file": ("clip.wav", b"RIFF0000WAVEfmt ", "audio/wav")},
+        data={
+            "model": "fake-model",
+            "language": "en",
+            "prompt": "Names"
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json() == {"text": "Hello world", "language": "English"}
+    assert llm.prepared_messages[0] == {
+        "role": "system",
+        "content": "English",
+    }
+
+    speech = client.post("/v1/audio/speech",
+                         json={
+                             "model": "fake-model",
+                             "input": "Hello",
+                             "voice": "Ryan",
+                             "response_format": "pcm",
+                         })
+    assert speech.status_code == 200
+    assert speech.content == b"\x01\x00\x02\x00"
+
+
+def test_transcription_text_response_and_validation(client_and_llm):
+    client, llm = client_and_llm
+    llm.next_text = "transcript"
+    response = client.post(
+        "/v1/audio/transcriptions",
+        files={"file": ("clip.wav", b"RIFF0000WAVEfmt ", "audio/wav")},
+        data={
+            "model": "fake-model",
+            "response_format": "text"
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain")
+    assert response.text == "transcript"
+
+    invalid_cases = [
+        ({
+            "model": "other"
+        }, "model"),
+        ({
+            "model": "fake-model",
+            "language": "not-a-language"
+        }, "language"),
+        ({
+            "model": "fake-model",
+            "temperature": "3"
+        }, "temperature"),
+        ({
+            "model": "fake-model",
+            "response_format": "srt"
+        }, "response_format"),
+    ]
+    for data, expected in invalid_cases:
+        rejected = client.post(
+            "/v1/audio/transcriptions",
+            files={"file": ("clip.wav", b"RIFF0000WAVEfmt ", "audio/wav")},
+            data=data,
+        )
+        assert rejected.status_code in (400, 404)
+        assert expected in rejected.text
+
+    empty = client.post(
+        "/v1/audio/transcriptions",
+        files={"file": ("empty.wav", b"", "audio/wav")},
+        data={"model": "fake-model"},
+    )
+    assert empty.status_code == 400
+    assert "empty" in empty.text
+
+
+def test_transcription_requires_asr_bundle(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from experimental.server.runtime.engine_layout import inspect_bundle
+
+    llm = _FakeLLM(tmp_path)
+    audio_config = Path(llm.bundle_dir) / "audio" / "config.json"
+    audio_config.write_text('{"model_type":"qwen3_omni"}', encoding="utf-8")
+    llm.bundle_layout = inspect_bundle(llm.bundle_dir)
+    client = TestClient(_create_app(llm))
+    response = client.post(
+        "/v1/audio/transcriptions",
+        files={"file": ("clip.wav", b"RIFF0000WAVEfmt ", "audio/wav")},
+        data={"model": "fake-model"},
+    )
+    assert response.status_code == 400
+    assert "not transcription" in response.text
+
+
+def test_audio_requests_forward_talker_controls(client_and_llm):
+    client, llm = client_and_llm
+    controls = {
+        "voice": "Ryan",
+        "talker_temperature": 0.8,
+        "talker_top_k": 7,
+        "talker_top_p": 0.95,
+        "repetition_penalty": 1.1,
+        "max_audio_length": 1024,
+        "codec_chunk_frames": 5,
+        "talker_prefill_threshold": 2,
+    }
+    response = client.post("/v1/audio/speech",
+                           json={
+                               "model": "fake-model",
+                               "input": "Hello",
+                               **controls,
+                           })
+    assert response.status_code == 200, response.text
+    for field, value in controls.items():
+        assert getattr(llm.last_audio_params, field) == value
+
+    response = client.post("/v1/chat/completions",
+                           json={
+                               "messages": [{
+                                   "role": "user",
+                                   "content": "Hello"
+                               }],
+                               "modalities": ["text", "audio"],
+                               "audio": {
+                                   "format": "pcm16",
+                                   **controls,
+                               },
+                           })
+    assert response.status_code == 200, response.text
+    for field, value in controls.items():
+        assert getattr(llm.last_audio_params, field) == value
+
+
+@pytest.mark.parametrize("field,value", [
+    ("talker_temperature", -0.1),
+    ("talker_top_k", 1.5),
+    ("max_audio_length", 0),
+    ("codec_chunk_frames", 0),
+    ("talker_prefill_threshold", 0),
+])
+def test_audio_requests_reject_invalid_talker_controls(client_and_llm, field,
+                                                       value):
+    client, _ = client_and_llm
+    response = client.post("/v1/audio/speech",
+                           json={
+                               "input": "Hello",
+                               field: value,
+                           })
+    assert response.status_code == 400
+    assert field in response.text
+
+
+def test_omni_chat_audio_output(client_and_llm):
+    client, _ = client_and_llm
+    response = client.post("/v1/chat/completions",
+                           json={
+                               "messages": [{
+                                   "role": "user",
+                                   "content": "Say hello"
+                               }],
+                               "modalities": ["text", "audio"],
+                               "audio": {
+                                   "voice": "Ryan",
+                                   "format": "pcm16"
+                               },
+                               "max_tokens":
+                               8,
+                           })
+    assert response.status_code == 200, response.text
+    message = response.json()["choices"][0]["message"]
+    assert message["content"] == "spoken"
+    assert base64.b64decode(message["audio"]["data"]) == b"\x01\x00\x02\x00"
+
+
+def test_local_media_is_denied_outside_allowed_root(client_and_llm):
+    client, _ = client_and_llm
+    response = client.post("/v1/chat/completions",
+                           json={
+                               "messages": [{
+                                   "role":
+                                   "user",
+                                   "content": [{
+                                       "type": "image_url",
+                                       "image_url": {
+                                           "url": "file:///etc/passwd"
+                                       },
+                                   }],
+                               }],
+                               "max_tokens":
+                               8,
+                           })
+    assert response.status_code == 403
+
+
+def _media_messages(item):
+    return [{"role": "user", "content": [item]}]
+
+
+@pytest.mark.parametrize("item", [
+    {
+        "type": "image",
+        "image": "/etc/passwd.png"
+    },
+    {
+        "type": "image_url",
+        "image_url": {
+            "url": "/etc/passwd.png"
+        }
+    },
+    {
+        "type": "video",
+        "video": "/etc/passwd.mp4"
+    },
+    {
+        "type": "video",
+        "video": {
+            "url": "/etc/passwd.mp4"
+        }
+    },
+    {
+        "type": "video_url",
+        "video_url": {
+            "url": "/etc/passwd.mp4"
+        }
+    },
+    {
+        "type": "video",
+        "frames": ["/etc/passwd.png"]
+    },
+    {
+        "type": "audio_url",
+        "audio_url": {
+            "url": "/etc/passwd.wav"
+        }
+    },
+])
+def test_local_media_policy_checks_every_loader_spelling(item):
+    from experimental.server.media.media_source import \
+        enforce_local_media_policy
+
+    with pytest.raises(PermissionError):
+        enforce_local_media_policy(_media_messages(item), "")
+
+
+def test_local_media_policy_allows_root_and_rejects_traversal(tmp_path):
+    from experimental.server.media.media_source import \
+        enforce_local_media_policy
+
+    root = tmp_path / "media"
+    root.mkdir()
+    inside = root / "image.png"
+    inside.touch()
+    enforce_local_media_policy(
+        _media_messages({
+            "type": "image_url",
+            "image_url": {
+                "url": f"file://{inside}"
+            }
+        }), str(root))
+
+    outside = tmp_path / "outside.png"
+    outside.touch()
+    with pytest.raises(PermissionError):
+        enforce_local_media_policy(
+            _media_messages({
+                "type": "image_url",
+                "image_url": {
+                    "url": str(root / ".." / outside.name)
+                }
+            }), str(root))
+
+
+def test_remote_and_data_media_do_not_require_local_root():
+    from experimental.server.media.media_source import \
+        enforce_local_media_policy
+
+    for ref in ("https://example.com/image.png",
+                "data:image/png;base64,aW1hZ2U="):
+        enforce_local_media_policy(
+            _media_messages({
+                "type": "image_url",
+                "image_url": {
+                    "url": ref
+                }
+            }), "")
+
+
+def test_allowed_local_media_path_is_honored_by_http(tmp_path):
+    from fastapi.testclient import TestClient
+
+    root = tmp_path / "media"
+    root.mkdir()
+    image = root / "image.png"
+    image.touch()
+    llm = _FakeLLM(tmp_path / "runtime")
+    config = ApiConfig(allowed_local_media_path=str(root))
+    client = TestClient(_create_app(llm, config))
+    response = client.post("/v1/chat/completions",
+                           json={
+                               "messages":
+                               _media_messages({
+                                   "type": "image_url",
+                                   "image_url": {
+                                       "url": str(image)
+                                   }
+                               })
+                           })
+    assert response.status_code == 200, response.text
+
+
+@pytest.mark.parametrize("marker,status", [
+    ("EDGELLM_BAD_MEDIA_COUNT: expected one image", 400),
+    ("EDGELLM_INPUT_TOO_LONG: rebuild for this prompt", 413),
+    ("CUDA error: out of memory", 500),
+])
+def test_native_errors_map_to_protocol_status(client_and_llm, marker, status):
+    client, llm = client_and_llm
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError(marker)
+
+    llm._complete_prepared_request = fail
+    response = client.post(
+        "/v1/chat/completions",
+        json={"messages": [{
+            "role": "user",
+            "content": "Hello"
+        }]})
+    assert response.status_code == status
+    assert marker in response.text
+    expected_type = ("invalid_request_error"
+                     if status < 500 else "engine_error")
+    assert response.json()["error"]["type"] == expected_type
+
+
+@pytest.mark.parametrize("field,value", [
+    ("top_k", 1.5),
+    ("max_tokens", 2.5),
+    ("temperature", "hot"),
+    ("top_p", 2.0),
+])
+def test_sampling_schema_rejects_invalid_values(client_and_llm, field, value):
+    client, _ = client_and_llm
+    response = client.post("/v1/chat/completions",
+                           json={
+                               "messages": [{
+                                   "role": "user",
+                                   "content": "Hello"
+                               }],
+                               field: value,
+                           })
+    assert response.status_code == 400
+    assert field in response.text
+
+
+def test_stream_include_usage_requires_boolean(client_and_llm):
+    client, _ = client_and_llm
+    response = client.post("/v1/chat/completions",
+                           json={
+                               "messages": [{
+                                   "role": "user",
+                                   "content": "Hello"
+                               }],
+                               "stream": True,
+                               "stream_options": {
+                                   "include_usage": "false"
+                               },
+                           })
+    assert response.status_code == 400
+    assert "include_usage" in response.text
+
+
+def test_request_body_limit_counts_received_bytes(client_and_llm, monkeypatch):
+    from experimental.server.api import app as app_module
+
+    client, _ = client_and_llm
+    monkeypatch.setattr(app_module, "MAX_REQUEST_BODY_BYTES", 256)
+    response = client.post(
+        "/v1/chat/completions",
+        json={"messages": [{
+            "role": "user",
+            "content": "x" * 1024
+        }]})
+    assert response.status_code == 413
+
+
+@pytest.mark.parametrize("value,expected", [
+    (None, None),
+    ("1024", 1024),
+    ("abc", -1),
+    ("1.5", -1),
+    ("10, 20", -1),
+])
+def test_content_length_parsing(value, expected):
+    from experimental.server.api.app import _content_length
+
+    assert _content_length(value) == expected
+
+
+def test_app_reports_package_version(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from tensorrt_edgellm import __version__
+
+    client = TestClient(_create_app(_FakeLLM(tmp_path)))
+    assert client.get("/openapi.json").json()["info"]["version"] == __version__
+
+
+def test_media_is_rejected_by_the_loaded_model_contract(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from experimental.server.runtime.engine_layout import inspect_bundle
+
+    llm = _FakeLLM(tmp_path)
+    (Path(llm.bundle_dir) / "visual" / "visual.engine").unlink()
+    llm.bundle_layout = inspect_bundle(llm.bundle_dir)
+    response = TestClient(_create_app(llm)).post(
         "/v1/chat/completions",
         json={
             "messages": [{
-                "role": "user",
-                "content": "hi"
+                "role":
+                "user",
+                "content": [{
+                    "type": "image_url",
+                    "image_url": {
+                        "url": "https://example.com/image.png"
+                    },
+                }],
             }],
-            "stream":
-            True,
-            "stream_options": {
-                "include_usage": True
-            },
-            "tools": [{
-                "type": "function",
-                "function": {
-                    "name": "f",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {}
-                    }
-                }
-            }],
+            "max_tokens":
+            8,
         },
     )
-    assert resp.status_code == 200
-    chunks = [
-        json.loads(line[len("data: "):]) for line in resp.text.splitlines()
-        if line.startswith("data: ") and "[DONE]" not in line
-    ]
-    usage_chunks = [c for c in chunks if c.get("usage")]
-    assert len(usage_chunks) == 1
-    assert usage_chunks[0]["usage"]["prompt_tokens"] == 7
+    assert response.status_code == 400
+    assert "does not accept image input" in response.json()["error"]["message"]
 
 
-def test_local_media_frames_rejected_when_unset(tmp_path):
-    """`{"type": "video", "frames": [...]}` is a local-path entry point too."""
-    from experimental.server.api_server import enforce_local_media_policy
+def test_remote_media_fetch_is_size_bounded(monkeypatch):
+    from experimental.server.media import media_source
 
-    msgs = [{
+    class Response:
+
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def geturl(self):
+            return "https://example.com/image.png"
+
+        def read(self, _limit):
+            return b"oversized"
+
+    monkeypatch.setattr(media_source.urllib.request, "urlopen",
+                        lambda *_args, **_kwargs: Response())
+    item = {
+        "type": "image_url",
+        "image_url": {
+            "url": "https://example.com/image.png"
+        },
+    }
+    assert media_source.resolve_image_message(item) == b"oversized"
+    with pytest.raises(ValueError, match="supported maximum"):
+        media_source.fetch_remote_media("https://example.com/image.png",
+                                        "image", 4)
+
+
+def test_image_data_url_reaches_bytes_loader():
+    from experimental.server.runtime.engine import _load_image_buffers
+
+    class Image:
+        do_resize = True
+
+    class Runtime:
+        loaded = None
+
+        @classmethod
+        def load_image_from_bytes(cls, data):
+            cls.loaded = data
+            return Image()
+
+    payload = base64.b64encode(b"encoded-image").decode()
+    buffers = _load_image_buffers(Runtime, [{
         "role":
         "user",
         "content": [{
-            "type": "video",
-            "frames": ["/etc/passwd", "/etc/hosts"],
-            "fps": 1.0
-        }]
-    }]
-    with pytest.raises(PermissionError):
-        enforce_local_media_policy(msgs, None)
-
-    root = tmp_path / "root"
-    root.mkdir()
-    inside = root / "f0.png"
-    inside.write_bytes(b"")
-    enforce_local_media_policy(
-        [{
-            "role": "user",
-            "content": [{
-                "type": "video",
-                "frames": [str(inside)]
-            }]
-        }], str(root))
-
-    outside = tmp_path / "out.png"
-    outside.write_bytes(b"")
-    with pytest.raises(PermissionError):
-        enforce_local_media_policy(
-            [{
-                "role": "user",
-                "content": [{
-                    "type": "video",
-                    "frames": [str(outside)]
-                }]
-            }], str(root))
-
-
-@pytest.mark.parametrize("body", [{"top_k": 1.9}, {"max_tokens": 2.9}])
-def test_integer_params_reject_floats(body):
-    from experimental.server.api_server import parse_sampling_params
-    with pytest.raises(ValueError):
-        parse_sampling_params(body, default_max_tokens=16)
-
-
-def test_include_usage_rejects_non_bool(client_and_llm):
-    client, _ = client_and_llm
-    resp = client.post(
-        "/v1/chat/completions",
-        json={
-            "messages": [{
-                "role": "user",
-                "content": "hi"
-            }],
-            "stream": True,
-            "stream_options": {
-                "include_usage": "false"
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:image/png;base64,{payload}"
             },
-        },
-    )
-    assert resp.status_code == 400
+        }],
+    }])
+    assert len(buffers) == 1
+    assert Runtime.loaded == b"encoded-image"

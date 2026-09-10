@@ -40,7 +40,7 @@ for installation commands and CUDA 12/13 host-runtime guidance.
 
 | Dependency | Version | Notes |
 |---|---|---|
-| `nvidia-cutlass-dsl` | `4.6.1` | Pinned; isolate cu12 and cu13 compiler backends by environment |
+| `nvidia-cutlass-dsl` | `4.7.0` | Pinned; isolate cu12 and cu13 compiler backends by environment |
 | `cupy-cuda12x` | `12.3.0` | CUDA 12 build host |
 | `cupy-cuda13x` | `13.6.0` | CUDA 13 build host |
 | `cuda-python` | matches the build host | Required by every group's AOT export |
@@ -67,7 +67,7 @@ The image build installs dependencies only. Kernel generation runs under
 ```bash
 # Context = kernelSrcs/ (small, self-contained); the repo root would drag
 # local build trees into the docker context.
-CUTE_DSL_BUILDER_VERSION=4.6.1
+CUTE_DSL_BUILDER_VERSION=4.7.0
 docker build \
   -f kernelSrcs/Dockerfile.cutedsl \
   --build-arg "CUTE_DSL_BUILDER_VERSION=${CUTE_DSL_BUILDER_VERSION}" \
@@ -86,11 +86,13 @@ The default matrix generates these tarballs and matching `.sha256` files under
 
 ```text
 cutedsl_x86_64_sm_80_cuda13.tar.gz
+cutedsl_x86_64_sm_86_cuda13.tar.gz
+cutedsl_x86_64_sm_90_cuda13.tar.gz
 cutedsl_x86_64_sm_100_cuda13.tar.gz
 cutedsl_x86_64_sm_120_cuda13.tar.gz
 cutedsl_x86_64_sm_120_cuda12.tar.gz
 cutedsl_aarch64_sm_87_cuda13.tar.gz
-cutedsl_aarch64_sm_87_cuda12.tar.gz
+cutedsl_aarch64_sm_90_cuda13.tar.gz
 cutedsl_aarch64_sm_101_cuda12.tar.gz
 cutedsl_aarch64_sm_110_cuda13.tar.gz
 cutedsl_aarch64_sm_121_cuda12.tar.gz
@@ -147,7 +149,7 @@ require rebuilding the image, and bind-mount the expanded artifact directory so
 the generated objects and headers update the tree consumed by CMake:
 
 ```bash
-CUTE_DSL_BUILDER_VERSION=4.6.1
+CUTE_DSL_BUILDER_VERSION=4.7.0
 docker build \
   -f kernelSrcs/Dockerfile.cutedsl \
   --build-arg "CUTE_DSL_BUILDER_VERSION=${CUTE_DSL_BUILDER_VERSION}" \
@@ -186,7 +188,7 @@ python3 -m venv .venv-cutedsl-cu13
 source .venv-cutedsl-cu13/bin/activate
 python -m pip install --upgrade pip wheel
 
-export CUTE_DSL_VERSION=4.6.1
+export CUTE_DSL_VERSION=4.7.0
 python -m pip install \
   "nvidia-cutlass-dsl[cu13]==${CUTE_DSL_VERSION}" \
   cupy-cuda13x==13.6.0 \
@@ -228,7 +230,7 @@ a clean full-matrix rebuild so stale archive members cannot be retained.
 | `--gpu_arch SM` | auto-detected | Target GPU SM (e.g. `sm_100`); auto-detected via cupy / nvidia-smi when omitted. The CuTe DSL compile architecture is derived automatically, including the required Blackwell `a` suffix. |
 | `--arch ARCH` | auto-detected | Target CPU arch `x86_64` or `aarch64`. If it differs from the build host, kernels are cross-compiled (target host objects). |
 | `--cuda-version VERSION` | host CUDA | Artifact CUDA flavor used to select `cu12` or `cu13` runtime objects. |
-| `--runtime-libs-version VERSION` | CuTe DSL package version | Target-architecture runtime-libs wheel version; useful with internal compiler wheels. |
+| `--runtime-libs-version VERSION` | CuTe DSL package version | Target-architecture runtime-libs wheel version; use when compiler and runtime-libs package versions differ. |
 | `--output_dir DIR` | `cpp/kernels/cuteDSLArtifact` | Root output dir (artifacts go under `{DIR}/{arch}/sm_<NN>/`). |
 | `-j JOBS` | CPU count | Parallel compile jobs, defaulting to the CPUs available to the process (use `-j 1` if GPU memory is limited). |
 | `--verbose` | off | Show per-variant kernel script output. |

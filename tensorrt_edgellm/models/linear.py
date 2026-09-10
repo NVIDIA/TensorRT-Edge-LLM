@@ -76,6 +76,7 @@ __all__ = [
     "ColumnParallelLinear",
     "RowParallelLinear",
     "is_nvfp4_linear",
+    "is_int4_linear",
     "FP16Linear",
     "FP8Linear",
     "MXFP8Linear",
@@ -809,6 +810,12 @@ class INT8SQLinear(LinearBase):
 # ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
+
+
+def is_int4_linear(module: nn.Module) -> bool:
+    """Return whether *module* emits an INT4 groupwise GEMM plugin."""
+    return isinstance(module,
+                      (AWQLinear, ModelOptAWQPrepackedLinear, GPTQLinear))
 
 
 def make_linear(

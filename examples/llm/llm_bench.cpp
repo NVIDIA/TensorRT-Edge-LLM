@@ -24,7 +24,7 @@
 #include "common/logger.h"
 #include "common/tensor.h"
 #include "common/trtUtils.h"
-#include "multimodal/multimodalRunner.h"
+#include "multimodal/common/multimodalRunner.h"
 #include "profiling/layerProfiler.h"
 #include "runtime/config/deploymentConfig.h"
 #include "runtime/config/inferenceDims.h"
@@ -1039,8 +1039,10 @@ int main(int argc, char** argv)
             if (useSpecDecodeResources)
             {
                 resources = rt::SharedResources::createForSpecDecode(deployment, maxBatch, emptyLoraMap, stream);
-                io = std::make_unique<rt::PipelineIO>(
-                    rt::PipelineIO::createForSpecDecode(deployment, maxBatch, stream));
+                // The bench drives no Talker, but TensorRegistry::bindAll fails on any
+                // engine I/O missing from the map, so the buffer must follow the engine.
+                io = std::make_unique<rt::PipelineIO>(rt::PipelineIO::createForSpecDecode(
+                    deployment, maxBatch, stream, executor->hasIOTensor(binding_names::kAcceptHiddenStates)));
             }
             else
             {

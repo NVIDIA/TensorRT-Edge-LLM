@@ -26,7 +26,9 @@ directly into the language-model hidden space::
       -> embedding [N, 3840]
 
 Checkpoint prefixes are ``model.vision_embedder.*`` and
-``model.embed_vision.*``.
+``model.embed_vision.*`` in the released layout; ``save_pretrained`` output
+nests the same tensors differently. Both load, see
+``_MODULE_TREE_PREFIX_REWRITES``.
 """
 
 from __future__ import annotations
@@ -69,9 +71,13 @@ class Gemma4UnifiedMultimodalEmbedder(nn.Module):
                  text_config: dict,
                  model_config: "ModelConfig",
                  module_name: str,
-                 force_fp32_projection: bool = False) -> None:
+                 force_fp32_projection: bool = False,
+                 multimodal_hidden_size: int | None = None) -> None:
         super().__init__()
-        multimodal_hidden_size = int(multimodal_config["output_proj_dims"])
+        # Callers whose sub-config may have lost ``output_proj_dims`` resolve
+        # it themselves and pass it in; see ``Gemma4UnifiedAudioModel``.
+        if multimodal_hidden_size is None:
+            multimodal_hidden_size = int(multimodal_config["output_proj_dims"])
         text_hidden_size = int(text_config["hidden_size"])
         eps = float(multimodal_config.get("rms_norm_eps", 1e-6))
         self.embedding_pre_projection_norm = Gemma4UnifiedRMSNorm(
@@ -197,12 +203,31 @@ class Gemma4UnifiedVisualModel(nn.Module):
         return args, input_names, output_names, dynamic_shapes
 
 
+#: Every quantized checkpoint nests the patch embedder under ``embed_vision``
+#: and the projection under ``multimodal_embedder``, where the released layout
+#: keeps them flat. First match wins, so the ``multimodal_embedder`` entry must
+#: precede the bare ``embed_vision`` ones; released keys match none.
+_MODULE_TREE_PREFIX_REWRITES = (
+    ("embed_vision.multimodal_embedder.", "embed_vision."),
+    ("embed_vision.patch_", "vision_embedder.patch_"),
+    ("embed_vision.pos_", "vision_embedder.pos_"),
+)
+
+
 def _load_weights(model: nn.Module, weights: dict) -> None:
-    """Strictly load Unified vision/embedder tensors from the root checkpoint."""
+    """Strictly load Unified vision/embedder tensors from the root checkpoint.
+
+    Accepts the released and ``save_pretrained`` layouts, see
+    ``_MODULE_TREE_PREFIX_REWRITES``.
+    """
     from ...checkpoint.loader import load_submodule_weights
 
     def _remap(key: str) -> "str | None":
         candidate = key[len("model."):] if key.startswith("model.") else key
+        for prefix, replacement in _MODULE_TREE_PREFIX_REWRITES:
+            if candidate.startswith(prefix):
+                candidate = replacement + candidate[len(prefix):]
+                break
         if (candidate.startswith("vision_embedder.")
                 or candidate.startswith("embed_vision.")):
             return candidate
@@ -247,11 +272,17 @@ def build_gemma4_unified_visual(
         # Infer patch_dim from the checkpoint weight rather than hard-coding an
         # architectural constant.  patch_dense maps [num_patches, patch_dim] →
         # [num_patches, mm_embed_dim], so weight shape is [mm_embed_dim, patch_dim].
-        _key = "model.vision_embedder.patch_dense.weight"
-        if _key not in weights:
+        # Both layouts, for the same reason ``_MODULE_TREE_PREFIX_REWRITES``
+        # exists: a quantized checkpoint nests the patch embedder under
+        # ``embed_vision``, and loses ``model_patch_size`` to the same
+        # round-trip that sends it down this branch.
+        _keys = ("model.vision_embedder.patch_dense.weight",
+                 "model.embed_vision.patch_dense.weight")
+        _key = next((k for k in _keys if k in weights), None)
+        if _key is None:
             raise KeyError(
-                f"Cannot infer patch_dim: '{_key}' absent from weights and "
-                "'model_patch_size' is not in vision_config.")
+                f"Cannot infer patch_dim: none of {_keys} is present in "
+                "weights and 'model_patch_size' is not in vision_config.")
         patch_dim = int(weights[_key].shape[1])
     model = Gemma4UnifiedVisualModel(config,
                                      model_config=model_config,

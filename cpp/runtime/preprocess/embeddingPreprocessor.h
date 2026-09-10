@@ -51,17 +51,23 @@ public:
     //! request the image/audio embeddings are inserted at the imageTokenId / audioTokenId
     //! positions; for a pure-text request the same kernel performs a plain table lookup.
     //!
-    //! The multimodal indices are generated on-device directly from the GPU token IDs (no host
-    //! round-trip: zero D2H/H2D), cached in `mMultimodalIndices`, and reused by a subsequent
-    //! `prepareDeepstack`/`assembleDeepstack` for the same tokens.
+    //! When @p precomputedIndices has a value, it is used directly (computed on CPU by the
+    //! caller and uploaded). Otherwise a fallback single-threaded GPU kernel generates them.
     //!
-    //! @param tokenIds     GPU tensor of token IDs [batchSize, seqLen].
-    //! @param visionEmbeds Optional vision (image) embeddings.
-    //! @param audioEmbeds  Optional audio embeddings.
-    //! @param io           Pipeline I/O – `inputsEmbeds` is written.
-    //! @param stream       CUDA stream for execution.
+    //! @param tokenIds              GPU tensor of token IDs [batchSize, seqLen].
+    //! @param visionEmbeds          Optional vision (image) embeddings.
+    //! @param audioEmbeds           Optional audio embeddings.
+    //! @param io                    Pipeline I/O – `inputsEmbeds` is written.
+    //! @param stream                CUDA stream for execution.
+    //! @param precomputedIndices    Pre-populated GPU tensor of multimodal indices [batchSize, seqLen].
+    //!                              When present, the GPU single-threaded index kernel is skipped.
+    //! @param imageBaseOffsets      Device pointer to per-batch image index offsets, or nullptr.
+    //!                              Only used when precomputedIndices is nullptr.
+    //! @param audioBaseOffsets      Device pointer to per-batch audio index offsets, or nullptr.
+    //!                              Only used when precomputedIndices is nullptr.
     void embed(Tensor const& tokenIds, OptionalInputTensor visionEmbeds, OptionalInputTensor audioEmbeds,
-        PipelineIO& io, cudaStream_t stream);
+        PipelineIO& io, cudaStream_t stream, OptionalInputTensor precomputedIndices = std::nullopt,
+        int32_t const* imageBaseOffsets = nullptr, int32_t const* audioBaseOffsets = nullptr);
 
     //! Assemble deepstack features at image placeholder positions.
     //!
@@ -96,10 +102,13 @@ private:
     EmbeddingData const& mEmbedding;
     LLMEngineConfig mConfig;
 
-    //! Multimodal indices for the prefill embedding lookup, computed once per prefill in `embed()`
-    //! from the host token IDs and reused by `assembleDeepstack()` for the same tokens (deepstack
-    //! always follows `embed()` in the base prefill). Persisted for async kernel lifetime.
-    Tensor mMultimodalIndices;
+    //! Non-owning pointer to the active multimodal indices tensor for this prefill step. Points to
+    //! either an externally-owned pre-computed tensor (from the caller) or to mOwnedIndices below.
+    //! Valid between embed() and assembleDeepstack() within a single prefill.
+    Tensor const* mIndicesPtr{nullptr};
+
+    //! Fallback indices tensor allocated when no pre-computed indices are provided (decode paths).
+    Tensor mOwnedIndices;
 };
 
 } // namespace rt

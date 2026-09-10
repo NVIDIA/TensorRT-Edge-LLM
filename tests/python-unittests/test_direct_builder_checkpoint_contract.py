@@ -21,12 +21,13 @@ import pytest
 
 safetensors_numpy = pytest.importorskip("safetensors.numpy")
 
-from experimental.builder.core import quantization
+from experimental.builder.core import quantization, weight_policy
 from experimental.builder.core.artifacts.external_weights import (
     _share_tied_embedding, checkpoint_identity, patch_external_weight_config)
 from experimental.builder.core.safetensors_np import (SafetensorsStore,
                                                       _ShardFile)
-from experimental.builder.core.weights import Weights
+from experimental.builder.core.weights import (LinearWeights, ParameterSpec,
+                                               Weights)
 
 
 def _checkpoint(path, values):
@@ -280,3 +281,123 @@ def test_declared_nvfp4_layer_without_payload_is_not_fp16():
     with pytest.raises(ValueError, match="selects NVFP4"):
         weights.linear_descriptor("model.layers.0.mlp.up_proj",
                                   quantization.QUANT_NVFP4)
+
+
+@pytest.mark.parametrize(
+    "mode, source_shape, expected_shape, shard_axis",
+    (
+        ("column", (12288, 4096), (6144, 4096), 0),
+        ("row", (4096, 12288), (4096, 6144), 1),
+    ),
+)
+def test_tp_external_fp16_shard_recipe_is_rank_neutral(mode, source_shape,
+                                                       expected_shape,
+                                                       shard_axis):
+    descriptor = LinearWeights(
+        quantization.QUANT_FP16,
+        ParameterSpec(source_shape, np.float16),
+        weight_recipe={"checkpoint_keys": ["weight"]},
+    )
+
+    rank0 = Weights.shard_linear(descriptor, mode, 2, 0)
+    rank1 = Weights.shard_linear(descriptor, mode, 2, 1)
+
+    assert rank0.weight.shape == expected_shape
+    assert rank0.weight_recipe == rank1.weight_recipe
+    assert rank0.weight_recipe["extra"]["tp_shard"] == {
+        "axis": shard_axis,
+        "size": 2,
+    }
+
+
+def test_tp_nvfp4_row_parallel_shards_scale_on_input_axis():
+    descriptor = LinearWeights(
+        quantization.QUANT_NVFP4,
+        np.zeros((4096, 2048), dtype=np.uint8),
+        weight_scale=np.zeros((4096, 256), dtype=np.uint8),
+        group_size=16,
+    )
+
+    sharded = Weights.shard_linear(descriptor, "row", 2, 0)
+
+    assert sharded.weight.shape == (4096, 1024)
+    assert sharded.weight_scale.shape == (4096, 128)
+
+
+def test_tp_external_nvfp4_shard_recipe_is_rank_neutral():
+    descriptor = LinearWeights(
+        quantization.QUANT_NVFP4,
+        ParameterSpec((4096, 2048), np.uint8),
+        weight_scale=ParameterSpec((4096, 256), np.uint8),
+        group_size=16,
+        weight_recipe={"checkpoint_keys": ["weight"]},
+        scale_recipe={"checkpoint_keys": ["weight_scale"]},
+        logical_out_features=4096,
+        logical_in_features=4096,
+    )
+
+    rank0 = Weights.shard_linear(descriptor, "row", 2, 0)
+    rank1 = Weights.shard_linear(descriptor, "row", 2, 1)
+
+    assert rank0.weight.shape == (4096, 1024)
+    assert rank0.weight_scale.shape == (4096, 128)
+    assert rank0.weight_recipe == rank1.weight_recipe
+    assert rank0.scale_recipe == rank1.scale_recipe
+    assert rank0.weight_recipe["extra"]["tp_shard"] == {
+        "axis": 1,
+        "size": 2,
+    }
+    assert rank0.scale_recipe["extra"]["tp_shard"] == {
+        "axis": 1,
+        "size": 2,
+    }
+
+
+def test_tp_nvfp4_resource_rejects_signed_packed_storage():
+    prefix = "model.layers.0.self_attn.o_proj"
+    dtypes = {
+        prefix + ".weight": "I8",
+        prefix + ".weight_scale": "F8_E4M3",
+        prefix + ".weight_scale_2": "F32",
+    }
+
+    class DtypeOnlyStore:
+
+        @staticmethod
+        def has(name):
+            return name in dtypes
+
+        @staticmethod
+        def dtype(name):
+            return dtypes[name]
+
+    weights = object.__new__(Weights)
+    weights.store = DtypeOnlyStore()
+    weights.conversion = None
+    weights.vocab_map = None
+    weights.component = "llm"
+    weights.spec_type = "none"
+    weights.spec_role = "none"
+    weights.tie_word_embeddings = False
+
+    assert weights.linear_nvfp4_tp_metadata(prefix) is None
+
+
+def test_tp_default_bakes_small_fp16_parameters():
+    from experimental.builder.core.builder import BuildArgs
+
+    default = BuildArgs("/checkpoint", "/engine", tp_size=2).weight_policy
+    assert default.wants(weight_policy.EXTERNAL_WEIGHT_EMBEDDING)
+    assert default.wants(weight_policy.EXTERNAL_WEIGHT_LM_HEAD)
+    assert default.wants(weight_policy.EXTERNAL_WEIGHT_NVFP4_TP)
+    assert not default.wants(weight_policy.EXTERNAL_WEIGHT_FP16)
+
+    fully_external = BuildArgs(
+        "/checkpoint",
+        "/engine",
+        tp_size=2,
+        externalize_weights=(weight_policy.EXTERNAL_WEIGHT_ALL, ),
+    ).weight_policy
+    assert fully_external.wants(weight_policy.EXTERNAL_WEIGHT_EMBEDDING)
+    assert fully_external.wants(weight_policy.EXTERNAL_WEIGHT_LM_HEAD)
+    assert fully_external.wants(weight_policy.EXTERNAL_WEIGHT_FP16)

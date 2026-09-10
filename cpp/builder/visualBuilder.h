@@ -17,8 +17,8 @@
 
 #pragma once
 
-#include "multimodal/imageUtils.h"
-#include "multimodal/modelTypes.h"
+#include "multimodal/common/imageUtils.h"
+#include "multimodal/common/modelTypes.h"
 #include <NvInfer.h>
 #include <filesystem>
 #include <nlohmann/json.hpp>

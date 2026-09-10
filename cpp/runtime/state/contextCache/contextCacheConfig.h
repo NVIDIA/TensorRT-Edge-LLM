@@ -36,6 +36,9 @@ enum class ContextCacheLookupPolicy : uint8_t
 enum class ContextCacheCommitPolicy : uint8_t
 {
     kIncludingGeneratedTokens,
+    //! Publish only prefill state; every kDecodeEnd publication is suppressed. Hybrid+MTP reuse depends on this: its
+    //! draft KV lags the base cache by the last accepted span (see MTPDecoder::decodeStep), so a decode-end
+    //! publication would record a short draft cache. Widening this policy must flush that pending accept first.
     kPrefillStateOnly,
 };
 
@@ -51,6 +54,8 @@ struct ContextCacheConfig
     int64_t recurrentSnapshotPoolBytes{};
     //! Device-memory budget for preallocated partial attention-KV checkpoints.
     int64_t partialKvSnapshotPoolBytes{};
+    //! Device-memory budget for encoder embedding cache (ViT/audio). Zero disables.
+    int64_t encoderEmbeddingCacheBudgetBytes{256LL * 1024 * 1024};
 };
 
 } // namespace rt

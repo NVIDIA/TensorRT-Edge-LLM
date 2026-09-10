@@ -14,4 +14,4 @@
 # limitations under the License.
 """Package version for runtime export metadata (no dependency on sibling packages)."""
 
-__version__ = "0.10.0"
+__version__ = "0.10.1"

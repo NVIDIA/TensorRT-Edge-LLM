@@ -29,8 +29,9 @@ namespace kernel
 {
 
 //! Paged-KV bad-page semantics: the write kernels resolve each token's physical page through
-//! `pageTable`; a negative page id (kBAD_PAGE_INDEX) means the position is unmapped and the write
-//! is silently skipped (same contract as other paged-KV runtimes, e.g. vLLM's slot_mapping < 0).
+//! `pageTable`. A negative page id (`kUNUSED_PAGE_ENTRY`) means the position is unmapped. A K id
+//! outside `[0, numPages)` or a V id outside `[numPages, 2 * numPages)` is invalid. Unmapped and
+//! invalid ids skip the write for that cache plane.
 //! The runtime is responsible for never presenting an unmapped page for a live position: identity
 //! tables cover every slot by construction, and reuse-mode table builders enforce coverage on the
 //! host at build time.
@@ -42,7 +43,7 @@ namespace kernel
 //! @param[in,out] q FP16 type tensor with layout of [batchSize, runtimeSeqLen, Hq, headDim]
 //! @param[in,out] k FP16 type tensor with layout of [batchSize, runtimeSeqLen, Hkv, headDim]
 //! @param[in] v FP16 type tensor with layout of [batchSize, runtimeSeqLen, Hkv, headDim]
-//! @param[out] kvCache FP16/FP8 type tensor with layout of [batchSize, 2, Hkv, kvCacheCapacity, headDim]
+//! @param[out] kvCache FP16/FP8 paged pool with layout of [2, numPages, kTOKENS_PER_PAGE, Hkv, headDim]
 //! @param[in] kScale K dequant scale (quant→orig). Use 1.0f for FP16 KV cache.
 //! @param[in] vScale V dequant scale (quant→orig). Use 1.0f for FP16 KV cache.
 //! @param[in] stream CUDA stream to launch the kernel
@@ -52,14 +53,10 @@ namespace kernel
 //!     as separate contiguous tensors rather than from the KV cache. In this case K must contain the roped result.
 //!     Set to false (default) for chunked prefill with KV cache reuse, where FMHA reads KV from the transposed
 //!     KV cache, and for all decoding paths (vanilla / tree), where the XQA kernel reads KV from the cache.
-//! @param[in] pageTable INT32 device page table `[batchSize, 2, maxPagesPerSeq]`; row `b*2+0` carries K page ids,
-//!     row `b*2+1` the derived V page ids. When non-null, token `t` of slot `b` writes K to
-//!     `kvCache[pageTable[(b*2+0)*maxPagesPerSeq + t/128]][t%128][h][d]` and V via the row's V half (both addressing
-//!     the same flat `kvCache` buffer, reinterpreted as `[nPages, 128, Hkv, D]`). A negative entry skips the write
-//!     for that half. Pass nullptr to use the legacy `[B, 2, Hkv, S, D]` addressing instead.
-//! @param[in] maxPagesPerSeq Page-table inner dimension (number of page slots per sequence). Only used when
-//!     pageTable != nullptr.
-//!     the check (e.g. in unit tests that don't care).
+//! @param[in] pageTable Required INT32 device page table `[batchSize, 2, maxPagesPerSeq]`. K row ids are in
+//!     `[0, numPages)` and V row ids are flattened as `K + numPages` in `[numPages, 2 * numPages)`.
+//!     An unmapped or out-of-plane entry skips the write for that cache plane.
+//! @param[in] maxPagesPerSeq Positive page-table inner dimension (number of page slots per sequence).
 //! @throws std::runtime_error if tensor shape or data type is incorrect
 void launchApplyRopeWriteKV(rt::Tensor const& cosSinCache, rt::OptionalInputTensor kvCacheEndLens, rt::Tensor& q,
     rt::Tensor& k, rt::Tensor const& v, rt::Tensor& kvCache, float kScale, float vScale, cudaStream_t stream,
@@ -73,14 +70,13 @@ void launchApplyRopeWriteKV(rt::Tensor const& cosSinCache, rt::OptionalInputTens
 //! @param[in,out] q FP16 type tensor with layout of [batchSize, runtimeSeqLen, Hq, headDim]
 //! @param[in] k FP16 type tensor with layout of [batchSize, runtimeSeqLen, Hkv, headDim]
 //! @param[in] v FP16 type tensor with layout of [batchSize, runtimeSeqLen, Hkv, headDim]
-//! @param[out] kvCache FP16/FP8 type tensor with layout of [batchSize, 2, Hkv, kvCacheCapacity, headDim], write KVCache
-//! from the end position.
+//! @param[out] kvCache FP16/FP8 paged pool with layout of [2, numPages, kTOKENS_PER_PAGE, Hkv, headDim].
 //! @param[in] kScale K dequant scale (quant→orig). Use 1.0f for FP16 KV cache.
 //! @param[in] vScale V dequant scale (quant→orig). Use 1.0f for FP16 KV cache.
 //! @param[in] stream CUDA stream to launch the kernel
 //! @note We won't overwrite K/V tensor in this case but we use Tensor& signature to reduce duplicate code.
-//! @param[in] pageTable Optional INT32 device page table `[batchSize, 2, maxPagesPerSeq]`. See launchApplyRopeWriteKV.
-//! @param[in] maxPagesPerSeq Page-table inner dimension. Only used when pageTable != nullptr.
+//! @param[in] pageTable Required INT32 device page table `[batchSize, 2, maxPagesPerSeq]`. See launchApplyRopeWriteKV.
+//! @param[in] maxPagesPerSeq Positive page-table inner dimension.
 //! @throws std::runtime_error if tensor shape or data type is incorrect
 void launchApplyRopeWriteKVTreeDecoding(rt::Tensor const& cosSinCache, rt::Tensor const& kvCacheEndLens,
     rt::Tensor const& tokenPosIds, rt::Tensor& q, rt::Tensor& k, rt::Tensor const& v, rt::Tensor& kvCache, float kScale,
@@ -89,7 +85,7 @@ void launchApplyRopeWriteKVTreeDecoding(rt::Tensor const& cosSinCache, rt::Tenso
 //! @brief Launch kernel to apply RoPE to Q, apply RoPE to K and write K/V to KVCache.
 //!
 //! Optimized for the CuTe DSL FMHA path: applies RoPE to Q, writes roped K and V into
-//! KV cache [B, 2, H_kv, S, D]. Does NOT write roped K back to the K input tensor.
+//! KV pool [2, numPages, kTOKENS_PER_PAGE, H_kv, D]. Does NOT write roped K back to the K input tensor.
 //!
 //! When @p fp8QOut is non-null (FP8 KV cache path), the roped Q is quantized to FP8 and written
 //! to the provided output buffer. The original FP16 Q tensor is NOT modified. The downstream
@@ -103,12 +99,12 @@ void launchApplyRopeWriteKVTreeDecoding(rt::Tensor const& cosSinCache, rt::Tenso
 //!     RoPE applied in-place when fp8QOut is null.
 //! @param[in] k FP16 type tensor with layout of [batchSize, runtimeSeqLen, Hkv, headDim]
 //! @param[in] v FP16 type tensor with layout of [batchSize, runtimeSeqLen, Hkv, headDim]
-//! @param[out] kvCache FP16/FP8 type tensor with layout of [batchSize, 2, Hkv, kvCacheCapacity, headDim]
+//! @param[out] kvCache FP16/FP8 paged pool with layout of [2, numPages, kTOKENS_PER_PAGE, Hkv, headDim]
 //! @param[in] kScale K dequant scale (quant→orig). Use 1.0f for FP16 KV cache.
 //! @param[in] vScale V dequant scale (quant→orig). Use 1.0f for FP16 KV cache.
 //! @param[in] stream CUDA stream to launch the kernel
-//! @param[in] pageTable Optional INT32 device page table `[batchSize, 2, maxPagesPerSeq]`. See launchApplyRopeWriteKV.
-//! @param[in] maxPagesPerSeq Page-table inner dimension. Only used when pageTable != nullptr.
+//! @param[in] pageTable Required INT32 device page table `[batchSize, 2, maxPagesPerSeq]`. See launchApplyRopeWriteKV.
+//! @param[in] maxPagesPerSeq Positive page-table inner dimension.
 //! @param[out] fp8QOut Optional FP8 output buffer for roped Q [batchSize, runtimeSeqLen, Hq, headDim].
 //!     When non-null, roped Q is quantized to FP8 E4M3 and stored here. Pass nullptr for FP16 in-place RoPE.
 //! @param[in] qScale Q dequant scale (quant→orig). Only used when fp8QOut is non-null.
@@ -159,13 +155,13 @@ void launchApplyRopeQOnlyTreeDecoding(
 //! @param[in]  packedQKV    FP16 tensor [batchSize, runtimeSeqLen, Hq+2*Hkv, headDim], read-only.
 //! @param[out] qScratch     FP16 tensor [batchSize, runtimeSeqLen, Hq, headDim] — roped Q output
 //!             (unless @p fp8QOut is non-null, in which case this is unused).
-//! @param[out] kvCache      FP16/FP8 tensor [batchSize, 2, Hkv, kvCacheCapacity, headDim] — K/V written here.
+//! @param[out] kvCache      FP16/FP8 paged pool [2, numPages, kTOKENS_PER_PAGE, Hkv, headDim] — K/V written here.
 //! @param[in]  kScale       K dequant scale (quant→orig). Use 1.0f for FP16 KV cache.
 //! @param[in]  vScale       V dequant scale (quant→orig). Use 1.0f for FP16 KV cache.
 //! @param[in]  stream       CUDA stream.
-//! @param[in]  pageTable    Optional INT32 device page table `[batchSize, 2, maxPagesPerSeq]`.
-//!             See launchApplyRopeWriteKV. Pass nullptr for the legacy [B, 2, Hkv, S, D] addressing.
-//! @param[in]  maxPagesPerSeq Page-table inner dimension. Only used when pageTable != nullptr.
+//! @param[in]  pageTable    Required INT32 device page table `[batchSize, 2, maxPagesPerSeq]`.
+//!             See launchApplyRopeWriteKV.
+//! @param[in]  maxPagesPerSeq Positive page-table inner dimension.
 //! @param[out] kScratchOut  Optional FP16 buffer [batchSize, runtimeSeqLen, Hkv, headDim] — mirrored roped K.
 //!             Pass nullptr if downstream does not need scratch K.
 //! @param[out] vScratchOut  Optional FP16 buffer [batchSize, runtimeSeqLen, Hkv, headDim] — mirrored V.

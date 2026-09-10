@@ -3,7 +3,7 @@
 This directory contains tools for running accuracy benchmarks on TensorRT Edge LLM models.
 
 Supported benchmark types:
-- **Accuracy Tests** — Multiple choice correctness (MMLU, MMMU, MMStar, OmniBench)
+- **Accuracy Tests** — Multiple choice correctness (MMLU, MMMU, MMBench, MMStar, OmniBench)
 - **ROUGE Similarity Tests** — Text generation quality (GSM8K, HumanEval, MTBench)
 - **Audio Score Tests** — Speech generation WER + speaker similarity (Seed-TTS-eval, MiniMax)
 
@@ -81,6 +81,28 @@ python3 scripts/calculate_correctness.py \
   --answers_file /path/to/datasets/mmlu_output/mmlu_dataset.json
 ```
 
+**DART visual-token pruning comparison** (`run_dart_accuracy.py`): [visual-token pruning](../../docs/source/user_guide/features/visual-token-pruning.md)
+removes redundant visual tokens before VLM prefill (`llm_inference --visualPrune`), trading a
+small, ratio-dependent accuracy cost for prefill speedup. This script quantifies the accuracy
+side of that trade-off: it runs a prepared multiple-choice VLM dataset (MMStar / MMMU) through
+`llm_inference` once without pruning and once per `--ratios` value, scores every run, and prints
+a per-dataset markdown table — score (Δ vs baseline), average text/visual token counts, ISL, and
+the *estimated* prefill speedup (the linear token-count ratio `baseline_ISL / pruned_ISL`).
+Pass several `--dataset_files` for one table row per dataset. It intentionally reports no timing
+— the sequential single-pass runs are not a fair benchmark; measure real latency with
+`llm_inference --dumpProfile --warmup N`:
+
+```bash
+python3 scripts/prepare_dataset.py --dataset MMStar --output_dir tmp/mmstar_output
+
+python3 scripts/run_dart_accuracy.py \
+  --engine_dir /path/to/engines/llm \
+  --multimodal_engine_dir /path/to/engines/visual \
+  --dataset_file tmp/mmstar_output/mmstar_dataset.json \
+  --ratios 0.25 0.5 \
+  --output_dir tmp/dart_accuracy
+```
+
 ### 2. ROUGE Similarity Tests
 
 Evaluate text generation quality using ROUGE metrics against reference responses.
@@ -127,6 +149,8 @@ Located in `example_datasets/` directory. Use `scripts/prepare_dataset.py` to co
 ### Multimodal Datasets
 
 **Vision + Language:**
+- **MMBench** (`mmbench.py`): Multimodal benchmark, EN dev split (letter-match accuracy; the
+  official metric adds circular evaluation + GPT answer matching, so expect small differences)
 - **MMMU** (`mmmu.py`): Massive Multi-discipline Multimodal Understanding
 - **MMMU_Pro** (`mmmu.py`): Enhanced version of MMMU
 - **MMStar** (`mmstar.py`): Multimodal benchmark with visual reasoning

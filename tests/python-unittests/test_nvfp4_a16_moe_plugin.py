@@ -678,3 +678,34 @@ def test_build_rejects_nonpositive_sigmoid_routed_scaling_factor():
                          ids=["hidden", "swiglu_intermediate"])
 def test_build_rejects_misaligned_dimensions(case):
     assert _build_serialized_network_without_skip(case) is None
+
+
+def test_build_rejects_unsupported_num_experts():
+    assert _build_serialized_network_without_skip(
+        replace(_QWEN_CASE, num_experts=64)) is None
+
+
+def test_create_plugin_accepts_256_experts():
+    """Qwen3.6-35B-A3B uses 256 routed experts; createPlugin must not reject it."""
+    PluginRunner()
+    creator = trt.get_plugin_registry().get_creator(_PLUGIN_NAME,
+                                                    _PLUGIN_VERSION, "")
+    assert creator is not None
+    fields = _plugin_fields(replace(_QWEN_CASE, num_experts=256))
+    plugin = creator.create_plugin(_PLUGIN_NAME,
+                                   trt.PluginFieldCollection(fields),
+                                   trt.TensorRTPhase.BUILD)
+    assert plugin is not None
+
+
+def test_create_plugin_accepts_512_experts():
+    """Nemotron-3-Super-120B uses 512 routed experts; createPlugin must not reject it."""
+    PluginRunner()
+    creator = trt.get_plugin_registry().get_creator(_PLUGIN_NAME,
+                                                    _PLUGIN_VERSION, "")
+    assert creator is not None
+    fields = _plugin_fields(replace(_QWEN_CASE, num_experts=512))
+    plugin = creator.create_plugin(_PLUGIN_NAME,
+                                   trt.PluginFieldCollection(fields),
+                                   trt.TensorRTPhase.BUILD)
+    assert plugin is not None

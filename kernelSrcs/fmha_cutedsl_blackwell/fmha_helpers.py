@@ -14,8 +14,9 @@ from typing import Optional, Tuple
 
 import cutlass
 import cutlass.cute as cute
+from cutlass._mlir.dialects import llvm, vector
 from cutlass.cute.typing import Boolean
-from cutlass.cutlass_dsl import (Float32, Int32, extract_mlir_values, min,
+from cutlass.cutlass_dsl import (Float32, Int32, T, dsl_user_op, extract_mlir_values, min,
                                  new_from_mlir_values)
 from cutlass.utils import WorkTileInfo
 from cutlass.utils.hardware_info import HardwareInfo
@@ -1170,3 +1171,29 @@ class FusedMask:
                                       or mask_type == MaskEnum.RESIDUAL_MASK_BWD):
                     if index_k >= seqlen_k or index_q >= seqlen_q:
                         acc_qk[i] = -Float32.inf
+
+
+@cute.jit
+def cvt_f32x4_to_f8x4(fp32x4, fp8x4, *, loc=None, ip=None):
+    src = fp32x4.load()
+    vec = src.ir_value(loc=loc, ip=ip) if hasattr(src, "ir_value") else src
+    src0 = Float32(vector.extract(vec, [], [0])).ir_value(loc=loc, ip=ip)
+    src1 = Float32(vector.extract(vec, [], [1])).ir_value(loc=loc, ip=ip)
+    src2 = Float32(vector.extract(vec, [], [2])).ir_value(loc=loc, ip=ip)
+    src3 = Float32(vector.extract(vec, [], [3])).ir_value(loc=loc, ip=ip)
+    packed = llvm.inline_asm(
+        T.i32(),
+        [src0, src1, src2, src3],
+        "{\n"
+        "  .reg .b16 lo;\n"
+        "  .reg .b16 hi;\n"
+        "  cvt.rn.satfinite.e4m3x2.f32 lo, $2, $1;\n"
+        "  cvt.rn.satfinite.e4m3x2.f32 hi, $4, $3;\n"
+        "  mov.b32 $0, {lo, hi};\n"
+        "}",
+        "=r,f,f,f,f",
+        has_side_effects=False,
+        is_align_stack=False,
+        asm_dialect=llvm.AsmDialect.AD_ATT,
+    )
+    cute.recast_tensor(fp8x4, cutlass.Int32)[0] = cutlass.Int32(packed)

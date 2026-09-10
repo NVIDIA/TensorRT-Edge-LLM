@@ -9,3 +9,13 @@ tests:
   - tests/defs/test_llm_pipeline.py::test_engine_build[Qwen3-1.7B-NVFP4-nvfp4-mxsl4096-mxbs2-mxil4096]
   - tests/defs/test_llm_pipeline.py::test_inference[Qwen3-1.7B-NVFP4-nvfp4-mxsl4096-mxbs2-mxil4096-llm_basic]
   - tests/defs/test_llm_pipeline.py::test_inference[Qwen3-1.7B-NVFP4-nvfp4-mxsl4096-mxbs2-mxil4096-mmlu_5-bs2]
+
+  # DSpark owns a paged draft state with its exported proposal block size.
+  - tests/defs/test_llm_pipeline.py::test_engine_build[Qwen3-4B-fp16-mxsl2048-dspark-block7-mxbs2-mxil1024-mvts8-mdts7-mxkvp64]
+  - tests/defs/test_llm_pipeline.py::test_inference[Qwen3-4B-fp16-mxsl2048-dspark-block7-mxbs2-mxil1024-mvts8-mdts7-mxkvp64-ctxreuse-llm_context_reuse]
+  # Reuse the same 4B engine; tree mode is runtime-selected and exercises INT8 verify-mask compaction.
+  - tests/defs/test_llm_pipeline.py::test_inference[Qwen3-4B-fp16-mxsl2048-dspark-block7-mxbs2-mxil1024-mvts8-mdts7-mxkvp64-edtk2-ctxreuse-llm_spec_prefill_evict]
+
+  # Gemma4 MTP is the no-paged-spec-state contract row.
+  - tests/defs/test_llm_pipeline.py::test_engine_build[gemma-4-E2B-it-fp16-mxsl2048-mtp-mxbs2-mxil1024-mxkvp64]
+  - tests/defs/test_llm_pipeline.py::test_inference[gemma-4-E2B-it-fp16-mxsl2048-mtp-mxbs2-mxil1024-mxkvp64-ctxreuse-llm_context_reuse]

@@ -51,3 +51,6 @@ tests:
   - tests/python-unittests/test_export_kv_page_table.py::test_attention_plugin_nodes_have_required_inputs
   - tests/python-unittests/test_export_kv_page_table.py::test_kv_cache_graph_input_is_pool_shaped
   - tests/python-unittests/test_export_kv_page_table.py::test_attention_plugin_call_sites_pass_kv_page_table
+  - tests/python-unittests/test_export_kv_page_table.py::test_dflash_target_kv_update_requires_page_table_argument
+  - tests/python-unittests/test_export_kv_page_table.py::test_dflash_target_kv_update_schema_keeps_name_and_has_seven_inputs
+  - tests/python-unittests/test_export_kv_page_table.py::test_dflash_target_kv_update_call_sites_pass_page_table

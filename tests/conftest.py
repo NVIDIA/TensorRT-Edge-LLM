@@ -47,7 +47,7 @@ class EnvironmentConfig:
     llm_sdk_dir: str
     llm_models_dir: Optional[str]
     edgellm_data_dir: Optional[str]
-    onnx_dir: str
+    onnx_dir: Optional[str]
     engine_dir: Optional[str]
     build_dir: str
     test_log_dir: str
@@ -58,18 +58,13 @@ class EnvironmentConfig:
 
     @classmethod
     def from_environment(cls) -> 'EnvironmentConfig':
-        """Create EnvironmentConfig from required environment variables"""
+        """Create an EnvironmentConfig from the process environment."""
         llm_sdk_dir = os.environ.get('LLM_SDK_DIR')
         if not llm_sdk_dir:
             raise ValueError(
                 "LLM_SDK_DIR environment variable is required. "
                 "Please set it to the root directory of the TensorRT Edge-LLM project."
             )
-
-        onnx_dir = os.environ.get('ONNX_DIR')
-        if not onnx_dir:
-            raise ValueError("ONNX_DIR environment variable is required. "
-                             "Please set it to the directory for ONNX models.")
 
         # LLM models directory with default fallback
         llm_models_dir = os.environ.get('LLM_MODELS_DIR')
@@ -98,6 +93,7 @@ class EnvironmentConfig:
                     break
 
         # Optional directories - will be validated when needed
+        onnx_dir = os.environ.get('ONNX_DIR')
         engine_dir = os.environ.get('ENGINE_DIR')
         trt_package_dir = os.environ.get('TRT_PACKAGE_DIR')
         vlmevalkit_dir = os.environ.get('VLMEVALKIT_DIR')
@@ -119,21 +115,30 @@ class EnvironmentConfig:
                    vlmevalkit_data_dir=vlmevalkit_data_dir,
                    vlmevalkit_work_dir=vlmevalkit_work_dir)
 
-    def validate_for_export_tests(self):
-        """Validate that required directories are set for export tests"""
-        if not self.llm_models_dir:
+    @staticmethod
+    def _require_setting(value: Optional[str], variable: str,
+                         purpose: str) -> None:
+        if not value:
             raise ValueError(
-                "LLM_MODELS_DIR environment variable is required for export tests. "
-                "Please set it to the directory containing LLM torch models, or ensure one of the default paths exists: "
-                "/scratch.trt_llm_data/llm-models, /home/scratch.trt_llm_data/llm-models"
-            )
+                f"{variable} environment variable is required for {purpose}.")
 
-    def validate_for_pipeline_tests(self):
-        """Validate that required directories are set for pipeline tests"""
-        if not self.engine_dir:
-            raise ValueError(
-                "ENGINE_DIR environment variable is required for pipeline tests. "
-                "Please set it to the directory for TensorRT engines.")
+    def validate_for_export_tests(self) -> None:
+        """Validate the checkpoint export environment."""
+        self._require_setting(self.llm_models_dir, 'LLM_MODELS_DIR',
+                              'export tests')
+        self._require_setting(self.onnx_dir, 'ONNX_DIR', 'export tests')
+
+    def validate_for_pipeline_tests(self) -> None:
+        """Validate an ONNX-based build or runtime environment."""
+        self._require_setting(self.onnx_dir, 'ONNX_DIR', 'pipeline tests')
+        self._require_setting(self.engine_dir, 'ENGINE_DIR', 'pipeline tests')
+
+    def validate_for_checkpoint_builder_tests(self) -> None:
+        """Validate a direct checkpoint-to-engine test environment."""
+        self._require_setting(self.llm_models_dir, 'LLM_MODELS_DIR',
+                              'checkpoint builder tests')
+        self._require_setting(self.engine_dir, 'ENGINE_DIR',
+                              'checkpoint builder tests')
 
     def validate_for_vlmevalkit_tests(self):
         """Validate that required directories are set for VLMEvalKit tests."""
@@ -180,8 +185,9 @@ def env_config():
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_environment(env_config):
-    """Setup environment and library paths"""
-    os.makedirs(env_config.onnx_dir, exist_ok=True)
+    """Create only the directories declared by the selected test job."""
+    if env_config.onnx_dir:
+        os.makedirs(env_config.onnx_dir, exist_ok=True)
     if env_config.engine_dir:
         os.makedirs(env_config.engine_dir, exist_ok=True)
     os.makedirs(env_config.test_log_dir, exist_ok=True)
@@ -202,7 +208,9 @@ def executable_files(env_config):
         f"{build_dir}/examples/multimodal/action_inference",
         'qwen3_tts_inference':
         f"{build_dir}/examples/omni/qwen3_tts_inference",
-        'unit_test': f"{build_dir}/unitTest"
+        # The unit tests are several ctest-registered executables; this points
+        # at the directory ctest is invoked from, not a single binary.
+        'unit_test': f"{build_dir}"
     }
 
 
@@ -383,7 +391,7 @@ def _preferred_model_quantization_test_name(test_param: str) -> str:
     if "tts" in lower:
         return "test_tts_model_quantization"
     vlm_hints = ("-vl-", "internvl", "multimodal", "cosmos", "vitfp8",
-                 "qwen3.5-", "qwen3.6-")
+                 "qwen3.5-", "qwen3.6-", "qwen3.8-")
     if any(hint in lower for hint in vlm_hints):
         return "test_vlm_model_quantization"
     return "test_llm_model_quantization"
@@ -514,6 +522,18 @@ def pytest_collection_modifyitems(config, items):
     for test_case in test_list_file.get('tests', []):
         if not isinstance(test_case, str):
             continue
+        if '::' not in test_case:
+            test_path = Path(test_case)
+            if not test_path.is_absolute():
+                test_path = repo_root / test_path
+            test_path = test_path.resolve()
+            for item in items:
+                if (Path(str(item.path)).resolve() == test_path
+                        and id(item) not in seen):
+                    ordered.append(item)
+                    seen.add(id(item))
+            continue
+
         test_name = test_case.split('::')[-1]
 
         for item in item_by_name.get(test_name, []):

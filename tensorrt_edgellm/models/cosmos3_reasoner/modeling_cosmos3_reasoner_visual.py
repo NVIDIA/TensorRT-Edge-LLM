@@ -45,13 +45,10 @@ qwenViTRunner family can drive the engine:
         output                [total_patches / 4, 2048]  float16
 
 ``input`` carries the packed patches in 2×2 spatial-merge-block order per
-frame (block-raster over the frame, ``h1``-major inside each block) — the
-same patch ordering Qwen-VL image processors emit — so the merger is a
-plain ``view(-1, 4 * 1152)``.  The HF reference keeps raster order and
-rearranges inside ``patch_merging_by_param``; both orderings are
-numerically identical because attention is full within each frame.  Use
-:func:`pack_raster_patches_to_merge_order` to convert raster-order packed
-patches from the HF image processor.
+frame (block-raster over the frame, ``h1``-major inside each block), with
+each patch flattened channel-first by the shared Qwen runtime.  The Cosmos3
+processor flattens each patch channel-last, so checkpoint loading permutes
+the patch-embedding weight columns to preserve embedding parity.
 
 ``fast_pos_embed_idx`` / ``fast_pos_embed_weight`` are the host-precomputed
 4-tap bilinear gather (indices into the flattened 16×16 position table and
@@ -104,33 +101,18 @@ def _make_visual_linear(model_config: "ModelConfig | None", in_features: int,
                        module_name=module_name)
 
 
-def pack_raster_patches_to_merge_order(pixel_values: torch.Tensor,
-                                       grid_thw: torch.Tensor,
-                                       merge_size: int = 2) -> torch.Tensor:
-    """Reorder raster-order packed patches into 2×2 merge-block order.
-
-    The HF Cosmos3-Edge image processor packs each frame's patches row-major
-    (``[t, h, w]`` raster).  The exported graph expects the Qwen-VL ordering:
-    block-raster ``(t, h/ms, w/ms)`` with the ``ms × ms`` patches of each
-    block contiguous (``h1``-major).  Host-side preprocessing applies this
-    permutation before feeding ``input``.
-
-    Args:
-        pixel_values: ``[total_patches, C]`` packed patches, raster order.
-        grid_thw:     ``[num_images, 3]`` per-image ``(t, h, w)`` patch grid.
-        merge_size:   Spatial merge factor (2).
-    """
-    out: List[torch.Tensor] = []
-    offset = 0
-    for t, h, w in grid_thw.tolist():
-        num = t * h * w
-        x = pixel_values[offset:offset + num]
-        offset += num
-        x = x.view(t, h // merge_size, merge_size, w // merge_size, merge_size,
-                   -1)
-        x = x.permute(0, 1, 3, 2, 4, 5).reshape(num, -1)
-        out.append(x)
-    return torch.cat(out, dim=0)
+def _adapt_patch_embedding_weight_for_chw_input(
+        weight: torch.Tensor, patch_size: int,
+        num_channels: int) -> torch.Tensor:
+    """Adapt Cosmos3 patch-embedding columns to the runtime patch layout."""
+    expected_width = num_channels * patch_size**2
+    if weight.ndim != 2 or weight.shape[1] != expected_width:
+        raise ValueError(
+            "Cosmos3 patch-embedding weight must have shape "
+            f"[out_features, {expected_width}], got {tuple(weight.shape)}")
+    return weight.reshape(weight.shape[0],
+                          patch_size, patch_size, num_channels).permute(
+                              0, 3, 1, 2).reshape_as(weight).contiguous()
 
 
 # ---------------------------------------------------------------------------
@@ -760,9 +742,17 @@ def load_cosmos3_reasoner_visual_weights(
     def _remap(k: str) -> "str | None":
         return k[len(strip):] if k.startswith(prefixes) else None
 
+    def _transform(remapped_key: str, tensor: torch.Tensor) -> torch.Tensor:
+        if remapped_key == "visual.embeddings.patch_embedding.weight":
+            num_channels = model.in_features // model.patch_size**2
+            return _adapt_patch_embedding_weight_for_chw_input(
+                tensor, model.patch_size, num_channels)
+        return tensor
+
     load_submodule_weights(model,
                            weights,
                            _remap,
+                           transform=_transform,
                            label="Cosmos3ReasonerVisualModel")
 
     remapped = {k[len(strip):] for k in weights if k.startswith(prefixes)}
@@ -811,7 +801,6 @@ __all__ = [
     "Cosmos3ReasonerVisionTransformer",
     "Cosmos3ReasonerPatchMerger",
     "Cosmos3ReasonerVisualModel",
-    "pack_raster_patches_to_merge_order",
     "load_cosmos3_reasoner_visual_weights",
     "build_cosmos3_reasoner_visual",
 ]

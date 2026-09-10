@@ -44,6 +44,15 @@ bool isSafetensorsIndex(std::filesystem::path const& path)
     return name.size() >= 23 && name.compare(name.size() - 23, 23, ".safetensors.index.json") == 0;
 }
 
+int discardMappedPages(void* address, size_t length)
+{
+#if defined(__QNXNTO__)
+    return posix_madvise(address, length, POSIX_MADV_DONTNEED);
+#else
+    return madvise(address, length, MADV_DONTNEED);
+#endif
+}
+
 } // namespace
 
 CheckpointReader::CheckpointReader(std::filesystem::path const& directory)
@@ -237,8 +246,7 @@ void CheckpointReader::discardTensorRange(std::string const& name, size_t offset
         {
             end += std::min(pageSize - remainder, shard.file->getSize() - rangeEnd);
         }
-        if (begin < end
-            && madvise(const_cast<int8_t*>(shard.file->getByteData()) + begin, end - begin, MADV_DONTNEED) != 0)
+        if (begin < end && discardMappedPages(const_cast<int8_t*>(shard.file->getByteData()) + begin, end - begin) != 0)
         {
             LOG_WARNING("Failed to release checkpoint pages for %s", name.c_str());
         }

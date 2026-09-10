@@ -12,6 +12,7 @@ tests:
 
   - tests/defs/test_llm_pipeline.py::test_engine_build[Qwen3.5-0.8B-fp16-mxsl4096-mtp-mxbs1-mxil2048]
   - tests/defs/test_llm_pipeline.py::test_inference[Qwen3.5-0.8B-fp16-mxsl4096-mtp-mxbs1-mxil2048-llm_basic]
+  - tests/defs/test_llm_pipeline.py::test_inference[Qwen3.5-0.8B-fp16-mxsl4096-mtp-mxbs1-mxil2048-llm_logit_bias]
 
   # Gemma4 E2B smoke: vanilla FP16 + paired MTP. Keep sequence/input modest for L0 runtime.
   - tests/defs/test_llm_pipeline.py::test_engine_build[gemma-4-E2B-it-fp16-mxsl2048-mxbs1-mxil1024]

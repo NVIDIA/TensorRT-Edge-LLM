@@ -144,6 +144,12 @@ void dsparkNormalizeTopKRows(rt::Tensor const& topKValues, rt::Tensor& topKProba
     float temperature, cudaStream_t stream);
 
 /*!
+ * @brief Store one selected top-1 token per batch row into draftTokenIds [B, P].
+ */
+void dsparkStoreDraftStepTop1(rt::Tensor const& top1Indices, rt::Tensor& draftTokenIds, int32_t batchSize, int32_t step,
+    int32_t proposalLen, cudaStream_t stream);
+
+/*!
  * @brief Sample one DSpark draft token from selected top-k logits and store sparse draft probabilities/indices.
  */
 void dsparkSampleTopKRowsAndStore(rt::Tensor const& topKValues, rt::Tensor const& topKIndices,

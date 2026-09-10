@@ -26,7 +26,7 @@
 #include "kernels/embeddingKernels/embeddingKernels.h"
 #include "kernels/kvCacheUtilKernels/kvCacheUtilsKernels.h"
 #include "kernels/talkerMLPKernels/talkerMLPKernels.h"
-#include "multimodal/cloneEncoderRunner.h"
+#include "multimodal/qwen3_omni/cloneEncoderRunner.h"
 #include "runtime/audioLoader.h"
 
 #ifdef CUTE_DSL_GEMM_ENABLED
@@ -41,6 +41,8 @@
 #include <cctype>
 #include <chrono>
 #include <cuda_runtime.h>
+#include <filesystem>
+#include <fstream>
 #include <nlohmann/json.hpp>
 #include <unordered_set>
 
@@ -4262,13 +4264,13 @@ bool Qwen3OmniTTSRuntime::handleStreamingGeneration(LLMInferenceRuntime& thinker
                 auto& talkerKVManager = talkerCacheManager.getKVCacheManager();
                 for (int32_t i = 0; i < talkerKVManager.numLayers(); ++i)
                 {
-                    rt::Tensor& layerKV = talkerKVManager.getCombinedKVCachePoolView(i);
+                    rt::Tensor& layerKV = talkerKVManager.getCombinedKVCache(i);
                     CUDA_CHECK(cudaMemsetAsync(layerKV.rawPointer(), 0, layerKV.getMemoryCapacity(), stream));
                 }
                 auto& cpKVManager = cpCacheManager.getKVCacheManager();
                 for (int32_t i = 0; i < cpKVManager.numLayers(); ++i)
                 {
-                    rt::Tensor& layerKV = cpKVManager.getCombinedKVCachePoolView(i);
+                    rt::Tensor& layerKV = cpKVManager.getCombinedKVCache(i);
                     CUDA_CHECK(cudaMemsetAsync(layerKV.rawPointer(), 0, layerKV.getMemoryCapacity(), stream));
                 }
             }

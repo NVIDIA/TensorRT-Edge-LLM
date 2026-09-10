@@ -170,16 +170,8 @@ void loadIdentityWeight(CheckpointReader& checkpoint, Json const& binding, Tenso
     nvinfer1::DataType const outputType = output.getDataType();
     bool const needCast = outputType == nvinfer1::DataType::kHALF && sourceType != nvinfer1::DataType::kHALF
         && (sourceType == nvinfer1::DataType::kBF16 || sourceType == nvinfer1::DataType::kFLOAT);
-
     Coords const want = output.getShape();
     Coords const have = source.shape;
-    bool const needTranspose = have != want;
-    if (needTranspose)
-    {
-        ELLM_CHECK(want.getNumDims() == 2 && have.getNumDims() == 2 && have[0] == want[1] && have[1] == want[0],
-            "checkpoint weight shape " + have.formatString() + " does not match binding " + want.formatString()
-                + " for " + output.getName());
-    }
 
     auto runRange = [&](size_t sourceOffset, size_t sourceBytes, auto&& launch) {
         View const mapped = checkpoint.registerTensorRange(sourceKey, sourceOffset, sourceBytes);
@@ -198,30 +190,55 @@ void loadIdentityWeight(CheckpointReader& checkpoint, Json const& binding, Tenso
         checkpoint.discardTensorRange(sourceKey, sourceOffset, sourceBytes);
     };
 
-    if (!needTranspose)
+    int32_t const runtimeRank = binding.value("runtime_rank", 0);
+    if (binding.value("tp_rank0_only", false) && runtimeRank != 0)
     {
-        ELLM_CHECK(!needCast || outputType == nvinfer1::DataType::kHALF,
-            "checkpoint cast currently requires an FP16 engine binding");
-        ELLM_CHECK(!needCast || sourceType == nvinfer1::DataType::kBF16 || sourceType == nvinfer1::DataType::kFLOAT,
-            "unsupported checkpoint cast for " + output.getName());
-        ELLM_CHECK(needCast || sourceType == outputType,
-            "checkpoint weight dtype does not match binding for " + output.getName());
+        CUDA_CHECK(cudaMemsetAsync(output.rawPointer(), 0, static_cast<size_t>(output.getMemoryCapacity()), stream));
+        return;
+    }
+
+    bool const hasShard = binding.contains("tp_shard");
+    int32_t shardAxis = -1;
+    int32_t shardSize = 1;
+    int32_t shardRank = 0;
+    if (hasShard)
+    {
+        Json const& shard = binding["tp_shard"];
+        ELLM_CHECK(shard.is_object(), "tp_shard must be an object for " + output.getName());
+        shardAxis = shard.value("axis", -1);
+        shardSize = shard.value("size", 0);
+        shardRank = shard.value("rank", -1);
+        ELLM_CHECK(shardAxis >= 0 && shardAxis < have.getNumDims(), "invalid tp_shard axis for " + output.getName());
+        ELLM_CHECK(shardSize > 1 && shardRank >= 0 && shardRank < shardSize,
+            "invalid tp_shard size or rank for " + output.getName());
+        ELLM_CHECK(have[shardAxis] % shardSize == 0, "checkpoint weight dimension is not divisible by tp_shard size");
+        Coords expected = have;
+        expected[shardAxis] /= shardSize;
+        ELLM_CHECK(expected == want,
+            "checkpoint TP shard shape " + expected.formatString() + " does not match binding " + want.formatString()
+                + " for " + output.getName());
+    }
+
+    bool const needTranspose = !hasShard && have != want;
+    if (needTranspose)
+    {
+        ELLM_CHECK(want.getNumDims() == 2 && have.getNumDims() == 2 && have[0] == want[1] && have[1] == want[0],
+            "checkpoint weight shape " + have.formatString() + " does not match binding " + want.formatString()
+                + " for " + output.getName());
+    }
+
+    auto copyContiguous = [&](size_t sourceOffset, int64_t elements) {
+        ELLM_CHECK(elements > 0, "checkpoint shard is empty for " + output.getName());
         size_t const sourceElementBytes = utils::getTypeSize(sourceType);
         size_t const outputElementBytes = utils::getTypeSize(outputType);
-        int64_t const elements = source.shape.volume();
-        ELLM_CHECK(elements > 0 && source.bytes == static_cast<size_t>(elements) * sourceElementBytes,
-            "checkpoint weight byte size does not match metadata for " + output.getName());
-        ELLM_CHECK(
-            static_cast<size_t>(output.getMemoryCapacity()) == static_cast<size_t>(elements) * outputElementBytes,
-            "checkpoint weight byte size does not match binding for " + output.getName());
         size_t const windowElements = std::max<size_t>(1, kSourceWindowBytes / sourceElementBytes);
         for (size_t first = 0; first < static_cast<size_t>(elements); first += windowElements)
         {
             size_t const count = std::min(windowElements, static_cast<size_t>(elements) - first);
-            size_t const sourceOffset = first * sourceElementBytes;
+            size_t const rangeOffset = sourceOffset + first * sourceElementBytes;
             size_t const sourceBytes = count * sourceElementBytes;
             auto* destination = static_cast<uint8_t*>(output.rawPointer()) + first * outputElementBytes;
-            runRange(sourceOffset, sourceBytes, [&](View const& mapped) {
+            runRange(rangeOffset, sourceBytes, [&](View const& mapped) {
                 if (!needCast)
                 {
                     CUDA_CHECK(kernel::launchCopyBytes(mapped.deviceData, destination, sourceBytes, stream));
@@ -235,6 +252,114 @@ void loadIdentityWeight(CheckpointReader& checkpoint, Json const& binding, Tenso
                     CUDA_CHECK(kernel::launchBf16ToFp16(mapped.deviceData, destination, count, stream));
                 }
             });
+        }
+    };
+
+    if (hasShard)
+    {
+        ELLM_CHECK(!needCast || outputType == nvinfer1::DataType::kHALF,
+            "checkpoint TP cast currently requires an FP16 engine binding");
+        ELLM_CHECK(needCast || sourceType == outputType,
+            "checkpoint TP shard dtype does not match binding for " + output.getName());
+        ELLM_CHECK(source.bytes == static_cast<size_t>(source.shape.volume()) * utils::getTypeSize(sourceType),
+            "checkpoint weight byte size does not match metadata for " + output.getName());
+        ELLM_CHECK(static_cast<size_t>(output.getMemoryCapacity())
+                == static_cast<size_t>(want.volume()) * utils::getTypeSize(outputType),
+            "checkpoint shard byte size does not match binding for " + output.getName());
+
+        if (shardAxis == 0)
+        {
+            int64_t const localElements = want.volume();
+            int64_t const sourceElementsPerShard = have.volume() / shardSize;
+            ELLM_CHECK(sourceElementsPerShard == localElements,
+                "contiguous checkpoint shard element count does not match binding for " + output.getName());
+            size_t const sourceOffset = needCast
+                ? static_cast<size_t>(shardRank * sourceElementsPerShard) * utils::getTypeSize(sourceType)
+                : static_cast<size_t>(shardRank) * static_cast<size_t>(output.getMemoryCapacity());
+            if (needCast)
+            {
+                copyContiguous(sourceOffset, localElements);
+            }
+            else
+            {
+                size_t const bytes = static_cast<size_t>(output.getMemoryCapacity());
+                size_t const windowBytes = std::max<size_t>(1, kSourceWindowBytes);
+                for (size_t first = 0; first < bytes; first += windowBytes)
+                {
+                    size_t const count = std::min(windowBytes, bytes - first);
+                    auto* destination = static_cast<uint8_t*>(output.rawPointer()) + first;
+                    runRange(sourceOffset + first, count, [&](View const& mapped) {
+                        CUDA_CHECK(kernel::launchCopyBytes(mapped.deviceData, destination, count, stream));
+                    });
+                }
+            }
+            return;
+        }
+
+        ELLM_CHECK(have.getNumDims() == 2 && shardAxis == 1,
+            "non-contiguous TP checkpoint sharding currently supports only matrix axis 1");
+        int64_t const rows = have[0];
+        int64_t const sourceColumns = have[1];
+        int64_t const destinationColumns = want[1];
+        int64_t const sourceColumnOffset = static_cast<int64_t>(shardRank) * destinationColumns;
+        size_t const sourceRowBytes = static_cast<size_t>(sourceColumns) * utils::getTypeSize(sourceType);
+        size_t const destinationRowBytes = static_cast<size_t>(destinationColumns) * utils::getTypeSize(outputType);
+        size_t const rowsPerWindow = std::max<size_t>(1, kSourceWindowBytes / sourceRowBytes);
+        for (size_t firstRow = 0; firstRow < static_cast<size_t>(rows); firstRow += rowsPerWindow)
+        {
+            size_t const rowCount = std::min(rowsPerWindow, static_cast<size_t>(rows) - firstRow);
+            size_t const rangeOffset = firstRow * sourceRowBytes;
+            size_t const rangeBytes = rowCount * sourceRowBytes;
+            auto* destination = static_cast<uint8_t*>(output.rawPointer()) + firstRow * destinationRowBytes;
+            runRange(rangeOffset, rangeBytes, [&](View const& mapped) {
+                if (needCast && sourceType == nvinfer1::DataType::kFLOAT)
+                {
+                    CUDA_CHECK(kernel::launchFp32SliceToFp16(mapped.deviceData, destination, rowCount, sourceColumns,
+                        sourceColumnOffset, destinationColumns, stream));
+                }
+                else if (needCast)
+                {
+                    CUDA_CHECK(kernel::launchBf16SliceToFp16(mapped.deviceData, destination, rowCount, sourceColumns,
+                        sourceColumnOffset, destinationColumns, stream));
+                }
+                else
+                {
+                    size_t const sourceColumnOffsetBytes
+                        = static_cast<size_t>(sourceColumnOffset) * utils::getTypeSize(sourceType);
+                    CUDA_CHECK(kernel::launchCopy2DBytes(mapped.deviceData, destination, rowCount, sourceRowBytes,
+                        sourceColumnOffsetBytes, destinationRowBytes, stream));
+                }
+            });
+        }
+        return;
+    }
+
+    if (!needTranspose)
+    {
+        ELLM_CHECK(!needCast || outputType == nvinfer1::DataType::kHALF,
+            "checkpoint cast currently requires an FP16 engine binding");
+        ELLM_CHECK(needCast || sourceType == outputType,
+            "checkpoint weight dtype does not match binding for " + output.getName());
+        ELLM_CHECK(source.bytes == static_cast<size_t>(source.shape.volume()) * utils::getTypeSize(sourceType),
+            "checkpoint weight byte size does not match metadata for " + output.getName());
+        ELLM_CHECK(static_cast<size_t>(output.getMemoryCapacity())
+                == static_cast<size_t>(want.volume()) * utils::getTypeSize(outputType),
+            "checkpoint weight byte size does not match binding for " + output.getName());
+        if (!needCast)
+        {
+            size_t const bytes = static_cast<size_t>(output.getMemoryCapacity());
+            for (size_t first = 0; first < bytes; first += kSourceWindowBytes)
+            {
+                size_t const count = std::min(kSourceWindowBytes, bytes - first);
+                auto* destination = static_cast<uint8_t*>(output.rawPointer()) + first;
+                runRange(first, count, [&](View const& mapped) {
+                    CUDA_CHECK(kernel::launchCopyBytes(mapped.deviceData, destination, count, stream));
+                });
+            }
+        }
+        else
+        {
+            copyContiguous(0, have.volume());
         }
         return;
     }
@@ -840,13 +965,13 @@ void assembleNvfp4Alpha(CheckpointReader const& checkpoint, Json const& binding,
     Json const& keys = checkpointKeys(binding);
     int32_t const numExperts = binding.value("num_experts", 0);
     int32_t const keysPerExpert = binding.value("keys_per_expert", 1);
-    ELLM_CHECK(numExperts > 0 && numExperts <= 256 && keysPerExpert > 0
+    ELLM_CHECK(numExperts > 0 && numExperts <= 512 && keysPerExpert > 0
             && static_cast<int32_t>(keys.size()) == numExperts * keysPerExpert,
         "NVFP4 alpha key count does not match the expert layout");
     validateOutput(output, Coords{numExperts}, nvinfer1::DataType::kFLOAT, "NVFP4 alpha output");
 
     bool const reciprocal = binding.value("reciprocal_alpha", false);
-    std::array<float, 256> values{};
+    std::array<float, 512> values{};
     for (int32_t expert = 0; expert < numExperts; ++expert)
     {
         size_t const base = static_cast<size_t>(expert * keysPerExpert);

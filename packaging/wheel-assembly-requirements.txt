@@ -1,0 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Deterministic wheel unpacking, packing, and metadata validation.
+tomli==2.2.1; python_version < "3.11"
+wheel==0.45.1

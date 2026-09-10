@@ -19,6 +19,7 @@
 
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
+#include <type_traits>
 
 namespace trt_edgellm
 {
@@ -37,6 +38,43 @@ __global__ void copyKernel(T const* source, T* destination, int64_t count)
     for (; index < count; index += stride)
     {
         destination[index] = source[index];
+    }
+}
+
+__global__ void copy2DBytesKernel(uint8_t const* source, uint8_t* destination, int64_t count, size_t sourceRowBytes,
+    size_t sourceColumnOffsetBytes, size_t destinationRowBytes)
+{
+    int64_t index = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    int64_t const stride = static_cast<int64_t>(blockDim.x) * gridDim.x;
+    for (; index < count; index += stride)
+    {
+        // Flatten the compact destination shard to one byte per thread. Each
+        // destination row maps to one contiguous byte window in the wider source row.
+        size_t const destinationRow = static_cast<size_t>(index) / destinationRowBytes;
+        size_t const destinationColumnByte = static_cast<size_t>(index) % destinationRowBytes;
+        destination[index] = source[destinationRow * sourceRowBytes + sourceColumnOffsetBytes + destinationColumnByte];
+    }
+}
+
+template <typename Source>
+__global__ void sliceToFp16Kernel(Source const* source, __half* destination, int64_t count, int64_t sourceColumns,
+    int64_t sourceColumnOffset, int64_t destinationColumns)
+{
+    int64_t index = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    int64_t const stride = static_cast<int64_t>(blockDim.x) * gridDim.x;
+    for (; index < count; index += stride)
+    {
+        int64_t const row = index / destinationColumns;
+        int64_t const column = index % destinationColumns;
+        if constexpr (std::is_same_v<Source, __nv_bfloat16>)
+        {
+            destination[index]
+                = __float2half(__bfloat162float(source[row * sourceColumns + sourceColumnOffset + column]));
+        }
+        else
+        {
+            destination[index] = __float2half(source[row * sourceColumns + sourceColumnOffset + column]);
+        }
     }
 }
 
@@ -148,7 +186,7 @@ __global__ void fillFp32Kernel(float* data, int64_t n, float value)
 
 struct Fp32ValueBatch
 {
-    float values[256];
+    float values[512];
 };
 
 __global__ void writeFp32Kernel(Fp32ValueBatch values, float* output, int32_t count)
@@ -194,6 +232,62 @@ cudaError_t launchCopyBytes(void const* source, void* destination, size_t bytes,
         copyKernel<<<grid1d(count, threads), threads, 0, stream>>>(
             static_cast<uint8_t const*>(source), static_cast<uint8_t*>(destination), count);
     }
+    return cudaGetLastError();
+}
+
+cudaError_t launchCopy2DBytes(void const* source, void* destination, int64_t rows, size_t sourceRowBytes,
+    size_t sourceColumnOffsetBytes, size_t destinationRowBytes, cudaStream_t stream)
+{
+    if (rows <= 0 || destinationRowBytes == 0)
+    {
+        return cudaSuccess;
+    }
+    if (source == nullptr || destination == nullptr || sourceColumnOffsetBytes + destinationRowBytes > sourceRowBytes)
+    {
+        return cudaErrorInvalidValue;
+    }
+    int64_t const count = rows * static_cast<int64_t>(destinationRowBytes);
+    int32_t constexpr threads = 256;
+    copy2DBytesKernel<<<grid1d(count, threads), threads, 0, stream>>>(static_cast<uint8_t const*>(source),
+        static_cast<uint8_t*>(destination), count, sourceRowBytes, sourceColumnOffsetBytes, destinationRowBytes);
+    return cudaGetLastError();
+}
+
+cudaError_t launchBf16SliceToFp16(void const* source, void* destination, int64_t rows, int64_t sourceColumns,
+    int64_t sourceColumnOffset, int64_t destinationColumns, cudaStream_t stream)
+{
+    if (rows <= 0 || destinationColumns <= 0)
+    {
+        return cudaSuccess;
+    }
+    if (source == nullptr || destination == nullptr || sourceColumnOffset < 0
+        || sourceColumnOffset + destinationColumns > sourceColumns)
+    {
+        return cudaErrorInvalidValue;
+    }
+    int64_t const count = rows * destinationColumns;
+    int32_t constexpr threads = 256;
+    sliceToFp16Kernel<<<grid1d(count, threads), threads, 0, stream>>>(static_cast<__nv_bfloat16 const*>(source),
+        static_cast<__half*>(destination), count, sourceColumns, sourceColumnOffset, destinationColumns);
+    return cudaGetLastError();
+}
+
+cudaError_t launchFp32SliceToFp16(void const* source, void* destination, int64_t rows, int64_t sourceColumns,
+    int64_t sourceColumnOffset, int64_t destinationColumns, cudaStream_t stream)
+{
+    if (rows <= 0 || destinationColumns <= 0)
+    {
+        return cudaSuccess;
+    }
+    if (source == nullptr || destination == nullptr || sourceColumnOffset < 0
+        || sourceColumnOffset + destinationColumns > sourceColumns)
+    {
+        return cudaErrorInvalidValue;
+    }
+    int64_t const count = rows * destinationColumns;
+    int32_t constexpr threads = 256;
+    sliceToFp16Kernel<<<grid1d(count, threads), threads, 0, stream>>>(static_cast<float const*>(source),
+        static_cast<__half*>(destination), count, sourceColumns, sourceColumnOffset, destinationColumns);
     return cudaGetLastError();
 }
 
@@ -311,7 +405,7 @@ cudaError_t launchFillFp32(void* dFp32, int64_t n, float value, cudaStream_t str
 
 cudaError_t launchWriteFp32(float const* values, int32_t count, void* dFp32, cudaStream_t stream)
 {
-    if (values == nullptr || dFp32 == nullptr || count <= 0 || count > 256)
+    if (values == nullptr || dFp32 == nullptr || count <= 0 || count > 512)
     {
         return cudaErrorInvalidValue;
     }
@@ -320,7 +414,7 @@ cudaError_t launchWriteFp32(float const* values, int32_t count, void* dFp32, cud
     {
         batch.values[index] = values[index];
     }
-    writeFp32Kernel<<<1, 256, 0, stream>>>(batch, static_cast<float*>(dFp32), count);
+    writeFp32Kernel<<<1, 512, 0, stream>>>(batch, static_cast<float*>(dFp32), count);
     return cudaGetLastError();
 }
 

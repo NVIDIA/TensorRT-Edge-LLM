@@ -19,6 +19,7 @@
 
 #include "common/hashUtils.h"
 #include "runtime/decoding/decodingStrategy.h"
+#include "runtime/decoding/specCommonStateTracker.h"
 #include "runtime/state/externalWeightManager.h"
 
 #include <filesystem>
@@ -35,7 +36,7 @@ class EagleDecoder final : public DecodingStrategy
 public:
     EagleDecoder(DecodingRuntimeContext& runtime, std::filesystem::path const& engineDir,
         SpecDecodeDraftingConfig const& draftingConfig, std::unique_ptr<EngineExecutor> draftExecutor,
-        cudaStream_t stream);
+        ExternalWeightManager draftWeights, cudaStream_t stream);
 
     DecodingStrategyKind kind() const noexcept override
     {
@@ -51,6 +52,8 @@ public:
     {
         return true;
     }
+
+    DecodingKvHeadroom requiredKvHeadroom() const override;
 
     bool decodeStep(DecodingInferenceContext& context) override;
     bool captureCudaGraphs(cudaStream_t stream) override;
@@ -68,7 +71,7 @@ public:
 
     void resetForNewSequences(Tensor& reuseLengths, cudaStream_t stream) override;
     void onBatchEvict(std::vector<int32_t> const& batchMapping, int32_t oldActiveBatch, int32_t newActiveBatch,
-        Tensor& deviceBatchMapping, cudaStream_t stream, BatchCompactionMode mode) override;
+        Tensor& deviceBatchMapping, cudaStream_t stream) override;
 
 private:
     bool runDraftModelPrefill(DecodingInferenceContext& context);
@@ -100,12 +103,7 @@ private:
     Tensor mAcceptLength;
     Tensor mHostAcceptLengths;
     Tensor mHostAcceptedTokenIds;
-    //! Per-slot greatest logical prefix whose continuation state is materialized by both base and draft models.
-    std::vector<int32_t> mCommonMaterializedStateLengths;
-    //! Per-slot accepted lengths from the previous verification, pending draft-state materialization.
-    std::vector<int32_t> mPendingDraftAcceptLengths;
-    //! Draft-prefill logits and hidden state are waiting for first-proposal construction.
-    bool mDraftPrefillOutputsPending{};
+    SpecCommonStateTracker mCommonStateTracker;
 
     hash_utils::HashMap<SystemPromptCacheKey, SystemPromptKVCache> mSystemPromptKVCacheDraft;
 };

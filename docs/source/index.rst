@@ -41,10 +41,12 @@ and action models on NVIDIA edge platforms.
 
    user_guide/features/lora.md
    user_guide/features/quantization.md
+   user_guide/features/multi-device.md
    user_guide/features/reduce-vocab.md
    user_guide/features/FP8KV.md
    user_guide/features/fp8-embedding.md
    user_guide/features/streaming.md
+   user_guide/features/visual-token-pruning.md
    user_guide/features/kv-cache-reuse.md
 
 .. toctree::
@@ -71,6 +73,8 @@ and action models on NVIDIA edge platforms.
    developer_guide/software-design/cpp-runtime-overview.md
    developer_guide/software-design/llm-inference-runtime.md
    developer_guide/software-design/llm-streaming.md
+   developer_guide/software-design/memory-monitoring.md
+   developer_guide/software-design/openai-server.md
 
 .. toctree::
    :maxdepth: 2
@@ -91,6 +95,7 @@ and action models on NVIDIA edge platforms.
    :maxdepth: 2
    :caption: Testing
 
+   developer_guide/testing/runtime-unit-tests.md
    developer_guide/testing/code-coverage.md
    developer_guide/testing/few-layer-validation.md
 

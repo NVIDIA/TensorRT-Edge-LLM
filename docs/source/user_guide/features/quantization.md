@@ -122,6 +122,23 @@ store `lm_head` weights. DFlash draft quantization has been validated with
 NVFP4. The target-hidden projector stays in dense precision; export will
 reject checkpoints where that `fc` module is quantized.
 
+## Export NVFP4 MoE for SM12x
+
+NVFP4 MoE weights use different export layouts on SM120/SM121 and
+SM100/SM101/SM110. Select the SM12x layout before exporting for DGX Spark
+(SM121) or an SM120 GPU:
+
+```bash
+export EDGELLM_NVFP4_MOE_TARGET=sm12x
+tensorrt-edgellm-export \
+  /path/to/nvfp4_moe_checkpoint \
+  /tmp/nvfp4_moe_sm12x_onnx
+```
+
+Without this setting, export uses the SM100/SM101/SM110 layout. The selected
+weight layout is fixed in the exported artifacts and cannot be changed during
+engine build or inference. Use a separate export directory for each layout.
+
 ## Quantize Embedding Table To FP8
 
 FP8 embedding quantization is applied at export time via `tensorrt_edgellm`, not during the quantization step. Pass `--fp8-embedding` when exporting the quantized checkpoint. See [FP8 Embedding](fp8-embedding.md) for details and usage examples. Export the runtime embedding table in FP8:

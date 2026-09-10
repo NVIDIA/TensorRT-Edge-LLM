@@ -135,6 +135,8 @@ class BlackwellFusedMultiHeadAttentionForward:
         actual_head_dim: Optional[int] = None,
         enable_skip_correction: bool = True,
         skip_softmax_threshold: Optional[float] = None,
+        kv_stage: Optional[int] = None,
+        q_stage: Optional[int] = None,
     ):
         """Initializes the configuration for a Blackwell Fused Multi-Head Attention (FMHA) kernel.
 
@@ -208,6 +210,9 @@ class BlackwellFusedMultiHeadAttentionForward:
         # Non-None only compiles the skip path in; the runtime lambda is
         # __call__'s skip_softmax_threshold_log2 argument.
         self.skip_softmax_threshold = skip_softmax_threshold
+        self._kv_stage_override = kv_stage
+        self._q_stage_override = q_stage
+
         self.softmax0_warp_ids = (0, 1, 2, 3)
         self.softmax1_warp_ids = (4, 5, 6, 7)
         self.correction_warp_ids = (8, 9, 10, 11)
@@ -278,8 +283,9 @@ class BlackwellFusedMultiHeadAttentionForward:
         - Configures pipeline stages for softmax, correction, and epilogue operations
         """
 
-        self.q_stage = 2
-        self.kv_stage = 4 if self.q_dtype.width == 8 else 3
+        self.q_stage = self._q_stage_override if self._q_stage_override is not None else 2
+        _kv_default = 4 if self.q_dtype.width == 8 else 3
+        self.kv_stage = self._kv_stage_override if self._kv_stage_override is not None else _kv_default
         self.acc_stage = 1
         self.softmax_corr_stage = 1
         self.mma_corr_stage = 2
@@ -2584,7 +2590,14 @@ class BlackwellFusedMultiHeadAttentionForward:
         ) = tensor_args
         enable_skip_softmax = skip_softmax_threshold_log2 is not None
 
-        tilePlikeFP32 = self.qk_mma_tiler[1] // Float32.width * self.o_dtype.width
+        # P is stored to TMEM as q_dtype (the PV-MMA A operand), not o_dtype.
+        # With FP8 in / FP16 out the o_dtype-sized view was 2x too wide, costing
+        # an extra tcgen05.st(Repetition(32)) and 32 registers per tile.
+        # Unchanged for FP16 (q_dtype == o_dtype there).
+        p_store_width = (
+            self.q_dtype.width if self.q_dtype.width == 8 else self.o_dtype.width
+        )
+        tilePlikeFP32 = self.qk_mma_tiler[1] // Float32.width * p_store_width
         tScS = qk_thr_mma.partition_C(cS)
         tScS_vec_layout = cute.composition(tScS.layout, cute.make_layout((128, 2)))
         tScS_vec = cute.make_tensor(tScS.iterator, tScS_vec_layout)
@@ -2742,7 +2755,23 @@ class BlackwellFusedMultiHeadAttentionForward:
 
                 s_vec = tTMEM_LOADrS_frg[None, j].load()
                 row_sum = s_vec.reduce(cute.ReductionOp.ADD, row_sum, 0)
-                tTMEM_STORErS_x4_e_frg[None, j].store(s_vec.to(self.q_dtype))
+                if cutlass.const_expr(self.q_dtype == cutlass.Float8E4M3FN):
+                    # PRMT-free packed f32x4 -> e4m3x4 conversion
+                    # (F2FP.PACK_AB_MERGE_C chains; SASS-verified on sm_100/110).
+                    src_cvt = cute.logical_divide(
+                        tTMEM_LOADrS_frg[None, j], cute.make_layout(4)
+                    )
+                    dst_cvt = cute.logical_divide(
+                        tTMEM_STORErS_x4_e_frg[None, j], cute.make_layout(4)
+                    )
+                    for cvt_idx in cutlass.range_constexpr(
+                        cute.size(src_cvt, mode=[1])
+                    ):
+                        fmha_utils.cvt_f32x4_to_f8x4(
+                            src_cvt[None, cvt_idx], dst_cvt[None, cvt_idx]
+                        )
+                else:
+                    tTMEM_STORErS_x4_e_frg[None, j].store(s_vec.to(self.q_dtype))
         # Sequence barrier arrive
         if cutlass.const_expr(stage == 0):
             sequence_producer_handle.commit()
@@ -2855,7 +2884,12 @@ class BlackwellFusedMultiHeadAttentionForward:
         cS_base = cute.make_identity_tensor(
             (self.qk_mma_tiler[0], self.qk_mma_tiler[1])
         )
-        tilePlikeFP32 = self.qk_mma_tiler[1] // 32 * self.o_dtype.width
+        # See the softmax-side p_store_width comment: P lives in TMEM as
+        # q_dtype; keep both views consistent.
+        p_store_width = (
+            self.q_dtype.width if self.q_dtype.width == 8 else self.o_dtype.width
+        )
+        tilePlikeFP32 = self.qk_mma_tiler[1] // 32 * p_store_width
         tScS = qk_thr_mma.partition_C(cS_base)
         tStS_vec_layout = cute.composition(tStS.layout, cute.make_layout((128, 2)))
         tmem_vec_offset = self.tmem_vec0_offset if stage == 0 else self.tmem_vec1_offset
@@ -6815,6 +6849,8 @@ def run(
     skip_softmax_threshold: Optional[float] = None,
     load_qkv: Optional[str] = None,
     prefill_test_rounds: int = 3,
+    kv_stage: Optional[int] = None,
+    q_stage: Optional[int] = None,
     **kwargs,
 ):
     """Execute Fused Multi-Head Attention (FMHA) on Blackwell architecture and validate results.
@@ -7127,10 +7163,16 @@ def run(
         kvcache_ref = np.stack([_k, _v], axis=1)
         print(f"[fmha] loaded real Q/K/V from {load_qkv}")
 
-    # SM100 tcgen05.mma atom K = 256 bits / element_bits.  For fp16: 16 elems.
-    # The MMA tiler K must be a multiple of this atom.  Non-aligned dims like
-    # 72 are padded up (→ 80); TMA ZFILL/OOB-drop bridge the gap at zero cost.
-    _MMA_K_ATOM = 256 // 16  # 16 for fp16
+    # SM100 tcgen05.mma atom K = 256 bits / element_bits: 16 elems for fp16,
+    # 32 elems for fp8.  The MMA tiler K must be a multiple of this atom.
+    # Non-aligned dims are padded up (fp16 72 -> 80; fp8 80 -> 96); TMA
+    # ZFILL/OOB-drop bridge the gap at zero cost. The TMA gmem row stride
+    # must stay 16B-aligned, so fp8 d=72 cannot be loaded directly.
+    _MMA_K_ATOM = 256 // in_dtype.width
+    if (d * in_dtype.width) % 128 != 0:
+        raise ValueError(
+            f"head_dim {d} x {in_dtype.width}-bit rows are not 16B-aligned "
+            f"for TMA; pad the tensors to the next 16B multiple first")
     padded_d = ((d + _MMA_K_ATOM - 1) // _MMA_K_ATOM) * _MMA_K_ATOM
     actual_head_dim = d if padded_d != d else None
     if actual_head_dim is not None:
@@ -7207,6 +7249,8 @@ def run(
             actual_head_dim=actual_head_dim,
             enable_skip_correction=False,
             skip_softmax_threshold=skip_softmax_threshold,
+            kv_stage=kv_stage,
+            q_stage=q_stage,
         )
     elif d == 512:
         fmha = BlackwellFusedMultiHeadAttentionForwardHeadDimPerCta256(
@@ -7243,6 +7287,8 @@ def run(
             use_sliding_window=(use_sliding_window and not vit_mode),
             actual_head_dim=actual_head_dim,
             enable_skip_correction=enable_skip_correction,
+            kv_stage=kv_stage,
+            q_stage=q_stage,
         )
 
     # Initialize Stream
@@ -8355,6 +8401,21 @@ if __name__ == "__main__":
         "lambda per request (scale_factor / context_length).",
     )
 
+    parser.add_argument(
+        "--kv_stage",
+        type=int,
+        default=None,
+        help="Override K/V pipeline depth (default: 4 for FP8, 3 for FP16). "
+        "kv_stage=1 deadlocks — use 2 or higher.",
+    )
+
+    parser.add_argument(
+        "--q_stage",
+        type=int,
+        default=None,
+        help="Override Q pipeline depth (default: 2).",
+    )
+
     args = parser.parse_args()
 
     if cp.cuda.runtime.getDeviceCount() == 0:
@@ -8412,6 +8473,8 @@ if __name__ == "__main__":
         skip_softmax_threshold=args.skip_softmax_threshold,
         load_qkv=args.load_qkv,
         prefill_test_rounds=args.prefill_test_rounds,
+        kv_stage=args.kv_stage,
+        q_stage=args.q_stage,
     )
 
     if latency is not None:

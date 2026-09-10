@@ -284,7 +284,7 @@ FAMILIES: Tuple[ModelFamily, ...] = (
             "qwen3_omni_next_text_moe":
             _set(Component.LLM),
             "qwen3_omni_next_talker":
-            _set(Component.TALKER, Component.CODE_PREDICTOR),
+            _set(Component.CODE_PREDICTOR),
             "qwen3_omni_next_talker_text":
             _set(Component.TALKER),
             "qwen3_omni_next_code_predictor":
@@ -402,6 +402,18 @@ FAMILIES: Tuple[ModelFamily, ...] = (
         },
     ),
     ModelFamily(
+        "nemotron3_5_asr",
+        {"nemotron3_5_asr": _set(Component.AUDIO, Component.RNNT)},
+        {
+            Component.AUDIO:
+            _component("nemotron3_5_asr.modeling_nemotron3_5_asr_audio",
+                       "Nemotron3_5AsrAudioEncoder"),
+            Component.RNNT:
+            _component("nemotron3_5_asr.modeling_nemotron3_5_asr_rnnt",
+                       "Nemotron3_5AsrRNNTStep"),
+        },
+    ),
+    ModelFamily(
         "nemotron_omni",
         {
             "NemotronH_Nano_VL_V2":
@@ -511,7 +523,10 @@ FAMILIES: Tuple[ModelFamily, ...] = (
     ),
     ModelFamily(
         "gemma4_assistant",
-        {"gemma4_assistant": _set(Component.LLM)},
+        {
+            "gemma4_assistant": _set(Component.LLM),
+            "gemma4_unified_assistant": _set(Component.LLM),
+        },
         {
             Component.LLM:
             _component("gemma4.modeling_gemma4_assistant",
@@ -561,6 +576,8 @@ SPECULATIVE_DRAFTS = {
     _component("qwen3_5.modeling_qwen3_5_mtp", "Qwen35MtpDraftModel"),
     "dflash":
     _component("dflash.modeling_dflash_draft", "DFlashDraftModel"),
+    "jetspec":
+    _component("dflash.modeling_dflash_draft", "DFlashDraftModel"),
     "dspark":
     _component("dspark.modeling_dspark_draft", "DSparkDraftModel"),
     "gemma4_mtp":
@@ -572,6 +589,7 @@ SPECULATIVE_WEIGHT_CONVERSIONS = {
     "eagle3": "eagle3.weights",
     "mtp": "qwen3_5.weights",
     "dflash": "dflash.weights",
+    "jetspec": "dflash.weights",
     "dspark": "dspark.weights",
     "gemma4_mtp": "gemma4.weights",
 }
@@ -580,6 +598,7 @@ SPECULATIVE_CONFIGURATIONS = {
     "eagle3": "eagle3.configuration",
     "mtp": "qwen3_5.configuration",
     "dflash": "dflash.configuration",
+    "jetspec": "jetspec.configuration",
     "dspark": "dspark.configuration",
     "gemma4_mtp": "gemma4.configuration",
 }

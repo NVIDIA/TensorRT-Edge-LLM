@@ -39,6 +39,7 @@
 #include "common/checkMacros.h"
 #include "common/trtUtils.h"
 #include "requestFileParser.h"
+#include "runtime/config/llmEngineConfig.h"
 #include "runtime/llmInferenceRuntime.h"
 #include "runtime/llmRuntimeUtils.h"
 #include "runtime/streaming.h"
@@ -52,6 +53,7 @@
 #include <filesystem>
 #include <iostream>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -78,10 +80,149 @@ struct Args
     bool showSpecialTokens = false; // StreamChannel::setSkipSpecialTokens(!this)
     bool specDecode = false;
     int32_t specDraftTopK = 8;
+    bool specDraftTopKSet = false;
     int32_t specDraftStep = 4;
+    bool specDraftStepSet = false;
     int32_t specVerifySize = 24;
+    bool specVerifySizeSet = false;
     int32_t dflashBlockSize = 0;
 };
+
+namespace
+{
+
+std::filesystem::path getBaseConfigPath(std::string const& engineDir)
+{
+    std::filesystem::path const dir{engineDir};
+    std::filesystem::path const configPath = dir / "config.json";
+    if (std::filesystem::is_regular_file(configPath))
+    {
+        return configPath;
+    }
+    return dir / "base_config.json";
+}
+
+std::filesystem::path getDraftConfigPath(std::string const& engineDir)
+{
+    return std::filesystem::path{engineDir} / "draft_config.json";
+}
+
+int32_t maxVerifySizeOrDefault(rt::LLMEngineConfig const& config, int32_t fallback)
+{
+    return config.maxVerifyTreeSize > 0 ? config.maxVerifyTreeSize : fallback;
+}
+
+int32_t dsparkVerifySizeOrDefault(std::string const& engineDir)
+{
+    std::filesystem::path const draftConfigPath = getDraftConfigPath(engineDir);
+    if (!std::filesystem::is_regular_file(draftConfigPath))
+    {
+        return 8;
+    }
+
+    rt::LLMEngineConfig const draftConfig = rt::parseDraftEngineConfig(draftConfigPath);
+    return draftConfig.specDraftBlockSize > 0 ? draftConfig.specDraftBlockSize + 1 : 8;
+}
+
+int32_t cachedBlockDraftBlockSizeOrThrow(
+    std::string const& engineDir, rt::LLMEngineConfig const& baseConfig, int32_t explicitBlockSize)
+{
+    if (explicitBlockSize > 0)
+    {
+        return explicitBlockSize;
+    }
+
+    std::filesystem::path const draftConfigPath = getDraftConfigPath(engineDir);
+    if (std::filesystem::is_regular_file(draftConfigPath))
+    {
+        rt::LLMEngineConfig const draftConfig = rt::parseDraftEngineConfig(draftConfigPath);
+        if (draftConfig.specDraftBlockSize > 0)
+        {
+            return draftConfig.specDraftBlockSize;
+        }
+    }
+    if (baseConfig.specDraftBlockSize > 0)
+    {
+        return baseConfig.specDraftBlockSize;
+    }
+
+    throw std::runtime_error(
+        "unable to resolve DFlash/JetSpec block size from CLI, draft_config.json, or base config.");
+}
+
+bool applyEngineSpecDecodeDefaults(Args& args)
+{
+    if (!args.specDecode)
+    {
+        return true;
+    }
+
+    try
+    {
+        rt::LLMEngineConfig const baseConfig = rt::parseEngineConfig(getBaseConfigPath(args.engineDir));
+        switch (baseConfig.specDecodeType)
+        {
+        case rt::SpecDecodeMode::kDFlash:
+        case rt::SpecDecodeMode::kJetSpec:
+        {
+            if (!args.specDraftTopKSet)
+            {
+                args.specDraftTopK = 1;
+            }
+            if (!args.specDraftStepSet)
+            {
+                args.specDraftStep = 1;
+            }
+            int32_t const blockSize
+                = cachedBlockDraftBlockSizeOrThrow(args.engineDir, baseConfig, args.dflashBlockSize);
+            if (args.dflashBlockSize == 0)
+            {
+                args.dflashBlockSize = blockSize;
+            }
+            if (!args.specVerifySizeSet)
+            {
+                args.specVerifySize = args.specDraftTopK > 1 ? maxVerifySizeOrDefault(baseConfig, 128) : blockSize;
+            }
+            break;
+        }
+        case rt::SpecDecodeMode::kDSpark:
+            if (!args.specDraftTopKSet)
+            {
+                args.specDraftTopK = 1;
+            }
+            if (!args.specDraftStepSet)
+            {
+                args.specDraftStep = 1;
+            }
+            if (!args.specVerifySizeSet)
+            {
+                args.specVerifySize = dsparkVerifySizeOrDefault(args.engineDir);
+            }
+            break;
+        default: break;
+        }
+
+        bool const isCachedBlockDraft = baseConfig.specDecodeType == rt::SpecDecodeMode::kDFlash
+            || baseConfig.specDecodeType == rt::SpecDecodeMode::kJetSpec;
+        std::cout << "Spec decode engine mode: " << rt::specDecodeModeName(baseConfig.specDecodeType) << "\n"
+                  << "Resolved spec defaults: topK=" << args.specDraftTopK << ", step=" << args.specDraftStep
+                  << ", verifySize=" << args.specVerifySize;
+        if (isCachedBlockDraft)
+        {
+            std::cout << ", blockSize=" << args.dflashBlockSize;
+        }
+        std::cout << "\n";
+    }
+    catch (std::exception const& e)
+    {
+        std::cerr << "Failed to resolve speculative decoding defaults from engine config: " << e.what() << "\n";
+        return false;
+    }
+
+    return true;
+}
+
+} // namespace
 
 void printUsage(char const* argv0)
 {
@@ -91,11 +232,12 @@ void printUsage(char const* argv0)
                  "           [--streamInterval N] [--specDecode [--specDraftTopK K]\n"
                  "                                             [--specDraftStep S]\n"
                  "                                             [--specVerifySize V]\n"
-                 "                                             [--dflashBlockSize B]]\n\n"
+                 "                                             [--dflashBlockSize B|--jetspecBlockSize B]]\n\n"
                  "Spec decode:\n"
-                 "   --specDraftTopK K     For DFlash: candidateTopK; 1 is linear, >1 enables branching DDTree\n"
-                 "   --specDraftStep S     DFlash requires 1; use --dflashBlockSize for proposal horizon\n"
-                 "   --dflashBlockSize B   DFlash proposal block size; 0 means infer from engine config\n\n"
+                 "   --specDraftTopK K     Default: 8; DFlash/JetSpec/DSpark default to 1 when omitted\n"
+                 "   --specDraftStep S     Default: 4; DFlash/JetSpec/DSpark default to 1 when omitted\n"
+                 "   --specVerifySize V    Default: 24; DFlash/JetSpec linear default to block size\n"
+                 "   --dflashBlockSize B   DFlash/JetSpec proposal block size; 0 means infer from engine config\n\n"
                  "Hotkeys while streaming:\n"
                  "   s         skip the current request\n"
                  "   q         quit (cancel current + stop)\n"
@@ -183,6 +325,7 @@ bool parseArgs(int argc, char** argv, Args& args)
             {
                 return false;
             }
+            args.specDraftTopKSet = true;
         }
         else if (a == "--specDraftStep" || a == "--eagleDraftStep")
         {
@@ -190,6 +333,7 @@ bool parseArgs(int argc, char** argv, Args& args)
             {
                 return false;
             }
+            args.specDraftStepSet = true;
         }
         else if (a == "--specVerifySize" || a == "--specVerifyTreeSize" || a == "--eagleVerifyTreeSize")
         {
@@ -197,8 +341,14 @@ bool parseArgs(int argc, char** argv, Args& args)
             {
                 return false;
             }
+            args.specVerifySizeSet = true;
+            if (args.specVerifySize < 0)
+            {
+                std::cerr << "--specVerifySize must be non-negative\n";
+                return false;
+            }
         }
-        else if (a == "--dflashBlockSize")
+        else if (a == "--dflashBlockSize" || a == "--jetspecBlockSize")
         {
             if (!takeInt(i, a, args.dflashBlockSize))
             {
@@ -206,7 +356,7 @@ bool parseArgs(int argc, char** argv, Args& args)
             }
             if (args.dflashBlockSize < 0)
             {
-                std::cerr << "--dflashBlockSize must be non-negative\n";
+                std::cerr << "--dflashBlockSize/--jetspecBlockSize must be non-negative\n";
                 return false;
             }
         }
@@ -492,6 +642,10 @@ int main(int argc, char** argv)
     if (!std::filesystem::is_regular_file(args.inputFile))
     {
         std::cerr << "Input file not found: " << args.inputFile << "\n";
+        return 1;
+    }
+    if (!applyEngineSpecDecodeDefaults(args))
+    {
         return 1;
     }
 

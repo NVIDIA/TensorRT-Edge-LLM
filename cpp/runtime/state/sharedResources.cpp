@@ -34,11 +34,11 @@ bool needsBaseVerifyIntermediateStates(DeploymentConfig const& bundle)
     {
         return false;
     }
-
     switch (bundle.base.specDecodeType)
     {
     case SpecDecodeMode::kMTP:
     case SpecDecodeMode::kDFlash:
+    case SpecDecodeMode::kJetSpec:
     case SpecDecodeMode::kDSpark: return true;
     case SpecDecodeMode::kGemma4MTP:
     case SpecDecodeMode::kEAGLE:
@@ -51,7 +51,7 @@ namespace
 {
 bool isDFlashDDTreeShape(DeploymentConfig const& bundle)
 {
-    return bundle.specConfig.has_value() && bundle.base.specDecodeType == SpecDecodeMode::kDFlash
+    return bundle.specConfig.has_value() && isCachedBlockDraftMode(bundle.base.specDecodeType)
         && bundle.specConfig->draftingTopK > 1;
 }
 
@@ -61,7 +61,7 @@ int32_t baseVerifyIntermediateSeqLen(DeploymentConfig const& bundle)
     {
         return 0;
     }
-    if (bundle.base.specDecodeType != SpecDecodeMode::kDFlash)
+    if (!isCachedBlockDraftMode(bundle.base.specDecodeType))
     {
         return bundle.specConfig->maxVerifySize;
     }

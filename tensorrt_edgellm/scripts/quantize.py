@@ -68,6 +68,12 @@ def _add_common_args(parser):
               "validated. When unset the visual tower stays at fp16 "),
     )
     parser.add_argument(
+        "--visual_mha_quantization",
+        default=None,
+        choices=["fp8"],
+        help=("Run the visual attention (Q*K^T and P*V matmuls) in FP8."),
+    )
+    parser.add_argument(
         "--audio_quantization",
         default=None,
         choices=["fp8"],
@@ -126,10 +132,26 @@ def main():
 
     llm_parser = sub.add_parser("llm", help="Quantize an LLM")
     llm_parser.add_argument("--model_dir", required=True)
+    llm_parser.add_argument(
+        "--fuse_gdn_qkvzba_scales",
+        action="store_true",
+        help=("NVFP4 hybrid-GDN models only: also quantize the small GDN "
+              "in_proj_b/in_proj_a projections (disabled by stock ModelOpt "
+              ">=0.45 configs) and share in_proj_qkv's per-tensor scales so "
+              "export fuses qkv/z/b/a into a single NVFP4 GEMM."))
+    llm_parser.add_argument(
+        "--mtp_draft_dir",
+        default=None,
+        help=
+        ("Optional separate checkpoint providing the MTP draft weights "
+         "(``mtp.*``). Use when the MTP head lives in a different checkpoint "
+         "than the calibration base -- e.g. a BF16 base that can run the "
+         "forward pass plus a checkpoint that carries the MTP weights. "
+         "Defaults to --model_dir (MTP embedded in the base)."))
     _add_common_args(llm_parser)
 
     draft_parser = sub.add_parser(
-        "draft", help="Quantize an Eagle3 or DFlash draft model")
+        "draft", help="Quantize an Eagle3, DFlash, or JetSpec draft model")
     draft_parser.add_argument("--base_model_dir", required=True)
     draft_parser.add_argument("--draft_model_dir", required=True)
     _add_common_args(draft_parser)
@@ -140,10 +162,12 @@ def main():
         from ..quantization.quantize import quantize_and_export
         quantize_and_export(
             model_dir=args.model_dir,
+            mtp_draft_dir=args.mtp_draft_dir,
             output_dir=args.output_dir,
             quantization=args.quantization,
             lm_head_quantization=args.lm_head_quantization,
             visual_quantization=args.visual_quantization,
+            visual_mha_quantization=args.visual_mha_quantization,
             audio_quantization=args.audio_quantization,
             cp_quantization=args.cp_quantization,
             kv_cache_quantization=args.kv_cache_quantization,
@@ -153,9 +177,10 @@ def main():
             image_dataset=args.image_dataset,
             audio_dataset=args.audio_dataset,
             num_samples=args.num_samples,
+            fuse_gdn_qkvzba_scales=args.fuse_gdn_qkvzba_scales,
         )
     elif args.command == "draft":
-        if _is_dflash_draft(args.draft_model_dir):
+        if _is_dflash_or_jetspec_draft(args.draft_model_dir):
             _validate_dflash_quant_args(parser, args)
             from ..quantization.models.dflash_draft import \
                 quantize_and_export_dflash_draft
@@ -188,18 +213,19 @@ def main():
             )
 
 
-def _is_dflash_draft(draft_model_dir: str) -> bool:
+def _is_dflash_or_jetspec_draft(draft_model_dir: str) -> bool:
     cfg_path = os.path.join(draft_model_dir, "config.json")
     if not os.path.isfile(cfg_path):
         return False
     with open(cfg_path, encoding="utf-8") as f:
-        return bool(json.load(f).get("dflash_config"))
+        cfg = json.load(f)
+    return bool(cfg.get("dflash_config") or cfg.get("jetspec_config"))
 
 
 def _validate_dflash_quant_args(parser, args) -> None:
     if args.kv_cache_quantization is not None:
         parser.error(
-            "DFlash draft KV-cache quantization is not validated yet.")
+            "DFlash/JetSpec draft KV-cache quantization is not validated yet.")
 
 
 if __name__ == "__main__":

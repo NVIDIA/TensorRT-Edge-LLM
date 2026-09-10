@@ -84,6 +84,7 @@ struct StreamChunk
 {
     std::vector<int32_t> tokenIds;                   //!< Delta tokens since last chunk (may be >1 under spec-decode).
     std::string text;                                //!< Delta text; always well-formed UTF-8.
+    int32_t promptTokenCount{-1};                    //!< Exact input-token count, or -1 when unavailable.
     bool finished{false};                            //!< True for the final chunk on this channel.
     FinishReason reason{FinishReason::kNotFinished}; //!< Terminal reason (only meaningful when `finished==true`).
     //! Per-token top-K logprobs: logprobs[i] = [LogprobEntry, ...] for tokenIds[i].

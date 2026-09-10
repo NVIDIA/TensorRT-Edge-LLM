@@ -19,6 +19,8 @@
 
 #include "memoryMonitor.h"
 #include "profiling/metrics.h"
+#include <cstddef>
+#include <cstdint>
 #include <nlohmann/json.hpp>
 #include <ostream>
 #include <string>
@@ -31,6 +33,15 @@ namespace rt
 struct ContextCacheMetrics;
 } // namespace rt
 } // namespace trt_edgellm
+
+//! Per-rank memory summary for multi-device launches.
+struct RankMemorySummary
+{
+    int32_t rank{0};
+    int32_t device{0};
+    size_t peakGpuMemoryBytes{0};
+    size_t peakCpuMemoryBytes{0};
+};
 
 //! Statistical analysis results for performance data.
 struct StatisticalAnalysis
@@ -109,6 +120,10 @@ void addJsonTimingStages(nlohmann::json& summary);
 
 //! Add JSON for memory usage to existing json object
 void addJsonMemorySummary(nlohmann::json& summary, MemoryMonitor const& memoryMonitor);
+
+//! Add JSON for memory usage with multi-device metadata.
+void addJsonMemorySummary(nlohmann::json& summary, MemoryMonitor const& memoryMonitor, int32_t tpSize,
+    std::string const& launchMode, std::vector<RankMemorySummary> const& rankMemory = {});
 
 //! Check string for invalid UTF-8 sequences
 //! Returns original string if valid, or error message if invalid UTF-8 detected

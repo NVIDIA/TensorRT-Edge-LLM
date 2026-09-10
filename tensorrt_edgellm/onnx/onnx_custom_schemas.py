@@ -325,6 +325,15 @@ _vit_attention_plugin_schema = OpSchema(
             description="Absolute multiplier applied to QK^T before softmax.",
             required=False,
         ),
+        OpSchema.Attribute(
+            name="qkv_scales",
+            type=OpSchema.AttrType.FLOATS,
+            description=
+            "Per-tensor FP8 dequant scales [q, k, v]; used when Q/K/V arrive "
+            "as FLOAT8E4M3FN (the plugin infers FP8 mode from the tensor "
+            "dtype), identity otherwise.",
+            required=False,
+        ),
     ],
 )
 
@@ -577,6 +586,38 @@ _trt_mxfp8_dequantize_linear_schema = OpSchema(
             type=OpSchema.AttrType.INT,
             description="ONNX elem_type for output (10 = FLOAT16)",
             required=True,
+        ),
+    ],
+)
+
+# ---------------------------------------------------------------------------
+# trt_edgellm::QkvConcatPlugin
+# ---------------------------------------------------------------------------
+
+_qkv_concat_schema = OpSchema(
+    name="QkvConcatPlugin",
+    domain="trt_edgellm",
+    since_version=_SCHEMA_SINCE_VERSION,
+    doc="Pack three contiguous FP16 Q/K/V tensors along the last dimension.",
+    inputs=[
+        OpSchema.FormalParameter(
+            name=name,
+            description=f"{name.upper()} projection",
+            type_str="T",
+        ) for name in ("q", "k", "v")
+    ],
+    outputs=[
+        OpSchema.FormalParameter(
+            name="qkv",
+            description="Packed QKV tensor",
+            type_str="T",
+        ),
+    ],
+    type_constraints=[
+        (
+            "T",
+            ["tensor(float16)"],
+            "Q/K/V and output data type.",
         ),
     ],
 )
@@ -1714,6 +1755,14 @@ _dflash_target_kv_cache_update_schema = OpSchema(
             "Per-batch delta lengths [B] INT32 for multi-batch guard",
             type_str="tensor(int32)",
         ),
+        OpSchema.FormalParameter(
+            name="kv_page_table",
+            description=
+            ("Canonical KV page table [B, 2, M] INT32: K page IDs are "
+             "in [0, num_pages), V page IDs are in [num_pages, 2 * num_pages)"
+             ),
+            type_str="tensor(int32)",
+        ),
     ],
     outputs=[
         OpSchema.FormalParameter(
@@ -1830,6 +1879,7 @@ _ALL_CUSTOM_SCHEMAS: tuple[OpSchema, ...] = (
     _trt_mxfp8_dynamic_quantize_schema,
     _trt_mxfp8_dequantize_linear_schema,
     _int4_groupwise_gemm_schema,
+    _qkv_concat_schema,
     _int4_groupwise_gemm_v2_schema,
     _nvfp4_a16_gemm_schema,
     _causal_conv1d_schema,

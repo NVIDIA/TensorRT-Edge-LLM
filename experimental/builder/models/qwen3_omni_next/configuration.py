@@ -129,7 +129,8 @@ def available_components(root: dict, registered):
         "qwen3_omni_next_thinker": contracts.Component.LLM,
         "qwen3_omni_next_text": contracts.Component.LLM,
         "qwen3_omni_next_text_moe": contracts.Component.LLM,
-        "qwen3_omni_next_talker": contracts.Component.TALKER,
+        # ModelOpt uses this type for the CP-only replacement checkpoint.
+        "qwen3_omni_next_talker": contracts.Component.CODE_PREDICTOR,
         "qwen3_omni_next_talker_text": contracts.Component.TALKER,
         "qwen3_omni_next_code_predictor": contracts.Component.CODE_PREDICTOR,
         "qwen3_omni_next_talker_code_predictor":
@@ -138,11 +139,6 @@ def available_components(root: dict, registered):
         "qwen3_omni_next_audio_encoder": contracts.Component.AUDIO,
         "qwen3_omni_next_code2wav": contracts.Component.CODE2WAV,
     }
-    if model_type == "qwen3_omni_next_talker":
-        components = {contracts.Component.TALKER}
-        if isinstance(root.get("code_predictor_config"), dict):
-            components.add(contracts.Component.CODE_PREDICTOR)
-        return frozenset(components)
     if model_type in standalone:
         return frozenset((standalone[model_type], ))
     return registered

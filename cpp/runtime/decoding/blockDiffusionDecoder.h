@@ -72,12 +72,7 @@ public:
     }
 
     void resetForNewSequences(Tensor&, cudaStream_t) override {}
-    void onBatchEvict(
-        std::vector<int32_t> const&, int32_t, int32_t, Tensor&, cudaStream_t, BatchCompactionMode mode) override
-    {
-        ELLM_CHECK(mode == BatchCompactionMode::kLegacyPhysicalKv,
-            "Block Diffusion does not support managed context-cache batch compaction.");
-    }
+    void onBatchEvict(std::vector<int32_t> const&, int32_t, int32_t, Tensor&, cudaStream_t) override {}
 
 private:
     struct DenoiseStepParams

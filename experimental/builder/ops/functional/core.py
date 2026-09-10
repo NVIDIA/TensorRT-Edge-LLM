@@ -126,6 +126,23 @@ def linear_from_weights(input: Tensor,
                                                     name=name))
 
 
+def fused_nvfp4_gemm_all_reduce(input: Tensor,
+                                weights,
+                                bias,
+                                tp_size: int,
+                                rank: int = 3,
+                                name: str = "",
+                                bias_recipe=None) -> Tensor:
+    return tensor(current_net().fused_nvfp4_gemm_all_reduce(
+        input,
+        weights,
+        bias,
+        tp_size,
+        rank,
+        name=name,
+        bias_recipe=bias_recipe))
+
+
 def linear_f32(input: Tensor,
                weight: np.ndarray,
                bias: Optional[np.ndarray] = None,

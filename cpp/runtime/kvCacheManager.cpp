@@ -40,15 +40,12 @@ KVCacheManager::KVCacheManager(Config const& config, cudaStream_t stream)
     check::check(static_cast<int32_t>(mConfig.layerConfigs.size()) == mConfig.numAttentionLayers,
         "layerConfigs size must equal numAttentionLayers.");
 
-    // Token capacity per slot, padded up to a whole number of kTOKENS_PER_PAGE-token pages. This
-    // is the substrate for paged kernels: a [2, maxBatch, capPadded, H, D] buffer is byte-identical
-    // to a [2, numPages, kTOKENS_PER_PAGE, H, D] page pool (numPages = maxBatch * capPadded / kTOKENS_PER_PAGE).
+    // Token capacity of each active-slot K/V view, padded to a whole number of pages.
     mCapPadded = static_cast<int32_t>(
         ((static_cast<int64_t>(mConfig.maxSequenceLength) + kTOKENS_PER_PAGE - 1) / kTOKENS_PER_PAGE)
         * kTOKENS_PER_PAGE);
 
-    // numPages defaults to the minimum active pages. A larger override adds pages retained across
-    // requests; identity-mapped slot math still covers only the minimum active pages.
+    // numPages defaults to the active-slot pages. A larger override retains pages across requests.
     int64_t const minimumActivePages = computeMinimumKvPoolPages(mConfig.maxBatchSize, mConfig.maxSequenceLength);
     check::check(minimumActivePages <= kMAX_KV_POOL_PAGES,
         "KVCacheManager: minimum active pages exceed the largest int32-addressable paged-KV pool.");
@@ -82,16 +79,8 @@ KVCacheManager::KVCacheManager(Config const& config, cudaStream_t stream)
         }
     }
 
-    // The pool-shaped buffer [2, numPages, kTOKENS_PER_PAGE, H, D] is the actual OWNING allocation
-    // (K-half and V-half each a contiguous numPages*kTOKENS_PER_PAGE*H*D pool, required by paged
-    // XQA layout-1 / CuTe DSL TMA paging). getCombinedKVCache()'s slot-shaped [2, maxBatch,
-    // capPadded, H, D] view is a non-owning alias over the SAME memory: this is only a valid
-    // reinterpretation when numPages equals the minimum active pages (K-half == maxBatch*capPadded
-    // elements exactly); extra retained pages move the V-half beyond that alias's declared stride,
-    // so getCombinedKVCache() must not be used in that case (see its doc comment).
     size_t totalBytes = 0;
     mLayerCaches.reserve(mConfig.numAttentionLayers);
-    mLayerCachesPoolView.reserve(mConfig.numAttentionLayers);
     for (int32_t i = 0; i < mConfig.numAttentionLayers; ++i)
     {
         KVLayerConfig const& lc = mConfig.layerConfigs[i];
@@ -102,13 +91,8 @@ KVCacheManager::KVCacheManager(Config const& config, cudaStream_t stream)
         size_t const layerBytes = static_cast<size_t>(layerVolume) * elemSize;
         totalBytes += layerBytes;
 
-        mLayerCachesPoolView.emplace_back(rt::Tensor({2, mNumPages, kTOKENS_PER_PAGE, lc.numKVHeads, lc.headDim},
+        mLayerCaches.emplace_back(rt::Tensor({2, mNumPages, kTOKENS_PER_PAGE, lc.numKVHeads, lc.headDim},
             DeviceType::kGPU, mConfig.kvCacheType, "KVCacheManager::layer_" + std::to_string(i)));
-
-        // Slot-shaped alias of the same allocation — see getCombinedKVCache().
-        mLayerCaches.emplace_back(mLayerCachesPoolView.back().rawPointer(),
-            rt::Coords{2, mConfig.maxBatchSize, mCapPadded, lc.numKVHeads, lc.headDim}, DeviceType::kGPU,
-            mConfig.kvCacheType);
     }
 
     LOG_DEBUG("KVCacheManager(dtype=%s, layers=%d, uniform=%s) allocated %.2f MB total GPU memory", kvCacheTypeStr,
@@ -122,7 +106,6 @@ KVCacheManager::KVCacheManager(KVCacheManager&& other) noexcept
 {
     mConfig = std::move(other.mConfig);
     mLayerCaches = std::move(other.mLayerCaches);
-    mLayerCachesPoolView = std::move(other.mLayerCachesPoolView);
     mIsUniform = other.mIsUniform;
     mCapPadded = other.mCapPadded;
     mNumPages = other.mNumPages;
@@ -139,7 +122,6 @@ KVCacheManager& KVCacheManager::operator=(KVCacheManager&& other) noexcept
     {
         mConfig = std::move(other.mConfig);
         mLayerCaches = std::move(other.mLayerCaches);
-        mLayerCachesPoolView = std::move(other.mLayerCachesPoolView);
         mIsUniform = other.mIsUniform;
         mCapPadded = other.mCapPadded;
         mNumPages = other.mNumPages;
@@ -152,25 +134,19 @@ KVCacheManager& KVCacheManager::operator=(KVCacheManager&& other) noexcept
     return *this;
 }
 
-rt::Tensor& KVCacheManager::getCombinedKVCache(int32_t attnLayerIdx)
+rt::Tensor& KVCacheManager::getCombinedKVCache(int32_t attnLayerIdx) noexcept
 {
-    int64_t const minimumActivePages = computeMinimumKvPoolPages(mConfig.maxBatchSize, mConfig.maxSequenceLength);
-    ELLM_CHECK(mNumPages == minimumActivePages,
-        "KVCacheManager::getCombinedKVCache: slot-shaped combined view is invalid with extra retained pages; use a "
-        "pool-shaped or separate K/V view.");
     return mLayerCaches[attnLayerIdx];
 }
 
-rt::Tensor& KVCacheManager::getCombinedKVCachePoolView(int32_t attnLayerIdx) noexcept
+rt::Tensor const& KVCacheManager::getCombinedKVCache(int32_t attnLayerIdx) const noexcept
 {
-    return mLayerCachesPoolView[attnLayerIdx];
+    return mLayerCaches[attnLayerIdx];
 }
 
 std::pair<rt::Tensor, rt::Tensor> KVCacheManager::getSeparateKVCache(int32_t attnLayerIdx) const noexcept
 {
     KVLayerConfig const& lc = mConfig.layerConfigs[attnLayerIdx];
-    // K-half / V-half of the NHD pool [2, maxBatch, capPadded, H, D] are each a contiguous
-    // [maxBatch, capPadded, H, D] view; kPoolPtr()/vPoolPtr() already carry the V-half offset.
     rt::Tensor kView(kPoolPtr(attnLayerIdx), {mConfig.maxBatchSize, mCapPadded, lc.numKVHeads, lc.headDim},
         DeviceType::kGPU, mConfig.kvCacheType);
     rt::Tensor vView(vPoolPtr(attnLayerIdx), {mConfig.maxBatchSize, mCapPadded, lc.numKVHeads, lc.headDim},

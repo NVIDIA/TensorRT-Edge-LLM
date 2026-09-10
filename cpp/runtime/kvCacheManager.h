@@ -36,11 +36,10 @@ struct KVLayerConfig
 };
 
 //! Per-layer KV cache manager that supports heterogeneous head configurations across layers.
-//! Each attention layer gets its own independently-sized tensor in slot-shaped NHD layout with
-//! shape [2, maxBatchSize, capPadded, numKVHeads_i, headDim_i], where the K/V split (the leading
-//! `2`) is OUTERMOST and capPadded = ceil(maxSequenceLength / kTOKENS_PER_PAGE) * kTOKENS_PER_PAGE.
-//! This same buffer is a bind-time reinterpretation of a page pool [2, numPages, kTOKENS_PER_PAGE,
-//! numKVHeads_i, headDim_i]; see kPoolPtr()/vPoolPtr().
+//! Each attention layer gets its own independently-sized page pool with shape
+//! [2, numPages, kTOKENS_PER_PAGE, numKVHeads_i, headDim_i], where the K/V split is outermost.
+//! Separate K/V active-slot views use maxBatchSize and capPadded =
+//! ceil(maxSequenceLength / kTOKENS_PER_PAGE) * kTOKENS_PER_PAGE.
 //! This replaces the monolithic LinearKVCache allocation when layers have different numKVHeads or headDim.
 class KVCacheManager
 {
@@ -60,7 +59,7 @@ public:
         nvinfer1::DataType kvCacheType{};        //!< Storage dtype for KV cache (kHALF or kFP8)
         //! Optional override of the pool's total page count. 0 (default) selects the minimum active pages
         //! (`maxBatchSize * ceil(maxSequenceLength / kTOKENS_PER_PAGE)`). A non-zero value must be at least
-        //! that count; any extra pages are retained for cross-request reuse (see numPages()/getCombinedKVCache()).
+        //! that count; any extra pages are retained for cross-request reuse.
         int32_t numPages{0};
     };
     //! \endcond
@@ -97,22 +96,12 @@ public:
     //! @return Reference to this
     KVCacheManager& operator=(KVCacheManager&&) noexcept;
 
-    //! Get the combined KVCache for the given attention layer.
-    //! @note This slot-shaped view is available only when numPages() equals the minimum active pages.
-    //!       With extra retained pages, its declared V-half stride would point into the K pool;
-    //!       use getCombinedKVCachePoolView(), getSeparateKVCache(), kPoolPtr(), or vPoolPtr().
+    //! Get the combined KV-cache page pool for the given attention layer.
     //! @param attnLayerIdx The index of the attention layer.
-    //! @return A reference to the tensor with shape [2, maxBatchSize, capPadded, numKVHeads_i, headDim_i].
-    rt::Tensor& getCombinedKVCache(int32_t attnLayerIdx);
-
-    //! Get the pool-shaped view of the given attention layer's combined KVCache — same device
-    //! allocation as getCombinedKVCache(), reinterpreted as the AttentionPlugin's paged-pool
-    //! binding contract [2, numPages(), kTOKENS_PER_PAGE, numKVHeads_i, headDim_i]. This is the
-    //! tensor that must be bound to the engine's past/present_key_values_i inputs so
-    //! `dims.d[1] == numPages` (see AttentionPlugin::enqueue).
-    //! @param attnLayerIdx The index of the attention layer.
-    //! @return A reference to the pool-view tensor.
-    rt::Tensor& getCombinedKVCachePoolView(int32_t attnLayerIdx) noexcept;
+    //! @return A reference to the tensor with shape
+    //!         [2, numPages(), kTOKENS_PER_PAGE, numKVHeads_i, headDim_i].
+    rt::Tensor& getCombinedKVCache(int32_t attnLayerIdx) noexcept;
+    rt::Tensor const& getCombinedKVCache(int32_t attnLayerIdx) const noexcept;
 
     //! Get the K-half and V-half of the given attention layer's pool as separate tensor views.
     //! @param attnLayerIdx The index of the attention layer.
@@ -129,7 +118,7 @@ public:
     int32_t numPages() const noexcept;
 
     //! Get the K-half page-pool base pointer for the given attention layer, i.e. the base of the
-    //! combined tensor reinterpreted as [numPages(), kTOKENS_PER_PAGE, numKVHeads_i, headDim_i].
+    //! combined page pool.
     //! @param attnLayerIdx The index of the attention layer.
     //! @return Device pointer to the K pool.
     void* kPoolPtr(int32_t attnLayerIdx) const noexcept;
@@ -159,13 +148,10 @@ public:
 
 private:
     Config mConfig{};                     //!< Cache configuration
-    std::vector<rt::Tensor> mLayerCaches; //!< Per-layer KV cache tensors on device
-    //! Per-layer pool-shaped views aliasing mLayerCaches' device memory (same pointer, different
-    //! declared Coords); see getCombinedKVCachePoolView().
-    std::vector<rt::Tensor> mLayerCachesPoolView;
-    bool mIsUniform{true}; //!< True if all layers share the same numKVHeads and headDim
-    int32_t mCapPadded{};  //!< maxSequenceLength padded up to a multiple of kTOKENS_PER_PAGE
-    int32_t mNumPages{};   //!< Resolved total page count (Config::numPages, or minimum active pages if 0)
+    std::vector<rt::Tensor> mLayerCaches; //!< Per-layer KV page pools on device
+    bool mIsUniform{true};                //!< True if all layers share the same numKVHeads and headDim
+    int32_t mCapPadded{};                 //!< maxSequenceLength padded up to a multiple of kTOKENS_PER_PAGE
+    int32_t mNumPages{}; //!< Resolved total page count (Config::numPages, or minimum active pages if 0)
 };
 
 } // namespace rt

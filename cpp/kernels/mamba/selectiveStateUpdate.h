@@ -97,8 +97,17 @@ void invokeSelectiveStateUpdatePrefill(trt_edgellm::rt::Tensor const& x, trt_edg
  *                  must be bounded by activeBatchSize to avoid reading past
  *                  acceptedLengths).
  */
-void invokeMambaReplayReconstruct(trt_edgellm::rt::Tensor& state, trt_edgellm::rt::Tensor const& replayDA,
-    trt_edgellm::rt::Tensor const& replayU, trt_edgellm::rt::Tensor const& replayB,
-    trt_edgellm::rt::Tensor const& acceptedLengths, int32_t activeBatchSize, cudaStream_t stream);
+struct MambaReplayLayerInfo
+{
+    void* stateDst;
+    void const* replayDa;
+    void const* replayU;
+    void const* replayB;
+};
+
+void invokeMambaReplayReconstructBatched(MambaReplayLayerInfo const* deviceLayerInfos, int32_t numLayers,
+    trt_edgellm::rt::Tensor const& state, trt_edgellm::rt::Tensor const& replayU,
+    trt_edgellm::rt::Tensor const& replayB, trt_edgellm::rt::Tensor const& acceptedLengths, int32_t activeBatchSize,
+    cudaStream_t stream);
 
 } // namespace mamba_ssm

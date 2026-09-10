@@ -87,13 +87,17 @@ std::byte* byteOffset(void* pointer, size_t offset)
 
 } // namespace
 
-HybridSnapshotStorage::HybridSnapshotStorage(
-    HybridCacheManager& cacheManager, int32_t recurrentSlotCount, int32_t partialKvSlotCount)
+HybridSnapshotStorage::HybridSnapshotStorage(HybridCacheManager& cacheManager, int32_t recurrentSlotCount,
+    int32_t partialKvSlotCount, HybridCacheManager* draftCacheManager, int32_t boundaryHiddenDim,
+    nvinfer1::DataType boundaryHiddenType)
     : mCacheManager(cacheManager)
+    , mDraftCacheManager(draftCacheManager)
     , mRecurrentSlotCount(recurrentSlotCount)
     , mPartialKvSlotCount(partialKvSlotCount)
+    , mBoundaryHiddenDim(boundaryHiddenDim)
 {
     ELLM_CHECK(recurrentSlotCount >= 0 && partialKvSlotCount >= 0, "Hybrid snapshot slot counts must be non-negative");
+    ELLM_CHECK(boundaryHiddenDim >= 0, "Hybrid snapshot boundary hidden dim must be non-negative");
     MambaCacheManager& mamba = cacheManager.getMambaCacheManager();
     KVCacheManager& kv = cacheManager.getKVCacheManager();
     MambaCacheManager::Config const& mambaConfig = mamba.getConfig();
@@ -127,7 +131,7 @@ HybridSnapshotStorage::HybridSnapshotStorage(
             = checkedMultiply(pageElements, utils::getTypeSize(kvConfig.kvCacheType), "live KV page dtype");
         size_t const poolHalfBytes
             = checkedMultiply(pageBytes, static_cast<size_t>(kv.numPages()), "live KV pool half");
-        Tensor const& pool = kv.getCombinedKVCachePoolView(layer);
+        Tensor const& pool = kv.getCombinedKVCache(layer);
         std::string const description = "Live KV pool layer " + std::to_string(layer);
         validateGpuTensorLayout(pool, {2, kv.numPages(), kTOKENS_PER_PAGE, layerConfig.numKVHeads, layerConfig.headDim},
             kvConfig.kvCacheType, poolHalfBytes, description);
@@ -183,6 +187,43 @@ HybridSnapshotStorage::HybridSnapshotStorage(
                 kvConfig.kvCacheType, checkedMultiply(2U, pageBytes, "partial KV snapshot slot"),
                 "Partial KV snapshot layer " + std::to_string(layer));
         }
+
+        if (mDraftCacheManager != nullptr)
+        {
+            KVCacheManager& draftKv = mDraftCacheManager->getKVCacheManager();
+            KVCacheManager::Config const& draftKvConfig = draftKv.getConfig();
+            ELLM_CHECK(
+                draftKv.numLayers() > 0, "Hybrid MTP snapshot storage requires at least one draft attention layer");
+            mDraftPartialKvSnapshots.reserve(static_cast<size_t>(draftKv.numLayers()));
+            for (int32_t layer = 0; layer < draftKv.numLayers(); ++layer)
+            {
+                KVLayerConfig const& layerConfig = draftKv.getLayerConfig(layer);
+                size_t const tokenElements = checkedMultiply(static_cast<size_t>(layerConfig.numKVHeads),
+                    static_cast<size_t>(layerConfig.headDim), "draft partial KV snapshot token");
+                size_t const pageBytes
+                    = checkedMultiply(checkedMultiply(tokenElements, static_cast<size_t>(kTOKENS_PER_PAGE),
+                                          "draft partial KV snapshot page"),
+                        utils::getTypeSize(draftKvConfig.kvCacheType), "draft partial KV snapshot dtype");
+                mDraftPartialKvSnapshots.emplace_back(
+                    Tensor({partialKvSlotCount, 2, kTOKENS_PER_PAGE, layerConfig.numKVHeads, layerConfig.headDim},
+                        DeviceType::kGPU, draftKvConfig.kvCacheType,
+                        "HybridSnapshotStorage::draftPartialKv_" + std::to_string(layer)));
+                validateGpuTensorLayout(mDraftPartialKvSnapshots.back(),
+                    {partialKvSlotCount, 2, kTOKENS_PER_PAGE, layerConfig.numKVHeads, layerConfig.headDim},
+                    draftKvConfig.kvCacheType, checkedMultiply(2U, pageBytes, "draft partial KV snapshot slot"),
+                    "Draft partial KV snapshot layer " + std::to_string(layer));
+            }
+        }
+    }
+
+    if (mBoundaryHiddenDim > 0 && recurrentSlotCount > 0)
+    {
+        size_t const rowBytes = checkedMultiply(
+            static_cast<size_t>(mBoundaryHiddenDim), utils::getTypeSize(boundaryHiddenType), "boundary hidden row");
+        mBoundaryHiddenSnapshot = Tensor({recurrentSlotCount, mBoundaryHiddenDim}, DeviceType::kGPU, boundaryHiddenType,
+            "HybridSnapshotStorage::boundaryHidden");
+        validateGpuTensorLayout(mBoundaryHiddenSnapshot, {recurrentSlotCount, mBoundaryHiddenDim}, boundaryHiddenType,
+            rowBytes, "Boundary hidden snapshot");
     }
 }
 
@@ -208,6 +249,13 @@ size_t HybridSnapshotStorage::partialKvBytesPerSlot(KVCacheManager::Config const
             "partial KV layers");
     }
     return bytes;
+}
+
+size_t HybridSnapshotStorage::boundaryHiddenBytesPerSlot(int32_t boundaryHiddenDim, nvinfer1::DataType type)
+{
+    ELLM_CHECK(boundaryHiddenDim >= 0, "Hybrid snapshot boundary hidden dimension must be non-negative");
+    return checkedMultiply(
+        static_cast<size_t>(boundaryHiddenDim), utils::getTypeSize(type), "boundary hidden row bytes");
 }
 
 void HybridSnapshotStorage::zeroRecurrent(int32_t batchSlot, cudaStream_t stream)
@@ -273,8 +321,40 @@ void HybridSnapshotStorage::restoreRecurrent(int32_t snapshotSlot, int32_t batch
 void HybridSnapshotStorage::capturePartialKv(
     int32_t snapshotSlot, PageId sourcePage, int32_t validTokenCount, cudaStream_t stream)
 {
-    validatePartialSlots(snapshotSlot, sourcePage, validTokenCount);
-    KVCacheManager& kvCache = mCacheManager.getKVCacheManager();
+    capturePartialKv(mCacheManager, mPartialKvSnapshots, snapshotSlot, sourcePage, validTokenCount, stream);
+}
+
+void HybridSnapshotStorage::restorePartialKv(
+    int32_t snapshotSlot, PageId destinationPage, int32_t validTokenCount, cudaStream_t stream)
+{
+    restorePartialKv(mCacheManager, mPartialKvSnapshots, snapshotSlot, destinationPage, validTokenCount, stream);
+}
+
+void HybridSnapshotStorage::capturePartialKv(
+    int32_t snapshotSlot, PageId sourceBasePage, PageId sourceDraftPage, int32_t validTokenCount, cudaStream_t stream)
+{
+    ELLM_CHECK(mDraftCacheManager != nullptr, "Hybrid MTP partial snapshot storage has no draft cache manager");
+    capturePartialKv(mCacheManager, mPartialKvSnapshots, snapshotSlot, sourceBasePage, validTokenCount, stream);
+    capturePartialKv(
+        *mDraftCacheManager, mDraftPartialKvSnapshots, snapshotSlot, sourceDraftPage, validTokenCount, stream);
+}
+
+void HybridSnapshotStorage::restorePartialKv(int32_t snapshotSlot, PageId destinationBasePage,
+    PageId destinationDraftPage, int32_t validTokenCount, cudaStream_t stream)
+{
+    ELLM_CHECK(mDraftCacheManager != nullptr, "Hybrid MTP partial snapshot storage has no draft cache manager");
+    restorePartialKv(mCacheManager, mPartialKvSnapshots, snapshotSlot, destinationBasePage, validTokenCount, stream);
+    restorePartialKv(
+        *mDraftCacheManager, mDraftPartialKvSnapshots, snapshotSlot, destinationDraftPage, validTokenCount, stream);
+}
+
+void HybridSnapshotStorage::capturePartialKv(HybridCacheManager& cacheManager, std::vector<Tensor>& snapshots,
+    int32_t snapshotSlot, PageId sourcePage, int32_t validTokenCount, cudaStream_t stream)
+{
+    validatePartialSlots(cacheManager, snapshotSlot, sourcePage, validTokenCount);
+    KVCacheManager& kvCache = cacheManager.getKVCacheManager();
+    ELLM_CHECK(snapshots.size() == static_cast<size_t>(kvCache.numLayers()),
+        "Hybrid partial KV snapshot layer count does not match the cache manager");
     for (int32_t layer = 0; layer < kvCache.numLayers(); ++layer)
     {
         KVLayerConfig const& config = kvCache.getLayerConfig(layer);
@@ -286,7 +366,7 @@ void HybridSnapshotStorage::capturePartialKv(
         size_t const copyBytes = checkedMultiply(tokenBytes, static_cast<size_t>(validTokenCount), "partial KV copy");
         size_t const snapshotBase = static_cast<size_t>(snapshotSlot) * 2U * pageBytes;
         size_t const pageOffset = static_cast<size_t>(sourcePage) * pageBytes;
-        Tensor& snapshot = mPartialKvSnapshots[static_cast<size_t>(layer)];
+        Tensor& snapshot = snapshots[static_cast<size_t>(layer)];
         CUDA_CHECK(cudaMemcpyAsync(byteOffset(snapshot.rawPointer(), snapshotBase),
             byteOffset(kvCache.kPoolPtr(layer), pageOffset), copyBytes, cudaMemcpyDeviceToDevice, stream));
         CUDA_CHECK(cudaMemcpyAsync(byteOffset(snapshot.rawPointer(), snapshotBase + pageBytes),
@@ -294,11 +374,13 @@ void HybridSnapshotStorage::capturePartialKv(
     }
 }
 
-void HybridSnapshotStorage::restorePartialKv(
+void HybridSnapshotStorage::restorePartialKv(HybridCacheManager& cacheManager, std::vector<Tensor>& snapshots,
     int32_t snapshotSlot, PageId destinationPage, int32_t validTokenCount, cudaStream_t stream)
 {
-    validatePartialSlots(snapshotSlot, destinationPage, validTokenCount);
-    KVCacheManager& kvCache = mCacheManager.getKVCacheManager();
+    validatePartialSlots(cacheManager, snapshotSlot, destinationPage, validTokenCount);
+    KVCacheManager& kvCache = cacheManager.getKVCacheManager();
+    ELLM_CHECK(snapshots.size() == static_cast<size_t>(kvCache.numLayers()),
+        "Hybrid partial KV snapshot layer count does not match the cache manager");
     for (int32_t layer = 0; layer < kvCache.numLayers(); ++layer)
     {
         KVLayerConfig const& config = kvCache.getLayerConfig(layer);
@@ -310,7 +392,7 @@ void HybridSnapshotStorage::restorePartialKv(
         size_t const copyBytes = checkedMultiply(tokenBytes, static_cast<size_t>(validTokenCount), "partial KV copy");
         size_t const snapshotBase = static_cast<size_t>(snapshotSlot) * 2U * pageBytes;
         size_t const pageOffset = static_cast<size_t>(destinationPage) * pageBytes;
-        Tensor& snapshot = mPartialKvSnapshots[static_cast<size_t>(layer)];
+        Tensor& snapshot = snapshots[static_cast<size_t>(layer)];
         CUDA_CHECK(cudaMemcpyAsync(byteOffset(kvCache.kPoolPtr(layer), pageOffset),
             byteOffset(snapshot.rawPointer(), snapshotBase), copyBytes, cudaMemcpyDeviceToDevice, stream));
         CUDA_CHECK(cudaMemcpyAsync(byteOffset(kvCache.vPoolPtr(layer), pageOffset),
@@ -328,6 +410,58 @@ int32_t HybridSnapshotStorage::partialKvSlotCount() const noexcept
     return mPartialKvSlotCount;
 }
 
+int32_t HybridSnapshotStorage::boundaryHiddenDim() const noexcept
+{
+    return mBoundaryHiddenDim;
+}
+
+void HybridSnapshotStorage::captureBoundaryHidden(
+    int32_t snapshotSlot, Tensor const& sourceHiddenStates, int32_t batchSlot, int32_t position, cudaStream_t stream)
+{
+    ELLM_CHECK(mBoundaryHiddenDim > 0 && !mBoundaryHiddenSnapshot.isEmpty(),
+        "Boundary hidden storage is not configured for this deployment");
+    ELLM_CHECK(
+        snapshotSlot >= 0 && snapshotSlot < mRecurrentSlotCount, "Boundary hidden snapshot slot is out of range");
+    Coords const& shape = sourceHiddenStates.getShape();
+    ELLM_CHECK(shape.getNumDims() == 3 && shape[2] == mBoundaryHiddenDim,
+        "Boundary hidden source must be a [batch, seq, boundaryHiddenDim] tensor");
+    ELLM_CHECK(batchSlot >= 0 && batchSlot < shape[0] && position >= 0 && position < shape[1],
+        "Boundary hidden capture indices are out of range");
+    ELLM_CHECK(sourceHiddenStates.getDataType() == mBoundaryHiddenSnapshot.getDataType(),
+        "Boundary hidden source dtype does not match the snapshot slab");
+    size_t const rowBytes = checkedMultiply(static_cast<size_t>(mBoundaryHiddenDim),
+        utils::getTypeSize(mBoundaryHiddenSnapshot.getDataType()), "boundary hidden row");
+    size_t const sourceRow
+        = static_cast<size_t>(batchSlot) * static_cast<size_t>(shape[1]) + static_cast<size_t>(position);
+    CUDA_CHECK(
+        cudaMemcpyAsync(byteOffset(mBoundaryHiddenSnapshot.rawPointer(), static_cast<size_t>(snapshotSlot) * rowBytes),
+            static_cast<std::byte const*>(sourceHiddenStates.rawPointer()) + sourceRow * rowBytes, rowBytes,
+            cudaMemcpyDeviceToDevice, stream));
+}
+
+void HybridSnapshotStorage::restoreBoundaryHidden(
+    int32_t snapshotSlot, Tensor& destinationHiddenStates, int32_t batchSlot, int32_t position, cudaStream_t stream)
+{
+    ELLM_CHECK(mBoundaryHiddenDim > 0 && !mBoundaryHiddenSnapshot.isEmpty(),
+        "Boundary hidden storage is not configured for this deployment");
+    ELLM_CHECK(
+        snapshotSlot >= 0 && snapshotSlot < mRecurrentSlotCount, "Boundary hidden snapshot slot is out of range");
+    Coords const& shape = destinationHiddenStates.getShape();
+    ELLM_CHECK(shape.getNumDims() == 3 && shape[2] == mBoundaryHiddenDim,
+        "Boundary hidden destination must be a [batch, seq, boundaryHiddenDim] tensor");
+    ELLM_CHECK(batchSlot >= 0 && batchSlot < shape[0] && position >= 0 && position < shape[1],
+        "Boundary hidden restore indices are out of range");
+    ELLM_CHECK(destinationHiddenStates.getDataType() == mBoundaryHiddenSnapshot.getDataType(),
+        "Boundary hidden destination dtype does not match the snapshot slab");
+    size_t const rowBytes = checkedMultiply(static_cast<size_t>(mBoundaryHiddenDim),
+        utils::getTypeSize(mBoundaryHiddenSnapshot.getDataType()), "boundary hidden row");
+    size_t const destRow
+        = (static_cast<size_t>(batchSlot) * static_cast<size_t>(shape[1]) + static_cast<size_t>(position));
+    CUDA_CHECK(cudaMemcpyAsync(byteOffset(destinationHiddenStates.rawPointer(), destRow * rowBytes),
+        byteOffset(mBoundaryHiddenSnapshot.rawPointer(), static_cast<size_t>(snapshotSlot) * rowBytes), rowBytes,
+        cudaMemcpyDeviceToDevice, stream));
+}
+
 void HybridSnapshotStorage::validateRecurrentSlots(int32_t snapshotSlot, int32_t batchSlot) const
 {
     ELLM_CHECK(
@@ -341,14 +475,17 @@ void HybridSnapshotStorage::validateBatchSlot(int32_t batchSlot) const
         "Hybrid recurrent live batch slot is out of range");
 }
 
-void HybridSnapshotStorage::validatePartialSlots(int32_t snapshotSlot, PageId page, int32_t validTokenCount) const
+void HybridSnapshotStorage::validatePartialSlots(
+    HybridCacheManager& cacheManager, int32_t snapshotSlot, PageId page, int32_t validTokenCount) const
 {
     ELLM_CHECK(
         snapshotSlot >= 0 && snapshotSlot < mPartialKvSlotCount, "Hybrid partial KV snapshot slot is out of range");
-    ELLM_CHECK(page >= 0 && page < mCacheManager.getKVCacheManager().numPages(),
+    ELLM_CHECK(page >= 0 && page < cacheManager.getKVCacheManager().numPages(),
         "Hybrid partial KV physical page is out of range");
-    ELLM_CHECK(validTokenCount > 0 && validTokenCount < kTOKENS_PER_PAGE,
-        "Hybrid partial KV snapshot must contain a strict partial page");
+    // Hybrid+MTP retains its boundary token in a private partial page even when the checkpoint length is page-aligned,
+    // in which case that page holds a full kTOKENS_PER_PAGE tokens; allow the inclusive upper bound.
+    ELLM_CHECK(validTokenCount > 0 && validTokenCount <= kTOKENS_PER_PAGE,
+        "Hybrid partial KV snapshot must contain a non-empty page");
 }
 
 } // namespace rt
