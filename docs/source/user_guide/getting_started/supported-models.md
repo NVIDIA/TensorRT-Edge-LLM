@@ -213,6 +213,7 @@ The model class names were checked against the upstream [Transformers model sour
 
 - **Alpamayo:** [nvidia/Alpamayo-R1-10B](https://huggingface.co/nvidia/Alpamayo-R1-10B)
 - **Cosmos3-Edge:** [nvidia/Cosmos3-Edge](https://huggingface.co/nvidia/Cosmos3-Edge), [nvidia/Cosmos3-Edge-Policy-DROID](https://huggingface.co/nvidia/Cosmos3-Edge-Policy-DROID)
+- **InternVLA-N1:** [InternRobotics/InternVLA-N1-DualVLN](https://huggingface.co/InternRobotics/InternVLA-N1-DualVLN)
 
 ## Speculative Draft Checkpoints
 

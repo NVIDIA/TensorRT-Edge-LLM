@@ -271,6 +271,16 @@ class NVFP4LinearMethod(LinearMethodBase):
             torch.ones(out_features, num_groups, dtype=torch.float32))
         module.register_buffer("weight_scale_2", torch.ones(1))
         module.register_buffer("input_scale", torch.ones(1))
+        # AWQ activation smoothing scale. ModelOpt's NVFP4 AWQ configs emit one
+        # per input channel; without a buffer to receive it the loader drops it
+        # silently and the layer computes on unsmoothed activations, which is
+        # catastrophic rather than approximate -- observed range [0.16, 6.44] on
+        # Qwen2.5-VL, i.e. a 40x channel spread. Defaults to ones (a no-op) and
+        # ``_pqs_active`` stays False for the far commoner non-AWQ checkpoints,
+        # so the multiply is not traced into their graphs at all.
+        module.register_buffer("pre_quant_scale",
+                               torch.ones(in_features, dtype=torch.float16))
+        module._pqs_active = False
         if bias:
             module.register_buffer("bias", torch.empty(out_features))
         else:
@@ -278,6 +288,8 @@ class NVFP4LinearMethod(LinearMethodBase):
 
     def apply(self, module: "LinearBase", x: torch.Tensor) -> torch.Tensor:
         _require_fp16_input(x, type(module).__name__)
+        if getattr(module, "_pqs_active", False):
+            x = x * module.pre_quant_scale
         # Activation: DynQ + 2x trt::DQ -> float16 activations
         x_dq = nvfp4_act_qdq(x, module.input_scale)
         # Weight: 2xstandard-ONNX DQ -> w_dq (float16)
@@ -290,6 +302,8 @@ class NVFP4LinearMethod(LinearMethodBase):
     def apply_linear_allreduce(self, module: "LinearBase",
                                x: torch.Tensor) -> torch.Tensor:
         _require_fp16_input(x, type(module).__name__)
+        if getattr(module, "_pqs_active", False):
+            x = x * module.pre_quant_scale
         # Single op: TRT_FP4DynamicQuantize + DequantizeLinear +
         # FusedNvfp4GemmAllReducePlugin. Output is FP16, already AllReduced.
         out = fused_nvfp4_gemm_allreduce(

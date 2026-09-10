@@ -1,5 +1,8 @@
 # Release Notes
 
+## Unreleased
+- Added InternVLA-N1-DualVLN vision-language navigation support: direct export of the Qwen2.5-VL planner with the z_latents bridge folded into the graph, and an experimental System-1 runtime for the flow-matching trajectory head
+
 ## 0.10.1
 - Added experimental Dual NVIDIA DGX Spark support with TP=2 tensor-parallel inference over MPI and NCCL
 - Redesigned the experimental OpenAI-compatible server for faster cold launches and lower memory usage

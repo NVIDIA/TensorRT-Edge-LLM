@@ -207,7 +207,7 @@ def infer_checkpoint_export_model_type(param_str: str) -> ModelType:
     model_name = '-'.join(model_parts) if model_parts else param_str
     base = strip_model_quant_suffixes(model_name)
 
-    if base.startswith("Alpamayo"):
+    if base.startswith("Alpamayo") or base.startswith("InternVLA"):
         return ModelType.VLA
     if base.startswith("Qwen3-ASR"):
         return ModelType.ASR
@@ -339,6 +339,8 @@ LLM_MODELS_DIR_MAP = {
     "Phi-4-multimodal-instruct",
     "Alpamayo-R1-10B":
     "Alpamayo-R1-10B",
+    "InternVLA-N1-DualVLN":
+    "InternVLA-N1-DualVLN",
     # Pre-quantized models in llm_models_dir
     "Llama-3.2-1B-FP8":
     "llama-3.2-models/Llama-3.2-1B-FP8",

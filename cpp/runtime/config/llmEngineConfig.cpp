@@ -511,6 +511,7 @@ void parseCoreFields(Json const& configJson, LLMEngineConfig& cfg)
     cfg.numKVHeads = getRequired<int32_t>(configJson, "num_key_value_heads");
     cfg.headDim = getRequired<int32_t>(configJson, "head_dim");
     cfg.hiddenSize = getRequired<int32_t>(configJson, "hidden_size");
+    cfg.outputHiddenSize = configJson.value("output_hidden_size", cfg.hiddenSize);
 
     // Top-level: kv_cache_dtype. Required — all current exports write this.
     parseRequiredStateDtype(configJson, "kv_cache_dtype", cfg.kvCacheDtype);
@@ -531,6 +532,7 @@ void parseCoreFields(Json const& configJson, LLMEngineConfig& cfg)
     requirePositive(cfg.numKVHeads, "num_key_value_heads");
     requirePositive(cfg.headDim, "head_dim");
     requirePositive(cfg.hiddenSize, "hidden_size");
+    requirePositive(cfg.outputHiddenSize, "output_hidden_size");
     requirePositive(cfg.maxSupportedBatchSize, "max_batch_size");
     requirePositive(cfg.maxSupportedInputLength, "max_input_len");
     requirePositive(cfg.maxKVCacheCapacity, "max_kv_cache_capacity");

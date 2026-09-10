@@ -1276,8 +1276,8 @@ bool LLMRankRuntime::handleRequest(LLMGenerationRequest const& request, LLMGener
         int32_t const prefillSequenceLength
             = *std::max_element(context.effectivePrefillLengths.begin(), context.effectivePrefillLengths.end());
         mPipelineIO->streamingPrefill.populateFromPrefill(mPipelineIO->inputsEmbeds, mPipelineIO->outputHiddenStates,
-            activeBatchSize, prefillSequenceLength, mDeployment.base.hiddenSize, mMaxRuntimeBatchSize,
-            mDeployment.base.maxSupportedInputLength, stream);
+            activeBatchSize, prefillSequenceLength, mDeployment.base.hiddenSize, mDeployment.base.outputHiddenSize,
+            mMaxRuntimeBatchSize, mDeployment.base.maxSupportedInputLength, stream);
         mLastPrefillLength = prefillSequenceLength;
         mLastInputTokenIds = context.rawBatchedInputIds;
         mHiddenStatesRegistry[0] = &mPipelineIO->streamingPrefill.inputEmbeds;

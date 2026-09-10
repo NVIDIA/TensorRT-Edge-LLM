@@ -372,7 +372,33 @@ def apply_all_repacking(model: nn.Module) -> None:
     _cast_modelopt_awq_prepacked(model)
     _cast_fp8_linear_scales(model)
     _cast_nvfp4_weights(model)
+    _activate_nvfp4_pre_quant_scale(model)
     _repack_nvfp4_a16_marlin_linears(model)
+
+
+def _activate_nvfp4_pre_quant_scale(model: nn.Module) -> None:
+    """Enable the AWQ smoothing multiply on NVFP4 linears that carry a scale.
+
+    ModelOpt's NVFP4 AWQ configs emit a per-input-channel ``pre_quant_scale``.
+    The buffer defaults to ones, so a checkpoint without one leaves the flag
+    off and the multiply is never traced -- the graph for a plain NVFP4 model
+    is unchanged. A checkpoint that does carry one gets the flag set here,
+    after the loader has written the buffer.
+
+    Detected by value rather than by config: the quantization config records
+    the algorithm but not whether this particular layer was smoothed, and
+    excluded layers legitimately have none.
+    """
+    for module in model.modules():
+        pqs = module._buffers.get("pre_quant_scale") if hasattr(
+            module, "_buffers") else None
+        if pqs is None or not hasattr(module, "weight_scale_2"):
+            continue
+        if torch.allclose(pqs.to(torch.float32),
+                          torch.ones_like(pqs, dtype=torch.float32)):
+            continue
+        module._buffers["pre_quant_scale"] = pqs.to(torch.float16)
+        module._pqs_active = True
 
 
 def _cast_modelopt_awq_prepacked(model: nn.Module) -> None:

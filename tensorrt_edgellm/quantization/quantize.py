@@ -43,6 +43,9 @@ from transformers import (AutoModel, AutoModelForCausalLM,
 
 from .datasets import (AudioDataset, ImageDataset, TextDataset, dataset_name,
                        resolve_dataset)
+from .internvla_n1_loader import (copy_auxiliary_files, is_internvla_n1_model,
+                                  load_internvla_n1_system2,
+                                  restore_system1_tensors)
 from .quantization_configs import _VISUAL_PREFIXES, build_quant_config
 from .qwen3_asr_loader import (asr_calibration_dataloader, is_qwen3_asr_model,
                                load_qwen3_asr_joint_for_calibration,
@@ -248,6 +251,14 @@ def _load_model(model_dir, dtype="fp16", device="cuda"):
         from tensorrt_edgellm.lora import load_phi4mm_model
         model = load_phi4mm_model(model_dir, torch_dtype)
         model.to(device)
+    elif is_internvla_n1_model(model_dir):
+        # InternVLA-N1 declares model_type="internvla_n1" and ships neither
+        # modeling code nor an auto_map, so the AutoModel factories below cannot
+        # reach it. Underneath, System 2 is a stock Qwen2.5-VL; the loader
+        # presents it as one and leaves the System-1 tensors alone. They are
+        # copied back into the export by restore_system1_tensors.
+        model, tokenizer, processor = load_internvla_n1_system2(
+            model_dir, torch_dtype, device)
     elif is_qwen3_asr_model(model_dir):
         # Qwen3-ASR HF ckpt declares model_type="qwen3_asr" but ships no
         # modeling code, so the AutoModel factories below would fail. We
@@ -1203,6 +1214,17 @@ def quantize_and_export(
             _copy_phi4mm_processor_files(model_dir, output_dir)
         else:
             processor.save_pretrained(output_dir)
+    if is_internvla_n1_model(model_dir):
+        # The loader presented System 2 as a Qwen2.5-VL, so the export has
+        # neither System 1 nor the model_type the exporter dispatches on. Both
+        # are restored from the source here; missing either is silent, since
+        # tensorrt-edgellm-export matches no keys, default-initialises those
+        # modules and still exits 0.
+        copy_auxiliary_files(model_dir, output_dir)
+        restored = restore_system1_tensors(model_dir, output_dir)
+        print(
+            f"Restored {restored} System-1 tensors from the source checkpoint."
+        )
 
     # Copy preprocessor / processor configs so downstream tools (tensorrt_edgellm's
     # tensorrt-edgellm-export, the C++ visual builder) can find image preprocessing

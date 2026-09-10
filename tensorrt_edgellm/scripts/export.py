@@ -115,6 +115,7 @@ _VLM_MODEL_TYPES = frozenset([
     "qwen3_5",
     "qwen3_5_moe",
     "qwen2_5_vl",
+    "internvla_n1",
     "internvl",
     "internvl_chat",
     "phi4mm",
@@ -161,6 +162,7 @@ _CODE2WAV_MODEL_TYPES = frozenset([
 
 _ACTION_MODEL_TYPES = frozenset([
     "alpamayo_r1",
+    "internvla_n1",
 ])
 # Which LLM-family components each model ships.  Default (unlisted model types)
 # is ``{"thinker"}``.  Add a new Talker/CP-bearing model by listing it here; no
@@ -950,6 +952,93 @@ def _cosmos3_edge_llm_key_remap(key: str) -> "Optional[str]":
     return key
 
 
+def _finalize_internvla_llm_artifacts(model_dir: str,
+                                      llm_out_dir: str) -> None:
+    """Put the learned latent queries where the runtime will find them.
+
+    InternVLA-N1 conditions its trajectory head on the hidden states at
+    ``n_query`` learned query embeddings appended to the prompt. The runtime
+    performs its own embedding lookup, so the way in is the same one Alpamayo
+    uses for trajectory tokens: make them real tokens.
+
+    Three artifacts change, none of them the engine graph's input contract:
+
+    * ``embedding.safetensors`` -- the queries are written into the table's
+      trailing padding rows. Qwen2.5's table is padded well past the last used
+      token ID (151664 used, 152064 rows), and the padding rows are zero.
+    * ``tokenizer.json`` -- one special token per query, so a prompt can end
+      with them and the C++ tokenizer emits the right IDs.
+    * ``config.json`` -- the ID list, so consumers read it instead of
+      hard-coding row arithmetic.
+    """
+    import glob
+
+    from safetensors import safe_open
+    from safetensors.torch import save_file
+
+    lq = None
+    for shard in sorted(glob.glob(os.path.join(model_dir, "*.safetensors"))):
+        with safe_open(shard, framework="pt") as handle:
+            for key in handle.keys():
+                if key.endswith("latent_queries"):
+                    lq = handle.get_tensor(key)
+    if lq is None:
+        logger.warning(
+            "[LLM] latent_queries not found in %s; the bridge "
+            "cannot be driven without them", model_dir)
+        return
+    lq = lq.reshape(lq.shape[-2], lq.shape[-1])
+    n_query = lq.shape[0]
+
+    emb_path = os.path.join(llm_out_dir, "embedding.safetensors")
+    with safe_open(emb_path, framework="pt") as handle:
+        emb = handle.get_tensor("embedding")
+    token_ids = list(range(emb.shape[0] - n_query, emb.shape[0]))
+    emb[token_ids[0]:] = lq.to(emb.dtype)
+    save_file({"embedding": emb}, emb_path)
+    logger.info("[LLM] Wrote latent queries into embedding rows %s", token_ids)
+
+    tok_path = os.path.join(llm_out_dir, "tokenizer.json")
+    with open(tok_path) as handle:
+        tok = json.load(handle)
+    existing = {t["id"] for t in tok.get("added_tokens", [])}
+    for i, tid in enumerate(token_ids):
+        if tid in existing:
+            continue
+        tok.setdefault("added_tokens", []).append({
+            "id": tid,
+            "content": f"<|latent_q{i}|>",
+            "single_word": False,
+            "lstrip": False,
+            "rstrip": False,
+            "normalized": False,
+            "special": True,
+        })
+    with open(tok_path, "w") as handle:
+        json.dump(tok, handle, ensure_ascii=False)
+    logger.info("[LLM] Registered %d latent-query tokens in tokenizer.json",
+                n_query)
+
+    cfg_path = os.path.join(llm_out_dir, "config.json")
+    with open(cfg_path) as handle:
+        cfg = json.load(handle)
+    cfg["latent_query_token_ids"] = token_ids
+    # The graph folds the final norm and cond_projector, so `hidden_states` comes
+    # out at the bridge width rather than the model width. The runtime sizes and
+    # copies that buffer from this key; without it, it would move model-width
+    # bytes out of a narrower output and hand the consumer a buffer whose tail is
+    # whatever happened to be next in memory.
+    # The bridge width is latent_dim, not the latent queries' own width -- the
+    # queries enter at model width and cond_projector narrows them on the way out.
+    from ..models.internvla_n1.modeling_internvla_n1_text import \
+        DEFAULT_LATENT_DIM
+
+    cfg["output_hidden_size"] = int(
+        cfg.get("latent_dim") or DEFAULT_LATENT_DIM)
+    with open(cfg_path, "w") as handle:
+        json.dump(cfg, handle, indent=2)
+
+
 def _rank_suffix(world: int, rank: int) -> str:
     if world <= 1:
         return ""
@@ -1174,6 +1263,8 @@ def _export_llm(model_dir: str,
                                 llm_out_dir,
                                 model_type,
                                 config_filename=config_filename)
+    if model_type == "internvla_n1":
+        _finalize_internvla_llm_artifacts(model_dir, llm_out_dir)
 
     # Standalone Talker checkpoints route through ``_export_llm`` (not the
     # qwen3_tts ``_export_talker``) because their model_type isn't in the
@@ -1843,6 +1934,9 @@ def _export_visual(model_dir: str, visual_out_dir: str, weights: dict,
     # - ``qwen3_omni`` → ``qwen3_omni_vision_encoder`` (bare "qwen3_omni"
     #   maps to AUDIO_ENCODER in C++, so visualBuilder rejects it)
     _VISUAL_MODEL_TYPE_MAP = {
+        # InternVLA-N1's tower is a stock Qwen2.5-VL one, so the C++
+        # Qwen25VLViTRunner serves it unchanged.
+        "internvla_n1": "qwen2_5_vl",
         "internvl": "internvl",
         "internvl_chat": "internvl",
         "qwen3_5_moe": "qwen3_5",
@@ -1877,9 +1971,9 @@ def _export_visual(model_dir: str, visual_out_dir: str, weights: dict,
         vis_cfg_out["vision_config"] = dict(vis_cfg_out["vision_config"])
         vis_cfg_out["vision_config"][
             "model_type"] = "qwen3_omni_vision_encoder"
-    if model_type in ("qwen2_5_vl", "qwen3_vl", "qwen3_omni", "qwen3_omni_moe",
-                      "qwen3_omni_next", "qwen3_5", "qwen3_5_moe",
-                      "cosmos3_edge"):
+    if model_type in ("qwen2_5_vl", "internvla_n1", "qwen3_vl", "qwen3_omni",
+                      "qwen3_omni_moe", "qwen3_omni_next", "qwen3_5",
+                      "qwen3_5_moe", "cosmos3_edge"):
         # C++ QwenViTRunner reads these token IDs and rope_theta from config.json.
         # For Qwen3-VL the token IDs are at the root level, but vocab_size and
         # rope_theta live inside text_config.  Fall back to text_config for any
@@ -3609,8 +3703,26 @@ def _build_action_config(root_cfg: dict, weights: dict):
 def _export_action(model_dir: str, action_out_dir: str, weights: dict,
                    config: dict, max_kv_cache_capacity: int,
                    dtype: "torch.dtype") -> None:
-    """Export Alpamayo action expert to ONNX."""
+    """Export the action/System-1 component to ONNX."""
     os.makedirs(action_out_dir, exist_ok=True)
+
+    if config.get("model_type") == "internvla_n1":
+        # InternVLA-N1 ships two System-1 graphs rather than one expert: the
+        # memory block runs once per observation window, the trajectory expert
+        # once per denoising step.
+        from ..onnx.export_encoder import export_internvla_n1_system1_onnx
+        logger.info("[Action] Exporting InternVLA-N1 System 1 to %s",
+                    action_out_dir)
+        try:
+            export_internvla_n1_system1_onnx(action_out_dir,
+                                             weights,
+                                             dtype=dtype)
+        except (OSError, ValueError, RuntimeError) as exc:
+            logger.exception("[Action] System-1 export failed")
+            raise SystemExit(1) from exc
+        logger.info("[Action] Done: %s", action_out_dir)
+        return
+
     output_path = os.path.join(action_out_dir, "model.onnx")
 
     logger.info("[Action] Building ActionConfig from checkpoint ...")
@@ -4619,8 +4731,20 @@ def main() -> None:
         if not os.path.isdir(p_sub):
             continue
         onnx = os.path.join(p_sub, "model.onnx")
-        mb = os.path.getsize(onnx) / 1e6 if os.path.exists(onnx) else 0
-        print(f"  {component:15s}: {onnx}  ({mb:.1f} MB)")
+        if os.path.exists(onnx):
+            print(f"  {component:15s}: {onnx}  "
+                  f"({os.path.getsize(onnx) / 1e6:.1f} MB)")
+        else:
+            # A component may ship several graphs instead of one model.onnx --
+            # InternVLA-N1's System 1 is a memory block plus a trajectory
+            # expert. Report what is there rather than a 0.0 MB path that is not.
+            found = sorted(f for f in os.listdir(p_sub) if f.endswith(".onnx"))
+            for name in found:
+                path = os.path.join(p_sub, name)
+                print(f"  {component:15s}: {path}  "
+                      f"({os.path.getsize(path) / 1e6:.1f} MB)")
+            if not found:
+                print(f"  {component:15s}: {p_sub}  (no .onnx produced)")
         for sidecar in _SIDECARS:
             sc_path = os.path.join(p_sub, sidecar)
             if os.path.exists(sc_path):
