@@ -182,12 +182,31 @@ target_include_directories(edgellmPluginJit PRIVATE ${COMMON_INCLUDE_DIRS}
                                                     ${NVRTC_INCLUDE_DIR})
 target_link_libraries(
   edgellmPluginJit PRIVATE ${NVRTC_LIB} ${CUDA_DRIVER_LINK_LIB} ${CUDART_LIB})
-# The XQA JIT compiles its kernel through NVRTC at load time and needs the
-# toolkit's own headers on the include path (cuda_fp16.h -> vector_types.h).
-# Pass the directory this build was configured against; EDGELLM_NVRTC_INCLUDE
-# overrides it at runtime.
+# The XQA JIT compiles its kernel through NVRTC at load time and needs the CUDA
+# runtime headers on the include path (cuda_fp16.h -> vector_types.h). Those are
+# not necessarily where nvrtc.h is: in a full toolkit they sit together, but a
+# standalone NVRTC package ships nvrtc.h alone. Search for the header that is
+# actually included, across the roots FindNVRTC already honours and in the same
+# precedence, so a non-default NVRTC_ROOT_DIR or CUDA_TARGET_DIR cannot leave
+# the JIT reading a different toolkit's headers than the one it links against.
+find_path(
+  EDGELLM_JIT_CUDA_INCLUDE_DIR vector_types.h
+  HINTS ${NVRTC_INCLUDE_DIR} ${NVRTC_ROOT_DIR}/include
+        ${CUDA_TARGET_DIR}/include ${CUDA_DIR}/include
+  NO_DEFAULT_PATH)
+if(NOT EDGELLM_JIT_CUDA_INCLUDE_DIR)
+  message(
+    WARNING
+      "No vector_types.h under the NVRTC/CUDA roots; the XQA JIT will fall back "
+      "to ${CUDA_DIR}/include. Set NVRTC_ROOT_DIR or CUDA_DIR to a CUDA Toolkit "
+      "with the runtime headers, or set EDGELLM_NVRTC_INCLUDE at run time.")
+  set(EDGELLM_JIT_CUDA_INCLUDE_DIR "${CUDA_DIR}/include")
+endif()
+# Cross builds bake a path that is correct on the BUILD host; where the toolkit
+# sits elsewhere on the target, EDGELLM_NVRTC_INCLUDE overrides it at run time.
 target_compile_definitions(
-  edgellmPluginJit PRIVATE EDGELLM_CUDA_INCLUDE_DIR="${CUDA_DIR}/include")
+  edgellmPluginJit
+  PRIVATE EDGELLM_CUDA_INCLUDE_DIR="${EDGELLM_JIT_CUDA_INCLUDE_DIR}")
 add_dependencies(edgellmPluginJit generatePluginJitEmbeddedSources)
 edgellm_apply_qnx_warning_suppressions(edgellmPluginJit)
 edgellm_set_hidden_visibility(edgellmPluginJit)
