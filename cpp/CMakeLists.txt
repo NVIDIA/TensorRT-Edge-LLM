@@ -182,6 +182,12 @@ target_include_directories(edgellmPluginJit PRIVATE ${COMMON_INCLUDE_DIRS}
                                                     ${NVRTC_INCLUDE_DIR})
 target_link_libraries(
   edgellmPluginJit PRIVATE ${NVRTC_LIB} ${CUDA_DRIVER_LINK_LIB} ${CUDART_LIB})
+# The XQA JIT compiles its kernel through NVRTC at load time and needs the
+# toolkit's own headers on the include path (cuda_fp16.h -> vector_types.h).
+# Pass the directory this build was configured against; EDGELLM_NVRTC_INCLUDE
+# overrides it at runtime.
+target_compile_definitions(
+  edgellmPluginJit PRIVATE EDGELLM_CUDA_INCLUDE_DIR="${CUDA_DIR}/include")
 add_dependencies(edgellmPluginJit generatePluginJitEmbeddedSources)
 edgellm_apply_qnx_warning_suppressions(edgellmPluginJit)
 edgellm_set_hidden_visibility(edgellmPluginJit)
