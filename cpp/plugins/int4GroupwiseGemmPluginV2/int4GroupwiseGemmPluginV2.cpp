@@ -408,6 +408,19 @@ int32_t Int4GroupwiseGemmPluginV2::enqueue(PluginTensorDesc const* inputDesc, Pl
         return cuteDslInt4GemmLaunch(v, inputs[0], inputs[1], inputs[2], outputs[0],
             (v.splitK > 1) ? mLockWorkspace : nullptr, M, mGemmN, mGemmK, /*swizzle=*/1, stream);
 #else
+        // The CuTe DSL INT4 kernels are not in this build, so there is nothing to dispatch to.
+        // Without a message the only symptom is "Failed to enqueue status -1" at inference time,
+        // long after the plugin registered, the engine built and the runtime loaded -- none of
+        // which fail. Log once rather than per enqueue.
+        static std::once_flag disabledKernelsWarning;
+        std::call_once(disabledKernelsWarning,
+            []
+            {
+                LOG_ERROR(
+                    "Int4GroupwiseGemmPluginV2: this build has no CuTe DSL INT4 kernels, so the plugin cannot "
+                    "execute. Reconfigure with -DENABLE_CUTE_DSL=\"fmha;int4_fp16_gemm\" -- the default is "
+                    "\"fmha\" alone, which omits the INT4 GEMM group -- and rebuild.");
+            });
         return -1;
 #endif
     }
