@@ -64,7 +64,8 @@ namespace
 bool isFMHAV2SM(int32_t smVersion)
 {
     return smVersion == 80 || smVersion == 86 || smVersion == 87 || smVersion == 89 || smVersion == 90
-        || smVersion == 100 || smVersion == 101 || smVersion == 110 || smVersion == 120 || smVersion == 121;
+        || smVersion == 100 || smVersion == 101 || smVersion == 103 || smVersion == 110 || smVersion == 120
+        || smVersion == 121;
 }
 
 bool isFMHAV2PagedLlmHeadSize(int32_t headSize)
