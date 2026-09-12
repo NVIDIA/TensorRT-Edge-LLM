@@ -71,6 +71,11 @@ constexpr int32_t kDecodeProfile{1};
 
 namespace rt
 {
+namespace
+{
+//! Fixed seed keeps a given input reproducible; the per-call offset supplies the variation.
+constexpr uint64_t kSAMPLING_PHILOX_SEED{42};
+} // namespace
 
 std::vector<int32_t> LLMRankRuntime::countPromptTokens(LLMGenerationRequest const& request) const
 {
@@ -2578,8 +2583,8 @@ bool LLMRankRuntime::runBaseModelPrefill(
     {
         SamplingParams params(activeBatchSize, mDeployment.base.outputVocabSize, context.temperature,
             static_cast<int32_t>(context.topK), context.topP);
-        topKtopPSamplingFromLogits(
-            mPipelineIO->outputLogits, mSamplingIndices, params, mSamplingWorkspace, context.stream);
+        topKtopPSamplingFromLogits(mPipelineIO->outputLogits, mSamplingIndices, params, mSamplingWorkspace,
+            context.stream, kSAMPLING_PHILOX_SEED, mSamplingPhiloxOffset++);
     }
     else
     {

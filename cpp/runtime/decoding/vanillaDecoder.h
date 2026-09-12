@@ -67,11 +67,23 @@ public:
     {
     }
 
-    void resetForNewSequences(Tensor&, cudaStream_t) override {}
+    void resetForNewSequences(Tensor&, cudaStream_t) override
+    {
+        //! Restart the sampler's RNG stream so a given input reproduces exactly.
+        mSamplingPhiloxOffset = 0;
+    }
     void onBatchEvict(std::vector<int32_t> const&, int32_t, int32_t, Tensor&, cudaStream_t) override {}
 
 private:
     DecodingRuntimeContext& mRuntime;
+
+    //! Philox offset for top-k/top-p sampling, advanced once per sampled token.
+    //!
+    //! curand_init(seed, batchIdx, offset) is keyed on the offset, so leaving it at the
+    //! default 0 draws the SAME uniform at every decode step: sampling becomes
+    //! deterministic and collapses onto the argmax, making temperature and top_p inert.
+    //! The TTS talker path already varies this deliberately (qwen3OmniTTSRuntime.cpp).
+    uint64_t mSamplingPhiloxOffset{0};
 };
 
 } // namespace rt

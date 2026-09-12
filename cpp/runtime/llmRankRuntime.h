@@ -320,6 +320,11 @@ private:
     // [2] Sampling workspace and output tensors that used across all the sampling operations.
     rt::Tensor mSamplingWorkspace;
     rt::Tensor mSamplingIndices;
+
+    //! Philox offset for top-k/top-p sampling, advanced once per sampled token.
+    //! See the note on VanillaDecoder::mSamplingPhiloxOffset: a fixed offset makes every
+    //! sampling call draw the same uniform, which collapses sampling onto the argmax.
+    uint64_t mSamplingPhiloxOffset{0};
     rt::Tensor mSamplingScores;
     rt::Tensor mBaseVocabMappingTable; // Vocab mapping table for base model reduced vocab (empty if not used)
 
