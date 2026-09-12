@@ -39,6 +39,12 @@ namespace rt
 {
 namespace
 {
+//! Fixed seed keeps a given input reproducible; the offset supplies the per-step variation.
+constexpr uint64_t kSAMPLING_PHILOX_SEED{42};
+} // namespace
+
+namespace
+{
 constexpr int32_t kDecodeProfile{1};
 
 } // namespace
@@ -121,8 +127,11 @@ bool VanillaDecoder::decodeStep(DecodingInferenceContext& context)
     {
         SamplingParams params(activeBatchSize, mRuntime.deployment.base.outputVocabSize, context.temperature,
             static_cast<int32_t>(context.topK), context.topP);
+        // Advance the Philox offset per sampled token. With the default offset of 0 every
+        // step shares one RNG counter, so the same uniform is drawn each time and sampling
+        // degenerates to greedy regardless of temperature and top_p.
         topKtopPSamplingFromLogits(mRuntime.base.pipelineIO.outputLogits, mRuntime.sampling.indices, params,
-            mRuntime.sampling.workspace, context.stream);
+            mRuntime.sampling.workspace, context.stream, kSAMPLING_PHILOX_SEED, mSamplingPhiloxOffset++);
     }
     else
     {

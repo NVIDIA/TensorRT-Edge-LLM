@@ -308,6 +308,53 @@ TEST_F(SamplingTest, TemperatureZeroParameterOverride)
     }
 }
 
+TEST_F(SamplingTest, AdvancingPhiloxOffsetChangesSampledToken)
+{
+    // Pins the Philox offset contract that #211 depended on: distinct offsets must be able
+    // to select distinct tokens, and a repeated offset must reproduce.
+    //
+    // SCOPE, stated so this is not mistaken for a regression guard: the kernel was never the
+    // faulty part. #211 was two CALLERS that never passed an offset, so it defaulted to 0 at
+    // every decode step and one uniform was drawn for the whole sequence. This test passes
+    // on the unpatched tree. It documents the invariant a caller has to uphold; catching a
+    // caller that does not would need a decoder-level test with a real runtime.
+    constexpr int32_t kBatchSize = 1;
+    constexpr int32_t kVocabSize = 32;
+    constexpr int32_t kNumOffsets = 16; // each call carries a device sync; 16 is enough to diverge
+
+    // A deliberately flat distribution: with many near-equal candidates, a working sampler
+    // visits several of them while a broken one returns the argmax every time.
+    std::vector<float> hostLogits(kVocabSize, 1.0f);
+
+    rt::Tensor logits({kBatchSize, kVocabSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    CUDA_CHECK(
+        cudaMemcpy(logits.rawPointer(), hostLogits.data(), hostLogits.size() * sizeof(float), cudaMemcpyHostToDevice));
+
+    rt::Tensor selected({kBatchSize, 1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    SamplingParams params(kBatchSize, kVocabSize, /*temperature=*/1.0f, /*topK=*/kVocabSize, /*topP=*/1.0f);
+    size_t const workspaceSize = getTopKtopPSamplingWorkspaceSize(kBatchSize, kVocabSize, params);
+    rt::Tensor workspace({static_cast<int64_t>(workspaceSize)}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT8);
+
+    auto sampleAtOffset = [&](uint64_t offset) {
+        topKtopPSamplingFromLogits(logits, selected, params, workspace, 0, TEST_SEED, offset);
+        CUDA_CHECK(cudaDeviceSynchronize());
+        return copyDeviceToHost<int32_t>(selected).at(0);
+    };
+
+    std::set<int32_t> distinctTokens;
+    for (uint64_t offset = 0; offset < kNumOffsets; ++offset)
+    {
+        distinctTokens.insert(sampleAtOffset(offset));
+    }
+
+    // The bug produced exactly one distinct token across every offset.
+    EXPECT_GT(distinctTokens.size(), 1U) << "sampling returned the same token for all " << kNumOffsets
+                                         << " Philox offsets, so the offset is not reaching the RNG";
+
+    // Same seed and same offset must still be reproducible.
+    EXPECT_EQ(sampleAtOffset(7), sampleAtOffset(7));
+}
+
 TEST(SamplingUtilsTest, ShouldUseNonGreedySampling)
 {
     EXPECT_FALSE(trt_edgellm::shouldUseNonGreedySampling(1.0f, 0, 1.0f));
