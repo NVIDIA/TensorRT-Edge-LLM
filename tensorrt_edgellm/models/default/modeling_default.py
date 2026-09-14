@@ -68,9 +68,11 @@ __all__ = [
 # ONNX export spec
 # ---------------------------------------------------------------------------
 
-_BATCH_SIZE = 1
-_SEQ_LEN = 1
-_PAST_LEN = 1
+# PyTorch applies 0/1 specialization which breaks ONNX dynamic batching
+# Using size = 2 avoids this issue
+_BATCH_SIZE = 2
+_SEQ_LEN = 2
+_PAST_LEN = 2
 _MAX_POS = 4096
 
 
