@@ -139,7 +139,8 @@ public:
 
     //! @brief Return a profile shape (min/opt/max) for a named binding.
     virtual nvinfer1::Dims getProfileShape(
-        char const* name, int32_t profileIndex, nvinfer1::OptProfileSelector selector) const = 0;
+        char const* name, int32_t profileIndex, nvinfer1::OptProfileSelector selector) const
+        = 0;
 
     //! @brief Attach a TRT profiler to the execution context.
     //!
@@ -158,6 +159,16 @@ public:
 
         bool operator==(BindingSnapshot const& rhs) const noexcept;
     };
+
+    struct ExecutionStats
+    {
+        uint64_t captures{}, replays{}, eager{}, profileSwitches{};
+    };
+    //! Thread-safe counters for bounded execution-path qualification.
+    virtual ExecutionStats executionStats() const noexcept
+    {
+        return {};
+    }
 
 protected:
     EngineExecutor() = default;

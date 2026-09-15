@@ -239,7 +239,27 @@ public:
         return mDecoderRegistry && mDecoderRegistry->hasSpeculativeDecoder();
     }
 
+    //! Metadata borrowed by the single-rank continuous scheduler. The scheduler
+    //! never owns either object and must be destroyed before this runtime.
+    tokenizer::Tokenizer const& tokenizer() const
+    {
+        ELLM_CHECK(mTokenizer != nullptr, "LLMRankRuntime tokenizer is not initialized.");
+        return *mTokenizer;
+    }
+    auto executionStats() const noexcept
+    {
+        return mBaseExecutor->executionStats();
+    }
+
+    int32_t vocabularySize() const
+    {
+        return mDeployment.base.vocabSize;
+    }
+
 private:
+    friend class ContinuousBatchingProbe;
+    friend class SequenceStepRuntime;
+
     void initializeFromEngineDir(std::string const& engineDir, std::string const& multimodalEngineDir,
         std::unordered_map<std::string, std::string> const& loraWeightsMap,
         std::optional<SpecDecodeDraftingConfig> const& draftingConfig, cudaStream_t stream,

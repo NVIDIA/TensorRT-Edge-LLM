@@ -16,10 +16,12 @@
  */
 
 #pragma once
+#include <array>
 
 #include "common/tensor.h"
 #include "profiling/metrics.h"
 #include "runtime/config/deploymentConfig.h"
+#include "runtime/continuousScheduler.h"
 #include "runtime/llmRuntimeUtils.h"
 #include "runtime/modelArtifacts.h"
 #include "runtime/multiDevice/parallelConfig.h"
@@ -115,6 +117,20 @@ public:
     int32_t getBaseModelPrefillLength() const;
     std::vector<std::vector<int32_t>> const& getBaseModelInputTokenIds() const;
     bool hasDraftModel() const;
+    std::array<uint64_t, 4> continuousExecutionStats() const;
+
+    //! Create the P5 native scheduler for the deliberately narrow P6 serving
+    //! mode: one local rank, vanilla text generation and no context cache.
+    //! The returned scheduler borrows this runtime and `stream`; callers must
+    //! close/destroy it before this object or stream is released.
+    std::unique_ptr<ContinuousScheduler> createContinuousScheduler(
+        cudaStream_t stream, size_t maxQueued = 8, size_t maxQueuedBytes = 256 * 1024, bool captureGraphs = false);
+
+    //! Format and tokenize exactly once using the runtime tokenizer for a P6
+    //! text request. Media and batched legacy requests are rejected rather
+    //! than silently dropping request state.
+    std::vector<int32_t> prepareContinuousPrompt(LLMGenerationRequest const& request) const;
+    std::string continuousTokenPiece(int32_t tokenId) const;
 
     //! True when this runtime instance owns the requested global rank.
     bool ownsGlobalRank(int32_t globalRank) const noexcept;

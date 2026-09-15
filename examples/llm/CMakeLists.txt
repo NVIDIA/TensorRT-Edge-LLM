@@ -10,6 +10,17 @@
 # prohibited.
 
 # Build executables for chat, benchmark and accuracy mode
+option(BUILD_CONTINUOUS_BATCHING_PROBE
+       "Build the model-dependent eager slot/chunk feasibility probe" OFF)
+if(BUILD_CONTINUOUS_BATCHING_PROBE)
+  add_executable(continuous_batching_probe continuousBatchingProbe.cpp)
+  target_link_libraries(continuous_batching_probe PRIVATE edgellmCore
+                                                        commonLibraryExt)
+  target_include_directories(continuous_batching_probe
+                             PRIVATE ${COMMON_INCLUDE_DIRS})
+  add_cross_build_link_options(continuous_batching_probe)
+endif()
+
 add_executable(llm_build llm_build.cpp)
 target_link_libraries(llm_build PRIVATE ${NV_ONNX_PARSER_LIB} commonLibraryExt
                                         edgellmBuilder)

@@ -165,6 +165,7 @@ class ModelConfig:
     """Checkpoint, build-cache, and runtime-profile options."""
 
     model: str
+    engine_dir: str = ""
     cache_dir: str = ""
     engine_cache_max_size_gb: float = 50.0
     clear_engine_cache: bool = False
@@ -188,6 +189,7 @@ class ModelConfig:
     def llm_kwargs(self) -> Dict[str, Any]:
         return {
             "model": self.model,
+            "engine_dir": self.engine_dir,
             "cache_dir": self.cache_dir,
             "engine_cache_max_size_gb": self.engine_cache_max_size_gb,
             "clear_engine_cache": self.clear_engine_cache,
@@ -299,6 +301,11 @@ def create_argument_parser() -> argparse.ArgumentParser:
 
     model = parser.add_argument_group("Model build and runtime")
     model.add_argument(
+        "--engine-dir",
+        default="",
+        help="Load an existing Edge-LLM engine bundle and skip engine build.",
+    )
+    model.add_argument(
         "--cache-dir",
         default="",
         help="Root for downloaded checkpoints and complete engine bundles. "
@@ -368,6 +375,7 @@ def parse_server_config(argv: Optional[Sequence[str]] = None) -> ServerConfig:
     )
     model = ModelConfig(
         model=args.model,
+        engine_dir=args.engine_dir,
         cache_dir=args.cache_dir,
         engine_cache_max_size_gb=args.engine_cache_max_size_gb,
         clear_engine_cache=args.clear_engine_cache,

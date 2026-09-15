@@ -16,6 +16,7 @@
  */
 
 #include "runtime/exec/engineExecutor.h"
+#include <atomic>
 
 #include "common/bindingNames.h"
 #include "common/checkMacros.h"
@@ -92,6 +93,10 @@ public:
     bool prepare(int32_t profileIndex, InferenceDims const& dims, TensorMap const& map, cudaStream_t stream) override;
     bool execute(cudaStream_t stream) override;
     bool captureGraph(cudaStream_t stream) override;
+    ExecutionStats executionStats() const noexcept override
+    {
+        return {mCaptures.load(), mReplays.load(), mEager.load(), mProfileSwitches.load()};
+    }
     int64_t getRequiredContextMemorySize() const override;
     bool setContextMemory(Tensor& sharedMem) override;
     int32_t getNumIOTensors() const override;
@@ -104,11 +109,13 @@ public:
     nvinfer1::ICudaEngine const& getEngine() const noexcept override;
 
 private:
+    std::atomic<uint64_t> mCaptures{}, mReplays{}, mEager{}, mProfileSwitches{};
     AuxStreamSet mAuxStreams{};
     std::unique_ptr<nvinfer1::IRuntime> mRuntime;
     std::unique_ptr<nvinfer1::ICudaEngine> mEngine;
     std::unique_ptr<nvinfer1::IExecutionContext> mContext;
     TensorRegistry mRegistry;
+    std::vector<std::string> mUnregisteredNames;
     int32_t mCurrentProfileIndex{-1};
 
     //! A captured CUDA graph together with its binding snapshot for verification.
@@ -127,6 +134,7 @@ private:
 
     //! Build a full snapshot of the current binding state.
     BindingSnapshot snapshotBindings() const;
+    bool matchesBindings(BindingSnapshot const& snapshot) const;
 };
 
 TrtEngineExecutor::TrtEngineExecutor(std::filesystem::path const& enginePath, TensorRegistry registry)
@@ -163,6 +171,14 @@ TrtEngineExecutor::TrtEngineExecutor(std::filesystem::path const& enginePath, Te
             {sym(&InferenceDims::skipSoftmaxScaleLen)}});
     }
 
+    for (int32_t i = 0; i < mEngine->getNbIOTensors(); ++i)
+    {
+        std::string name = mEngine->getIOTensorName(i);
+        if (!mRegistry.contains(name))
+        {
+            mUnregisteredNames.push_back(std::move(name));
+        }
+    }
     LOG_INFO("engine loaded successfully (%d I/O tensors)", mEngine->getNbIOTensors());
 }
 
@@ -240,6 +256,10 @@ bool TrtEngineExecutor::prepare(
         LOG_ERROR("failed to set optimization profile %d", profileIndex);
         return false;
     }
+    if (mCurrentProfileIndex != profileIndex)
+    {
+        ++mProfileSwitches;
+    }
     mCurrentProfileIndex = profileIndex;
 
     if (!mRegistry.bindAll(mContext.get(), map, dims))
@@ -259,16 +279,10 @@ bool TrtEngineExecutor::prepare(
     //
     // LoRA weights are model-dependent and populated into the TensorMap by
     // LoRAManager::refreshTensorMap() before prepare() is called.
-    int32_t const numIO = mEngine->getNbIOTensors();
-    for (int32_t i = 0; i < numIO; ++i)
+    for (auto const& binding : mUnregisteredNames)
     {
-        char const* name = mEngine->getIOTensorName(i);
-        if (mRegistry.contains(name))
-        {
-            // Already bound by bindAll above; leave alone.
-            continue;
-        }
-        Tensor* tensor = map.get(name);
+        char const* name = binding.c_str();
+        Tensor* tensor = map.get(binding);
         if (tensor == nullptr)
         {
             LOG_ERROR(
@@ -302,18 +316,20 @@ bool TrtEngineExecutor::execute(cudaStream_t stream)
     auto it = mGraphs.find(hash);
     if (it != mGraphs.end())
     {
-        BindingSnapshot const current = snapshotBindings();
-        if (current == it->second.snapshot)
+        if (matchesBindings(it->second.snapshot))
         {
             cudaError_t const err = cudaGraphLaunch(it->second.exec, stream);
             if (err == cudaSuccess)
             {
+                ++mReplays;
                 return true;
             }
-            LOG_WARNING("cudaGraphLaunch failed (%s), falling back to enqueueV3", cudaGetErrorString(err));
+            LOG_ERROR("cudaGraphLaunch failed (%s)", cudaGetErrorString(err));
+            return false;
         }
     }
 
+    ++mEager;
     return mContext->enqueueV3(stream);
 }
 
@@ -356,6 +372,7 @@ bool TrtEngineExecutor::captureGraph(cudaStream_t stream)
     cg.exec = result->second;
     cg.snapshot = snap;
     mGraphs[hash] = cg;
+    ++mCaptures;
 
     LOG_INFO("captured graph (hash=0x%zx)", hash);
     return true;
@@ -442,6 +459,7 @@ bool EngineExecutor::BindingSnapshot::operator==(BindingSnapshot const& rhs) con
 size_t TrtEngineExecutor::computeBindingHash() const
 {
     size_t seed = 0;
+    hash_utils::hashCombine(seed, mCurrentProfileIndex);
     int32_t const numIO = mEngine->getNbIOTensors();
     for (int32_t i = 0; i < numIO; ++i)
     {
@@ -457,6 +475,34 @@ size_t TrtEngineExecutor::computeBindingHash() const
         }
     }
     return seed;
+}
+
+bool TrtEngineExecutor::matchesBindings(BindingSnapshot const& snapshot) const
+{
+    int32_t const count = mEngine->getNbIOTensors();
+    if (snapshot.bindings.size() != static_cast<size_t>(count))
+    {
+        return false;
+    }
+    for (int32_t i = 0; i < count; ++i)
+    {
+        char const* name = mEngine->getIOTensorName(i);
+        auto const& expected = snapshot.bindings[i];
+        auto const shape = mContext->getTensorShape(name);
+        if (expected.first != reinterpret_cast<uintptr_t>(mContext->getTensorAddress(name))
+            || expected.second.nbDims != shape.nbDims)
+        {
+            return false;
+        }
+        for (int32_t d = 0; d < shape.nbDims; ++d)
+        {
+            if (expected.second.d[d] != shape.d[d])
+            {
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 EngineExecutor::BindingSnapshot TrtEngineExecutor::snapshotBindings() const

@@ -51,8 +51,9 @@ class EngineCapabilities:
 class _AdmissionController:
     """Bounded queue for the runtime's single generation slot."""
 
-    def __init__(self, max_queued_requests: int, timeout: float) -> None:
-        self._semaphore = asyncio.Semaphore(1)
+    def __init__(self, max_queued_requests: int, timeout: float, capacity: int = 1) -> None:
+        self._capacity = capacity
+        self._semaphore = asyncio.Semaphore(capacity)
         self._max_queued = max_queued_requests
         self._timeout = timeout
         self._active = 0
@@ -73,7 +74,7 @@ class _AdmissionController:
         acquired = False
         if self._closing:
             raise ServerUnavailableError()
-        if self._active + self._waiting >= self._max_queued + 1:
+        if self._active + self._waiting >= self._max_queued + self._capacity:
             raise ServerOverloadedError()
         self._waiting += 1
 
@@ -93,7 +94,7 @@ class _AdmissionController:
                 self._semaphore.release()
                 acquired = False
                 raise ServerUnavailableError()
-            self._active = 1
+            self._active += 1
             return _AdmissionLease(self)
         except BaseException:
             if acquired:
@@ -101,7 +102,7 @@ class _AdmissionController:
             raise
 
     def release(self) -> None:
-        self._active = 0
+        self._active -= 1
         self._semaphore.release()
 
     async def close(self) -> None:
@@ -110,7 +111,8 @@ class _AdmissionController:
             if self._drained:
                 return
             self._closing = True
-            await self._semaphore.acquire()
+            for _ in range(self._capacity):
+                await self._semaphore.acquire()
             self._drained = True
 
 
@@ -133,8 +135,11 @@ class PreparedRequest:
 
     request: Any
     lease: _AdmissionLease
+    ticket: Any = None
 
     def release(self) -> None:
+        if self.ticket is not None:
+            self.ticket.cancel()
         self.lease.release()
 
 
@@ -190,7 +195,7 @@ def _capabilities_for(llm: Union[LLM, TTS]) -> EngineCapabilities:
             builder.get("max_input_len"), int) else None,
         max_batch_size=builder.get("max_batch_size") if isinstance(
             builder.get("max_batch_size"), int) else None,
-        max_num_seqs=1,
+        max_num_seqs=2 if getattr(llm, "continuous_batching_enabled", False) else 1,
         kv_cache_dtype=str(config.get("kv_cache_dtype", "unknown")),
         speculative_decoding=llm.has_draft_model,
         speculative_method=str(config.get("spec_decode_type", "none")),
@@ -260,6 +265,8 @@ class EngineClient:
         self._admission = _AdmissionController(
             self._api_config.max_queued_requests,
             self._api_config.queue_timeout,
+            capacity=(self._api_config.max_queued_requests + 2
+                      if getattr(llm, "continuous_batching_enabled", False) else 1),
         )
         self._capabilities = _capabilities_for(llm)
         self._close_lock = asyncio.Lock()
@@ -279,11 +286,30 @@ class EngineClient:
         return self._capabilities
 
     @property
+    def execution_stats(self) -> Dict[str, int]:
+        if getattr(self._llm, "continuous_batching_enabled", False):
+            values = self._llm._runtime.continuous_execution_stats()
+            return dict(zip(("captures", "replays", "eager", "profile_switches"), values))
+        return {}
+
+    @property
+    def healthy(self) -> bool:
+        if self._closed:
+            return False
+        if getattr(self._llm, "continuous_batching_enabled", False):
+            return bool(self._llm._runtime.continuous_healthy())
+        return True
+
+    @property
     def active_requests(self) -> int:
+        if getattr(self._llm, "continuous_batching_enabled", False):
+            return int(self._llm._runtime.continuous_resident_requests())
         return self._admission.active
 
     @property
     def queued_requests(self) -> int:
+        if getattr(self._llm, "continuous_batching_enabled", False):
+            return int(self._llm._runtime.continuous_queued_requests())
         return self._admission.waiting
 
     async def close(self) -> None:
@@ -316,6 +342,18 @@ class EngineClient:
         tool_config: ToolConfig,
         enable_thinking: bool,
     ) -> int:
+        if getattr(self._llm, "continuous_batching_enabled", False):
+            request = await _run_sync(partial(
+                self._llm._make_generation_request, messages,
+                SamplingParams(max_tokens=1, enable_thinking=enable_thinking),
+                tools=tool_config.tools, tool_choice=tool_config.tool_choice,
+                tool_config=tool_config))
+            count = await _run_sync(partial(
+                self._llm._count_prepared_prompt_tokens, request))
+            if count is None:
+                raise UnsupportedFeatureError(
+                    "exact token counting is not available for media inputs")
+            return count
         prepared = await self.prepare_request(
             messages,
             SamplingParams(max_tokens=1, enable_thinking=enable_thinking),
@@ -358,6 +396,18 @@ class EngineClient:
                     tool_choice=tool_config.tool_choice,
                     tool_config=tool_config,
                 )
+            if owned.ticket is not None:
+                operation = partial(
+                    self._llm._complete_continuous_request, owned.request,
+                    sampling_params, tool_config, tool_parser=tool_parser,
+                    reasoning_parser=reasoning_parser, ticket=owned.ticket)
+                worker = asyncio.create_task(asyncio.to_thread(operation))
+                try:
+                    return await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    owned.ticket.cancel()
+                    await asyncio.shield(asyncio.gather(worker, return_exceptions=True))
+                    raise
             operation = partial(
                 self._llm._complete_prepared_request,
                 owned.request,
@@ -383,6 +433,7 @@ class EngineClient:
         tools: Optional[Sequence[Dict[str, Any]]] = None,
         tool_choice: Optional[Union[str, Dict[str, Any]]] = None,
         tool_config: Optional[ToolConfig] = None,
+        stream: bool = False,
     ) -> PreparedRequest:
         lease = await self._admission.reserve()
         try:
@@ -395,6 +446,20 @@ class EngineClient:
                     tool_choice=tool_choice,
                     tool_config=tool_config,
                 ))
+            if getattr(self._llm, "continuous_batching_enabled", False):
+                # No await between submission and ownership transfer can lose a ticket.
+                prompt = self._llm._runtime.prepare_continuous_prompt(request)
+                options = self._llm._continuous_options(sampling_params, stream=stream)
+                options.set_queue_timeout_ms(int(self._api_config.queue_timeout * 1000))
+                try:
+                    ticket = self._llm._runtime.submit_continuous(prompt, options)
+                except RuntimeError as exc:
+                    if not self._llm._runtime.continuous_healthy():
+                        raise ServerUnavailableError() from exc
+                    if "queue full" in str(exc):
+                        raise ServerOverloadedError() from exc
+                    raise
+                return PreparedRequest(request=request, lease=lease, ticket=ticket)
             return PreparedRequest(request=request, lease=lease)
         except BaseException:
             lease.release()
@@ -415,8 +480,15 @@ class EngineClient:
             sampling_params,
             tools=tools,
             tool_choice=tool_choice,
+            stream=True,
         )
         try:
+            if owned.ticket is not None:
+                iterator = self._llm.generate_continuous_stream(
+                    owned.request, sampling_params, ticket=owned.ticket)
+                async for item in _iterate_sync(iterator):
+                    yield item
+                return
             iterator = self._llm.generate_stream(
                 messages,
                 sampling_params,

@@ -220,7 +220,8 @@ if(ENABLE_CUTEDSL_MODULE_TEST_HOOK)
   target_compile_definitions(edgellmCore
                              PRIVATE ENABLE_CUTEDSL_MODULE_TEST_HOOK)
 endif()
-target_link_libraries(edgellmCore PRIVATE ${CMAKE_DL_LIBS})
+find_package(Threads REQUIRED)
+target_link_libraries(edgellmCore PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)
 # Apply FMHA SM exclusion definitions
 target_compile_definitions(edgellmCore PRIVATE ${FMHA_EXCLUDE_DEFINITIONS})
 edgellm_apply_qnx_warning_suppressions(edgellmCore)

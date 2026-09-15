@@ -19,6 +19,7 @@
 
 #include "common/checkMacros.h"
 #include "common/logger.h"
+#include "runtime/greedySchedulerBackend.h"
 #include "runtime/llmRankRuntime.h"
 #include "runtime/multiDevice/runtimeCoordinator.h"
 
@@ -232,9 +233,45 @@ std::vector<std::vector<int32_t>> const& LLMInferenceRuntime::getBaseModelInputT
     return rootRuntime().getBaseModelInputTokenIds();
 }
 
+std::array<uint64_t, 4> LLMInferenceRuntime::continuousExecutionStats() const
+{
+    auto const stats = rootRuntime().executionStats();
+    return {stats.captures, stats.replays, stats.eager, stats.profileSwitches};
+}
+
 bool LLMInferenceRuntime::hasDraftModel() const
 {
     return rootRuntime().hasDraftModel();
+}
+
+std::unique_ptr<ContinuousScheduler> LLMInferenceRuntime::createContinuousScheduler(
+    cudaStream_t stream, size_t maxQueued, size_t maxQueuedBytes, bool captureGraphs)
+{
+    ELLM_CHECK(mCoordinator != nullptr, "Runtime coordinator is not initialized.");
+    ELLM_CHECK(!hasDraftModel(), "Continuous scheduling does not support speculative decoding.");
+    auto& runtime = rootRuntime();
+    auto backend = std::make_unique<SamplingSchedulerBackend>(
+        runtime, stream, runtime.vocabularySize(), &runtime.tokenizer(), captureGraphs);
+    return std::make_unique<ContinuousScheduler>(std::move(backend), maxQueued, maxQueuedBytes);
+}
+
+std::vector<int32_t> LLMInferenceRuntime::prepareContinuousPrompt(LLMGenerationRequest const& request) const
+{
+    ELLM_CHECK(mCoordinator != nullptr, "Runtime coordinator is not initialized.");
+    ELLM_CHECK(request.requests.size() == 1, "Continuous scheduling accepts one request at a time.");
+    auto const& row = request.requests.front();
+    ELLM_CHECK(row.imageBuffers.empty() && row.audioBuffers.empty() && !row.pastTrajectory.has_value(),
+        "Continuous scheduling currently supports text-only requests.");
+    ELLM_CHECK(!request.saveSystemPromptKVCache, "Continuous scheduling does not support context-cache writes.");
+    auto prepared = mCoordinator->prepareRequestState(request);
+    ELLM_CHECK(prepared.preTokenizedInputIds.size() == 1 && !prepared.preTokenizedInputIds.front().empty(),
+        "Continuous scheduling could not tokenize request.");
+    return std::move(prepared.preTokenizedInputIds.front());
+}
+
+std::string LLMInferenceRuntime::continuousTokenPiece(int32_t tokenId) const
+{
+    return rootRuntime().tokenizer().idToPiece(tokenId, true);
 }
 
 bool LLMInferenceRuntime::ownsGlobalRank(int32_t globalRank) const noexcept

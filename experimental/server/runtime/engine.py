@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import (TYPE_CHECKING, Any, Dict, Iterator, List, Mapping,
                     Optional, Sequence, Union)
 
+from ..api.errors import ServerOverloadedError
 from ..config import ContextCacheConfig
 from ..parsing.tool_calling import (ToolConfig, parse_assistant_output,
                                     validate_tool_request)
@@ -91,6 +92,7 @@ class SamplingParams:
     skip_special_tokens: bool = True
     reuse_context: bool = True
     cache_generated_tokens: bool = True
+    seed: int = 42
 
 
 @dataclass
@@ -106,6 +108,7 @@ class LogprobEntry:
     logprob: float
     token: str
     bytes: List[int]
+    chosen_only: bool = False
 
 
 def _convert_logprobs(raw) -> List[List[LogprobEntry]]:
@@ -649,6 +652,7 @@ class LLM:
         self,
         model: str,
         *,
+        engine_dir: str = "",
         cache_dir: str = "",
         engine_cache_max_size_gb: float = 50.0,
         clear_engine_cache: bool = False,
@@ -704,6 +708,18 @@ class LLM:
         self._prev_ctx_admitted_sequences = 0
         self._closed = False
         self._runtime = None
+
+        if engine_dir:
+            if not os.path.isdir(model):
+                raise ValueError(
+                    "an existing --engine-dir requires a local checkpoint "
+                    "directory for tokenizer and external weights")
+            self._cache_dir = ""
+            self._model_dir = os.path.abspath(model)
+            self._draft_model_dir = ""
+            self._init_from_bundle(os.path.abspath(engine_dir))
+            self._load_runtime()
+            return
 
         from .engine_build import BuildOptions, cache_root, prepare_model
 
@@ -821,9 +837,172 @@ class LLM:
                 self._model_dir,
                 context_cache_config,
             )
-        self._runtime.capture_decoding_cuda_graph()
+        self._continuous_batching = False
+        # P6 is deliberately opt-in until P7 has qualified the existing graph
+        # captures, allocation behaviour and singleton regression. Candidate
+        # service units set this explicit switch; legacy deployments retain
+        # their exact single-request path.
+        if (os.environ.get("EDGELLM_CONTINUOUS_BATCHING", "").lower()
+                in {"1", "true", "on"}):
+            self.enable_continuous_batching()
+        else:
+            self._runtime.capture_decoding_cuda_graph()
         self._load_omni_runtime()
         logger.info("Engine loaded and ready.")
+
+    @property
+    def continuous_batching_enabled(self) -> bool:
+        return self._continuous_batching
+
+    def enable_continuous_batching(self) -> None:
+        """Enable P6 native scheduling for supported vanilla text bundles."""
+        if self._continuous_batching:
+            return
+        if self.has_draft_model or self._max_batch_size < 2:
+            raise ValueError(
+                "continuous batching requires a vanilla batch-two engine")
+        if self._layout.visual_dir or self._layout.audio_dir:
+            raise ValueError(
+                "continuous batching currently supports text-only engines")
+        if self._context_cache_config.enabled:
+            raise ValueError(
+                "continuous batching does not support context cache")
+        self._runtime.enable_continuous_batching(capture_graphs=os.environ.get(
+            "EDGELLM_CONTINUOUS_GRAPHS", "0") == "1")
+        self._continuous_batching = True
+
+    def _continuous_options(self, params: SamplingParams, *, stream: bool):
+        options = self._rt.ContinuousRequestOptions()
+        generation = self._rt.ContinuousSequenceOptions()
+        generation.max_output_tokens = params.max_tokens
+        generation.temperature = params.temperature
+        generation.top_p = params.top_p
+        generation.top_k = params.top_k
+        generation.seed = params.seed
+        generation.num_logprobs = params.num_logprobs
+        generation.enable_thinking = params.enable_thinking
+        generation.stop_strings = params.stop
+        generation.logit_bias = _normalize_logit_bias(params.logit_bias)
+        options.generation = generation
+        options.stream_records = min(max(params.max_tokens +
+                                         2, 2), 64) if stream else 0
+        options.stream_bytes = 65536 if stream else 0
+        return options
+
+    def _submit_continuous(self, request, params: SamplingParams, *,
+                           stream: bool):
+        self._ensure_open()
+        prompt = self._runtime.prepare_continuous_prompt(request)
+        return self._runtime.submit_continuous(
+            prompt, self._continuous_options(params, stream=stream))
+
+    def _continuous_logprobs(self, samples) -> List[List[LogprobEntry]]:
+        converted = []
+        for sample in samples:
+            entries = []
+            for entry in list(sample.top)[:sample.top_count]:
+                piece = self._runtime.continuous_token_piece(entry.token)
+                entries.append(
+                    LogprobEntry(entry.token, entry.logprob,
+                                 piece.decode("utf-8", "replace"),
+                                 list(piece)))
+            if not any(entry.token_id == sample.token for entry in entries):
+                piece = self._runtime.continuous_token_piece(sample.token)
+                entries.append(
+                    LogprobEntry(sample.token,
+                                 sample.logprob,
+                                 piece.decode("utf-8", "replace"),
+                                 list(piece),
+                                 chosen_only=True))
+            converted.append(entries)
+        return converted
+
+    def _complete_continuous_request(self,
+                                     request,
+                                     params: SamplingParams,
+                                     tool_config: ToolConfig,
+                                     *,
+                                     tool_parser: str,
+                                     reasoning_parser: str,
+                                     ticket=None) -> CompletionOutput:
+        if ticket is None:
+            ticket = self._submit_continuous(request, params, stream=False)
+        result = ticket.result()
+        if result.status == self._rt.SchedulerStatus.DEADLINE:
+            raise ServerOverloadedError("native request deadline expired")
+        if result.status != self._rt.SchedulerStatus.COMPLETED:
+            raise RuntimeError(
+                f"continuous generation failed: {result.status}")
+        finish_reason = {
+            self._rt.SequenceFinish.LENGTH: "length",
+            self._rt.SequenceFinish.EOS: "stop",
+            self._rt.SequenceFinish.STOP: "stop",
+        }.get(result.finish, "stop")
+        output = self._parse_generation_output(
+            result.text,
+            list(result.tokens),
+            result.prompt_tokens,
+            finish_reason,
+            tool_config,
+            tool_parser=tool_parser,
+            reasoning_parser=reasoning_parser)
+        if params.num_logprobs:
+            output.logprobs = self._continuous_logprobs(result.logprobs)
+        return output
+
+    def generate_continuous_stream(self,
+                                   request,
+                                   params: SamplingParams,
+                                   ticket=None) -> Iterator[StreamDelta]:
+        """Read one P5 ticket channel; closing this iterator cancels only it."""
+        state = {"ticket": ticket}
+
+        def _cancel():
+            ticket = state.get("ticket")
+            if ticket is not None:
+                ticket.cancel()
+
+        def _iterate():
+            ticket = state["ticket"]
+            if ticket is None:
+                ticket = self._submit_continuous(request, params, stream=True)
+                state["ticket"] = ticket
+            terminal = None
+            try:
+                while True:
+                    read = ticket.read(timeout_ms=200)
+                    if read.update is not None:
+                        update = read.update
+                        yield StreamDelta(
+                            text=update.text,
+                            token_ids=([update.sample.token]
+                                       if update.sample.token >= 0 else []),
+                            logprobs=(self._continuous_logprobs(
+                                [update.sample]) if params.num_logprobs
+                                      and update.sample.token >= 0 else []))
+                    if read.closed:
+                        terminal = ticket.result()
+                        if terminal.status == self._rt.SchedulerStatus.DEADLINE:
+                            raise ServerOverloadedError(
+                                "native request deadline expired")
+                        if terminal.status != self._rt.SchedulerStatus.COMPLETED:
+                            raise RuntimeError(
+                                f"continuous generation failed: {terminal.status}"
+                            )
+                        reason = {
+                            self._rt.SequenceFinish.LENGTH: "length",
+                            self._rt.SequenceFinish.EOS: "stop",
+                            self._rt.SequenceFinish.STOP: "stop",
+                        }.get(terminal.finish, "stop")
+                        yield StreamDelta(finished=True,
+                                          finish_reason=reason,
+                                          prompt_tokens=terminal.prompt_tokens)
+                        return
+            finally:
+                if terminal is None:
+                    _cancel()
+
+        return _CancellableIterator(_iterate(), _cancel)
 
     def _load_omni_runtime(self) -> None:
         """Load the Qwen3-Omni audio-output stack when its engines exist."""
@@ -1243,6 +1422,9 @@ class LLM:
             self._closed = True
             with self._admission_sem:
                 with self._infer_lock:
+                    if getattr(self, "_continuous_batching", False):
+                        self._runtime.close_continuous_batching()
+                        self._continuous_batching = False
                     self._runtime = None
 
     def __enter__(self) -> "LLM":

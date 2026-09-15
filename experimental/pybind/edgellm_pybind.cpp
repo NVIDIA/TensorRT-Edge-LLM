@@ -33,6 +33,7 @@
 #include "profiling/metrics.h"
 #include "runtime/audioLoader.h"
 #include "runtime/audioUtils.h"
+#include "runtime/continuousScheduler.h"
 #include "runtime/imageUtils.h"
 #include "runtime/llmInferenceRuntime.h"
 #include "runtime/llmRuntimeUtils.h"
@@ -274,6 +275,58 @@ public:
         return response;
     }
 
+    void enableContinuousBatching(size_t maxQueued, size_t maxQueuedBytes, bool captureGraphs)
+    {
+        ELLM_CHECK(mScheduler == nullptr, "Continuous scheduler is already enabled");
+        mScheduler = mRuntime->createContinuousScheduler(mStream.get(), maxQueued, maxQueuedBytes, captureGraphs);
+    }
+
+    std::vector<int32_t> prepareContinuousPrompt(LLMGenerationRequest const& request) const
+    {
+        ELLM_CHECK(mScheduler != nullptr, "Enable continuous batching before preparing requests");
+        return mRuntime->prepareContinuousPrompt(request);
+    }
+
+    SchedulerTicket submitContinuous(std::vector<int32_t> const& prompt, SchedulerRequestOptions const& options)
+    {
+        ELLM_CHECK(mScheduler != nullptr, "Enable continuous batching before submitting requests");
+        return mScheduler->submit(prompt, options);
+    }
+
+    py::bytes continuousTokenPiece(int32_t tokenId) const
+    {
+        return py::bytes(mRuntime->continuousTokenPiece(tokenId));
+    }
+
+    std::array<uint64_t, 4> continuousExecutionStats() const
+    {
+        return mRuntime->continuousExecutionStats();
+    }
+
+    bool continuousHealthy() const
+    {
+        return mScheduler != nullptr && mScheduler->healthy();
+    }
+
+    size_t continuousQueuedRequests() const
+    {
+        return mScheduler ? mScheduler->queuedCount() : 0;
+    }
+
+    size_t continuousResidentRequests() const
+    {
+        return mScheduler ? mScheduler->residentCount() : 0;
+    }
+
+    void closeContinuousBatching()
+    {
+        if (mScheduler)
+        {
+            mScheduler->close();
+            mScheduler.reset();
+        }
+    }
+
     //! Load the Qwen3-Omni audio-output stack (Talker + CodePredictor + Code2Wav).
     //! tokenizerDir is normally the Thinker engine dir.
     void loadOmni(std::string const& talkerEngineDir, std::string const& codePredictorEngineDir,
@@ -409,6 +462,7 @@ private:
     CudaStreamWrapper mStream;
     std::unique_ptr<void, DlDeleter> mPluginHandle;
     std::unique_ptr<LLMInferenceRuntime> mRuntime;
+    std::unique_ptr<ContinuousScheduler> mScheduler;
     std::unique_ptr<Qwen3OmniTTSRuntime> mTtsRuntime;
     std::unique_ptr<Code2WavRunner> mCode2wavRunner;
 };
@@ -916,6 +970,84 @@ PYBIND11_MODULE(_edgellm_runtime, m)
         .def_readonly("prompt_token_counts", &LLMGenerationResponse::inputTokenCounts);
 
     // ========================================================================
+    // Continuous scheduler (P6 bridge)
+    // ========================================================================
+    py::enum_<SchedulerStatus>(m, "SchedulerStatus")
+        .value("COMPLETED", SchedulerStatus::kCompleted)
+        .value("CANCELLED", SchedulerStatus::kCancelled)
+        .value("FAILED", SchedulerStatus::kFailed)
+        .value("DEADLINE", SchedulerStatus::kDeadline)
+        .value("SLOW_CONSUMER", SchedulerStatus::kSlowConsumer);
+
+    py::enum_<SequenceFinish>(m, "SequenceFinish")
+        .value("NONE", SequenceFinish::kNone)
+        .value("LENGTH", SequenceFinish::kLength)
+        .value("EOS", SequenceFinish::kEos)
+        .value("STOP", SequenceFinish::kStop);
+
+    py::class_<TokenLogprob>(m, "NativeTokenLogprob")
+        .def_readonly("token", &TokenLogprob::token)
+        .def_readonly("logprob", &TokenLogprob::logprob);
+    py::class_<SequenceSample>(m, "NativeSequenceSample")
+        .def_readonly("token", &SequenceSample::token)
+        .def_readonly("logprob", &SequenceSample::logprob)
+        .def_readonly("top", &SequenceSample::top)
+        .def_readonly("top_count", &SequenceSample::topCount)
+        .def_readonly("random_counter", &SequenceSample::randomCounter)
+        .def_readonly("thinking", &SequenceSample::thinking);
+    py::class_<SequenceUpdate>(m, "NativeSequenceUpdate")
+        .def_readonly("sample", &SequenceUpdate::sample)
+        .def_readonly("text", &SequenceUpdate::text);
+    py::class_<SequenceRead>(m, "NativeSequenceRead")
+        .def_readonly("update", &SequenceRead::update)
+        .def_readonly("closed", &SequenceRead::closed);
+    py::class_<SchedulerResult>(m, "NativeSchedulerResult")
+        .def_readonly("status", &SchedulerResult::status)
+        .def_readonly("tokens", &SchedulerResult::tokens)
+        .def_readonly("text", &SchedulerResult::text)
+        .def_readonly("logprobs", &SchedulerResult::logprobs)
+        .def_readonly("finish", &SchedulerResult::finish)
+        .def_readonly("prompt_tokens", &SchedulerResult::promptTokens)
+        .def_readonly("random_counter", &SchedulerResult::randomCounter);
+    py::class_<SequenceOptions>(m, "ContinuousSequenceOptions")
+        .def(py::init<>())
+        .def_readwrite("max_output_tokens", &SequenceOptions::maxOutputTokens)
+        .def_readwrite("temperature", &SequenceOptions::temperature)
+        .def_readwrite("top_p", &SequenceOptions::topP)
+        .def_readwrite("top_k", &SequenceOptions::topK)
+        .def_readwrite("seed", &SequenceOptions::seed)
+        .def_readwrite("num_logprobs", &SequenceOptions::numLogprobs)
+        .def_readwrite("enable_thinking", &SequenceOptions::enableThinking)
+        .def_readwrite("ignore_eos", &SequenceOptions::ignoreEos)
+        .def_readwrite("eos_token_ids", &SequenceOptions::eosTokenIds)
+        .def_readwrite("stop_strings", &SequenceOptions::stopStrings)
+        .def_readwrite("logit_bias", &SequenceOptions::logitBias);
+    py::class_<SchedulerRequestOptions>(m, "ContinuousRequestOptions")
+        .def(py::init<>())
+        .def_readwrite("generation", &SchedulerRequestOptions::generation)
+        .def_readwrite("stream_records", &SchedulerRequestOptions::streamRecords)
+        .def_readwrite("stream_bytes", &SchedulerRequestOptions::streamBytes)
+        .def("set_queue_timeout_ms",
+            [](SchedulerRequestOptions& self, int64_t timeoutMs) {
+                self.queueDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{timeoutMs};
+            })
+        .def("set_timeout_ms", [](SchedulerRequestOptions& self, int64_t timeoutMs) {
+            self.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{timeoutMs};
+        });
+    py::class_<SchedulerTicket>(m, "ContinuousTicket")
+        .def("id", &SchedulerTicket::id)
+        .def("cancel", &SchedulerTicket::cancel)
+        .def(
+            "read",
+            [](SchedulerTicket const& self, int64_t timeoutMs) {
+                return self.read(std::chrono::milliseconds{timeoutMs});
+            },
+            py::arg("timeout_ms"), py::call_guard<py::gil_scoped_release>())
+        .def(
+            "result", [](SchedulerTicket const& self) { return self.result().get(); },
+            py::call_guard<py::gil_scoped_release>());
+
+    // ========================================================================
     // Runtime: unified (vanilla + Eagle speculative decoding)
     // ========================================================================
     py::class_<PyLLMRuntime>(m, "LLMRuntime", "Unified LLM inference runtime with optional speculative decoding.")
@@ -934,6 +1066,20 @@ PYBIND11_MODULE(_edgellm_runtime, m)
             py::arg("dflash_block_size") = 0, "Construct for speculative decoding")
         .def("handle_request", &PyLLMRuntime::handleRequest, py::arg("request"),
             py::call_guard<py::gil_scoped_release>(), "Process a generation request and return the response")
+        .def("enable_continuous_batching", &PyLLMRuntime::enableContinuousBatching, py::arg("max_queued") = 8,
+            py::arg("max_queued_bytes") = 256 * 1024, py::arg("capture_graphs") = false,
+            py::call_guard<py::gil_scoped_release>())
+        .def("prepare_continuous_prompt", &PyLLMRuntime::prepareContinuousPrompt, py::arg("request"),
+            py::call_guard<py::gil_scoped_release>())
+        .def("submit_continuous", &PyLLMRuntime::submitContinuous, py::arg("prompt"), py::arg("options"),
+            py::call_guard<py::gil_scoped_release>())
+        .def("continuous_token_piece", &PyLLMRuntime::continuousTokenPiece, py::arg("token_id"))
+        .def("continuous_execution_stats", &PyLLMRuntime::continuousExecutionStats)
+        .def("continuous_healthy", &PyLLMRuntime::continuousHealthy)
+        .def("continuous_queued_requests", &PyLLMRuntime::continuousQueuedRequests)
+        .def("continuous_resident_requests", &PyLLMRuntime::continuousResidentRequests)
+        .def("close_continuous_batching", &PyLLMRuntime::closeContinuousBatching,
+            py::call_guard<py::gil_scoped_release>())
         .def("load_omni", &PyLLMRuntime::loadOmni, py::arg("talker_engine_dir"), py::arg("code_predictor_engine_dir"),
             py::arg("code2wav_engine_dir"), py::arg("tokenizer_dir"), py::arg("checkpoint_dir") = "",
             "Load the Qwen3-Omni audio-output stack (Talker + CodePredictor + Code2Wav)")

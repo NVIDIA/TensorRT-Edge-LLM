@@ -93,6 +93,10 @@ public:
     LLMRankRuntime& rootRuntime();
     LLMRankRuntime const& rootRuntime() const;
 
+    //! Formats and tokenizes a request without submitting it to rank workers.
+    //! Used only by the P6 single-rank continuous scheduler bridge.
+    LLMGenerationRequest prepareRequestState(LLMGenerationRequest const& request) const;
+
     bool ownsGlobalRank(int32_t globalRank) const noexcept;
     bool localRanksSucceeded() const noexcept;
 
@@ -137,7 +141,6 @@ private:
         LLMGenerationRequest const& request, bool enableProfiling, bool outputThinkerEmbeddings, cudaStream_t stream);
 
     std::unique_ptr<LLMRankRuntime> createRankRuntime(int32_t globalRank);
-    LLMGenerationRequest prepareRequestState(LLMGenerationRequest const& request) const;
     void prepareRankRequests(LLMGenerationRequest const& request);
     CollectiveGroup const* collectiveGroup(ParallelType type) const noexcept;
     CollectiveGroup* collectiveGroup(ParallelType type) noexcept;

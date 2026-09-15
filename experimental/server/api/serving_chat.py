@@ -70,10 +70,11 @@ def _format_logprob_steps(token_ids, steps,
         return None
     content = []
     for token_id, step in zip(token_ids, steps):
-        top = [_entry_to_openai(entry) for entry in step]
+        top = [_entry_to_openai(entry) for entry in step if not entry.chosen_only]
+        candidates = [_entry_to_openai(entry) for entry in step]
         chosen = next(
             (candidate
-             for candidate in top if candidate["token_id"] == token_id), None)
+             for candidate in candidates if candidate["token_id"] == token_id), None)
         content.append({
             "token": chosen["token"] if chosen else "",
             "token_id": token_id,
@@ -154,9 +155,12 @@ class OpenAIServingChat:
             raise UnsupportedFeatureError(
                 "presence_penalty is not supported by the Edge-LLM runtime",
                 param="presence_penalty")
-        if request.seed is not None:
+        if (request.seed is not None
+                and not getattr(self._client.llm, "continuous_batching_enabled", False)):
             raise UnsupportedFeatureError(
                 "seed is not supported by the Edge-LLM runtime", param="seed")
+        if request.seed is not None and not 0 <= request.seed < (1 << 64):
+            raise InvalidRequestError("seed must fit an unsigned 64-bit integer", param="seed")
         if request.response_format is not None:
             raise UnsupportedFeatureError(
                 "response_format requires structured decoding, which is not "
@@ -223,6 +227,7 @@ class OpenAIServingChat:
             num_logprobs = max(1, request.top_logprobs or 0)
         greedy = request.temperature == 0
         sampling = SamplingParams(
+            seed=request.seed if request.seed is not None else 42,
             temperature=request.temperature,
             top_p=1.0 if greedy else request.top_p,
             top_k=1 if greedy else request.top_k,
@@ -372,6 +377,7 @@ class OpenAIServingChat:
                 tools=prepared.tool_config.tools,
                 tool_choice=prepared.tool_config.tool_choice,
                 tool_config=prepared.tool_config,
+                stream=request.stream,
             )
             return engine_request
         except (KeyError, TypeError, ValueError) as exc:
