@@ -685,6 +685,60 @@ _int4_groupwise_gemm_schema = OpSchema(
 )
 
 # ---------------------------------------------------------------------------
+# trt_edgellm::Fp8BlockGemmPlugin
+# ---------------------------------------------------------------------------
+
+_fp8_block_gemm_plugin_schema = OpSchema(
+    name="Fp8BlockGemmPlugin",
+    domain="trt_edgellm",
+    since_version=_SCHEMA_SINCE_VERSION,
+    doc="Blockwise FP8 GEMM with dynamic activation quantization.",
+    inputs=[
+        OpSchema.FormalParameter(
+            name="input",
+            description="Activation tensor [*, K]",
+            type_str="T1",
+        ),
+        OpSchema.FormalParameter(
+            name="weight",
+            description="FP8 weight as INT8 bit-view [N, K]",
+            type_str="T2",
+        ),
+        OpSchema.FormalParameter(
+            name="weight_scale",
+            description="Blockwise weight scale [N/128, K/128]",
+            type_str="T3",
+        ),
+    ],
+    outputs=[
+        OpSchema.FormalParameter(
+            name="output",
+            description="Output tensor [*, N]",
+            type_str="T1",
+        ),
+    ],
+    type_constraints=[
+        ("T1", ["tensor(float16)"], "Activation/output type"),
+        ("T2", ["tensor(int8)"], "Weight type (INT8 bit-view of E4M3)"),
+        ("T3", ["tensor(float)"], "Scale type"),
+    ],
+    attributes=[
+        OpSchema.Attribute(
+            name="gemm_n",
+            type=OpSchema.AttrType.INT,
+            description="Output feature dimension",
+            required=True,
+        ),
+        OpSchema.Attribute(
+            name="gemm_k",
+            type=OpSchema.AttrType.INT,
+            description="Input feature dimension",
+            required=True,
+        ),
+    ],
+)
+
+# ---------------------------------------------------------------------------
 # trt_edgellm::Int4GroupwiseGemmPluginV2 (cuteDSL fragment-layout weights)
 # ---------------------------------------------------------------------------
 
@@ -1881,6 +1935,7 @@ _ALL_CUSTOM_SCHEMAS: tuple[OpSchema, ...] = (
     _int4_groupwise_gemm_schema,
     _qkv_concat_schema,
     _int4_groupwise_gemm_v2_schema,
+    _fp8_block_gemm_plugin_schema,
     _nvfp4_a16_gemm_schema,
     _causal_conv1d_schema,
     _update_ssm_state_schema,

@@ -32,6 +32,7 @@
 #              Blackwell overlay when the artifact has it (default)
 #   gdn      — enable only the GDN group
 #   f16_moe  — enable the target-specific homogeneous-FP16 MoE group
+#   fp8_blockwise_gemm — enable the SM110 blockwise FP8 GEMM group
 #   fmha;gdn — semicolon-separated list of groups (CMake list syntax)
 #
 # Usage:
@@ -51,6 +52,7 @@
 #   CUTE_DSL_RMSNORM_ENABLED — set when the rmsnorm group is active
 #   CUTE_DSL_NVFP4_A16_BLACKWELL_GEMM_ENABLED — set when the SM110 dense W4A16
 #                                                GEMM group is active
+#   CUTE_DSL_FP8_BLOCKWISE_GEMM_ENABLED — set when the SM110 blockwise FP8 GEMM group is active
 #   CUTE_DSL_GEMM_ENABLED  — set when any gemm variant is active
 # ---------------------------------------------------------------------------
 # cmake-format: on
@@ -59,7 +61,7 @@ set(ENABLE_CUTE_DSL
     "fmha"
     CACHE
       STRING
-      "CuTe DSL kernels: OFF, ALL, or semicolon-separated group list (fmha;gdn;rmsnorm)"
+      "CuTe DSL kernels: OFF, ALL, or semicolon-separated group list (fmha;gdn;rmsnorm;fp8_blockwise_gemm)"
 )
 
 set(CUTE_DSL_ARTIFACT_TAG
@@ -1003,6 +1005,18 @@ function(cute_dsl_setup)
       STATUS
         "CuTe DSL: gemm_blackwell_nvfp4_ws_fp8_tn128 — CUTE_DSL_GEMM_BLACKWELL_NVFP4_WS_FP8_TN128_ENABLED set"
     )
+  endif()
+
+  # Blockwise FP8 GEMM has one dynamic M/N/K entry point. Reject incomplete
+  # artifacts before compiling a runner that would reference a missing symbol.
+  if("fp8_blockwise_gemm" IN_LIST _active_groups)
+    list(FIND _variants "fp8_blockwise_gemm" _fp8_blockwise_gemm_idx)
+    if(${_fp8_blockwise_gemm_idx} EQUAL -1)
+      message(
+        FATAL_ERROR
+          "CuTe DSL: fp8_blockwise_gemm group is missing its fp8_blockwise_gemm variant in ${_metadata}."
+      )
+    endif()
   endif()
 
   # Dense SM110 W4A16 variants. The group supports both IO dtypes and dispatch

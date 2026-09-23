@@ -21,6 +21,7 @@ Kernel groups:
                      FP16/FP8 variants on SM100/101/110
   ssd              — Mamba2 SSM chunk-scan prefill
   gemm             — Talker MLP GEMM (Ampere / Blackwell / BW GeForce)
+  fp8_blockwise_gemm — SM110 blockwise E4M3 GEMM with FP32 scales
   int4_fp16_gemm   — W4A16 INT4-weight FP16 GEMM (Ampere; 60-config sweep, bN=128) +
                      the decode GEMV (small-M, shares the GEMM's weight layout;
                      one exported function per M in 1..8) — built together
@@ -97,7 +98,8 @@ class KernelVariant:
         name:          Unique identifier — used as --file_name / --function_prefix.
         group:         Logical group ("gdn", "fmha", "f16_moe",
                        "nvfp4_fused_moe", "nvfp4_moe", "rmsnorm", "ssd",
-                       "nvfp4_a16_blackwell_gemm", or "gemm").
+                       "nvfp4_a16_blackwell_gemm", "fp8_blockwise_gemm",
+                       or "gemm").
                        cmake sets CUTE_DSL_<GROUP>_ENABLED for integrated groups.
         supported_sms: Explicit SM whitelist. With --kernels ALL, only variants whose
                        supported_sms contains the detected/requested SM are compiled.
@@ -128,6 +130,7 @@ class KernelVariant:
 #                      persistent variants on SM100/101/110.
 #   ssd              — Mamba2 SSM chunk-scan prefill
 #   gemm             — Talker MLP cuBLAS replacement (Ampere/Blackwell/BW GeForce)
+#   fp8_blockwise_gemm — SM110 blockwise E4M3 GEMM with FP32 scales
 #   f16_moe          — FP16 grouped FC1/FC2 MoE (Ampere/Blackwell/SM12x)
 #   nvfp4_moe        — split FC1/FC2 NVFP4 MoE (currently SM110/Thor only)
 #   nvfp4_a16_blackwell_gemm — SM110 dense W4A16 TCGen5 GEMM (FP16/BF16)
@@ -1646,6 +1649,13 @@ KERNEL_VARIANTS = [
             "--export_only",
         ],
     ),
+    KernelVariant(
+        name="fp8_blockwise_gemm",
+        group="fp8_blockwise_gemm",
+        supported_sms=[110],
+        script="fp8_blockwise_gemm_cutedsl/export_kernel.py",
+        script_args=[],
+    ),
 ]
 
 
@@ -2731,7 +2741,7 @@ def main():
         help="Which kernels to build: ALL (default), a group name "
              "(fmha | gdn | f16_moe | nvfp4_moe | "
              "nvfp4_a16_blackwell_gemm | nvfp4_fused_moe | rmsnorm | ssd | gemm | "
-             "int4_fp16_gemm), or a comma-separated list "
+             "fp8_blockwise_gemm | int4_fp16_gemm), or a comma-separated list "
              "of group names. "
              "Variants whose supported_sms does not include the target SM are skipped.",
     )

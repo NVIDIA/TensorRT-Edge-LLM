@@ -67,6 +67,7 @@ from .checkpoint.checkpoint_utils import load_checkpoint_config_dicts
 
 QUANT_FP16 = "fp16"
 QUANT_FP8 = "fp8"
+QUANT_FP8_BLOCK = "fp8_block"
 QUANT_MXFP8 = "mxfp8"
 QUANT_NVFP4 = "nvfp4"
 # Weight-only NVFP4 (W4A16): ModelOpt ``W4A16_NVFP4`` — 4-bit float weights,
@@ -400,6 +401,7 @@ class QuantConfig:
     quant_type: str = QUANT_FP16
     # group_size: 1 = per-tensor/per-channel, 16 for NVFP4, 128 for AWQ
     group_size: int = 1
+    weight_block_size: Optional[list[int]] = None
     # GPTQ checkpoints are not consistent about whether qzeros stores the
     # actual zero point or (zero point - 1).  The loader uses:
     # actual_zero = stored_zero + gptq_zero_point_offset.
@@ -437,6 +439,11 @@ class QuantConfig:
         if self.quant_type == QUANT_MXFP8:
             return True
         return any(v == QUANT_MXFP8 for v in self.layer_overrides.values())
+
+    @property
+    def uses_fp8_block_weights(self) -> bool:
+        """True if the checkpoint uses blockwise FP8 weights."""
+        return self.quant_type == QUANT_FP8_BLOCK
 
 
 def module_quant_type(module_name: str, model_config: "ModelConfig") -> str:
@@ -2381,6 +2388,20 @@ def _parse_quant(model_dir: str,
                 model_dir,
                 _scope_exclusions(list(qc.get("ignore", [])),
                                   submodel_prefix)),
+        )
+
+    # quant_method == fp8 (per-tensor or 2-D blockwise checkpoints)
+    if qc.get("quant_method") == "fp8":
+        weight_block_size = qc.get("weight_block_size")
+        quant_type = QUANT_FP8_BLOCK if weight_block_size else QUANT_FP8
+        excluded = list(qc.get("ignored_layers", []))
+        excluded.extend(qc.get("modules_to_not_convert", []))
+        return QuantConfig(
+            quant_type=quant_type,
+            weight_block_size=(list(weight_block_size)
+                               if weight_block_size else None),
+            excluded=_effective_excluded_modules(
+                model_dir, _scope_exclusions(excluded, submodel_prefix)),
         )
 
     # quant_method == awq (column-packed int4 checkpoints)

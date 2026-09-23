@@ -59,6 +59,7 @@ from ..external_weights import (externalize_model_weights,
                                 reject_quantized_lm_head_externalization,
                                 resolve_externalize_weights)
 from ..models.default.modeling_default import CausalLM
+from ..models.linear import FP8BlockLinear
 from .dynamo_translations import build_custom_translation_table
 
 logger = logging.getLogger(__name__)
@@ -541,6 +542,7 @@ def _initializer_dtype_fixup_required(
         return True
 
     plugin_fp32_init_names: set = set()
+    fp8_block_plugin_init_names: set = set()
     for node in model.graph.node:
         if node.op_type == "update_ssm_state" and len(node.input) > 1:
             plugin_fp32_init_names.add(node.input[1])
@@ -552,6 +554,10 @@ def _initializer_dtype_fixup_required(
                     plugin_fp32_init_names.add(node.input[input_idx])
         if node.op_type == "Fp16MoePlugin" and len(node.input) > 4:
             plugin_fp32_init_names.add(node.input[4])
+        if node.op_type == "Fp8BlockGemmPlugin":
+            fp8_block_plugin_init_names.update(node.input)
+            if len(node.input) > 2:
+                plugin_fp32_init_names.add(node.input[2])
 
     init_map = {init.name: init for init in model.graph.initializer}
     elem_types: dict[str, int] = {}
@@ -607,6 +613,8 @@ def _initializer_dtype_fixup_required(
                     or init.name.endswith("_scale_2")):
                 continue
             if init.name in plugin_fp32_init_names:
+                continue
+            if init.name in fp8_block_plugin_init_names:
                 continue
             if _is_preserved_fp32(init.name):
                 continue
@@ -828,6 +836,7 @@ def _fix_initializer_dtypes(
     #   vectors; input[10] is the FP32 router correction bias. Both plugins
     #   share the same 11-input ONNX surface.
     plugin_fp32_init_names: set = set()
+    fp8_block_plugin_init_names: set = set()
     for node in model.graph.node:
         if node.op_type == "update_ssm_state" and len(node.input) > 1:
             plugin_fp32_init_names.add(node.input[1])
@@ -841,6 +850,10 @@ def _fix_initializer_dtypes(
             plugin_fp32_init_names.add(node.input[8])
         if node.op_type == "Fp16MoePlugin" and len(node.input) > 4:
             plugin_fp32_init_names.add(node.input[4])
+        if node.op_type == "Fp8BlockGemmPlugin":
+            fp8_block_plugin_init_names.update(node.input)
+            if len(node.input) > 2:
+                plugin_fp32_init_names.add(node.input[2])
 
     init_map = {init.name: init for init in model.graph.initializer}
     elem_types: dict[str, int] = {}
@@ -904,6 +917,8 @@ def _fix_initializer_dtypes(
         if init.data_type != 1:  # not FP32
             continue
         if init.name in plugin_fp32_init_names:  # already FP32, must stay
+            continue
+        if init.name in fp8_block_plugin_init_names:
             continue
         if _is_preserved_fp32(init.name):  # caller opted this init out
             logger.info(
@@ -1026,6 +1041,9 @@ def _export_model(
 ) -> "list[dict[str, object]]":
     setup_fp8_qkv_scales_for_export(model)
     _capture_qk_norm_gammas_for_export(model)
+    for module in model.modules():
+        if isinstance(module, FP8BlockLinear):
+            module.repack_for_export()
     spec = model.onnx_export_spec()
 
     translation_table = build_custom_translation_table()

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -34,15 +34,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from ..config import (QUANT_FP8, QUANT_FP16, QUANT_INT4_AWQ,
+from ..config import (QUANT_FP8, QUANT_FP8_BLOCK, QUANT_FP16, QUANT_INT4_AWQ,
                       QUANT_INT4_AWQ_MODELOPT, QUANT_INT4_GPTQ, QUANT_INT8_SQ,
                       QUANT_MXFP8, QUANT_NVFP4, QUANT_NVFP4_A16, Mapping,
                       ModelConfig, module_quant_type)
-from .ops import (fp8_dequantize, fp8_quantize, fused_nvfp4_gemm_allreduce,
-                  int4_gemm_plugin_version, int4_groupwise_gemm,
-                  int4_groupwise_gemm_v2, int8_sq_act_qdq, int8_sq_weight_dq,
-                  mxfp8_act_qdq, mxfp8_weight_dq, nvfp4_a16_gemm,
-                  nvfp4_act_qdq, nvfp4_dequantize)
+from .ops import (fp8_block_gemm, fp8_dequantize, fp8_quantize,
+                  fused_nvfp4_gemm_allreduce, int4_gemm_plugin_version,
+                  int4_groupwise_gemm, int4_groupwise_gemm_v2, int8_sq_act_qdq,
+                  int8_sq_weight_dq, mxfp8_act_qdq, mxfp8_weight_dq,
+                  nvfp4_a16_gemm, nvfp4_act_qdq, nvfp4_dequantize)
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +79,7 @@ __all__ = [
     "is_int4_linear",
     "FP16Linear",
     "FP8Linear",
+    "FP8BlockLinear",
     "MXFP8Linear",
     "AWQLinear",
     "ModelOptAWQPrepackedLinear",
@@ -235,6 +236,67 @@ class FP8Linear(LinearBase):
         w_fp16 = fp8_dequantize(self.weight, self.weight_scale)
         bias = self.bias.to(torch.float16) if self.bias is not None else None
         return F.linear(hidden_states_dq, w_fp16, bias)
+
+
+class FP8BlockLinear(LinearBase):
+    """Blockwise FP8 linear layer for 128x128 fine-grained checkpoints."""
+
+    block_size = (128, 128)
+
+    def __init__(self,
+                 in_features: int,
+                 out_features: int,
+                 bias: bool = False,
+                 dtype: torch.dtype = torch.float16) -> None:
+        super().__init__()
+        block_n, block_k = self.block_size
+        if out_features % block_n != 0 or in_features % block_k != 0:
+            raise ValueError(
+                "FP8BlockLinear dimensions must be divisible by 128")
+
+        self.in_features = in_features
+        self.out_features = out_features
+        self.tp_mode = TPMode.REPLICATED
+        self.register_buffer(
+            "weight",
+            torch.empty(out_features, in_features, dtype=torch.float8_e4m3fn))
+        self.register_buffer(
+            "weight_scale_inv",
+            torch.empty(out_features // block_n,
+                        in_features // block_k,
+                        dtype=torch.float32))
+        if bias:
+            self.register_buffer("bias", torch.empty(out_features,
+                                                     dtype=dtype))
+        else:
+            self.bias = None
+
+    def repack_for_export(self) -> None:
+        """Bit-view E4M3 weights as INT8 for ONNX serialization."""
+        if self.weight.dtype == torch.int8:
+            return
+        if self.weight.dtype != torch.float8_e4m3fn:
+            raise TypeError(
+                f"FP8BlockLinear weight must be E4M3 or INT8, got {self.weight.dtype}"
+            )
+        self._buffers["weight"] = self.weight.view(torch.int8)
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        _require_fp16_input(hidden_states, "FP8BlockLinear")
+        output = fp8_block_gemm(hidden_states, self.weight,
+                                self.weight_scale_inv)
+        if self.bias is not None:
+            output = output + self.bias.to(torch.float16)
+        return output
+
+    def tp_split_dim(self, attr: str) -> Optional[int]:
+        if self.tp_mode == TPMode.COL and attr in ("weight",
+                                                   "weight_scale_inv", "bias"):
+            return 0
+        if self.tp_mode == TPMode.ROW and attr in ("weight",
+                                                   "weight_scale_inv"):
+            return 1
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -857,6 +919,8 @@ def make_linear(
         layer = FP16Linear(in_features, out_features, bias)
     elif quant_type == QUANT_FP8:
         layer = FP8Linear(in_features, out_features, bias)
+    elif quant_type == QUANT_FP8_BLOCK:
+        layer = FP8BlockLinear(in_features, out_features, bias=bias)
     elif quant_type == QUANT_MXFP8:
         layer = MXFP8Linear(in_features, out_features, config.quant.group_size,
                             bias)

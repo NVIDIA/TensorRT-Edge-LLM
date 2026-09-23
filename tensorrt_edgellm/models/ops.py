@@ -524,6 +524,70 @@ def _(hidden_states, scale):
 
 
 # ---------------------------------------------------------------------------
+# Custom op: trt::fp8_block_gemm
+# ---------------------------------------------------------------------------
+
+_FP8_BLOCK_SIZE = 128
+
+
+def _fp8_block_gemm_eager(x: torch.Tensor, weight: torch.Tensor,
+                          weight_scale: torch.Tensor) -> torch.Tensor:
+    """Reference blockwise FP8 GEMM with dynamic activation quantization."""
+    block_size = _FP8_BLOCK_SIZE
+    gemm_k = x.shape[-1]
+    gemm_n = weight.shape[0]
+    if gemm_k % block_size != 0 or gemm_n % block_size != 0:
+        raise ValueError("FP8 block GEMM dimensions must be divisible by 128")
+
+    num_k_blocks = gemm_k // block_size
+    expected_scale_shape = (gemm_n // block_size, num_k_blocks)
+    if tuple(weight.shape) != (gemm_n, gemm_k):
+        raise ValueError("FP8 block GEMM weight must have shape [N, K]")
+    if tuple(weight_scale.shape) != expected_scale_shape:
+        raise ValueError(
+            "FP8 block GEMM weight scale must have shape [N/128, K/128]")
+
+    leading_shape = x.shape[:-1]
+    x_groups = x.to(torch.float32).reshape(-1, num_k_blocks, block_size)
+    amax = x_groups.abs().amax(dim=-1)
+    activation_scale = torch.where(amax > 0, amax / _FP8_E4M3_MAX,
+                                   torch.ones_like(amax))
+    x_quantized = torch.clamp(x_groups / activation_scale.unsqueeze(-1),
+                              -_FP8_E4M3_MAX, _FP8_E4M3_MAX).to(
+                                  torch.float8_e4m3fn).to(torch.float32)
+
+    weight_quantized = weight.view(torch.float8_e4m3fn).to(
+        torch.float32).reshape(gemm_n, num_k_blocks, block_size)
+    expanded_weight_scale = weight_scale.to(torch.float32).repeat_interleave(
+        block_size, dim=0)
+    output = torch.zeros((x_groups.shape[0], gemm_n),
+                         dtype=torch.float32,
+                         device=x.device)
+    for group_idx in range(num_k_blocks):
+        block_output = torch.matmul(x_quantized[:, group_idx],
+                                    weight_quantized[:, group_idx].t())
+        block_scale = (activation_scale[:, group_idx, None] *
+                       expanded_weight_scale[None, :, group_idx])
+        output += block_output * block_scale
+
+    return output.reshape(*leading_shape, gemm_n).to(torch.float16)
+
+
+@torch.library.custom_op("trt::fp8_block_gemm", mutates_args=())
+def fp8_block_gemm(x: torch.Tensor, weight: torch.Tensor,
+                   weight_scale: torch.Tensor) -> torch.Tensor:
+    """Run blockwise FP8 GEMM with dynamic per-token-group quantization."""
+    return _fp8_block_gemm_eager(x, weight, weight_scale)
+
+
+@fp8_block_gemm.register_fake
+def _(x, weight, weight_scale):
+    del weight_scale
+    out_shape = list(x.shape[:-1]) + [weight.shape[0]]
+    return torch.empty(out_shape, dtype=x.dtype, device=x.device)
+
+
+# ---------------------------------------------------------------------------
 # Custom op: trt::fp8_dequantize
 # ---------------------------------------------------------------------------
 

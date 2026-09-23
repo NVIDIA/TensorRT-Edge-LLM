@@ -156,6 +156,30 @@ def _fp8_dequantize_translation(
     return _op21.DequantizeLinear(x, scale)
 
 
+@script()
+def _fp8_block_gemm_plugin_translation(
+    x: onnxscript.FLOAT16,
+    weight: onnxscript.INT8,
+    weight_scale: onnxscript.FLOAT,
+    gemm_n: int,
+    gemm_k: int,
+) -> onnxscript.FLOAT16:
+    return _trt_edgellm.Fp8BlockGemmPlugin(
+        x,
+        weight,
+        weight_scale,
+        gemm_n=gemm_n,
+        gemm_k=gemm_k,
+    )
+
+
+def _fp8_block_gemm_translation(x, weight, weight_scale):
+    gemm_n = int(weight.shape[0])
+    gemm_k = int(weight.shape[1])
+    return _fp8_block_gemm_plugin_translation(x, weight, weight_scale, gemm_n,
+                                              gemm_k)
+
+
 # ---------------------------------------------------------------------------
 # NVFP4 ops
 # ---------------------------------------------------------------------------
@@ -1344,6 +1368,8 @@ def build_custom_translation_table() -> dict:
         _fp8_quantize_translation,
         torch.ops.trt.fp8_dequantize.default:
         _fp8_dequantize_translation,
+        torch.ops.trt.fp8_block_gemm.default:
+        _fp8_block_gemm_translation,
         torch.ops.trt.nvfp4_act_qdq.default:
         _nvfp4_act_qdq_translation,
         torch.ops.trt.nvfp4_dequantize.default:
