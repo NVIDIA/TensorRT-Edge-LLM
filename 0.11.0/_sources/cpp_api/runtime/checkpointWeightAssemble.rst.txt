@@ -1,0 +1,12 @@
+Checkpoint Weight Assemble
+==========================
+
+.. doxygenfunction:: trt_edgellm::rt::checkpointWeightPhase
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::checkpointWeightManagesSourceRegistration
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::loadCheckpointWeight
+   :project: TensorRT Edge-LLM
+

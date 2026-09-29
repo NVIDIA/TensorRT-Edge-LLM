@@ -28,8 +28,8 @@
   </noscript>
   
   <!-- Loaded before other Sphinx assets -->
-  <link href="../../_static/styles/theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
-<link href="../../_static/styles/pydata-sphinx-theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
+  <link href="../../_static/styles/theme.css?digest=0790524f97105ba85085" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=0790524f97105ba85085" rel="stylesheet" />
 
     <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=03e43079" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/nvidia-sphinx-theme.css?v=933278ad" />
@@ -39,10 +39,10 @@
     <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=e02be394" />
   
   <!-- So that users can add custom icons -->
-  <script defer src="../../_static/scripts/fontawesome.js?digest=cb8930eaaf36d9849b67"></script>
+  <script defer src="../../_static/scripts/fontawesome.js?digest=0790524f97105ba85085"></script>
   <!-- Pre-loaded scripts that we'll load fully later -->
-  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67" />
-<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67" />
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=0790524f97105ba85085" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=0790524f97105ba85085" />
 
 
 
@@ -58,9 +58,9 @@
     <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'cpp_api/runtime/pipelineIO';</script>
     <script>
-        DOCUMENTATION_OPTIONS.theme_version = '0.21.0';
+        DOCUMENTATION_OPTIONS.theme_version = '0.18.0';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = './_static/switcher.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.10.1';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.11.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner =
             false;
         </script>
@@ -76,7 +76,7 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.10.1" />
+  <meta name="docsearch:version" content="0.11.0" />
   
     
     <script src="../../_static/searchtools.js"></script>
@@ -364,6 +364,7 @@
 <li class="toctree-l1 has-children"><a class="reference internal" href="../../user_guide/examples/vla/index.html">Vision-Language-Action</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l2"><a class="reference internal" href="../../user_guide/examples/vla/alpamayo.html">Alpamayo-R1-10B (Vision-Language-Action)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../../user_guide/examples/vla/cosmos3.html">Cosmos3-Edge</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../user_guide/examples/vla/pi05.html">pi0.5</a></li>
 </ul>
 </details></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/omni.html">Omni (Audio + Vision + Speech I/O)</a></li>
@@ -379,8 +380,11 @@
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/FP8KV.html">FP8 KV Cache</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/fp8-embedding.html">FP8 Embedding</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/streaming.html">Streaming Output</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/guided-decoding.html">Guided Decoding</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/visual-token-pruning.html">Visual-Token Pruning (DART)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/kv-cache-reuse.html">KV Cache Reuse</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/in-flight-batching.html">In-Flight Batching</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/codepredictor-speculative-decoding.html">CodePredictor Speculative Decoding</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Input &amp; Chat Format</span></p>
 <ul class="nav bd-sidenav">
@@ -400,6 +404,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/cpp-runtime-overview.html">C++ Runtime Overview</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/llm-inference-runtime.html">LLM Inference Runtime</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/llm-streaming.html">LLM Streaming — Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/in-flight-batching.html">In-Flight Batching (V0)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/memory-monitoring.html">Memory monitoring</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/openai-server.html">HTTP Inference Server Architecture</a></li>
 </ul>
@@ -407,6 +412,7 @@
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/models/cosmos3.html">Cosmos3-Edge Design</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/models/nemotron3_5_asr.html">Nemotron-3.5-ASR</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/models/pi05.html">pi0.5 Design</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Customization</span></p>
 <ul class="nav bd-sidenav">
@@ -440,12 +446,20 @@
 <li class="toctree-l3"><a class="reference internal" href="../builder/visualBuilder.html">Visual Builder</a></li>
 </ul>
 </details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../chatTemplate/index.html">Chattemplate Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../chatTemplate/chatTemplate.html">Chat Template</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../chatTemplate/injaCallbacks.html">Inja Callbacks</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../chatTemplate/injaJson.html">Inja Json</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../chatTemplate/injaRenderer.html">Inja Renderer</a></li>
+</ul>
+</details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../common/index.html">Common Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l3"><a class="reference internal" href="../common/allReducePath.html">All Reduce Path</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/bindingNames.html">Binding Names</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/checkMacros.html">Check Macros</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/cudaMacros.html">CUDA Macros</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/cudaUtils.html">CUDA Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/executionPhase.html">Execution Phase</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/fileUtils.html">File Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/hashUtils.html">Hash Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/inputLimits.html">Input Limits</a></li>
@@ -456,6 +470,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../common/parallelArtifactNames.html">Parallel Artifact Names</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/ropeUtils.html">Rope Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/safetensorsUtils.html">Safetensors Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/specDecodeConfigUtils.html">Spec Decode Config Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/stringUtils.html">String Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/tensor.html">Tensor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/trtUtils.html">TRT Utils</a></li>
@@ -470,21 +485,26 @@
 <li class="toctree-l3"><a class="reference internal" href="../kernels/attentionScaleUtils.html">Attention Scale Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/audioFbankKernels.html">Audio Fbank Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/batchEvictKernels.html">Batch Evict Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/blockHashKernel.html">Block Hash Kernel</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/buildLayout.html">Build Layout</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/causalConv1d.html">Causal Conv1d</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/checkpointSourceBatch.html">Checkpoint Source Batch</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/common.html">Common</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/conversion.html">Conversion</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cpSpecKernels.html">Cp Spec Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslF16MoeRunner.html">Cute Dsl F16 Moe Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslFMHARunner.html">Cute Dsl FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslFMHAV2Runner.html">Cute Dsl Fmhav2 Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslFmhaParams.html">Cute Dsl FMHA Params</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslFmhaTypes.html">Cute Dsl FMHA Types</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGDNRunner.html">Cute Dsl Gdn Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGemmNvFp4Runner.html">Cute Dsl GEMM Nv Fp4 Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGemmRunner.html">Cute Dsl GEMM Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslLayerNormRunner.html">Cute Dsl Layer Norm Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslModuleLoader.html">Cute Dsl Module Loader</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslNvfp4MoeRunner.html">Cute Dsl Nvfp4 Moe Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslNvfp4MoeSm110Runner.html">Cute Dsl Nvfp4 Moe Sm110 Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslQsaSparseRunner.html">Cute Dsl Qsa Sparse Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslRmsNormRunner.html">Cute Dsl Rms Norm Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslSSDRunner.html">Cute Dsl Ssd Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslTensorDescriptors.html">Cute Dsl Tensor Descriptors</a></li>
@@ -495,6 +515,8 @@
 <li class="toctree-l3"><a class="reference internal" href="../kernels/decoderXQARunner.html">Decoder XQA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/dequant.html">Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/dequantize.html">Dequantize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/dflash2CandidateSelector.html">Dflash2 Candidate Selector</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/dflash2GroupedDynamicConv.html">Dflash2 Grouped Dynamic Conv</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/dflashRuntimeKernels.html">Dflash Runtime Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/dsparkKernels.html">Dspark Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/eagleAcceptKernels.html">EAGLE Accept Kernels</a></li>
@@ -505,6 +527,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../kernels/fp16MoeAssemble.html">Fp16 Moe Assemble</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/fp4Quantize.html">Fp4 Quantize</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/gdnKernelUtils.html">Gdn Kernel Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/gdnPdlConfig.html">Gdn Pdl Config</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/gdnTreeChunkKernels.html">Gdn Tree Chunk Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/gemma4AudioAttention.html">Gemma4 Audio Attention</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/gemma4MTPRuntimeKernels.html">Gemma4 Mtp Runtime Kernels</a></li>
@@ -537,9 +560,14 @@
 <li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4A16BlackwellGemmRunner.html">Nvfp4 A16 Blackwell GEMM Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4A16BlackwellGemvJitCompiler.html">Nvfp4 A16 Blackwell Gemv Jit Compiler</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4A16BlackwellGemvJitRunner.html">Nvfp4 A16 Blackwell Gemv Jit Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4A16BlackwellMoeDispatchPolicy.html">Nvfp4 A16 Blackwell Moe Dispatch Policy</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4A16BlackwellMoeJitCompiler.html">Nvfp4 A16 Blackwell Moe Jit Compiler</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4A16BlackwellMoeJitRunner.html">Nvfp4 A16 Blackwell Moe Jit Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4A16BlackwellMoeRunner.html">Nvfp4 A16 Blackwell Moe Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4A16BlackwellSupport.html">Nvfp4 A16 Blackwell Support</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoeLayout.html">Nvfp4 Moe Layout</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoeNormalize.html">Nvfp4 Moe Normalize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoePdlConfig.html">Nvfp4 Moe Pdl Config</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoePluginGeforceTransform.html">Nvfp4 Moe Plugin Geforce Transform</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoePluginTransform.html">Nvfp4 Moe Plugin Transform</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoeScaleTransform.html">Nvfp4 Moe Scale Transform</a></li>
@@ -551,14 +579,22 @@
 <li class="toctree-l3"><a class="reference internal" href="../kernels/pluginJitCompileCache.html">Plugin Jit Compile Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/pluginJitCompiler.html">Plugin Jit Compiler</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/pluginJitEmbeddedSources.html">Plugin Jit Embedded Sources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/qsaIndexerJitCompiler.html">Qsa Indexer Jit Compiler</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/qsaIndexerKernels.html">Qsa Indexer Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/qsaIndexerRunner.html">Qsa Indexer Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/requestStableRngKernels.html">Request Stable Rng Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/scaleConvert.html">Scale Convert</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/selectiveStateUpdate.html">Selective State Update</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/slidingWindowUtils.html">Sliding Window Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/speculativeKernelsUtils.html">Speculative Kernels Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/speculativeSampling.html">Speculative Sampling</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/speculativeSamplingKernels.html">Speculative Sampling Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/ssdVarlenMetadata.html">Ssd Varlen Metadata</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/talkerMLPKernels.html">Talker Mlp Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/utilKernels.html">Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/vectorizedTypes.html">Vectorized Types</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/xqaKernelTypes.html">XQA Kernel Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/xqaLaunchConfig.html">XQA Launch Config</a></li>
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../multimodal/index.html">Multimodal Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
@@ -575,6 +611,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/internViTRunner.html">Intern ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/modelTypes.html">Model Types</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/multimodalRunner.html">Multimodal Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/museGlimmerViTRunner.html">Muse Glimmer ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/nemotronOmniAudioRunner.html">Nemotron Omni Audio Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/nemotronOmniViTRunner.html">Nemotron Omni ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/phi4mmViTRunner.html">Phi4mm ViT Runner</a></li>
@@ -590,6 +627,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../plugins/causalConv1dPlugin.html">Causal Conv1d Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/cuteDslInt4Gemm.html">Cute Dsl Int4 GEMM</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/cuteDslInt4Gemv.html">Cute Dsl Int4 Gemv</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/dflash2GroupedDynamicConvPlugin.html">Dflash2 Grouped Dynamic Conv Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/dflashTargetKVCacheUpdatePlugin.html">Dflash Target KV Cache Update Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/fp16MoePlugin.html">Fp16 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/fusedNvfp4GemmAllReducePlugin.html">Fused Nvfp4 GEMM All Reduce Plugin</a></li>
@@ -598,15 +636,19 @@
 <li class="toctree-l3"><a class="reference internal" href="../plugins/int4GroupwiseGemmPlugin.html">Int4 Groupwise GEMM Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/int4GroupwiseGemmPluginV2.html">Int4 Groupwise GEMM Plugin V2</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/int4MoePlugin.html">Int4 Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/layerNormPlugin.html">Layer Norm Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/mambaPlugin.html">Mamba Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4A16BlackwellDispatchPolicy.html">Nvfp4 A16 Blackwell Dispatch Policy</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4A16BlackwellGemmPlugin.html">Nvfp4 A16 Blackwell GEMM Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4A16BlackwellMoePlugin.html">Nvfp4 A16 Blackwell Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4A16GemmPlugin.html">Nvfp4 A16 GEMM Plugin</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4A16GemmPluginV2.html">Nvfp4 A16 GEMM Plugin V2</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4A16MoePlugin.html">Nvfp4 A16 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4MoePlugin.html">Nvfp4 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4MoePluginGeforce.html">Nvfp4 Moe Plugin Geforce</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/pluginUtils.html">Plugin Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/qkvConcatPlugin.html">Qkv Concat Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/qsaAttentionPlugin.html">Qsa Attention Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/raggedPluginMetadata.html">Ragged Plugin Metadata</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/rmsNormPlugin.html">Rms Norm Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/vitAttentionPlugin.html">VIT Attention Plugin</a></li>
 </ul>
@@ -624,6 +666,7 @@
 <li class="toctree-l3"><a class="reference internal" href="blockDiffusionDecoder.html">Block Diffusion Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="blockHash.html">Block Hash</a></li>
 <li class="toctree-l3"><a class="reference internal" href="blockIndex.html">Block Index</a></li>
+<li class="toctree-l3"><a class="reference internal" href="boundedSwaKVPageManager.html">Bounded Swa KV Page Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="cacheRecord.html">Cache Record</a></li>
 <li class="toctree-l3"><a class="reference internal" href="checkpointReader.html">Checkpoint Reader</a></li>
 <li class="toctree-l3"><a class="reference internal" href="checkpointWeightAssemble.html">Checkpoint Weight Assemble</a></li>
@@ -653,6 +696,8 @@
 <li class="toctree-l3"><a class="reference internal" href="externalWeightManager.html">External Weight Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="gemma4EmbeddingPreprocessor.html">Gemma4 Embedding Preprocessor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="gemma4MTPDecoder.html">Gemma4 Mtp Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="generationBoundary.html">Generation Boundary</a></li>
+<li class="toctree-l3"><a class="reference internal" href="guidedDecoder.html">Guided Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="hybridCacheManager.html">Hybrid Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="hybridSnapshotStorage.html">Hybrid Snapshot Storage</a></li>
 <li class="toctree-l3"><a class="reference internal" href="imageUtils.html">Image Utils</a></li>
@@ -668,6 +713,7 @@
 <li class="toctree-l3"><a class="reference internal" href="logitBias.html">Logit Bias</a></li>
 <li class="toctree-l3"><a class="reference internal" href="loraManager.html">Lora Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="mambaCacheManager.html">Mamba Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="managedKVCacheRequest.html">Managed KV Cache Request</a></li>
 <li class="toctree-l3"><a class="reference internal" href="melSpectrogram.html">Mel Spectrogram</a></li>
 <li class="toctree-l3"><a class="reference internal" href="modelArtifacts.html">Model Artifacts</a></li>
 <li class="toctree-l3"><a class="reference internal" href="mtpDecoder.html">Mtp Decoder</a></li>
@@ -678,11 +724,16 @@
 <li class="toctree-l3"><a class="reference internal" href="parallelConfig.html">Parallel Config</a></li>
 <li class="toctree-l3 current active"><a class="current reference internal" href="#">Pipeline Io</a></li>
 <li class="toctree-l3"><a class="reference internal" href="qwen3OmniTTSRuntime.html">Qwen3 Omni Tts Runtime</a></li>
+<li class="toctree-l3"><a class="reference internal" href="raggedBatchBuilder.html">Ragged Batch Builder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="registryBuilder.html">Registry Builder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="requestStableRng.html">Request Stable Rng</a></li>
+<li class="toctree-l3"><a class="reference internal" href="residentSlotPool.html">Resident Slot Pool</a></li>
 <li class="toctree-l3"><a class="reference internal" href="resourcePools.html">Resource Pools</a></li>
 <li class="toctree-l3"><a class="reference internal" href="reusePlan.html">Reuse Plan</a></li>
 <li class="toctree-l3"><a class="reference internal" href="ropeCache.html">Rope Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="runtimeCoordinator.html">Runtime Coordinator</a></li>
+<li class="toctree-l3"><a class="reference internal" href="runtimeStepper.html">Runtime Stepper</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scheduledStep.html">Scheduled Step</a></li>
 <li class="toctree-l3"><a class="reference internal" href="sharedResources.html">Shared Resources</a></li>
 <li class="toctree-l3"><a class="reference internal" href="specCommonStateTracker.html">Spec Common State Tracker</a></li>
 <li class="toctree-l3"><a class="reference internal" href="specReuseContract.html">Spec Reuse Contract</a></li>
@@ -701,6 +752,17 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../sampler/index.html">Sampler Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l3"><a class="reference internal" href="../sampler/diffusionGemmaSampling.html">Diffusion Gemma Sampling</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../sampler/sampling.html">Sampling</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../scheduler/index.html">Scheduler Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../scheduler/batchCompatibility.html">Batch Compatibility</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../scheduler/commandQueue.html">Command Queue</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../scheduler/engineChannel.html">Engine Channel</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../scheduler/engineCommand.html">Engine Command</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../scheduler/requestCoordinator.html">Request Coordinator</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../scheduler/requestEngine.html">Request Engine</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../scheduler/requestIdentity.html">Request Identity</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../scheduler/requestRecord.html">Request Record</a></li>
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../tokenizer/index.html">Tokenizer Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
@@ -778,6 +840,66 @@
                   
   <section id="pipeline-io">
 <h1>Pipeline Io<a class="headerlink" href="#pipeline-io" title="Link to this heading">#</a></h1>
+<dl class="cpp class">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt21AsyncHostStagingFenceE">
+<span id="_CPPv3N11trt_edgellm2rt21AsyncHostStagingFenceE"></span><span id="_CPPv2N11trt_edgellm2rt21AsyncHostStagingFenceE"></span><span id="trt_edgellm::rt::AsyncHostStagingFence"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1AsyncHostStagingFence"></span><span class="k"><span class="pre">class</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">AsyncHostStagingFence</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt21AsyncHostStagingFenceE" title="Link to this definition">#</a><br /></dt>
+<dd><div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-functions">Public Functions</p>
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt21AsyncHostStagingFence21AsyncHostStagingFenceEv">
+<span id="_CPPv3N11trt_edgellm2rt21AsyncHostStagingFence21AsyncHostStagingFenceEv"></span><span id="_CPPv2N11trt_edgellm2rt21AsyncHostStagingFence21AsyncHostStagingFenceEv"></span><span id="trt_edgellm::rt::AsyncHostStagingFence::AsyncHostStagingFence"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1AsyncHostStagingFence_1a9df5054a504b2036507977a2a4cd52a5"></span><span class="sig-name descname"><span class="n"><span class="pre">AsyncHostStagingFence</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="k"><span class="pre">default</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt21AsyncHostStagingFence21AsyncHostStagingFenceEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt21AsyncHostStagingFence21AsyncHostStagingFenceERK21AsyncHostStagingFence">
+<span id="_CPPv3N11trt_edgellm2rt21AsyncHostStagingFence21AsyncHostStagingFenceERK21AsyncHostStagingFence"></span><span id="_CPPv2N11trt_edgellm2rt21AsyncHostStagingFence21AsyncHostStagingFenceERK21AsyncHostStagingFence"></span><span id="trt_edgellm::rt::AsyncHostStagingFence::AsyncHostStagingFence__AsyncHostStagingFenceCR"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1AsyncHostStagingFence_1a4085ac7aa930882b472519c40308dd3d"></span><span class="sig-name descname"><span class="n"><span class="pre">AsyncHostStagingFence</span></span></span><span class="sig-paren">(</span><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt21AsyncHostStagingFence21AsyncHostStagingFenceERK21AsyncHostStagingFence" title="trt_edgellm::rt::AsyncHostStagingFence::AsyncHostStagingFence"><span class="n"><span class="pre">AsyncHostStagingFence</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="p"><span class="pre">&amp;</span></span></em><span class="sig-paren">)</span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="k"><span class="pre">delete</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt21AsyncHostStagingFence21AsyncHostStagingFenceERK21AsyncHostStagingFence" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt21AsyncHostStagingFenceaSERK21AsyncHostStagingFence">
+<span id="_CPPv3N11trt_edgellm2rt21AsyncHostStagingFenceaSERK21AsyncHostStagingFence"></span><span id="_CPPv2N11trt_edgellm2rt21AsyncHostStagingFenceaSERK21AsyncHostStagingFence"></span><span id="trt_edgellm::rt::AsyncHostStagingFence::assign-operator__AsyncHostStagingFenceCR"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1AsyncHostStagingFence_1a19d2dc4f9b8e5d03ae6a35b796db6e40"></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt21AsyncHostStagingFenceE" title="trt_edgellm::rt::AsyncHostStagingFence"><span class="n"><span class="pre">AsyncHostStagingFence</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="k"><span class="pre">operator</span></span><span class="o"><span class="pre">=</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt21AsyncHostStagingFenceE" title="trt_edgellm::rt::AsyncHostStagingFence"><span class="n"><span class="pre">AsyncHostStagingFence</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="p"><span class="pre">&amp;</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="k"><span class="pre">delete</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt21AsyncHostStagingFenceaSERK21AsyncHostStagingFence" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt21AsyncHostStagingFence21AsyncHostStagingFenceERR21AsyncHostStagingFence">
+<span id="_CPPv3N11trt_edgellm2rt21AsyncHostStagingFence21AsyncHostStagingFenceERR21AsyncHostStagingFence"></span><span id="_CPPv2N11trt_edgellm2rt21AsyncHostStagingFence21AsyncHostStagingFenceERR21AsyncHostStagingFence"></span><span id="trt_edgellm::rt::AsyncHostStagingFence::AsyncHostStagingFence__AsyncHostStagingFenceRR"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1AsyncHostStagingFence_1aeb335b10e08f66c886a7cb4b6417b1a1"></span><span class="sig-name descname"><span class="n"><span class="pre">AsyncHostStagingFence</span></span></span><span class="sig-paren">(</span><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt21AsyncHostStagingFence21AsyncHostStagingFenceERR21AsyncHostStagingFence" title="trt_edgellm::rt::AsyncHostStagingFence::AsyncHostStagingFence"><span class="n"><span class="pre">AsyncHostStagingFence</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">other</span></span></em><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt21AsyncHostStagingFence21AsyncHostStagingFenceERR21AsyncHostStagingFence" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt21AsyncHostStagingFenceaSERR21AsyncHostStagingFence">
+<span id="_CPPv3N11trt_edgellm2rt21AsyncHostStagingFenceaSERR21AsyncHostStagingFence"></span><span id="_CPPv2N11trt_edgellm2rt21AsyncHostStagingFenceaSERR21AsyncHostStagingFence"></span><span id="trt_edgellm::rt::AsyncHostStagingFence::assign-operator__AsyncHostStagingFenceRR"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1AsyncHostStagingFence_1a88c6af2d8fee40c47f9fd11a2224f707"></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt21AsyncHostStagingFenceE" title="trt_edgellm::rt::AsyncHostStagingFence"><span class="n"><span class="pre">AsyncHostStagingFence</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="k"><span class="pre">operator</span></span><span class="o"><span class="pre">=</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt21AsyncHostStagingFenceE" title="trt_edgellm::rt::AsyncHostStagingFence"><span class="n"><span class="pre">AsyncHostStagingFence</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">other</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt21AsyncHostStagingFenceaSERR21AsyncHostStagingFence" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt21AsyncHostStagingFenceD0Ev">
+<span id="_CPPv3N11trt_edgellm2rt21AsyncHostStagingFenceD0Ev"></span><span id="_CPPv2N11trt_edgellm2rt21AsyncHostStagingFenceD0Ev"></span><span id="trt_edgellm::rt::AsyncHostStagingFence::~AsyncHostStagingFence"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1AsyncHostStagingFence_1a7cbe667182acfe4f96407fe15d513ea7"></span><span class="sig-name descname"><span class="n"><span class="pre">~AsyncHostStagingFence</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt21AsyncHostStagingFenceD0Ev" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt21AsyncHostStagingFence4waitEv">
+<span id="_CPPv3N11trt_edgellm2rt21AsyncHostStagingFence4waitEv"></span><span id="_CPPv2N11trt_edgellm2rt21AsyncHostStagingFence4waitEv"></span><span id="trt_edgellm::rt::AsyncHostStagingFence::wait"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1AsyncHostStagingFence_1aaab2263d0ace03a2f1e17f7551569df2"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">wait</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt21AsyncHostStagingFence4waitEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt21AsyncHostStagingFence6recordE12cudaStream_t">
+<span id="_CPPv3N11trt_edgellm2rt21AsyncHostStagingFence6recordE12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm2rt21AsyncHostStagingFence6recordE12cudaStream_t"></span><span id="trt_edgellm::rt::AsyncHostStagingFence::record__cudaStream_t"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1AsyncHostStagingFence_1a42bdd68c237be5cf4bec0629c40579f6"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">record</span></span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt21AsyncHostStagingFence6recordE12cudaStream_t" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+</div>
+</dd></dl>
+
 <dl class="cpp struct">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt23StreamingPrefillBuffersE">
 <span id="_CPPv3N11trt_edgellm2rt23StreamingPrefillBuffersE"></span><span id="_CPPv2N11trt_edgellm2rt23StreamingPrefillBuffersE"></span><span id="trt_edgellm::rt::StreamingPrefillBuffers"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1StreamingPrefillBuffers"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">StreamingPrefillBuffers</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt23StreamingPrefillBuffersE" title="Link to this definition">#</a><br /></dt>
@@ -827,6 +949,47 @@
 <span id="_CPPv3N11trt_edgellm2rt10PipelineIOE"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIOE"></span><span id="trt_edgellm::rt::PipelineIO"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">PipelineIO</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIOE" title="Link to this definition">#</a><br /></dt>
 <dd><p>All tensors flowing through the inference pipeline. POINTER STABILITY INVARIANT: After buildTensorMap() is called, this struct must not be moved, and deepstackEmbeds must not be resized. <a class="reference internal" href="tensorMap.html#classtrt__edgellm_1_1rt_1_1TensorMap"><span class="std std-ref">TensorMap</span></a> holds Tensor* pointers into these members — any reallocation invalidates them. </p>
 <div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-functions">Public Functions</p>
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO20uploadRaggedMetadataERK20RaggedExecutionBatch12cudaStream_t">
+<span id="_CPPv3N11trt_edgellm2rt10PipelineIO20uploadRaggedMetadataERK20RaggedExecutionBatch12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO20uploadRaggedMetadataERK20RaggedExecutionBatch12cudaStream_t"></span><span id="trt_edgellm::rt::PipelineIO::uploadRaggedMetadata__RaggedExecutionBatchCR.cudaStream_t"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1a7a5c164144d284f35bd4bc85b2fba3f1"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">uploadRaggedMetadata</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="raggedBatchBuilder.html#_CPPv4N11trt_edgellm2rt20RaggedExecutionBatchE" title="trt_edgellm::rt::RaggedExecutionBatch"><span class="n"><span class="pre">RaggedExecutionBatch</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">batch</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO20uploadRaggedMetadataERK20RaggedExecutionBatch12cudaStream_t" title="Link to this definition">#</a><br /></dt>
+<dd><p>Stage and asynchronously upload one already-validated ragged batch. </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO18uploadStateIndicesEPKNSt6vectorI11ResidentRefEE7int32_t12cudaStream_t">
+<span id="_CPPv3N11trt_edgellm2rt10PipelineIO18uploadStateIndicesEPKNSt6vectorI11ResidentRefEE7int32_t12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO18uploadStateIndicesEPKNSt6vectorI11ResidentRefEE7int32_t12cudaStream_t"></span><span id="trt_edgellm::rt::PipelineIO::uploadStateIndices__std::vector:ResidentRef:CP.int32_t.cudaStream_t"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1a719e737d713a98233073ade7083a2b3b"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">uploadStateIndices</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><a class="reference internal" href="scheduledStep.html#_CPPv4N11trt_edgellm2rt11ResidentRefE" title="trt_edgellm::rt::ResidentRef"><span class="n"><span class="pre">ResidentRef</span></span></a><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">residentRefs</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">numSequences</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO18uploadStateIndicesEPKNSt6vectorI11ResidentRefEE7int32_t12cudaStream_t" title="Link to this definition">#</a><br /></dt>
+<dd><p>Stage and asynchronously upload active sequence-to-resident-slot indices. A null residentRefs uses identity mapping for runtimes without resident-slot indirection. </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO22waitForStepHostStagingEv">
+<span id="_CPPv3N11trt_edgellm2rt10PipelineIO22waitForStepHostStagingEv"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO22waitForStepHostStagingEv"></span><span id="trt_edgellm::rt::PipelineIO::waitForStepHostStaging"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1a5502c70bb41785131abe4c57ede360e9"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">waitForStepHostStaging</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO22waitForStepHostStagingEv" title="Link to this definition">#</a><br /></dt>
+<dd><p>Protect reusable pinned step metadata and ragged token snapshots before CPU reuse. </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO21recordStepHostUploadsE12cudaStream_t">
+<span id="_CPPv3N11trt_edgellm2rt10PipelineIO21recordStepHostUploadsE12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO21recordStepHostUploadsE12cudaStream_t"></span><span id="trt_edgellm::rt::PipelineIO::recordStepHostUploads__cudaStream_t"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1ab46d3e0ea0367a15b9792a0b092d4bbc"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">recordStepHostUploads</span></span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO21recordStepHostUploadsE12cudaStream_t" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+</div>
+<div class="breathe-sectiondef docutils container">
 <p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-members">Public Members</p>
 <dl class="cpp var">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO12inputsEmbedsE">
@@ -846,7 +1009,7 @@
 <dl class="cpp var">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO14phaseIsEncoderE">
 <span id="_CPPv3N11trt_edgellm2rt10PipelineIO14phaseIsEncoderE"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO14phaseIsEncoderE"></span><span id="trt_edgellm::rt::PipelineIO::phaseIsEncoder__Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1a1677471ca0ba58c9dd042cd822e84ffa"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">phaseIsEncoder</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO14phaseIsEncoderE" title="Link to this definition">#</a><br /></dt>
-<dd><p>DiffusionGemma phase selector, [batch] INT32. </p>
+<dd><p>DiffusionGemma invocation phase selector, [1] INT32. </p>
 </dd></dl>
 
 <dl class="cpp var">
@@ -876,13 +1039,93 @@
 <dl class="cpp var">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO18hostPhaseIsEncoderE">
 <span id="_CPPv3N11trt_edgellm2rt10PipelineIO18hostPhaseIsEncoderE"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO18hostPhaseIsEncoderE"></span><span id="trt_edgellm::rt::PipelineIO::hostPhaseIsEncoder__Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1ad81011b02c5fab999105670089078303"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">hostPhaseIsEncoder</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO18hostPhaseIsEncoderE" title="Link to this definition">#</a><br /></dt>
-<dd><p>CPU (pinned, [maxBatch] INT32) — pairs with phaseIsEncoder for H2D staging </p>
+<dd><p>CPU pinned scalar paired with phaseIsEncoder. </p>
 </dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO9positionsE">
+<span id="_CPPv3N11trt_edgellm2rt10PipelineIO9positionsE"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO9positionsE"></span><span id="trt_edgellm::rt::PipelineIO::positions__Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1aff25c9b61c2e94bc1a97d9c76e54e48b"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">positions</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO9positionsE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO17queryStartOffsetsE">
+<span id="_CPPv3N11trt_edgellm2rt10PipelineIO17queryStartOffsetsE"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO17queryStartOffsetsE"></span><span id="trt_edgellm::rt::PipelineIO::queryStartOffsets__Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1a640cf551ffc49c55b44132d101af3e9f"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">queryStartOffsets</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO17queryStartOffsetsE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO12queryLengthsE">
+<span id="_CPPv3N11trt_edgellm2rt10PipelineIO12queryLengthsE"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO12queryLengthsE"></span><span id="trt_edgellm::rt::PipelineIO::queryLengths__Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1a2509feaea9987272553db4db0b1620c9"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">queryLengths</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO12queryLengthsE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO11pastLengthsE">
+<span id="_CPPv3N11trt_edgellm2rt10PipelineIO11pastLengthsE"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO11pastLengthsE"></span><span id="trt_edgellm::rt::PipelineIO::pastLengths__Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1ae947cb30e1ef0d0dc6964dfa2041a65a"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">pastLengths</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO11pastLengthsE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO24attentionSequenceLengthsE">
+<span id="_CPPv3N11trt_edgellm2rt10PipelineIO24attentionSequenceLengthsE"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO24attentionSequenceLengthsE"></span><span id="trt_edgellm::rt::PipelineIO::attentionSequenceLengths__Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1a0c24ac6f64e8daa6d152aeed03b941c6"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">attentionSequenceLengths</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO24attentionSequenceLengthsE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO12stateIndicesE">
+<span id="_CPPv3N11trt_edgellm2rt10PipelineIO12stateIndicesE"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO12stateIndicesE"></span><span id="trt_edgellm::rt::PipelineIO::stateIndices__Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1ac2d21fc465af1fb9c806e4b11a3dee15"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">stateIndices</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO12stateIndicesE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO13logitsIndicesE">
+<span id="_CPPv3N11trt_edgellm2rt10PipelineIO13logitsIndicesE"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO13logitsIndicesE"></span><span id="trt_edgellm::rt::PipelineIO::logitsIndices__Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1a58ba15fb2e8211f8ab10858c39b58dd1"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">logitsIndices</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO13logitsIndicesE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO17raggedKVPageTableE">
+<span id="_CPPv3N11trt_edgellm2rt10PipelineIO17raggedKVPageTableE"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO17raggedKVPageTableE"></span><span id="trt_edgellm::rt::PipelineIO::raggedKVPageTable__Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1a6e00191dce414370d6b1b36dacf73254"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">raggedKVPageTable</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO17raggedKVPageTableE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO20raggedSwaKVPageTableE">
+<span id="_CPPv3N11trt_edgellm2rt10PipelineIO20raggedSwaKVPageTableE"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO20raggedSwaKVPageTableE"></span><span id="trt_edgellm::rt::PipelineIO::raggedSwaKVPageTable__Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1a079ec0f6e38e5aeba8ce7687991bca6e"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">raggedSwaKVPageTable</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO20raggedSwaKVPageTableE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO13hostPositionsE">
+<span id="_CPPv3N11trt_edgellm2rt10PipelineIO13hostPositionsE"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO13hostPositionsE"></span><span id="trt_edgellm::rt::PipelineIO::hostPositions__Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1a100202ed6cc170f8e23ad154a03742be"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">hostPositions</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO13hostPositionsE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO21hostQueryStartOffsetsE">
+<span id="_CPPv3N11trt_edgellm2rt10PipelineIO21hostQueryStartOffsetsE"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO21hostQueryStartOffsetsE"></span><span id="trt_edgellm::rt::PipelineIO::hostQueryStartOffsets__Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1a877f227963ff4f1947767d4b80444ef0"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">hostQueryStartOffsets</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO21hostQueryStartOffsetsE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO16hostQueryLengthsE">
+<span id="_CPPv3N11trt_edgellm2rt10PipelineIO16hostQueryLengthsE"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO16hostQueryLengthsE"></span><span id="trt_edgellm::rt::PipelineIO::hostQueryLengths__Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1afe108d0231d2957b3c4fea8bec87e6b7"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">hostQueryLengths</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO16hostQueryLengthsE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO15hostPastLengthsE">
+<span id="_CPPv3N11trt_edgellm2rt10PipelineIO15hostPastLengthsE"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO15hostPastLengthsE"></span><span id="trt_edgellm::rt::PipelineIO::hostPastLengths__Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1ad25b786c0d4b03fb8ce308b5489ad7fe"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">hostPastLengths</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO15hostPastLengthsE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO28hostAttentionSequenceLengthsE">
+<span id="_CPPv3N11trt_edgellm2rt10PipelineIO28hostAttentionSequenceLengthsE"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO28hostAttentionSequenceLengthsE"></span><span id="trt_edgellm::rt::PipelineIO::hostAttentionSequenceLengths__Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1ac666392ff23753dd1657297d6c8bad97"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">hostAttentionSequenceLengths</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO28hostAttentionSequenceLengthsE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO16hostStateIndicesE">
+<span id="_CPPv3N11trt_edgellm2rt10PipelineIO16hostStateIndicesE"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO16hostStateIndicesE"></span><span id="trt_edgellm::rt::PipelineIO::hostStateIndices__Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1a2d89791cf827963819dc35fda76cdadc"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">hostStateIndices</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO16hostStateIndicesE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO17hostLogitsIndicesE">
+<span id="_CPPv3N11trt_edgellm2rt10PipelineIO17hostLogitsIndicesE"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO17hostLogitsIndicesE"></span><span id="trt_edgellm::rt::PipelineIO::hostLogitsIndices__Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1ac0827ffaf42898d541a25438341483e7"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">hostLogitsIndices</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO17hostLogitsIndicesE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
 
 <dl class="cpp var">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO14visionBlockIdsE">
 <span id="_CPPv3N11trt_edgellm2rt10PipelineIO14visionBlockIdsE"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO14visionBlockIdsE"></span><span id="trt_edgellm::rt::PipelineIO::visionBlockIds__Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1aed91ce5c936f82ec4e430d089ffdf9d3"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">visionBlockIds</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO14visionBlockIdsE" title="Link to this definition">#</a><br /></dt>
-<dd><p>Gemma4 Unified block IDs, [batch, seq_len] INT32; empty for other models. </p>
+<dd><p>Gemma4 Unified block IDs, [physical_tokens] INT32; empty for other models. </p>
 </dd></dl>
 
 <dl class="cpp var">
@@ -893,6 +1136,28 @@
 <dl class="cpp var">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO11mropeCosSinE">
 <span id="_CPPv3N11trt_edgellm2rt10PipelineIO11mropeCosSinE"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO11mropeCosSinE"></span><span id="trt_edgellm::rt::PipelineIO::mropeCosSin__Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1ae2937fdf7070df7142a10b457e5867cc"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">mropeCosSin</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO11mropeCosSinE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Resident-slot MRoPE source cache. </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO17mropeActiveCosSinE">
+<span id="_CPPv3N11trt_edgellm2rt10PipelineIO17mropeActiveCosSinE"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO17mropeActiveCosSinE"></span><span id="trt_edgellm::rt::PipelineIO::mropeActiveCosSin__Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1a8ae39485b4e667bea19d1f68f9526da3"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">mropeActiveCosSin</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO17mropeActiveCosSinE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Active-row MRoPE preprocessing scratch. </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO16raggedRopeCosSinE">
+<span id="_CPPv3N11trt_edgellm2rt10PipelineIO16raggedRopeCosSinE"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO16raggedRopeCosSinE"></span><span id="trt_edgellm::rt::PipelineIO::raggedRopeCosSin__Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1aae31b39590ecf1abb157ae39296141bc"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">raggedRopeCosSin</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO16raggedRopeCosSinE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO23raggedRopeCosSinSlidingE">
+<span id="_CPPv3N11trt_edgellm2rt10PipelineIO23raggedRopeCosSinSlidingE"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO23raggedRopeCosSinSlidingE"></span><span id="trt_edgellm::rt::PipelineIO::raggedRopeCosSinSliding__Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1af38ed0310548fc608ce41200fece64e1"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">raggedRopeCosSinSliding</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO23raggedRopeCosSinSlidingE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO20raggedRopeCosSinFullE">
+<span id="_CPPv3N11trt_edgellm2rt10PipelineIO20raggedRopeCosSinFullE"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO20raggedRopeCosSinFullE"></span><span id="trt_edgellm::rt::PipelineIO::raggedRopeCosSinFull__Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1a05e44aef24e7d58d8d7e2cd74a902d17"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">raggedRopeCosSinFull</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO20raggedRopeCosSinFullE" title="Link to this definition">#</a><br /></dt>
 <dd></dd></dl>
 
 <dl class="cpp var">
@@ -925,19 +1190,25 @@
 <dl class="cpp var">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO19packedAttentionMaskE">
 <span id="_CPPv3N11trt_edgellm2rt10PipelineIO19packedAttentionMaskE"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO19packedAttentionMaskE"></span><span id="trt_edgellm::rt::PipelineIO::packedAttentionMask__Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1a0b4cf2c5d67a39cb2b1eb22a9cbe8306"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">packedAttentionMask</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO19packedAttentionMaskE" title="Link to this definition">#</a><br /></dt>
-<dd><p>Packed proposal attention mask, [batch, proposalSize, divUp(proposalSize, 32)] INT32. Written by proposal/verify input preparation kernels; consumed by the base and draft engines via the <code class="docutils literal notranslate"><span class="pre">kAttentionMask</span></code> binding. </p>
+<dd><p>Packed proposal attention mask, [physical_tokens, divUp(proposalSize, 32)] INT32. Written by proposal/verify input preparation kernels; consumed by the base and draft engines via the <code class="docutils literal notranslate"><span class="pre">kAttentionMask</span></code> binding. </p>
 </dd></dl>
 
 <dl class="cpp var">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO21specDecodePositionIdsE">
 <span id="_CPPv3N11trt_edgellm2rt10PipelineIO21specDecodePositionIdsE"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO21specDecodePositionIdsE"></span><span id="trt_edgellm::rt::PipelineIO::specDecodePositionIds__Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1af8c2f80da0c108c28679fa5257e58081"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">specDecodePositionIds</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO21specDecodePositionIdsE" title="Link to this definition">#</a><br /></dt>
-<dd><p>SpecDecode position IDs, [batch, proposalSize] INT32. Written by proposal/verify input preparation kernels; consumed by the base and draft engines via the <code class="docutils literal notranslate"><span class="pre">kAttentionPosId</span></code> binding. </p>
+<dd><p>SpecDecode position IDs, [physical_tokens] INT32. Written by proposal/verify input preparation kernels; consumed by the base and draft engines via the <code class="docutils literal notranslate"><span class="pre">kAttentionPosId</span></code> binding. </p>
 </dd></dl>
 
 <dl class="cpp var">
-<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO21specVerifyPhaseMarkerE">
-<span id="_CPPv3N11trt_edgellm2rt10PipelineIO21specVerifyPhaseMarkerE"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO21specVerifyPhaseMarkerE"></span><span id="trt_edgellm::rt::PipelineIO::specVerifyPhaseMarker__Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1ab76a8ec60e1ff509ae0060e356d9c4dc"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">specVerifyPhaseMarker</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO21specVerifyPhaseMarkerE" title="Link to this definition">#</a><br /></dt>
-<dd><p>Shape-only marker for hybrid MTP/DFlash/JetSpec base engines. The runtime binds this tensor at shape [0] for normal prefill/decode and [1] for spec verify; plugins branch on the shape, not the payload. </p>
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO20executionPhaseMarkerE">
+<span id="_CPPv3N11trt_edgellm2rt10PipelineIO20executionPhaseMarkerE"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO20executionPhaseMarkerE"></span><span id="trt_edgellm::rt::PipelineIO::executionPhaseMarker__Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1a2fc7ddfab5fb6c9062719a688ac1f7ca"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">executionPhaseMarker</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO20executionPhaseMarkerE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Shape-only execution-phase carrier. Plugins branch on its extent and never read its payload. </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO27contextSequenceCountCarrierE">
+<span id="_CPPv3N11trt_edgellm2rt10PipelineIO27contextSequenceCountCarrierE"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO27contextSequenceCountCarrierE"></span><span id="trt_edgellm::rt::PipelineIO::contextSequenceCountCarrier__Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1a671b59469e379e0272adb03ab0d20115"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">contextSequenceCountCarrier</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO27contextSequenceCountCarrierE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Shape-only [N_context] INT32 carrier. Its payload is never initialized or read. </p>
 </dd></dl>
 
 <dl class="cpp var">
@@ -949,13 +1220,13 @@
 <dl class="cpp var">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO17specTreeParentIdsE">
 <span id="_CPPv3N11trt_edgellm2rt10PipelineIO17specTreeParentIdsE"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO17specTreeParentIdsE"></span><span id="trt_edgellm::rt::PipelineIO::specTreeParentIds__Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1af3f14b697fd37c2b330221d1d90e6de2"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">specTreeParentIds</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO17specTreeParentIdsE" title="Link to this definition">#</a><br /></dt>
-<dd><p>DDTree parent node ids, [batch, proposalSize] INT32. Runtime-owned metadata for tree attention and hybrid state plugin bindings. </p>
+<dd><p>DDTree parent node ids, [physical_tokens] INT32. Runtime-owned metadata for tree attention and hybrid state plugin bindings. </p>
 </dd></dl>
 
 <dl class="cpp var">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO14specTreeDepthsE">
 <span id="_CPPv3N11trt_edgellm2rt10PipelineIO14specTreeDepthsE"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO14specTreeDepthsE"></span><span id="trt_edgellm::rt::PipelineIO::specTreeDepths__Tensor"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1aa07a9edcb9e9424b878c4f822b436a03"></span><a class="reference internal" href="../common/tensor.html#_CPPv4N11trt_edgellm2rt6TensorE" title="trt_edgellm::rt::Tensor"><span class="n"><span class="pre">Tensor</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">specTreeDepths</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO14specTreeDepthsE" title="Link to this definition">#</a><br /></dt>
-<dd><p>DDTree depth per node, [batch, proposalSize] INT32. Runtime-owned metadata for tree attention and hybrid state plugin bindings. </p>
+<dd><p>DDTree depth per node, [physical_tokens] INT32. Runtime-owned metadata for tree attention and hybrid state plugin bindings. </p>
 </dd></dl>
 
 </div>
@@ -975,39 +1246,84 @@
 </dd></dl>
 
 <dl class="cpp function">
-<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO19createForSpecDecodeERK16DeploymentConfig7int32_t12cudaStream_tb">
-<span id="_CPPv3N11trt_edgellm2rt10PipelineIO19createForSpecDecodeERK16DeploymentConfig7int32_t12cudaStream_tb"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO19createForSpecDecodeERK16DeploymentConfig7int32_t12cudaStream_tb"></span><span id="trt_edgellm::rt::PipelineIO::createForSpecDecode__DeploymentConfigCR.int32_t.cudaStream_t.b"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1a0d95f455ac7226f2c424b24020f8217c"></span><span class="k"><span class="pre">static</span></span><span class="w"> </span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt10PipelineIOE" title="trt_edgellm::rt::PipelineIO"><span class="n"><span class="pre">PipelineIO</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">createForSpecDecode</span></span></span><span class="sig-paren">(</span>
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10PipelineIO19createForSpecDecodeERK16DeploymentConfig7int32_t12cudaStream_tbb">
+<span id="_CPPv3N11trt_edgellm2rt10PipelineIO19createForSpecDecodeERK16DeploymentConfig7int32_t12cudaStream_tbb"></span><span id="_CPPv2N11trt_edgellm2rt10PipelineIO19createForSpecDecodeERK16DeploymentConfig7int32_t12cudaStream_tbb"></span><span id="trt_edgellm::rt::PipelineIO::createForSpecDecode__DeploymentConfigCR.int32_t.cudaStream_t.b.b"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1PipelineIO_1a290a99c47f9f8b97dab63654046b3533"></span><span class="k"><span class="pre">static</span></span><span class="w"> </span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt10PipelineIOE" title="trt_edgellm::rt::PipelineIO"><span class="n"><span class="pre">PipelineIO</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">createForSpecDecode</span></span></span><span class="sig-paren">(</span>
 
 <dl>
 <dd><em class="sig-param"><a class="reference internal" href="deploymentConfig.html#_CPPv4N11trt_edgellm2rt16DeploymentConfigE" title="trt_edgellm::rt::DeploymentConfig"><span class="n"><span class="pre">DeploymentConfig</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">bundle</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">maxRuntimeBatchSize</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">hasAcceptHiddenOutput</span></span></em></dd>
+<dd><em class="sig-param"><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">hasAcceptHiddenOutput</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">hasTreeMetadataInputs</span></span></em></dd>
 </dl>
 
-<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO19createForSpecDecodeERK16DeploymentConfig7int32_t12cudaStream_tb" title="Link to this definition">#</a><br /></dt>
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10PipelineIO19createForSpecDecodeERK16DeploymentConfig7int32_t12cudaStream_tbb" title="Link to this definition">#</a><br /></dt>
 <dd><p>Build <a class="reference internal" href="#structtrt__edgellm_1_1rt_1_1PipelineIO"><span class="std std-ref">PipelineIO</span></a> for a two-engine speculative-decoding runtime (basic I/O, hidden states, deepstack embeds, MRope cos/sin cache).</p>
-<p><code class="docutils literal notranslate"><span class="pre">hasAcceptHiddenOutput</span></code> must say whether the base engine actually exposes the <code class="docutils literal notranslate"><span class="pre">accept_hidden_states</span></code> binding: allocating regardless would make <code class="docutils literal notranslate"><span class="pre">outputHiddenStates.isEmpty()</span></code> stop meaning “nothing will fill this”, and the Talker would be handed uninitialised memory instead of failing. </p>
+<p><code class="docutils literal notranslate"><span class="pre">hasAcceptHiddenOutput</span></code> must say whether the base engine actually exposes the <code class="docutils literal notranslate"><span class="pre">accept_hidden_states</span></code> binding: allocating regardless would make <code class="docutils literal notranslate"><span class="pre">outputHiddenStates.isEmpty()</span></code> stop meaning “nothing will fill this”, and the Talker would be handed uninitialised memory instead of failing. <code class="docutils literal notranslate"><span class="pre">hasTreeMetadataInputs</span></code> similarly reflects the base or draft engine ABI. Some engines retain these optional bindings even when the selected runtime policy uses a linear proposal. </p>
 </dd></dl>
 
 </div>
 </dd></dl>
 
 <dl class="cpp function">
-<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt15allocateBasicIOER10PipelineIO7int32_t7int32_t7int32_t7int32_tN8nvinfer18DataTypeE">
-<span id="_CPPv3N11trt_edgellm2rt15allocateBasicIOER10PipelineIO7int32_t7int32_t7int32_t7int32_tN8nvinfer18DataTypeE"></span><span id="_CPPv2N11trt_edgellm2rt15allocateBasicIOER10PipelineIO7int32_t7int32_t7int32_t7int32_tN8nvinfer18DataTypeE"></span><span id="trt_edgellm::rt::allocateBasicIO__PipelineIOR.int32_t.int32_t.int32_t.int32_t.nvinfer1::DataType"></span><span class="target" id="pipelineIO_8cpp_1ac33b11618d1bdc3b75043342d802450e"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">allocateBasicIO</span></span></span><span class="sig-paren">(</span>
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt15allocateBasicIOER10PipelineIO7int32_t7int32_t">
+<span id="_CPPv3N11trt_edgellm2rt15allocateBasicIOER10PipelineIO7int32_t7int32_t"></span><span id="_CPPv2N11trt_edgellm2rt15allocateBasicIOER10PipelineIO7int32_t7int32_t"></span><span id="trt_edgellm::rt::allocateBasicIO__PipelineIOR.int32_t.int32_t"></span><span class="target" id="pipelineIO_8cpp_1a550aba44e015210cade982cd4ce0ff08"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">allocateBasicIO</span></span></span><span class="sig-paren">(</span>
 
 <dl>
 <dd><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt10PipelineIOE" title="trt_edgellm::rt::PipelineIO"><span class="n"><span class="pre">PipelineIO</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">io</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">maxBatch</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">maxSeq</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">hiddenSize</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">vocabSize</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">nvinfer1</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">DataType</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">dtype</span></span></em></dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">vocabSize</span></span></em></dd>
 </dl>
 
-<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt15allocateBasicIOER10PipelineIO7int32_t7int32_t7int32_t7int32_tN8nvinfer18DataTypeE" title="Link to this definition">#</a><br /></dt>
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt15allocateBasicIOER10PipelineIO7int32_t7int32_t" title="Link to this definition">#</a><br /></dt>
 <dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt24prepareRaggedKVPageTableER10PipelineIORK11KVPageTable7int32_t12cudaStream_t">
+<span id="_CPPv3N11trt_edgellm2rt24prepareRaggedKVPageTableER10PipelineIORK11KVPageTable7int32_t12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm2rt24prepareRaggedKVPageTableER10PipelineIORK11KVPageTable7int32_t12cudaStream_t"></span><span id="trt_edgellm::rt::prepareRaggedKVPageTable__PipelineIOR.KVPageTableCR.int32_t.cudaStream_t"></span><span class="target" id="pipelineIO_8cpp_1aa0d7463fb3ffd41605224d31225d7529"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">prepareRaggedKVPageTable</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt10PipelineIOE" title="trt_edgellm::rt::PipelineIO"><span class="n"><span class="pre">PipelineIO</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">io</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="kvPageTable.html#_CPPv4N11trt_edgellm2rt11KVPageTableE" title="trt_edgellm::rt::KVPageTable"><span class="n"><span class="pre">KVPageTable</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">pageTable</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">numSequences</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt24prepareRaggedKVPageTableER10PipelineIORK11KVPageTable7int32_t12cudaStream_t" title="Link to this definition">#</a><br /></dt>
+<dd><p>Gather resident page-table rows into the stable active-step binding after state-index upload. </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt27prepareRaggedSwaKVPageTableER10PipelineIORK11KVPageTable7int32_t12cudaStream_t">
+<span id="_CPPv3N11trt_edgellm2rt27prepareRaggedSwaKVPageTableER10PipelineIORK11KVPageTable7int32_t12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm2rt27prepareRaggedSwaKVPageTableER10PipelineIORK11KVPageTable7int32_t12cudaStream_t"></span><span id="trt_edgellm::rt::prepareRaggedSwaKVPageTable__PipelineIOR.KVPageTableCR.int32_t.cudaStream_t"></span><span class="target" id="pipelineIO_8cpp_1af62a70a4ac69c143ed188a8ea58fcfb6"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">prepareRaggedSwaKVPageTable</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt10PipelineIOE" title="trt_edgellm::rt::PipelineIO"><span class="n"><span class="pre">PipelineIO</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">io</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="kvPageTable.html#_CPPv4N11trt_edgellm2rt11KVPageTableE" title="trt_edgellm::rt::KVPageTable"><span class="n"><span class="pre">KVPageTable</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">pageTable</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">numSequences</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt27prepareRaggedSwaKVPageTableER10PipelineIORK11KVPageTable7int32_t12cudaStream_t" title="Link to this definition">#</a><br /></dt>
+<dd><p>Gather bounded-SWA resident rows into its stable active-step binding after state-index upload. </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt30prepareRaggedExecutionBindingsER10PipelineIOR15SharedResourcesRK15LLMEngineConfigRK20RaggedExecutionBatch7int32_t12cudaStream_t">
+<span id="_CPPv3N11trt_edgellm2rt30prepareRaggedExecutionBindingsER10PipelineIOR15SharedResourcesRK15LLMEngineConfigRK20RaggedExecutionBatch7int32_t12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm2rt30prepareRaggedExecutionBindingsER10PipelineIOR15SharedResourcesRK15LLMEngineConfigRK20RaggedExecutionBatch7int32_t12cudaStream_t"></span><span id="trt_edgellm::rt::prepareRaggedExecutionBindings__PipelineIOR.SharedResourcesR.LLMEngineConfigCR.RaggedExecutionBatchCR.int32_t.cudaStream_t"></span><span class="target" id="pipelineIO_8cpp_1a1de1d6f260619168bc189859292034b7"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">prepareRaggedExecutionBindings</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt10PipelineIOE" title="trt_edgellm::rt::PipelineIO"><span class="n"><span class="pre">PipelineIO</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">io</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="sharedResources.html#_CPPv4N11trt_edgellm2rt15SharedResourcesE" title="trt_edgellm::rt::SharedResources"><span class="n"><span class="pre">SharedResources</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">resources</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="llmEngineConfig.html#_CPPv4N11trt_edgellm2rt15LLMEngineConfigE" title="trt_edgellm::rt::LLMEngineConfig"><span class="n"><span class="pre">LLMEngineConfig</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">cfg</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="raggedBatchBuilder.html#_CPPv4N11trt_edgellm2rt20RaggedExecutionBatchE" title="trt_edgellm::rt::RaggedExecutionBatch"><span class="n"><span class="pre">RaggedExecutionBatch</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">batch</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">kvCacheIndex</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt30prepareRaggedExecutionBindingsER10PipelineIOR15SharedResourcesRK15LLMEngineConfigRK20RaggedExecutionBatch7int32_t12cudaStream_t" title="Link to this definition">#</a><br /></dt>
+<dd><p>Upload one validated execution batch and derive every token-major engine binding backed by persistent resources. MRoPE resident rows must already have been initialized or published by the caller. </p>
+</dd></dl>
 
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt23allocateDeepstackEmbedsER10PipelineIO7int32_t7int32_t7int32_t7int32_tN8nvinfer18DataTypeE">
@@ -1043,18 +1359,65 @@
 <dd></dd></dl>
 
 <dl class="cpp function">
-<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt13allocateMRopeER10PipelineIO7int32_t7int32_t7int32_t">
-<span id="_CPPv3N11trt_edgellm2rt13allocateMRopeER10PipelineIO7int32_t7int32_t7int32_t"></span><span id="_CPPv2N11trt_edgellm2rt13allocateMRopeER10PipelineIO7int32_t7int32_t7int32_t"></span><span id="trt_edgellm::rt::allocateMRope__PipelineIOR.int32_t.int32_t.int32_t"></span><span class="target" id="pipelineIO_8cpp_1a0a906f878844fbe4c8d81fce03b8975c"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">allocateMRope</span></span></span><span class="sig-paren">(</span>
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt13allocateMRopeER10PipelineIO7int32_t7int32_t7int32_t7int32_t">
+<span id="_CPPv3N11trt_edgellm2rt13allocateMRopeER10PipelineIO7int32_t7int32_t7int32_t7int32_t"></span><span id="_CPPv2N11trt_edgellm2rt13allocateMRopeER10PipelineIO7int32_t7int32_t7int32_t7int32_t"></span><span id="trt_edgellm::rt::allocateMRope__PipelineIOR.int32_t.int32_t.int32_t.int32_t"></span><span class="target" id="pipelineIO_8cpp_1aba593c4bfc5177cdeaea35576806355e"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">allocateMRope</span></span></span><span class="sig-paren">(</span>
 
 <dl>
 <dd><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt10PipelineIOE" title="trt_edgellm::rt::PipelineIO"><span class="n"><span class="pre">PipelineIO</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">io</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">maxBatch</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">residentRows</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">activeRows</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">maxKVCacheCapacity</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">rotaryDim</span></span></em></dd>
 </dl>
 
-<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt13allocateMRopeER10PipelineIO7int32_t7int32_t7int32_t" title="Link to this definition">#</a><br /></dt>
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt13allocateMRopeER10PipelineIO7int32_t7int32_t7int32_t7int32_t" title="Link to this definition">#</a><br /></dt>
 <dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt20prepareTextOnlyMRopeER10PipelineIORK15LLMEngineConfig7int32_t12cudaStream_t">
+<span id="_CPPv3N11trt_edgellm2rt20prepareTextOnlyMRopeER10PipelineIORK15LLMEngineConfig7int32_t12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm2rt20prepareTextOnlyMRopeER10PipelineIORK15LLMEngineConfig7int32_t12cudaStream_t"></span><span id="trt_edgellm::rt::prepareTextOnlyMRope__PipelineIOR.LLMEngineConfigCR.int32_t.cudaStream_t"></span><span class="target" id="pipelineIO_8cpp_1a5f1bbbff7d3c5bd0e3d2e66323b2b9b6"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">prepareTextOnlyMRope</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt10PipelineIOE" title="trt_edgellm::rt::PipelineIO"><span class="n"><span class="pre">PipelineIO</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">io</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="llmEngineConfig.html#_CPPv4N11trt_edgellm2rt15LLMEngineConfigE" title="trt_edgellm::rt::LLMEngineConfig"><span class="n"><span class="pre">LLMEngineConfig</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">cfg</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">activeRows</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt20prepareTextOnlyMRopeER10PipelineIORK15LLMEngineConfig7int32_t12cudaStream_t" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt17prepareRaggedRopeER10PipelineIOR15SharedResourcesRK15LLMEngineConfig7int32_t7int32_t12cudaStream_t">
+<span id="_CPPv3N11trt_edgellm2rt17prepareRaggedRopeER10PipelineIOR15SharedResourcesRK15LLMEngineConfig7int32_t7int32_t12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm2rt17prepareRaggedRopeER10PipelineIOR15SharedResourcesRK15LLMEngineConfig7int32_t7int32_t12cudaStream_t"></span><span id="trt_edgellm::rt::prepareRaggedRope__PipelineIOR.SharedResourcesR.LLMEngineConfigCR.int32_t.int32_t.cudaStream_t"></span><span class="target" id="pipelineIO_8cpp_1a4bac83b1d78193acd7ca196c8e98ccbe"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">prepareRaggedRope</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt10PipelineIOE" title="trt_edgellm::rt::PipelineIO"><span class="n"><span class="pre">PipelineIO</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">io</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="sharedResources.html#_CPPv4N11trt_edgellm2rt15SharedResourcesE" title="trt_edgellm::rt::SharedResources"><span class="n"><span class="pre">SharedResources</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">res</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="llmEngineConfig.html#_CPPv4N11trt_edgellm2rt15LLMEngineConfigE" title="trt_edgellm::rt::LLMEngineConfig"><span class="n"><span class="pre">LLMEngineConfig</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">cfg</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">physicalTokens</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">numSequences</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt17prepareRaggedRopeER10PipelineIOR15SharedResourcesRK15LLMEngineConfig7int32_t7int32_t12cudaStream_t" title="Link to this definition">#</a><br /></dt>
+<dd><p>Gather the current ragged step’s token-aligned RoPE inputs after metadata upload. </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt28scatterActiveMRopeToResidentER10PipelineIORK20RaggedExecutionBatchRK15LLMEngineConfig12cudaStream_t">
+<span id="_CPPv3N11trt_edgellm2rt28scatterActiveMRopeToResidentER10PipelineIORK20RaggedExecutionBatchRK15LLMEngineConfig12cudaStream_t"></span><span id="_CPPv2N11trt_edgellm2rt28scatterActiveMRopeToResidentER10PipelineIORK20RaggedExecutionBatchRK15LLMEngineConfig12cudaStream_t"></span><span id="trt_edgellm::rt::scatterActiveMRopeToResident__PipelineIOR.RaggedExecutionBatchCR.LLMEngineConfigCR.cudaStream_t"></span><span class="target" id="pipelineIO_8cpp_1ab399f7caed379703418707409d41dde1"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../action/alpamayo1RunnerUtils.html#_CPPv4N11trt_edgellm2rtE" title="trt_edgellm::rt"><span class="n"><span class="pre">rt</span></span></a><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">scatterActiveMRopeToResident</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt10PipelineIOE" title="trt_edgellm::rt::PipelineIO"><span class="n"><span class="pre">PipelineIO</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">io</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="raggedBatchBuilder.html#_CPPv4N11trt_edgellm2rt20RaggedExecutionBatchE" title="trt_edgellm::rt::RaggedExecutionBatch"><span class="n"><span class="pre">RaggedExecutionBatch</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">batch</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="llmEngineConfig.html#_CPPv4N11trt_edgellm2rt15LLMEngineConfigE" title="trt_edgellm::rt::LLMEngineConfig"><span class="n"><span class="pre">LLMEngineConfig</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">cfg</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">stream</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt28scatterActiveMRopeToResidentER10PipelineIORK20RaggedExecutionBatchRK15LLMEngineConfig12cudaStream_t" title="Link to this definition">#</a><br /></dt>
+<dd><p>Publish active-row MRoPE preprocessing output into its resident-slot rows. </p>
+</dd></dl>
 
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt14buildTensorMapER9TensorMapR10PipelineIOR15SharedResourcesRK15LLMEngineConfig7int32_t">
@@ -1146,7 +1509,7 @@
 
 <span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt32buildTensorMapForSpecDecodeDraftER9TensorMapR10PipelineIOR15SharedResourcesRK15LLMEngineConfig" title="Link to this definition">#</a><br /></dt>
 <dd><p>Populate a <a class="reference internal" href="tensorMap.html#classtrt__edgellm_1_1rt_1_1TensorMap"><span class="std std-ref">TensorMap</span></a> for a SpecDecode draft engine. Delegates to <code class="docutils literal notranslate"><span class="pre">buildTensorMap</span></code> with <code class="docutils literal notranslate"><span class="pre">kvCacheIndex=1</span></code> for the common bindings, then patches in draft-engine- specific bindings (base/draft hidden states in+out, packed proposal attention mask, proposal position IDs).</p>
-<p>Preconditions: <code class="docutils literal notranslate"><span class="pre">io</span></code> must have been constructed via <code class="docutils literal notranslate"><a class="reference internal" href="#structtrt__edgellm_1_1rt_1_1PipelineIO_1a0d95f455ac7226f2c424b24020f8217c"><span class="std std-ref"><span class="pre">PipelineIO::createForSpecDecode</span></span></a></code> for an EAGLE/MTP-style draft path where draftHiddenStatesIn/Out are populated alongside baseHiddenStates, packedAttentionMask, and specDecodePositionIds. DFlash uses its own draft <a class="reference internal" href="tensorMap.html#classtrt__edgellm_1_1rt_1_1TensorMap"><span class="std std-ref">TensorMap</span></a>.</p>
+<p>Preconditions: <code class="docutils literal notranslate"><span class="pre">io</span></code> must have been constructed via <code class="docutils literal notranslate"><a class="reference internal" href="#structtrt__edgellm_1_1rt_1_1PipelineIO_1a290a99c47f9f8b97dab63654046b3533"><span class="std std-ref"><span class="pre">PipelineIO::createForSpecDecode</span></span></a></code> for an EAGLE/MTP-style draft path where draftHiddenStatesIn/Out are populated alongside baseHiddenStates, packedAttentionMask, and specDecodePositionIds. DFlash uses its own draft <a class="reference internal" href="tensorMap.html#classtrt__edgellm_1_1rt_1_1TensorMap"><span class="std std-ref">TensorMap</span></a>.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
@@ -1226,6 +1589,17 @@
   </div>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt21AsyncHostStagingFenceE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::rt::AsyncHostStagingFence</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt21AsyncHostStagingFence21AsyncHostStagingFenceEv"><code class="docutils literal notranslate"><span class="pre">AsyncHostStagingFence()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt21AsyncHostStagingFence21AsyncHostStagingFenceERK21AsyncHostStagingFence"><code class="docutils literal notranslate"><span class="pre">AsyncHostStagingFence()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt21AsyncHostStagingFenceaSERK21AsyncHostStagingFence"><code class="docutils literal notranslate"><span class="pre">operator=()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt21AsyncHostStagingFence21AsyncHostStagingFenceERR21AsyncHostStagingFence"><code class="docutils literal notranslate"><span class="pre">AsyncHostStagingFence()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt21AsyncHostStagingFenceaSERR21AsyncHostStagingFence"><code class="docutils literal notranslate"><span class="pre">operator=()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt21AsyncHostStagingFenceD0Ev"><code class="docutils literal notranslate"><span class="pre">~AsyncHostStagingFence()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt21AsyncHostStagingFence4waitEv"><code class="docutils literal notranslate"><span class="pre">wait()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt21AsyncHostStagingFence6recordE12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">record()</span></code></a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt23StreamingPrefillBuffersE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::rt::StreamingPrefillBuffers</span></code></a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt23StreamingPrefillBuffers19populateFromPrefillERK6TensorRK6Tensor7int32_t7int32_t7int32_t7int32_t7int32_t12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">populateFromPrefill()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt23StreamingPrefillBuffers11inputEmbedsE"><code class="docutils literal notranslate"><span class="pre">inputEmbeds</span></code></a></li>
@@ -1233,6 +1607,10 @@
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIOE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::rt::PipelineIO</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO20uploadRaggedMetadataERK20RaggedExecutionBatch12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">uploadRaggedMetadata()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO18uploadStateIndicesEPKNSt6vectorI11ResidentRefEE7int32_t12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">uploadStateIndices()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO22waitForStepHostStagingEv"><code class="docutils literal notranslate"><span class="pre">waitForStepHostStaging()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO21recordStepHostUploadsE12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">recordStepHostUploads()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO12inputsEmbedsE"><code class="docutils literal notranslate"><span class="pre">inputsEmbeds</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO12outputLogitsE"><code class="docutils literal notranslate"><span class="pre">outputLogits</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO18selectTokenIndicesE"><code class="docutils literal notranslate"><span class="pre">selectTokenIndices</span></code></a></li>
@@ -1242,9 +1620,29 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO18hostContextLengthsE"><code class="docutils literal notranslate"><span class="pre">hostContextLengths</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO22hostSelectTokenIndicesE"><code class="docutils literal notranslate"><span class="pre">hostSelectTokenIndices</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO18hostPhaseIsEncoderE"><code class="docutils literal notranslate"><span class="pre">hostPhaseIsEncoder</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO9positionsE"><code class="docutils literal notranslate"><span class="pre">positions</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO17queryStartOffsetsE"><code class="docutils literal notranslate"><span class="pre">queryStartOffsets</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO12queryLengthsE"><code class="docutils literal notranslate"><span class="pre">queryLengths</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO11pastLengthsE"><code class="docutils literal notranslate"><span class="pre">pastLengths</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO24attentionSequenceLengthsE"><code class="docutils literal notranslate"><span class="pre">attentionSequenceLengths</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO12stateIndicesE"><code class="docutils literal notranslate"><span class="pre">stateIndices</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO13logitsIndicesE"><code class="docutils literal notranslate"><span class="pre">logitsIndices</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO17raggedKVPageTableE"><code class="docutils literal notranslate"><span class="pre">raggedKVPageTable</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO20raggedSwaKVPageTableE"><code class="docutils literal notranslate"><span class="pre">raggedSwaKVPageTable</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO13hostPositionsE"><code class="docutils literal notranslate"><span class="pre">hostPositions</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO21hostQueryStartOffsetsE"><code class="docutils literal notranslate"><span class="pre">hostQueryStartOffsets</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO16hostQueryLengthsE"><code class="docutils literal notranslate"><span class="pre">hostQueryLengths</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO15hostPastLengthsE"><code class="docutils literal notranslate"><span class="pre">hostPastLengths</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO28hostAttentionSequenceLengthsE"><code class="docutils literal notranslate"><span class="pre">hostAttentionSequenceLengths</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO16hostStateIndicesE"><code class="docutils literal notranslate"><span class="pre">hostStateIndices</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO17hostLogitsIndicesE"><code class="docutils literal notranslate"><span class="pre">hostLogitsIndices</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO14visionBlockIdsE"><code class="docutils literal notranslate"><span class="pre">visionBlockIds</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO15deepstackEmbedsE"><code class="docutils literal notranslate"><span class="pre">deepstackEmbeds</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO11mropeCosSinE"><code class="docutils literal notranslate"><span class="pre">mropeCosSin</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO17mropeActiveCosSinE"><code class="docutils literal notranslate"><span class="pre">mropeActiveCosSin</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO16raggedRopeCosSinE"><code class="docutils literal notranslate"><span class="pre">raggedRopeCosSin</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO23raggedRopeCosSinSlidingE"><code class="docutils literal notranslate"><span class="pre">raggedRopeCosSinSliding</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO20raggedRopeCosSinFullE"><code class="docutils literal notranslate"><span class="pre">raggedRopeCosSinFull</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO16baseHiddenStatesE"><code class="docutils literal notranslate"><span class="pre">baseHiddenStates</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO19draftHiddenStatesInE"><code class="docutils literal notranslate"><span class="pre">draftHiddenStatesIn</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO20draftHiddenStatesOutE"><code class="docutils literal notranslate"><span class="pre">draftHiddenStatesOut</span></code></a></li>
@@ -1252,18 +1650,25 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO16streamingPrefillE"><code class="docutils literal notranslate"><span class="pre">streamingPrefill</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO19packedAttentionMaskE"><code class="docutils literal notranslate"><span class="pre">packedAttentionMask</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO21specDecodePositionIdsE"><code class="docutils literal notranslate"><span class="pre">specDecodePositionIds</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO21specVerifyPhaseMarkerE"><code class="docutils literal notranslate"><span class="pre">specVerifyPhaseMarker</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO20executionPhaseMarkerE"><code class="docutils literal notranslate"><span class="pre">executionPhaseMarker</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO27contextSequenceCountCarrierE"><code class="docutils literal notranslate"><span class="pre">contextSequenceCountCarrier</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO16skipSoftmaxScaleE"><code class="docutils literal notranslate"><span class="pre">skipSoftmaxScale</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO17specTreeParentIdsE"><code class="docutils literal notranslate"><span class="pre">specTreeParentIds</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO14specTreeDepthsE"><code class="docutils literal notranslate"><span class="pre">specTreeDepths</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO12createForLLMERK15LLMEngineConfig12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">createForLLM()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO19createForSpecDecodeERK16DeploymentConfig7int32_t12cudaStream_tb"><code class="docutils literal notranslate"><span class="pre">createForSpecDecode()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10PipelineIO19createForSpecDecodeERK16DeploymentConfig7int32_t12cudaStream_tbb"><code class="docutils literal notranslate"><span class="pre">createForSpecDecode()</span></code></a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt15allocateBasicIOER10PipelineIO7int32_t7int32_t7int32_t7int32_tN8nvinfer18DataTypeE"><code class="docutils literal notranslate"><span class="pre">allocateBasicIO()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt15allocateBasicIOER10PipelineIO7int32_t7int32_t"><code class="docutils literal notranslate"><span class="pre">allocateBasicIO()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt24prepareRaggedKVPageTableER10PipelineIORK11KVPageTable7int32_t12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">prepareRaggedKVPageTable()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt27prepareRaggedSwaKVPageTableER10PipelineIORK11KVPageTable7int32_t12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">prepareRaggedSwaKVPageTable()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt30prepareRaggedExecutionBindingsER10PipelineIOR15SharedResourcesRK15LLMEngineConfigRK20RaggedExecutionBatch7int32_t12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">prepareRaggedExecutionBindings()</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt23allocateDeepstackEmbedsER10PipelineIO7int32_t7int32_t7int32_t7int32_tN8nvinfer18DataTypeE"><code class="docutils literal notranslate"><span class="pre">allocateDeepstackEmbeds()</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt30allocateSpecDecodeHiddenStatesER10PipelineIO7int32_t7int32_t7int32_t7int32_tN8nvinfer18DataTypeEb"><code class="docutils literal notranslate"><span class="pre">allocateSpecDecodeHiddenStates()</span></code></a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt13allocateMRopeER10PipelineIO7int32_t7int32_t7int32_t"><code class="docutils literal notranslate"><span class="pre">allocateMRope()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt13allocateMRopeER10PipelineIO7int32_t7int32_t7int32_t7int32_t"><code class="docutils literal notranslate"><span class="pre">allocateMRope()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt20prepareTextOnlyMRopeER10PipelineIORK15LLMEngineConfig7int32_t12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">prepareTextOnlyMRope()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt17prepareRaggedRopeER10PipelineIOR15SharedResourcesRK15LLMEngineConfig7int32_t7int32_t12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">prepareRaggedRope()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt28scatterActiveMRopeToResidentER10PipelineIORK20RaggedExecutionBatchRK15LLMEngineConfig12cudaStream_t"><code class="docutils literal notranslate"><span class="pre">scatterActiveMRopeToResident()</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt14buildTensorMapER9TensorMapR10PipelineIOR15SharedResourcesRK15LLMEngineConfig7int32_t"><code class="docutils literal notranslate"><span class="pre">buildTensorMap()</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt34buildTensorMapForDiffusionBackboneER9TensorMapR10PipelineIOR15SharedResourcesRK15LLMEngineConfig7int32_t"><code class="docutils literal notranslate"><span class="pre">buildTensorMapForDiffusionBackbone()</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt35bindDiffusionUnifiedBackboneTensorsER9TensorMapR10PipelineIOR6TensorR6TensorR6TensorR6TensorR6Tensor"><code class="docutils literal notranslate"><span class="pre">bindDiffusionUnifiedBackboneTensors()</span></code></a></li>
@@ -1288,8 +1693,8 @@
   
 
   <!-- Scripts loaded after <body> so the DOM is not blocked -->
-  <script defer src="../../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67"></script>
-<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67"></script>
+  <script defer src="../../_static/scripts/bootstrap.js?digest=0790524f97105ba85085"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=0790524f97105ba85085"></script>
 
 
   <footer class="bd-footer">
@@ -1361,9 +1766,9 @@
         <div class="footer-item">
 <div class="extra_footer">
   
-  <p>Last updated on September 03, 2026.</p>
+  <p>Last updated on September 29, 2026.</p>
   
-  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/e8b29522938901f6df19ebeedd4b69bc8edbcd97">e8b2952</a>.</p>
+  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/e649dadcbbf049fa4caf2f09f3a3275ca56751db">e649dad</a>.</p>
   
 </div></div>
       

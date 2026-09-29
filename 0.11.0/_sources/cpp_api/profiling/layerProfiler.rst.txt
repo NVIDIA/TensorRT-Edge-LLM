@@ -1,0 +1,24 @@
+Layer Profiler
+==============
+
+.. doxygenclass:: trt_edgellm::layerProfiler::LayerProfiler
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::layerProfiler::LayerProfile
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::layerProfiler::LayerProfilerMetrics
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::layerProfiler::enableLayerProfilers
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::layerProfiler::disableLayerProfilers
+   :project: TensorRT Edge-LLM
+

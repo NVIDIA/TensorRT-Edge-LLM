@@ -41,3 +41,8 @@ Context Cache Coordinator
    :members:
    :undoc-members:
 
+.. doxygenstruct:: trt_edgellm::rt::ContextCacheCoordinator::AdmitSequenceResult
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

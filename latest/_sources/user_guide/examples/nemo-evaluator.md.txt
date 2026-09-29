@@ -5,15 +5,13 @@ builds or reuses its complete runtime bundle before evaluation.
 
 ## Install Dependencies
 
-From the TensorRT Edge-LLM repository:
+Set up the [server](experimental-server.md#install) from a published wheel or
+source build first. Then install evaluator dependencies from the repository
+without replacing the installed Edge-LLM package:
 
 ```bash
-python -m pip install -e ".[server]"
-pip install -r requirements-nemo-evaluator.txt
+python -m pip install -r /path/to/TensorRT-Edge-LLM/requirements-nemo-evaluator.txt
 ```
-
-Make sure the built Python bindings, TensorRT libraries, and Edge-LLM plugin are available in the active environment.
-See the [experimental server guide](experimental-server.md) for setup details.
 
 ## Evaluate a Running Server
 

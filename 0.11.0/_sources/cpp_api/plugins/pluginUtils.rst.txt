@@ -1,0 +1,28 @@
+Plugin Utils
+============
+
+.. doxygenstruct:: trt_edgellm::plugins::Serializer
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::plugins::Serializer< T, typename std::enable_if_t< std::is_arithmetic_v< T >||std::is_enum_v< T > > >
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::plugins::applyThorSMRenumberWAR
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::plugins::alignTensorSize
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::plugins::toFieldType
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::plugins::accumulateWorkspaceSize
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::plugins::assignTensorFromWorkspace
+   :project: TensorRT Edge-LLM
+

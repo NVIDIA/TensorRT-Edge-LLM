@@ -1,0 +1,8 @@
+Engine Channel
+==============
+
+.. doxygenclass:: trt_edgellm::rt::scheduler::EngineChannel
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

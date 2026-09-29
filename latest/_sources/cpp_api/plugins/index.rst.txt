@@ -11,6 +11,7 @@ API documentation for the plugins module.
    causalConv1dPlugin
    cuteDslInt4Gemm
    cuteDslInt4Gemv
+   dflash2GroupedDynamicConvPlugin
    dflashTargetKVCacheUpdatePlugin
    fp16MoePlugin
    fusedNvfp4GemmAllReducePlugin
@@ -19,14 +20,18 @@ API documentation for the plugins module.
    int4GroupwiseGemmPlugin
    int4GroupwiseGemmPluginV2
    int4MoePlugin
+   layerNormPlugin
    mambaPlugin
    nvfp4A16BlackwellDispatchPolicy
+   nvfp4A16BlackwellGemmPlugin
+   nvfp4A16BlackwellMoePlugin
    nvfp4A16GemmPlugin
-   nvfp4A16GemmPluginV2
    nvfp4A16MoePlugin
    nvfp4MoePlugin
    nvfp4MoePluginGeforce
    pluginUtils
    qkvConcatPlugin
+   qsaAttentionPlugin
+   raggedPluginMetadata
    rmsNormPlugin
    vitAttentionPlugin

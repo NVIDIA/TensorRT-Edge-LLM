@@ -6,3 +6,6 @@ Model Artifacts
    :members:
    :undoc-members:
 
+.. doxygenfunction:: trt_edgellm::rt::validateDsparkTreeMetadataBindings
+   :project: TensorRT Edge-LLM
+

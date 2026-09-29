@@ -1,0 +1,32 @@
+All Reduce Plugin
+=================
+
+.. doxygenclass:: trt_edgellm::plugins::AllReducePlugin
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::plugins::AllReducePluginCreator
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::plugins::NcclAllReducePathRegistration
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::plugins::AllReducePathRegistrations
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::plugins::registerNcclAllReducePath
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::plugins::unregisterNcclAllReducePath
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::plugins::snapshotAllReducePathRegistrationsForDevice
+   :project: TensorRT Edge-LLM
+

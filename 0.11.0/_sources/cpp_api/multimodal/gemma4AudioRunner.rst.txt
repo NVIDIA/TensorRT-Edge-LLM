@@ -1,0 +1,13 @@
+Gemma4 Audio Runner
+===================
+
+.. doxygenclass:: trt_edgellm::rt::Gemma4AudioRunner
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::Gemma4AudioConfig
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

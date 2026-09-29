@@ -1,0 +1,6 @@
+Cute Dsl Gdn Runner
+===================
+
+.. doxygenfile:: kernels/gdnKernels/cuteDslGDNRunner.h
+   :project: TensorRT Edge-LLM
+

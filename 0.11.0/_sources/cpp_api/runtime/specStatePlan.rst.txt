@@ -1,0 +1,24 @@
+Spec State Plan
+===============
+
+.. doxygenstruct:: trt_edgellm::rt::SpecReusePlanInput
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::SpecLeaseStateView
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::SpecPublishStateInput
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::makeSpecReusePlan
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::makeSpecPublishedState
+   :project: TensorRT Edge-LLM
+

@@ -1,0 +1,8 @@
+Mamba Cache Manager
+===================
+
+.. doxygenclass:: trt_edgellm::rt::MambaCacheManager
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

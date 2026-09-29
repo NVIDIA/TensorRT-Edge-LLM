@@ -1,6 +1,11 @@
 EAGLE Util Kernels
 ==================
 
+.. doxygenstruct:: trt_edgellm::kernel::AcceptLengthBudgets
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
 .. doxygenfunction:: trt_edgellm::kernel::prepareEaglePrefillInputs
    :project: TensorRT Edge-LLM
 
@@ -17,6 +22,9 @@ EAGLE Util Kernels
    :project: TensorRT Edge-LLM
 
 .. doxygenfunction:: trt_edgellm::kernel::eagleBaseAssembleHiddenState
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::clampAcceptLengths
    :project: TensorRT Edge-LLM
 
 .. doxygenfunction:: trt_edgellm::kernel::initializeDraftTreeTables

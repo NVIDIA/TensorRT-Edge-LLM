@@ -6,7 +6,7 @@ tasks with separate component and runtime contracts:
 | Task | Input to output | Components | Runtime |
 |---|---|---|---|
 | Policy | observation and instruction to action chunk | UND prefill, generation policy, VAE encoder | `cosmos3_policy_inference` |
-| Reasoning | image and prompt to text | visual encoder, LLM | `llm_inference` |
+| Reasoning | image or video and prompt to text | visual encoder, LLM | `llm_inference` or OpenAI-compatible server |
 
 See the [Cosmos3-Edge example](../../user_guide/examples/vla/cosmos3.md) for
 export, engine build, and inference commands.
@@ -20,7 +20,7 @@ onnx/
   und_prefill/ model.onnx config.json embed_tokens.safetensors
   gen/         model.onnx config.json
   vae_encoder/ model.onnx config.json
-  text_tokenizer/ tokenizer.json processed_chat_template.json ...
+  text_tokenizer/ tokenizer.json chat_template.jinja ...
 ```
 
 Each `config.json` is the component contract (optimization profile, tensor
@@ -40,10 +40,12 @@ the raw K because `qk_norm_for_text=False`.
 ## Reasoner Components
 
 The reasoner is a standard Edge-LLM VLM with a SigLIP2 vision encoder,
-PatchMerger and an autoregressive text decoder. The only model-specific pieces
-are on the export side: the decoder swaps SwiGLU for the Nemotron-H
-squared-ReLU MLP (`Cosmos3ReasonerCausalLM`), and the exporter maps the
-checkpoint's native flat schema onto the shared decoder names.
+PatchMerger and an autoregressive text decoder. The OpenAI-compatible server
+accepts a native video file in a `video` or `video_url` content block, decodes
+and samples the clip, and sends it to the visual runtime as one video buffer.
+The only model-specific pieces on the export side are the Nemotron-H
+squared-ReLU MLP (`Cosmos3ReasonerCausalLM`) and the mapping from the
+checkpoint's native flat schema to the shared decoder names.
 
 Image and video synthesis are not exposed.
 

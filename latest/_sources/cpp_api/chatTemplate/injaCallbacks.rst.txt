@@ -1,0 +1,6 @@
+Inja Callbacks
+==============
+
+.. doxygenfunction:: trt_edgellm::chat_template::registerInjaCallbacks
+   :project: TensorRT Edge-LLM
+

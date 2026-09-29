@@ -1,0 +1,18 @@
+Causal Conv1d
+=============
+
+.. doxygenfunction:: mamba_ssm::invokeCausalConv1d
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: mamba_ssm::invokeCaptureConvState
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: mamba_ssm::invokeCausalConv1dDecode
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: mamba_ssm::invokeCausalConv1dDecodeMTP
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: mamba_ssm::invokeCausalConv1dDecodeDDTree
+   :project: TensorRT Edge-LLM
+

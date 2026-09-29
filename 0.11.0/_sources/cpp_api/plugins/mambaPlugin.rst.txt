@@ -1,0 +1,13 @@
+Mamba Plugin
+============
+
+.. doxygenclass:: trt_edgellm::plugins::MambaPlugin
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::plugins::MambaPluginCreator
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

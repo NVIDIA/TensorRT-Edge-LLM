@@ -1,0 +1,8 @@
+Block Diffusion Decoder
+=======================
+
+.. doxygenclass:: trt_edgellm::rt::BlockDiffusionDecoder
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

@@ -10,7 +10,19 @@ Dflash Runtime Kernels
 .. doxygenfunction:: trt_edgellm::kernel::launchDFlashPrepareProposalInputs
    :project: TensorRT Edge-LLM
 
+.. doxygenfunction:: trt_edgellm::kernel::launchDFlashPrepareDeltaMetadata
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchDFlashGatherDeltaRope
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchPrepareSpecRaggedMetadata
+   :project: TensorRT Edge-LLM
+
 .. doxygenfunction:: trt_edgellm::kernel::launchDFlashPrepareBaseVerifyInputs
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchDFlashBuildLinearTreeMetadata
    :project: TensorRT Edge-LLM
 
 .. doxygenfunction:: trt_edgellm::kernel::launchDFlashBuildLinearVerifyInputs

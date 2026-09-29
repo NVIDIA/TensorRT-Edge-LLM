@@ -1,0 +1,11 @@
+Multi Device Plugin Resource Factory
+====================================
+
+.. doxygenstruct:: trt_edgellm::rt::MultiDevicePluginResourceConfig
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::createMultiDevicePluginResources
+   :project: TensorRT Edge-LLM
+

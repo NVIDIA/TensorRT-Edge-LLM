@@ -1,0 +1,8 @@
+Muse Glimmer ViT Runner
+=======================
+
+.. doxygenclass:: trt_edgellm::rt::MuseGlimmerViTRunner
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

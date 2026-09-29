@@ -1,0 +1,42 @@
+Nvfp4 A16 Blackwell Moe Jit Compiler
+====================================
+
+.. doxygenstruct:: trt_edgellm::Nvfp4A16BlackwellMoeJitKey
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::Nvfp4A16BlackwellMoeJitDigest
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::Nvfp4A16BlackwellMoeJitKernel
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::getNvfp4A16BlackwellMoeFc1SharedBytes
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::getNvfp4A16BlackwellMoeFc2SharedBytes
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::describeNvfp4A16BlackwellMoeJitKeyProblem
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::canCompileNvfp4A16BlackwellMoeJitKernel
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::computeNvfp4A16BlackwellMoeJitDigest
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::compileNvfp4A16BlackwellMoeJitKernel
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::serializeNvfp4A16BlackwellMoeJitKernel
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::deserializeNvfp4A16BlackwellMoeJitKernel
+   :project: TensorRT Edge-LLM
+

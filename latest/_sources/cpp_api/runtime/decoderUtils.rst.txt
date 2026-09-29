@@ -4,13 +4,37 @@ Decoder Utils
 .. doxygenfunction:: trt_edgellm::rt::decoder_utils::zeroActiveRegion
    :project: TensorRT Edge-LLM
 
+.. doxygenfunction:: trt_edgellm::rt::decoder_utils::prepareSpecRaggedBindings
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::decoder_utils::buildSpecPrefillRaggedBatch
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::decoder_utils::contextPrefillPhase
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::decoder_utils::prepareSpecPrefillRaggedBindings
+   :project: TensorRT Edge-LLM
+
 .. doxygenfunction:: trt_edgellm::rt::decoder_utils::loadDraftEngine
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::decoder_utils::directVocabMapToOffsets
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::decoder_utils::appendSampledTokens
    :project: TensorRT Edge-LLM
 
 .. doxygenfunction:: trt_edgellm::rt::decoder_utils::appendAcceptedTokens
    :project: TensorRT Edge-LLM
 
 .. doxygenfunction:: trt_edgellm::rt::decoder_utils::clampAcceptLengthsToRemainingGeneration
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::decoder_utils::applyForcedAcceptance
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::decoder_utils::dumpSpecRound
    :project: TensorRT Edge-LLM
 
 .. doxygenfunction:: trt_edgellm::rt::decoder_utils::enqueueLogprobsD2H

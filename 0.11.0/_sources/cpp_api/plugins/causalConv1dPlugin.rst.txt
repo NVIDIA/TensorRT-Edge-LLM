@@ -1,0 +1,13 @@
+Causal Conv1d Plugin
+====================
+
+.. doxygenclass:: trt_edgellm::plugins::CausalConv1dPlugin
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::plugins::CausalConv1dPluginCreator
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

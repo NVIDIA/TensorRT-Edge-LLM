@@ -6,6 +6,16 @@ LLM Builder
    :members:
    :undoc-members:
 
+.. doxygenstruct:: trt_edgellm::builder::RaggedProfilePoint
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::builder::RaggedProfileRange
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
 .. doxygenstruct:: trt_edgellm::builder::LLMBuilderConfig
    :project: TensorRT Edge-LLM
    :members:

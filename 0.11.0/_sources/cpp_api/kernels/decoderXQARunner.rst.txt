@@ -1,0 +1,13 @@
+Decoder XQA Runner
+==================
+
+.. doxygenclass:: trt_edgellm::DecoderXQARunner
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::XQALaunchParams
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

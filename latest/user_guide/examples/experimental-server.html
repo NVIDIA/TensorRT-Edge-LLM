@@ -28,8 +28,8 @@
   </noscript>
   
   <!-- Loaded before other Sphinx assets -->
-  <link href="../../_static/styles/theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
-<link href="../../_static/styles/pydata-sphinx-theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
+  <link href="../../_static/styles/theme.css?digest=0790524f97105ba85085" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=0790524f97105ba85085" rel="stylesheet" />
 
     <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=03e43079" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/nvidia-sphinx-theme.css?v=933278ad" />
@@ -39,10 +39,10 @@
     <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=e02be394" />
   
   <!-- So that users can add custom icons -->
-  <script defer src="../../_static/scripts/fontawesome.js?digest=cb8930eaaf36d9849b67"></script>
+  <script defer src="../../_static/scripts/fontawesome.js?digest=0790524f97105ba85085"></script>
   <!-- Pre-loaded scripts that we'll load fully later -->
-  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67" />
-<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67" />
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=0790524f97105ba85085" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=0790524f97105ba85085" />
 
 
 
@@ -58,9 +58,9 @@
     <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'user_guide/examples/experimental-server';</script>
     <script>
-        DOCUMENTATION_OPTIONS.theme_version = '0.21.0';
+        DOCUMENTATION_OPTIONS.theme_version = '0.18.0';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = './_static/switcher.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.10.1';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.11.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner =
             false;
         </script>
@@ -76,7 +76,7 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.10.1" />
+  <meta name="docsearch:version" content="0.11.0" />
   
     
     <script src="../../_static/searchtools.js"></script>
@@ -364,6 +364,7 @@
 <li class="toctree-l1 has-children"><a class="reference internal" href="vla/index.html">Vision-Language-Action</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l2"><a class="reference internal" href="vla/alpamayo.html">Alpamayo-R1-10B (Vision-Language-Action)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="vla/cosmos3.html">Cosmos3-Edge</a></li>
+<li class="toctree-l2"><a class="reference internal" href="vla/pi05.html">pi0.5</a></li>
 </ul>
 </details></li>
 <li class="toctree-l1"><a class="reference internal" href="omni.html">Omni (Audio + Vision + Speech I/O)</a></li>
@@ -379,8 +380,11 @@
 <li class="toctree-l1"><a class="reference internal" href="../features/FP8KV.html">FP8 KV Cache</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../features/fp8-embedding.html">FP8 Embedding</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../features/streaming.html">Streaming Output</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../features/guided-decoding.html">Guided Decoding</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../features/visual-token-pruning.html">Visual-Token Pruning (DART)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../features/kv-cache-reuse.html">KV Cache Reuse</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../features/in-flight-batching.html">In-Flight Batching</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../features/codepredictor-speculative-decoding.html">CodePredictor Speculative Decoding</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Input &amp; Chat Format</span></p>
 <ul class="nav bd-sidenav">
@@ -400,6 +404,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/cpp-runtime-overview.html">C++ Runtime Overview</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/llm-inference-runtime.html">LLM Inference Runtime</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/llm-streaming.html">LLM Streaming — Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/in-flight-batching.html">In-Flight Batching (V0)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/memory-monitoring.html">Memory monitoring</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/openai-server.html">HTTP Inference Server Architecture</a></li>
 </ul>
@@ -407,6 +412,7 @@
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/models/cosmos3.html">Cosmos3-Edge Design</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/models/nemotron3_5_asr.html">Nemotron-3.5-ASR</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/models/pi05.html">pi0.5 Design</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Customization</span></p>
 <ul class="nav bd-sidenav">
@@ -440,12 +446,20 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/builder/visualBuilder.html">Visual Builder</a></li>
 </ul>
 </details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/chatTemplate/index.html">Chattemplate Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/chatTemplate/chatTemplate.html">Chat Template</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/chatTemplate/injaCallbacks.html">Inja Callbacks</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/chatTemplate/injaJson.html">Inja Json</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/chatTemplate/injaRenderer.html">Inja Renderer</a></li>
+</ul>
+</details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/common/index.html">Common Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/allReducePath.html">All Reduce Path</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/bindingNames.html">Binding Names</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/checkMacros.html">Check Macros</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/cudaMacros.html">CUDA Macros</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/cudaUtils.html">CUDA Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/executionPhase.html">Execution Phase</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/fileUtils.html">File Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/hashUtils.html">Hash Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/inputLimits.html">Input Limits</a></li>
@@ -456,6 +470,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/parallelArtifactNames.html">Parallel Artifact Names</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/ropeUtils.html">Rope Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/safetensorsUtils.html">Safetensors Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/specDecodeConfigUtils.html">Spec Decode Config Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/stringUtils.html">String Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/tensor.html">Tensor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/trtUtils.html">TRT Utils</a></li>
@@ -470,21 +485,26 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/attentionScaleUtils.html">Attention Scale Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/audioFbankKernels.html">Audio Fbank Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/batchEvictKernels.html">Batch Evict Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/blockHashKernel.html">Block Hash Kernel</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/buildLayout.html">Build Layout</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/causalConv1d.html">Causal Conv1d</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/checkpointSourceBatch.html">Checkpoint Source Batch</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/common.html">Common</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/conversion.html">Conversion</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cpSpecKernels.html">Cp Spec Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslF16MoeRunner.html">Cute Dsl F16 Moe Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslFMHARunner.html">Cute Dsl FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslFMHAV2Runner.html">Cute Dsl Fmhav2 Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslFmhaParams.html">Cute Dsl FMHA Params</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslFmhaTypes.html">Cute Dsl FMHA Types</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslGDNRunner.html">Cute Dsl Gdn Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslGemmNvFp4Runner.html">Cute Dsl GEMM Nv Fp4 Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslGemmRunner.html">Cute Dsl GEMM Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslLayerNormRunner.html">Cute Dsl Layer Norm Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslModuleLoader.html">Cute Dsl Module Loader</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslNvfp4MoeRunner.html">Cute Dsl Nvfp4 Moe Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslNvfp4MoeSm110Runner.html">Cute Dsl Nvfp4 Moe Sm110 Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslQsaSparseRunner.html">Cute Dsl Qsa Sparse Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslRmsNormRunner.html">Cute Dsl Rms Norm Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslSSDRunner.html">Cute Dsl Ssd Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslTensorDescriptors.html">Cute Dsl Tensor Descriptors</a></li>
@@ -495,6 +515,8 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/decoderXQARunner.html">Decoder XQA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dequant.html">Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dequantize.html">Dequantize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dflash2CandidateSelector.html">Dflash2 Candidate Selector</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dflash2GroupedDynamicConv.html">Dflash2 Grouped Dynamic Conv</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dflashRuntimeKernels.html">Dflash Runtime Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dsparkKernels.html">Dspark Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/eagleAcceptKernels.html">EAGLE Accept Kernels</a></li>
@@ -505,6 +527,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/fp16MoeAssemble.html">Fp16 Moe Assemble</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/fp4Quantize.html">Fp4 Quantize</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/gdnKernelUtils.html">Gdn Kernel Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/gdnPdlConfig.html">Gdn Pdl Config</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/gdnTreeChunkKernels.html">Gdn Tree Chunk Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/gemma4AudioAttention.html">Gemma4 Audio Attention</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/gemma4MTPRuntimeKernels.html">Gemma4 Mtp Runtime Kernels</a></li>
@@ -537,9 +560,14 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4A16BlackwellGemmRunner.html">Nvfp4 A16 Blackwell GEMM Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4A16BlackwellGemvJitCompiler.html">Nvfp4 A16 Blackwell Gemv Jit Compiler</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4A16BlackwellGemvJitRunner.html">Nvfp4 A16 Blackwell Gemv Jit Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4A16BlackwellMoeDispatchPolicy.html">Nvfp4 A16 Blackwell Moe Dispatch Policy</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4A16BlackwellMoeJitCompiler.html">Nvfp4 A16 Blackwell Moe Jit Compiler</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4A16BlackwellMoeJitRunner.html">Nvfp4 A16 Blackwell Moe Jit Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4A16BlackwellMoeRunner.html">Nvfp4 A16 Blackwell Moe Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4A16BlackwellSupport.html">Nvfp4 A16 Blackwell Support</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4MoeLayout.html">Nvfp4 Moe Layout</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4MoeNormalize.html">Nvfp4 Moe Normalize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4MoePdlConfig.html">Nvfp4 Moe Pdl Config</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4MoePluginGeforceTransform.html">Nvfp4 Moe Plugin Geforce Transform</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4MoePluginTransform.html">Nvfp4 Moe Plugin Transform</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4MoeScaleTransform.html">Nvfp4 Moe Scale Transform</a></li>
@@ -551,14 +579,22 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/pluginJitCompileCache.html">Plugin Jit Compile Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/pluginJitCompiler.html">Plugin Jit Compiler</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/pluginJitEmbeddedSources.html">Plugin Jit Embedded Sources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/qsaIndexerJitCompiler.html">Qsa Indexer Jit Compiler</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/qsaIndexerKernels.html">Qsa Indexer Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/qsaIndexerRunner.html">Qsa Indexer Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/requestStableRngKernels.html">Request Stable Rng Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/scaleConvert.html">Scale Convert</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/selectiveStateUpdate.html">Selective State Update</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/slidingWindowUtils.html">Sliding Window Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/speculativeKernelsUtils.html">Speculative Kernels Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/speculativeSampling.html">Speculative Sampling</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/speculativeSamplingKernels.html">Speculative Sampling Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/ssdVarlenMetadata.html">Ssd Varlen Metadata</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/talkerMLPKernels.html">Talker Mlp Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/utilKernels.html">Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/vectorizedTypes.html">Vectorized Types</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/xqaKernelTypes.html">XQA Kernel Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/xqaLaunchConfig.html">XQA Launch Config</a></li>
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/multimodal/index.html">Multimodal Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
@@ -575,6 +611,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/internViTRunner.html">Intern ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/modelTypes.html">Model Types</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/multimodalRunner.html">Multimodal Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/museGlimmerViTRunner.html">Muse Glimmer ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/nemotronOmniAudioRunner.html">Nemotron Omni Audio Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/nemotronOmniViTRunner.html">Nemotron Omni ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/phi4mmViTRunner.html">Phi4mm ViT Runner</a></li>
@@ -590,6 +627,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/causalConv1dPlugin.html">Causal Conv1d Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/cuteDslInt4Gemm.html">Cute Dsl Int4 GEMM</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/cuteDslInt4Gemv.html">Cute Dsl Int4 Gemv</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/dflash2GroupedDynamicConvPlugin.html">Dflash2 Grouped Dynamic Conv Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/dflashTargetKVCacheUpdatePlugin.html">Dflash Target KV Cache Update Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/fp16MoePlugin.html">Fp16 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/fusedNvfp4GemmAllReducePlugin.html">Fused Nvfp4 GEMM All Reduce Plugin</a></li>
@@ -598,15 +636,19 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/int4GroupwiseGemmPlugin.html">Int4 Groupwise GEMM Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/int4GroupwiseGemmPluginV2.html">Int4 Groupwise GEMM Plugin V2</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/int4MoePlugin.html">Int4 Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/layerNormPlugin.html">Layer Norm Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/mambaPlugin.html">Mamba Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/nvfp4A16BlackwellDispatchPolicy.html">Nvfp4 A16 Blackwell Dispatch Policy</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/nvfp4A16BlackwellGemmPlugin.html">Nvfp4 A16 Blackwell GEMM Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/nvfp4A16BlackwellMoePlugin.html">Nvfp4 A16 Blackwell Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/nvfp4A16GemmPlugin.html">Nvfp4 A16 GEMM Plugin</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/nvfp4A16GemmPluginV2.html">Nvfp4 A16 GEMM Plugin V2</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/nvfp4A16MoePlugin.html">Nvfp4 A16 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/nvfp4MoePlugin.html">Nvfp4 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/nvfp4MoePluginGeforce.html">Nvfp4 Moe Plugin Geforce</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/pluginUtils.html">Plugin Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/qkvConcatPlugin.html">Qkv Concat Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/qsaAttentionPlugin.html">Qsa Attention Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/raggedPluginMetadata.html">Ragged Plugin Metadata</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/rmsNormPlugin.html">Rms Norm Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/vitAttentionPlugin.html">VIT Attention Plugin</a></li>
 </ul>
@@ -624,6 +666,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/blockDiffusionDecoder.html">Block Diffusion Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/blockHash.html">Block Hash</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/blockIndex.html">Block Index</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/boundedSwaKVPageManager.html">Bounded Swa KV Page Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/cacheRecord.html">Cache Record</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/checkpointReader.html">Checkpoint Reader</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/checkpointWeightAssemble.html">Checkpoint Weight Assemble</a></li>
@@ -653,6 +696,8 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/externalWeightManager.html">External Weight Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/gemma4EmbeddingPreprocessor.html">Gemma4 Embedding Preprocessor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/gemma4MTPDecoder.html">Gemma4 Mtp Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/generationBoundary.html">Generation Boundary</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/guidedDecoder.html">Guided Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/hybridCacheManager.html">Hybrid Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/hybridSnapshotStorage.html">Hybrid Snapshot Storage</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/imageUtils.html">Image Utils</a></li>
@@ -668,6 +713,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/logitBias.html">Logit Bias</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/loraManager.html">Lora Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/mambaCacheManager.html">Mamba Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/managedKVCacheRequest.html">Managed KV Cache Request</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/melSpectrogram.html">Mel Spectrogram</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/modelArtifacts.html">Model Artifacts</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/mtpDecoder.html">Mtp Decoder</a></li>
@@ -678,11 +724,16 @@
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/parallelConfig.html">Parallel Config</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/pipelineIO.html">Pipeline Io</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/qwen3OmniTTSRuntime.html">Qwen3 Omni Tts Runtime</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/raggedBatchBuilder.html">Ragged Batch Builder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/registryBuilder.html">Registry Builder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/requestStableRng.html">Request Stable Rng</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/residentSlotPool.html">Resident Slot Pool</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/resourcePools.html">Resource Pools</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/reusePlan.html">Reuse Plan</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/ropeCache.html">Rope Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/runtimeCoordinator.html">Runtime Coordinator</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/runtimeStepper.html">Runtime Stepper</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/scheduledStep.html">Scheduled Step</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/sharedResources.html">Shared Resources</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/specCommonStateTracker.html">Spec Common State Tracker</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/specReuseContract.html">Spec Reuse Contract</a></li>
@@ -701,6 +752,17 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/sampler/index.html">Sampler Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/sampler/diffusionGemmaSampling.html">Diffusion Gemma Sampling</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../cpp_api/sampler/sampling.html">Sampling</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/scheduler/index.html">Scheduler Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/scheduler/batchCompatibility.html">Batch Compatibility</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/scheduler/commandQueue.html">Command Queue</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/scheduler/engineChannel.html">Engine Channel</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/scheduler/engineCommand.html">Engine Command</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/scheduler/requestCoordinator.html">Request Coordinator</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/scheduler/requestEngine.html">Request Engine</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/scheduler/requestIdentity.html">Request Identity</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/scheduler/requestRecord.html">Request Record</a></li>
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/tokenizer/index.html">Tokenizer Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
@@ -781,16 +843,18 @@ here are supported.</p>
 </div></blockquote>
 <section id="install">
 <h2>Install<a class="headerlink" href="#install" title="Link to this heading">#</a></h2>
-<p>Build TensorRT Edge-LLM with Python bindings, then install the package and
-server dependencies in the same environment:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>/path/to/TensorRT-Edge-LLM
-pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span><span class="s2">".[server,server-tools,native-build]"</span>
-</pre></div>
-</div>
-<p>For a prebuilt TensorRT Edge-LLM package that already contains the Python
-runtime extension, omit <code class="docutils literal notranslate"><span class="pre">native-build</span></code>. <code class="docutils literal notranslate"><span class="pre">server-tools</span></code> is required only for
-model-native tool chat templates; plain text and multimodal serving use the
-smaller <code class="docutils literal notranslate"><span class="pre">server</span></code> extra. None of these extras installs the PyTorch/ONNX exporter.</p>
+<p>For a supported target, follow <a class="reference internal" href="../getting_started/installation.html#published-python-wheel"><span class="std std-ref">published-wheel installation</span></a>
+and select <code class="docutils literal notranslate"><span class="pre">tensorrt-edgellm[server]==0.11.0</span></code>. The wheel includes the runtime
+bindings, builder, and plugin; no checkout, <code class="docutils literal notranslate"><span class="pre">native-build</span></code> extra, or CMake build
+is needed. Install the TensorRT Python bindings supported by the target
+platform before launching the server. Run the examples in that environment
+outside a source checkout.</p>
+<p>Alternatively, complete the <a class="reference internal" href="../getting_started/installation.html#install-and-launch-the-python-server"><span class="std std-ref">source build and server setup</span></a>.
+Do not reinstall the source package over a published wheel.</p>
+<p>For gated checkpoints, accept the provider’s terms and run <code class="docutils literal notranslate"><span class="pre">hf</span> <span class="pre">auth</span> <span class="pre">login</span></code>.
+The server extra supplies <code class="docutils literal notranslate"><span class="pre">huggingface-hub</span></code> for downloads. Model-provided Jinja
+templates run natively through Pantor Inja; serving does not require Jinja2 or
+the PyTorch/ONNX exporter.</p>
 </section>
 <section id="python-api">
 <h2>Python API<a class="headerlink" href="#python-api" title="Link to this heading">#</a></h2>
@@ -801,24 +865,28 @@ the resolved checkpoint during runtime initialization.</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">experimental.server</span><span class="w"> </span><span class="kn">import</span> <span class="n">LLM</span><span class="p">,</span> <span class="n">SamplingParams</span>
 
 <span class="n">llm</span> <span class="o">=</span> <span class="n">LLM</span><span class="p">(</span>
-    <span class="n">model</span><span class="o">=</span><span class="s2">"Qwen/Qwen3.5-0.8B"</span><span class="p">,</span>
-    <span class="n">cache_dir</span><span class="o">=</span><span class="s2">"/data/edgellm-cache"</span><span class="p">,</span>
+    <span class="n">model</span><span class="o">=</span><span class="s2">&quot;Qwen/Qwen3.5-0.8B&quot;</span><span class="p">,</span>
+    <span class="n">cache_dir</span><span class="o">=</span><span class="s2">&quot;/data/edgellm-cache&quot;</span><span class="p">,</span>
     <span class="n">max_input_len</span><span class="o">=</span><span class="mi">4096</span><span class="p">,</span>
     <span class="n">max_kv_cache_capacity</span><span class="o">=</span><span class="mi">8192</span><span class="p">,</span>
 <span class="p">)</span>
 <span class="n">result</span> <span class="o">=</span> <span class="n">llm</span><span class="o">.</span><span class="n">chat</span><span class="p">(</span>
-    <span class="p">[{</span><span class="s2">"role"</span><span class="p">:</span> <span class="s2">"user"</span><span class="p">,</span> <span class="s2">"content"</span><span class="p">:</span> <span class="s2">"Explain paged KV caches."</span><span class="p">}],</span>
+    <span class="p">[{</span><span class="s2">&quot;role&quot;</span><span class="p">:</span> <span class="s2">&quot;user&quot;</span><span class="p">,</span> <span class="s2">&quot;content&quot;</span><span class="p">:</span> <span class="s2">&quot;Explain paged KV caches.&quot;</span><span class="p">}],</span>
     <span class="n">SamplingParams</span><span class="p">(</span><span class="n">max_tokens</span><span class="o">=</span><span class="mi">128</span><span class="p">,</span> <span class="n">temperature</span><span class="o">=</span><span class="mi">0</span><span class="p">),</span>
 <span class="p">)</span>
 <span class="nb">print</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">text</span><span class="p">)</span>
 </pre></div>
 </div>
+<p>Pass <code class="docutils literal notranslate"><span class="pre">enable_in_flight_batching=True</span></code> together with <code class="docutils literal notranslate"><span class="pre">max_batch_size</span></code> to let
+concurrent <code class="docutils literal notranslate"><span class="pre">chat()</span></code>, <code class="docutils literal notranslate"><span class="pre">generate()</span></code>, and <code class="docutils literal notranslate"><span class="pre">generate_stream()</span></code> calls from several
+threads share the running batch instead of taking turns; see
+<a class="reference internal" href="../features/in-flight-batching.html"><span class="std std-doc">In-Flight Batching</span></a>.</p>
 <p>Streaming uses the same runtime:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">for</span> <span class="n">delta</span> <span class="ow">in</span> <span class="n">llm</span><span class="o">.</span><span class="n">generate_stream</span><span class="p">(</span>
-    <span class="p">[{</span><span class="s2">"role"</span><span class="p">:</span> <span class="s2">"user"</span><span class="p">,</span> <span class="s2">"content"</span><span class="p">:</span> <span class="s2">"Write a CUDA optimization checklist."</span><span class="p">}],</span>
+    <span class="p">[{</span><span class="s2">&quot;role&quot;</span><span class="p">:</span> <span class="s2">&quot;user&quot;</span><span class="p">,</span> <span class="s2">&quot;content&quot;</span><span class="p">:</span> <span class="s2">&quot;Write a CUDA optimization checklist.&quot;</span><span class="p">}],</span>
     <span class="n">SamplingParams</span><span class="p">(</span><span class="n">max_tokens</span><span class="o">=</span><span class="mi">128</span><span class="p">),</span>
 <span class="p">):</span>
-    <span class="nb">print</span><span class="p">(</span><span class="n">delta</span><span class="o">.</span><span class="n">text</span><span class="p">,</span> <span class="n">end</span><span class="o">=</span><span class="s2">""</span><span class="p">,</span> <span class="n">flush</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="nb">print</span><span class="p">(</span><span class="n">delta</span><span class="o">.</span><span class="n">text</span><span class="p">,</span> <span class="n">end</span><span class="o">=</span><span class="s2">&quot;&quot;</span><span class="p">,</span> <span class="n">flush</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 </pre></div>
 </div>
 </section>
@@ -832,11 +900,14 @@ the resolved checkpoint during runtime initialization.</p>
 <span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
 </pre></div>
 </div>
+<p>Add <code class="docutils literal notranslate"><span class="pre">--enable-in-flight-batching</span> <span class="pre">--max-batch-size</span> <span class="pre">4</span></code> to serve up to four
+requests at once; see <a class="reference internal" href="#runtime-concurrency">Runtime Concurrency</a>.</p>
 <p>The cache contains downloaded checkpoints and complete, profile-specific
 runtime bundles. A launch reuses a bundle only when the base checkpoint,
 optional draft checkpoint, and build profile all match. A cache miss runs
-<code class="docutils literal notranslate"><span class="pre">tensorrt-edgellm-build</span> <span class="pre">--components</span> <span class="pre">all</span> <span class="pre">--externalize-weights</span> <span class="pre">all</span></code> internally
-and publishes the completed bundle atomically. Direct engine and ONNX paths are
+<code class="docutils literal notranslate"><span class="pre">tensorrt-edgellm-build</span> <span class="pre">--components</span> <span class="pre">all</span></code> internally and publishes the
+completed bundle atomically. The builder’s default policy externalizes the
+weight kinds supported by each component. Direct engine and ONNX paths are
 rejected so the server cannot lose the checkpoint-to-runtime association.</p>
 <p>Compiled bundles use a 50 GiB least-recently-used cache by default. Set
 <code class="docutils literal notranslate"><span class="pre">--engine-cache-max-size-gb</span></code> to another positive limit. Use
@@ -858,28 +929,45 @@ proposal tokens, with one additional base-verification token.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>tensorrt-edgellm-serve<span class="w"> </span>Qwen/Qwen3-1.7B<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--cache-dir<span class="w"> </span>/data/edgellm-cache<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--speculative-config<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span><span class="s1">'{"method":"eagle3","model":"AngelSlim/Qwen3-1.7B_eagle3","num_speculative_tokens":3}'</span>
+<span class="w">  </span><span class="s1">&#39;{&quot;method&quot;:&quot;eagle3&quot;,&quot;model&quot;:&quot;AngelSlim/Qwen3-1.7B_eagle3&quot;,&quot;num_speculative_tokens&quot;:3}&#39;</span>
 </pre></div>
 </div>
 <p>DFlash example:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>tensorrt-edgellm-serve<span class="w"> </span>Qwen/Qwen3.5-4B<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--cache-dir<span class="w"> </span>/data/edgellm-cache<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--speculative-config<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span><span class="s1">'{"method":"dflash","model":"z-lab/Qwen3.5-4B-DFlash","num_speculative_tokens":3}'</span>
+<span class="w">  </span><span class="s1">&#39;{&quot;method&quot;:&quot;dflash&quot;,&quot;model&quot;:&quot;z-lab/Qwen3.5-4B-DFlash&quot;,&quot;num_speculative_tokens&quot;:3}&#39;</span>
+</pre></div>
+</div>
+<p>Muse-Glimmer DFlash and DFlash2 examples:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>tensorrt-edgellm-serve<span class="w"> </span>meta-models/Muse-Glimmer-30B<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--cache-dir<span class="w"> </span>/data/edgellm-cache<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--speculative-config<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="s1">&#39;{&quot;method&quot;:&quot;dflash&quot;,&quot;model&quot;:&quot;meta-models/Muse-Glimmer-30B-assistant&quot;}&#39;</span>
+
+tensorrt-edgellm-serve<span class="w"> </span>meta-models/Muse-Glimmer-30B<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--cache-dir<span class="w"> </span>/data/edgellm-cache<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--speculative-config<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="s1">&#39;{&quot;method&quot;:&quot;dflash&quot;,&quot;model&quot;:&quot;incoai/Muse-Glimmer-30B-DFlash2&quot;}&#39;</span>
+
+tensorrt-edgellm-serve<span class="w"> </span>RadixArk/Muse-Glimmer-NVFP4<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--cache-dir<span class="w"> </span>/data/edgellm-cache<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--speculative-config<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="s1">&#39;{&quot;method&quot;:&quot;dflash&quot;,&quot;model&quot;:&quot;incoai/Muse-Glimmer-30B-DFlash2&quot;}&#39;</span>
 </pre></div>
 </div>
 <p>JetSpec example:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>tensorrt-edgellm-serve<span class="w"> </span>Qwen/Qwen3-8B<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--cache-dir<span class="w"> </span>/data/edgellm-cache<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--speculative-config<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span><span class="s1">'{"method":"jetspec","model":"JetSpec/jetspec-qwen3-8b","num_speculative_tokens":16}'</span>
+<span class="w">  </span><span class="s1">&#39;{&quot;method&quot;:&quot;jetspec&quot;,&quot;model&quot;:&quot;JetSpec/jetspec-qwen3-8b&quot;,&quot;num_speculative_tokens&quot;:16}&#39;</span>
 </pre></div>
 </div>
 <p>dSpark example:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>tensorrt-edgellm-serve<span class="w"> </span>Qwen/Qwen3-4B<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--cache-dir<span class="w"> </span>/data/edgellm-cache<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--speculative-config<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span><span class="s1">'{"method":"dspark","model":"deepseek-ai/dspark_qwen3_4b_block7","num_speculative_tokens":7}'</span>
+<span class="w">  </span><span class="s1">&#39;{&quot;method&quot;:&quot;dspark&quot;,&quot;model&quot;:&quot;deepseek-ai/dspark_qwen3_4b_block7&quot;,&quot;num_speculative_tokens&quot;:7}&#39;</span>
 </pre></div>
 </div>
 <p>For a checkpoint containing native MTP layers, select <code class="docutils literal notranslate"><span class="pre">mtp</span></code> without <code class="docutils literal notranslate"><span class="pre">model</span></code>.
@@ -887,7 +975,12 @@ Gemma MTP instead supplies its separate assistant checkpoint as <code class="doc
 server defaults MTP, DFlash, JetSpec, and dSpark to their linear contracts.
 Where the method supports branching, setting <code class="docutils literal notranslate"><span class="pre">--draft-top-k</span></code> above 1 selects
 its tree contract and causes the direct builder to compile matching tree-base
-inputs automatically. The
+inputs automatically. <code class="docutils literal notranslate"><span class="pre">--max-verify-tree-size</span></code> and
+<code class="docutils literal notranslate"><span class="pre">--max-draft-tree-size</span></code> set engine profile capacities, while
+<code class="docutils literal notranslate"><span class="pre">--verify-tree-size</span></code> optionally selects a smaller active verification topology.
+For linear MTP (<code class="docutils literal notranslate"><span class="pre">--draft-top-k</span> <span class="pre">1</span></code>), omit <code class="docutils literal notranslate"><span class="pre">--verify-tree-size</span></code>; the server
+derives the active size as <code class="docutils literal notranslate"><span class="pre">--draft-step</span> <span class="pre">+</span> <span class="pre">1</span></code>, independently of the larger
+build profile. The
 <code class="docutils literal notranslate"><span class="pre">disable_spec_decode</span></code> request field can disable drafting for one request,
 except with a Gemma MTP verification engine; use a standalone target bundle
 for target-only Gemma inference.
@@ -908,11 +1001,11 @@ reuse metrics:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">experimental.server</span><span class="w"> </span><span class="kn">import</span> <span class="n">ContextCacheConfig</span><span class="p">,</span> <span class="n">LLM</span><span class="p">,</span> <span class="n">SamplingParams</span>
 
 <span class="n">llm</span> <span class="o">=</span> <span class="n">LLM</span><span class="p">(</span>
-    <span class="n">model</span><span class="o">=</span><span class="s2">"Qwen/Qwen3.5-0.8B"</span><span class="p">,</span>
+    <span class="n">model</span><span class="o">=</span><span class="s2">&quot;Qwen/Qwen3.5-0.8B&quot;</span><span class="p">,</span>
     <span class="n">context_cache_config</span><span class="o">=</span><span class="n">ContextCacheConfig</span><span class="p">(</span><span class="n">enabled</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">max_records</span><span class="o">=</span><span class="mi">1024</span><span class="p">),</span>
 <span class="p">)</span>
-<span class="n">llm</span><span class="o">.</span><span class="n">generate</span><span class="p">(</span><span class="s2">"shared prefix"</span><span class="p">,</span> <span class="n">SamplingParams</span><span class="p">(</span><span class="n">max_tokens</span><span class="o">=</span><span class="mi">32</span><span class="p">))</span>
-<span class="n">llm</span><span class="o">.</span><span class="n">generate</span><span class="p">(</span><span class="s2">"shared prefix with another suffix"</span><span class="p">,</span> <span class="n">SamplingParams</span><span class="p">(</span><span class="n">max_tokens</span><span class="o">=</span><span class="mi">32</span><span class="p">))</span>
+<span class="n">llm</span><span class="o">.</span><span class="n">generate</span><span class="p">(</span><span class="s2">&quot;shared prefix&quot;</span><span class="p">,</span> <span class="n">SamplingParams</span><span class="p">(</span><span class="n">max_tokens</span><span class="o">=</span><span class="mi">32</span><span class="p">))</span>
+<span class="n">llm</span><span class="o">.</span><span class="n">generate</span><span class="p">(</span><span class="s2">&quot;shared prefix with another suffix&quot;</span><span class="p">,</span> <span class="n">SamplingParams</span><span class="p">(</span><span class="n">max_tokens</span><span class="o">=</span><span class="mi">32</span><span class="p">))</span>
 <span class="nb">print</span><span class="p">(</span><span class="n">llm</span><span class="o">.</span><span class="n">get_context_cache_metrics</span><span class="p">()</span><span class="o">.</span><span class="n">reused_tokens</span><span class="p">)</span>
 </pre></div>
 </div>
@@ -936,11 +1029,11 @@ record stays valid as a prefix of the next turn.</p>
 <section id="openai-chat">
 <h2>OpenAI Chat<a class="headerlink" href="#openai-chat" title="Link to this heading">#</a></h2>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-s<span class="w"> </span>http://localhost:8000/v1/chat/completions<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-H<span class="w"> </span><span class="s1">'Content-Type: application/json'</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-d<span class="w"> </span><span class="s1">'{</span>
-<span class="s1">    "messages":[{"role":"user","content":"Hello"}],</span>
-<span class="s1">    "max_tokens":128</span>
-<span class="s1">  }'</span>
+<span class="w">  </span>-H<span class="w"> </span><span class="s1">&#39;Content-Type: application/json&#39;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{</span>
+<span class="s1">    &quot;messages&quot;:[{&quot;role&quot;:&quot;user&quot;,&quot;content&quot;:&quot;Hello&quot;}],</span>
+<span class="s1">    &quot;max_tokens&quot;:128</span>
+<span class="s1">  }&#39;</span>
 </pre></div>
 </div>
 <p>Set <code class="docutils literal notranslate"><span class="pre">stream=true</span></code> for SSE chunks ending in <code class="docutils literal notranslate"><span class="pre">data:</span> <span class="pre">[DONE]</span></code>. Set
@@ -948,9 +1041,48 @@ record stays valid as a prefix of the next turn.</p>
 from the native generation result; normal inference does not run a second
 tokenization pass.</p>
 <p>The request contract includes sampling, stop strings, log probabilities,
-<code class="docutils literal notranslate"><span class="pre">logit_bias</span></code>, tools, <code class="docutils literal notranslate"><span class="pre">parallel_tool_calls</span></code>, thinking, and per-request
-speculative disablement. Unsupported fields such as penalties, seed, and
-structured output are rejected rather than ignored. Only <code class="docutils literal notranslate"><span class="pre">n=1</span></code> is supported.</p>
+<code class="docutils literal notranslate"><span class="pre">logit_bias</span></code>, tools, <code class="docutils literal notranslate"><span class="pre">parallel_tool_calls</span></code>, thinking, structured output, and
+per-request speculative disablement. <code class="docutils literal notranslate"><span class="pre">seed</span></code> accepts an unsigned 64-bit request
+seed, and <code class="docutils literal notranslate"><span class="pre">top_k=-1</span></code> disables top-k filtering. <code class="docutils literal notranslate"><span class="pre">min_p</span></code> and text
+<code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code> are accepted for client compatibility, but the runtime
+currently supports only their defaults (<code class="docutils literal notranslate"><span class="pre">0.0</span></code> and <code class="docutils literal notranslate"><span class="pre">1.0</span></code>); non-default values
+are normalized to those defaults with a server warning. Nonzero
+<code class="docutils literal notranslate"><span class="pre">frequency_penalty</span></code> and <code class="docutils literal notranslate"><span class="pre">presence_penalty</span></code> remain unsupported and are rejected.
+Only <code class="docutils literal notranslate"><span class="pre">n=1</span></code> is supported.
+Provider chat templating and the assistant generation prompt are enabled by
+default. Set <code class="docutils literal notranslate"><span class="pre">apply_chat_template=false</span></code> only for an already formatted prompt,
+or <code class="docutils literal notranslate"><span class="pre">add_generation_prompt=false</span></code> when continuing an existing assistant turn.</p>
+<section id="structured-output">
+<h3>Structured Output<a class="headerlink" href="#structured-output" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">response_format</span></code> constrains the reply to a JSON object or a JSON Schema:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-s<span class="w"> </span>http://localhost:8000/v1/chat/completions<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-H<span class="w"> </span><span class="s1">&#39;Content-Type: application/json&#39;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{</span>
+<span class="s1">    &quot;messages&quot;:[{&quot;role&quot;:&quot;user&quot;,&quot;content&quot;:&quot;Give me a person record.&quot;}],</span>
+<span class="s1">    &quot;response_format&quot;:{</span>
+<span class="s1">      &quot;type&quot;:&quot;json_schema&quot;,</span>
+<span class="s1">      &quot;json_schema&quot;:{&quot;name&quot;:&quot;person&quot;,&quot;schema&quot;:{</span>
+<span class="s1">        &quot;type&quot;:&quot;object&quot;,</span>
+<span class="s1">        &quot;properties&quot;:{&quot;name&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;age&quot;:{&quot;type&quot;:&quot;integer&quot;}},</span>
+<span class="s1">        &quot;required&quot;:[&quot;name&quot;,&quot;age&quot;]}}}</span>
+<span class="s1">  }&#39;</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">response_format</span></code> covers <code class="docutils literal notranslate"><span class="pre">text</span></code>, <code class="docutils literal notranslate"><span class="pre">json_object</span></code>, and <code class="docutils literal notranslate"><span class="pre">json_schema</span></code> — the whole of
+the OpenAI specification. For <code class="docutils literal notranslate"><span class="pre">regex</span></code>, <code class="docutils literal notranslate"><span class="pre">ebnf</span></code>, <code class="docutils literal notranslate"><span class="pre">structural_tag</span></code>, and <code class="docutils literal notranslate"><span class="pre">choice</span></code>,
+use the low-level <code class="docutils literal notranslate"><span class="pre">guided_decoding</span></code> field, which takes the same shape as in a
+request file:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{</span>
+<span class="s1">    &quot;messages&quot;:[{&quot;role&quot;:&quot;user&quot;,&quot;content&quot;:&quot;Answer yes or no.&quot;}],</span>
+<span class="s1">    &quot;guided_decoding&quot;:{&quot;choice&quot;:[&quot;yes&quot;,&quot;no&quot;]}</span>
+<span class="s1">  }&#39;</span>
+</pre></div>
+</div>
+<p>Setting both surfaces on one request is rejected rather than one silently
+winning. Streaming works normally, and the assembled output satisfies the guide.
+A schema keyword that the backend accepts but cannot enforce is rejected with a
+400 naming the keyword. See <a class="reference internal" href="../features/guided-decoding.html"><span class="std std-doc">Guided Decoding</span></a>.</p>
+</section>
 <section id="tool-calls-and-thinking">
 <h3>Tool Calls and Thinking<a class="headerlink" href="#tool-calls-and-thinking" title="Link to this heading">#</a></h3>
 <p>Launch automatic tool choice explicitly:</p>
@@ -967,6 +1099,11 @@ the request sets <code class="docutils literal notranslate"><span class="pre">en
 <code class="docutils literal notranslate"><span class="pre">chat_template_kwargs.enable_thinking=true</span></code>.
 Streaming responses emit indexed tool-call deltas as soon as each generated
 call is complete and end with <code class="docutils literal notranslate"><span class="pre">finish_reason=&quot;tool_calls&quot;</span></code>.</p>
+<p>Qwen3.8’s provider template accepts <code class="docutils literal notranslate"><span class="pre">reasoning_effort</span></code> values <code class="docutils literal notranslate"><span class="pre">xhigh</span></code> (the
+provider default), <code class="docutils literal notranslate"><span class="pre">medium</span></code>, and <code class="docutils literal notranslate"><span class="pre">low</span></code> when thinking is enabled. Edge-LLM
+passes the value through unchanged, so an unsupported value fails template
+rendering instead of being remapped. Because Edge-LLM defaults to non-thinking
+requests, set <code class="docutils literal notranslate"><span class="pre">enable_thinking=true</span></code> together with the desired effort.</p>
 </section>
 <section id="image-video-and-audio-input">
 <h3>Image, Video, and Audio Input<a class="headerlink" href="#image-video-and-audio-input" title="Link to this heading">#</a></h3>
@@ -977,6 +1114,18 @@ and audio components automatically:</p>
 <span class="w">  </span>--allowed-local-media-path<span class="w"> </span>/data/media
 </pre></div>
 </div>
+<p>Muse-Glimmer image and video chat use its FP16 multimodal checkpoint; the
+NVFP4 checkpoint is text-only:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>tensorrt-edgellm-serve<span class="w"> </span>meta-models/Muse-Glimmer-30B<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--cache-dir<span class="w"> </span>/data/edgellm-cache<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--max-image-tokens<span class="w"> </span><span class="m">4096</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--max-image-tokens-per-image<span class="w"> </span><span class="m">4096</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--allowed-local-media-path<span class="w"> </span>/data/media
+</pre></div>
+</div>
+<p>Use an <code class="docutils literal notranslate"><span class="pre">image_url</span></code> block for an image or a <code class="docutils literal notranslate"><span class="pre">video_url</span></code> block for a video.
+Muse-Glimmer samples video at 2 FPS, up to 96 frames; <code class="docutils literal notranslate"><span class="pre">fps</span></code> and <code class="docutils literal notranslate"><span class="pre">nframes</span></code> on
+the video content block override those defaults.</p>
 <p>OpenAI content blocks accept <code class="docutils literal notranslate"><span class="pre">image_url</span></code>, <code class="docutils literal notranslate"><span class="pre">video_url</span></code>, <code class="docutils literal notranslate"><span class="pre">input_audio</span></code>, and
 <code class="docutils literal notranslate"><span class="pre">audio_url</span></code> forms described in <a class="reference internal" href="../format/input-format.html"><span class="std std-doc">Input Format</span></a>. Data
 URLs and files under <code class="docutils literal notranslate"><span class="pre">--allowed-local-media-path</span></code> are supported. Remote HTTP
@@ -1011,9 +1160,9 @@ experimental server; see <a class="reference internal" href="../../developer_gui
 <p>When a model owns Talker, CodePredictor, and Code2Wav components, chat can
 return text and PCM audio:</p>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">  </span><span class="nt">"messages"</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="nt">"role"</span><span class="p">:</span><span class="w"> </span><span class="s2">"user"</span><span class="p">,</span><span class="w"> </span><span class="nt">"content"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Say hello"</span><span class="p">}],</span>
-<span class="w">  </span><span class="nt">"modalities"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"text"</span><span class="p">,</span><span class="w"> </span><span class="s2">"audio"</span><span class="p">],</span>
-<span class="w">  </span><span class="nt">"audio"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"voice"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Ryan"</span><span class="p">,</span><span class="w"> </span><span class="nt">"format"</span><span class="p">:</span><span class="w"> </span><span class="s2">"pcm16"</span><span class="p">}</span>
+<span class="w">  </span><span class="nt">&quot;messages&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;user&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;content&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Say hello&quot;</span><span class="p">}],</span>
+<span class="w">  </span><span class="nt">&quot;modalities&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;text&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;audio&quot;</span><span class="p">],</span>
+<span class="w">  </span><span class="nt">&quot;audio&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;voice&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Ryan&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;format&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;pcm16&quot;</span><span class="p">}</span>
 <span class="p">}</span>
 </pre></div>
 </div>
@@ -1026,8 +1175,8 @@ speech requests accept <code class="docutils literal notranslate"><span class="p
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">experimental.server</span><span class="w"> </span><span class="kn">import</span> <span class="n">TTS</span>
 
 <span class="n">tts</span> <span class="o">=</span> <span class="n">TTS</span><span class="p">(</span>
-    <span class="n">model</span><span class="o">=</span><span class="s2">"Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"</span><span class="p">,</span>
-    <span class="n">cache_dir</span><span class="o">=</span><span class="s2">"/data/edgellm-cache"</span><span class="p">,</span>
+    <span class="n">model</span><span class="o">=</span><span class="s2">&quot;Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice&quot;</span><span class="p">,</span>
+    <span class="n">cache_dir</span><span class="o">=</span><span class="s2">&quot;/data/edgellm-cache&quot;</span><span class="p">,</span>
 <span class="p">)</span>
 <span class="n">tts</span><span class="o">.</span><span class="n">serve</span><span class="p">(</span><span class="n">port</span><span class="o">=</span><span class="mi">8000</span><span class="p">)</span>
 </pre></div>
@@ -1069,7 +1218,7 @@ claude
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">GET</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">/health</span></code>, <code class="docutils literal notranslate"><span class="pre">/health/ready</span></code></p></td>
-<td><p>Runtime, queue, and capability state</p></td>
+<td><p>Runtime, queue, and capability state; under in-flight batching also the scheduler counters (<code class="docutils literal notranslate"><span class="pre">scheduling</span></code>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">GET</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">/v1/models</span></code></p></td>
@@ -1108,15 +1257,28 @@ API.</p>
 </section>
 <section id="runtime-concurrency">
 <h2>Runtime Concurrency<a class="headerlink" href="#runtime-concurrency" title="Link to this heading">#</a></h2>
-<p>The current high-level runtime has one mutable generation state. The server
-therefore admits one request at a time and uses a bounded async queue configured
-by <code class="docutils literal notranslate"><span class="pre">--max-queued-requests</span></code> and <code class="docutils literal notranslate"><span class="pre">--queue-timeout</span></code>. Queue overflow and timeout
-return HTTP 429 (Anthropic 529). Streaming disconnects cancel the native channel
-immediately, wait for the native worker to exit, and then release the runtime
-lease. Engines stay resident across HTTP connections; graceful server shutdown
-drains active work and releases the runtime and its device resources.</p>
-<p>Continuous batching, chunked prefill scheduling, and tensor parallelism require
-additional native scheduler support and are rejected at launch.</p>
+<p>By default the server admits one request at a time: the runtime has one mutable
+generation state, and a bounded async queue configured by
+<code class="docutils literal notranslate"><span class="pre">--max-queued-requests</span></code> and <code class="docutils literal notranslate"><span class="pre">--queue-timeout</span></code> holds the rest. Queue overflow and
+timeout return HTTP 429 (Anthropic 529). Streaming disconnects cancel the native
+channel immediately, wait for the native worker to exit, and then release the
+runtime lease. Engines stay resident across HTTP connections; graceful server
+shutdown drains active work and releases the runtime and its device resources.</p>
+<p><code class="docutils literal notranslate"><span class="pre">--enable-in-flight-batching</span></code> replaces the one-at-a-time path with the request
+engine: up to <code class="docutils literal notranslate"><span class="pre">--max-batch-size</span></code> requests decode together, and a new request
+joins the running batch at the next generation boundary instead of waiting for
+it to finish. Admission is then a limit rather than a queue: at most
+<code class="docutils literal notranslate"><span class="pre">--max-batch-size</span></code> plus <code class="docutils literal notranslate"><span class="pre">--max-queued-requests</span></code> requests are in flight, and a
+request past that limit gets an immediate 429. A disconnect cancels the request
+inside the engine, so an abandoned stream stops decoding and frees its seat.
+<code class="docutils literal notranslate"><span class="pre">/health</span></code> reports <code class="docutils literal notranslate"><span class="pre">in_flight_batching:</span> <span class="pre">true</span></code>, <code class="docutils literal notranslate"><span class="pre">max_num_seqs</span></code> equal to the batch
+size, and a <code class="docutils literal notranslate"><span class="pre">scheduling</span></code> block with the engine’s counters (submitted, completed,
+cancelled, admissions that joined mid-flight, and the reasons a queued request
+had to wait).</p>
+<p>Not every deployment can take the flag, and not every request can join a
+running batch; see <a class="reference internal" href="../features/in-flight-batching.html"><span class="std std-doc">In-Flight Batching</span></a> for
+the support matrix. Chunked prefill scheduling and tensor parallelism remain on
+the one-at-a-time path.</p>
 </section>
 </section>
 
@@ -1175,6 +1337,7 @@ additional native scheduler support and are rejected at launch.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#speculative-decoding">Speculative Decoding</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#kv-cache-reuse">KV Cache Reuse</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#openai-chat">OpenAI Chat</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#structured-output">Structured Output</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#tool-calls-and-thinking">Tool Calls and Thinking</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#image-video-and-audio-input">Image, Video, and Audio Input</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#omni-audio-output">Omni Audio Output</a></li>
@@ -1201,8 +1364,8 @@ additional native scheduler support and are rejected at launch.</p>
   
 
   <!-- Scripts loaded after <body> so the DOM is not blocked -->
-  <script defer src="../../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67"></script>
-<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67"></script>
+  <script defer src="../../_static/scripts/bootstrap.js?digest=0790524f97105ba85085"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=0790524f97105ba85085"></script>
 
 
   <footer class="bd-footer">
@@ -1274,9 +1437,9 @@ additional native scheduler support and are rejected at launch.</p>
         <div class="footer-item">
 <div class="extra_footer">
   
-  <p>Last updated on September 03, 2026.</p>
+  <p>Last updated on September 29, 2026.</p>
   
-  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/e8b29522938901f6df19ebeedd4b69bc8edbcd97">e8b2952</a>.</p>
+  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/e649dadcbbf049fa4caf2f09f3a3275ca56751db">e649dad</a>.</p>
   
 </div></div>
       

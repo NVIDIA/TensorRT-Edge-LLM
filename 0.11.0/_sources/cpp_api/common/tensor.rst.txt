@@ -1,0 +1,49 @@
+Tensor
+======
+
+.. doxygenclass:: trt_edgellm::rt::Coords
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::rt::Tensor
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::is_arithmetic_ext
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::is_arithmetic_ext< half >
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::is_arithmetic_ext< __nv_bfloat16 >
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::utils::computeStrides
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::utils::getTypeSize
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::utils::formatString
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::utils::toKB
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::utils::toMB
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::utils::toGB
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::utils::getMaxInt32Value
+   :project: TensorRT Edge-LLM
+

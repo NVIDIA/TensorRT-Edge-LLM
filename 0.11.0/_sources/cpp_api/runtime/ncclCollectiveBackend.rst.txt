@@ -1,0 +1,56 @@
+Nccl Collective Backend
+=======================
+
+.. doxygenstruct:: trt_edgellm::rt::NcclUniqueId
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::NcclCollectiveBackend::load
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::NcclCollectiveBackend::isLoaded
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::NcclCollectiveBackend::getUniqueId
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::NcclCollectiveBackend::initRank
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::NcclCollectiveBackend::initAll
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::NcclCollectiveBackend::destroyComm
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::NcclCollectiveBackend::abortComm
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::NcclCollectiveBackend::abortComms
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::NcclCollectiveBackend::destroyComms
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::NcclCollectiveBackend::allReduce
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::NcclCollectiveBackend::allGather
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::NcclCollectiveBackend::broadcast
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::NcclCollectiveBackend::allReduceRaw
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::NcclCollectiveBackend::allGatherRaw
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::NcclCollectiveBackend::broadcastRaw
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::NcclCollectiveBackend::allReduceFunction
+   :project: TensorRT Edge-LLM
+

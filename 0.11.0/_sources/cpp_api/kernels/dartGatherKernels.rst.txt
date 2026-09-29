@@ -1,0 +1,6 @@
+Dart Gather Kernels
+===================
+
+.. doxygenfunction:: trt_edgellm::kernel::gatherRows
+   :project: TensorRT Edge-LLM
+

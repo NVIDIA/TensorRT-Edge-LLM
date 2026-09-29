@@ -1,0 +1,6 @@
+Sliding Window Utils
+====================
+
+.. doxygenfile:: kernels/common/slidingWindowUtils.cuh
+   :project: TensorRT Edge-LLM
+

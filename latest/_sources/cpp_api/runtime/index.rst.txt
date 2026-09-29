@@ -11,6 +11,7 @@ API documentation for the runtime module.
    blockDiffusionDecoder
    blockHash
    blockIndex
+   boundedSwaKVPageManager
    cacheRecord
    checkpointReader
    checkpointWeightAssemble
@@ -40,6 +41,8 @@ API documentation for the runtime module.
    externalWeightManager
    gemma4EmbeddingPreprocessor
    gemma4MTPDecoder
+   generationBoundary
+   guidedDecoder
    hybridCacheManager
    hybridSnapshotStorage
    imageUtils
@@ -55,6 +58,7 @@ API documentation for the runtime module.
    logitBias
    loraManager
    mambaCacheManager
+   managedKVCacheRequest
    melSpectrogram
    modelArtifacts
    mtpDecoder
@@ -65,11 +69,16 @@ API documentation for the runtime module.
    parallelConfig
    pipelineIO
    qwen3OmniTTSRuntime
+   raggedBatchBuilder
    registryBuilder
+   requestStableRng
+   residentSlotPool
    resourcePools
    reusePlan
    ropeCache
    runtimeCoordinator
+   runtimeStepper
+   scheduledStep
    sharedResources
    specCommonStateTracker
    specReuseContract

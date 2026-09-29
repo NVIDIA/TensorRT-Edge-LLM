@@ -76,44 +76,47 @@ $QUANT_ROOT/
 ├── tokenizer + chat_template + preprocessor files
 ```
 
-### Optional: CodePredictor FP8
+### Optional: CodePredictor FP8 / NVFP4
 
 By default the CodePredictor stays FP16 (above the NVFP4 backbone path
 and in any FP16 baseline). CP is a 5-layer decoder with 15 lm_heads that
 runs 15 sequential AR steps per audio frame, so its per-frame cost is
-disproportionate to its parameter count. Adding `--cp_quantization fp8`
-quantizes only the CP body Linears (q/k/v/o + gate/up) at FP8 with
-per-channel weight + per-tensor static activation scales; `down_proj`, the
-15 lm_heads, and CP KV-cache BMM stay FP16 because static per-tensor FP8
-on the CP's `silu(gate)*up` intermediate ([-39.5, 72.4]) drops top-1 codec
-agreement below 80%.
+disproportionate to its parameter count.
 
-The flag composes with the backbone quantization from Part 1 — one
-checkpoint, one export:
+`--cp_quantization fp8` quantizes the CP body Linears (q/k/v/o + gate/up)
+at FP8 with per-channel weight + per-tensor static activation scales.
+`--cp_quantization nvfp4` uses per-16-element block weights and inputs
+with FP8 E4M3 block scales instead. Both keep `down_proj`, the 15
+lm_heads, `talker_projection`, the codec embedding tables, and the CP
+KV-cache BMM at FP16.
 
-```bash
-tensorrt-edgellm-quantize llm \
-    --model_dir   $HF_ROOT \
-    --output_dir  $QUANT_ROOT \
-    --quantization nvfp4 \
-    --cp_quantization fp8
-```
+Which one to pick depends on the memory bandwidth of the target, because
+the CP decode step is dominated by weight traffic on bandwidth-limited
+parts and by the per-call quantize/dequantize overhead everywhere else.
+NVFP4 shrinks the CP engine the most but is not a free win on every
+target, so benchmark both against FP16 on the part you ship. TTS quality
+is unchanged either way.
 
-To reuse an existing backbone-quantized checkpoint instead, run a CP-only
-pass against the original HF root and export just the `code_predictor`
-component from it (all other components come from the existing checkpoint):
+The CP flag cannot be combined with `--quantization` on a Qwen3-Omni root
+— that combination is rejected with an explicit error. Run a CP-only pass
+against the original HF root and export just the `code_predictor`
+component from it (all other components come from the backbone-quantized
+checkpoint of Part 1):
 
 ```bash
 tensorrt-edgellm-quantize llm \
     --model_dir  $HF_ROOT \
-    --output_dir $QUANT_ROOT/cp_fp8 \
+    --output_dir $QUANT_ROOT/cp_quant \
     --cp_quantization fp8 \
     --text_dataset cnn_dailymail
 
 tensorrt-edgellm-export \
     --components code_predictor \
-    $QUANT_ROOT/cp_fp8 $ONNX
+    $QUANT_ROOT/cp_quant $ONNX
 ```
+
+Swap `fp8` for `nvfp4` above to build the NVFP4 variant; the export and
+engine-build steps are identical.
 
 
 ---
@@ -155,7 +158,7 @@ $ONNX/
 │   ├── model.onnx + model.onnx.data
 │   ├── config.json                       # model: qwen3_omni_moe_text
 │   ├── embedding.safetensors
-│   ├── processed_chat_template.json
+│   ├── chat_template.jinja
 │   └── tokenizer files
 ├── llm/talker/                           # Talker MoE ONNX + sidecars
 │   ├── model.onnx + model.onnx.data
@@ -374,3 +377,26 @@ CLI flag remains for ad-hoc runs and takes precedence for `enable`):
   state through a `text_projection` MLP sidecar. Build C++ with
   `-DENABLE_CUTE_DSL=gemm` — without it this MLP silently returns zeros on
   Ampere/Blackwell, producing garbled or empty Talker audio.
+## CodePredictor speculative decoding
+
+The CodePredictor loop dominates audio decode time and can speculate with no draft model and no
+retraining, reusing the `lm_head` the checkpoint already carries for each RVQ depth. It is off by
+default; add `--cpSpecVerifySize N` (one committed RVQ depth plus `N-1` drafted depths, valid
+range 2-8) to the command above:
+
+```bash
+./build/examples/llm/llm_inference \
+    --engineDir $ENG/thinker \
+    --multimodalEngineDir $ENG/multimodal \
+    --enableAudioOutput \
+    --talkerEngineDir $ENG/talker \
+    --code2wavEngineDir $ENG/multimodal/code2wav \
+    --inputFile $WORKSPACE_DIR/input.json \
+    --outputFile $WORKSPACE_DIR/output.json \
+    --outputAudioDir $WORKSPACE_DIR/audio \
+    --cpSpecVerifySize 3
+```
+
+Engines need no special build step, and the sampled output distribution is unchanged. See
+[CodePredictor Speculative Decoding](../features/codepredictor-speculative-decoding.md) for the
+design, the acceptance behaviour, and the limitations.

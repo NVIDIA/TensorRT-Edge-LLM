@@ -1,0 +1,13 @@
+Dflash Target KV Cache Update Plugin
+====================================
+
+.. doxygenclass:: trt_edgellm::plugins::DFlashTargetKVCacheUpdatePlugin
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::plugins::DFlashTargetKVCacheUpdatePluginCreator
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

@@ -1,0 +1,6 @@
+File Utils
+==========
+
+.. doxygenfunction:: trt_edgellm::file_io::copyFile
+   :project: TensorRT Edge-LLM
+

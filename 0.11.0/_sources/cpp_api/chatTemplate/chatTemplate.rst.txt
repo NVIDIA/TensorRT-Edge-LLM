@@ -1,0 +1,13 @@
+Chat Template
+=============
+
+.. doxygenclass:: trt_edgellm::chat_template::ChatTemplate
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::chat_template::ChatTemplate::Options
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

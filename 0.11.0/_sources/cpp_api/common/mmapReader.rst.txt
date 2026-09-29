@@ -1,0 +1,8 @@
+MMAP Reader
+===========
+
+.. doxygenclass:: trt_edgellm::file_io::MmapReader
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

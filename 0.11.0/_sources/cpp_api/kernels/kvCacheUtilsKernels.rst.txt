@@ -1,0 +1,18 @@
+KV Cache Utils Kernels
+======================
+
+.. doxygenfunction:: trt_edgellm::kernel::incrementLengthTensor
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::saveKVCacheBatched
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::instantiateKVCacheBatched
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::gatherPagedKVToSplit
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::gatherPagedKVToHeadMajor
+   :project: TensorRT Edge-LLM
+

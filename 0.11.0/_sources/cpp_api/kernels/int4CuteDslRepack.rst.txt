@@ -1,0 +1,15 @@
+Int4 Cute Dsl Repack
+====================
+
+.. doxygenfunction:: trt_edgellm::kernel::int4CuteDslFragmentRows
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchModelOptInt4CuteDslRepack
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchGptqInt4CuteDslRepack
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchAwqInt4CuteDslRepack
+   :project: TensorRT Edge-LLM
+

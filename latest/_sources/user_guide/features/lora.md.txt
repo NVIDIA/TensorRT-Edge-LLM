@@ -6,6 +6,9 @@ Use dynamic LoRA when you need to select adapters at runtime. Use static LoRA
 merge when the adapter is always required, such as the Phi-4-Multimodal
 `vision-lora` adapter.
 
+Install the `tools` extra using the [wheel or source installation guide](../getting_started/installation.md#optional-python-dependencies).
+The C++ build/inference commands below still require a source build.
+
 ## Dynamic Runtime LoRA
 
 This workflow exports the base checkpoint, inserts LoRA inputs into the ONNX
@@ -13,9 +16,7 @@ graph, processes HuggingFace adapter weights, then builds an engine with a
 maximum adapter rank.
 
 ```bash
-# LoRA helper commands require the optional tools extra.
 cd /path/to/TensorRT-Edge-LLM
-pip3 install ".[tools]"
 
 # Step 1: Export the base model with tensorrt_edgellm
 tensorrt-edgellm-export \
@@ -57,9 +58,7 @@ merge the required `vision-lora` adapter before quantization and export; dynamic
 runtime LoRA is for adapters selected per request.
 
 ```bash
-# Static merge and optional quantization require the optional tools extra.
 cd /path/to/TensorRT-Edge-LLM
-pip3 install ".[tools]"
 
 export WORKSPACE_DIR=$HOME/tensorrt-edgellm-workspace
 export MODEL_NAME=Phi-4-multimodal-instruct

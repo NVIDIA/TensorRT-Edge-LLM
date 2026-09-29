@@ -24,6 +24,12 @@ Talker Mlp Kernels
 .. doxygenfunction:: trt_edgellm::kernel::invokePrefillRowAssemble
    :project: TensorRT Edge-LLM
 
+.. doxygenfunction:: trt_edgellm::kernel::invokeGroupedHeadLinear
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::invokeGatherCodecEmbedRows
+   :project: TensorRT Edge-LLM
+
 .. doxygenfunction:: trt_edgellm::kernel::invokeSumCodecEmbeddings
    :project: TensorRT Edge-LLM
 

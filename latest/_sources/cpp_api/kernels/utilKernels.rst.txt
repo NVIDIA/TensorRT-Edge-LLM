@@ -1,9 +1,24 @@
 Util Kernels
 ============
 
+.. doxygenfunction:: trt_edgellm::kernel::calCuQCuKVSeqLens
+   :project: TensorRT Edge-LLM
+
 .. doxygenfunction:: trt_edgellm::kernel::calCuQCuKVSeqLensAndKVEndIdxs
    :project: TensorRT Edge-LLM
 
+.. doxygenfunction:: trt_edgellm::kernel::calSWAChunkedPrefillMetadata
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::assemblePagedSWAChunkedPrefillFMHAKV
+   :project: TensorRT Edge-LLM
+
 .. doxygenfunction:: trt_edgellm::kernel::launchBuildVisionBlockRanges
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchScatterActiveRows
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchGatherTokenAlignedRope
    :project: TensorRT Edge-LLM
 

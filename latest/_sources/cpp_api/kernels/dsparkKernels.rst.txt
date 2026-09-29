@@ -34,6 +34,21 @@ Dspark Kernels
 .. doxygenfunction:: trt_edgellm::kernel::dsparkBuildMarkovLogits
    :project: TensorRT Edge-LLM
 
+.. doxygenfunction:: trt_edgellm::kernel::dsparkFusedGreedySupported
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::dsparkMarkovGreedyFusedStep
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::dsparkQuantizeMarkovW2Fp8
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::dsparkMarkovGreedyFusedStepFp8
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::dsparkFinalizeGreedyDraftTokens
+   :project: TensorRT Edge-LLM
+
 .. doxygenfunction:: trt_edgellm::kernel::dsparkSampleProbabilityRows
    :project: TensorRT Edge-LLM
 
@@ -47,9 +62,6 @@ Dspark Kernels
    :project: TensorRT Edge-LLM
 
 .. doxygenfunction:: trt_edgellm::kernel::dsparkSampleTopKRowsAndStore
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::kernel::dsparkSparseTopKAccept
    :project: TensorRT Edge-LLM
 
 .. doxygenfunction:: trt_edgellm::kernel::dsparkProbabilisticAccept

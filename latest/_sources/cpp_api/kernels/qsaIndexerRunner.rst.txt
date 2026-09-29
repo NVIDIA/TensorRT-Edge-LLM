@@ -1,0 +1,15 @@
+Qsa Indexer Runner
+==================
+
+.. doxygenfunction:: trt_edgellm::kernel::getQsaIndexerWorkspaceSize
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::runQsaIndexerPrefill
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::getQsaIndexerDecodeWorkspaceSize
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::runQsaIndexerDecode
+   :project: TensorRT Edge-LLM
+

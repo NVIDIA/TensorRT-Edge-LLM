@@ -1,140 +1,77 @@
 # Chat Template Format
 
-Chat templates define how conversational messages are formatted for the language model. This guide explains the JSON-based chat template format used by TensorRT Edge-LLM.
+TensorRT Edge-LLM uses each checkpoint's provider-owned Jinja template. During
+export or checkpoint-direct build, the template is copied without rewriting.
+The C++ runtime loads `chat_template.jinja` directly with Pantor Inja. It does
+not invoke Python, generate a second template representation, or select a
+model-family template.
 
-## Overview
+## Exported Artifact
 
-Our implementation follows HuggingFace's `apply_chat_template` API, but uses a lightweight JSON format instead of Jinja templates. The chat template is automatically extracted during model export and saved as `processed_chat_template.json`.
+`tensorrt-edgellm-export` and the checkpoint-direct builder copy the provider
+template beside the LLM engine artifacts:
 
-## File Structure
-
-```json
-{
-  "roles": {
-    "system": {"prefix": "string", "suffix": "string"},
-    "user": {"prefix": "string", "suffix": "string"},
-    "assistant": {"prefix": "string", "suffix": "string"}
-  },
-  "content_types": {
-    "image": {"format": "string"},
-    "video": {"format": "string"}
-  },
-  "generation_prompt": "string",
-  "generation_prompt_thinking": "string (optional)",
-  "default_system_prompt": "string"
-}
+```text
+llm/
+├── chat_template.jinja
+├── chat_template.processor # Present for a provider-defined raw processor contract
+├── config.json
+├── tokenizer.json
+└── tokenizer_config.json
 ```
 
-### Fields
-- **`roles`** (required): Prefix/suffix tokens for each role
-- **`content_types`** (optional): Format tokens for images/videos
-- **`generation_prompt`** (optional): Token sequence to start generation
-- **`generation_prompt_thinking`** (optional): Alternative prompt for thinking mode
-- **`default_system_prompt`** (optional): Default system instruction
+The authoritative source is the checkpoint's standalone
+`chat_template.jinja`, or its `chat_template` field in the provider's
+`chat_template.json`, `processor_config.json`, or `tokenizer_config.json`.
+These JSON files are checkpoint metadata containers whose field value is
+provider-owned Jinja source. Export materializes one default provider template
+as `chat_template.jinja` and removes any JSON chat-template artifact from the
+runtime directory. Named template sets fail explicitly; supported Edge-LLM
+models carry tool behavior in their default provider template.
+Edge-LLM neither exports nor loads a JSON chat-template format. Pantor Inja
+parses the Jinja files when the runtime loads the model. A provider construct
+that Pantor Inja does not support fails model loading instead of being
+rewritten or silently changing the prompt.
 
-## Thinking Mode
+Following vLLM's server contract, the runtime detects whether the provider
+template iterates over message content and normalizes each request to content
+blocks or strings before rendering. Tool results are normalized to strings. A
+string-only multimodal template requires an explicit model processor contract;
+Edge-LLM does not guess media tokens.
 
-Some models (like Qwen3) support "thinking mode" where the model generates its reasoning process. This is controlled by `enable_thinking` in the input JSON.
+Some older multimodal checkpoints publish a string-only template even though
+their API accepts structured media. Phi-4MM's raw processor turns media blocks
+into numbered placeholders, and legacy InternVL's provider path inserts its
+image and video sentinels. `chat_template.processor` records these
+provider-owned contracts. The C++ runtime applies them explicitly and rejects
+unsupported content types; it does not substitute a generic template.
 
-- **`enable_thinking: false`** (default): Uses `generation_prompt`
-- **`enable_thinking: true`**: Uses `generation_prompt_thinking`
+Models that do not publish Jinja semantics use an explicit
+`chat_template.model` marker backed by a model-specific C++ renderer. This is
+used for contracts such as Qwen3-TTS and Alpamayo. Provider Jinja always takes
+precedence when a checkpoint supplies it, including the current Qwen3-ASR and
+Qwen3-Omni processor checkpoints.
 
-The system automatically detects thinking mode support during model export. If not supported, the parameter has no effect.
+## Runtime Context
 
-## Custom Templates
+The C++ renderer receives the structured request directly. Templates can use:
 
-`tensorrt_edgellm` extracts the chat template from the checkpoint during export and
-writes `processed_chat_template.json` next to the exported LLM ONNX graph.
+- `messages`, normalized to the provider template's string or content-block contract
+- `message.reasoning` and the legacy alias `message.reasoning_content`
+- `message.tool_calls`, tool-call IDs, names, and arguments
+- `tools`, `tool_choice`, and `parallel_tool_calls`
+- `add_generation_prompt`, `enable_thinking`, and `reasoning_effort`
+- `bos_token` and `eos_token`
 
-To customize the chat template, first export the model normally, then edit the
-generated file in place:
+Image, video, audio, and trajectory blocks remain structured until the provider
+template emits that model's placeholder tokens, except where an explicit raw
+processor contract requires pre-render conversion. As in vLLM, JSON-encoded
+assistant tool arguments are parsed into provider-visible objects and empty
+`tool_calls` arrays use the ordinary assistant-message path. A `developer`
+message is preserved when the provider template supports that role; otherwise,
+it is converted to `system` and system messages are consolidated as in vLLM.
 
-```bash
-# 1. Export (generates processed_chat_template.json with auto-detected template)
-tensorrt-edgellm-export \
-    /path/to/model \
-    /path/to/output
-
-# 2. Edit the generated template to customize roles, delimiters, etc.
-vi /path/to/output/llm/processed_chat_template.json
-```
-
-The generated `processed_chat_template.json` is a structured JSON with the
-following schema (not a raw Jinja template):
-
-```json
-{
-  "model_path": "path/to/model",
-  "roles": {
-    "system":    {"prefix": "<prefix>", "suffix": "<suffix>"},
-    "user":      {"prefix": "<prefix>", "suffix": "<suffix>"},
-    "assistant": {"prefix": "<prefix>", "suffix": "<suffix>"}
-  },
-  "content_types": {
-    "image": {"format": "<placeholder>"},
-    "video": {"format": "<placeholder>"},
-    "audio": {"format": "<placeholder>"}
-  },
-  "generation_prompt": "<prompt>",
-  "default_system_prompt": "<system_message>"
-}
-```
-
-Reference templates are available under `tensorrt_edgellm/chat_templates/`
-(e.g., `phi4mm.json`, `qwen3asr.json`, `nemotron_nano_v2.json`).
-
-Pre-built templates are automatically used for models with known tokenizer issues (e.g., Phi-4-Multimodal).
-
-## Examples
-
-### Basic Text-Only Model (Qwen2)
-
-```json
-{
-  "roles": {
-    "system": {"prefix": "<|im_start|>system\n", "suffix": "<|im_end|>\n"},
-    "user": {"prefix": "<|im_start|>user\n", "suffix": "<|im_end|>\n"},
-    "assistant": {"prefix": "<|im_start|>assistant\n", "suffix": "<|im_end|>\n"}
-  },
-  "generation_prompt": "<|im_start|>assistant\n",
-  "default_system_prompt": "You are a helpful assistant"
-}
-```
-
-### Multimodal Model (Qwen2-VL)
-
-```json
-{
-  "roles": {
-    "system": {"prefix": "<|im_start|>system\n", "suffix": "<|im_end|>\n"},
-    "user": {"prefix": "<|im_start|>user\n", "suffix": "<|im_end|>\n"},
-    "assistant": {"prefix": "<|im_start|>assistant\n", "suffix": "<|im_end|>\n"}
-  },
-  "content_types": {
-    "image": {"format": "<|vision_start|><|image_pad|><|vision_end|>"}
-  },
-  "generation_prompt": "<|im_start|>assistant\n",
-  "default_system_prompt": "You are a helpful assistant."
-}
-```
-
-### Model with Thinking Mode (Qwen3)
-
-```json
-{
-  "roles": {
-    "system": {"prefix": "<|im_start|>system\n", "suffix": "<|im_end|>\n"},
-    "user": {"prefix": "<|im_start|>user\n", "suffix": "<|im_end|>\n"},
-    "assistant": {"prefix": "<|im_start|>assistant\n", "suffix": "<|im_end|>\n"}
-  },
-  "generation_prompt": "<|im_start|>assistant\n<think>\n\n</think>\n\n",
-  "generation_prompt_thinking": "<|im_start|>assistant\n",
-  "default_system_prompt": "You are a helpful assistant"
-}
-```
-
-## System Prompt Priority
-
-1. Explicit system message in request (highest)
-2. `default_system_prompt` from chat template
-3. No system prompt if neither provided
+Template changes must be checked against the provider's
+`apply_chat_template(..., tokenize=False)` output for text, system prompts,
+multimodal content, assistant history, reasoning, tool calls, tool responses,
+and generation-prompt modes supported by the family.

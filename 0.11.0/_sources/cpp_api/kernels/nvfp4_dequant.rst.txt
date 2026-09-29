@@ -1,0 +1,6 @@
+Nvfp4 Dequant
+=============
+
+.. doxygenfile:: kernels/moe/moe_marlin/marlin/nvfp4_dequant.cuh
+   :project: TensorRT Edge-LLM
+

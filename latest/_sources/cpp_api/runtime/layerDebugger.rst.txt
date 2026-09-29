@@ -1,6 +1,9 @@
 Layer Debugger
 ==============
 
-.. doxygenfunction:: trt_edgellm::rt::readForcedTokensFromEnv
+.. doxygenfunction:: trt_edgellm::rt::originalRow
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::forcedRowBase
    :project: TensorRT Edge-LLM
 

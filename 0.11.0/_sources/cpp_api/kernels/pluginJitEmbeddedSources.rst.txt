@@ -1,0 +1,11 @@
+Plugin Jit Embedded Sources
+===========================
+
+.. doxygenstruct:: trt_edgellm::PluginJitEmbeddedSources
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::getPluginJitEmbeddedSources
+   :project: TensorRT Edge-LLM
+

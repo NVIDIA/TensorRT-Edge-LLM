@@ -16,6 +16,3 @@ Apply Rope Write KV
 .. doxygenfunction:: trt_edgellm::kernel::launchApplyRopeQOnly
    :project: TensorRT Edge-LLM
 
-.. doxygenfunction:: trt_edgellm::kernel::launchApplyRopeQOnlyTreeDecoding
-   :project: TensorRT Edge-LLM
-

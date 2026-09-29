@@ -1,0 +1,15 @@
+Cp Spec Kernels
+===============
+
+.. doxygenfunction:: trt_edgellm::kernel::cpSpecSupportsVocab
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::cpSpecTopKTopPProbs
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::cpSpecSampleRows
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::cpSpecProbabilisticAccept
+   :project: TensorRT Edge-LLM
+

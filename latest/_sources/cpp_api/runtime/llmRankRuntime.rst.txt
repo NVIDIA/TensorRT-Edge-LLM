@@ -6,3 +6,18 @@ LLM Rank Runtime
    :members:
    :undoc-members:
 
+.. doxygenclass:: trt_edgellm::rt::LLMRankRuntime::GenerationSession
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::LLMRankRuntime::SteppedGeneration
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::LLMRankRuntime::SteppedGeneration::InProgressGuard
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

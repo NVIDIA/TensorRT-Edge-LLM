@@ -1,6 +1,11 @@
 Selective State Update
 ======================
 
+.. doxygenstruct:: mamba_ssm::MambaStateLayerInfo
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
 .. doxygenstruct:: mamba_ssm::MambaReplayLayerInfo
    :project: TensorRT Edge-LLM
    :members:
@@ -12,6 +17,18 @@ Selective State Update
 .. doxygenfunction:: mamba_ssm::invokeSelectiveStateUpdatePrefill
    :project: TensorRT Edge-LLM
 
+.. doxygenfunction:: mamba_ssm::invokeSelectiveStateUpdateDDTree
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: mamba_ssm::invokeMambaStateClear
+   :project: TensorRT Edge-LLM
+
 .. doxygenfunction:: mamba_ssm::invokeMambaReplayReconstructBatched
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: mamba_ssm::invokeMambaStateGather
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: mamba_ssm::invokeMambaStateScatter
    :project: TensorRT Edge-LLM
 

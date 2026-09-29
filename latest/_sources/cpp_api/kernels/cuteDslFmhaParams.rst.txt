@@ -11,12 +11,22 @@ Cute Dsl FMHA Params
    :members:
    :undoc-members:
 
+.. doxygenstruct:: trt_edgellm::LlmFmhaRaggedPagedParams
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
 .. doxygenstruct:: trt_edgellm::VitFmhaParams
    :project: TensorRT Edge-LLM
    :members:
    :undoc-members:
 
 .. doxygenstruct:: trt_edgellm::FmhaV2LlmParams
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::FmhaV2RaggedPagedParams
    :project: TensorRT Edge-LLM
    :members:
    :undoc-members:

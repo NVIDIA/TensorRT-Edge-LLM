@@ -1,0 +1,18 @@
+Utf8
+====
+
+.. doxygenfunction:: trt_edgellm::utf8::leaderByteLen
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::utf8::decodeCodepoint
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::utf8::isValidCodepointForLen
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::utf8::sanitizeUtf8Streaming
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::utf8::sanitizeUtf8Flush
+   :project: TensorRT Edge-LLM
+

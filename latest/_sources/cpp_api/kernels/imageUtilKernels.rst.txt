@@ -11,8 +11,10 @@ Image Util Kernels
    :members:
    :undoc-members:
 
-.. doxygenfunction:: trt_edgellm::kernel::normalizeImage
+.. doxygenstruct:: trt_edgellm::kernel::YuvToRgbCoeffs
    :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
 
 .. doxygenfunction:: trt_edgellm::kernel::transposeToPatchGemma4ViT
    :project: TensorRT Edge-LLM
@@ -38,13 +40,13 @@ Image Util Kernels
 .. doxygenfunction:: trt_edgellm::kernel::initFastPosEmbedQwenViT
    :project: TensorRT Edge-LLM
 
-.. doxygenfunction:: trt_edgellm::kernel::resizeImage
+.. doxygenfunction:: trt_edgellm::kernel::initFastPosEmbedCosmos3ViT
    :project: TensorRT Edge-LLM
 
-.. doxygenfunction:: trt_edgellm::kernel::copyImageToDeviceAndResize
+.. doxygenfunction:: trt_edgellm::kernel::initRotaryPosEmbMuseGlimmerViT
    :project: TensorRT Edge-LLM
 
-.. doxygenfunction:: trt_edgellm::kernel::allocateResizeScratch
+.. doxygenfunction:: trt_edgellm::kernel::initFastPosEmbedMuseGlimmerViT
    :project: TensorRT Edge-LLM
 
 .. doxygenfunction:: trt_edgellm::kernel::transposeToPatchNemotronViT
@@ -54,5 +56,8 @@ Image Util Kernels
    :project: TensorRT Edge-LLM
 
 .. doxygenfunction:: trt_edgellm::kernel::evsScoresNemotronViT
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::batchedPreprocessImage
    :project: TensorRT Edge-LLM
 

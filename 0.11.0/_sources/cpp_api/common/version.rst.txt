@@ -1,0 +1,6 @@
+Version
+=======
+
+.. doxygenfunction:: trt_edgellm::version::checkVersion
+   :project: TensorRT Edge-LLM
+

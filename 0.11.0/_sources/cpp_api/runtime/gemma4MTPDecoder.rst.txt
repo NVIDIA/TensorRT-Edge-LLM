@@ -1,0 +1,8 @@
+Gemma4 Mtp Decoder
+==================
+
+.. doxygenclass:: trt_edgellm::rt::Gemma4MTPDecoder
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

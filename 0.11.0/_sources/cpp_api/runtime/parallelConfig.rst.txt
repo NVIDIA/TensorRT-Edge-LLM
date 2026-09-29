@@ -1,0 +1,53 @@
+Parallel Config
+===============
+
+.. doxygenstruct:: trt_edgellm::rt::ParallelGroupConfig
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::ParallelBackendHandles
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::ParallelConfig
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::ParallelMapping
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::parallelTypeName
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::parallelLaunchModeName
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::isInlineSingleRank
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::isFullLocalParallelGroup
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::parallelGroupSize
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::parallelWorldSize
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::parallelGroupRank
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::makeParallelMapping
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::makeParallelGroupConfig
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::activeParallelGroups
+   :project: TensorRT Edge-LLM
+

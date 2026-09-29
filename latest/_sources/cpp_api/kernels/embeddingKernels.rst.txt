@@ -4,6 +4,9 @@ Embedding Kernels
 .. doxygenfunction:: trt_edgellm::kernel::generateMultimodalIndices
    :project: TensorRT Edge-LLM
 
+.. doxygenfunction:: trt_edgellm::kernel::generateVisionBlockIds
+   :project: TensorRT Edge-LLM
+
 .. doxygenfunction:: trt_edgellm::kernel::assembleDeepstackEmbedding
    :project: TensorRT Edge-LLM
 

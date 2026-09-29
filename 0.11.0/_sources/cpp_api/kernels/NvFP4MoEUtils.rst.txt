@@ -1,0 +1,8 @@
+Nv Fp4 Mo E Utils
+=================
+
+.. doxygenstruct:: trt_edgellm::kernel::nvfp4_moe::MoELayout
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

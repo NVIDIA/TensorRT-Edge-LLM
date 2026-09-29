@@ -11,12 +11,32 @@ LLM Runtime Utils
    :members:
    :undoc-members:
 
+.. doxygenstruct:: trt_edgellm::rt::Message::ToolCall
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::ToolDefinition
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::ToolChoice
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
 .. doxygenstruct:: trt_edgellm::rt::TokenCallbackInfo
    :project: TensorRT Edge-LLM
    :members:
    :undoc-members:
 
 .. doxygenstruct:: trt_edgellm::rt::LogprobEntry
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::GuidedDecodingParams
    :project: TensorRT Edge-LLM
    :members:
    :undoc-members:
@@ -36,6 +56,11 @@ LLM Runtime Utils
    :members:
    :undoc-members:
 
+.. doxygenstruct:: trt_edgellm::rt::Llama3Params
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
 .. doxygenstruct:: trt_edgellm::rt::YarnParams
    :project: TensorRT Edge-LLM
    :members:
@@ -50,6 +75,12 @@ LLM Runtime Utils
    :project: TensorRT Edge-LLM
    :members:
    :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::rt::guideTypeName
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::operator<<
+   :project: TensorRT Edge-LLM
 
 .. doxygenfunction:: trt_edgellm::rt::formatRopeConfig
    :project: TensorRT Edge-LLM

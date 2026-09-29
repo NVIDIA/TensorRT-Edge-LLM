@@ -1,0 +1,13 @@
+Nvfp4 A16 Blackwell GEMM Plugin
+===============================
+
+.. doxygenclass:: trt_edgellm::plugins::Nvfp4A16BlackwellGemmPlugin
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::plugins::Nvfp4A16BlackwellGemmPluginCreator
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

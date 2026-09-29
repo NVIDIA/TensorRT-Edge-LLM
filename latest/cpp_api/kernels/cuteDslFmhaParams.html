@@ -28,8 +28,8 @@
   </noscript>
   
   <!-- Loaded before other Sphinx assets -->
-  <link href="../../_static/styles/theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
-<link href="../../_static/styles/pydata-sphinx-theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
+  <link href="../../_static/styles/theme.css?digest=0790524f97105ba85085" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=0790524f97105ba85085" rel="stylesheet" />
 
     <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=03e43079" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/nvidia-sphinx-theme.css?v=933278ad" />
@@ -39,10 +39,10 @@
     <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=e02be394" />
   
   <!-- So that users can add custom icons -->
-  <script defer src="../../_static/scripts/fontawesome.js?digest=cb8930eaaf36d9849b67"></script>
+  <script defer src="../../_static/scripts/fontawesome.js?digest=0790524f97105ba85085"></script>
   <!-- Pre-loaded scripts that we'll load fully later -->
-  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67" />
-<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67" />
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=0790524f97105ba85085" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=0790524f97105ba85085" />
 
 
 
@@ -58,9 +58,9 @@
     <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'cpp_api/kernels/cuteDslFmhaParams';</script>
     <script>
-        DOCUMENTATION_OPTIONS.theme_version = '0.21.0';
+        DOCUMENTATION_OPTIONS.theme_version = '0.18.0';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = './_static/switcher.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.10.1';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.11.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner =
             false;
         </script>
@@ -70,13 +70,13 @@
 
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
-    <link rel="next" title="Cute Dsl Gdn Runner" href="cuteDslGDNRunner.html" />
+    <link rel="next" title="Cute Dsl FMHA Types" href="cuteDslFmhaTypes.html" />
     <link rel="prev" title="Cute Dsl Fmhav2 Runner" href="cuteDslFMHAV2Runner.html" />
 
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.10.1" />
+  <meta name="docsearch:version" content="0.11.0" />
   
     
     <script src="../../_static/searchtools.js"></script>
@@ -364,6 +364,7 @@
 <li class="toctree-l1 has-children"><a class="reference internal" href="../../user_guide/examples/vla/index.html">Vision-Language-Action</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l2"><a class="reference internal" href="../../user_guide/examples/vla/alpamayo.html">Alpamayo-R1-10B (Vision-Language-Action)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../../user_guide/examples/vla/cosmos3.html">Cosmos3-Edge</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../user_guide/examples/vla/pi05.html">pi0.5</a></li>
 </ul>
 </details></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/omni.html">Omni (Audio + Vision + Speech I/O)</a></li>
@@ -379,8 +380,11 @@
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/FP8KV.html">FP8 KV Cache</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/fp8-embedding.html">FP8 Embedding</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/streaming.html">Streaming Output</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/guided-decoding.html">Guided Decoding</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/visual-token-pruning.html">Visual-Token Pruning (DART)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/kv-cache-reuse.html">KV Cache Reuse</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/in-flight-batching.html">In-Flight Batching</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/codepredictor-speculative-decoding.html">CodePredictor Speculative Decoding</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Input &amp; Chat Format</span></p>
 <ul class="nav bd-sidenav">
@@ -400,6 +404,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/cpp-runtime-overview.html">C++ Runtime Overview</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/llm-inference-runtime.html">LLM Inference Runtime</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/llm-streaming.html">LLM Streaming — Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/in-flight-batching.html">In-Flight Batching (V0)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/memory-monitoring.html">Memory monitoring</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/openai-server.html">HTTP Inference Server Architecture</a></li>
 </ul>
@@ -407,6 +412,7 @@
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/models/cosmos3.html">Cosmos3-Edge Design</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../developer_guide/models/nemotron3_5_asr.html">Nemotron-3.5-ASR</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/models/pi05.html">pi0.5 Design</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Customization</span></p>
 <ul class="nav bd-sidenav">
@@ -440,12 +446,20 @@
 <li class="toctree-l3"><a class="reference internal" href="../builder/visualBuilder.html">Visual Builder</a></li>
 </ul>
 </details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../chatTemplate/index.html">Chattemplate Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../chatTemplate/chatTemplate.html">Chat Template</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../chatTemplate/injaCallbacks.html">Inja Callbacks</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../chatTemplate/injaJson.html">Inja Json</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../chatTemplate/injaRenderer.html">Inja Renderer</a></li>
+</ul>
+</details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../common/index.html">Common Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l3"><a class="reference internal" href="../common/allReducePath.html">All Reduce Path</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/bindingNames.html">Binding Names</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/checkMacros.html">Check Macros</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/cudaMacros.html">CUDA Macros</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/cudaUtils.html">CUDA Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/executionPhase.html">Execution Phase</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/fileUtils.html">File Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/hashUtils.html">Hash Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/inputLimits.html">Input Limits</a></li>
@@ -456,6 +470,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../common/parallelArtifactNames.html">Parallel Artifact Names</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/ropeUtils.html">Rope Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/safetensorsUtils.html">Safetensors Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/specDecodeConfigUtils.html">Spec Decode Config Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/stringUtils.html">String Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/tensor.html">Tensor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../common/trtUtils.html">TRT Utils</a></li>
@@ -470,21 +485,26 @@
 <li class="toctree-l3"><a class="reference internal" href="attentionScaleUtils.html">Attention Scale Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="audioFbankKernels.html">Audio Fbank Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="batchEvictKernels.html">Batch Evict Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="blockHashKernel.html">Block Hash Kernel</a></li>
 <li class="toctree-l3"><a class="reference internal" href="buildLayout.html">Build Layout</a></li>
 <li class="toctree-l3"><a class="reference internal" href="causalConv1d.html">Causal Conv1d</a></li>
 <li class="toctree-l3"><a class="reference internal" href="checkpointSourceBatch.html">Checkpoint Source Batch</a></li>
 <li class="toctree-l3"><a class="reference internal" href="common.html">Common</a></li>
 <li class="toctree-l3"><a class="reference internal" href="conversion.html">Conversion</a></li>
+<li class="toctree-l3"><a class="reference internal" href="cpSpecKernels.html">Cp Spec Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="cuteDslF16MoeRunner.html">Cute Dsl F16 Moe Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="cuteDslFMHARunner.html">Cute Dsl FMHA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="cuteDslFMHAV2Runner.html">Cute Dsl Fmhav2 Runner</a></li>
 <li class="toctree-l3 current active"><a class="current reference internal" href="#">Cute Dsl FMHA Params</a></li>
+<li class="toctree-l3"><a class="reference internal" href="cuteDslFmhaTypes.html">Cute Dsl FMHA Types</a></li>
 <li class="toctree-l3"><a class="reference internal" href="cuteDslGDNRunner.html">Cute Dsl Gdn Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="cuteDslGemmNvFp4Runner.html">Cute Dsl GEMM Nv Fp4 Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="cuteDslGemmRunner.html">Cute Dsl GEMM Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="cuteDslLayerNormRunner.html">Cute Dsl Layer Norm Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="cuteDslModuleLoader.html">Cute Dsl Module Loader</a></li>
 <li class="toctree-l3"><a class="reference internal" href="cuteDslNvfp4MoeRunner.html">Cute Dsl Nvfp4 Moe Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="cuteDslNvfp4MoeSm110Runner.html">Cute Dsl Nvfp4 Moe Sm110 Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="cuteDslQsaSparseRunner.html">Cute Dsl Qsa Sparse Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="cuteDslRmsNormRunner.html">Cute Dsl Rms Norm Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="cuteDslSSDRunner.html">Cute Dsl Ssd Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="cuteDslTensorDescriptors.html">Cute Dsl Tensor Descriptors</a></li>
@@ -495,6 +515,8 @@
 <li class="toctree-l3"><a class="reference internal" href="decoderXQARunner.html">Decoder XQA Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="dequant.html">Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="dequantize.html">Dequantize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dflash2CandidateSelector.html">Dflash2 Candidate Selector</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dflash2GroupedDynamicConv.html">Dflash2 Grouped Dynamic Conv</a></li>
 <li class="toctree-l3"><a class="reference internal" href="dflashRuntimeKernels.html">Dflash Runtime Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="dsparkKernels.html">Dspark Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="eagleAcceptKernels.html">EAGLE Accept Kernels</a></li>
@@ -505,6 +527,7 @@
 <li class="toctree-l3"><a class="reference internal" href="fp16MoeAssemble.html">Fp16 Moe Assemble</a></li>
 <li class="toctree-l3"><a class="reference internal" href="fp4Quantize.html">Fp4 Quantize</a></li>
 <li class="toctree-l3"><a class="reference internal" href="gdnKernelUtils.html">Gdn Kernel Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="gdnPdlConfig.html">Gdn Pdl Config</a></li>
 <li class="toctree-l3"><a class="reference internal" href="gdnTreeChunkKernels.html">Gdn Tree Chunk Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="gemma4AudioAttention.html">Gemma4 Audio Attention</a></li>
 <li class="toctree-l3"><a class="reference internal" href="gemma4MTPRuntimeKernels.html">Gemma4 Mtp Runtime Kernels</a></li>
@@ -537,9 +560,14 @@
 <li class="toctree-l3"><a class="reference internal" href="nvfp4A16BlackwellGemmRunner.html">Nvfp4 A16 Blackwell GEMM Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="nvfp4A16BlackwellGemvJitCompiler.html">Nvfp4 A16 Blackwell Gemv Jit Compiler</a></li>
 <li class="toctree-l3"><a class="reference internal" href="nvfp4A16BlackwellGemvJitRunner.html">Nvfp4 A16 Blackwell Gemv Jit Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="nvfp4A16BlackwellMoeDispatchPolicy.html">Nvfp4 A16 Blackwell Moe Dispatch Policy</a></li>
+<li class="toctree-l3"><a class="reference internal" href="nvfp4A16BlackwellMoeJitCompiler.html">Nvfp4 A16 Blackwell Moe Jit Compiler</a></li>
+<li class="toctree-l3"><a class="reference internal" href="nvfp4A16BlackwellMoeJitRunner.html">Nvfp4 A16 Blackwell Moe Jit Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="nvfp4A16BlackwellMoeRunner.html">Nvfp4 A16 Blackwell Moe Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="nvfp4A16BlackwellSupport.html">Nvfp4 A16 Blackwell Support</a></li>
 <li class="toctree-l3"><a class="reference internal" href="nvfp4MoeLayout.html">Nvfp4 Moe Layout</a></li>
 <li class="toctree-l3"><a class="reference internal" href="nvfp4MoeNormalize.html">Nvfp4 Moe Normalize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="nvfp4MoePdlConfig.html">Nvfp4 Moe Pdl Config</a></li>
 <li class="toctree-l3"><a class="reference internal" href="nvfp4MoePluginGeforceTransform.html">Nvfp4 Moe Plugin Geforce Transform</a></li>
 <li class="toctree-l3"><a class="reference internal" href="nvfp4MoePluginTransform.html">Nvfp4 Moe Plugin Transform</a></li>
 <li class="toctree-l3"><a class="reference internal" href="nvfp4MoeScaleTransform.html">Nvfp4 Moe Scale Transform</a></li>
@@ -551,14 +579,22 @@
 <li class="toctree-l3"><a class="reference internal" href="pluginJitCompileCache.html">Plugin Jit Compile Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="pluginJitCompiler.html">Plugin Jit Compiler</a></li>
 <li class="toctree-l3"><a class="reference internal" href="pluginJitEmbeddedSources.html">Plugin Jit Embedded Sources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="qsaIndexerJitCompiler.html">Qsa Indexer Jit Compiler</a></li>
+<li class="toctree-l3"><a class="reference internal" href="qsaIndexerKernels.html">Qsa Indexer Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="qsaIndexerRunner.html">Qsa Indexer Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="requestStableRngKernels.html">Request Stable Rng Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="scaleConvert.html">Scale Convert</a></li>
 <li class="toctree-l3"><a class="reference internal" href="selectiveStateUpdate.html">Selective State Update</a></li>
+<li class="toctree-l3"><a class="reference internal" href="slidingWindowUtils.html">Sliding Window Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="speculativeKernelsUtils.html">Speculative Kernels Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="speculativeSampling.html">Speculative Sampling</a></li>
+<li class="toctree-l3"><a class="reference internal" href="speculativeSamplingKernels.html">Speculative Sampling Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="ssdVarlenMetadata.html">Ssd Varlen Metadata</a></li>
 <li class="toctree-l3"><a class="reference internal" href="talkerMLPKernels.html">Talker Mlp Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="utilKernels.html">Util Kernels</a></li>
 <li class="toctree-l3"><a class="reference internal" href="vectorizedTypes.html">Vectorized Types</a></li>
 <li class="toctree-l3"><a class="reference internal" href="xqaKernelTypes.html">XQA Kernel Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="xqaLaunchConfig.html">XQA Launch Config</a></li>
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../multimodal/index.html">Multimodal Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
@@ -575,6 +611,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/internViTRunner.html">Intern ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/modelTypes.html">Model Types</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/multimodalRunner.html">Multimodal Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/museGlimmerViTRunner.html">Muse Glimmer ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/nemotronOmniAudioRunner.html">Nemotron Omni Audio Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/nemotronOmniViTRunner.html">Nemotron Omni ViT Runner</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../multimodal/phi4mmViTRunner.html">Phi4mm ViT Runner</a></li>
@@ -590,6 +627,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../plugins/causalConv1dPlugin.html">Causal Conv1d Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/cuteDslInt4Gemm.html">Cute Dsl Int4 GEMM</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/cuteDslInt4Gemv.html">Cute Dsl Int4 Gemv</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/dflash2GroupedDynamicConvPlugin.html">Dflash2 Grouped Dynamic Conv Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/dflashTargetKVCacheUpdatePlugin.html">Dflash Target KV Cache Update Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/fp16MoePlugin.html">Fp16 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/fusedNvfp4GemmAllReducePlugin.html">Fused Nvfp4 GEMM All Reduce Plugin</a></li>
@@ -598,15 +636,19 @@
 <li class="toctree-l3"><a class="reference internal" href="../plugins/int4GroupwiseGemmPlugin.html">Int4 Groupwise GEMM Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/int4GroupwiseGemmPluginV2.html">Int4 Groupwise GEMM Plugin V2</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/int4MoePlugin.html">Int4 Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/layerNormPlugin.html">Layer Norm Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/mambaPlugin.html">Mamba Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4A16BlackwellDispatchPolicy.html">Nvfp4 A16 Blackwell Dispatch Policy</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4A16BlackwellGemmPlugin.html">Nvfp4 A16 Blackwell GEMM Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4A16BlackwellMoePlugin.html">Nvfp4 A16 Blackwell Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4A16GemmPlugin.html">Nvfp4 A16 GEMM Plugin</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4A16GemmPluginV2.html">Nvfp4 A16 GEMM Plugin V2</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4A16MoePlugin.html">Nvfp4 A16 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4MoePlugin.html">Nvfp4 Moe Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4MoePluginGeforce.html">Nvfp4 Moe Plugin Geforce</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/pluginUtils.html">Plugin Utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/qkvConcatPlugin.html">Qkv Concat Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/qsaAttentionPlugin.html">Qsa Attention Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/raggedPluginMetadata.html">Ragged Plugin Metadata</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/rmsNormPlugin.html">Rms Norm Plugin</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../plugins/vitAttentionPlugin.html">VIT Attention Plugin</a></li>
 </ul>
@@ -624,6 +666,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../runtime/blockDiffusionDecoder.html">Block Diffusion Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/blockHash.html">Block Hash</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/blockIndex.html">Block Index</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/boundedSwaKVPageManager.html">Bounded Swa KV Page Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/cacheRecord.html">Cache Record</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/checkpointReader.html">Checkpoint Reader</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/checkpointWeightAssemble.html">Checkpoint Weight Assemble</a></li>
@@ -653,6 +696,8 @@
 <li class="toctree-l3"><a class="reference internal" href="../runtime/externalWeightManager.html">External Weight Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/gemma4EmbeddingPreprocessor.html">Gemma4 Embedding Preprocessor</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/gemma4MTPDecoder.html">Gemma4 Mtp Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/generationBoundary.html">Generation Boundary</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/guidedDecoder.html">Guided Decoder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/hybridCacheManager.html">Hybrid Cache Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/hybridSnapshotStorage.html">Hybrid Snapshot Storage</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/imageUtils.html">Image Utils</a></li>
@@ -668,6 +713,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../runtime/logitBias.html">Logit Bias</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/loraManager.html">Lora Manager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/mambaCacheManager.html">Mamba Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/managedKVCacheRequest.html">Managed KV Cache Request</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/melSpectrogram.html">Mel Spectrogram</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/modelArtifacts.html">Model Artifacts</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/mtpDecoder.html">Mtp Decoder</a></li>
@@ -678,11 +724,16 @@
 <li class="toctree-l3"><a class="reference internal" href="../runtime/parallelConfig.html">Parallel Config</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/pipelineIO.html">Pipeline Io</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/qwen3OmniTTSRuntime.html">Qwen3 Omni Tts Runtime</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/raggedBatchBuilder.html">Ragged Batch Builder</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/registryBuilder.html">Registry Builder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/requestStableRng.html">Request Stable Rng</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/residentSlotPool.html">Resident Slot Pool</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/resourcePools.html">Resource Pools</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/reusePlan.html">Reuse Plan</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/ropeCache.html">Rope Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/runtimeCoordinator.html">Runtime Coordinator</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/runtimeStepper.html">Runtime Stepper</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/scheduledStep.html">Scheduled Step</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/sharedResources.html">Shared Resources</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/specCommonStateTracker.html">Spec Common State Tracker</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/specReuseContract.html">Spec Reuse Contract</a></li>
@@ -701,6 +752,17 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../sampler/index.html">Sampler Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l3"><a class="reference internal" href="../sampler/diffusionGemmaSampling.html">Diffusion Gemma Sampling</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../sampler/sampling.html">Sampling</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../scheduler/index.html">Scheduler Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../scheduler/batchCompatibility.html">Batch Compatibility</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../scheduler/commandQueue.html">Command Queue</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../scheduler/engineChannel.html">Engine Channel</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../scheduler/engineCommand.html">Engine Command</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../scheduler/requestCoordinator.html">Request Coordinator</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../scheduler/requestEngine.html">Request Engine</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../scheduler/requestIdentity.html">Request Identity</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../scheduler/requestRecord.html">Request Record</a></li>
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../tokenizer/index.html">Tokenizer Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
@@ -781,7 +843,7 @@
 <dl class="cpp struct">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm13LlmFmhaParamsE">
 <span id="_CPPv3N11trt_edgellm13LlmFmhaParamsE"></span><span id="_CPPv2N11trt_edgellm13LlmFmhaParamsE"></span><span id="trt_edgellm::LlmFmhaParams"></span><span class="target" id="structtrt__edgellm_1_1LlmFmhaParams"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">LlmFmhaParams</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm13LlmFmhaParamsE" title="Link to this definition">#</a><br /></dt>
-<dd><p>Everything the dense LLM descriptors need, gathered once per <a class="reference internal" href="cuteDslFMHARunner.html#classtrt__edgellm_1_1CuteDslFMHARunner_1a4f206dc98d2f0a6d87e862cf5367aa78"><span class="std std-ref">CuteDslFMHARunner::run()</span></a> call. </p>
+<dd><p>Everything the dense LLM descriptors need, gathered once per <a class="reference internal" href="cuteDslFMHARunner.html#classtrt__edgellm_1_1CuteDslFMHARunner_1a9bc5ca16a94a3b4e4a3ad923c164d55e"><span class="std std-ref">CuteDslFMHARunner::run()</span></a> call. </p>
 <div class="breathe-sectiondef docutils container">
 <p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-members">Public Members</p>
 <dl class="cpp var">
@@ -865,8 +927,8 @@
 <dd></dd></dl>
 
 <dl class="cpp var">
-<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm13LlmFmhaParams24skipSoftmaxThresholdLog2E">
-<span id="_CPPv3N11trt_edgellm13LlmFmhaParams24skipSoftmaxThresholdLog2E"></span><span id="_CPPv2N11trt_edgellm13LlmFmhaParams24skipSoftmaxThresholdLog2E"></span><span id="trt_edgellm::LlmFmhaParams::skipSoftmaxThresholdLog2__float"></span><span class="target" id="structtrt__edgellm_1_1LlmFmhaParams_1a683a365e38ff8b01abf75c06d483c5ab"></span><span class="kt"><span class="pre">float</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">skipSoftmaxThresholdLog2</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm13LlmFmhaParams24skipSoftmaxThresholdLog2E" title="Link to this definition">#</a><br /></dt>
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm13LlmFmhaParams22skipSoftmaxScaleFactorE">
+<span id="_CPPv3N11trt_edgellm13LlmFmhaParams22skipSoftmaxScaleFactorE"></span><span id="_CPPv2N11trt_edgellm13LlmFmhaParams22skipSoftmaxScaleFactorE"></span><span id="trt_edgellm::LlmFmhaParams::skipSoftmaxScaleFactor__float"></span><span class="target" id="structtrt__edgellm_1_1LlmFmhaParams_1a4230134f367faa391d9391867570abad"></span><span class="kt"><span class="pre">float</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">skipSoftmaxScaleFactor</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm13LlmFmhaParams22skipSoftmaxScaleFactorE" title="Link to this definition">#</a><br /></dt>
 <dd><p>Skip-softmax (BLASST) threshold as log2(lambda); 0.0 = disabled. Only the *_skipsoftmax launchers forward it — the other wrappers have no such argument. </p>
 </dd></dl>
 
@@ -881,7 +943,7 @@
 <dl class="cpp struct">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm18LlmFmhaPagedParamsE">
 <span id="_CPPv3N11trt_edgellm18LlmFmhaPagedParamsE"></span><span id="_CPPv2N11trt_edgellm18LlmFmhaPagedParamsE"></span><span id="trt_edgellm::LlmFmhaPagedParams"></span><span class="target" id="structtrt__edgellm_1_1LlmFmhaPagedParams"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">LlmFmhaPagedParams</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm18LlmFmhaPagedParamsE" title="Link to this definition">#</a><br /></dt>
-<dd><p>Everything the paged LLM descriptors need, gathered once per <a class="reference internal" href="cuteDslFMHARunner.html#classtrt__edgellm_1_1CuteDslFMHARunner_1aabe95e6f85f22f37af7ce095985db963"><span class="std std-ref">CuteDslFMHARunner::runPaged()</span></a> call. </p>
+<dd><p>Everything the paged LLM descriptors need, gathered once per <a class="reference internal" href="cuteDslFMHARunner.html#classtrt__edgellm_1_1CuteDslFMHARunner_1a09bf41f7f0f6f9a9310427789f8728fa"><span class="std std-ref">CuteDslFMHARunner::runPaged()</span></a> call. </p>
 <div class="breathe-sectiondef docutils container">
 <p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-members">Public Members</p>
 <dl class="cpp var">
@@ -995,14 +1057,133 @@
 <dd></dd></dl>
 
 <dl class="cpp var">
-<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm18LlmFmhaPagedParams24skipSoftmaxThresholdLog2E">
-<span id="_CPPv3N11trt_edgellm18LlmFmhaPagedParams24skipSoftmaxThresholdLog2E"></span><span id="_CPPv2N11trt_edgellm18LlmFmhaPagedParams24skipSoftmaxThresholdLog2E"></span><span id="trt_edgellm::LlmFmhaPagedParams::skipSoftmaxThresholdLog2__float"></span><span class="target" id="structtrt__edgellm_1_1LlmFmhaPagedParams_1a58259aba424c8519d3b2ef027fb5ce86"></span><span class="kt"><span class="pre">float</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">skipSoftmaxThresholdLog2</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm18LlmFmhaPagedParams24skipSoftmaxThresholdLog2E" title="Link to this definition">#</a><br /></dt>
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm18LlmFmhaPagedParams22skipSoftmaxScaleFactorE">
+<span id="_CPPv3N11trt_edgellm18LlmFmhaPagedParams22skipSoftmaxScaleFactorE"></span><span id="_CPPv2N11trt_edgellm18LlmFmhaPagedParams22skipSoftmaxScaleFactorE"></span><span id="trt_edgellm::LlmFmhaPagedParams::skipSoftmaxScaleFactor__float"></span><span class="target" id="structtrt__edgellm_1_1LlmFmhaPagedParams_1a945f9fa4abcd4e0583cfb56da2dd8271"></span><span class="kt"><span class="pre">float</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">skipSoftmaxScaleFactor</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm18LlmFmhaPagedParams22skipSoftmaxScaleFactorE" title="Link to this definition">#</a><br /></dt>
 <dd><p>Skip-softmax (BLASST) threshold as log2(lambda); 0.0 = disabled. Only the *_skipsoftmax_paged launchers forward it — the other wrappers have no such argument. </p>
 </dd></dl>
 
 <dl class="cpp var">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm18LlmFmhaPagedParams6streamE">
 <span id="_CPPv3N11trt_edgellm18LlmFmhaPagedParams6streamE"></span><span id="_CPPv2N11trt_edgellm18LlmFmhaPagedParams6streamE"></span><span id="trt_edgellm::LlmFmhaPagedParams::stream__cudaStream_t"></span><span class="target" id="structtrt__edgellm_1_1LlmFmhaPagedParams_1acab11cce32a0231b7acfdc4b572da5d2"></span><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">stream</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm18LlmFmhaPagedParams6streamE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+</div>
+</dd></dl>
+
+<dl class="cpp struct">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParamsE">
+<span id="_CPPv3N11trt_edgellm24LlmFmhaRaggedPagedParamsE"></span><span id="_CPPv2N11trt_edgellm24LlmFmhaRaggedPagedParamsE"></span><span id="trt_edgellm::LlmFmhaRaggedPagedParams"></span><span class="target" id="structtrt__edgellm_1_1LlmFmhaRaggedPagedParams"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">LlmFmhaRaggedPagedParams</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParamsE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Everything the optimized Blackwell packed-Q/O paged descriptors need for one ragged launch. </p>
+<div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-members">Public Members</p>
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams4qPtrE">
+<span id="_CPPv3N11trt_edgellm24LlmFmhaRaggedPagedParams4qPtrE"></span><span id="_CPPv2N11trt_edgellm24LlmFmhaRaggedPagedParams4qPtrE"></span><span id="trt_edgellm::LlmFmhaRaggedPagedParams::qPtr__voidCP"></span><span class="target" id="structtrt__edgellm_1_1LlmFmhaRaggedPagedParams_1a0c71404298747e4a22c809f70efe69eb"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">qPtr</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams4qPtrE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams14pagedKVPoolPtrE">
+<span id="_CPPv3N11trt_edgellm24LlmFmhaRaggedPagedParams14pagedKVPoolPtrE"></span><span id="_CPPv2N11trt_edgellm24LlmFmhaRaggedPagedParams14pagedKVPoolPtrE"></span><span id="trt_edgellm::LlmFmhaRaggedPagedParams::pagedKVPoolPtr__voidCP"></span><span class="target" id="structtrt__edgellm_1_1LlmFmhaRaggedPagedParams_1a4a09f39e49c2f7da3125be03d49c534f"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">pagedKVPoolPtr</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams14pagedKVPoolPtrE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams15kvCachePageListE">
+<span id="_CPPv3N11trt_edgellm24LlmFmhaRaggedPagedParams15kvCachePageListE"></span><span id="_CPPv2N11trt_edgellm24LlmFmhaRaggedPagedParams15kvCachePageListE"></span><span id="trt_edgellm::LlmFmhaRaggedPagedParams::kvCachePageList__int32_tCP"></span><span class="target" id="structtrt__edgellm_1_1LlmFmhaRaggedPagedParams_1af3b6db4461ff0938b26a0999997930bb"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">kvCachePageList</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams15kvCachePageListE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams4oPtrE">
+<span id="_CPPv3N11trt_edgellm24LlmFmhaRaggedPagedParams4oPtrE"></span><span id="_CPPv2N11trt_edgellm24LlmFmhaRaggedPagedParams4oPtrE"></span><span id="trt_edgellm::LlmFmhaRaggedPagedParams::oPtr__voidP"></span><span class="target" id="structtrt__edgellm_1_1LlmFmhaRaggedPagedParams_1a2cc4ba79d2d011c1749f21f65f45508d"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">oPtr</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams4oPtrE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams10cuQSeqLensE">
+<span id="_CPPv3N11trt_edgellm24LlmFmhaRaggedPagedParams10cuQSeqLensE"></span><span id="_CPPv2N11trt_edgellm24LlmFmhaRaggedPagedParams10cuQSeqLensE"></span><span id="trt_edgellm::LlmFmhaRaggedPagedParams::cuQSeqLens__int32_tCP"></span><span class="target" id="structtrt__edgellm_1_1LlmFmhaRaggedPagedParams_1a05bc1bc94978e9ddc3dac97ac4b9b79e"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">cuQSeqLens</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams10cuQSeqLensE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams11cuKVSeqLensE">
+<span id="_CPPv3N11trt_edgellm24LlmFmhaRaggedPagedParams11cuKVSeqLensE"></span><span id="_CPPv2N11trt_edgellm24LlmFmhaRaggedPagedParams11cuKVSeqLensE"></span><span id="trt_edgellm::LlmFmhaRaggedPagedParams::cuKVSeqLens__int32_tCP"></span><span class="target" id="structtrt__edgellm_1_1LlmFmhaRaggedPagedParams_1aa336e56b861ec414202d3dac1b5ad60f"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">cuKVSeqLens</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams11cuKVSeqLensE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams12totalQSeqLenE">
+<span id="_CPPv3N11trt_edgellm24LlmFmhaRaggedPagedParams12totalQSeqLenE"></span><span id="_CPPv2N11trt_edgellm24LlmFmhaRaggedPagedParams12totalQSeqLenE"></span><span id="trt_edgellm::LlmFmhaRaggedPagedParams::totalQSeqLen__int32_t"></span><span class="target" id="structtrt__edgellm_1_1LlmFmhaRaggedPagedParams_1ad00cb6e796687339a527eb1df11a2208"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">totalQSeqLen</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams12totalQSeqLenE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams10maxQSeqLenE">
+<span id="_CPPv3N11trt_edgellm24LlmFmhaRaggedPagedParams10maxQSeqLenE"></span><span id="_CPPv2N11trt_edgellm24LlmFmhaRaggedPagedParams10maxQSeqLenE"></span><span id="trt_edgellm::LlmFmhaRaggedPagedParams::maxQSeqLen__int32_t"></span><span class="target" id="structtrt__edgellm_1_1LlmFmhaRaggedPagedParams_1a08c8ccc8c5bd4927e45e8de9b697907a"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">maxQSeqLen</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams10maxQSeqLenE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams9batchSizeE">
+<span id="_CPPv3N11trt_edgellm24LlmFmhaRaggedPagedParams9batchSizeE"></span><span id="_CPPv2N11trt_edgellm24LlmFmhaRaggedPagedParams9batchSizeE"></span><span id="trt_edgellm::LlmFmhaRaggedPagedParams::batchSize__int32_t"></span><span class="target" id="structtrt__edgellm_1_1LlmFmhaRaggedPagedParams_1afecf63bcc2104e43b6695a70ec360b50"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">batchSize</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams9batchSizeE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams9numQHeadsE">
+<span id="_CPPv3N11trt_edgellm24LlmFmhaRaggedPagedParams9numQHeadsE"></span><span id="_CPPv2N11trt_edgellm24LlmFmhaRaggedPagedParams9numQHeadsE"></span><span id="trt_edgellm::LlmFmhaRaggedPagedParams::numQHeads__int32_t"></span><span class="target" id="structtrt__edgellm_1_1LlmFmhaRaggedPagedParams_1adeddeb34bd2de1fa805d6df107256fcb"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">numQHeads</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams9numQHeadsE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams10numKVHeadsE">
+<span id="_CPPv3N11trt_edgellm24LlmFmhaRaggedPagedParams10numKVHeadsE"></span><span id="_CPPv2N11trt_edgellm24LlmFmhaRaggedPagedParams10numKVHeadsE"></span><span id="trt_edgellm::LlmFmhaRaggedPagedParams::numKVHeads__int32_t"></span><span class="target" id="structtrt__edgellm_1_1LlmFmhaRaggedPagedParams_1abee9ec2886c2fb1841cf8733c58da2be"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">numKVHeads</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams10numKVHeadsE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams7headDimE">
+<span id="_CPPv3N11trt_edgellm24LlmFmhaRaggedPagedParams7headDimE"></span><span id="_CPPv2N11trt_edgellm24LlmFmhaRaggedPagedParams7headDimE"></span><span id="trt_edgellm::LlmFmhaRaggedPagedParams::headDim__int32_t"></span><span class="target" id="structtrt__edgellm_1_1LlmFmhaRaggedPagedParams_1a8dcd8f33e619551e8cf0428e564c3ab9"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">headDim</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams7headDimE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams12numFlatPagesE">
+<span id="_CPPv3N11trt_edgellm24LlmFmhaRaggedPagedParams12numFlatPagesE"></span><span id="_CPPv2N11trt_edgellm24LlmFmhaRaggedPagedParams12numFlatPagesE"></span><span id="trt_edgellm::LlmFmhaRaggedPagedParams::numFlatPages__int32_t"></span><span class="target" id="structtrt__edgellm_1_1LlmFmhaRaggedPagedParams_1a1bde100721a36445c116a8084e79474b"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">numFlatPages</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams12numFlatPagesE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams14maxPagesPerSeqE">
+<span id="_CPPv3N11trt_edgellm24LlmFmhaRaggedPagedParams14maxPagesPerSeqE"></span><span id="_CPPv2N11trt_edgellm24LlmFmhaRaggedPagedParams14maxPagesPerSeqE"></span><span id="trt_edgellm::LlmFmhaRaggedPagedParams::maxPagesPerSeq__int32_t"></span><span class="target" id="structtrt__edgellm_1_1LlmFmhaRaggedPagedParams_1a781d09833355fabf30f6dee0d1d1bbdd"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">maxPagesPerSeq</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams14maxPagesPerSeqE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams13tokensPerPageE">
+<span id="_CPPv3N11trt_edgellm24LlmFmhaRaggedPagedParams13tokensPerPageE"></span><span id="_CPPv2N11trt_edgellm24LlmFmhaRaggedPagedParams13tokensPerPageE"></span><span id="trt_edgellm::LlmFmhaRaggedPagedParams::tokensPerPage__int32_t"></span><span class="target" id="structtrt__edgellm_1_1LlmFmhaRaggedPagedParams_1ac1050bf56fcd4e99167b04c73ccdf708"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">tokensPerPage</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams13tokensPerPageE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams14windowSizeLeftE">
+<span id="_CPPv3N11trt_edgellm24LlmFmhaRaggedPagedParams14windowSizeLeftE"></span><span id="_CPPv2N11trt_edgellm24LlmFmhaRaggedPagedParams14windowSizeLeftE"></span><span id="trt_edgellm::LlmFmhaRaggedPagedParams::windowSizeLeft__int32_t"></span><span class="target" id="structtrt__edgellm_1_1LlmFmhaRaggedPagedParams_1a4da3d51e974f0211c0fd3dbd40c95f69"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">windowSizeLeft</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams14windowSizeLeftE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams14attentionScaleE">
+<span id="_CPPv3N11trt_edgellm24LlmFmhaRaggedPagedParams14attentionScaleE"></span><span id="_CPPv2N11trt_edgellm24LlmFmhaRaggedPagedParams14attentionScaleE"></span><span id="trt_edgellm::LlmFmhaRaggedPagedParams::attentionScale__float"></span><span class="target" id="structtrt__edgellm_1_1LlmFmhaRaggedPagedParams_1a99cd9017505b4bc9d1796af1803d6b31"></span><span class="kt"><span class="pre">float</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">attentionScale</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams14attentionScaleE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams6scaleQE">
+<span id="_CPPv3N11trt_edgellm24LlmFmhaRaggedPagedParams6scaleQE"></span><span id="_CPPv2N11trt_edgellm24LlmFmhaRaggedPagedParams6scaleQE"></span><span id="trt_edgellm::LlmFmhaRaggedPagedParams::scaleQ__float"></span><span class="target" id="structtrt__edgellm_1_1LlmFmhaRaggedPagedParams_1af3b37f0b136dc4479fcbf08b7a3c659f"></span><span class="kt"><span class="pre">float</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">scaleQ</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams6scaleQE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams6scaleKE">
+<span id="_CPPv3N11trt_edgellm24LlmFmhaRaggedPagedParams6scaleKE"></span><span id="_CPPv2N11trt_edgellm24LlmFmhaRaggedPagedParams6scaleKE"></span><span id="trt_edgellm::LlmFmhaRaggedPagedParams::scaleK__float"></span><span class="target" id="structtrt__edgellm_1_1LlmFmhaRaggedPagedParams_1a161adbf67b0db15b266afe7fc31ede0f"></span><span class="kt"><span class="pre">float</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">scaleK</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams6scaleKE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams6scaleVE">
+<span id="_CPPv3N11trt_edgellm24LlmFmhaRaggedPagedParams6scaleVE"></span><span id="_CPPv2N11trt_edgellm24LlmFmhaRaggedPagedParams6scaleVE"></span><span id="trt_edgellm::LlmFmhaRaggedPagedParams::scaleV__float"></span><span class="target" id="structtrt__edgellm_1_1LlmFmhaRaggedPagedParams_1ae9e54a855815c1edb4f761c37651ae4a"></span><span class="kt"><span class="pre">float</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">scaleV</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams6scaleVE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams9invScaleOE">
+<span id="_CPPv3N11trt_edgellm24LlmFmhaRaggedPagedParams9invScaleOE"></span><span id="_CPPv2N11trt_edgellm24LlmFmhaRaggedPagedParams9invScaleOE"></span><span id="trt_edgellm::LlmFmhaRaggedPagedParams::invScaleO__float"></span><span class="target" id="structtrt__edgellm_1_1LlmFmhaRaggedPagedParams_1ab9fe53994afcdb4839f29419421631c2"></span><span class="kt"><span class="pre">float</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">invScaleO</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams9invScaleOE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams6streamE">
+<span id="_CPPv3N11trt_edgellm24LlmFmhaRaggedPagedParams6streamE"></span><span id="_CPPv2N11trt_edgellm24LlmFmhaRaggedPagedParams6streamE"></span><span id="trt_edgellm::LlmFmhaRaggedPagedParams::stream__cudaStream_t"></span><span class="target" id="structtrt__edgellm_1_1LlmFmhaRaggedPagedParams_1a6374869e7f6da5bd7c10ad92c3dbb7b2"></span><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">stream</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams6streamE" title="Link to this definition">#</a><br /></dt>
 <dd></dd></dl>
 
 </div>
@@ -1198,6 +1379,105 @@
 </dd></dl>
 
 <dl class="cpp struct">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParamsE">
+<span id="_CPPv3N11trt_edgellm23FmhaV2RaggedPagedParamsE"></span><span id="_CPPv2N11trt_edgellm23FmhaV2RaggedPagedParamsE"></span><span id="trt_edgellm::FmhaV2RaggedPagedParams"></span><span class="target" id="structtrt__edgellm_1_1FmhaV2RaggedPagedParams"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">FmhaV2RaggedPagedParams</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParamsE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Everything the packed-Q/O FMHA-v2 paged descriptors need, gathered once per ragged launch. </p>
+<div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-members">Public Members</p>
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams4qPtrE">
+<span id="_CPPv3N11trt_edgellm23FmhaV2RaggedPagedParams4qPtrE"></span><span id="_CPPv2N11trt_edgellm23FmhaV2RaggedPagedParams4qPtrE"></span><span id="trt_edgellm::FmhaV2RaggedPagedParams::qPtr__voidCP"></span><span class="target" id="structtrt__edgellm_1_1FmhaV2RaggedPagedParams_1a5f5944a5c319f8aa6ceb261b7a82d804"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">qPtr</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams4qPtrE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams14pagedKVPoolPtrE">
+<span id="_CPPv3N11trt_edgellm23FmhaV2RaggedPagedParams14pagedKVPoolPtrE"></span><span id="_CPPv2N11trt_edgellm23FmhaV2RaggedPagedParams14pagedKVPoolPtrE"></span><span id="trt_edgellm::FmhaV2RaggedPagedParams::pagedKVPoolPtr__voidCP"></span><span class="target" id="structtrt__edgellm_1_1FmhaV2RaggedPagedParams_1a3b2aa223d31cb7809987e04520100388"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">pagedKVPoolPtr</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams14pagedKVPoolPtrE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams15kvCachePageListE">
+<span id="_CPPv3N11trt_edgellm23FmhaV2RaggedPagedParams15kvCachePageListE"></span><span id="_CPPv2N11trt_edgellm23FmhaV2RaggedPagedParams15kvCachePageListE"></span><span id="trt_edgellm::FmhaV2RaggedPagedParams::kvCachePageList__int32_tCP"></span><span class="target" id="structtrt__edgellm_1_1FmhaV2RaggedPagedParams_1a743102893b169c164050e629a2a6b247"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">kvCachePageList</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams15kvCachePageListE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams4oPtrE">
+<span id="_CPPv3N11trt_edgellm23FmhaV2RaggedPagedParams4oPtrE"></span><span id="_CPPv2N11trt_edgellm23FmhaV2RaggedPagedParams4oPtrE"></span><span id="trt_edgellm::FmhaV2RaggedPagedParams::oPtr__voidP"></span><span class="target" id="structtrt__edgellm_1_1FmhaV2RaggedPagedParams_1a9b24563e948c1a3d9eaf77888c137081"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">oPtr</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams4oPtrE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams10cuQSeqLensE">
+<span id="_CPPv3N11trt_edgellm23FmhaV2RaggedPagedParams10cuQSeqLensE"></span><span id="_CPPv2N11trt_edgellm23FmhaV2RaggedPagedParams10cuQSeqLensE"></span><span id="trt_edgellm::FmhaV2RaggedPagedParams::cuQSeqLens__int32_tCP"></span><span class="target" id="structtrt__edgellm_1_1FmhaV2RaggedPagedParams_1aeb1e6d00e989b8914c8c61777698f961"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">cuQSeqLens</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams10cuQSeqLensE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams11cuKVSeqLensE">
+<span id="_CPPv3N11trt_edgellm23FmhaV2RaggedPagedParams11cuKVSeqLensE"></span><span id="_CPPv2N11trt_edgellm23FmhaV2RaggedPagedParams11cuKVSeqLensE"></span><span id="trt_edgellm::FmhaV2RaggedPagedParams::cuKVSeqLens__int32_tCP"></span><span class="target" id="structtrt__edgellm_1_1FmhaV2RaggedPagedParams_1ac1d55283b23b907c3a50636040d9f02d"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">cuKVSeqLens</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams11cuKVSeqLensE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams12totalQSeqLenE">
+<span id="_CPPv3N11trt_edgellm23FmhaV2RaggedPagedParams12totalQSeqLenE"></span><span id="_CPPv2N11trt_edgellm23FmhaV2RaggedPagedParams12totalQSeqLenE"></span><span id="trt_edgellm::FmhaV2RaggedPagedParams::totalQSeqLen__int32_t"></span><span class="target" id="structtrt__edgellm_1_1FmhaV2RaggedPagedParams_1a7f49f8c6ce229564c86a010430933577"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">totalQSeqLen</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams12totalQSeqLenE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams10maxQSeqLenE">
+<span id="_CPPv3N11trt_edgellm23FmhaV2RaggedPagedParams10maxQSeqLenE"></span><span id="_CPPv2N11trt_edgellm23FmhaV2RaggedPagedParams10maxQSeqLenE"></span><span id="trt_edgellm::FmhaV2RaggedPagedParams::maxQSeqLen__int32_t"></span><span class="target" id="structtrt__edgellm_1_1FmhaV2RaggedPagedParams_1aec39541c5581e821c692b33b794624b7"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">maxQSeqLen</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams10maxQSeqLenE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams9batchSizeE">
+<span id="_CPPv3N11trt_edgellm23FmhaV2RaggedPagedParams9batchSizeE"></span><span id="_CPPv2N11trt_edgellm23FmhaV2RaggedPagedParams9batchSizeE"></span><span id="trt_edgellm::FmhaV2RaggedPagedParams::batchSize__int32_t"></span><span class="target" id="structtrt__edgellm_1_1FmhaV2RaggedPagedParams_1af8dc8734e56eef40e651261a79ded96e"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">batchSize</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams9batchSizeE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams9numQHeadsE">
+<span id="_CPPv3N11trt_edgellm23FmhaV2RaggedPagedParams9numQHeadsE"></span><span id="_CPPv2N11trt_edgellm23FmhaV2RaggedPagedParams9numQHeadsE"></span><span id="trt_edgellm::FmhaV2RaggedPagedParams::numQHeads__int32_t"></span><span class="target" id="structtrt__edgellm_1_1FmhaV2RaggedPagedParams_1ad3dac688af0d0a65d08973011a68be8a"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">numQHeads</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams9numQHeadsE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams10numKVHeadsE">
+<span id="_CPPv3N11trt_edgellm23FmhaV2RaggedPagedParams10numKVHeadsE"></span><span id="_CPPv2N11trt_edgellm23FmhaV2RaggedPagedParams10numKVHeadsE"></span><span id="trt_edgellm::FmhaV2RaggedPagedParams::numKVHeads__int32_t"></span><span class="target" id="structtrt__edgellm_1_1FmhaV2RaggedPagedParams_1a0592ddcf190bd31de44294a1900345d3"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">numKVHeads</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams10numKVHeadsE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams7headDimE">
+<span id="_CPPv3N11trt_edgellm23FmhaV2RaggedPagedParams7headDimE"></span><span id="_CPPv2N11trt_edgellm23FmhaV2RaggedPagedParams7headDimE"></span><span id="trt_edgellm::FmhaV2RaggedPagedParams::headDim__int32_t"></span><span class="target" id="structtrt__edgellm_1_1FmhaV2RaggedPagedParams_1a27b38a4cb6fd4f38d5e1c39884ab95d4"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">headDim</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams7headDimE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams8numPagesE">
+<span id="_CPPv3N11trt_edgellm23FmhaV2RaggedPagedParams8numPagesE"></span><span id="_CPPv2N11trt_edgellm23FmhaV2RaggedPagedParams8numPagesE"></span><span id="trt_edgellm::FmhaV2RaggedPagedParams::numPages__int32_t"></span><span class="target" id="structtrt__edgellm_1_1FmhaV2RaggedPagedParams_1aea0cca032b8aa330b34610161a025fc6"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">numPages</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams8numPagesE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams14maxPagesPerSeqE">
+<span id="_CPPv3N11trt_edgellm23FmhaV2RaggedPagedParams14maxPagesPerSeqE"></span><span id="_CPPv2N11trt_edgellm23FmhaV2RaggedPagedParams14maxPagesPerSeqE"></span><span id="trt_edgellm::FmhaV2RaggedPagedParams::maxPagesPerSeq__int32_t"></span><span class="target" id="structtrt__edgellm_1_1FmhaV2RaggedPagedParams_1a6a91b93885d302d8ac2afa6c0c8943c4"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">maxPagesPerSeq</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams14maxPagesPerSeqE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams13tokensPerPageE">
+<span id="_CPPv3N11trt_edgellm23FmhaV2RaggedPagedParams13tokensPerPageE"></span><span id="_CPPv2N11trt_edgellm23FmhaV2RaggedPagedParams13tokensPerPageE"></span><span id="trt_edgellm::FmhaV2RaggedPagedParams::tokensPerPage__int32_t"></span><span class="target" id="structtrt__edgellm_1_1FmhaV2RaggedPagedParams_1a05a2c2bc06de408e8972937a004e8742"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">tokensPerPage</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams13tokensPerPageE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams14windowSizeLeftE">
+<span id="_CPPv3N11trt_edgellm23FmhaV2RaggedPagedParams14windowSizeLeftE"></span><span id="_CPPv2N11trt_edgellm23FmhaV2RaggedPagedParams14windowSizeLeftE"></span><span id="trt_edgellm::FmhaV2RaggedPagedParams::windowSizeLeft__int32_t"></span><span class="target" id="structtrt__edgellm_1_1FmhaV2RaggedPagedParams_1aa9ae01020f0c09e3eb78d9f216b59b44"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">windowSizeLeft</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams14windowSizeLeftE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams14attentionScaleE">
+<span id="_CPPv3N11trt_edgellm23FmhaV2RaggedPagedParams14attentionScaleE"></span><span id="_CPPv2N11trt_edgellm23FmhaV2RaggedPagedParams14attentionScaleE"></span><span id="trt_edgellm::FmhaV2RaggedPagedParams::attentionScale__float"></span><span class="target" id="structtrt__edgellm_1_1FmhaV2RaggedPagedParams_1af93ffa420dd3380827f7c8c0a322a041"></span><span class="kt"><span class="pre">float</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">attentionScale</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams14attentionScaleE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams6streamE">
+<span id="_CPPv3N11trt_edgellm23FmhaV2RaggedPagedParams6streamE"></span><span id="_CPPv2N11trt_edgellm23FmhaV2RaggedPagedParams6streamE"></span><span id="trt_edgellm::FmhaV2RaggedPagedParams::stream__cudaStream_t"></span><span class="target" id="structtrt__edgellm_1_1FmhaV2RaggedPagedParams_1a9a0b347a6bd5c8c457e790dc92b1aa3e"></span><span class="n"><span class="pre">cudaStream_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">stream</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams6streamE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+</div>
+</dd></dl>
+
+<dl class="cpp struct">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm15FmhaV2VitParamsE">
 <span id="_CPPv3N11trt_edgellm15FmhaV2VitParamsE"></span><span id="_CPPv2N11trt_edgellm15FmhaV2VitParamsE"></span><span id="trt_edgellm::FmhaV2VitParams"></span><span class="target" id="structtrt__edgellm_1_1FmhaV2VitParams"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">FmhaV2VitParams</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm15FmhaV2VitParamsE" title="Link to this definition">#</a><br /></dt>
 <dd><p>Everything the FMHA-v2 ViT descriptors need, gathered once per <a class="reference internal" href="cuteDslFMHAV2Runner.html#classtrt__edgellm_1_1CuteDslFMHAV2Runner"><span class="std std-ref">CuteDslFMHAV2Runner</span></a> ViT run() call. Unlike <a class="reference internal" href="#structtrt__edgellm_1_1VitFmhaParams"><span class="std std-ref">VitFmhaParams</span></a> these variants are GQA, so Q and KV head counts differ. </p>
@@ -1303,11 +1583,11 @@
       </div>
     </a>
     <a class="right-next"
-       href="cuteDslGDNRunner.html"
+       href="cuteDslFmhaTypes.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Cute Dsl Gdn Runner</p>
+        <p class="prev-next-title">Cute Dsl FMHA Types</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
@@ -1349,7 +1629,7 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13LlmFmhaParams6scaleKE"><code class="docutils literal notranslate"><span class="pre">scaleK</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13LlmFmhaParams6scaleVE"><code class="docutils literal notranslate"><span class="pre">scaleV</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13LlmFmhaParams9invScaleOE"><code class="docutils literal notranslate"><span class="pre">invScaleO</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13LlmFmhaParams24skipSoftmaxThresholdLog2E"><code class="docutils literal notranslate"><span class="pre">skipSoftmaxThresholdLog2</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13LlmFmhaParams22skipSoftmaxScaleFactorE"><code class="docutils literal notranslate"><span class="pre">skipSoftmaxScaleFactor</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13LlmFmhaParams6streamE"><code class="docutils literal notranslate"><span class="pre">stream</span></code></a></li>
 </ul>
 </li>
@@ -1376,8 +1656,33 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm18LlmFmhaPagedParams6scaleKE"><code class="docutils literal notranslate"><span class="pre">scaleK</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm18LlmFmhaPagedParams6scaleVE"><code class="docutils literal notranslate"><span class="pre">scaleV</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm18LlmFmhaPagedParams9invScaleOE"><code class="docutils literal notranslate"><span class="pre">invScaleO</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm18LlmFmhaPagedParams24skipSoftmaxThresholdLog2E"><code class="docutils literal notranslate"><span class="pre">skipSoftmaxThresholdLog2</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm18LlmFmhaPagedParams22skipSoftmaxScaleFactorE"><code class="docutils literal notranslate"><span class="pre">skipSoftmaxScaleFactor</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm18LlmFmhaPagedParams6streamE"><code class="docutils literal notranslate"><span class="pre">stream</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParamsE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::LlmFmhaRaggedPagedParams</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams4qPtrE"><code class="docutils literal notranslate"><span class="pre">qPtr</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams14pagedKVPoolPtrE"><code class="docutils literal notranslate"><span class="pre">pagedKVPoolPtr</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams15kvCachePageListE"><code class="docutils literal notranslate"><span class="pre">kvCachePageList</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams4oPtrE"><code class="docutils literal notranslate"><span class="pre">oPtr</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams10cuQSeqLensE"><code class="docutils literal notranslate"><span class="pre">cuQSeqLens</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams11cuKVSeqLensE"><code class="docutils literal notranslate"><span class="pre">cuKVSeqLens</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams12totalQSeqLenE"><code class="docutils literal notranslate"><span class="pre">totalQSeqLen</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams10maxQSeqLenE"><code class="docutils literal notranslate"><span class="pre">maxQSeqLen</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams9batchSizeE"><code class="docutils literal notranslate"><span class="pre">batchSize</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams9numQHeadsE"><code class="docutils literal notranslate"><span class="pre">numQHeads</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams10numKVHeadsE"><code class="docutils literal notranslate"><span class="pre">numKVHeads</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams7headDimE"><code class="docutils literal notranslate"><span class="pre">headDim</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams12numFlatPagesE"><code class="docutils literal notranslate"><span class="pre">numFlatPages</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams14maxPagesPerSeqE"><code class="docutils literal notranslate"><span class="pre">maxPagesPerSeq</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams13tokensPerPageE"><code class="docutils literal notranslate"><span class="pre">tokensPerPage</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams14windowSizeLeftE"><code class="docutils literal notranslate"><span class="pre">windowSizeLeft</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams14attentionScaleE"><code class="docutils literal notranslate"><span class="pre">attentionScale</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams6scaleQE"><code class="docutils literal notranslate"><span class="pre">scaleQ</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams6scaleKE"><code class="docutils literal notranslate"><span class="pre">scaleK</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams6scaleVE"><code class="docutils literal notranslate"><span class="pre">scaleV</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams9invScaleOE"><code class="docutils literal notranslate"><span class="pre">invScaleO</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm24LlmFmhaRaggedPagedParams6streamE"><code class="docutils literal notranslate"><span class="pre">stream</span></code></a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm13VitFmhaParamsE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::VitFmhaParams</span></code></a><ul class="nav section-nav flex-column">
@@ -1420,6 +1725,27 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm15FmhaV2LlmParams8blockEndE"><code class="docutils literal notranslate"><span class="pre">blockEnd</span></code></a></li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParamsE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::FmhaV2RaggedPagedParams</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams4qPtrE"><code class="docutils literal notranslate"><span class="pre">qPtr</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams14pagedKVPoolPtrE"><code class="docutils literal notranslate"><span class="pre">pagedKVPoolPtr</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams15kvCachePageListE"><code class="docutils literal notranslate"><span class="pre">kvCachePageList</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams4oPtrE"><code class="docutils literal notranslate"><span class="pre">oPtr</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams10cuQSeqLensE"><code class="docutils literal notranslate"><span class="pre">cuQSeqLens</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams11cuKVSeqLensE"><code class="docutils literal notranslate"><span class="pre">cuKVSeqLens</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams12totalQSeqLenE"><code class="docutils literal notranslate"><span class="pre">totalQSeqLen</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams10maxQSeqLenE"><code class="docutils literal notranslate"><span class="pre">maxQSeqLen</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams9batchSizeE"><code class="docutils literal notranslate"><span class="pre">batchSize</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams9numQHeadsE"><code class="docutils literal notranslate"><span class="pre">numQHeads</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams10numKVHeadsE"><code class="docutils literal notranslate"><span class="pre">numKVHeads</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams7headDimE"><code class="docutils literal notranslate"><span class="pre">headDim</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams8numPagesE"><code class="docutils literal notranslate"><span class="pre">numPages</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams14maxPagesPerSeqE"><code class="docutils literal notranslate"><span class="pre">maxPagesPerSeq</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams13tokensPerPageE"><code class="docutils literal notranslate"><span class="pre">tokensPerPage</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams14windowSizeLeftE"><code class="docutils literal notranslate"><span class="pre">windowSizeLeft</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams14attentionScaleE"><code class="docutils literal notranslate"><span class="pre">attentionScale</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm23FmhaV2RaggedPagedParams6streamE"><code class="docutils literal notranslate"><span class="pre">stream</span></code></a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm15FmhaV2VitParamsE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::FmhaV2VitParams</span></code></a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm15FmhaV2VitParams4qPtrE"><code class="docutils literal notranslate"><span class="pre">qPtr</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm15FmhaV2VitParams4kPtrE"><code class="docutils literal notranslate"><span class="pre">kPtr</span></code></a></li>
@@ -1456,8 +1782,8 @@
   
 
   <!-- Scripts loaded after <body> so the DOM is not blocked -->
-  <script defer src="../../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67"></script>
-<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67"></script>
+  <script defer src="../../_static/scripts/bootstrap.js?digest=0790524f97105ba85085"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=0790524f97105ba85085"></script>
 
 
   <footer class="bd-footer">
@@ -1529,9 +1855,9 @@
         <div class="footer-item">
 <div class="extra_footer">
   
-  <p>Last updated on September 03, 2026.</p>
+  <p>Last updated on September 29, 2026.</p>
   
-  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/e8b29522938901f6df19ebeedd4b69bc8edbcd97">e8b2952</a>.</p>
+  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/e649dadcbbf049fa4caf2f09f3a3275ca56751db">e649dad</a>.</p>
   
 </div></div>
       

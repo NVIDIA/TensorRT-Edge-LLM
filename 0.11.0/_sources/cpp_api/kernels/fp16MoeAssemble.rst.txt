@@ -1,0 +1,6 @@
+Fp16 Moe Assemble
+=================
+
+.. doxygenfunction:: trt_edgellm::kernel::launchFp16MoeSourceBatch
+   :project: TensorRT Edge-LLM
+

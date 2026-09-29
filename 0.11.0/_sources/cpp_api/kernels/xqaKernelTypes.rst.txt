@@ -1,0 +1,8 @@
+XQA Kernel Types
+================
+
+.. doxygenstruct:: xqa::kernels::XQAKernelMetaInfo
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

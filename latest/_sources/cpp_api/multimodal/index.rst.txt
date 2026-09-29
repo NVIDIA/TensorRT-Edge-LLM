@@ -19,6 +19,7 @@ API documentation for the multimodal module.
    internViTRunner
    modelTypes
    multimodalRunner
+   museGlimmerViTRunner
    nemotronOmniAudioRunner
    nemotronOmniViTRunner
    phi4mmViTRunner

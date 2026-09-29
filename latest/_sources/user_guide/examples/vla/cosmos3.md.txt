@@ -84,7 +84,7 @@ tensorrt-edgellm-export \
 
 ### 3. Run Reasoning
 
-Create an input file using the standard
+For image reasoning, create an input file using the standard
 [image message format](../../format/input-format.md#message-fields), then run:
 
 ```bash
@@ -94,6 +94,41 @@ Create an input file using the standard
   --inputFile input.json \
   --outputFile output.json
 ```
+
+For native video-file input, launch the OpenAI-compatible server:
+
+```bash
+tensorrt-edgellm-serve "$REASONING_CHECKPOINT" \
+  --cache-dir "$HOME/tensorrt-edgellm-workspace/cache" \
+  --max-image-tokens 4096 \
+  --max-image-tokens-per-image 4096 \
+  --allowed-local-media-path /data/media
+```
+
+Then send the video itself, rather than converting it to image content blocks:
+
+```bash
+curl -s http://localhost:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "nvidia/Cosmos3-Edge",
+    "messages": [{
+      "role": "user",
+      "content": [
+        {
+          "type": "video_url",
+          "video_url": {"url": "file:///data/media/example.mp4"},
+          "fps": 2.0
+        },
+        {"type": "text", "text": "Describe the actions in this video."}
+      ]
+    }],
+    "max_tokens": 256
+  }'
+```
+
+The server decodes and samples the clip to the visual engine profile and keeps
+it as one video input through the native runtime.
 
 See the [Cosmos3 model guide](../../../developer_guide/models/cosmos3.md) for
 the component contracts and implementation details.

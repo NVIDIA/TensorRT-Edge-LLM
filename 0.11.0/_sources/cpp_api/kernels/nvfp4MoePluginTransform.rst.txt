@@ -1,0 +1,6 @@
+Nvfp4 Moe Plugin Transform
+==========================
+
+.. doxygenfile:: kernels/weightsTransform/nvfp4/moe/sm110/nvfp4MoePluginTransform.h
+   :project: TensorRT Edge-LLM
+

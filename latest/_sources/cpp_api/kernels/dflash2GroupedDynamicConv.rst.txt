@@ -1,0 +1,6 @@
+Dflash2 Grouped Dynamic Conv
+============================
+
+.. doxygenfunction:: trt_edgellm::kernel::launchDFlash2GroupedDynamicConv
+   :project: TensorRT Edge-LLM
+

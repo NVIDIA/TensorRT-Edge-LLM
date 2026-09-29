@@ -399,8 +399,6 @@ Base and draft engine directories should be the same. This example uses EAGLE3; 
    - KV-Cache capacity: `maxKVCacheCapacity` = `maxInputLen` + expected output length
 
 3. **Set Image Token Ranges for VLMs**: Configure appropriate token ranges for multimodal models
-   - InternVL and Phi-4-multimodal: Image tokens must be multiples of 256
-   - Qwen-VL: Flexible image token counts based on dynamic patching
    - Use `--minImageTokens` and `--maxImageTokens` to set the range
    - Set `--maxImageTokensPerImage` for batch processing limits
 

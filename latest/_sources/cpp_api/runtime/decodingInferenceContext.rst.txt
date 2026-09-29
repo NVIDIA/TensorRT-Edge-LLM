@@ -16,6 +16,11 @@ Decoding Inference Context
    :members:
    :undoc-members:
 
+.. doxygenstruct:: trt_edgellm::rt::SlotSeed
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
 .. doxygenstruct:: trt_edgellm::rt::DecodingInferenceContext
    :project: TensorRT Edge-LLM
    :members:

@@ -1,0 +1,6 @@
+Gptq Marlin Repack
+==================
+
+.. doxygenfunction:: trt_edgellm::kernel::launchGptqMarlinRepackSourceBatch
+   :project: TensorRT Edge-LLM
+

@@ -11,3 +11,8 @@ KV Cache Manager
    :members:
    :undoc-members:
 
+.. doxygenstruct:: trt_edgellm::rt::KVLayerStorageMetadata
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

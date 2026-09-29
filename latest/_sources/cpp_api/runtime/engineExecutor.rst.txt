@@ -11,3 +11,9 @@ Engine Executor
    :members:
    :undoc-members:
 
+.. doxygenfunction:: trt_edgellm::rt::validateRaggedInferenceDims
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::rt::computeExecutionGraphKey
+   :project: TensorRT Edge-LLM
+

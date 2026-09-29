@@ -1,0 +1,8 @@
+Dspark Decoder
+==============
+
+.. doxygenclass:: trt_edgellm::rt::DSparkDecoder
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

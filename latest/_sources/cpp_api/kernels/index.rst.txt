@@ -12,21 +12,26 @@ API documentation for the kernels module.
    attentionScaleUtils
    audioFbankKernels
    batchEvictKernels
+   blockHashKernel
    buildLayout
    causalConv1d
    checkpointSourceBatch
    common
    conversion
+   cpSpecKernels
    cuteDslF16MoeRunner
    cuteDslFMHARunner
    cuteDslFMHAV2Runner
    cuteDslFmhaParams
+   cuteDslFmhaTypes
    cuteDslGDNRunner
    cuteDslGemmNvFp4Runner
    cuteDslGemmRunner
+   cuteDslLayerNormRunner
    cuteDslModuleLoader
    cuteDslNvfp4MoeRunner
    cuteDslNvfp4MoeSm110Runner
+   cuteDslQsaSparseRunner
    cuteDslRmsNormRunner
    cuteDslSSDRunner
    cuteDslTensorDescriptors
@@ -37,6 +42,8 @@ API documentation for the kernels module.
    decoderXQARunner
    dequant
    dequantize
+   dflash2CandidateSelector
+   dflash2GroupedDynamicConv
    dflashRuntimeKernels
    dsparkKernels
    eagleAcceptKernels
@@ -47,6 +54,7 @@ API documentation for the kernels module.
    fp16MoeAssemble
    fp4Quantize
    gdnKernelUtils
+   gdnPdlConfig
    gdnTreeChunkKernels
    gemma4AudioAttention
    gemma4MTPRuntimeKernels
@@ -79,9 +87,14 @@ API documentation for the kernels module.
    nvfp4A16BlackwellGemmRunner
    nvfp4A16BlackwellGemvJitCompiler
    nvfp4A16BlackwellGemvJitRunner
+   nvfp4A16BlackwellMoeDispatchPolicy
+   nvfp4A16BlackwellMoeJitCompiler
+   nvfp4A16BlackwellMoeJitRunner
+   nvfp4A16BlackwellMoeRunner
    nvfp4A16BlackwellSupport
    nvfp4MoeLayout
    nvfp4MoeNormalize
+   nvfp4MoePdlConfig
    nvfp4MoePluginGeforceTransform
    nvfp4MoePluginTransform
    nvfp4MoeScaleTransform
@@ -93,11 +106,19 @@ API documentation for the kernels module.
    pluginJitCompileCache
    pluginJitCompiler
    pluginJitEmbeddedSources
+   qsaIndexerJitCompiler
+   qsaIndexerKernels
+   qsaIndexerRunner
+   requestStableRngKernels
    scaleConvert
    selectiveStateUpdate
+   slidingWindowUtils
    speculativeKernelsUtils
+   speculativeSampling
+   speculativeSamplingKernels
    ssdVarlenMetadata
    talkerMLPKernels
    utilKernels
    vectorizedTypes
    xqaKernelTypes
+   xqaLaunchConfig

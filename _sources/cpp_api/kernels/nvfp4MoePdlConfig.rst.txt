@@ -1,0 +1,6 @@
+Nvfp4 Moe Pdl Config
+====================
+
+.. doxygenfile:: kernels/moe/nvfp4_cutedsl/nvfp4MoePdlConfig.h
+   :project: TensorRT Edge-LLM
+
