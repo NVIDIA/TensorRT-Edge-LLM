@@ -23,6 +23,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 
+from . import oss
 from .config import (REPO_ROOT, package_version, require_clean_source,
                      run_checked, sha256, source_revision, source_snapshot,
                      write_json)
@@ -79,7 +80,8 @@ def main(argv=None) -> None:
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="edgellm-base-wheel-") as temp:
-        temporary_output = Path(temp)
+        temporary_output = Path(temp) / "dist"
+        staged_source = oss.stage_source(repo_root, Path(temp) / "source")
         environment = dict(os.environ)
         environment["SKBUILD_CMAKE_ARGS"] = "-DEDGELLM_PYTHON_ONLY_WHEEL=ON"
         run_checked([
@@ -90,7 +92,7 @@ def main(argv=None) -> None:
             "--no-isolation",
             "--outdir",
             os.fspath(temporary_output),
-            os.fspath(repo_root),
+            os.fspath(staged_source),
         ],
                     env=environment)
         wheels = list(temporary_output.glob("*.whl"))
@@ -99,11 +101,14 @@ def main(argv=None) -> None:
                 f"Expected one base wheel, found {len(wheels)} in {temporary_output}."
             )
         _verify_native_free(wheels[0])
+        with zipfile.ZipFile(wheels[0]) as archive:
+            oss.audit_archive(archive, repo_root)
         wheel = output_dir / wheels[0].name
         shutil.copy2(wheels[0], wheel)
     write_json(
         output_dir / "base-wheel.json", {
             "schema_version": 1,
+            "oss_policy_sha256": oss.policy_digest(repo_root),
             "package_version": package_version(repo_root),
             "source_revision": revision,
             "wheel": wheel.name,

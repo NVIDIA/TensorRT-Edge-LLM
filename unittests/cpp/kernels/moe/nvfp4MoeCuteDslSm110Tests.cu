@@ -15,6 +15,96 @@
  * limitations under the License.
  */
 
+#include <cuda_runtime.h>
+
+#if defined(EDGELLM_TEST_WRAP_CUTEDSL_LAUNCH) && CUDART_VERSION >= 12080
+
+#include <utility>
+#include <vector>
+
+namespace
+{
+
+struct LaunchConfigSnapshot
+{
+    dim3 gridDim;
+    dim3 blockDim;
+    size_t dynamicSmemBytes;
+    std::vector<cudaLaunchAttribute> attrs;
+};
+
+thread_local bool gCaptureLaunchConfigs{false};
+thread_local std::vector<LaunchConfigSnapshot> gLaunchConfigs;
+
+void beginLaunchConfigCapture()
+{
+    gLaunchConfigs.clear();
+    gCaptureLaunchConfigs = true;
+}
+
+std::vector<LaunchConfigSnapshot> endLaunchConfigCapture()
+{
+    gCaptureLaunchConfigs = false;
+    std::vector<LaunchConfigSnapshot> result = std::move(gLaunchConfigs);
+    gLaunchConfigs.clear();
+    return result;
+}
+
+void captureLaunchConfig(cudaLaunchConfig_t const* config)
+{
+    if (!gCaptureLaunchConfigs)
+    {
+        return;
+    }
+
+    LaunchConfigSnapshot snapshot{config->gridDim, config->blockDim, config->dynamicSmemBytes, {}};
+    snapshot.attrs.assign(config->attrs, config->attrs + config->numAttrs);
+    gLaunchConfigs.emplace_back(std::move(snapshot));
+}
+
+class ScopedLaunchConfigCapture
+{
+public:
+    ScopedLaunchConfigCapture()
+    {
+        beginLaunchConfigCapture();
+    }
+
+    ScopedLaunchConfigCapture(ScopedLaunchConfigCapture const&) = delete;
+    ScopedLaunchConfigCapture& operator=(ScopedLaunchConfigCapture const&) = delete;
+
+    ~ScopedLaunchConfigCapture()
+    {
+        if (mActive)
+        {
+            (void) endLaunchConfigCapture();
+        }
+    }
+
+    std::vector<LaunchConfigSnapshot> finish()
+    {
+        mActive = false;
+        return endLaunchConfigCapture();
+    }
+
+private:
+    bool mActive{true};
+};
+
+} // namespace
+
+extern "C" cudaError_t __real__cudaLaunchKernelEx(
+    cudaLaunchConfig_t const* config, cudaKernel_t kernel, void** kernelParams);
+
+extern "C" cudaError_t __wrap__cudaLaunchKernelEx(
+    cudaLaunchConfig_t const* config, cudaKernel_t kernel, void** kernelParams)
+{
+    captureLaunchConfig(config);
+    return __real__cudaLaunchKernelEx(config, kernel, kernelParams);
+}
+
+#endif // defined(EDGELLM_TEST_WRAP_CUTEDSL_LAUNCH) && CUDART_VERSION >= 12080
+
 #ifdef CUTE_DSL_NVFP4_MOE_ENABLED
 
 #include <algorithm>
@@ -26,6 +116,9 @@
 #include <cuda_fp8.h>
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
+#ifdef ENABLE_NVTX_PROFILING
+#include <nvtx3.hpp>
+#endif
 #include <random>
 #include <string>
 #include <vector>
@@ -54,6 +147,8 @@ constexpr int32_t kActReLU2 = 4;
 constexpr int32_t kActGeGLU = 5;
 constexpr int32_t kIoDtypeFp16 = 1;
 constexpr int32_t kBackendAuto = 0;
+constexpr int32_t kGraphReplayCount = 8;
+constexpr int32_t kOutputPoisonByte = 0xA5;
 
 constexpr std::array<float, 16> kFp4Levels{
     0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f, -0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f};
@@ -429,6 +524,10 @@ std::vector<float> computeReference(CaseData const& c)
         {
             int32_t const expert = c.topkIds[static_cast<size_t>(t) * kTopK + slot];
             float const routerWeight = c.topkWeights[static_cast<size_t>(t) * kTopK + slot];
+            if (routerWeight == 0.0f)
+            {
+                continue;
+            }
             float const inputScale = c.inputGlobalScale[expert];
             float const downScale = c.downInputScale[expert];
 
@@ -498,10 +597,36 @@ std::vector<float> computeReference(CaseData const& c)
 struct RunResult
 {
     int32_t status;
-    std::vector<float> outputFp32; // [T*H]
+    std::vector<uint16_t> outputFp16Bits; // [T*H]
+    std::vector<float> outputFp32;        // [T*H]
+    std::vector<uint16_t> outputPrefixGuardFp16Bits;
+    std::vector<uint16_t> outputSuffixGuardFp16Bits;
 };
 
-RunResult runCase(CaseData const& c)
+enum class ExecutionMode
+{
+    kEager,
+    kCudaGraph,
+};
+
+RunResult readOutput(int32_t status, void const* deviceOutput, size_t numElements)
+{
+    std::vector<__half> hostFp16(numElements);
+    CUDA_CHECK(cudaMemcpy(hostFp16.data(), deviceOutput, hostFp16.size() * sizeof(__half), cudaMemcpyDeviceToHost));
+
+    std::vector<uint16_t> hostFp16Bits(hostFp16.size());
+    std::memcpy(hostFp16Bits.data(), hostFp16.data(), hostFp16Bits.size() * sizeof(uint16_t));
+
+    std::vector<float> hostFp32(hostFp16.size());
+    for (size_t i = 0; i < hostFp16.size(); ++i)
+    {
+        hostFp32[i] = __half2float(hostFp16[i]);
+    }
+    return {status, std::move(hostFp16Bits), std::move(hostFp32)};
+}
+
+RunResult runCase(CaseData const& c, bool enablePdl = false, ExecutionMode mode = ExecutionMode::kEager,
+    char const* nvtxLabel = nullptr)
 {
     using rt::Coords;
     using rt::DeviceType;
@@ -535,7 +660,16 @@ RunResult runCase(CaseData const& c)
     rt::Tensor fc2Alpha({E}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
     rt::Tensor inputScale({E}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
     rt::Tensor downScale({E}, DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
-    rt::Tensor output({T, H}, DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    constexpr int32_t kOutputGuardElements = 16;
+    size_t const outputElements = static_cast<size_t>(T) * H;
+    size_t const outputPrefixElements = kOutputGuardElements;
+    size_t const outputSuffixElements = kOutputGuardElements;
+    void* outputAllocation = nullptr;
+    CUDA_CHECK(
+        cudaMalloc(&outputAllocation, (outputPrefixElements + outputElements + outputSuffixElements) * sizeof(__half)));
+    auto outputGuard = Defer([&] { cudaFree(outputAllocation); });
+    auto* const outputBase = static_cast<__half*>(outputAllocation);
+    void* const outputPtr = outputBase + outputPrefixElements;
 
     CUDA_CHECK(cudaMemcpy(
         hidden.rawPointer(), c.hiddenFp16.data(), c.hiddenFp16.size() * sizeof(__half), cudaMemcpyHostToDevice));
@@ -555,7 +689,8 @@ RunResult runCase(CaseData const& c)
         cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(downScale.rawPointer(), c.downInputScale.data(), c.downInputScale.size() * sizeof(float),
         cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemset(output.rawPointer(), 0, static_cast<size_t>(T) * H * sizeof(__half)));
+    CUDA_CHECK(cudaMemset(outputAllocation, kOutputPoisonByte,
+        (outputPrefixElements + outputElements + outputSuffixElements) * sizeof(__half)));
 
     // Allocate runner workspace.
     size_t const workspaceBytes = CuteDslNvfp4MoeSm110Runner::getWorkspaceSize(T, T * kTopK, E, kTopK, H, I);
@@ -581,22 +716,107 @@ RunResult runCase(CaseData const& c)
     params.fc2Alpha = fc2Alpha.dataPointer<float>();
     params.inputGlobalScale = inputScale.dataPointer<float>();
     params.downInputScale = downScale.dataPointer<float>();
-    params.output = output.rawPointer();
+    params.output = outputPtr;
     params.activationType = c.config.activationType;
+    params.enablePdl = enablePdl;
 
-    cudaStream_t stream = nullptr;
-    int32_t const ret = CuteDslNvfp4MoeSm110Runner{}.run(params, workspace, stream);
-    CUDA_CHECK(cudaStreamSynchronize(stream));
+    cudaStream_t stream{};
+    CUDA_CHECK(cudaStreamCreate(&stream));
+    auto streamGuard = Defer([&] { cudaStreamDestroy(stream); });
 
-    std::vector<__half> hostFp16(static_cast<size_t>(T) * H);
-    CUDA_CHECK(
-        cudaMemcpy(hostFp16.data(), output.rawPointer(), hostFp16.size() * sizeof(__half), cudaMemcpyDeviceToHost));
-    std::vector<float> hostFp32(hostFp16.size());
-    for (size_t i = 0; i < hostFp16.size(); ++i)
+    CuteDslNvfp4MoeSm110Runner runner{};
+    auto readWithGuards = [&](int32_t status) {
+        RunResult result = readOutput(status, outputPtr, outputElements);
+        result.outputPrefixGuardFp16Bits.resize(outputPrefixElements);
+        result.outputSuffixGuardFp16Bits.resize(outputSuffixElements);
+        CUDA_CHECK(cudaMemcpy(result.outputPrefixGuardFp16Bits.data(), outputAllocation,
+            outputPrefixElements * sizeof(__half), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(
+            cudaMemcpy(result.outputSuffixGuardFp16Bits.data(), outputBase + outputPrefixElements + outputElements,
+                outputSuffixElements * sizeof(__half), cudaMemcpyDeviceToHost));
+        return result;
+    };
+    if (mode == ExecutionMode::kEager)
     {
-        hostFp32[i] = __half2float(hostFp16[i]);
+        auto launchAndRead = [&]() {
+            int32_t const ret = runner.run(params, workspace, stream);
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+            return readWithGuards(ret);
+        };
+#ifdef ENABLE_NVTX_PROFILING
+        if (nvtxLabel != nullptr)
+        {
+            nvtx3::scoped_range nvtxRange{nvtxLabel};
+            return launchAndRead();
+        }
+#else
+        (void) nvtxLabel;
+#endif
+        return launchAndRead();
     }
-    return {ret, std::move(hostFp32)};
+
+    // First-use module loading and cached device queries are not part of the capturable launch path.
+    if (!CuteDslNvfp4MoeSm110Runner::ensureKernelModules(params, stream))
+    {
+        return {-1, {}, {}, {}, {}};
+    }
+    (void) getSMVersion();
+    (void) getDeviceMultiProcessorCount();
+
+    int32_t ret = runner.run(params, workspace, stream);
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    if (ret != 0)
+    {
+        return readWithGuards(ret);
+    }
+
+    cudaGraph_t graph{};
+    CUDA_CHECK(cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal));
+    ret = runner.run(params, workspace, stream);
+    CUDA_CHECK(cudaStreamEndCapture(stream, &graph));
+    auto graphGuard = Defer([&] {
+        if (graph != nullptr)
+        {
+            cudaGraphDestroy(graph);
+        }
+    });
+    if (ret != 0)
+    {
+        return readWithGuards(ret);
+    }
+
+    cudaGraphExec_t graphExec{};
+    CUDA_CHECK(instantiateCudaGraph(&graphExec, graph));
+    auto graphExecGuard = Defer([&] {
+        if (graphExec != nullptr)
+        {
+            cudaGraphExecDestroy(graphExec);
+        }
+    });
+
+    RunResult firstReplay{};
+    size_t const outputBytes = outputElements * sizeof(__half);
+    for (int32_t replay = 0; replay < kGraphReplayCount; ++replay)
+    {
+        // Poison every graph-produced buffer so a missing setup or FC1 node
+        // cannot pass by reusing values left by warmup or an earlier replay.
+        CUDA_CHECK(cudaMemsetAsync(workspace, kOutputPoisonByte, workspaceBytes, stream));
+        CUDA_CHECK(cudaMemsetAsync(outputPtr, kOutputPoisonByte, outputBytes, stream));
+        CUDA_CHECK(cudaGraphLaunch(graphExec, stream));
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+
+        RunResult replayResult = readWithGuards(ret);
+        if (replay == 0)
+        {
+            firstReplay = std::move(replayResult);
+        }
+        else
+        {
+            EXPECT_EQ(replayResult.outputFp16Bits, firstReplay.outputFp16Bits)
+                << "CUDA Graph output changed on replay " << replay;
+        }
+    }
+    return firstReplay;
 }
 
 // ---------------------------------------------------------------------------
@@ -647,6 +867,25 @@ Summary summarize(std::vector<float> const& got, std::vector<float> const& ref, 
     return {median, mag, maxAbs};
 }
 
+void expectReferenceMatch(RunResult const& result, std::vector<float> const& ref, MoeCase const& cfg, char const* mode)
+{
+    constexpr double kMinCosine = 0.94;
+    constexpr double kMinMagRatio = 0.25;
+    constexpr double kMaxMagRatio = 3.00;
+
+    ASSERT_EQ(result.status, 0) << mode << " runner returned non-zero status for " << cfg.name;
+    ASSERT_EQ(result.outputFp32.size(), ref.size());
+    Summary const s = summarize(result.outputFp32, ref, cfg.numTokens, cfg.hiddenSize);
+    std::cout << "[" << cfg.name << "][" << mode << "] median_cos=" << s.medianCosine << " mag_ratio=" << s.magRatio
+              << " max_abs=" << s.maxAbs << std::endl;
+    EXPECT_GE(s.medianCosine, kMinCosine)
+        << mode << " median cosine " << s.medianCosine << " below threshold " << kMinCosine << " for " << cfg.name;
+    EXPECT_GE(s.magRatio, kMinMagRatio) << mode << " magnitude ratio below band [" << kMinMagRatio << ", "
+                                        << kMaxMagRatio << "] for " << cfg.name;
+    EXPECT_LE(s.magRatio, kMaxMagRatio) << mode << " magnitude ratio above band [" << kMinMagRatio << ", "
+                                        << kMaxMagRatio << "] for " << cfg.name;
+}
+
 bool checkRequirements()
 {
     int32_t const sm = getSMVersion();
@@ -693,8 +932,97 @@ std::vector<MoeCase> defaultCases()
             /*intermediateSize=*/768, /*activationType=*/kActSwiGLU, /*numExperts=*/256, /*seed=*/0xA11CE256u},
         {/*name=*/"prefill_h1024_i768_t8_relu2_e256", /*numTokens=*/8, /*hiddenSize=*/1024,
             /*intermediateSize=*/768, /*activationType=*/kActReLU2, /*numExperts=*/256, /*seed=*/0xB0B256u},
+        {/*name=*/"decode_h1024_i768_t1_geglu_e256", /*numTokens=*/1, /*hiddenSize=*/1024,
+            /*intermediateSize=*/768, /*activationType=*/kActGeGLU, /*numExperts=*/256, /*seed=*/0x6E61256u},
+        {/*name=*/"prefill_h1024_i768_t8_geglu_e256", /*numTokens=*/8, /*hiddenSize=*/1024,
+            /*intermediateSize=*/768, /*activationType=*/kActGeGLU, /*numExperts=*/256, /*seed=*/0x6E68256u},
     };
 }
+
+std::vector<MoeCase> pdlCases()
+{
+    return defaultCases();
+}
+
+CaseData buildBitwiseStablePdlCase(MoeCase const& cfg)
+{
+    CaseData c = buildCase(cfg);
+    // FC2 combines top-K rows with atomics. One nonzero route per token keeps
+    // the bitwise check independent of otherwise valid atomic accumulation order.
+    for (int32_t token = 0; token < cfg.numTokens; ++token)
+    {
+        float* weights = c.topkWeights.data() + static_cast<size_t>(token) * kTopK;
+        std::fill_n(weights, kTopK, 0.0f);
+        weights[0] = 1.0f;
+    }
+    return c;
+}
+
+CaseData buildZeroRouteCase(MoeCase const& cfg)
+{
+    CaseData c = buildCase(cfg);
+    std::fill(c.topkWeights.begin(), c.topkWeights.end(), 0.0f);
+    return c;
+}
+
+void expectOutputWasClearedAndGuardsIntact(RunResult const& result, MoeCase const& cfg)
+{
+    constexpr uint16_t kOutputPoisonFp16Bits{0xA5A5};
+    ASSERT_EQ(result.status, 0) << "runner returned non-zero status for " << cfg.name;
+    EXPECT_TRUE(std::all_of(
+        result.outputFp16Bits.begin(), result.outputFp16Bits.end(), [](uint16_t bits) { return bits == 0; }))
+        << "active output was not fully cleared for " << cfg.name;
+    EXPECT_TRUE(std::all_of(result.outputPrefixGuardFp16Bits.begin(), result.outputPrefixGuardFp16Bits.end(),
+        [kOutputPoisonFp16Bits](uint16_t bits) { return bits == kOutputPoisonFp16Bits; }))
+        << "prefix guard was modified for " << cfg.name;
+    EXPECT_TRUE(std::all_of(result.outputSuffixGuardFp16Bits.begin(), result.outputSuffixGuardFp16Bits.end(),
+        [kOutputPoisonFp16Bits](uint16_t bits) { return bits == kOutputPoisonFp16Bits; }))
+        << "suffix guard was modified for " << cfg.name;
+}
+
+#if defined(EDGELLM_TEST_WRAP_CUTEDSL_LAUNCH) && CUDART_VERSION >= 12080
+
+cudaLaunchAttribute const* findLaunchAttribute(LaunchConfigSnapshot const& config, cudaLaunchAttributeID const id)
+{
+    auto const it = std::find_if(
+        config.attrs.begin(), config.attrs.end(), [id](cudaLaunchAttribute const& attr) { return attr.id == id; });
+    return it == config.attrs.end() ? nullptr : &*it;
+}
+
+void expectSameNonPdlLaunchConfiguration(LaunchConfigSnapshot const& pdlOff, LaunchConfigSnapshot const& pdlOn)
+{
+    EXPECT_EQ(pdlOff.gridDim.x, pdlOn.gridDim.x);
+    EXPECT_EQ(pdlOff.gridDim.y, pdlOn.gridDim.y);
+    EXPECT_EQ(pdlOff.gridDim.z, pdlOn.gridDim.z);
+    EXPECT_EQ(pdlOff.blockDim.x, pdlOn.blockDim.x);
+    EXPECT_EQ(pdlOff.blockDim.y, pdlOn.blockDim.y);
+    EXPECT_EQ(pdlOff.blockDim.z, pdlOn.blockDim.z);
+    EXPECT_EQ(pdlOff.dynamicSmemBytes, pdlOn.dynamicSmemBytes);
+
+    // CuTe DSL 4.7 emits exactly PSS, cluster, and cooperative attributes for
+    // these wrappers. Require the two pre-existing attributes explicitly so a
+    // wrapper that drops one cannot pass through equality alone.
+    ASSERT_EQ(pdlOff.attrs.size(), 3u);
+    ASSERT_EQ(pdlOn.attrs.size(), 3u);
+    auto const* offCluster = findLaunchAttribute(pdlOff, cudaLaunchAttributeClusterDimension);
+    auto const* onCluster = findLaunchAttribute(pdlOn, cudaLaunchAttributeClusterDimension);
+    auto const* offCooperative = findLaunchAttribute(pdlOff, cudaLaunchAttributeCooperative);
+    auto const* onCooperative = findLaunchAttribute(pdlOn, cudaLaunchAttributeCooperative);
+    ASSERT_NE(offCluster, nullptr);
+    ASSERT_NE(onCluster, nullptr);
+    ASSERT_NE(offCooperative, nullptr);
+    ASSERT_NE(onCooperative, nullptr);
+    EXPECT_EQ(offCluster->val.clusterDim.x, 1u);
+    EXPECT_EQ(offCluster->val.clusterDim.y, 1u);
+    EXPECT_EQ(offCluster->val.clusterDim.z, 1u);
+    EXPECT_EQ(onCluster->val.clusterDim.x, offCluster->val.clusterDim.x);
+    EXPECT_EQ(onCluster->val.clusterDim.y, offCluster->val.clusterDim.y);
+    EXPECT_EQ(onCluster->val.clusterDim.z, offCluster->val.clusterDim.z);
+    EXPECT_EQ(offCooperative->val.cooperative, 0);
+    EXPECT_EQ(onCooperative->val.cooperative, offCooperative->val.cooperative);
+}
+
+#endif // defined(EDGELLM_TEST_WRAP_CUTEDSL_LAUNCH) && CUDART_VERSION >= 12080
 
 } // namespace
 
@@ -810,6 +1138,184 @@ TEST(CuteDslNvfp4MoeSm110Test, accuracy)
             << "magnitude ratio below band [" << kMinMagRatio << ", " << kMaxMagRatio << "] for " << cfg.name;
         EXPECT_LE(s.magRatio, kMaxMagRatio)
             << "magnitude ratio above band [" << kMinMagRatio << ", " << kMaxMagRatio << "] for " << cfg.name;
+    }
+}
+
+TEST(CuteDslNvfp4MoeSm110Test, pdlMatchesDisabledAndReference)
+{
+    int32_t const sm = getSMVersion();
+    if (!isSupportedSm(sm))
+    {
+        GTEST_SKIP() << "NVFP4 MoE PDL test requires SM100, SM101, or SM110, got SM=" << sm;
+    }
+    if (!checkRequirements())
+    {
+        GTEST_SKIP() << "SM100/101/110 NVFP4 MoE CuTeDSL canImplement returned false";
+    }
+
+    for (auto const& cfg : pdlCases())
+    {
+        SCOPED_TRACE(::testing::Message() << "case=" << cfg.name);
+        CaseData const c = buildBitwiseStablePdlCase(cfg);
+        std::vector<float> const ref = computeReference(c);
+        RunResult const pdlOff = runCase(c, /*enablePdl=*/false);
+        RunResult const pdlOn = runCase(c, /*enablePdl=*/true);
+
+        expectReferenceMatch(pdlOff, ref, cfg, "pdl_off");
+        expectReferenceMatch(pdlOn, ref, cfg, "pdl_on");
+        EXPECT_EQ(pdlOn.outputFp16Bits, pdlOff.outputFp16Bits)
+            << "PDL changed the bitwise FP16 output for " << cfg.name;
+    }
+}
+
+TEST(CuteDslNvfp4MoeSm110Test, zeroRoutesClearPoisonedOutputAndPreserveGuards)
+{
+    int32_t const sm = getSMVersion();
+    if (!isSupportedSm(sm))
+    {
+        GTEST_SKIP() << "NVFP4 MoE output-clear test requires SM100, SM101, or SM110, got SM=" << sm;
+    }
+    if (!checkRequirements())
+    {
+        GTEST_SKIP() << "SM100/101/110 NVFP4 MoE CuTeDSL canImplement returned false";
+    }
+
+    std::vector<MoeCase> const cases{
+        defaultCases()[0], // SwiGLU decode
+        defaultCases()[2], // ReLU2 decode
+        defaultCases()[4], // GeGLU decode
+    };
+    for (auto const& cfg : cases)
+    {
+        SCOPED_TRACE(::testing::Message() << "case=" << cfg.name);
+        CaseData const c = buildZeroRouteCase(cfg);
+        for (bool const enablePdl : {false, true})
+        {
+            expectOutputWasClearedAndGuardsIntact(runCase(c, enablePdl), cfg);
+            // The graph path instantiates the captured launch then replays it
+            // eight times with a poisoned active output/workspace before each
+            // replay; guards stay outside every runner-owned range.
+            expectOutputWasClearedAndGuardsIntact(runCase(c, enablePdl, ExecutionMode::kCudaGraph), cfg);
+        }
+    }
+}
+
+#if defined(EDGELLM_TEST_WRAP_CUTEDSL_LAUNCH) && CUDART_VERSION >= 12080
+
+TEST(CuteDslNvfp4MoeSm110Test, generatedLaunchConfigurationUsesPdlAndPreservesExistingAttributes)
+{
+    int32_t const sm = getSMVersion();
+    if (!isSupportedSm(sm))
+    {
+        GTEST_SKIP() << "NVFP4 MoE PDL launch-config test requires SM100, SM101, or SM110, got SM=" << sm;
+    }
+    if (!checkRequirements())
+    {
+        GTEST_SKIP() << "SM100/101/110 NVFP4 MoE CuTeDSL canImplement returned false";
+    }
+
+    std::vector<MoeCase> launchCases{
+        defaultCases()[0], // SwiGLU N128
+        defaultCases()[2], // ReLU2 N128
+        defaultCases()[4], // GeGLU N128
+    };
+
+    std::vector<std::string> checkedFc1Variants;
+    for (auto const& cfg : launchCases)
+    {
+        checkedFc1Variants.push_back(cfg.name);
+        SCOPED_TRACE(::testing::Message() << "case=" << cfg.name);
+        CaseData const c = buildBitwiseStablePdlCase(cfg);
+
+        ScopedLaunchConfigCapture offCapture;
+        RunResult const pdlOff = runCase(c, /*enablePdl=*/false);
+        auto const pdlOffConfigs = offCapture.finish();
+
+        ScopedLaunchConfigCapture onCapture;
+        RunResult const pdlOn = runCase(c, /*enablePdl=*/true);
+        auto const pdlOnConfigs = onCapture.finish();
+
+        ASSERT_EQ(pdlOff.status, 0);
+        ASSERT_EQ(pdlOn.status, 0);
+        // The runner has exactly two CuTe DSL launches: FC1 followed by FC2.
+        ASSERT_EQ(pdlOffConfigs.size(), 2u);
+        ASSERT_EQ(pdlOnConfigs.size(), pdlOffConfigs.size());
+
+        for (size_t i = 0; i < pdlOffConfigs.size(); ++i)
+        {
+            auto const* offPdl
+                = findLaunchAttribute(pdlOffConfigs[i], cudaLaunchAttributeProgrammaticStreamSerialization);
+            auto const* onPdl
+                = findLaunchAttribute(pdlOnConfigs[i], cudaLaunchAttributeProgrammaticStreamSerialization);
+
+            // CuTe DSL 4.7 represents a disabled PDL policy as the PSS
+            // attribute with value zero. CUDA treats that as the effective
+            // no-PDL fallback; the enabled path carries value one.
+            ASSERT_NE(offPdl, nullptr) << "launch=" << i;
+            ASSERT_NE(onPdl, nullptr) << "launch=" << i;
+            EXPECT_EQ(offPdl->val.programmaticStreamSerializationAllowed, 0) << "launch=" << i;
+            EXPECT_EQ(onPdl->val.programmaticStreamSerializationAllowed, 1) << "launch=" << i;
+
+            // Switching PDL must not replace cluster/cooperative metadata or
+            // any other attribute emitted by the AOT wrapper.
+            expectSameNonPdlLaunchConfiguration(pdlOffConfigs[i], pdlOnConfigs[i]);
+        }
+    }
+    EXPECT_EQ(checkedFc1Variants.size(), 3u);
+}
+
+#endif // defined(EDGELLM_TEST_WRAP_CUTEDSL_LAUNCH) && CUDART_VERSION >= 12080
+
+TEST(CuteDslNvfp4MoeSm110Test, DISABLED_pdlNsightProfile)
+{
+    int32_t const sm = getSMVersion();
+    if (!isSupportedSm(sm))
+    {
+        GTEST_SKIP() << "NVFP4 MoE PDL Nsight test requires SM100, SM101, or SM110, got SM=" << sm;
+    }
+    if (!checkRequirements())
+    {
+        GTEST_SKIP() << "SM100/101/110 NVFP4 MoE CuTeDSL canImplement returned false";
+    }
+
+    for (auto const& cfg : pdlCases())
+    {
+        SCOPED_TRACE(::testing::Message() << "case=" << cfg.name);
+        CaseData const c = buildBitwiseStablePdlCase(cfg);
+        std::string const offLabel = "nvfp4_moe_pdl/" + cfg.name + "/off";
+        std::string const onLabel = "nvfp4_moe_pdl/" + cfg.name + "/on";
+        RunResult const pdlOff = runCase(c, /*enablePdl=*/false, ExecutionMode::kEager, offLabel.c_str());
+        RunResult const pdlOn = runCase(c, /*enablePdl=*/true, ExecutionMode::kEager, onLabel.c_str());
+        ASSERT_EQ(pdlOff.status, 0);
+        ASSERT_EQ(pdlOn.status, 0);
+        EXPECT_EQ(pdlOn.outputFp16Bits, pdlOff.outputFp16Bits);
+    }
+}
+
+TEST(CuteDslNvfp4MoeSm110Test, pdlCudaGraphReplayMatchesDisabledAndReference)
+{
+    int32_t const sm = getSMVersion();
+    if (!isSupportedSm(sm))
+    {
+        GTEST_SKIP() << "NVFP4 MoE PDL CUDA Graph test requires SM100, SM101, or SM110, got SM=" << sm;
+    }
+    if (!checkRequirements())
+    {
+        GTEST_SKIP() << "SM100/101/110 NVFP4 MoE CuTeDSL canImplement returned false";
+    }
+
+    for (auto const& cfg : pdlCases())
+    {
+        SCOPED_TRACE(::testing::Message() << "case=" << cfg.name);
+        CaseData const c = buildBitwiseStablePdlCase(cfg);
+        std::vector<float> const ref = computeReference(c);
+        RunResult const pdlOff = runCase(c, /*enablePdl=*/false, ExecutionMode::kCudaGraph);
+        RunResult const pdlOn = runCase(c, /*enablePdl=*/true, ExecutionMode::kCudaGraph);
+
+        expectReferenceMatch(pdlOff, ref, cfg, "cuda_graph_pdl_off");
+        expectReferenceMatch(pdlOn, ref, cfg, "cuda_graph_pdl_on");
+        EXPECT_EQ(pdlOn.outputFp16Bits, pdlOff.outputFp16Bits)
+            << "PDL changed the bitwise CUDA Graph output for " << cfg.name;
     }
 }
 

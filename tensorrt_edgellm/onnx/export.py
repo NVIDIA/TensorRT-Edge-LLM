@@ -22,23 +22,24 @@ attention and Mamba ops expose state as I/O.
 ONNX input / output layout - attention-only model
 --------------------------------------------------
 Inputs:
-    inputs_embeds           [batch, seq_len, hidden_size]            float16
+    inputs_embeds           [physical_tokens, hidden_size]           float16
     past_key_values_0..N    [2, num_pages, 128, num_kv_heads, head_dim] float16 (paged pool)
-    rope_rotary_cos_sin     [batch, max_pos, rotary_dim]  float32
-    context_lengths         [batch]                       int32
-    kvcache_start_index     [batch]                       int32
+    rope_rotary_cos_sin     [physical_tokens, rotary_dim] float32
+    token metadata          token rows [physical_tokens], sequence rows [batch]
+    state_indices           [batch]                       int32
+    execution_phase_marker  [phase_extent]                int32
     kv_page_table           [batch, 2, max_pages_per_seq] int32
-    last_token_ids          [batch, 1]                    int64
+    logits_indices          [selected_tokens]             int64
 
 Outputs:
-    logits                  [batch, seq_len, vocab_size]             float32
+    logits                  [selected_tokens, vocab_size]            float32
     present_key_values_0..N [2, num_pages, 128, num_kv_heads, head_dim] float16 (aliases past)
 
 Additional I/O for hybrid (Mamba) models
 -----------------------------------------
 Extra inputs:
-    conv_state_0..M   [batch, conv_dim, conv_kernel-1]        float16
-    ssm_state_0..M    [batch, num_heads, head_dim, ssm_state] float16
+    conv_state_0..M   [resident_rows, conv_dim, conv_kernel]        float16
+    ssm_state_0..M    [resident_rows, num_heads, head_dim, ssm_state] float16
 
 Extra outputs:
     present_conv_0..M   updated conv states
@@ -60,6 +61,8 @@ from ..external_weights import (externalize_model_weights,
                                 resolve_externalize_weights)
 from ..models.default.modeling_default import CausalLM
 from .dynamo_translations import build_custom_translation_table
+
+_ATTENTION_SINK_INIT_PREFIX = "attention_sinks_fp32"
 
 logger = logging.getLogger(__name__)
 
@@ -235,9 +238,10 @@ def _strip_attention_plugin_optional_inputs(onnx_path: str) -> None:
     """Strip disabled optional inputs from AttentionPlugin ONNX nodes.
 
     The onnxscript translation always emits the full optional layout:
-    q/k norm gammas, context-mask selector, and tree/vision mask inputs. The
-    C++ plugin expects those optional groups compacted in that relative order,
-    with disabled groups removed from the ONNX node input list.
+    q/k norm gammas, context-mask selector, tree/vision mask inputs, and runtime
+    shape selectors. The C++ plugin expects those optional groups compacted in
+    that relative order, with disabled groups removed from the ONNX node input
+    list.
     """
     _NUM_REQUIRED = 6
     _GAMMA_POSITIONS = (6, 7)
@@ -245,9 +249,26 @@ def _strip_attention_plugin_optional_inputs(onnx_path: str) -> None:
     _ATTENTION_MASK_POSITION = 9
     _ATTENTION_POS_ID_POSITION = 10
     _SKIP_SCALE_POSITION = 11
+    _SWA_KV_CACHE_MODE_POSITION = 12
+    _ATTENTION_SINKS_POSITION = 13
+    _TOKEN_METADATA_POSITIONS = range(14, 18)
     model = onnx.load(onnx_path, load_external_data=False)
     changed = 0
-    dropped_gamma_tensors: set = set()
+    mode_shape_changed = False
+    dropped_const_tensors: set = set()
+    for graph_input in model.graph.input:
+        if graph_input.name != "swa_kv_cache_mode":
+            continue
+        tensor_type = graph_input.type.tensor_type
+        if tensor_type.elem_type != onnx.TensorProto.INT8:
+            raise ValueError("swa_kv_cache_mode must be an INT8 tensor")
+        if len(tensor_type.shape.dim) != 1:
+            raise ValueError("swa_kv_cache_mode must be a 1-D tensor")
+        mode_dim = tensor_type.shape.dim[0]
+        if mode_dim.dim_param != "swa_kv_cache_mode_len":
+            mode_dim.ClearField("dim_value")
+            mode_dim.dim_param = "swa_kv_cache_mode_len"
+            mode_shape_changed = True
     for node in model.graph.node:
         if node.op_type != "AttentionPlugin":
             continue
@@ -269,6 +290,10 @@ def _strip_attention_plugin_optional_inputs(onnx_path: str) -> None:
             (a.i for a in node.attribute if a.name == "enable_qk_norm"),
             0,
         )
+        attention_sink = next(
+            (a.i for a in node.attribute if a.name == "enable_attention_sink"),
+            0,
+        )
         skip_scale_factor = next(
             (a.f
              for a in node.attribute if a.name == "skip_softmax_scale_factor"),
@@ -283,7 +308,7 @@ def _strip_attention_plugin_optional_inputs(onnx_path: str) -> None:
         if qk_norm:
             new_inputs += [get_input(i) for i in _GAMMA_POSITIONS]
         else:
-            dropped_gamma_tensors.update(
+            dropped_const_tensors.update(
                 get_input(i) for i in _GAMMA_POSITIONS if get_input(i))
         if context_mask_selector:
             new_inputs.append(get_input(_CONTEXT_MASK_SELECTOR_POSITION))
@@ -292,7 +317,7 @@ def _strip_attention_plugin_optional_inputs(onnx_path: str) -> None:
                 get_input(_ATTENTION_MASK_POSITION),
                 get_input(_ATTENTION_POS_ID_POSITION),
             ])
-        elif vision_block_attn:
+        if vision_block_attn:
             new_inputs.append(get_input(_ATTENTION_MASK_POSITION))
         # Trailing runtime skip-softmax override carrier (shape-only INT8 input),
         # emitted last by the translation; kept iff skip-softmax is enabled
@@ -301,14 +326,43 @@ def _strip_attention_plugin_optional_inputs(onnx_path: str) -> None:
             skip_input = get_input(_SKIP_SCALE_POSITION)
             if skip_input:
                 new_inputs.append(skip_input)
-        if new_inputs == inputs:
-            continue
-        del node.input[:]
-        node.input.extend(new_inputs)
-        changed += 1
+        # The final shape-only policy input is the single source of truth for
+        # bounded SWA capability. Materialize the corresponding TensorRT plugin
+        # field only after optional inputs have been normalized.
+        swa_mode_input = get_input(_SWA_KV_CACHE_MODE_POSITION)
+        supports_bounded_attr = next(
+            (a
+             for a in node.attribute if a.name == "supports_bounded_kv_cache"),
+            None,
+        )
+        node_changed = False
+        if swa_mode_input:
+            new_inputs.append(swa_mode_input)
+            if supports_bounded_attr is None:
+                node.attribute.append(
+                    onnx.helper.make_attribute("supports_bounded_kv_cache", 1))
+                node_changed = True
+            elif supports_bounded_attr.i != 1:
+                supports_bounded_attr.i = 1
+                node_changed = True
+        elif supports_bounded_attr is not None:
+            node.attribute.remove(supports_bounded_attr)
+            node_changed = True
+        sink_input = get_input(_ATTENTION_SINKS_POSITION)
+        if attention_sink:
+            if sink_input:
+                new_inputs.append(sink_input)
+        elif sink_input:
+            dropped_const_tensors.add(sink_input)
+        new_inputs.extend(get_input(i) for i in _TOKEN_METADATA_POSITIONS)
+        if new_inputs != inputs:
+            del node.input[:]
+            node.input.extend(new_inputs)
+            node_changed = True
+        changed += int(node_changed)
 
-    # Prune the gamma Constant/Cast chains that no longer feed any node.
-    if dropped_gamma_tensors:
+    # Prune disabled gamma/sink Constant and Cast chains that no longer feed a node.
+    if dropped_const_tensors:
         consumed = {i for n in model.graph.node for i in n.input}
         graph_outputs = {o.name for o in model.graph.output}
         pruned = True
@@ -317,10 +371,10 @@ def _strip_attention_plugin_optional_inputs(onnx_path: str) -> None:
             for n in list(model.graph.node):
                 if not n.output:
                     continue
-                if all(o in dropped_gamma_tensors and o not in consumed
+                if all(o in dropped_const_tensors and o not in consumed
                        and o not in graph_outputs for o in n.output):
                     model.graph.node.remove(n)
-                    dropped_gamma_tensors.update(n.input)
+                    dropped_const_tensors.update(n.input)
                     consumed = {
                         i
                         for node_ in model.graph.node
@@ -330,14 +384,27 @@ def _strip_attention_plugin_optional_inputs(onnx_path: str) -> None:
         # The dynamo exporter may lift the gamma Constants to graph
         # initializers instead of Constant nodes — drop those as well.
         for init in list(model.graph.initializer):
-            if init.name in dropped_gamma_tensors and init.name not in consumed:
+            if init.name in dropped_const_tensors and init.name not in consumed:
                 model.graph.initializer.remove(init)
 
-    if not changed:
+    # Drop the graph-level skip_softmax_scale input when no node consumes it
+    # any more (skip_softmax_scale_factor == 0 everywhere): a dangling ONNX
+    # graph input still becomes a TRT network input, so the dense engine would
+    # carry the binding it is supposed to be free of.
+    consumed_inputs = {i for n in model.graph.node for i in n.input}
+    for graph_input in list(model.graph.input):
+        if (graph_input.name == "skip_softmax_scale"
+                and graph_input.name not in consumed_inputs):
+            model.graph.input.remove(graph_input)
+            changed += 1
+
+    if not changed and not mode_shape_changed:
         return
     logger.info(
-        "TRT fix: normalized optional inputs on %d AttentionPlugin node(s)",
+        "TRT fix: normalized optional inputs on %d AttentionPlugin node(s)%s",
         changed,
+        " and restored the dynamic SWA mode shape"
+        if mode_shape_changed else "",
     )
     data_file = os.path.basename(onnx_path) + ".data"
     onnx.save_model(
@@ -550,8 +617,16 @@ def _initializer_dtype_fixup_required(
             for input_idx in (4, 7, 8, 9, 10):
                 if len(node.input) > input_idx:
                     plugin_fp32_init_names.add(node.input[input_idx])
+        if node.op_type == "Nvfp4A16BlackwellMoePlugin":
+            for input_idx in (4, 7, 8):
+                if len(node.input) > input_idx:
+                    plugin_fp32_init_names.add(node.input[input_idx])
         if node.op_type == "Fp16MoePlugin" and len(node.input) > 4:
             plugin_fp32_init_names.add(node.input[4])
+        if node.op_type == "AttentionPlugin":
+            plugin_fp32_init_names.update(
+                name for name in node.input
+                if name.startswith(_ATTENTION_SINK_INIT_PREFIX))
 
     init_map = {init.name: init for init in model.graph.initializer}
     elem_types: dict[str, int] = {}
@@ -713,6 +788,13 @@ def setup_fp8_qkv_scales_for_export(model: "torch.nn.Module") -> None:
         if not (getattr(module, "enable_fp8_kv_cache", False)
                 or getattr(module, "enable_fp8_mha", False)):
             continue
+        if hasattr(module, "qkv_proj_fused"):
+            scales = getattr(module, "_qkv_scales_float", None)
+            if scales is None or len(scales) != 3:
+                raise RuntimeError(
+                    "Fused FP8-KV attention is missing its Q/K/V scales")
+            module._qkv_scales_float = [float(scale) for scale in scales]
+            continue
         q_buf = getattr(module, "q_scale", None)
         if q_buf is None:
             q_buf = getattr(getattr(module, "q_proj", None), "q_scale", None)
@@ -750,6 +832,20 @@ def _capture_qk_norm_gammas_for_export(model: "CausalLM") -> None:
                 f"{type(module).__name__}: the module has q_norm/k_norm "
                 "weights but no gamma values were captured — the export "
                 "would silently drop the fused qk_norm.")
+
+
+def _capture_attention_sinks_for_export(model: "CausalLM") -> None:
+    for module in model.modules():
+        if not hasattr(module, "_capture_attention_sink_list"):
+            continue
+        module._capture_attention_sink_list()
+        has_sink = getattr(module, "attention_sink_bias", None) is not None
+        captured = bool(getattr(module, "_attention_sinks_list", None))
+        if has_sink and not captured:
+            raise RuntimeError(
+                "attention sink capture failed for "
+                f"{type(module).__name__}: sink weights exist but no values were captured"
+            )
 
 
 def _fix_initializer_dtypes(
@@ -827,6 +923,8 @@ def _fix_initializer_dtypes(
     # - Nvfp4MoePlugin / NvFP4MoEPluginGeforce: inputs[4,7,8,9] are FP32 scale
     #   vectors; input[10] is the FP32 router correction bias. Both plugins
     #   share the same 11-input ONNX surface.
+    # - Nvfp4A16BlackwellMoePlugin: inputs[4,7] are the FP32 per-expert global
+    #   scales; input[8] is the FP32 router correction bias.
     plugin_fp32_init_names: set = set()
     for node in model.graph.node:
         if node.op_type == "update_ssm_state" and len(node.input) > 1:
@@ -839,8 +937,16 @@ def _fix_initializer_dtypes(
                     plugin_fp32_init_names.add(node.input[input_idx])
         if node.op_type == "Nvfp4A16MoePlugin" and len(node.input) > 8:
             plugin_fp32_init_names.add(node.input[8])
+        if node.op_type == "Nvfp4A16BlackwellMoePlugin":
+            for input_idx in (4, 7, 8):
+                if len(node.input) > input_idx:
+                    plugin_fp32_init_names.add(node.input[input_idx])
         if node.op_type == "Fp16MoePlugin" and len(node.input) > 4:
             plugin_fp32_init_names.add(node.input[4])
+        if node.op_type == "AttentionPlugin":
+            plugin_fp32_init_names.update(
+                name for name in node.input
+                if name.startswith(_ATTENTION_SINK_INIT_PREFIX))
 
     init_map = {init.name: init for init in model.graph.initializer}
     elem_types: dict[str, int] = {}
@@ -1026,6 +1132,7 @@ def _export_model(
 ) -> "list[dict[str, object]]":
     setup_fp8_qkv_scales_for_export(model)
     _capture_qk_norm_gammas_for_export(model)
+    _capture_attention_sinks_for_export(model)
     spec = model.onnx_export_spec()
 
     translation_table = build_custom_translation_table()

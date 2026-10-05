@@ -65,6 +65,24 @@ def _required(mapping: Mapping[str, Any], fields: Iterable[str],
             f"{label} is missing required fields: {', '.join(missing)}.")
 
 
+def matrix_variant_gpu_sms(value: Mapping[str, Any]) -> tuple[int, ...]:
+    """Return every GPU SM compiled into one source-matrix payload."""
+    tag = str(value.get("cute_dsl_artifact_tag", ""))
+    if not re.fullmatch(r"sm_\d+(?:_sm_\d+)*", tag):
+        raise ValueError(f"Invalid CuTe DSL artifact tag {tag!r}.")
+    sms = tuple(int(sm) for sm in re.findall(r"sm_(\d+)", tag))
+    if len(set(sms)) != len(sms) or any(sm < 1 for sm in sms):
+        raise ValueError(f"Invalid CuTe DSL artifact SM set in {tag!r}.")
+    try:
+        primary_sm = int(value["gpu_sm"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("Variant gpu_sm must be an integer.") from error
+    if primary_sm != sms[0]:
+        raise ValueError(
+            f"Variant gpu_sm {primary_sm} must be the first SM in {tag!r}.")
+    return sms
+
+
 def validate_matrix_variant(value: Mapping[str, Any]) -> Dict[str, Any]:
     """Validate and normalize one source matrix variant."""
     if not isinstance(value, Mapping):
@@ -90,6 +108,7 @@ def validate_matrix_variant(value: Mapping[str, Any]) -> Dict[str, Any]:
             f"Variant {row['variant_id']} has an invalid CPU architecture.")
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]+", str(row["variant_id"])):
         raise ValueError(f"Invalid variant_id {row['variant_id']!r}.")
+    matrix_variant_gpu_sms(row)
     return row
 
 

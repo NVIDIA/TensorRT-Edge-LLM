@@ -62,20 +62,6 @@ _TRAJECTORY_TOKENS = {
     "future_end": "<|traj_future_end|>",
 }
 
-IMAGE_PLACEHOLDER = "<|vision_start|><|image_pad|><|vision_end|>"
-COT_START = "<|cot_start|>"
-
-
-def patch_chat_template(template: Dict[str, Any],
-                        root_config: Dict[str, Any]) -> None:
-    """Apply Alpamayo's Qwen3-VL media and action-generation contract."""
-    image = template.setdefault("content_types", {}).setdefault("image", {})
-    image["format"] = IMAGE_PLACEHOLDER
-    generation_prompt = template.get("generation_prompt", "")
-    if not generation_prompt.endswith(COT_START):
-        template["generation_prompt"] = generation_prompt + COT_START
-    _ = root_config
-
 
 def vlm_file(root: Dict[str, Any], model_dir: str, filename: str) -> str:
     reference = vlm_reference(model_dir, root)
@@ -140,13 +126,3 @@ def prepare_runtime_model(root: Dict[str, Any], args):
                   generation_file,
                   indent=2)
     return artifacts
-
-
-def patch_runtime_artifacts(output_dir: str, args) -> None:
-    """Point Alpamayo processed chat template back to the action checkpoint."""
-    template_path = os.path.join(output_dir, "processed_chat_template.json")
-    with open(template_path) as template_file:
-        template = json.load(template_file)
-    template["model_path"] = args.model_dir
-    with open(template_path, "w") as template_file:
-        json.dump(template, template_file, indent=2)

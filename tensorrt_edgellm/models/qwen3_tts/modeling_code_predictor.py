@@ -35,18 +35,17 @@ Extra weight files extracted alongside the ONNX:
 Checkpoint prefix: ``talker.code_predictor.*``
 """
 
-import itertools
+import dataclasses
+import inspect
 import logging
-from typing import List, Tuple
+from typing import Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from ..default.modeling_default import (_BATCH_SIZE, _MAX_POS, _PAST_LEN,
-                                        _SEQ_LEN, CausalLM, OnnxSpec)
-from ..linear import TPMode, make_linear
-from ..ops import KV_PAGE_SIZE
+from ..default.modeling_default import CausalLM, OnnxSpec
+from ..linear import FP16Linear, TPMode, make_linear
 
 logger = logging.getLogger(__name__)
 
@@ -64,9 +63,9 @@ class CodePredictorMLP(nn.Module):
     (via a Cast on the weight, constant-folded by TRT) preserves
     precision end-to-end.
 
-    The FP8_CP recipe excludes ``down_proj`` from FP8 quantization so
-    the down_proj Linear is always FP16Linear whether or not the rest of
-    the CP is quantized — this same forward path is safe in both modes.
+    Every CP recipe excludes ``down_proj`` (see ``_CP_LINEAR_EXCLUDES``) so
+    the down_proj Linear is always FP16Linear whatever the rest of the CP
+    runs at — this same forward path is then safe in fp16, fp8 and nvfp4.
     """
 
     def __init__(self, config, layer_idx: int) -> None:
@@ -87,6 +86,13 @@ class CodePredictorMLP(nn.Module):
                                      config.hidden_size,
                                      module_name=f"{prefix}.down_proj",
                                      tp_mode=TPMode.ROW)
+        # forward() reads down_proj.weight as a plain float tensor; a quantized
+        # class keeps a packed buffer there and would cast to garbage silently.
+        if not isinstance(self.down_proj, FP16Linear):
+            raise ValueError(
+                f"CodePredictor {prefix}.down_proj resolved to "
+                f"{type(self.down_proj).__name__}; the FP32 matmul needs an "
+                "unquantized weight. Keep down_proj excluded from CP quant.")
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         out_dtype = hidden_states.dtype
@@ -102,41 +108,41 @@ class CodePredictorMLP(nn.Module):
 # ---------------------------------------------------------------------------
 
 
-def _make_code_predictor_flat_wrapper(model: nn.Module, Na: int) -> nn.Module:
+def _make_code_predictor_flat_wrapper(base: nn.Module) -> nn.Module:
     """Build a flat-signature wrapper for CodePredictor ONNX export.
 
     Unlike the standard CausalLM wrapper, this includes:
     - ``lm_heads`` + ``lm_head_idx`` as inputs (head gathered in-graph)
     - ``hidden_states`` as an output (for residual connection)
     """
-    param_names: List[str] = (
-        ["inputs_embeds"] + [f"past_key_values_{i}" for i in range(Na)] + [
-            "rope_rotary_cos_sin", "context_lengths", "kvcache_start_index",
-            "kv_page_table", "last_token_ids", "lm_heads", "lm_head_idx"
-        ])
-
-    past_kv_tuple = "({},)".format(", ".join(
-        f"past_key_values_{i}" for i in range(Na))) if Na else "()"
-
-    body = (
-        f"    logits, hidden_states, present_key_values = self._model(\n"
-        f"        inputs_embeds, {past_kv_tuple}, rope_rotary_cos_sin, "
-        f"context_lengths, kvcache_start_index, kv_page_table, "
-        f"last_token_ids, lm_heads, lm_head_idx)\n"
-        f"    return (logits, hidden_states) + tuple(present_key_values)\n")
-
-    src = "def _forward(self, {}):\n{}".format(", ".join(param_names), body)
-    globs: dict = {}
+    signature = inspect.signature(base.forward)
+    base_names = [
+        name for name, parameter in signature.parameters.items()
+        if parameter.kind is parameter.POSITIONAL_OR_KEYWORD
+    ]
+    names = base_names + ["lm_heads", "lm_head_idx"]
+    base_call = ", ".join(base_names)
+    src = (
+        f"def _forward(self, {', '.join(names)}):\n"
+        f"    out = self._base({base_call})\n"
+        f"    full_hidden = out[1]\n"
+        f"    selected_hidden = torch.index_select(full_hidden, 0, "
+        f"logits_indices)\n"
+        f"    head = lm_heads.index_select(0, "
+        f"lm_head_idx.to(torch.long)).squeeze(0)\n"
+        f"    logits = torch.matmul(selected_hidden, head.T).to(torch.float32)\n"
+        f"    return (logits, full_hidden) + tuple(out[2:])\n")
+    globs: dict = {"torch": torch}
     exec(src, globs)  # noqa: S102
 
     class _Wrapper(nn.Module):
 
-        def __init__(self, m: nn.Module) -> None:
+        def __init__(self, b: nn.Module) -> None:
             super().__init__()
-            self._model = m
+            self._base = b
 
     _Wrapper.forward = globs["_forward"]
-    return _Wrapper(model)
+    return _Wrapper(base)
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +156,11 @@ class CodePredictorCausalLM(CausalLM):
     """
 
     match_fp32_matmul_initializers = True
+    emit_hidden_states = True
+
+    def _ragged_emitted_hidden(self) -> torch.Tensor:
+        hidden_states = self.model.norm(self.model.last_pre_norm_hidden_states)
+        return hidden_states.reshape(-1, hidden_states.shape[-1])
 
     def __init__(self, config) -> None:
         super().__init__(config)
@@ -185,100 +196,21 @@ class CodePredictorCausalLM(CausalLM):
 
     def onnx_export_spec(self) -> OnnxSpec:
         """ONNX export spec with lm_heads/lm_head_idx inputs and hidden_states output."""
+        spec = super().onnx_export_spec()
         config = self.config
-        Na = config.num_hidden_layers
-        device = next(itertools.chain(self.parameters(),
-                                      self.buffers())).device
-        dtype16 = torch.float16
-        batch_size, seq_len, past_len, max_pos = (_BATCH_SIZE, _SEQ_LEN,
-                                                  _PAST_LEN, _MAX_POS)
-
-        inputs_embeds = torch.zeros(batch_size,
-                                    seq_len,
-                                    config.hidden_size,
-                                    dtype=dtype16,
-                                    device=device)
-        # Paged KV pool binding: [2, num_pages, KV_PAGE_SIZE, num_kv_heads, head_dim].
-        # num_pages is a dummy placeholder for export; the builder sets the real fixed
-        # value (see llmBuilder.cpp setupKVCacheProfiles).
-        past_key_values_list: List[torch.Tensor] = [
-            torch.zeros(2,
-                        1,
-                        KV_PAGE_SIZE,
-                        config.num_key_value_heads,
-                        config.head_dim,
-                        dtype=dtype16,
-                        device=device) for _ in range(Na)
-        ]
-        rotary_dim = int(config.head_dim * config.partial_rotary_factor)
-        rope_rotary_cos_sin = torch.zeros(batch_size,
-                                          max_pos,
-                                          rotary_dim,
-                                          dtype=torch.float32,
-                                          device=device)
-        context_lengths = torch.zeros(batch_size,
-                                      dtype=torch.int32,
-                                      device=device)
-        kvcache_start_index = torch.zeros(batch_size,
-                                          dtype=torch.int32,
-                                          device=device)
-        kv_page_table = torch.zeros(batch_size,
-                                    2,
-                                    1,
-                                    dtype=torch.int32,
-                                    device=device)
-        last_token_ids = torch.zeros(batch_size,
-                                     1,
-                                     dtype=torch.int64,
-                                     device=device)
         num_heads = config.num_code_groups - 1
         assert num_heads > 0, "num_code_groups missing from CP config"
+        device = next(self.parameters()).device
         lm_heads = torch.zeros(num_heads,
                                config.vocab_size,
                                config.hidden_size,
-                               dtype=dtype16,
+                               dtype=torch.float16,
                                device=device)
         lm_head_idx = torch.zeros(1, dtype=torch.int32, device=device)
-
-        args = (inputs_embeds, *past_key_values_list, rope_rotary_cos_sin,
-                context_lengths, kvcache_start_index, kv_page_table,
-                last_token_ids, lm_heads, lm_head_idx)
-
-        input_names = (["inputs_embeds"] +
-                       [f"past_key_values_{i}" for i in range(Na)] + [
-                           "rope_rotary_cos_sin", "context_lengths",
-                           "kvcache_start_index", "kv_page_table",
-                           "last_token_ids", "lm_heads", "lm_head_idx"
-                       ])
-        output_names = (["logits", "hidden_states"] +
-                        [f"present_key_values_{i}" for i in range(Na)])
-
-        batch = torch.export.Dim("batch", min=1, max=256)
-        seq = torch.export.Dim("seq_len", min=1, max=32768)
-        pos = torch.export.Dim("max_pos", min=1, max=32768)
-        rope_batch = torch.export.Dim("rope_batch", min=1, max=256)
-        kv_batch = torch.export.Dim("kv_batch", min=1, max=256)
-        page_batch = torch.export.Dim("page_batch", min=1, max=256)
-        max_pages = torch.export.Dim("max_pages_per_seq", min=1, max=32768)
-        num_pages = torch.export.Dim("num_pages", min=1, max=1048576)
-
-        all_shapes: list = [{0: batch, 1: seq}]  # inputs_embeds
-        for _ in range(Na):
-            all_shapes.append({1:
-                               num_pages})  # past_key_values_i (pool-shaped)
-        all_shapes.append({0: rope_batch, 1: pos})  # rope_rotary_cos_sin
-        all_shapes.append({0: batch})  # context_lengths
-        all_shapes.append({0: kv_batch})  # kvcache_start_index
-        all_shapes.append({0: page_batch, 2: max_pages})  # kv_page_table
-        all_shapes.append({0: batch})  # last_token_ids
-        all_shapes.append({})  # lm_heads (fixed shape)
-        all_shapes.append({})  # lm_head_idx (fixed shape)
-
-        wrapped = _make_code_predictor_flat_wrapper(self, Na)
-        wrapped.eval()
-
-        return OnnxSpec(wrapped=wrapped,
-                        args=args,
-                        input_names=input_names,
-                        output_names=output_names,
-                        dynamic_shapes=all_shapes)
+        return dataclasses.replace(
+            spec,
+            wrapped=_make_code_predictor_flat_wrapper(spec.wrapped),
+            args=spec.args + (lm_heads, lm_head_idx),
+            input_names=list(spec.input_names) + ["lm_heads", "lm_head_idx"],
+            dynamic_shapes=list(spec.dynamic_shapes) + [{}, {}],
+        )

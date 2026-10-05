@@ -68,7 +68,9 @@ def _find_weight_shape(gemm_node: gs.Node) -> tuple:
     node = gemm_node.inputs[1].inputs[0]
     max_depth = 5
     depth = 0
-    num_transpose = 0
+    attrs = gemm_node.attrs or {}
+    num_transpose = (int(attrs.get("transB", 0))
+                     if gemm_node.op == "Gemm" else 0)
     while node.op not in _WEIGHT_DQ_OPS and depth < max_depth:
         if node.op == "Transpose":
             num_transpose += 1
@@ -101,13 +103,13 @@ def _is_fp8_quantize_node(node: gs.Node) -> bool:
 _TRANSPARENT_OPS = {"Cast", "Reshape", "Identity"}
 
 
-def _matmul_consumers_after_dq(quantize_node: gs.Node, max_hops: int = 3):
-    """Yield every MatMul reached through Q → DQ → ... → MatMul. The DQ may
-    fan out to several MatMul consumers (Q/K/V share one dequantized hidden
+def _linear_consumers_after_dq(quantize_node: gs.Node, max_hops: int = 3):
+    """Yield every MatMul or Gemm reached through activation Q/DQ. The DQ may
+    fan out to several linear consumers (Q/K/V share one dequantized hidden
     state). Walks through ``max_hops`` levels of transparent ops
-    (``Cast``/``Reshape``/``Identity``) between DQ and MatMul so a future
-    modelopt emit pattern with intermediate ops keeps binding correctly
-    instead of silently dropping the LoRA slot (Greptile P2)."""
+    (``Cast``/``Reshape``/``Identity``) between DQ and the linear op so a future
+    modelopt emit pattern with intermediate ops keeps binding correctly instead
+    of silently dropping the LoRA slot."""
     for dq in list(quantize_node.outputs[0].outputs):
         if dq.op != "DequantizeLinear":
             continue
@@ -120,7 +122,7 @@ def _matmul_consumers_after_dq(quantize_node: gs.Node, max_hops: int = 3):
                 if cons_id in seen:
                     continue
                 seen.add(cons_id)
-                if cons.op == "MatMul":
+                if cons.op in ("MatMul", "Gemm"):
                     yield cons
                 elif cons.op in _TRANSPARENT_OPS and cons.outputs:
                     next_frontier.extend(cons.outputs[0].outputs)
@@ -150,15 +152,15 @@ def _synth_gemm_name(stem: str, fallback: str) -> str:
     return ("/" + stem.replace(".", "/") + "/MatMul") if stem else fallback
 
 
-def _stem_from_weight_init(matmul_node: gs.Node) -> str:
-    """Walk up the MatMul weight side to its originating ``_model.…weight``
+def _stem_from_weight_init(linear_node: gs.Node) -> str:
+    """Walk up a linear op's weight side to its originating ``_model.…weight``
     initializer and return its module-path stem. Returns ``""`` when the walk
     does not terminate at an initializer named ``_model.<...>.weight`` — the
     caller must then refuse to synthesize a LoRA binding name (silent garbage
     names produce dummy bindings at runtime)."""
-    if not matmul_node.inputs[1].inputs:
+    if not linear_node.inputs[1].inputs:
         return ""
-    node = matmul_node.inputs[1].inputs[0]
+    node = linear_node.inputs[1].inputs[0]
     depth = 0
     while node is not None and node.op not in _WEIGHT_DQ_OPS and depth < 5:
         if not node.inputs or not node.inputs[0].inputs:
@@ -174,29 +176,34 @@ def _match_fp8_gemm(graph: gs.Graph):
     """
     Match FP8 GEMM nodes in the graph.
 
-    A single Quantize may fan out to multiple MatMuls through one
-    DequantizeLinear; each MatMul becomes its own GEMM, and ``name`` is
+    A single Quantize may fan out to multiple linear ops through one
+    DequantizeLinear; each linear op becomes its own GEMM, and ``name`` is
     rewritten to a path-style stem derived from the weight initializer so the
     downstream LoRA input names match the adapter safetensors.
     """
     fp8_gemm_infos = []
-    seen_matmul_ids = set()
+    seen_linear_ids = set()
     for node in graph.nodes:
         if not _is_fp8_quantize_node(node):
             continue
         input_node = node.inputs[0]
-        matmuls = list(_matmul_consumers_after_dq(node))
+        linear_nodes = list(_linear_consumers_after_dq(node))
 
-        for matmul_node in matmuls:
-            if id(matmul_node) in seen_matmul_ids:
+        for linear_node in linear_nodes:
+            attrs = linear_node.attrs or {}
+            if (linear_node.op == "Gemm"
+                    and (int(attrs.get("transA", 0)) != 0
+                         or float(attrs.get("alpha", 1.0)) != 1.0)):
                 continue
-            seen_matmul_ids.add(id(matmul_node))
-            stem = _stem_from_weight_init(matmul_node)
+            if id(linear_node) in seen_linear_ids:
+                continue
+            seen_linear_ids.add(id(linear_node))
+            stem = _stem_from_weight_init(linear_node)
             fp8_gemm_infos.append(
                 GEMMInfo(input=input_node,
-                         output=matmul_node.outputs[0],
-                         name=_synth_gemm_name(stem, matmul_node.name),
-                         weight_shape=_find_weight_shape(matmul_node)))
+                         output=linear_node.outputs[0],
+                         name=_synth_gemm_name(stem, linear_node.name),
+                         weight_shape=_find_weight_shape(linear_node)))
     return fp8_gemm_infos
 
 
@@ -314,18 +321,33 @@ def _match_mxfp8_gemm(graph: gs.Graph):
 
 def _match_fp16_gemm(graph: gs.Graph):
     """
-    Match FP16 GEMM nodes in the graph.
+    Match FP16 MatMul and Gemm nodes in the graph.
     """
     fp16_gemm_infos = []
-    fp16_gemm_nodes = [node for node in graph.nodes if node.op == "MatMul"]
+    fp16_gemm_nodes = [
+        node for node in graph.nodes if node.op in ("MatMul", "Gemm")
+    ]
     for node in fp16_gemm_nodes:
         input_node = node.inputs[0]
         if not isinstance(node.inputs[1], gs.Constant):
             continue
-        weight_shape = node.inputs[1].shape
+        weight_shape = tuple(node.inputs[1].shape)
+        if node.op == "Gemm":
+            attrs = node.attrs or {}
+            if (int(attrs.get("transA", 0)) != 0
+                    or float(attrs.get("alpha", 1.0)) != 1.0):
+                continue
+            if int(attrs.get("transB", 0)) != 0:
+                weight_shape = (weight_shape[1], weight_shape[0])
+            stem = _stem_from_init_name(node.inputs[1].name)
+            if not stem:
+                continue
+            name = _synth_gemm_name(stem, node.name)
+        else:
+            name = node.name
         gemm_info = GEMMInfo(input=input_node,
                              output=node.outputs[0],
-                             name=node.name,
+                             name=name,
                              weight_shape=weight_shape)
         fp16_gemm_infos.append(gemm_info)
     return fp16_gemm_infos
@@ -452,7 +474,14 @@ def insert_lora_and_save(onnx_dir: str):
     # Insert dynamic LoRA patterns
     logger.info("Inserting dynamic LoRA patterns")
     # Track all GEMM nodes that need LoRA
-    gemm_infos = _match_gemm_infos(graph)
+    gemm_infos = [
+        gemm_info for gemm_info in _match_gemm_infos(graph)
+        if "lm_head" not in gemm_info.name
+    ]
+    if not gemm_infos:
+        raise ValueError(
+            "LoRA insertion found no eligible linear layers in model.onnx; "
+            "expected a supported MatMul, Gemm, or quantized GEMM node")
 
     # Insert LoRA patterns for each GEMM
     for gemm_info in gemm_infos:
@@ -461,9 +490,6 @@ def insert_lora_and_save(onnx_dir: str):
         gemm_name = gemm_info.name
         weight_shape = gemm_info.weight_shape
         k, n = weight_shape
-        if "lm_head" in gemm_name:
-            continue
-
         # Create dynamic input tensors for LoRA weights
         gemm_name_for_lora = gemm_name.replace("/", ".").rsplit(".", 1)[0][1:]
 

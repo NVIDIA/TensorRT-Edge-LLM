@@ -22,13 +22,12 @@ def _target_layers(values: dict, num_target_layers: int):
     layers = [int(index) for index in values.get("target_layer_ids", ()) or ()]
     if layers:
         return layers
-    return [2, num_target_layers // 2, num_target_layers - 4]
+    return [2, num_target_layers // 2, num_target_layers - 3]
 
 
 def _validate_target_layers(layers, num_target_layers: int) -> None:
-    if len(layers) != 3:
-        raise ValueError(
-            "EAGLE3 currently requires exactly three target hidden layers")
+    if not layers:
+        raise ValueError("EAGLE3 requires at least one target hidden layer")
     if len(set(layers)) != len(layers):
         raise ValueError("EAGLE3 target-layer IDs must be unique")
     invalid = [

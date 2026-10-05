@@ -16,16 +16,24 @@ see the [ONNX-less Builder Design](../../developer_guide/software-design/onnxles
 
 ## Prerequisites
 
+For a supported target, use a [base wheel](installation.md#minimal-installation-advanced).
+It includes the builder and selects its bundled plugin automatically; skip
+the source-build steps below. Run commands in the activated wheel environment
+outside a source checkout.
+
+### From source
+
 Install the repository package in a virtual environment. The TensorRT Python
 wheel must match the TensorRT headers and libraries used to build Edge-LLM:
 
 ```bash
 cd /path/to/TensorRT-Edge-LLM
 python3 -m venv --system-site-packages .venv
-.venv/bin/python -m pip install --upgrade pip
-.venv/bin/python -m pip install \
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install \
   /path/to/TensorRT/python/tensorrt-<version>-cp312-none-linux_x86_64.whl
-.venv/bin/python -m pip install ".[builder]"
+python -m pip install ".[builder]"
 ```
 
 Build Edge-LLM and its plugin library before compiling an engine:
@@ -42,14 +50,18 @@ extension includes `cutedsl_all.h`.
 
 ## Build All Components
 
+The following commands work with either installation. A source install defaults
+to `build/libNvInfer_edgellm_plugin.so`; use `--plugin-path` only for a different
+source-build location. A published wheel resolves its packaged plugin without
+that option.
+
 The default `--components all` selection discovers the checkpoint family and
 builds all of its components in runtime order:
 
 ```bash
-.venv/bin/tensorrt-edgellm-build \
+tensorrt-edgellm-build \
   --model-dir /path/to/checkpoint \
   --engine-dir /path/to/engines \
-  --plugin-path /path/to/build/libNvInfer_edgellm_plugin.so \
   --max-input-len 2048 \
   --max-kv-cache-capacity 4096 \
   --max-batch-size 1
@@ -68,11 +80,10 @@ quantized projections.
 Use `--components` only for an intentional partial rebuild:
 
 ```bash
-.venv/bin/tensorrt-edgellm-build \
+tensorrt-edgellm-build \
   --model-dir /path/to/checkpoint \
   --engine-dir /path/to/engines \
-  --components visual,audio \
-  --plugin-path /path/to/build/libNvInfer_edgellm_plugin.so
+  --components visual,audio
 ```
 
 The component set and output layout are model-specific:
@@ -81,8 +92,7 @@ The component set and output layout are model-specific:
 |---|---|
 | Text LLM | LLM |
 | VLM | LLM, visual |
-| Autoregressive ASR | LLM, audio |
-| RNN-T ASR | Audio encoder, RNN-T decoder step |
+| ASR | LLM, audio |
 | Omni | LLM, visual, audio, and model-owned speech components |
 | TTS | Talker, code predictor, Code2Wav, and checkpoint-owned clone encoders |
 | Alpamayo | LLM, visual, action |
@@ -95,7 +105,6 @@ The component set and output layout are model-specific:
 | Diffusion backbone | `dllm.engine` |
 | Visual | `visual/visual.engine` |
 | Audio | `audio/audio_encoder.engine` |
-| RNN-T decoder step | `rnnt/rnnt_step.engine` |
 | Talker | `talker/llm.engine` |
 | Code predictor | `code_predictor/llm.engine` |
 | Code2Wav | `code2wav/code2wav.engine` |
@@ -128,6 +137,12 @@ path while avoiding full copies of the shardable fused-plugin tensors.
 
 ## Run The Engines
 
+Wheel users can run the [native Python inference example](installation.md#minimal-installation-advanced)
+with an existing compatible text engine, or use the
+[Python server](../examples/experimental-server.md). The C++ commands below,
+including speculative inference, require a source build; wheels do not install
+these executables.
+
 Use the same C++ runtime and request JSON used by the ONNX workflow. A
 text-only engine runs directly from the output directory:
 
@@ -151,18 +166,6 @@ build/examples/llm/llm_inference \
   --inputFile=/path/to/input.json \
   --outputFile=/path/to/output.json
 ```
-
-Nemotron-3.5-ASR also builds all of its components in one command:
-
-```bash
-.venv/bin/tensorrt-edgellm-build \
-  --model-dir /path/to/nemotron-3.5-asr-streaming-0.6b \
-  --engine-dir /path/to/engines \
-  --max-time-steps 8192
-```
-
-See [Nemotron-3.5-ASR](../../developer_guide/models/nemotron3_5_asr.md) for
-native inference, the isolated server, and the maintained ONNX workflow.
 
 TTS uses the model-specific runtime:
 
@@ -233,26 +236,35 @@ target checkpoint's non-LLM components.
 EAGLE3, DFlash, JetSpec, DSpark, and Gemma4 MTP use paired checkpoints:
 
 ```bash
-.venv/bin/tensorrt-edgellm-build \
+tensorrt-edgellm-build \
   --model-dir /path/to/target \
   --draft-model-dir /path/to/draft \
   --spec-type eagle3 \
-  --engine-dir /path/to/engines \
-  --plugin-path /path/to/build/libNvInfer_edgellm_plugin.so
+  --engine-dir /path/to/engines
 ```
 
 Replace `eagle3` with `dflash`, `jetspec`, `dspark`, or `gemma4_mtp` as
-appropriate. JetSpec reads the provider's `jetspec_config` or compatible
-`dflash_config`, requires its causal proposal head, and uses `--tree-base` for
-the validated tree-verification path.
+appropriate. DFlash2 checkpoints use `dflash`; the checkpoint architecture
+selects DFlash2, which rejects `--tree-base`. It is supported by this
+checkpoint-native direct builder only. The legacy ONNX `llm_build`
+compatibility path rejects DFlash2 rather than routing it through the DFlash v1
+graph. JetSpec reads the provider's
+`jetspec_config` or compatible `dflash_config`, requires its causal proposal
+head, and uses `--tree-base` for the validated tree-verification path.
+MTP, JetSpec, and DSpark accept `--tree-base`; the resulting base engine
+includes DDTree parent/depth inputs and is distinct from a linear-chain base
+engine. A hybrid DFlash v1 base always includes the metadata because recurrent
+state replay also needs it for linear chain verification. The same DFlash v1
+base supports `topK=1` chain and `topK>1` tree decoding. Tree decoding is
+greedy-only.
+
 Qwen3.5 native MTP reads draft layers from the target checkpoint:
 
 ```bash
-.venv/bin/tensorrt-edgellm-build \
+tensorrt-edgellm-build \
   --model-dir /path/to/qwen3.5-checkpoint \
   --spec-type mtp \
-  --engine-dir /path/to/engines \
-  --plugin-path /path/to/build/libNvInfer_edgellm_plugin.so
+  --engine-dir /path/to/engines
 ```
 
 The integrated Qwen draft uses the target embedding and falls back to the
@@ -286,9 +298,9 @@ build/examples/llm/llm_inference \
   --specDecode
 ```
 
-`--draftCheckpointDir` applies to EAGLE3, DFlash, JetSpec, DSpark, and Gemma4
-MTP. It is rejected for native Qwen MTP because its draft layers are in
-`--checkpointDir`.
+`--draftCheckpointDir` applies to EAGLE3, DFlash, DFlash2, JetSpec, DSpark,
+and Gemma4 MTP. It is rejected for native Qwen MTP because its draft layers
+are in `--checkpointDir`.
 
 ## Optional Features
 
@@ -296,11 +308,19 @@ MTP. It is rejected for native Qwen MTP because its draft layers are in
 |---|---|
 | Runtime LoRA inputs | `--max-lora-rank N` |
 | Reduced vocabulary | `--reduced-vocab-dir DIR` |
-| DFlash or JetSpec draft vocabulary | `--draft-reduced-vocab-dir DIR` |
+| DFlash V1 draft vocabulary | `--draft-reduced-vocab-dir DIR` |
 | FP8 embedding sidecar | `--fp8-embedding` |
 | Tensor parallel rank | `--tp-size N --tp-rank R` |
 | Detailed TensorRT profiling names | `--profiling-detailed` |
 | Partial component rebuild | `--components NAME[,NAME...]` |
+| First N decoder layers only | `--num-decoder-layer N` |
+
+JetSpec and chain-MTP draft vocabulary reduction use the ONNX export workflow described in [Vocabulary Reduction](../features/reduce-vocab.md); the direct engine builder currently accepts `--draft-reduced-vocab-dir` only for DFlash V1 drafts.
+
+`--num-decoder-layer` truncates the LLM to its first N decoder layers, for the
+few-layer numeric validation (`scripts/few-layer-validation.sh`). Weights are read
+by name, so the dropped layers are simply never requested and the checkpoint needs
+no preparation.
 
 Tensor parallelism currently builds one rank per invocation. Invoke the command
 once for each `--tp-rank` and place the rank artifacts according to the normal
@@ -311,13 +331,12 @@ decoding is not supported.
 ## Support And Validation Status
 
 The explicit registry includes Llama, Mistral, Qwen2, Qwen3, Qwen3-MoE,
-Qwen2/2.5/3-VL, Qwen3.5 dense and MoE, Qwen3-ASR, Nemotron-3.5-ASR,
-Qwen3-Omni,
+Qwen2/2.5/3-VL, Qwen3.5 dense and MoE, Qwen3-ASR, Qwen3-Omni,
 Qwen3-Omni-Next, Qwen3-TTS, InternVL3/3.5, Phi-4 Multimodal,
 Nemotron-H/Omni, Gemma4 and Gemma4 Unified, DiffusionGemma, Cosmos3, and
-Alpamayo. EAGLE3, MTP, DFlash, JetSpec, DSpark, and Gemma4 assistant drafts use
-model-owned speculative definitions. Unsupported `model_type` values fail
-before TensorRT network creation and list the registered choices.
+Alpamayo. EAGLE3, MTP, DFlash/DFlash2, JetSpec, DSpark, and Gemma4 assistant
+drafts use model-owned speculative definitions. Unsupported `model_type`
+values fail before TensorRT network creation and list the registered choices.
 
 The following table distinguishes implementation from automatic direct-builder
 CI coverage. An implemented row can still have model-specific restrictions.
@@ -332,7 +351,7 @@ CI coverage. An implemented row can still have model-specific restrictions.
 | FP8 KV cache | Implemented from checkpoint metadata | Not yet |
 | FP8 embedding and reduced vocabulary | Implemented | Not yet |
 | Runtime LoRA inputs | Implemented | Not yet |
-| EAGLE3, Qwen3.5 MTP, DFlash, JetSpec, DSpark, and Gemma4 MTP | Implemented | EAGLE3 with Qwen3 on A30 |
+| EAGLE3, Qwen3.5 MTP, DFlash, DFlash2, JetSpec, DSpark, and Gemma4 MTP | Implemented | EAGLE3 with Qwen3 on A30 |
 | DiffusionGemma block diffusion | Implemented | Not yet |
 | Visual, audio, TTS, omni, action, and Cosmos3 policy components | Implemented for registered families | Not yet |
 | Tensor parallel graph generation | Implemented per rank | Not yet |

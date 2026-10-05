@@ -66,6 +66,10 @@ MAX_DECODE_PIXELS = 256 * 1024 * 1024
 MAX_SOURCE_BYTES = 256 * 1024 * 1024  # encoded payload (data: URLs)
 MAX_SOURCE_FRAMES = 54000  # ~30 min @ 30 fps
 
+# Official InternVL3/3.5: 448/14 patches per side, pixel shuffle by 2.
+INTERNVL_DEFAULT_TILE_PIXELS = 448
+INTERNVL_DEFAULT_BLOCK_TOKENS = 256
+
 # Nemotron-Omni video defaults (checkpoint video_io.py / configuration.py).
 NEMOTRON_DEFAULT_FPS = 1.0
 NEMOTRON_TEMPORAL_PATCH = 2  # T frames packed per tubelet
@@ -139,6 +143,31 @@ def sample_indices(total_frames: int, nframes: int) -> List[int]:
     return [
         min(total_frames - 1, int(round(i * step))) for i in range(nframes)
     ]
+
+
+def muse_nframes(total_frames: int,
+                 video_fps: float,
+                 target_fps: float = DEFAULT_FPS,
+                 nframes: Optional[int] = None,
+                 max_frames: Optional[int] = None,
+                 frame_factor: int = FRAME_FACTOR) -> int:
+    """Muse-Glimmer frame count: provider FPS sampling, capped at 96 frames
+    by default and rounded down to complete temporal groups."""
+    cap = 96 if nframes is None else int(nframes)
+    if max_frames is not None:
+        cap = min(cap, int(max_frames))
+    count = min(int(total_frames * target_fps / video_fps), cap, total_frames)
+    count = max(frame_factor, count // frame_factor * frame_factor)
+    return min(count, total_frames)
+
+
+def sample_indices_muse(total_frames: int, nframes: int) -> List[int]:
+    """Integer ``linspace`` used by MuseGlimmerVideoProcessor."""
+    if nframes <= 0 or total_frames <= 0:
+        return []
+    if nframes == 1:
+        return [0]
+    return [i * (total_frames - 1) // (nframes - 1) for i in range(nframes)]
 
 
 def sample_indices_internvl(total_frames: int,
@@ -259,14 +288,15 @@ def _pixel_cap(pixel_budget) -> int:
 def _raw_video_frame_tokens(family: str, count: int, width: int, height: int,
                             limits: dict) -> int:
     """Visual tokens of a do_resize=false video: InternVL frames must be exactly
-    one 448 block (C++ derives frames as tokens/256); Qwen frames must be
+    one tile (C++ derives frames as tokens per block); Qwen frames must be
     factor-aligned, accounted by input size. Nemotron always resizes, so it
     never reaches this path."""
     if family == "internvl":
-        if width != 448 or height != 448:
+        tile = _internvl_tile_pixels(limits)
+        if width != tile or height != tile:
             raise ValueError("do_resize=false InternVL video frames must be "
-                             f"448x448, got {width}x{height}")
-        return count * 256
+                             f"{tile}x{tile}, got {width}x{height}")
+        return count * _internvl_tokens_per_block(limits)
     factor = (limits.get("patch_size", 0) or 1) * \
         (limits.get("merge_size", 0) or 1)
     if factor <= 1:
@@ -317,8 +347,17 @@ def _check_aspect_ratio(width: int, height: int) -> None:
             "supported maximum of 200")
 
 
-def _estimate_qwen2d_frame_tokens(width: int, height: int,
-                                  limits: dict) -> int:
+def _uses_qwen3d_resize(model_type: str) -> bool:
+    """Whether the visual runner uses Qwen3-VL's whole-media 3D resize."""
+    return ("qwen3_vl" in model_type or "qwen3_5" in model_type
+            or model_type == "cosmos3_edge_vision")
+
+
+def _estimate_qwen2d_frame_tokens(width: int,
+                                  height: int,
+                                  limits: dict,
+                                  *,
+                                  is_video: bool = False) -> int:
     """Per-frame visual tokens after the C++ 2D smart_resize (HF parity:
     round-to-factor, then min-pixels upscale or max-pixels downscale)."""
     patch = limits.get("patch_size", 0)
@@ -326,6 +365,29 @@ def _estimate_qwen2d_frame_tokens(width: int, height: int,
     if patch <= 0 or merge <= 0 or width <= 0 or height <= 0:
         return 0
     factor = patch * merge
+    if limits.get("model_type") == "muse_glimmer_vision":
+        checkpoint_cap = (limits.get("max_video_frame_tokens", 0) if is_video
+                          else limits.get("max_image_tokens_checkpoint", 0))
+        profile_cap = limits.get("max_image_tokens_per_image", 0)
+        caps = [x for x in (checkpoint_cap, profile_cap) if x > 0]
+        if not caps:
+            return 0
+        max_tokens = min(caps)
+        ideal_h = height / factor
+        ideal_w = width / factor
+        ratio = ideal_w / ideal_h
+        if ideal_h * ideal_w > max_tokens:
+            ideal_h = math.sqrt(max_tokens / ratio)
+            ideal_w = ideal_h * ratio
+        candidates = {(math.floor(ideal_h), math.floor(ideal_w)),
+                      (math.floor(ideal_h), math.ceil(ideal_w)),
+                      (math.ceil(ideal_h), math.floor(ideal_w)),
+                      (math.ceil(ideal_h), math.ceil(ideal_w))}
+        candidates = [(h, w) for h, w in candidates
+                      if h >= 1 and w >= 1 and h * w <= max_tokens]
+        h, w = min(candidates,
+                   key=lambda grid: abs(grid[0] / grid[1] - height / width))
+        return h * w
     # C++ reuses the global min_image_tokens as the per-image minimum.
     min_px = limits.get("min_image_tokens", 0) * factor * factor
     max_px = limits.get("max_image_tokens_per_image", 0) * factor * factor
@@ -342,6 +404,29 @@ def _estimate_qwen2d_frame_tokens(width: int, height: int,
     return max(1, (h_bar * w_bar) // (factor * factor))
 
 
+def _internvl_tile_pixels(limits: dict) -> int:
+    """Pixel side of one InternVL tile (``vision_config.image_size``)."""
+    size = limits.get("internvl_image_size", 0)
+    return size if size > 0 else INTERNVL_DEFAULT_TILE_PIXELS
+
+
+def _internvl_tokens_per_block(limits: dict) -> int:
+    """Tokens one InternVL tile produces, mirroring the C++
+    ``imageUtils::computeTokensPerBlock``. Falls back to the official tile
+    size when the engine config lacks the geometry: this layer only pre-checks
+    budgets, the C++ rejects a genuine mismatch."""
+    image_size = limits.get("internvl_image_size", 0)
+    patch = limits.get("internvl_patch_size", 0)
+    ratio = limits.get("downsample_ratio", 0)
+    if image_size <= 0 or patch <= 0 or image_size % patch != 0 or ratio <= 0:
+        return INTERNVL_DEFAULT_BLOCK_TOKENS
+    scale = int(round(1.0 / ratio))
+    patches_per_side = image_size // patch
+    if scale < 1 or patches_per_side % scale != 0:
+        return INTERNVL_DEFAULT_BLOCK_TOKENS
+    return (patches_per_side // scale)**2
+
+
 def _estimate_internvl_image_tokens(width: int, height: int,
                                     limits: dict) -> int:
     """Tokens the C++ InternVL image path produces: mirrors imageUtils
@@ -349,8 +434,10 @@ def _estimate_internvl_image_tokens(width: int, height: int,
     thumbnail block when the grid or the engine minimum exceeds one block)."""
     per_image = limits.get("max_image_tokens_per_image", 0)
     min_per_image = limits.get("min_image_tokens", 0)
-    min_tiles = max(1, min_per_image // 256 - 1)
-    max_tiles = max(1, per_image // 256 - 1)
+    block_tokens = _internvl_tokens_per_block(limits)
+    tile = _internvl_tile_pixels(limits)
+    min_tiles = max(1, min_per_image // block_tokens - 1)
+    max_tiles = max(1, per_image // block_tokens - 1)
     grids = [(cols, rows) for cols in range(1, max_tiles + 1)
              for rows in range(1, max_tiles + 1)
              if min_tiles <= cols * rows <= max_tiles]
@@ -362,12 +449,12 @@ def _estimate_internvl_image_tokens(width: int, height: int,
         diff = abs(aspect - cols / rows)
         if diff < best_diff:
             best_diff, best = diff, (cols, rows)
-        elif diff == best_diff and area > (448 * 448 // 2) * cols * rows:
+        elif diff == best_diff and area > (tile * tile // 2) * cols * rows:
             best = (cols, rows)
     blocks = best[0] * best[1]
-    if blocks > 1 or min_per_image // 256 > 1:
+    if blocks > 1 or min_per_image // block_tokens > 1:
         blocks += 1  # thumbnail block
-    return blocks * 256
+    return blocks * block_tokens
 
 
 def estimate_image_tokens(path: str,
@@ -388,20 +475,23 @@ def estimate_image_tokens(path: str,
         return per_image
     if family == "internvl":
         if not do_resize:
-            # Raw input skips the C++ grid resize: each 448x448 tile is one
-            # block, so the dimensions must be tile-aligned.
-            if width % 448 or height % 448:
+            # Raw input skips the C++ grid resize: each tile is one block, so
+            # the dimensions must be tile-aligned.
+            tile = _internvl_tile_pixels(limits)
+            if width % tile or height % tile:
                 raise ValueError(
-                    "do_resize=false InternVL images must be 448-aligned, "
+                    f"do_resize=false InternVL images must be {tile}-aligned, "
                     f"got {width}x{height}")
-            blocks = (width // 448) * (height // 448)
+            blocks = (width // tile) * (height // tile)
             # C++ appends a thumbnail block when the main image spans more
             # than one block or the engine minimum requires it
             # (internViTRunner formatPatch).
-            min_blocks = max(1, limits.get("min_image_tokens", 0) // 256)
+            block_tokens = _internvl_tokens_per_block(limits)
+            min_blocks = max(1,
+                             limits.get("min_image_tokens", 0) // block_tokens)
             if blocks > 1 or min_blocks > 1:
                 blocks += 1
-            return blocks * 256
+            return blocks * block_tokens
         return _estimate_internvl_image_tokens(width, height, limits)
     if not do_resize:
         # Raw input skips the C++ smart resize: tokens follow the input
@@ -425,7 +515,7 @@ def estimate_image_tokens(path: str,
         return tokens
     _check_aspect_ratio(width, height)
     model_type = limits.get("model_type", "")
-    if "qwen3_vl" in model_type or "qwen3_5" in model_type:
+    if _uses_qwen3d_resize(model_type):
         # Still image on a 3D family: the C++ resize routes stills through
         # qwenSmartResize3D with isVideo=false (temporal factor 1), which
         # includes the factor-grid fallback the 2D estimate lacks.
@@ -568,10 +658,9 @@ def clamp_nframes_to_profile(
             "the request's other media already consume the engine's visual "
             f"token budget ({max_total}); no room left for this video")
     if family == "internvl":
-        # kBlockLength: an InternVL ViT block is 448x448 = 256 tokens. The
-        # engine minimum is a request-wide bound (all media accumulate), so
-        # it is checked by the caller after all buffers are loaded.
-        block_tokens = 256
+        # The engine minimum is a request-wide bound (all media accumulate),
+        # so it is checked by the caller after all buffers are loaded.
+        block_tokens = _internvl_tokens_per_block(limits)
         max_blocks = max(1, cap // block_tokens)
         n = min(nframes, max_blocks)
         return n, n * block_tokens
@@ -592,7 +681,7 @@ def clamp_nframes_to_profile(
         return n, _estimate_nemotron_video_tokens(n, limits)
     model_type = limits.get("model_type", "")
     per_image = limits.get("max_image_tokens_per_image", 0)
-    if "qwen3_vl" in model_type or "qwen3_5" in model_type:
+    if _uses_qwen3d_resize(model_type):
         # The 3D resize fits the whole video per media, but each temporal group
         # needs >= 1 token, so frames are bounded by temporalPatchSize * budget;
         # charge the tokens the resize actually produces.
@@ -615,7 +704,10 @@ def clamp_nframes_to_profile(
                 f"video needs ~{est} visual tokens but only {cap} remain in "
                 "the engine budget; reduce other media in the request")
         return n, est
-    frame_tokens = _estimate_qwen2d_frame_tokens(width, height, limits)
+    frame_tokens = _estimate_qwen2d_frame_tokens(width,
+                                                 height,
+                                                 limits,
+                                                 is_video=True)
     if frame_tokens <= 0:
         return nframes, 0
     tps = max(1, limits.get("temporal_patch_size", 2))
@@ -752,13 +844,23 @@ def sample_video(source: str,
                                         target_fps=target_fps,
                                         nframes=nframes,
                                         max_frames=max_frames))
+        elif family == "muse":
+            n = muse_nframes(total,
+                             video_fps,
+                             target_fps=target_fps,
+                             nframes=nframes,
+                             max_frames=max_frames,
+                             frame_factor=max(1, (frame_limits or {}).get(
+                                 "temporal_patch_size", 2)))
         else:
             n = smart_nframes(total,
                               video_fps,
                               target_fps=target_fps,
                               nframes=nframes,
                               min_frames=min_frames,
-                              max_frames=max_frames)
+                              max_frames=max_frames,
+                              frame_factor=max(1, (frame_limits or {}).get(
+                                  "temporal_patch_size", FRAME_FACTOR)))
         if do_resize:
             planned = n
             n, est_tokens = clamp_nframes_to_profile(n, family, stream.width
@@ -783,6 +885,8 @@ def sample_video(source: str,
             wanted = set(sample_indices_internvl(total, n))
         elif family == "nemotron":
             wanted = set(sample_indices_nemotron(total, video_fps, nframes=n))
+        elif family == "muse":
+            wanted = set(sample_indices_muse(total, n))
         else:
             wanted = set(sample_indices(total, n))
         # Charge planned decode work by the distinct sampled positions (a
@@ -1011,16 +1115,16 @@ def load_video_buffer(rt_module,
                         f"visual tokens but only {cap} remain in the engine "
                         "budget; reduce the frame count or other media")
             elif family == "internvl":
-                max_blocks = cap // 256
+                block_tokens = _internvl_tokens_per_block(limits)
+                max_blocks = cap // block_tokens
                 if len(frame_paths) > max_blocks:
                     raise ValueError(
                         f"{len(frame_paths)} pre-sampled frames exceed the "
                         f"engine's remaining budget of {max_blocks} InternVL "
                         "blocks")
                 _check_cu_budget(len(frame_paths), family, limits, cu_budget)
-                est = len(frame_paths) * 256
-            elif ("qwen3_vl" in limits.get("model_type", "")
-                  or "qwen3_5" in limits.get("model_type", "")):
+                est = len(frame_paths) * block_tokens
+            elif _uses_qwen3d_resize(limits.get("model_type", "")):
                 # 3D families use the whole-video 3D estimate, not the
                 # per-frame 2D one (same constraints as the clip path).
                 _check_aspect_ratio(width, height)
@@ -1051,8 +1155,10 @@ def load_video_buffer(rt_module,
                 # Estimate the post-resize per-frame tokens like the clip
                 # path does (the C++ smart resize enforces maxRatio too).
                 _check_aspect_ratio(width, height)
-                frame_tokens = _estimate_qwen2d_frame_tokens(
-                    width, height, limits)
+                frame_tokens = _estimate_qwen2d_frame_tokens(width,
+                                                             height,
+                                                             limits,
+                                                             is_video=True)
                 tps = max(1, limits.get("temporal_patch_size", 2))
                 _check_cu_budget(len(frame_paths), family, limits, cu_budget)
                 if frame_tokens > 0:
@@ -1088,7 +1194,7 @@ def load_video_buffer(rt_module,
         return buffer, est, frames_px, cu_used
 
     nframes = item.get("nframes")
-    if nframes is not None and "fps" in item:
+    if family != "muse" and nframes is not None and "fps" in item:
         # qwen_vl_utils rejects requests that pin both; a silent winner would
         # diverge from the HF sampling contract.
         raise ValueError("provide either fps or nframes for a video, not both")

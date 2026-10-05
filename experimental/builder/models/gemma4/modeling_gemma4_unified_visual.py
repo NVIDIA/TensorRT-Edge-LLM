@@ -14,6 +14,8 @@
 # limitations under the License.
 """Gemma4 Unified encoder-free visual embedding graph."""
 
+import math
+
 import numpy as np
 import tensorrt as trt
 
@@ -73,8 +75,24 @@ class Gemma4UnifiedVisionEmbedder(Module):
 
     def __init__(self, ctx, config: dict) -> None:
         super().__init__(ctx, "vision_embedder")
-        patch_size = int(config["model_patch_size"])
-        patch_dim = patch_size * patch_size * 3
+        patch_weight = self.weights.parameter_spec(
+            self.key("patch_dense.weight"), np.float32)
+        if len(patch_weight.shape) != 2:
+            raise ValueError(
+                "Gemma4 Unified patch projection must be a matrix")
+        patch_dim = int(patch_weight.shape[1])
+        patch_area, channels = divmod(patch_dim, 3)
+        patch_size = math.isqrt(patch_area)
+        if channels or patch_size * patch_size != patch_area:
+            raise ValueError(
+                "Gemma4 Unified patch projection input must be square RGB "
+                f"patches, got width {patch_dim}")
+        configured_patch_size = config.get("model_patch_size")
+        if (configured_patch_size is not None
+                and int(configured_patch_size) != patch_size):
+            raise ValueError(
+                "Gemma4 Unified model_patch_size disagrees with checkpoint: "
+                f"{configured_patch_size} != {patch_size}")
         hidden_size = int(config["mm_embed_dim"])
         output_size = int(config["output_proj_dims"])
         if hidden_size != output_size:

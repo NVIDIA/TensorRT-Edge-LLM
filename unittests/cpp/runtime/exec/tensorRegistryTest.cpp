@@ -34,7 +34,8 @@ TEST(TensorRegistryTest, ResolveShapeAllFixed)
 
     InferenceDims const dims{/*.batch=*/0, /*.seqLen=*/0, /*.kvLen=*/0, /*.selectLen=*/0, /*.attnMaskSeqLen=*/0,
         /*.ropeBatch=*/0, /*.packedMaskLen=*/0, /*.contextMaskSelectorLen=*/0, /*.startIndexLen=*/0,
-        /*.specVerifyPhaseLen=*/0};
+        /*.executionPhaseLen=*/0, /*.skipSoftmaxScaleLen=*/0, /*.swaKVCacheModeLen=*/0, /*.queryOffsetLen=*/0,
+        /*.contextSequenceCount=*/0};
     auto resolved = reg.resolveShape(specs[0].shape, dims);
     EXPECT_EQ(resolved.nbDims, 2);
     EXPECT_EQ(resolved.d[0], 4);
@@ -49,7 +50,8 @@ TEST(TensorRegistryTest, ResolveShapeWithSymbolicDims)
 
     InferenceDims const dims{/*.batch=*/4, /*.seqLen=*/128, /*.kvLen=*/1, /*.selectLen=*/1, /*.attnMaskSeqLen=*/1,
         /*.ropeBatch=*/1, /*.packedMaskLen=*/1, /*.contextMaskSelectorLen=*/0, /*.startIndexLen=*/4,
-        /*.specVerifyPhaseLen=*/0};
+        /*.executionPhaseLen=*/0, /*.skipSoftmaxScaleLen=*/0, /*.swaKVCacheModeLen=*/0, /*.queryOffsetLen=*/5,
+        /*.contextSequenceCount=*/0};
     auto specs = reg.allExpandedSpecs();
     auto resolved = reg.resolveShape(specs[0].shape, dims);
     EXPECT_EQ(resolved.nbDims, 3);

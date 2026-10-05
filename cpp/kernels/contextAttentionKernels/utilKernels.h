@@ -20,6 +20,7 @@
 #include "common/tensor.h"
 
 #include "common/cudaMacros.h"
+#include <cstddef>
 #include <cstdint>
 #include <cuda_runtime_api.h>
 
@@ -39,6 +40,20 @@ namespace kernel
 //! buffers.
 void launchBuildVisionBlockRanges(int32_t const* visionBlockIds, int32_t const* contextLengths, int32_t* blockBegin,
     int32_t* blockEnd, int32_t batchSize, int32_t seqLen, cudaStream_t stream);
+
+//! Gather token-aligned RoPE rows from a shared cache or a resident-slot cache.
+//!
+//! `sourceRows == 1` broadcasts the standard RoPE cache. Otherwise sequence
+//! `i` resolves its source row through `stateIndices[i]`. Only rows in the
+//! query intervals are gathered; padding remains zero.
+void launchGatherTokenAlignedRope(float const* source, float* output, int32_t const* positions,
+    int32_t const* queryStartOffsets, int32_t const* queryLengths, int32_t const* stateIndices, int32_t numTokens,
+    int32_t numSequences, int32_t sourceRows, int32_t cacheCapacity, int32_t rotaryDim, cudaStream_t stream);
+
+//! Scatter contiguous active rows into a resident-slot tensor using a device-side row map.
+//! Invalid resident rows are ignored.
+void launchScatterActiveRows(void const* source, void* destination, int32_t const* stateIndices, int32_t activeRows,
+    int32_t residentRows, size_t rowBytes, cudaStream_t stream);
 
 //! \brief Host-side wrapper that launches a lightweight CUDA kernel to compute prefix-sum of sequence lengths
 //! and KV cache end indices.
@@ -68,5 +83,33 @@ void calCuQCuKVSeqLensAndKVEndIdxs(rt::Tensor const& inputSeqLen, rt::Tensor con
     rt::Tensor& cuQSeqLens, rt::Tensor& cuKVSeqLens, rt::Tensor& kvCacheEndIdxs,
     rt::OptionalOutputTensor paddedCuKVSeqLens, int32_t const runtimeSeqLen, cudaStream_t stream);
 
+//! Build backend-neutral sequence metadata for ragged paged context attention.
+//!
+//! cuQSeqLens is the exclusive prefix sum of the active input lengths. cuKVSeqLens is the exclusive prefix sum of
+//! kvCacheStartIndices[b] + inputSeqLen[b], so it includes the complete logical KV history for chunked prefill. The
+//! outputs can be passed unchanged to either the optimized Blackwell or FMHA-v2 ragged paged backend.
+void calCuQCuKVSeqLens(rt::Tensor const& inputSeqLen, rt::Tensor const& kvCacheStartIndices, rt::Tensor& cuQSeqLens,
+    rt::Tensor& cuKVSeqLens, cudaStream_t stream);
+
+//! \brief Compute sequence metadata for paged SWA chunked prefill.
+//!
+//! The temporary KV source contains the previous resident window followed by the current chunk. The KV prefix sums
+//! therefore use `min(kvCacheStartIndices[b], slidingWindowSize) + inputSeqLen[b]`. `kvCacheEndIdxs` uses the padded
+//! runtime sequence length so the generic RoPE/write kernel assigns position `start + tokenOffset` to every row.
+//! `paddedCuKVSeqLens` uses the same resident prefix plus `runtimeSeqLen`, which preserves the causal offset when
+//! ragged chunks are padded to the maximum query length.
+void calSWAChunkedPrefillMetadata(rt::Tensor const& inputSeqLen, rt::Tensor const& kvCacheStartIndices,
+    rt::Tensor& cuQSeqLens, rt::Tensor& cuKVSeqLens, rt::Tensor& kvCacheEndIdxs, rt::Tensor& paddedCuKVSeqLens,
+    int32_t runtimeSeqLen, int32_t slidingWindowSize, cudaStream_t stream);
+
+//! \brief Assemble split FP16 K/V for SWA chunked prefill from a paged resident window plus the current chunk.
+//!
+//! For each batch row, logical tokens `[start - min(start, W), start)` are gathered through `swaPageTable`; newly
+//! roped K/V from the current chunk are appended directly. The outputs have shape `[B, W + S, Hkv, D]`, are padded
+//! with zeros, and are consumed with cu-seqlens from calSWAChunkedPrefillMetadata(). The persistent pool remains
+//! bounded independently of the maximum sequence length.
+void assemblePagedSWAChunkedPrefillFMHAKV(rt::Tensor const& swaPool, rt::Tensor const& swaPageTable,
+    rt::Tensor const& k, rt::Tensor const& v, rt::Tensor const& inputSeqLen, rt::Tensor const& kvCacheStartIndices,
+    rt::Tensor& kWorkspace, rt::Tensor& vWorkspace, int32_t slidingWindowSize, cudaStream_t stream);
 } // namespace kernel
 } // namespace trt_edgellm

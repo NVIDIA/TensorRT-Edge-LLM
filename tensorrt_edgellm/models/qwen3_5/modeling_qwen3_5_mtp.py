@@ -140,39 +140,62 @@ class Qwen3_5MtpDecoderLayer(nn.Module):
             self.post_attention_layernorm(hidden_states))
         return hidden_states, present_key_value
 
+    def forward_ragged(self, hidden_states: torch.Tensor,
+                       past_key_value: torch.Tensor, **metadata):
+        residual = hidden_states
+        attn_output, present_key_value = self.self_attn.forward_ragged(
+            self.input_layernorm(hidden_states),
+            past_key_value,
+            metadata["rope_rotary_cos_sin"],
+            metadata["positions"],
+            metadata["query_start_offsets"],
+            metadata["query_lengths"],
+            metadata["past_lengths"],
+            metadata["attention_sequence_lengths"],
+            metadata["state_indices"],
+            metadata["execution_phase_marker"],
+            metadata["context_sequence_count_carrier"],
+            metadata["kv_page_table"],
+            attention_position_ids=metadata["attention_position_ids"],
+            packed_attention_mask=metadata["packed_attention_mask"],
+            tree_parent_ids=metadata["tree_parent_ids"],
+            tree_depths=metadata["tree_depths"],
+            valid_tree_counts=metadata["valid_tree_counts"])
+        hidden_states = residual + attn_output
+        return (hidden_states +
+                self.mlp(self.post_attention_layernorm(hidden_states)),
+                present_key_value)
 
-def _make_flat_wrapper_qwen3_5_mtp(model: nn.Module,
-                                   num_layers: int) -> nn.Module:
-    """Build a flat-signature wrapper for Qwen3.5 MTP draft ONNX export."""
-    param_names: List[str] = (
-        ["inputs_embeds"] +
-        [f"past_key_values_{i}" for i in range(num_layers)] + [
-            "rope_rotary_cos_sin",
-            "context_lengths",
-            "kvcache_start_index",
-            "kv_page_table",
-            "last_token_ids",
-            "hidden_states_input",
-            "hidden_states_from_draft",
-            "attention_pos_id",
-            "attention_mask",
-        ])
 
-    past_kv_tuple = "({},)".format(", ".join(
-        f"past_key_values_{i}"
-        for i in range(num_layers))) if num_layers else "()"
+def _make_flat_wrapper_qwen3_5_mtp_ragged(model: nn.Module,
+                                          num_layers: int) -> nn.Module:
+    names = (["inputs_embeds"] +
+             [f"past_key_values_{i}" for i in range(num_layers)] + [
+                 "rope_rotary_cos_sin", "positions", "query_start_offsets",
+                 "query_lengths", "past_lengths", "attention_sequence_lengths",
+                 "state_indices", "execution_phase_marker",
+                 "context_sequence_count_carrier", "kv_page_table",
+                 "logits_indices", "hidden_states_input",
+                 "hidden_states_from_draft", "attention_position_ids",
+                 "packed_attention_mask", "tree_parent_ids", "tree_depths",
+                 "valid_tree_counts"
+             ])
+    kv = "({},)".format(", ".join(f"past_key_values_{i}"
+                                  for i in range(num_layers)))
     body = (
-        f"    logits, hidden_states, present_key_values = self._model(\n"
-        f"        inputs_embeds, {past_kv_tuple}, rope_rotary_cos_sin,\n"
-        f"        context_lengths, kvcache_start_index, kv_page_table,\n"
-        f"        last_token_ids,\n"
-        f"        hidden_states_input, hidden_states_from_draft,\n"
-        f"        attention_pos_id, attention_mask)\n"
-        f"    return (logits, hidden_states) + tuple(present_key_values)\n")
-
-    src = "def _forward(self, {}):\n{}".format(", ".join(param_names), body)
+        f"    logits, hidden_states, present = self._model.forward_ragged(\n"
+        f"        inputs_embeds, {kv}, rope_rotary_cos_sin, positions, "
+        f"query_start_offsets, query_lengths, past_lengths, "
+        f"attention_sequence_lengths, state_indices, "
+        f"execution_phase_marker, context_sequence_count_carrier, "
+        f"kv_page_table, logits_indices, "
+        f"hidden_states_input, hidden_states_from_draft, "
+        f"attention_position_ids, packed_attention_mask, tree_parent_ids, "
+        f"tree_depths, valid_tree_counts)\n"
+        f"    return (logits, hidden_states) + tuple(present)\n")
     globs: dict = {}
-    exec(src, globs)  # noqa: S102
+    exec("def _forward(self, {}):\n{}".format(", ".join(names), body),
+         globs)  # noqa: S102
 
     class _Wrapper(nn.Module):
 
@@ -264,136 +287,189 @@ class Qwen3_5MtpDraftModel(nn.Module):
 
         return logits, hidden_states, tuple(present_key_values)
 
+    def forward_ragged(
+        self,
+        inputs_embeds: torch.Tensor,
+        past_key_values: Tuple[torch.Tensor, ...],
+        rope_rotary_cos_sin: torch.Tensor,
+        positions: torch.Tensor,
+        query_start_offsets: torch.Tensor,
+        query_lengths: torch.Tensor,
+        past_lengths: torch.Tensor,
+        attention_sequence_lengths: torch.Tensor,
+        state_indices: torch.Tensor,
+        execution_phase_marker: torch.Tensor,
+        context_sequence_count_carrier: torch.Tensor,
+        kv_page_table: torch.Tensor,
+        logits_indices: torch.Tensor,
+        hidden_states_input: torch.Tensor,
+        hidden_states_from_draft: torch.Tensor,
+        attention_position_ids: torch.Tensor,
+        packed_attention_mask: torch.Tensor,
+        tree_parent_ids: torch.Tensor,
+        tree_depths: torch.Tensor,
+        valid_tree_counts: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, Tuple[torch.Tensor, ...]]:
+        hidden_states = self.fc(
+            torch.cat((self.pre_fc_norm_embedding(inputs_embeds),
+                       self.pre_fc_norm_hidden(hidden_states_input +
+                                               hidden_states_from_draft)),
+                      dim=-1))
+        metadata = {
+            "rope_rotary_cos_sin": rope_rotary_cos_sin,
+            "positions": positions,
+            "query_start_offsets": query_start_offsets,
+            "query_lengths": query_lengths,
+            "past_lengths": past_lengths,
+            "attention_sequence_lengths": attention_sequence_lengths,
+            "state_indices": state_indices,
+            "execution_phase_marker": execution_phase_marker,
+            "context_sequence_count_carrier": context_sequence_count_carrier,
+            "kv_page_table": kv_page_table,
+            "attention_position_ids": attention_position_ids,
+            "packed_attention_mask": packed_attention_mask,
+            "tree_parent_ids": tree_parent_ids,
+            "tree_depths": tree_depths,
+            "valid_tree_counts": valid_tree_counts,
+        }
+        present_key_values = []
+        for idx, layer in enumerate(self.layers):
+            hidden_states, present = layer.forward_ragged(
+                hidden_states, past_key_values[idx], **metadata)
+            present_key_values.append(present)
+        selected_hidden = self.norm(
+            torch.index_select(hidden_states, 0, logits_indices))
+        logits = F.log_softmax(self.lm_head(selected_hidden).to(torch.float32),
+                               dim=-1)
+        return logits, selected_hidden, tuple(present_key_values)
+
     def onnx_export_spec(self) -> OnnxSpec:
         """Return all model-specific parameters needed for ONNX export."""
+        return self._ragged_onnx_export_spec()
+
+    def _ragged_onnx_export_spec(self) -> OnnxSpec:
+        config = self.config
         num_layers = len(self.layers)
         device = next(itertools.chain(self.parameters(),
                                       self.buffers())).device
-        dtype16 = torch.float16
-        batch_size, seq_len, past_len, max_pos = (_BATCH_SIZE, _SEQ_LEN,
-                                                  _PAST_LEN, _MAX_POS)
-        config = self.config
-
-        inputs_embeds = torch.zeros(batch_size,
-                                    seq_len,
-                                    config.hidden_size,
-                                    dtype=dtype16,
-                                    device=device)
+        n, q = 2, 64
+        tokens = n * q
+        dtype = torch.float16
         kv_dtype = (torch.float8_e4m3fn
-                    if config.quant.kv_cache_quant == "fp8" else dtype16)
-        # Paged KV pool binding: [2, num_pages, KV_PAGE_SIZE, num_kv_heads, head_dim].
-        past_key_values_list: List[torch.Tensor] = [
+                    if config.quant.kv_cache_quant == "fp8" else dtype)
+        inputs_embeds = torch.zeros(tokens,
+                                    config.hidden_size,
+                                    dtype=dtype,
+                                    device=device)
+        past_key_values = tuple(
             torch.zeros(2,
-                        1,
+                        2,
                         KV_PAGE_SIZE,
                         config.num_key_value_heads,
                         config.head_dim,
                         dtype=kv_dtype,
-                        device=device) for _ in range(num_layers)
-        ]
+                        device=device) for _ in range(num_layers))
         rotary_dim = int(config.head_dim * config.partial_rotary_factor)
-        rope_rotary_cos_sin = torch.zeros(batch_size,
-                                          max_pos,
-                                          rotary_dim,
-                                          dtype=torch.float32,
-                                          device=device)
-        context_lengths = torch.zeros(batch_size,
-                                      dtype=torch.int32,
-                                      device=device)
-        last_token_ids = torch.zeros(batch_size,
-                                     1,
-                                     dtype=torch.int64,
-                                     device=device)
-        kvcache_start_index = torch.zeros(batch_size,
-                                          dtype=torch.int32,
-                                          device=device)
-        kv_page_table = torch.zeros(batch_size,
-                                    2,
-                                    1,
-                                    dtype=torch.int32,
-                                    device=device)
-        hidden_states_input = torch.zeros(batch_size,
-                                          seq_len,
-                                          config.hidden_size,
-                                          dtype=dtype16,
-                                          device=device)
-        hidden_states_from_draft = torch.zeros(batch_size,
-                                               seq_len,
-                                               config.hidden_size,
-                                               dtype=dtype16,
-                                               device=device)
-        attention_pos_id = torch.zeros(batch_size,
-                                       seq_len,
-                                       dtype=torch.int32,
-                                       device=device)
-        attention_mask = torch.zeros(batch_size,
-                                     seq_len,
-                                     seq_len + past_len,
+        rope = torch.zeros(tokens,
+                           rotary_dim,
+                           dtype=torch.float32,
+                           device=device)
+        positions = torch.arange(q, dtype=torch.int32, device=device).repeat(n)
+        offsets = torch.arange(0,
+                               tokens + 1,
+                               q,
+                               dtype=torch.int32,
+                               device=device)
+        lengths = torch.full((n, ), q, dtype=torch.int32, device=device)
+        past = torch.zeros(n, dtype=torch.int32, device=device)
+        state_indices = torch.arange(n, dtype=torch.int32, device=device)
+        phase = torch.zeros(2, dtype=torch.int32, device=device)
+        context_count = torch.empty(n, dtype=torch.int32, device=device)
+        page_table = torch.zeros(n, 2, 2, dtype=torch.int32, device=device)
+        logits_indices = offsets[1:].to(torch.int64) - 1
+        base_hidden = torch.zeros(tokens,
+                                  config.hidden_size,
+                                  dtype=dtype,
+                                  device=device)
+        draft_hidden = torch.zeros_like(base_hidden)
+        attention_positions = positions.clone()
+        attention_mask = torch.zeros(tokens, (q + 31) // 32,
                                      dtype=torch.int32,
                                      device=device)
-
-        args = (
-            inputs_embeds,
-            *past_key_values_list,
-            rope_rotary_cos_sin,
-            context_lengths,
-            kvcache_start_index,
-            kv_page_table,
-            last_token_ids,
-            hidden_states_input,
-            hidden_states_from_draft,
-            attention_pos_id,
-            attention_mask,
-        )
-        input_names = (["inputs_embeds"] +
-                       [f"past_key_values_{i}" for i in range(num_layers)] + [
-                           "rope_rotary_cos_sin",
-                           "context_lengths",
-                           "kvcache_start_index",
-                           "kv_page_table",
-                           "last_token_ids",
-                           "hidden_states_input",
-                           "hidden_states_from_draft",
-                           "attention_pos_id",
-                           "attention_mask",
-                       ])
+        parents = torch.full((tokens, ), -1, dtype=torch.int32, device=device)
+        depths = torch.zeros(tokens, dtype=torch.int32, device=device)
+        counts = lengths.clone()
+        args = (inputs_embeds,
+                *past_key_values, rope, positions, offsets, lengths, past,
+                lengths.clone(), state_indices, phase, context_count,
+                page_table, logits_indices, base_hidden, draft_hidden,
+                attention_positions, attention_mask, parents, depths, counts)
+        input_names = (
+            ["inputs_embeds"] +
+            [f"past_key_values_{i}" for i in range(num_layers)] + [
+                "rope_rotary_cos_sin", "positions", "query_start_offsets",
+                "query_lengths", "past_lengths", "attention_sequence_lengths",
+                "state_indices", "execution_phase_marker",
+                "context_sequence_count_carrier", "kv_page_table",
+                "logits_indices", "hidden_states_input",
+                "hidden_states_from_draft", "attention_position_ids",
+                "packed_attention_mask", "tree_parent_ids", "tree_depths",
+                "valid_tree_counts"
+            ])
         output_names = (["logits", "hidden_states"] +
                         [f"present_key_values_{i}" for i in range(num_layers)])
-
-        batch = torch.export.Dim("batch", min=1, max=256)
-        seq = torch.export.Dim("seq_len", min=1, max=32768)
-        pos = torch.export.Dim("max_pos", min=1, max=32768)
-        rope_batch = torch.export.Dim("rope_batch", min=1, max=256)
-        kv_batch = torch.export.Dim("kv_batch", min=1, max=256)
-        page_batch = torch.export.Dim("page_batch", min=1, max=256)
+        token_dim = torch.export.Dim("physical_tokens", min=1, max=8_388_608)
+        seq_dim = torch.export.Dim("num_sequences", min=1, max=256)
+        context_seq_dim = torch.export.Dim("num_context_sequences",
+                                           min=0,
+                                           max=256)
+        pages = torch.export.Dim("num_pages", min=1, max=1048576)
         max_pages = torch.export.Dim("max_pages_per_seq", min=1, max=32768)
-        num_pages = torch.export.Dim("num_pages", min=1, max=1048576)
-        attn_seq = torch.export.Dim("attn_seq_len", min=1, max=32768)
-        num_selected = torch.export.Dim("num_selected", min=1, max=256)
-        mask_kv_len = torch.export.Dim("mask_kv_len", min=1, max=65536)
-
-        dynamic_shapes: list = [{0: batch, 1: seq}]  # inputs_embeds
-        for _ in range(num_layers):
-            dynamic_shapes.append({1: num_pages
-                                   })  # past_key_values_i (pool-shaped)
-        dynamic_shapes.append({0: rope_batch, 1: pos})  # rope_rotary_cos_sin
-        dynamic_shapes.append({0: batch})  # context_lengths
-        dynamic_shapes.append({0: kv_batch})  # kvcache_start_index
-        dynamic_shapes.append({0: page_batch, 2: max_pages})  # kv_page_table
-        dynamic_shapes.append({0: batch, 1: num_selected})  # last_token_ids
-        dynamic_shapes.append({0: batch, 1: seq})  # hidden_states_input
-        dynamic_shapes.append({0: batch, 1: seq})  # hidden_states_from_draft
-        dynamic_shapes.append({0: batch, 1: attn_seq})  # attention_pos_id
-        dynamic_shapes.append({
-            0: batch,
-            1: attn_seq,
-            2: mask_kv_len
-        })  # attention_mask
-
-        wrapped = _make_flat_wrapper_qwen3_5_mtp(self, num_layers)
+        phase_dim = torch.export.Dim("execution_phase_extent", min=1, max=8)
+        selected_dim = torch.export.Dim("selected_rows", min=1, max=8_388_608)
+        packed_mask_width = torch.export.Dim("packed_mask_width",
+                                             min=1,
+                                             max=64)
+        shapes = [{0: token_dim}] + [{1: pages} for _ in range(num_layers)]
+        shapes += [{
+            0: token_dim
+        }, {
+            0: token_dim
+        }, {
+            0: seq_dim + 1
+        }, {
+            0: seq_dim
+        }, {
+            0: seq_dim
+        }, {
+            0: seq_dim
+        }, {
+            0: seq_dim
+        }, {
+            0: phase_dim
+        }, {
+            0: context_seq_dim
+        }, {
+            0: seq_dim,
+            2: max_pages
+        }, {
+            0: selected_dim
+        }, {
+            0: token_dim
+        }, {
+            0: token_dim
+        }, {
+            0: token_dim
+        }, {
+            0: token_dim,
+            1: packed_mask_width
+        }, {
+            0: token_dim
+        }, {
+            0: token_dim
+        }, {
+            0: seq_dim
+        }]
+        wrapped = _make_flat_wrapper_qwen3_5_mtp_ragged(self, num_layers)
         wrapped.eval()
-        return OnnxSpec(wrapped=wrapped,
-                        args=args,
-                        input_names=input_names,
-                        output_names=output_names,
-                        dynamic_shapes=dynamic_shapes)
+        return OnnxSpec(wrapped, args, input_names, output_names, shapes)

@@ -17,6 +17,8 @@
 
 #pragma once
 
+#include "common/executionPhase.h"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -38,24 +40,17 @@ namespace rt
 //! `proposalDims`, `acceptDims`, `resetDims`). Direct construction (aggregate
 //! or designated initializers) is supported for unit tests.
 //!
-//! The ten fields are the complete set of symbolic dims used by LLM, DiffusionGemma, and SpecDecode
+//! These fields are the complete set of symbolic dims used by LLM, DiffusionGemma, and SpecDecode
 //! draft engines. Fixed-shape tensor dims do not appear here.
 struct InferenceDims
 {
     int64_t batch;     //!< Active batch size
-    int64_t seqLen;    //!< Work-unit length for this step (prompt / proposal / accept / 1)
+    int64_t seqLen;    //!< Physical token rows for this step (T_exec)
     int64_t kvLen;     //!< KV cache capacity (usually LLMEngineConfig::maxKVCacheCapacity)
     int64_t selectLen; //!< last_token_ids select count (1 except for SpecDecode verification)
-    //! Effective sequence length for the SpecDecode attention_mask / attention_pos_id
-    //! tensors. This is decoupled from `seqLen` because the base engine's
-    //! attention plugin treats a "small" mask shape ([B, 1, 1]) as a signal to
-    //! use standard causal attention, while a proposal-shaped mask triggers
-    //! proposal attention and reads the buffer contents as a bit-packed mask.
-    //!
-    //! Set to 1 for prefill / decode / reset (engine applies standard causal
-    //! attention and ignores the dummy mask buffer); set to the effective proposal
-    //! size for verify / proposal / accept (engine applies proposal attention
-    //! using the prepared bit-packed mask).
+    //! Token rows for SpecDecode attention_mask / attention_pos_id. Unified
+    //! token-major engines require this to equal `seqLen`; execution phase,
+    //! not this extent, selects the kernel behavior.
     int64_t attnMaskSeqLen;
     int64_t ropeBatch;     //!< RoPE broadcast dim (1 for non-MRope; batch for MRope)
     int64_t packedMaskLen; //!< divUp(attnMaskSeqLen, 32) for SpecDecode masks; else 1
@@ -67,15 +62,20 @@ struct InferenceDims
     //! per-batch start offsets" for chunked prefill, decode, verify, and
     //! accept. Zero is a legitimate, engine-meaningful value for this dim.
     int64_t startIndexLen;
-    //! Shape length for `spec_verify_phase_marker`. Zero means normal
-    //! prefill/decode; one means speculative verification. The plugin reads
-    //! this shape, not the marker payload.
-    int64_t specVerifyPhaseLen;
+    //! Shape length for `execution_phase_marker`. The extent is an ExecutionPhase value;
+    //! plugins never read the marker payload.
+    int64_t executionPhaseLen;
     //! Shape length for `skip_softmax_scale`: the runtime skip-softmax
     //! scale-factor override (integer S). Zero = keep the engine-carried
     //! calibrated default. Like the phase marker, the plugin reads this
     //! shape, never the payload.
     int64_t skipSoftmaxScaleLen;
+    //! Shape length for `swa_kv_cache_mode`. One selects bounded SWA storage;
+    //! zero selects ordinary full KV storage. The plugin reads only the shape.
+    int64_t swaKVCacheModeLen;
+    int64_t queryOffsetLen; //!< Ragged query-offset extent, equal to active sequence count plus one
+    //! Shape-only context prefix sequence count. Zero is canonical for decode/spec/diffusion.
+    int64_t contextSequenceCount;
 };
 
 //! Tripwires: if `InferenceDims` gains, loses, or reorders a field, these asserts fire
@@ -85,7 +85,7 @@ struct InferenceDims
 //! change the meaning of every positional aggregate init). Note: these do NOT catch
 //! "short" aggregate inits (omitting trailing fields) — the policy is that production
 //! construction goes through recipe methods, which always set every field.
-static_assert(sizeof(InferenceDims) == 11 * sizeof(int64_t),
+static_assert(sizeof(InferenceDims) == 14 * sizeof(int64_t),
     "InferenceDims layout changed: update kDimNames, toString(), kZeroAllowedMembers, and every recipe "
     "method in LLMEngineConfig (prefillDims / decodeDims / denoiseDims / diffusionCommitDims / "
     "specVerifyDims / proposalDims / acceptDims / resetDims).");
@@ -101,9 +101,15 @@ static_assert(offsetof(InferenceDims, contextMaskSelectorLen) == 7 * sizeof(int6
     "InferenceDims::contextMaskSelectorLen reordered");
 static_assert(offsetof(InferenceDims, startIndexLen) == 8 * sizeof(int64_t), "InferenceDims::startIndexLen reordered");
 static_assert(
-    offsetof(InferenceDims, specVerifyPhaseLen) == 9 * sizeof(int64_t), "InferenceDims::specVerifyPhaseLen reordered");
+    offsetof(InferenceDims, executionPhaseLen) == 9 * sizeof(int64_t), "InferenceDims::executionPhaseLen reordered");
 static_assert(offsetof(InferenceDims, skipSoftmaxScaleLen) == 10 * sizeof(int64_t),
     "InferenceDims::skipSoftmaxScaleLen reordered");
+static_assert(
+    offsetof(InferenceDims, swaKVCacheModeLen) == 11 * sizeof(int64_t), "InferenceDims::swaKVCacheModeLen reordered");
+static_assert(
+    offsetof(InferenceDims, queryOffsetLen) == 12 * sizeof(int64_t), "InferenceDims::queryOffsetLen reordered");
+static_assert(offsetof(InferenceDims, contextSequenceCount) == 13 * sizeof(int64_t),
+    "InferenceDims::contextSequenceCount reordered");
 
 namespace detail
 {
@@ -127,19 +133,23 @@ inline constexpr std::array<std::pair<int64_t InferenceDims::*, std::string_view
         {&InferenceDims::packedMaskLen, "packed_mask_len"},
         {&InferenceDims::contextMaskSelectorLen, "context_mask_selector_len"},
         {&InferenceDims::startIndexLen, "start_index_len"},
-        {&InferenceDims::specVerifyPhaseLen, "spec_verify_phase_len"},
+        {&InferenceDims::executionPhaseLen, "execution_phase_len"},
         {&InferenceDims::skipSoftmaxScaleLen, "skip_softmax_scale_len"},
+        {&InferenceDims::swaKVCacheModeLen, "swa_kv_cache_mode_len"},
+        {&InferenceDims::queryOffsetLen, "query_offset_len"},
+        {&InferenceDims::contextSequenceCount, "context_sequence_count"},
     }};
 
 //! Members where `0` is a legitimate engine-meaningful value (not a recipe
 //! bypass). `firstInvalidMember` excludes these from the `> 0` positivity
 //! check. Keep this set as small as possible — default validation should be
 //! strict, and most dims (batch, seqLen, kvLen, etc.) must be > 0.
-inline constexpr std::array<int64_t InferenceDims::*, 4> kZeroAllowedMembers{
+inline constexpr std::array<int64_t InferenceDims::*, 5> kZeroAllowedMembers{
     &InferenceDims::contextMaskSelectorLen,
     &InferenceDims::startIndexLen,
-    &InferenceDims::specVerifyPhaseLen,
     &InferenceDims::skipSoftmaxScaleLen,
+    &InferenceDims::swaKVCacheModeLen,
+    &InferenceDims::contextSequenceCount,
 };
 } // namespace detail
 
@@ -161,6 +171,9 @@ std::string_view dimName(int64_t InferenceDims::* member);
 //! @param dims The value to format
 //! @return A string like `{batch=4, seq_len=128, kv_len=4096, ...}`
 std::string toString(InferenceDims const& dims);
+
+//! Return the validated execution phase encoded by `executionPhaseLen`.
+ExecutionPhase executionPhase(InferenceDims const& dims);
 
 //! Return the first referenced member whose value is <= 0, or nullptr if all
 //! referenced members are positive.

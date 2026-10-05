@@ -327,9 +327,7 @@ void decodePerSlot(DecodingInferenceContext& context, tokenizer::Tokenizer const
             }
         }
 
-        // For non-streaming slots there is no channel to read skipSpecial from;
-        // default to true (matches Tokenizer::decode(..., true) used in finalization).
-        bool const skipSpecial = hasChannel ? s.channel->getSkipSpecialTokens() : true;
+        bool const skipSpecial = hasChannel ? s.channel->getSkipSpecialTokens() : s.skipSpecialTokens;
         std::string delta = tokenizer::emitDelta(s, tok, context.tokenIds[i], skipSpecial);
         if (isFinal && !s.pendingBytes.empty())
         {

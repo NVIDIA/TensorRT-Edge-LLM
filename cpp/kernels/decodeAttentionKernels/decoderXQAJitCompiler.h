@@ -38,10 +38,12 @@ struct XQAJitKey
     int32_t tokensPerPage{};
     bool slidingWindow{};
     bool specDecode{};
+    bool contiguousQuerySwa{};
 
     auto asTuple() const noexcept
     {
-        return std::tie(sm, dataType, kvDataType, headSize, qHeadsPerKv, tokensPerPage, slidingWindow, specDecode);
+        return std::tie(sm, dataType, kvDataType, headSize, qHeadsPerKv, tokensPerPage, slidingWindow, specDecode,
+            contiguousQuerySwa);
     }
 
     bool operator==(XQAJitKey const& other) const noexcept

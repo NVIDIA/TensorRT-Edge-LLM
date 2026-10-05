@@ -492,8 +492,45 @@ using WarpAcc = WarpAccT<warpTile.y, warpTile.x>;
 #if SPEC_DEC
 #define MMAS_N_PER_MASK 2
 
+#if SLIDING_WINDOW && CONTIGUOUS_QUERY_SWA
+__device__ inline void applyContiguousQuerySlidingWindowMask(Warp const& warp, WarpAcc& acc, uint32_t rowOffset,
+    uint32_t warpTileTokenBeg, uint32_t firstQueryPosition, uint32_t actualQSeqLen, uint32_t headGrpSize,
+    uint32_t slidingWinSize)
+{
+    uint32_t const idxInQuad = laneId() % 4;
+    uint32_t const idxQuad = laneId() / 4;
+#pragma unroll
+    for (uint32_t m = 0; m < acc.rows; m++)
+    {
+#pragma unroll
+        for (uint32_t i = 0; i < InstAcc::rows; i++)
+        {
+            uint32_t const flatRow = rowOffset + instM * m + idxQuad + i * 8;
+            uint32_t const queryRow = min(flatRow / headGrpSize, actualQSeqLen - 1);
+            uint32_t const queryPosition = firstQueryPosition + queryRow;
+            uint32_t const queryLeftEdge = queryPosition < slidingWinSize ? 0U : queryPosition - slidingWinSize + 1U;
+            uint32_t const validColBeg = queryLeftEdge < warpTileTokenBeg ? 0U : queryLeftEdge - warpTileTokenBeg;
+#pragma unroll
+            for (uint32_t n = 0; n < acc.cols; n++)
+            {
+#pragma unroll
+                for (uint32_t j = 0; j < InstAcc::cols; j++)
+                {
+                    uint32_t const col = instN * n + InstAcc::cols * idxInQuad + j;
+                    if (col < validColBeg)
+                    {
+                        acc(m, n)(i, j) = mha::numeric_limits<float>::lowest();
+                    }
+                }
+            }
+        }
+    }
+}
+#endif
+
 __device__ inline void applyMaskFromInput(Warp const& warp, WarpAcc& acc, MaskType const* mask, uint32_t rowOffset,
-    uint32_t nbValidCols, uint32_t qSeqLen, uint32_t actualQSeqLen, uint32_t headGrpSize)
+    uint32_t nbValidCols, uint32_t qSeqLen, uint32_t actualQSeqLen, uint32_t paddedQSeqLen,
+    uint32_t headGrpSize)
 {
     uint32_t const idxInQuad = laneId() % 4;
     uint32_t const idxQuad = laneId() / 4;
@@ -512,12 +549,12 @@ __device__ inline void applyMaskFromInput(Warp const& warp, WarpAcc& acc, MaskTy
             {
                 uint32_t const firstCol = instN * mask_n * MMAS_N_PER_MASK + InstAcc::cols * idxInQuad;
                 uint32_t const lastCol = firstCol + instN * (MMAS_N_PER_MASK - 1) + InstAcc::cols - 1;
-                uint32_t const maskPos0 = firstCol + actualQSeqLen < nbValidCols
+                uint32_t const maskPos0 = firstCol + paddedQSeqLen < nbValidCols
                     ? 0u
-                    : min(firstCol + actualQSeqLen - nbValidCols, actualQSeqLen - 1);
-                uint32_t const maskPos1 = lastCol + actualQSeqLen < nbValidCols
+                    : min(firstCol + paddedQSeqLen - nbValidCols, paddedQSeqLen - 1);
+                uint32_t const maskPos1 = lastCol + paddedQSeqLen < nbValidCols
                     ? 0u
-                    : min(lastCol + actualQSeqLen - nbValidCols, actualQSeqLen - 1);
+                    : min(lastCol + paddedQSeqLen - nbValidCols, paddedQSeqLen - 1);
                 uint32_t packedMask = 0u;
                 uint32_t const maskPosStart = (maskPos0 / 16) * 16;
                 reinterpret_cast<uint16_t*>(&packedMask)[0]
@@ -534,9 +571,9 @@ __device__ inline void applyMaskFromInput(Warp const& warp, WarpAcc& acc, MaskTy
                         uint32_t const col = instN * n + InstAcc::cols * idxInQuad + j;
                         // bool const maskFlag = col + qSeqLen < nbValidCols ? true : mask[tokenRow * qSeqLen + (col +
                         // qSeqLen - nbValidCols)];
-                        bool const maskFlag = col + actualQSeqLen < nbValidCols
+                        bool const maskFlag = col + paddedQSeqLen < nbValidCols
                             ? true
-                            : packedMask & (1u << ((col + actualQSeqLen - nbValidCols) - maskPosStart));
+                            : packedMask & (1u << ((col + paddedQSeqLen - nbValidCols) - maskPosStart));
                         acc(m, n)(i, j) = maskFlag && col < nbValidCols ? acc(m, n)(i, j) : -INFINITY;
                     }
                 }
@@ -1506,17 +1543,26 @@ __device__ inline ThrdRegRowMax mergeRowMax(
     return mergedRowMax;
 }
 
-__device__ inline void addAttentionSinks(
-    ThrdRegRowMax& globalRowSum, ThrdRegRowMax const globalRowMax, float const* attentionSinks)
+__device__ inline ThrdRegRowMax mergeAttentionSinks(ThrdRegRowMax& globalRowSum, ThrdRegRowMax& globalRowMax,
+    float const* attentionSinks, uint32_t sinkHeadGrpSize, uint32_t rowOffset, uint32_t nbValidRows)
 {
+    assert(sinkHeadGrpSize > 0);
+    ThrdRegRowMax rowScales = ThrdRegRowMax::filled(1.F);
     for (uint32_t i = 0; i < globalRowSum.size; i++)
     {
-        uint32_t srcOffset = warp_size * i + laneId();
-        if (srcOffset < headGrpSize)
+        uint32_t const localRow = warp_size * i + laneId();
+        if (localRow < nbValidRows)
         {
-            globalRowSum[i] += expf(attentionSinks[srcOffset] - globalRowMax[i]);
+            uint32_t const headIdx = (rowOffset + localRow) % sinkHeadGrpSize;
+            float const sink = attentionSinks[headIdx];
+            float const newRowMax = fmaxf(globalRowMax[i], sink);
+            float const rowScale = expf(globalRowMax[i] - newRowMax);
+            globalRowSum[i] = globalRowSum[i] * rowScale + expf(sink - newRowMax);
+            globalRowMax[i] = newRowMax;
+            rowScales[i] = rowScale;
         }
     }
+    return rowScales;
 }
 
 #ifdef NDEBUG
@@ -1529,6 +1575,7 @@ CUBIN_EXPORT __global__
 #if SPEC_DEC
         uint32_t const qSeqLen, uint32_t const nbKHeads, uint32_t const headGrpSize,
         SeqLenDataType const* __restrict__ qCuSeqLens, // [nbReq + 1]
+        SeqLenDataType const* __restrict__ qSeqLens,   // [nbReq]
 #else
         uint32_t const nbKHeads,
 #endif
@@ -1577,7 +1624,12 @@ CUBIN_EXPORT __global__
 #if SPEC_DEC
     // Variable query sequence length support.
     bool const variableQSeqLen = qCuSeqLens != nullptr;
-    uint32_t const actualQSeqLen = variableQSeqLen ? uint32_t(qCuSeqLens[idxReq + 1] - qCuSeqLens[idxReq]) : qSeqLen;
+    uint32_t const actualQSeqLen = qSeqLens != nullptr
+        ? uint32_t(qSeqLens[idxReq])
+        : (variableQSeqLen ? uint32_t(qCuSeqLens[idxReq + 1] - qCuSeqLens[idxReq]) : qSeqLen);
+    // Fixed-width inputs retain padding in KV, while qCuSeqLens describes physically compact input.
+    // TODO: Unify paddedQSeqLen with actualQSeqLen once tree decoding consumes compact ragged Q/KV.
+    uint32_t const paddedQSeqLen = qSeqLens != nullptr ? qSeqLen : actualQSeqLen;
     // Same as idxReq * qSeqLen if all sequences all the same.
     // Take different beams as different requests/sequences currently.
     uint32_t const reqSeqOffset = variableQSeqLen ? uint32_t(qCuSeqLens[idxReq]) : (qSeqLen * idxReq);
@@ -1795,8 +1847,21 @@ CUBIN_EXPORT __global__
 
     uint32_t const cacheSeqLen = getCacheSeqLen<usePagedKVCache>(cacheList, idxReq);
 #if SLIDING_WINDOW
+#if SPEC_DEC && CONTIGUOUS_QUERY_SWA
+    uint32_t const firstQueryPosition = cacheSeqLen - paddedQSeqLen;
     bool const rtIsReallySliding = (cacheSeqLen > slidingWinSize);
-    uint32_t const nbTotalSkipTokens = rtIsReallySliding ? cacheSeqLen - slidingWinSize : 0;
+    uint32_t const nbTotalSkipTokens
+        = firstQueryPosition < slidingWinSize ? 0U : firstQueryPosition - slidingWinSize + 1U;
+    uint32_t const maxQueryLeftEdge = rtIsReallySliding ? cacheSeqLen - slidingWinSize : 0U;
+#else
+#if SPEC_DEC
+    uint32_t const windowCacheSeqLen = cacheSeqLen - paddedQSeqLen + actualQSeqLen;
+#else
+    uint32_t const windowCacheSeqLen = cacheSeqLen;
+#endif
+    bool const rtIsReallySliding = (windowCacheSeqLen > slidingWinSize);
+    uint32_t const nbTotalSkipTokens = rtIsReallySliding ? windowCacheSeqLen - slidingWinSize : 0;
+#endif
 #else
     constexpr bool rtIsReallySliding = false;
     constexpr uint32_t nbTotalSkipTokens = 0;
@@ -1813,7 +1878,7 @@ CUBIN_EXPORT __global__
 
     uint32_t const nbSeqIters = useKVCache ? divUp(cacheSeqLen, ctaTile.x) : 0;
 #if SPEC_DEC
-    uint32_t const nbSeqItersWithoutMask = (cacheSeqLen - actualQSeqLen) / ctaTile.x;
+    uint32_t const nbSeqItersWithoutMask = (cacheSeqLen - paddedQSeqLen) / ctaTile.x;
 #endif
 
     uint32_t const seqStrideIters = nbSubSeqPerSeq;
@@ -2265,6 +2330,13 @@ CUBIN_EXPORT __global__
             uint32_t const warpTileTokenBeg = ctaTile.x * seqIter + warpTile.x * warpIdx.x;
 #if SPEC_DEC
 #if SLIDING_WINDOW
+#if CONTIGUOUS_QUERY_SWA
+            if (warpTileTokenBeg < maxQueryLeftEdge)
+            {
+                applyContiguousQuerySlidingWindowMask(warp, acc, idxHeadTokenInGrp, warpTileTokenBeg,
+                    firstQueryPosition, actualQSeqLen, headGrpSize, slidingWinSize);
+            }
+#else
             // Full leading tiles are skipped by seqIterInit; mask residual leading tokens in the first computed tile.
             bool const isFirstIter = (seqIter == nbSkipLeadingTiles);
             bool const needMaskLeading = (rtIsReallySliding && isFirstIter);
@@ -2278,12 +2350,13 @@ CUBIN_EXPORT __global__
                 }
             }
 #endif
+#endif
             if (seqIter >= nbSeqItersWithoutMask)
             {
                 // Apply the packed speculative/tree attention mask for tiles that overlap generated query tokens.
                 uint32_t const nbValidCols = (warpTileTokenBeg < cacheSeqLen ? cacheSeqLen - warpTileTokenBeg : 0U);
-                applyMaskFromInput(
-                    warp, acc, mask, idxHeadTokenInGrp, nbValidCols, qSeqLen, actualQSeqLen, headGrpSize);
+                applyMaskFromInput(warp, acc, mask, idxHeadTokenInGrp, nbValidCols, qSeqLen, actualQSeqLen,
+                    paddedQSeqLen, headGrpSize);
             }
 #else
             // Mask the sliding-window left edge and the padded tail of the final cache tile.
@@ -2771,7 +2844,14 @@ CUBIN_EXPORT __global__
             if (!isMultiBlock && attentionSinks != nullptr)
             {
                 // Attention sinks are per head.
-                addAttentionSinks(globalRowSum, globalRowMax, attentionSinks + headGrpSize * idxHeadGrp);
+#if SPEC_DEC
+                ThrdRegRowMax const sinkRowScales = mergeAttentionSinks(globalRowSum, globalRowMax,
+                    attentionSinks + headGrpSize * idxHeadGrp, headGrpSize, idxHeadTokenInGrp, nbValidHeadTokens);
+#else
+                ThrdRegRowMax const sinkRowScales = mergeAttentionSinks(globalRowSum, globalRowMax,
+                    attentionSinks + headGrpSize * idxHeadGrp, headGrpSize, 0U, nbValidRows);
+#endif
+                rescaleAcc(warp, acc, fullRescaleMask, sinkRowScales);
             }
             ThrdRegRowMax const rcpRowSum = __frcp_rn(globalRowSum);
 #if LOW_PREC_OUTPUT
@@ -2893,7 +2973,7 @@ CUBIN_EXPORT __global__
                     smemRowMax.storeFromReg<false>(warp, mergedRowMax);
                 }
                 __syncthreads();
-                ThrdRegRowMax const mergedRowMax = smemRowMax.loadToReg<false>(warp);
+                ThrdRegRowMax mergedRowMax = smemRowMax.loadToReg<false>(warp);
 
                 // rescale and accumulate
                 auto getTileBuf = [&](auto& buffers, uint32_t d) -> decltype(buffers[0][0][0])&
@@ -2964,7 +3044,14 @@ CUBIN_EXPORT __global__
                 if (attentionSinks != nullptr)
                 {
                     // Attention sinks are per head.
-                    addAttentionSinks(mergedRowSum, mergedRowMax, attentionSinks + headGrpSize * idxHeadGrp);
+#if SPEC_DEC
+                    ThrdRegRowMax const sinkRowScales = mergeAttentionSinks(mergedRowSum, mergedRowMax,
+                        attentionSinks + headGrpSize * idxHeadGrp, headGrpSize, idxHeadTokenInGrp, nbValidHeadTokens);
+#else
+                    ThrdRegRowMax const sinkRowScales = mergeAttentionSinks(mergedRowSum, mergedRowMax,
+                        attentionSinks + headGrpSize * idxHeadGrp, headGrpSize, 0U, nbValidRows);
+#endif
+                    rescaleAcc(warp, sumAcc, fullRescaleMask, sinkRowScales);
                 }
                 __syncthreads();
                 rescaleAcc(warp, sumAcc, fullRescaleMask, __frcp_rn(mergedRowSum));
@@ -3007,6 +3094,7 @@ CUBIN_EXPORT __device__ constexpr XQAKernelType kernelType = XQAKernelType::kAMP
 CUBIN_EXPORT __global__ __launch_bounds__(ctaSize, nbCtaPerSM) void kernel_mha(
 #if SPEC_DEC
     uint32_t const qSeqLen, uint32_t const nbKHeads, uint32_t const headGrpSize, SeqLenDataType const* qCuSeqLens,
+    SeqLenDataType const* qSeqLens,
 #else
     uint32_t const nbKHeads,
 #endif
@@ -3034,7 +3122,7 @@ CUBIN_EXPORT __global__ __launch_bounds__(ctaSize, nbCtaPerSM) void kernel_mha(
     uint32_t* __restrict__ semaphores = nullptr, void* __restrict__ scratch = nullptr)
 {
 #if SPEC_DEC
-    kernel_mha_impl(qSeqLen, nbKHeads, headGrpSize, qCuSeqLens,
+    kernel_mha_impl(qSeqLen, nbKHeads, headGrpSize, qCuSeqLens, qSeqLens,
 #else
     kernel_mha_impl(nbKHeads,
 #endif
@@ -3103,6 +3191,7 @@ void launchMHA(cudaDeviceProp const& prop, uint32_t nbKHeads,
 #if SPEC_DEC
     auto const qSeqLen = specDecParams.qSeqLen;
     auto const qCuSeqLens = specDecParams.qCuSeqLens;
+    auto const qSeqLens = specDecParams.qSeqLens;
     auto const mask = specDecParams.mask;
 #endif
 #if USE_INPUT_KV
@@ -3156,7 +3245,7 @@ void launchMHA(cudaDeviceProp const& prop, uint32_t nbKHeads,
 #endif
     cudaLaunchKernelEx(&launchCfg, kernel_mha,
 #if SPEC_DEC
-        qSeqLen, nbKHeads, headGrpSize, qCuSeqLens,
+        qSeqLen, nbKHeads, headGrpSize, qCuSeqLens, qSeqLens,
 #else
         nbKHeads,
 #endif
@@ -3184,7 +3273,7 @@ void launchMHA(cudaDeviceProp const& prop, uint32_t nbKHeads,
     cudaLaunchKernelEx(&launchCfg, &kernel_mha,
 #endif
 #if SPEC_DEC
-        qSeqLen, nbKHeads, headGrpSize, qCuSeqLens,
+        qSeqLen, nbKHeads, headGrpSize, qCuSeqLens, qSeqLens,
 #else
         nbKHeads,
 #endif

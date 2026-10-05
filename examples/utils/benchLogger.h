@@ -39,6 +39,7 @@ enum class BenchMode
     kEAGLE_VERIFY,
     kEAGLE_DRAFT_PROPOSAL,
     kEAGLE_DRAFT_PREFILL,
+    kEAGLE_DRAFT_ACCEPT,
     kDFLASH_DRAFT_PROPOSAL,
     kDFLASH_DRAFT_FIRST_ROUND,
     kDFLASH_VERIFY,
@@ -121,6 +122,7 @@ struct BenchOutputParams
     int32_t pastKVLen{0};
     int32_t verifyTreeSize{0};
     int32_t draftTreeSize{0};
+    int32_t acceptLen{0};
     int32_t osl{1};
     int32_t imageHeight{0};
     int32_t imageWidth{0};

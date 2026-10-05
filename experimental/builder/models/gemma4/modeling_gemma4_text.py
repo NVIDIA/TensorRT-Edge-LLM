@@ -23,6 +23,7 @@ import tensorrt as trt
 from ...ops import Module, NetworkModule
 from ...ops import functional as F
 from ...ops import pack_qkv
+from ...ops.ragged import RaggedDecoderInputs, add_ragged_decoder_inputs
 from . import modeling_gemma4_layers as layers
 from . import weights as weight_conversion
 
@@ -84,9 +85,7 @@ class Gemma4TextAttention(Module):
                 hidden_states,
                 past_key_value,
                 rope,
-                context_lengths,
-                cache_start,
-                kv_page_table,
+                ragged,
                 attention_mask=None,
                 attention_pos_id=None):
         cfg = self.cfg
@@ -95,20 +94,19 @@ class Gemma4TextAttention(Module):
             key = self.k_proj(hidden_states)
             value = (key if self.use_alternative_attention else
                      self.v_proj(hidden_states))
-        query = query.reshape((0, 0, cfg.num_attention_heads, self.head_dim))
-        query = self.q_norm(query, 4)
-        query = query.reshape((0, 0, cfg.num_attention_heads * self.head_dim))
+        query = query.reshape((0, cfg.num_attention_heads, self.head_dim))
+        query = self.q_norm(query, 3)
+        query = query.reshape((0, cfg.num_attention_heads * self.head_dim))
         if not self.is_kv_shared:
-            key = key.reshape((0, 0, self.num_kv_heads, self.head_dim))
-            key = self.k_norm(key, 4)
-            key = key.reshape((0, 0, self.num_kv_heads * self.head_dim))
+            key = key.reshape((0, self.num_kv_heads, self.head_dim))
+            key = self.k_norm(key, 3)
+            key = key.reshape((0, self.num_kv_heads * self.head_dim))
             if cfg.has_value_norm:
-                value = value.reshape((0, 0, self.num_kv_heads, self.head_dim))
+                value = value.reshape((0, self.num_kv_heads, self.head_dim))
                 value = F.rms_norm(value,
                                    np.ones(self.head_dim, dtype=np.float16),
-                                   cfg.rms_norm_eps, 4)
-                value = value.reshape(
-                    (0, 0, self.num_kv_heads * self.head_dim))
+                                   cfg.rms_norm_eps, 3)
+                value = value.reshape((0, self.num_kv_heads * self.head_dim))
         sliding_window = (cfg.sliding_window_size if self.attention_type
                           == "sliding_attention" else -1)
         qkv = (query if self.is_kv_shared else pack_qkv(
@@ -116,21 +114,25 @@ class Gemma4TextAttention(Module):
         attention, present = F.attention(
             qkv,
             past_key_value,
-            context_lengths,
             rope,
-            cache_start,
-            kv_page_table,
+            ragged,
             num_q_heads=cfg.num_attention_heads,
             num_kv_heads=self.num_kv_heads,
             head_size=self.head_dim,
             sliding_window_size=sliding_window,
             enable_fp8_kv_cache=cfg.kv_cache_quant == "fp8",
             attention_scale=cfg.attention_scaling,
+            # Sliding layers have no skippable long-range tiles.
+            skip_softmax_scale_factor=(cfg.skip_softmax_scale_factor
+                                       if self.attention_type
+                                       == "full_attention" else 0.0),
             enable_kv_shared=self.is_kv_shared,
             qkv_scales=self.weights.qkv_scales(self.prefix),
             attention_mask=attention_mask,
             attention_pos_id=attention_pos_id,
         )
+        attention = attention.reshape(
+            (0, cfg.num_attention_heads * self.head_dim))
         return self.o_proj(attention), present
 
 
@@ -329,16 +331,14 @@ class Gemma4TextDecoderLayer(Module):
                 hidden_states,
                 past,
                 rope,
-                context_lengths,
-                cache_start,
-                kv_page_table,
+                ragged,
                 attention_mask,
                 attention_pos_id,
                 ple_input=None):
         residual = hidden_states
         attention, present = self.self_attn(
-            self.input_layernorm(hidden_states), past, rope, context_lengths,
-            cache_start, kv_page_table, attention_mask, attention_pos_id)
+            self.input_layernorm(hidden_states), past, rope, ragged,
+            attention_mask, attention_pos_id)
         attention = self.post_attention_layernorm(attention)
         hidden_states = residual + attention
         residual = hidden_states
@@ -357,7 +357,7 @@ class Gemma4TextDecoderLayer(Module):
             gated = self.ple_norm(self.ple_projection(gated * ple_input))
             hidden_states = hidden_states + gated
         hidden_states = hidden_states * F.constant(
-            self.layer_scalar.reshape(1, 1, 1), "layer_scalar")
+            self.layer_scalar.reshape(1, 1), "layer_scalar")
         return hidden_states, present
 
 
@@ -389,7 +389,7 @@ class Gemma4ForCausalLM(NetworkModule):
         io: Dict[str, object] = {
             "inputs_embeds":
             self.add_input("inputs_embeds", trt.float16,
-                           (-1, -1, cfg.hidden_size)),
+                           (-1, cfg.hidden_size)),
             "past": [
                 self.add_input(
                     f"past_key_values_{index}", kv_dtype,
@@ -397,40 +397,31 @@ class Gemma4ForCausalLM(NetworkModule):
                      cfg.layer_head_dim(index)))
                 for index in range(cfg.num_hidden_layers)
             ],
-            "context_lengths":
-            self.add_input("context_lengths", trt.int32, (-1, )),
-            "cache_start":
-            self.add_input("kvcache_start_index", trt.int32, (-1, )),
-            "kv_page_table":
-            self.add_input("kv_page_table", trt.int32, (-1, 2, -1)),
-            "last_token_ids":
-            self.add_input("last_token_ids", trt.int64,
-                           (-1, -1) if cfg.engine_role == "base" else (-1, 1)),
         }
+        io.update(add_ragged_decoder_inputs(self.add_input).as_dict())
         if cfg.uses_dual_rope:
             sliding_dim = cfg.rope_rotary_dim(cfg.sliding_rope_config,
                                               cfg.head_dim)
             full_dim = cfg.rope_rotary_dim(cfg.full_rope_config,
                                            cfg.global_head_dim or cfg.head_dim)
             io["rope_sliding"] = self.add_input("rope_rotary_cos_sin_sliding",
-                                                trt.float32,
-                                                (-1, -1, sliding_dim))
+                                                trt.float32, (-1, sliding_dim))
             io["rope_full"] = self.add_input("rope_rotary_cos_sin_full",
-                                             trt.float32, (-1, -1, full_dim))
+                                             trt.float32, (-1, full_dim))
         else:
             io["rope"] = self.add_input("rope_rotary_cos_sin", trt.float32,
-                                        (-1, -1, cfg.rotary_dim))
+                                        (-1, cfg.rotary_dim))
         if cfg.engine_role == "base":
-            io["attention_pos_id"] = self.add_input("attention_pos_id",
-                                                    trt.int32, (-1, -1))
-            io["attention_mask"] = self.add_input("attention_mask", trt.int32,
-                                                  (-1, -1, -1))
+            io["attention_pos_id"] = self.add_input("attention_position_ids",
+                                                    trt.int32, (-1, ))
+            io["attention_mask"] = self.add_input("packed_attention_mask",
+                                                  trt.int32, (-1, -1))
         else:
             io["attention_pos_id"] = None
             io["attention_mask"] = None
         io["ple"] = [
             self.add_input(f"ple_token_embeds_{index}", trt.float16,
-                           (-1, -1, cfg.hidden_size_per_layer_input))
+                           (-1, cfg.hidden_size_per_layer_input))
             for index in range(cfg.num_hidden_layers)
         ] if cfg.hidden_size_per_layer_input > 0 else []
         return io
@@ -442,15 +433,15 @@ class Gemma4ForCausalLM(NetworkModule):
         projected = self.ple_projection(hidden_states)
         projected = projected * np.float16(cfg.hidden_size**-0.5)
         projected = projected.reshape(
-            (0, 0, cfg.num_hidden_layers, cfg.hidden_size_per_layer_input))
-        projected = projected.transpose(
-            (0, 1, 3, 2)).slice_last_dim(index, 1, 4)
-        projected = projected.reshape((0, 0, cfg.hidden_size_per_layer_input))
+            (0, cfg.num_hidden_layers, cfg.hidden_size_per_layer_input))
+        projected = projected.transpose((0, 2, 1)).slice_last_dim(index, 1, 3)
+        projected = projected.reshape((0, cfg.hidden_size_per_layer_input))
         projected = self.ple_projection_norm(projected)
         combined = projected + token_ple[index]
         return combined * np.float16(2**-0.5)
 
     def forward(self, **io):
+        ragged = RaggedDecoderInputs.from_dict(io)
         outputs = {}
         hidden_states = io["inputs_embeds"]
         present = []
@@ -464,15 +455,15 @@ class Gemma4ForCausalLM(NetworkModule):
             else:
                 rope = io["rope"]
             ple = self._layer_ple(io["inputs_embeds"], io["ple"], index)
-            hidden_states, layer_present = layer(
-                hidden_states, io["past"][index], rope, io["context_lengths"],
-                io["cache_start"], io["kv_page_table"], io["attention_mask"],
-                io["attention_pos_id"], ple)
+            hidden_states, layer_present = layer(hidden_states,
+                                                 io["past"][index], rope,
+                                                 ragged, io["attention_mask"],
+                                                 io["attention_pos_id"], ple)
             present.append(layer_present)
             post_layer_hidden.append(hidden_states)
         pre_norm_hidden = hidden_states
         hidden_states = self.norm(hidden_states)
-        selected = F.gather_last_tokens(hidden_states, io["last_token_ids"])
+        selected = F.gather_token_rows(hidden_states, ragged.logits_indices)
         logits = F.cast(self.lm_head(selected), trt.float32)
         if self.cfg.final_logit_softcapping is not None:
             cap_value = float(self.cfg.final_logit_softcapping)
@@ -484,13 +475,13 @@ class Gemma4ForCausalLM(NetworkModule):
                     and self.cfg.eagle3_target_layer_ids):
                 indices = self.cfg.eagle3_target_layer_ids
                 feedback = F.concatenate(
-                    tuple(post_layer_hidden[index] for index in indices), 2)
+                    tuple(post_layer_hidden[index] for index in indices), 1)
             elif (self.cfg.spec_decode_type == "eagle3"
                   and len(pre_layer_hidden) >= 4):
                 indices = (2, len(pre_layer_hidden) // 2,
                            len(pre_layer_hidden) - 4)
                 feedback = F.concatenate(
-                    tuple(pre_layer_hidden[index] for index in indices), 2)
+                    tuple(pre_layer_hidden[index] for index in indices), 1)
             elif self.cfg.spec_decode_type in ("dflash", "dspark"):
                 feedback = F.hidden_state_feedback(
                     hidden_states,

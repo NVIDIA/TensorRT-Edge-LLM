@@ -566,3 +566,32 @@ TEST(AudioFbankPerKernelTest, LogMelNormalizeAndCastF16)
 
     CUDA_CHECK(cudaStreamDestroy(stream));
 }
+
+// ============================================================================
+// uploadHostPcmF32ToGpu — the H2D step in front of the kernels
+// ============================================================================
+
+// The staging copy reads host Float samples only; a device, Half or empty tensor is turned away
+// before any byte moves.
+TEST(AudioFbankPerKernelTest, UploadHostPcmRejectsNonHostFloatSamples)
+{
+    cudaStream_t stream{};
+    CUDA_CHECK(cudaStreamCreate(&stream));
+    rt::Tensor staging({1024}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+
+    std::vector<float> host(16, 0.5f);
+    rt::Tensor const device({16}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor const half({16}, rt::DeviceType::kCPU, nvinfer1::DataType::kHALF);
+    rt::Tensor const empty(
+        host.data(), rt::Coords{static_cast<int64_t>(0)}, rt::DeviceType::kCPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor const valid(host.data(), rt::Coords{16}, rt::DeviceType::kCPU, nvinfer1::DataType::kFLOAT);
+
+    EXPECT_FALSE(rt::audioUtils::uploadHostPcmF32ToGpu(device, staging, stream));
+    EXPECT_FALSE(rt::audioUtils::uploadHostPcmF32ToGpu(half, staging, stream));
+    EXPECT_FALSE(rt::audioUtils::uploadHostPcmF32ToGpu(empty, staging, stream));
+    EXPECT_TRUE(rt::audioUtils::uploadHostPcmF32ToGpu(valid, staging, stream));
+    EXPECT_EQ(staging.getShape().volume(), 16);
+
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    CUDA_CHECK(cudaStreamDestroy(stream));
+}

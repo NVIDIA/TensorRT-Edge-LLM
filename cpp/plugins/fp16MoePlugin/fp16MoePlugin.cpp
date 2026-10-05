@@ -214,19 +214,46 @@ void validateAttributes(int32_t numExperts, int32_t topK, int32_t hiddenSize, in
     }
 }
 
-bool validateTokenShape(Dims const& router, Dims const& hidden, int32_t numExperts, char const* profilePoint)
+bool getTokenCount(Dims const& hidden, int32_t hiddenSize, int64_t& tokenCount) noexcept
 {
-    if (router.nbDims != 2 || hidden.nbDims != 3 || router.d[0] <= 0 || router.d[1] != numExperts || hidden.d[0] <= 0
-        || hidden.d[1] <= 0 || hidden.d[2] <= 0)
+    if (hidden.nbDims != 2 || hidden.d[1] != hiddenSize || hidden.d[0] <= 0)
+    {
+        return false;
+    }
+    tokenCount = hidden.d[0];
+    return true;
+}
+
+bool hasSameDims(Dims const& lhs, Dims const& rhs) noexcept
+{
+    if (lhs.nbDims != rhs.nbDims)
+    {
+        return false;
+    }
+    for (int32_t index = 0; index < lhs.nbDims; ++index)
+    {
+        if (lhs.d[index] != rhs.d[index])
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool validateTokenShape(
+    Dims const& router, Dims const& hidden, int32_t hiddenSize, int32_t numExperts, char const* profilePoint)
+{
+    int64_t hiddenTokens{};
+    if (router.nbDims != 2 || router.d[0] <= 0 || router.d[1] != numExperts
+        || !getTokenCount(hidden, hiddenSize, hiddenTokens))
     {
         LOG_ERROR("Fp16MoePlugin: invalid %s profile dimensions", profilePoint);
         return false;
     }
-    int64_t const hiddenTokens = static_cast<int64_t>(hidden.d[0]) * hidden.d[1];
     if (hiddenTokens != router.d[0])
     {
-        LOG_ERROR("Fp16MoePlugin: %s router_logits d[0]=%d must equal hidden_states B*S=%d*%d=%lld", profilePoint,
-            router.d[0], hidden.d[0], hidden.d[1], static_cast<long long>(hiddenTokens));
+        LOG_ERROR("Fp16MoePlugin: %s router_logits rows=%d must equal hidden_states token count=%lld", profilePoint,
+            router.d[0], static_cast<long long>(hiddenTokens));
         return false;
     }
     return true;
@@ -375,10 +402,17 @@ int32_t Fp16MoePlugin::getOutputShapes(DimsExprs const* inputs, int32_t nbInputs
         LOG_ERROR("Fp16MoePlugin: getOutputShapes expected %d inputs and one output", numInputs());
         return -1;
     }
-    outputs[0].nbDims = 3;
-    outputs[0].d[0] = inputs[kIN_HIDDEN_STATES].d[0];
-    outputs[0].d[1] = inputs[kIN_HIDDEN_STATES].d[1];
-    outputs[0].d[2] = exprBuilder.constant(mHiddenSize);
+    if (inputs[kIN_HIDDEN_STATES].nbDims != 2)
+    {
+        LOG_ERROR("Fp16MoePlugin: hidden_states must have rank 2");
+        return -1;
+    }
+    (void) exprBuilder;
+    outputs[0].nbDims = inputs[kIN_HIDDEN_STATES].nbDims;
+    for (int32_t index = 0; index < outputs[0].nbDims; ++index)
+    {
+        outputs[0].d[index] = inputs[kIN_HIDDEN_STATES].d[index];
+    }
     return 0;
 }
 
@@ -398,7 +432,7 @@ bool Fp16MoePlugin::supportsFormatCombination(
 
     if (pos == nbIn) // sole output, at the position past the last input.
     {
-        return tensor.type == DataType::kHALF && tensor.dims.nbDims == 3 && tensor.dims.d[2] == mHiddenSize;
+        return tensor.type == DataType::kHALF && tensor.dims.nbDims == 2 && tensor.dims.d[1] == mHiddenSize;
     }
 
     int32_t const fc1N = static_cast<int32_t>(mActivationType == kACT_SWIGLU ? 2LL * mMoeInterSize : mMoeInterSize);
@@ -407,7 +441,7 @@ bool Fp16MoePlugin::supportsFormatCombination(
     case kIN_ROUTER_LOGITS:
         return tensor.type == DataType::kFLOAT && tensor.dims.nbDims == 2 && tensor.dims.d[1] == mNumExperts;
     case kIN_HIDDEN_STATES:
-        return tensor.type == DataType::kHALF && tensor.dims.nbDims == 3 && tensor.dims.d[2] == mHiddenSize;
+        return tensor.type == DataType::kHALF && tensor.dims.nbDims == 2 && tensor.dims.d[1] == mHiddenSize;
     case kIN_FC1_WEIGHTS:
         return tensor.type == DataType::kHALF && hasExactDims3(tensor.dims, mNumExperts, fc1N, mHiddenSize);
     case kIN_FC2_WEIGHTS:
@@ -436,17 +470,20 @@ int32_t Fp16MoePlugin::configurePlugin(DynamicPluginTensorDesc const* inputs, in
             LOG_ERROR("Fp16MoePlugin: e_score_correction_bias must be a length-%d 1-D tensor", mNumExperts);
             return -1;
         }
-        if (!validateTokenShape(inputs[kIN_ROUTER_LOGITS].min, inputs[kIN_HIDDEN_STATES].min, mNumExperts, "minimum")
-            || !validateTokenShape(inputs[kIN_ROUTER_LOGITS].opt, inputs[kIN_HIDDEN_STATES].opt, mNumExperts, "optimum")
+        if (!validateTokenShape(
+                inputs[kIN_ROUTER_LOGITS].min, inputs[kIN_HIDDEN_STATES].min, mHiddenSize, mNumExperts, "minimum")
             || !validateTokenShape(
-                inputs[kIN_ROUTER_LOGITS].max, inputs[kIN_HIDDEN_STATES].max, mNumExperts, "maximum"))
+                inputs[kIN_ROUTER_LOGITS].opt, inputs[kIN_HIDDEN_STATES].opt, mHiddenSize, mNumExperts, "optimum")
+            || !validateTokenShape(
+                inputs[kIN_ROUTER_LOGITS].max, inputs[kIN_HIDDEN_STATES].max, mHiddenSize, mNumExperts, "maximum"))
         {
             return -1;
         }
-        if (inputs[kIN_HIDDEN_STATES].min.d[2] != mHiddenSize || inputs[kIN_HIDDEN_STATES].opt.d[2] != mHiddenSize
-            || inputs[kIN_HIDDEN_STATES].max.d[2] != mHiddenSize)
+        if (!hasSameDims(outputs[0].min, inputs[kIN_HIDDEN_STATES].min)
+            || !hasSameDims(outputs[0].opt, inputs[kIN_HIDDEN_STATES].opt)
+            || !hasSameDims(outputs[0].max, inputs[kIN_HIDDEN_STATES].max))
         {
-            LOG_ERROR("Fp16MoePlugin: hidden_states profile hidden dimension must equal hidden_size=%d", mHiddenSize);
+            LOG_ERROR("Fp16MoePlugin: output profile dimensions must match hidden_states");
             return -1;
         }
 
@@ -519,7 +556,14 @@ size_t Fp16MoePlugin::getWorkspaceSize(DynamicPluginTensorDesc const* inputs, in
 #else
     try
     {
-        int64_t const maxTokens64 = inputs[kIN_ROUTER_LOGITS].max.d[0];
+        int64_t maxTokens64{};
+        if (!getTokenCount(inputs[kIN_HIDDEN_STATES].max, mHiddenSize, maxTokens64)
+            || inputs[kIN_ROUTER_LOGITS].max.nbDims != 2 || inputs[kIN_ROUTER_LOGITS].max.d[0] != maxTokens64
+            || inputs[kIN_ROUTER_LOGITS].max.d[1] != mNumExperts)
+        {
+            LOG_ERROR("Fp16MoePlugin: invalid profile maximum shapes while computing workspace");
+            return 0;
+        }
         if (maxTokens64 <= 0 || maxTokens64 > std::numeric_limits<int32_t>::max())
         {
             LOG_ERROR("Fp16MoePlugin: invalid profile maximum token count");
@@ -557,9 +601,9 @@ size_t Fp16MoePlugin::getWorkspaceSize(DynamicPluginTensorDesc const* inputs, in
 int32_t Fp16MoePlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTensorDesc const* outputDesc,
     void const* const* inputs, void* const* outputs, void* workspace, cudaStream_t stream) noexcept
 {
-    (void) outputDesc;
 #if !defined(CUTE_DSL_F16_MOE_ENABLED)
     (void) inputDesc;
+    (void) outputDesc;
     (void) inputs;
     (void) outputs;
     (void) workspace;
@@ -569,8 +613,8 @@ int32_t Fp16MoePlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTensorDe
 #else
     try
     {
-        if (inputDesc == nullptr || inputs == nullptr || outputs == nullptr || workspace == nullptr
-            || inputs[kIN_ROUTER_LOGITS] == nullptr || inputs[kIN_HIDDEN_STATES] == nullptr
+        if (inputDesc == nullptr || outputDesc == nullptr || inputs == nullptr || outputs == nullptr
+            || workspace == nullptr || inputs[kIN_ROUTER_LOGITS] == nullptr || inputs[kIN_HIDDEN_STATES] == nullptr
             || inputs[kIN_FC1_WEIGHTS] == nullptr || inputs[kIN_FC2_WEIGHTS] == nullptr || outputs[0] == nullptr)
         {
             LOG_ERROR("Fp16MoePlugin: null descriptor, tensor, output, or workspace");
@@ -589,15 +633,16 @@ int32_t Fp16MoePlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTensorDe
 
         Dims const& hiddenDims = inputDesc[kIN_HIDDEN_STATES].dims;
         Dims const& routerDims = inputDesc[kIN_ROUTER_LOGITS].dims;
-        if (hiddenDims.nbDims != 3 || routerDims.nbDims != 2 || hiddenDims.d[0] <= 0 || hiddenDims.d[1] <= 0)
+        int64_t numTokens64{};
+        if (!getTokenCount(hiddenDims, mHiddenSize, numTokens64) || routerDims.nbDims != 2
+            || routerDims.d[1] != mNumExperts || !hasSameDims(outputDesc[0].dims, hiddenDims))
         {
             LOG_ERROR("Fp16MoePlugin: invalid runtime hidden/router dimensions");
             return -1;
         }
-        int64_t const numTokens64 = static_cast<int64_t>(hiddenDims.d[0]) * hiddenDims.d[1];
         if (numTokens64 != routerDims.d[0] || numTokens64 > std::numeric_limits<int32_t>::max())
         {
-            LOG_ERROR("Fp16MoePlugin: runtime router token count must equal hidden_states B*S and fit INT32");
+            LOG_ERROR("Fp16MoePlugin: runtime router token count must equal hidden_states tokens and fit INT32");
             return -1;
         }
         int64_t const routedRows64 = numTokens64 * mTopK;
@@ -690,19 +735,23 @@ int32_t Fp16MoePlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTensorDe
 int32_t Fp16MoePlugin::onShapeChange(
     PluginTensorDesc const* inputs, int32_t nbInputs, PluginTensorDesc const* outputs, int32_t nbOutputs) noexcept
 {
-    (void) outputs;
-    if (inputs == nullptr || nbInputs != numInputs() || nbOutputs != kNB_OUTPUTS)
+    if (inputs == nullptr || outputs == nullptr || nbInputs != numInputs() || nbOutputs != kNB_OUTPUTS)
     {
         LOG_ERROR("Fp16MoePlugin: onShapeChange expected %d inputs and one output", numInputs());
         return -1;
     }
     Dims const& hidden = inputs[kIN_HIDDEN_STATES].dims;
     Dims const& router = inputs[kIN_ROUTER_LOGITS].dims;
-    if (hidden.nbDims != 3 || router.nbDims != 2 || hidden.d[0] <= 0 || hidden.d[1] <= 0)
+    int64_t tokens{};
+    if (!getTokenCount(hidden, mHiddenSize, tokens) || router.nbDims != 2 || router.d[1] != mNumExperts
+        || !hasSameDims(outputs[0].dims, hidden))
     {
         return -1;
     }
-    int64_t const tokens = static_cast<int64_t>(hidden.d[0]) * hidden.d[1];
+    if (tokens > std::numeric_limits<int64_t>::max() / mTopK)
+    {
+        return -1;
+    }
     int64_t const routedRows = tokens * mTopK;
     if (router.d[0] != tokens || mMaxRoutedRows <= 0 || routedRows > mMaxRoutedRows)
     {

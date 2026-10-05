@@ -22,6 +22,9 @@
 #include "kernels/mamba/selectiveStateUpdate.h"
 #include "kernels/speculative/mtpStateScatterKernels.h"
 
+#include <limits>
+#include <string>
+
 using namespace nvinfer1;
 
 namespace trt_edgellm
@@ -89,6 +92,7 @@ MambaCacheManager::MambaCacheManager(Config const& config, cudaStream_t stream)
             mReplayDaStates.reserve(mConfig.numRecurrentLayers);
             mReplayUStates.reserve(mConfig.numRecurrentLayers);
             mReplayBStates.reserve(mConfig.numRecurrentLayers);
+            mReplayDtStates.reserve(mConfig.numRecurrentLayers);
         }
         else
         {
@@ -101,7 +105,7 @@ MambaCacheManager::MambaCacheManager(Config const& config, cudaStream_t stream)
             auto const idx = std::to_string(i);
             if (useReplay)
             {
-                // Replay stash (FP32): dA [B,S,H], u [B,S,H,dim], B [B,S,ngroups,dstate].
+                // Replay stash (FP32): dA/dt [B,S,H], x in u [B,S,H,dim], B [B,S,ngroups,dstate].
                 int64_t const daVolume = stashSeq * mConfig.recurrentStateNumHeads;
                 int64_t const uVolume = daVolume * mConfig.recurrentStateHeadDim;
                 int64_t const bVolume = stashSeq * mConfig.recurrentStateNumGroups * mConfig.recurrentStateSize;
@@ -116,10 +120,14 @@ MambaCacheManager::MambaCacheManager(Config const& config, cudaStream_t stream)
                 mReplayBStates.emplace_back(rt::Tensor({mConfig.maxBatchSize, mConfig.maxIntermediateSeqLen,
                                                            mConfig.recurrentStateNumGroups, mConfig.recurrentStateSize},
                     DeviceType::kGPU, DataType::kFLOAT, "MambaCacheManager::replayB_" + idx));
+                mReplayDtStates.emplace_back(
+                    rt::Tensor({mConfig.maxBatchSize, mConfig.maxIntermediateSeqLen, mConfig.recurrentStateNumHeads},
+                        DeviceType::kGPU, DataType::kFLOAT, "MambaCacheManager::replayDt_" + idx));
                 CUDA_CHECK(cudaMemsetAsync(mReplayDaStates.back().rawPointer(), 0, daVolume * sizeof(float), stream));
                 CUDA_CHECK(cudaMemsetAsync(mReplayUStates.back().rawPointer(), 0, uVolume * sizeof(float), stream));
                 CUDA_CHECK(cudaMemsetAsync(mReplayBStates.back().rawPointer(), 0, bVolume * sizeof(float), stream));
-                totalBytes += static_cast<size_t>(daVolume + uVolume + bVolume) * sizeof(float);
+                CUDA_CHECK(cudaMemsetAsync(mReplayDtStates.back().rawPointer(), 0, daVolume * sizeof(float), stream));
+                totalBytes += static_cast<size_t>(2 * daVolume + uVolume + bVolume) * sizeof(float);
             }
             else
             {
@@ -171,7 +179,7 @@ MambaCacheManager::MambaCacheManager(Config const& config, cudaStream_t stream)
             for (int32_t i = 0; i < mConfig.numRecurrentLayers; ++i)
             {
                 replayInfos[i] = {mRecurrentStates[i].rawPointer(), mReplayDaStates[i].rawPointer(),
-                    mReplayUStates[i].rawPointer(), mReplayBStates[i].rawPointer()};
+                    mReplayUStates[i].rawPointer(), mReplayBStates[i].rawPointer(), mReplayDtStates[i].rawPointer()};
             }
             size_t const replayInfoBytes = replayInfos.size() * sizeof(mamba_ssm::MambaReplayLayerInfo);
             mDeviceMambaReplayLayerInfos = rt::Tensor({static_cast<int64_t>(replayInfoBytes)}, DeviceType::kGPU,
@@ -185,6 +193,20 @@ MambaCacheManager::MambaCacheManager(Config const& config, cudaStream_t stream)
         LOG_INFO("MambaCacheManager: allocated spec-verify intermediate state buffers (%d layers, maxSeqLen=%d)",
             mConfig.numRecurrentLayers, mConfig.maxIntermediateSeqLen);
     }
+
+    size_t const stateInfoBytes
+        = static_cast<size_t>(mConfig.numRecurrentLayers) * sizeof(mamba_ssm::MambaStateLayerInfo);
+    mHostStateLayerInfos = rt::Tensor(
+        {static_cast<int64_t>(stateInfoBytes)}, DeviceType::kCPU, DataType::kINT8, "MambaCacheManager::stateInfosHost");
+    mDeviceStateLayerInfos = rt::Tensor(
+        {static_cast<int64_t>(stateInfoBytes)}, DeviceType::kGPU, DataType::kINT8, "MambaCacheManager::stateInfos");
+    auto* const stateInfos = static_cast<mamba_ssm::MambaStateLayerInfo*>(mHostStateLayerInfos.rawPointer());
+    for (int32_t layer = 0; layer < mConfig.numRecurrentLayers; ++layer)
+    {
+        stateInfos[layer] = {mRecurrentStates[layer].rawPointer(), mConvStates[layer].rawPointer()};
+    }
+    CUDA_CHECK(cudaMemcpyAsync(
+        mDeviceStateLayerInfos.rawPointer(), stateInfos, stateInfoBytes, cudaMemcpyHostToDevice, stream));
 
     LOG_DEBUG("MambaCacheManager(layers=%d) allocated %.2f MB total GPU memory", mConfig.numRecurrentLayers,
         static_cast<float>(totalBytes) / (1024.0f * 1024.0f));
@@ -202,6 +224,9 @@ MambaCacheManager::MambaCacheManager(MambaCacheManager&& other) noexcept
     mReplayDaStates = std::move(other.mReplayDaStates);
     mReplayUStates = std::move(other.mReplayUStates);
     mReplayBStates = std::move(other.mReplayBStates);
+    mReplayDtStates = std::move(other.mReplayDtStates);
+    mHostStateLayerInfos = std::move(other.mHostStateLayerInfos);
+    mDeviceStateLayerInfos = std::move(other.mDeviceStateLayerInfos);
     mDeviceMtpLayerInfos = std::move(other.mDeviceMtpLayerInfos);
     mDeviceMambaReplayLayerInfos = std::move(other.mDeviceMambaReplayLayerInfos);
 
@@ -220,6 +245,9 @@ MambaCacheManager& MambaCacheManager::operator=(MambaCacheManager&& other) noexc
         mReplayDaStates = std::move(other.mReplayDaStates);
         mReplayUStates = std::move(other.mReplayUStates);
         mReplayBStates = std::move(other.mReplayBStates);
+        mReplayDtStates = std::move(other.mReplayDtStates);
+        mHostStateLayerInfos = std::move(other.mHostStateLayerInfos);
+        mDeviceStateLayerInfos = std::move(other.mDeviceStateLayerInfos);
         mDeviceMtpLayerInfos = std::move(other.mDeviceMtpLayerInfos);
         mDeviceMambaReplayLayerInfos = std::move(other.mDeviceMambaReplayLayerInfos);
 
@@ -240,11 +268,95 @@ rt::Tensor& MambaCacheManager::getConvState(int32_t recurrentLayerIdx) noexcept
 
 void MambaCacheManager::clearStates(cudaStream_t stream)
 {
-    for (int32_t i = 0; i < mConfig.numRecurrentLayers; ++i)
+    if (mConfig.numRecurrentLayers == 0)
     {
-        CUDA_CHECK(
-            cudaMemsetAsync(mRecurrentStates[i].rawPointer(), 0, mRecurrentStates[i].getMemoryCapacity(), stream));
-        CUDA_CHECK(cudaMemsetAsync(mConvStates[i].rawPointer(), 0, mConvStates[i].getMemoryCapacity(), stream));
+        return;
+    }
+    int64_t const recurrentRowBytes = static_cast<int64_t>(mConfig.recurrentStateNumHeads)
+        * mConfig.recurrentStateHeadDim * mConfig.recurrentStateSize
+        * static_cast<int64_t>(rt::utils::getTypeSize(mConfig.recurrentStateType));
+    int64_t const convRowBytes = static_cast<int64_t>(mConfig.convDim) * mConfig.convKernel
+        * static_cast<int64_t>(rt::utils::getTypeSize(mConfig.convStateType));
+    mamba_ssm::invokeMambaStateClear(
+        static_cast<mamba_ssm::MambaStateLayerInfo const*>(mDeviceStateLayerInfos.rawPointer()),
+        mConfig.numRecurrentLayers, mConfig.maxBatchSize, -1, recurrentRowBytes, convRowBytes, stream);
+}
+
+void MambaCacheManager::clearSlot(int32_t slot, cudaStream_t stream)
+{
+    check::check(slot >= 0 && slot < mConfig.maxBatchSize, "Resident state slot is out of range.");
+    if (mConfig.numRecurrentLayers == 0)
+    {
+        return;
+    }
+    int64_t const recurrentRowBytes = static_cast<int64_t>(mConfig.recurrentStateNumHeads)
+        * mConfig.recurrentStateHeadDim * mConfig.recurrentStateSize
+        * static_cast<int64_t>(rt::utils::getTypeSize(mConfig.recurrentStateType));
+    int64_t const convRowBytes = static_cast<int64_t>(mConfig.convDim) * mConfig.convKernel
+        * static_cast<int64_t>(rt::utils::getTypeSize(mConfig.convStateType));
+    mamba_ssm::invokeMambaStateClear(
+        static_cast<mamba_ssm::MambaStateLayerInfo const*>(mDeviceStateLayerInfos.rawPointer()),
+        mConfig.numRecurrentLayers, mConfig.maxBatchSize, slot, recurrentRowBytes, convRowBytes, stream);
+}
+
+void MambaCacheManager::restoreSlot(int32_t slot, std::vector<rt::Tensor> const& recurrentStates,
+    std::vector<rt::Tensor> const& convStates, cudaStream_t stream)
+{
+    check::check(slot >= 0 && slot < mConfig.maxBatchSize, "Resident state slot is out of range.");
+    check::check(recurrentStates.size() <= static_cast<size_t>(mConfig.numRecurrentLayers)
+            && convStates.size() <= static_cast<size_t>(mConfig.numRecurrentLayers),
+        "Cached recurrent state contains more layers than the resident pool.");
+
+    auto validate = [](rt::Tensor const& tensor, nvinfer1::DataType type, rt::Coords const& shape, int64_t bytes,
+                        char const* kind) {
+        check::check(tensor.getDeviceType() == DeviceType::kGPU && tensor.getDataType() == type
+                && tensor.getShape() == shape && tensor.getMemoryCapacity() >= bytes,
+            std::string("Cached ") + kind + " state does not match the resident pool descriptor.");
+    };
+    rt::Coords const recurrentShape{
+        1, mConfig.recurrentStateNumHeads, mConfig.recurrentStateHeadDim, mConfig.recurrentStateSize};
+    rt::Coords const convShape{1, mConfig.convDim, mConfig.convKernel};
+    int64_t const recurrentElements = recurrentShape.volume();
+    int64_t const convElements = convShape.volume();
+    int64_t const recurrentElementBytes = static_cast<int64_t>(rt::utils::getTypeSize(mConfig.recurrentStateType));
+    int64_t const convElementBytes = static_cast<int64_t>(rt::utils::getTypeSize(mConfig.convStateType));
+    check::check(recurrentElements > 0 && convElements > 0 && recurrentElementBytes > 0 && convElementBytes > 0
+            && recurrentElements <= std::numeric_limits<int64_t>::max() / recurrentElementBytes
+            && convElements <= std::numeric_limits<int64_t>::max() / convElementBytes,
+        "Resident state slot byte size is invalid.");
+    int64_t const recurrentSlotBytes = recurrentElements * recurrentElementBytes;
+    int64_t const convSlotBytes = convElements * convElementBytes;
+    for (rt::Tensor const& state : recurrentStates)
+    {
+        validate(state, mConfig.recurrentStateType, recurrentShape, recurrentSlotBytes, "recurrent");
+    }
+    for (rt::Tensor const& state : convStates)
+    {
+        validate(state, mConfig.convStateType, convShape, convSlotBytes, "convolution");
+    }
+
+    for (int32_t layer = 0; layer < mConfig.numRecurrentLayers; ++layer)
+    {
+        auto* recurrent = static_cast<char*>(mRecurrentStates[layer].rawPointer()) + slot * recurrentSlotBytes;
+        auto* conv = static_cast<char*>(mConvStates[layer].rawPointer()) + slot * convSlotBytes;
+        if (layer < static_cast<int32_t>(recurrentStates.size()))
+        {
+            CUDA_CHECK(cudaMemcpyAsync(recurrent, recurrentStates[layer].rawPointer(),
+                static_cast<size_t>(recurrentSlotBytes), cudaMemcpyDeviceToDevice, stream));
+        }
+        else
+        {
+            CUDA_CHECK(cudaMemsetAsync(recurrent, 0, static_cast<size_t>(recurrentSlotBytes), stream));
+        }
+        if (layer < static_cast<int32_t>(convStates.size()))
+        {
+            CUDA_CHECK(cudaMemcpyAsync(conv, convStates[layer].rawPointer(), static_cast<size_t>(convSlotBytes),
+                cudaMemcpyDeviceToDevice, stream));
+        }
+        else
+        {
+            CUDA_CHECK(cudaMemsetAsync(conv, 0, static_cast<size_t>(convSlotBytes), stream));
+        }
     }
 }
 
@@ -319,6 +431,8 @@ void MambaCacheManager::reshapeIntermediateStates(int32_t activeBatchSize, int32
             check::check(mReplayBStates[i].reshape(
                              {activeBatchSize, seqLen, mConfig.recurrentStateNumGroups, mConfig.recurrentStateSize}),
                 "Replay B reshape failed");
+            check::check(mReplayDtStates[i].reshape({activeBatchSize, seqLen, mConfig.recurrentStateNumHeads}),
+                "Replay dt reshape failed");
         }
         else
         {
@@ -345,6 +459,11 @@ rt::Tensor& MambaCacheManager::getReplayUState(int32_t recurrentLayerIdx) noexce
 rt::Tensor& MambaCacheManager::getReplayBState(int32_t recurrentLayerIdx) noexcept
 {
     return mReplayBStates[recurrentLayerIdx];
+}
+
+rt::Tensor& MambaCacheManager::getReplayDtState(int32_t recurrentLayerIdx) noexcept
+{
+    return mReplayDtStates[recurrentLayerIdx];
 }
 
 rt::Tensor& MambaCacheManager::getIntermediateRecurrentState(int32_t recurrentLayerIdx) noexcept
@@ -382,7 +501,8 @@ MambaCacheManager::Config const& MambaCacheManager::getConfig() const noexcept
     return mConfig;
 }
 
-void MambaCacheManager::scatterAcceptedLinearStates(rt::Tensor const& acceptLengths, cudaStream_t stream)
+void MambaCacheManager::scatterAcceptedLinearStates(
+    rt::Tensor const& acceptLengths, rt::Tensor const& stateIndices, cudaStream_t stream)
 {
     if (mIntermediateConvStates.empty())
     {
@@ -394,6 +514,9 @@ void MambaCacheManager::scatterAcceptedLinearStates(rt::Tensor const& acceptLeng
         useReplay ? mReplayUStates[0].getShape()[1] : mIntermediateRecurrentStates[0].getShape()[1]);
     int32_t const convElements = mConfig.convDim * mConfig.convKernel;
     int32_t const activeBatchSize = static_cast<int32_t>(acceptLengths.getShape()[0]);
+    check::check(stateIndices.getDeviceType() == DeviceType::kGPU && stateIndices.getDataType() == DataType::kINT32
+            && stateIndices.getShape().getNumDims() == 1 && stateIndices.getShape()[0] == activeBatchSize,
+        "stateIndices must be a GPU INT32 tensor with shape [activeBatchSize].");
     auto const* const layerInfos = static_cast<kernel::MtpLayerInfo const*>(mDeviceMtpLayerInfos.rawPointer());
     int32_t const* const acceptPtr = acceptLengths.dataPointer<int32_t>();
 
@@ -404,23 +527,25 @@ void MambaCacheManager::scatterAcceptedLinearStates(rt::Tensor const& acceptLeng
         auto const* const replayInfos
             = static_cast<mamba_ssm::MambaReplayLayerInfo const*>(mDeviceMambaReplayLayerInfos.rawPointer());
         mamba_ssm::invokeMambaReplayReconstructBatched(replayInfos, mConfig.numRecurrentLayers, mRecurrentStates[0],
-            mReplayUStates[0], mReplayBStates[0], acceptLengths, activeBatchSize, stream);
+            mReplayUStates[0], mReplayBStates[0], mReplayDtStates[0], acceptLengths, stateIndices, activeBatchSize,
+            stream);
     }
     else
     {
         // GDN linear MTP: commit the accepted per-token recurrent snapshot via the batched scatter.
         int32_t const recElements
             = mConfig.recurrentStateNumHeads * mConfig.recurrentStateHeadDim * mConfig.recurrentStateSize;
-        kernel::mtpScatterRecurrentStates(layerInfos, mConfig.numRecurrentLayers, activeBatchSize, verifySize,
-            recElements, acceptPtr, stream, mConfig.recurrentStateType == DataType::kHALF);
+        kernel::mtpScatterRecurrentStates(layerInfos, mConfig.numRecurrentLayers, activeBatchSize, mConfig.maxBatchSize,
+            verifySize, recElements, acceptPtr, stateIndices.dataPointer<int32_t>(), stream,
+            mConfig.recurrentStateType == DataType::kHALF);
     }
     // Conv state: commit the accepted per-token snapshot via the batched scatter.
-    kernel::mtpScatterConvStates(
-        layerInfos, mConfig.numRecurrentLayers, activeBatchSize, verifySize, convElements, acceptPtr, stream);
+    kernel::mtpScatterConvStates(layerInfos, mConfig.numRecurrentLayers, activeBatchSize, mConfig.maxBatchSize,
+        verifySize, convElements, acceptPtr, stateIndices.dataPointer<int32_t>(), stream);
 }
 
-void MambaCacheManager::scatterAcceptedTreeStates(
-    rt::Tensor const& acceptedStateNodeIds, rt::Tensor const& acceptLengths, cudaStream_t stream)
+void MambaCacheManager::scatterAcceptedTreeStates(rt::Tensor const& acceptedStateNodeIds,
+    rt::Tensor const& acceptLengths, rt::Tensor const& stateIndices, cudaStream_t stream)
 {
     if (mIntermediateRecurrentStates.empty())
     {
@@ -438,6 +563,8 @@ void MambaCacheManager::scatterAcceptedTreeStates(
     check::check(
         acceptedStateNodeIds.getDataType() == DataType::kINT32, "acceptedStateNodeIds must have INT32 data type.");
     check::check(acceptLengths.getDataType() == DataType::kINT32, "acceptLengths must have INT32 data type.");
+    check::check(stateIndices.getDeviceType() == DeviceType::kGPU && stateIndices.getDataType() == DataType::kINT32,
+        "stateIndices must be a GPU INT32 tensor.");
 
     auto const acceptedStateNodeIdsShape = acceptedStateNodeIds.getShape();
     auto const acceptLengthsShape = acceptLengths.getShape();
@@ -449,6 +576,8 @@ void MambaCacheManager::scatterAcceptedTreeStates(
     int32_t const maxAcceptLen = static_cast<int32_t>(acceptedStateNodeIdsShape[1]);
     check::check(
         acceptLengthsShape[0] == activeBatchSize, "acceptedStateNodeIds and acceptLengths batch sizes differ.");
+    check::check(stateIndices.getShape().getNumDims() == 1 && stateIndices.getShape()[0] == activeBatchSize,
+        "stateIndices must have shape [activeBatchSize].");
     if (activeBatchSize == 0 || maxAcceptLen == 0)
     {
         return;
@@ -466,35 +595,62 @@ void MambaCacheManager::scatterAcceptedTreeStates(
     int32_t const* const acceptLengthsPtr = acceptLengths.dataPointer<int32_t>();
 
     kernel::mtpScatterAcceptedTreeRecurrentStates(layerInfos, mConfig.numRecurrentLayers, activeBatchSize,
-        verifyTreeSize, recElements, acceptedStateNodeIdsPtr, maxAcceptLen, acceptLengthsPtr, stream);
-    kernel::mtpScatterAcceptedTreeConvStates(layerInfos, mConfig.numRecurrentLayers, activeBatchSize, verifyTreeSize,
-        convElements, acceptedStateNodeIdsPtr, maxAcceptLen, acceptLengthsPtr, stream);
+        mConfig.maxBatchSize, verifyTreeSize, recElements, acceptedStateNodeIdsPtr, maxAcceptLen, acceptLengthsPtr,
+        stateIndices.dataPointer<int32_t>(), stream);
+    kernel::mtpScatterAcceptedTreeConvStates(layerInfos, mConfig.numRecurrentLayers, activeBatchSize,
+        mConfig.maxBatchSize, verifyTreeSize, convElements, acceptedStateNodeIdsPtr, maxAcceptLen, acceptLengthsPtr,
+        stateIndices.dataPointer<int32_t>(), stream);
 }
 
-void MambaCacheManager::replayCommitAcceptedTreeStates(
-    rt::Tensor const& acceptedStateNodeIds, rt::Tensor const& acceptLengths, cudaStream_t stream)
+void MambaCacheManager::replayCommitAcceptedTreeStates(rt::Tensor const& acceptedStateNodeIds,
+    rt::Tensor const& acceptLengths, rt::Tensor const& stateIndices, cudaStream_t stream)
 {
-    if (mIntermediateRecurrentStates.empty())
-    {
-        check::check(mReplayUStates.empty(),
-            "Tree MTP is not supported for Mamba SSD replay recurrent states; chunk-form tree replay commit requires "
-            "GDN intermediate recurrent states.");
-        return;
-    }
-
     check::check(!mIntermediateConvStates.empty(), "Intermediate conv states are not allocated.");
-    check::check(mConfig.recurrentStateType == DataType::kFLOAT, "Replay commit supports FP32 recurrent states only.");
+    check::check(
+        acceptedStateNodeIds.getDeviceType() == DeviceType::kGPU, "acceptedStateNodeIds must be a GPU tensor.");
+    check::check(acceptLengths.getDeviceType() == DeviceType::kGPU, "acceptLengths must be a GPU tensor.");
     check::check(
         acceptedStateNodeIds.getDataType() == DataType::kINT32, "acceptedStateNodeIds must have INT32 data type.");
     check::check(acceptLengths.getDataType() == DataType::kINT32, "acceptLengths must have INT32 data type.");
 
     auto const idsShape = acceptedStateNodeIds.getShape();
+    auto const acceptLengthsShape = acceptLengths.getShape();
+    check::check(idsShape.getNumDims() == 2, "acceptedStateNodeIds must have shape [B, maxAcceptLen].");
+    check::check(acceptLengthsShape.getNumDims() == 1, "acceptLengths must have shape [B].");
     int32_t const activeBatchSize = static_cast<int32_t>(idsShape[0]);
+    check::check(
+        acceptLengthsShape[0] == activeBatchSize, "acceptedStateNodeIds and acceptLengths batch sizes differ.");
     int32_t const maxAcceptLen = static_cast<int32_t>(idsShape[1]);
     if (activeBatchSize == 0 || maxAcceptLen == 0)
     {
         return;
     }
+    check::check(stateIndices.getDeviceType() == DeviceType::kGPU && stateIndices.getDataType() == DataType::kINT32
+            && stateIndices.getShape().getNumDims() == 1 && stateIndices.getShape()[0] == activeBatchSize,
+        "stateIndices must be a GPU INT32 tensor with shape [activeBatchSize].");
+
+    if (!mReplayUStates.empty())
+    {
+        auto const replayShape = mReplayUStates[0].getShape();
+        check::check(replayShape[0] == activeBatchSize,
+            "Mamba replay states must be reshaped to the active batch size before tree commit.");
+        int32_t const verifyTreeSize = static_cast<int32_t>(replayShape[1]);
+        check::check(maxAcceptLen <= verifyTreeSize, "maxAcceptLen must not exceed the Mamba replay tree size.");
+        auto const* const replayInfos
+            = static_cast<mamba_ssm::MambaReplayLayerInfo const*>(mDeviceMambaReplayLayerInfos.rawPointer());
+        mamba_ssm::invokeMambaReplayReconstructBatched(replayInfos, mConfig.numRecurrentLayers, mRecurrentStates[0],
+            mReplayUStates[0], mReplayBStates[0], mReplayDtStates[0], acceptLengths, stateIndices, activeBatchSize,
+            stream, &acceptedStateNodeIds, maxAcceptLen);
+
+        int32_t const convElements = mConfig.convDim * mConfig.convKernel;
+        auto const* const layerInfos = static_cast<kernel::MtpLayerInfo const*>(mDeviceMtpLayerInfos.rawPointer());
+        kernel::mtpScatterAcceptedTreeConvStates(layerInfos, mConfig.numRecurrentLayers, activeBatchSize,
+            mConfig.maxBatchSize, verifyTreeSize, convElements, acceptedStateNodeIds.dataPointer<int32_t>(),
+            maxAcceptLen, acceptLengths.dataPointer<int32_t>(), stateIndices.dataPointer<int32_t>(), stream);
+        return;
+    }
+    check::check(!mIntermediateRecurrentStates.empty(), "Intermediate recurrent states are not allocated.");
+    check::check(mConfig.recurrentStateType == DataType::kFLOAT, "Replay commit supports FP32 recurrent states only.");
     check::check(maxAcceptLen <= kernel::kGDN_TREE_CHUNK_MAX_ACCEPT,
         format::fmtstr("replayCommitAcceptedTreeStates: maxAcceptLen (%d) exceeds kGDN_TREE_CHUNK_MAX_ACCEPT (%d); "
                        "blockSize must not exceed %d for the chunk-form replay kernel.",
@@ -524,14 +680,16 @@ void MambaCacheManager::replayCommitAcceptedTreeStates(
     int32_t const* const lensPtr = acceptLengths.dataPointer<int32_t>();
     auto const* const layerInfosForReplay = static_cast<kernel::MtpLayerInfo const*>(mDeviceMtpLayerInfos.rawPointer());
     CUDA_CHECK(kernel::gdnTreeReplayCommitBatched(layerInfosForReplay, mConfig.numRecurrentLayers,
-        stashBatchStrideBytes, idsPtr, lensPtr, activeBatchSize, maxAcceptLen, verifyTreeSize, h, hv, stream));
+        stashBatchStrideBytes, idsPtr, lensPtr, stateIndices.dataPointer<int32_t>(), activeBatchSize,
+        mConfig.maxBatchSize, maxAcceptLen, verifyTreeSize, h, hv, stream));
 
     // Conv states keep the checkpoint scatter (conv checkpoints remain valid
     // in chunk mode — the conv plugin path is unchanged).
     int32_t const convElements = mConfig.convDim * mConfig.convKernel;
     auto const* const layerInfos = static_cast<kernel::MtpLayerInfo const*>(mDeviceMtpLayerInfos.rawPointer());
-    kernel::mtpScatterAcceptedTreeConvStates(layerInfos, mConfig.numRecurrentLayers, activeBatchSize, verifyTreeSize,
-        convElements, idsPtr, maxAcceptLen, lensPtr, stream);
+    kernel::mtpScatterAcceptedTreeConvStates(layerInfos, mConfig.numRecurrentLayers, activeBatchSize,
+        mConfig.maxBatchSize, verifyTreeSize, convElements, idsPtr, maxAcceptLen, lensPtr,
+        stateIndices.dataPointer<int32_t>(), stream);
 }
 
 } // namespace rt

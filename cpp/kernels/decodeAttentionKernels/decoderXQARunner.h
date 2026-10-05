@@ -48,14 +48,18 @@ struct XQALaunchParams
     float kScale = 1.0f;             //!< K dequant scale (quantized -> original), host scalar
     float vScale = 1.0f;             //!< V dequant scale (quantized -> original), host scalar
     uint32_t slidingWinSize = 0;     //!< Sliding window size (0 = no sliding window)
+    bool contiguousQuerySwa = false; //!< Use a query-relative sliding-window boundary
     int32_t* semaphores = nullptr;   //!< Semaphores for synchronization
     void* scratch = nullptr;         //!< Scratch memory
 
     //! Unique device memory pointer for spec-decode tree attention
-    void* treeAttnMask = nullptr; //!< Tree attention mask
-    int32_t* qCuSeqLen = nullptr; //!< Cumulative query sequence lengths
+    void* treeAttnMask = nullptr;      //!< Tree attention mask
+    int32_t* qCuSeqLen = nullptr;      //!< Cumulative query sequence lengths for compact input
+    int32_t const* qSeqLens = nullptr; //!< Logical query lengths for fixed-width input
 
     float const* attentionSinks = nullptr; //!< Attention sinks parameter
+
+    bool enablePdl{true}; //!< Enable programmatic dependent launch when supported
 
     //! MHA parameters to locate a kernel to launch
     int32_t numQheads = 0;  //!< Number of query heads

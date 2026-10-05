@@ -65,6 +65,9 @@ def score_per_question(predictions_file, answers_file):
         responses = json.load(f)["responses"]
     with open(answers_file, encoding="utf-8") as f:
         requests = json.load(f)["requests"]
+    # Batched runs may emit responses out of dataset order; request_idx restores the mapping.
+    if all("request_idx" in r for r in responses):
+        responses = sorted(responses, key=lambda r: r["request_idx"])
     if len(responses) != len(requests):
         raise RuntimeError(
             f"{predictions_file} has {len(responses)} responses but the dataset has "
@@ -120,15 +123,16 @@ def make_inference_env(llm_inference_bin):
 
 
 def check_dataset_batch_size(dataset_file):
-    """DART pruning is gated to batch size 1 in the runtime — reject datasets that would make
-    every "DART" run silently identical to baseline."""
+    """Batched prefill is supported by visual-token pruning (each request in the batch is
+    pruned independently). Scoring realigns responses by request_idx, so batching only
+    affects the timing-free token statistics; note it for transparency."""
     with open(dataset_file, encoding="utf-8") as f:
         batch_size = json.load(f).get("batch_size", 1)
     if batch_size != 1:
-        raise RuntimeError(
-            f"{dataset_file} has batch_size={batch_size}, but visual-token pruning only runs at "
-            "batch size 1 — the DART configurations would silently equal baseline. "
-            "Regenerate the dataset with batch_size 1.")
+        print(
+            f"NOTE: {dataset_file} runs at batch_size={batch_size}; "
+            "responses are realigned to dataset order via request_idx before scoring."
+        )
 
 
 def run_config(args, dataset_file, dataset_name, tag, dart_ratio):
@@ -183,8 +187,8 @@ def run_config(args, dataset_file, dataset_name, tag, dart_ratio):
     if dart_ratio is not None and pruned_tokens is not None and pruned_tokens == 0:
         raise RuntimeError(
             f"[{dataset_name}/{tag}] the profile reports pruned_tokens=0 — visual-token pruning "
-            "never ran (check: mRoPE VLM engine, batch size 1, images large enough for "
-            "minVisualTokens). The result would silently equal baseline.")
+            "never ran (check: mRoPE VLM engine, images large enough for minVisualTokens). "
+            "The result would silently equal baseline.")
     return scores, avg_isl, avg_visual
 
 

@@ -1161,11 +1161,17 @@ void assembleFp16Moe(
     ELLM_CHECK(first.shape.getNumDims() == 2, "FP16 MoE checkpoint weights must be rank-2");
     int32_t const rows = static_cast<int32_t>(first.shape[0]);
     int32_t const columns = static_cast<int32_t>(first.shape[1]);
-    int32_t const outputRows = paired ? 2 * rows : rows;
-    validateOutput(output, Coords{numExperts, outputRows, columns}, nvinfer1::DataType::kHALF, "FP16 MoE output");
+    ELLM_CHECK(output.getShape().getNumDims() == 3 && output.getShape()[0] == numExperts,
+        "FP16 MoE output must be rank-3 with one matrix per expert");
+    int32_t const outputRows = static_cast<int32_t>(output.getShape()[1]);
+    int32_t const outputColumns = static_cast<int32_t>(output.getShape()[2]);
+    ELLM_CHECK(output.getDataType() == nvinfer1::DataType::kHALF && outputRows >= rows && outputColumns >= columns,
+        "FP16 MoE output must be FP16 and no smaller than each checkpoint matrix");
+    ELLM_CHECK(!paired || (outputRows == 2 * rows && outputColumns == columns),
+        "Paired FP16 MoE output must preserve the SwiGLU interleave shape");
     kernel::Fp16MoeSourceType const sourceType = fp16MoeSourceType(first.dtype);
 
-    size_t const bytesPerExpert = static_cast<size_t>(outputRows) * columns * sizeof(uint16_t);
+    size_t const bytesPerExpert = static_cast<size_t>(outputRows) * outputColumns * sizeof(uint16_t);
     auto* destination = static_cast<uint8_t*>(output.rawPointer());
     forCheckpointSourceBatches(numExperts, [&](int32_t begin, int32_t count) {
         std::array<uint8_t const*, kernel::kCheckpointSourcesPerLaunch> firstSources{};
@@ -1187,7 +1193,8 @@ void assembleFp16Moe(
             }
         }
         CUDA_CHECK(kernel::launchFp16MoeSourceBatch(firstSources.data(), paired ? secondSources.data() : nullptr, count,
-            destination + static_cast<size_t>(begin) * bytesPerExpert, rows, columns, sourceType, stream));
+            destination + static_cast<size_t>(begin) * bytesPerExpert, rows, columns, outputRows, outputColumns,
+            sourceType, stream));
     });
 }
 
@@ -1347,6 +1354,10 @@ void loadCheckpointWeight(CheckpointReader& checkpoint, Json const& binding, std
     else if (assemble == "fp16_moe_fc1")
     {
         assembleFp16Moe(checkpoint, binding, true, output, stream);
+    }
+    else if (assemble == "fp16_moe_fc1_relu2")
+    {
+        assembleFp16Moe(checkpoint, binding, false, output, stream);
     }
     else if (assemble == "fp16_moe_fc2")
     {

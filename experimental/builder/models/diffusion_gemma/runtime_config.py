@@ -17,7 +17,7 @@
 import json
 import os
 
-from ...core import contracts
+from ...core import contracts, ragged
 from ...core.artifacts.tokenizer import find_token_id
 
 
@@ -39,7 +39,7 @@ def _diffusion_config(root: dict, generation: dict) -> dict:
         "diffusion_family":
         "uniform_renoise",
         "canvas_length":
-        int(root.get("canvas_length", generation.get("canvas_length", 256))),
+        ragged.diffusion_canvas_length(root, generation_config=generation),
         "max_denoising_steps":
         int(generation.get("max_denoising_steps", 48)),
         "t_max":

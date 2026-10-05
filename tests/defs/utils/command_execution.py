@@ -23,8 +23,9 @@ unnecessary abstraction layers.
 import json
 import math
 import os
+import re
 import subprocess
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import pytest
 from conftest import EnvironmentConfig, RemoteConfig
@@ -36,6 +37,7 @@ from .baseline import (get_baseline, gpu_memory_metric_from_output,
                        map_accuracy_result_to_csv, parse_perf_from_output,
                        peak_gpu_memory_is_comparable,
                        promote_baseline_if_better, save_to_baseline)
+from .ci_engine_cache import EngineBundleCache
 from .command_generation import (generate_build_commands,
                                  generate_e2e_bench_commands,
                                  generate_inference_commands,
@@ -43,6 +45,58 @@ from .command_generation import (generate_build_commands,
                                  generate_vlmevalkit_commands)
 
 _ALPAMAYO_DATASET_PLACEHOLDER = "$ALPAMAYO_DATASET_DIR"
+
+_SPEC_DECODE_COMMON_PERF_COLUMNS = frozenset({
+    'spec_decode_avg_accept_length',
+    'spec_decode_acceptance_rate',
+    'spec_decode_avg_tokens_per_run',
+    'spec_decode_overall_tokens_per_second (tokens/s)',
+    'spec_decode_draft_proposal_avg_time (ms)',
+    'spec_decode_base_model_verification_avg_time (ms)',
+})
+
+_SPEC_DECODE_DRAFT_PREFILL_COLUMN = (
+    'spec_decode_draft_model_prefill_avg_time (ms)')
+_SPEC_DECODE_ACCEPTANCE_RATE_COLUMN = 'spec_decode_acceptance_rate'
+_LLM_BASIC_ACCEPTANCE_RATE_THRESHOLD = 0.30
+
+# These values prove that the runtime exercised the expected path and remain in
+# the baseline report. One-shot prefill and component timings are not stable
+# regression gates for a single request. End-to-end speculative throughput and
+# average accept length remain gated at 15%. Dataset acceptance rate uses the
+# same threshold; the one-prompt llm_basic smoke test allows 30% variance.
+_SPEC_DECODE_INFORMATIONAL_PERF_COLUMNS = frozenset({
+    'llm_prefill_avg_time_per_run (ms)',
+    'llm_prefill_avg_time_per_token (ms)',
+    'llm_prefill_tokens_per_second (tokens/s)',
+    _SPEC_DECODE_DRAFT_PREFILL_COLUMN,
+    'spec_decode_avg_tokens_per_run',
+    'spec_decode_draft_proposal_avg_time (ms)',
+    'spec_decode_base_model_verification_avg_time (ms)',
+})
+
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, '').strip().lower() in ('1', 'true')
+
+
+def _required_spec_decode_perf_columns(config: TestConfig) -> set[str]:
+    required = set(_SPEC_DECODE_COMMON_PERF_COLUMNS)
+    native_mtp = (config.is_mtp
+                  and not config.model_name.lower().startswith('gemma-'))
+    if (config.is_eagle and not config.is_mtp) or native_mtp:
+        required.add(_SPEC_DECODE_DRAFT_PREFILL_COLUMN)
+    return required
+
+
+def _engine_files(directory):
+    if not directory or not os.path.isdir(directory):
+        return set()
+    return {
+        os.path.relpath(os.path.join(root, name), directory)
+        for root, _, names in os.walk(directory)
+        for name in names if name.endswith(".engine")
+    }
 
 
 def _sync_remote_output_file(filepath: str,
@@ -84,13 +138,32 @@ def _read_context_reuse_profile(
         config: TestConfig,
         logger,
         remote_config: Optional[RemoteConfig] = None) -> int:
-    """Return reused prefill tokens and fail when an enabled cache never hits."""
+    """Validate context-cache metrics and return the reused prefill tokens."""
     profile_path = _sync_remote_output_file(config.get_profile_json_file(),
                                             remote_config, logger)
     with open(profile_path, encoding='utf-8') as profile_file:
         profile = json.load(profile_file)
 
     reused_tokens = profile.get('prefill', {}).get('reused_tokens')
+    if config.test_case == 'llm_spec_prefill_evict':
+        context_cache = profile.get('context_cache', {})
+        lookup_bypass_sequences = context_cache.get('lookup_bypass_sequences')
+        committed_publications = context_cache.get('publications',
+                                                   {}).get('committed')
+        if (not isinstance(reused_tokens, int) or reused_tokens < 0
+                or not isinstance(lookup_bypass_sequences, int)
+                or lookup_bypass_sequences <= 0
+                or not isinstance(committed_publications, int)
+                or committed_publications <= 0):
+            raise RuntimeError(
+                "The speculative prefill-eviction profile must report a "
+                "non-negative prefill.reused_tokens value, at least one "
+                "lookup bypass, and at least one committed publication: "
+                f"reused_tokens={reused_tokens!r}, "
+                f"lookup_bypass_sequences={lookup_bypass_sequences!r}, "
+                f"committed_publications={committed_publications!r}")
+        return reused_tokens
+
     if not isinstance(reused_tokens, int) or reused_tokens <= 0:
         raise RuntimeError(
             "Context reuse was enabled but the profile did not report a "
@@ -131,6 +204,102 @@ def _check_vlm_context_reuse_profile(
         raise RuntimeError(
             "VLM context cache profile failed expectations:\n  " +
             "\n  ".join(errors))
+
+
+def _check_guided_decoding_conformance(config: TestConfig) -> None:
+    """Require every guided response to satisfy the guide that produced it.
+
+    Guided decoding constrains generation token by token, so a violation is a real
+    regression rather than a quality dip and no accuracy metric would catch it. The
+    expectations are read back from the input fixture so the two cannot drift apart.
+
+    json_schema, json_object, regex and choice are checked against the guide itself. ebnf
+    cannot be validated without a grammar parser, and structural_tag only constrains text
+    once a trigger appears, so those two are checked for a clean finish plus, for
+    structural_tag, a well-formed tag whenever a trigger did fire; their grammar semantics
+    are covered by the unit tests.
+    """
+    with open(config.get_test_case_file(), encoding='utf-8') as input_file:
+        requests = json.load(input_file).get('requests', [])
+    with open(config.get_output_json_file(), encoding='utf-8') as output_file:
+        responses = json.load(output_file).get('responses', [])
+
+    if len(responses) != len(requests):
+        raise RuntimeError(
+            f"Expected {len(requests)} guided-decoding responses, got {len(responses)}."
+        )
+
+    json_types = {
+        'string': str,
+        'integer': int,
+        'number': (int, float),
+        'boolean': bool,
+        'array': list,
+        'object': dict,
+    }
+
+    for index, (request, response) in enumerate(zip(requests, responses)):
+        text = response.get('output_text', '')
+        guide = request.get('guided_decoding') or {}
+
+        # A grammar that fails to compile, or one that cannot be satisfied, ends the slot
+        # with `error`; every fixture here is expected to generate normally.
+        finish_reason = response.get('finish_reason')
+        if finish_reason == 'error':
+            raise RuntimeError(
+                f"Response {index} ended with finish_reason=error; text={text!r}"
+            )
+
+        # Hitting the generation budget leaves a valid prefix rather than a complete
+        # document, so only a run that reached EOS can be parsed as a whole.
+        if finish_reason == 'max-length':
+            continue
+
+        if 'json_schema' in guide or 'json_object' in guide:
+            try:
+                document = json.loads(text)
+            except ValueError as error:
+                raise RuntimeError(
+                    f"Response {index} is constrained to JSON but did not parse: {error}; "
+                    f"text={text!r}") from error
+            if not isinstance(document, dict):
+                raise RuntimeError(
+                    f"Response {index} must be a JSON object, got {type(document).__name__}."
+                )
+            schema = guide.get('json_schema', {})
+            for field in schema.get('required', []):
+                if field not in document:
+                    raise RuntimeError(
+                        f"Response {index} is missing required field {field!r}: {document!r}"
+                    )
+            for field, spec in schema.get('properties', {}).items():
+                expected = json_types.get(spec.get('type'))
+                if field in document and expected is not None and not isinstance(
+                        document[field], expected):
+                    raise RuntimeError(
+                        f"Response {index} field {field!r} should be {spec['type']}, "
+                        f"got {document[field]!r}")
+        elif 'regex' in guide:
+            if re.fullmatch(guide['regex'], text) is None:
+                raise RuntimeError(
+                    f"Response {index} does not match its regex {guide['regex']!r}: {text!r}"
+                )
+        elif 'choice' in guide:
+            if text not in guide['choice']:
+                raise RuntimeError(
+                    f"Response {index} is not one of its choices {guide['choice']!r}: "
+                    f"{text!r}")
+        elif 'structural_tag' in guide:
+            tag_format = guide['structural_tag'].get('format', {})
+            for tag in tag_format.get('tags', []):
+                if tag['begin'] in text and tag['end'] not in text:
+                    raise RuntimeError(
+                        f"Response {index} opened {tag['begin']!r} without closing "
+                        f"{tag['end']!r}: {text!r}")
+        elif 'ebnf' not in guide:
+            raise RuntimeError(
+                f"Request {index} of the guided-decoding fixture carries no guide."
+            )
 
 
 def _check_context_reuse_cold_hit_equivalence(config: TestConfig) -> None:
@@ -337,8 +506,7 @@ def _try_save_baseline(config: TestConfig, test_func: str,
     entries are reported (see caller) but never written, so baselines are
     not silently polluted by ad-hoc test runs.
     """
-    if os.environ.get('BASELINE_AUTOSAVE',
-                      '').strip().lower() not in ('1', 'true'):
+    if not _env_flag('BASELINE_AUTOSAVE'):
         return
     csv_path = os.environ.get('BASELINE_CSV', 'logs/baseline.csv')
     if not result.get('success', False):
@@ -380,28 +548,36 @@ def _check_baseline_regression(config: TestConfig,
     When baseline is found, threshold_failure is cleared since baseline takes priority.
     If no baseline exists, the current result is NOT written back — baseline
     CSVs are managed externally. Set BASELINE_AUTOSAVE=1 to opt in to seeding.
+    BASELINE_REQUIRED=1 makes a missing file, entry, or required speculative
+    metric a test failure.
 
     Args:
         check_perf: only True for benchmark tests; inference skips perf comparison.
     """
     baseline = get_baseline()
     if baseline is None:
+        message = f"Required baseline file is unavailable for [{config.param_str}]"
         if logger:
             logger.info(
                 "No baseline loaded for [%s]; skipping regression check",
                 config.param_str)
         _try_save_baseline(config, test_func, result, logger)
+        if _env_flag('BASELINE_REQUIRED'):
+            result.setdefault('baseline_regressions', []).append(message)
         return False
 
     entry = baseline.find_by_param(config.param_str,
                                    test_func,
                                    model_type_value=config.model_type.value)
     if entry is None:
+        message = f"Required baseline entry is missing for [{config.param_str}]"
         if logger:
             logger.info(
                 "No baseline entry for [%s]; skipping regression check",
                 config.param_str)
         _try_save_baseline(config, test_func, result, logger)
+        if _env_flag('BASELINE_REQUIRED'):
+            result.setdefault('baseline_regressions', []).append(message)
         return False
 
     regressions = []
@@ -427,9 +603,35 @@ def _check_baseline_regression(config: TestConfig,
         # only looks at columns in PERF_LOWER/HIGHER_IS_BETTER, so extras
         # (e.g. rouge scores) are naturally ignored.
         current_perf.update(current_acc)
+        if (_env_flag('BASELINE_REQUIRED') and any(
+            (config.is_eagle, config.is_mtp, config.is_dflash,
+             config.is_jetspec, config.is_dspark))):
+            required_metrics = _required_spec_decode_perf_columns(config)
+            missing_baseline = sorted(required_metrics - entry.keys())
+            missing_current = sorted(required_metrics - current_perf.keys())
+            if missing_baseline:
+                regressions.append(
+                    "Required speculative metrics are missing from the baseline: "
+                    + ", ".join(missing_baseline))
+            if missing_current:
+                regressions.append(
+                    "Required speculative metrics are missing from the current run: "
+                    + ", ".join(missing_current))
         if current_perf:
+            is_spec_decode = any(
+                (config.is_eagle, config.is_mtp, config.is_dflash,
+                 config.is_jetspec, config.is_dspark))
+            report_only = (_SPEC_DECODE_INFORMATIONAL_PERF_COLUMNS
+                           if is_spec_decode else frozenset())
+            threshold_overrides = ({
+                _SPEC_DECODE_ACCEPTANCE_RATE_COLUMN:
+                _LLM_BASIC_ACCEPTANCE_RATE_THRESHOLD,
+            } if is_spec_decode and config.test_case == 'llm_basic' else None)
             perf_reg, perf_sum = baseline.check_perf_regression(
-                entry, current_perf)
+                entry,
+                current_perf,
+                report_only_columns=report_only,
+                threshold_overrides=threshold_overrides)
             regressions.extend(perf_reg)
             all_summaries.extend(perf_sum)
 
@@ -453,6 +655,26 @@ def _check_baseline_regression(config: TestConfig,
     return True
 
 
+def _get_arg_value(cmd: List[str], name: str) -> Optional[str]:
+    prefix = f"--{name}="
+    for index, arg in enumerate(cmd):
+        if arg.startswith(prefix):
+            return arg.split("=", 1)[1]
+        if arg == f"--{name}" and index + 1 < len(cmd):
+            return cmd[index + 1]
+    return None
+
+
+def _llm_build_engine_candidates(cmd: List[str],
+                                 default: List[str]) -> List[str]:
+    """Per-rank engine name for a tensor-parallel build, else the default."""
+    tp_size = int(_get_arg_value(cmd, "tpSize") or 1)
+    tp_rank = int(_get_arg_value(cmd, "tpRank") or 0)
+    if tp_size <= 1:
+        return default
+    return [f"llm_world{tp_size}_rank{tp_rank}.engine"]
+
+
 def execute_build_test(
         config: TestConfig, executable_files: Dict[str, str],
         remote_config: Optional[RemoteConfig], logger,
@@ -463,6 +685,30 @@ def execute_build_test(
     commands = generate_build_commands(config, executable_files)
 
     all_outputs = []
+    remote_runner = None
+    trtexec_path = None
+    if remote_config is not None:
+
+        def remote_runner(command, timeout):
+            return run_with_trt_env(command, remote_config, timeout, logger,
+                                    env_config)
+
+        if env_config and env_config.trt_package_dir:
+            trtexec_path = os.path.join(env_config.trt_package_dir, 'bin',
+                                        'trtexec')
+    engine_cache = EngineBundleCache(config,
+                                     commands,
+                                     logger,
+                                     remote_runner=remote_runner,
+                                     trtexec_path=trtexec_path)
+    if engine_cache.restore_bundle():
+        return {
+            'success': True,
+            'error': None,
+            'output': 'complete TensorRT engine bundle restored from cache',
+            'test_type': TaskType.BUILD.value
+        }
+    engine_cache.prepare_build()
 
     engine_file_map = {
         executable_files['llm_build']: ["llm.engine"],
@@ -480,11 +726,16 @@ def execute_build_test(
         if logger:
             logger.info(f"Starting {task_name}: {' '.join(cmd)}")
 
+        cache_enabled = engine_cache is not None and engine_cache.enabled
         engine_candidates = engine_file_map.get(cmd[0], [])
+        if cmd[0] == executable_files['llm_build']:
+            engine_candidates = _llm_build_engine_candidates(
+                cmd, engine_candidates)
         engine_dir = next((arg.split('=', 1)[1]
                            for arg in cmd if arg.startswith('--engineDir=')),
-                          None) if engine_candidates else None
-        if engine_dir:
+                          None)
+        engines_before = _engine_files(engine_dir) if cache_enabled else set()
+        if engine_dir and not cache_enabled:
             skip = False
             for engine_filename in engine_candidates:
                 if check_file_exists(os.path.join(engine_dir, engine_filename),
@@ -512,6 +763,18 @@ def execute_build_test(
                 'output': '\n'.join(all_outputs),
                 'test_type': TaskType.BUILD.value
             }
+
+        if (cache_enabled and engine_dir
+                and not _engine_files(engine_dir) - engines_before):
+            return {
+                'success': False,
+                'error': f"{task_name} produced no TensorRT engine",
+                'output': '\n'.join(all_outputs),
+                'test_type': TaskType.BUILD.value
+            }
+
+    if engine_cache is not None and engine_cache.enabled:
+        engine_cache.publish_bundle()
 
     return {
         'success': True,
@@ -588,6 +851,8 @@ def execute_e2e_bench_test(
 
         # Merge metrics result into final result
         final_result.update(metrics_result)
+        if config.test_case == 'llm_guided_decoding':
+            _check_guided_decoding_conformance(config)
         if config.context_reuse:
             if config.test_case == 'llm_context_reuse':
                 _check_context_reuse_cold_hit_equivalence(config)
@@ -658,6 +923,7 @@ def execute_inference_test(
                 'test_type': TaskType.INFERENCE.value
             }
 
+
     # Calculate metrics based on dataset type
     final_result = {
         'success': True,
@@ -679,6 +945,8 @@ def execute_inference_test(
 
         # Merge metrics result into final result
         final_result.update(metrics_result)
+        if config.test_case == 'llm_guided_decoding':
+            _check_guided_decoding_conformance(config)
         if config.context_reuse:
             if config.test_case == 'llm_context_reuse':
                 _check_context_reuse_cold_hit_equivalence(config)

@@ -47,6 +47,10 @@ constexpr size_t kMaxContentItemsPerMessage = 18;
 constexpr size_t kMaxLogitBiasTokens = 1024;
 constexpr float kMinLogitBias = -100.0F;
 constexpr float kMaxLogitBias = 100.0F;
+// Guided-decoding guide string (JSON schema / regex / EBNF / structural tag).
+// Grammar compilation is superlinear in guide size and runs synchronously on the
+// host before any GPU work, so an unbounded guide is a denial-of-service vector.
+constexpr size_t kMaxGuidedDecodingGuideBytes = 128 * 1024;
 
 } // namespace security
 

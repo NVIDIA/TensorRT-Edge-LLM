@@ -33,6 +33,9 @@ namespace plugins
 //! verification, the plugin emits intermediate conv states so runtime can commit only the accepted speculative path.
 //! DDTree additionally consumes tree parent/depth metadata because adjacent flattened verify nodes are not necessarily
 //! parent and child in the proposal tree.
+//!
+//! Required metadata inputs end with `execution_phase_marker` at slot 7 and the shape-only INT32
+//! `context_sequence_count_carrier` at slot 8. DDTree parent/depth inputs, when enabled, occupy slots 9 and 10.
 class CausalConv1dPlugin : public nvinfer1::IPluginV3,
                            public nvinfer1::IPluginV3OneCore,
                            public nvinfer1::IPluginV3OneBuildV2,

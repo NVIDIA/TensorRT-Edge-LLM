@@ -9,6 +9,7 @@ tests:
   - tests/defs/test_checkpoint_export.py::test_checkpoint_export[Qwen3-4B-Instruct-2507-fp16]
   - tests/defs/test_checkpoint_export.py::test_checkpoint_export[Qwen3-8B-fp16]
   - tests/defs/test_checkpoint_export.py::test_checkpoint_export[Qwen2.5-7B-Instruct-fp16]
+  - tests/defs/test_checkpoint_export.py::test_checkpoint_export[HY-MT1.5-7B-fp16]
 
   # LLM exports - int4_awq
   - tests/defs/test_checkpoint_export.py::test_checkpoint_export[Qwen3-1.7B-int4_awq]

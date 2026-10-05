@@ -27,14 +27,28 @@ import os
 import re
 from typing import Callable
 
+import sys
+from pathlib import Path
+
 import cuda.bindings.driver as cuda
-import cupy
 import cutlass
 import cutlass.cute as cute
 from cutlass import Float32, Int32, Int64
 from cutlass._mlir.dialects import llvm
-from cutlass.cute.runtime import from_dlpack
 from cutlass.cutlass_dsl import T, dsl_user_op
+
+# Kernel scripts are executed directly, so add kernelSrcs/ (shared AOT
+# placeholder helpers) and layernorm_cutedsl/ (canonical per-SM
+# shared-memory table) to the path before importing them.
+_KERNEL_SRCS_DIR = Path(__file__).resolve().parent.parent
+if str(_KERNEL_SRCS_DIR) not in sys.path:
+    sys.path.insert(0, str(_KERNEL_SRCS_DIR))
+_LAYERNORM_DIR = _KERNEL_SRCS_DIR / "layernorm_cutedsl"
+if str(_LAYERNORM_DIR) not in sys.path:
+    sys.path.insert(0, str(_LAYERNORM_DIR))
+
+import layernorm_config  # noqa: E402
+from cutedsl_utils import aot_placeholders  # noqa: E402
 
 COPY_BITS = 128
 NUM_THREADS = 128
@@ -46,19 +60,34 @@ SUPPORTED_HIDDEN_SIZES = (4096, 5120, 7168, 8192)
 
 
 def _target_sm() -> int:
-    """Resolve the requested AOT architecture without depending on Torch."""
+    """Resolve the requested AOT architecture without probing a device."""
     arch = os.environ.get("CUTE_DSL_ARCH", "")
     match = re.search(r"sm_?(\d+)", arch)
     if match is not None:
         return int(match.group(1))
-    props = cupy.cuda.runtime.getDeviceProperties(cupy.cuda.Device().id)
-    return int(props["major"]) * 10 + int(props["minor"])
+    raise RuntimeError(
+        "rmsnorm.py: the target SM must be supplied explicitly (--target_sm) "
+        "or via CUTE_DSL_ARCH. Artifact generation is offline and never "
+        "queries a local GPU."
+    )
 
 
-def _shared_memory_per_block_optin() -> int:
-    """Return the active compiler device's opt-in shared-memory limit."""
-    props = cupy.cuda.runtime.getDeviceProperties(cupy.cuda.Device().id)
-    return int(props.get("sharedMemPerBlockOptin", props["sharedMemPerBlock"]))
+def _shared_memory_per_block_optin(sm_version: int) -> int:
+    """Return the target SM's opt-in shared-memory limit.
+
+    Static rather than queried: the export runs on the build host, not the
+    target board, so cudaDeviceProp here would describe the wrong device
+    (and would require a physical GPU during offline artifact generation).
+    The table is owned by layernorm_config so the two norm kernels cannot
+    drift apart.
+    """
+    try:
+        return layernorm_config.SHARED_MEMORY_PER_BLOCK_OPTIN[sm_version]
+    except KeyError:
+        raise RuntimeError(
+            f"rmsnorm.py: no shared-memory limit recorded for SM{sm_version}; "
+            "extend layernorm_config.SHARED_MEMORY_PER_BLOCK_OPTIN."
+        ) from None
 
 
 @dsl_user_op
@@ -317,7 +346,9 @@ class RMSNormKernel:
 
         if self.copy_bits >= 32:
             tile_bytes = self.rows_per_block * self.cols_per_tile * elem_bytes
-            self.use_async_copy = tile_bytes <= _shared_memory_per_block_optin() // 2
+            self.use_async_copy = (
+                tile_bytes <= _shared_memory_per_block_optin(self.sm_version) // 2
+            )
         else:
             self.use_async_copy = False
 
@@ -327,7 +358,7 @@ class RMSNormKernel:
         if sm_version < 90:
             return 1
 
-        max_smem_bytes = _shared_memory_per_block_optin()
+        max_smem_bytes = _shared_memory_per_block_optin(sm_version)
         elem_size = dtype.width // 8
 
         for cluster_n in [1, 2, 4, 8, 16]:
@@ -631,12 +662,12 @@ class RMSNormKernel:
             cute.arch.griddepcontrol_launch_dependents()
 
 
-def _create_wbc1_rmsnorm_jit(dtype, hidden_size):
+def _create_wbc1_rmsnorm_jit(dtype, hidden_size, target_sm):
     rmsnorm_kernel = RMSNormKernel(
         dtype,
         hidden_size,
         weight_bias=0.0,
-        sm_version=_target_sm(),
+        sm_version=target_sm,
     )
 
     @cute.jit
@@ -752,25 +783,18 @@ def _create_legacy_rmsnorm_jit(hidden_size):
     return run_rmsnorm
 
 
-def _create_rmsnorm_jit(dtype, hidden_size, weight_before_cast_mode):
+def _create_rmsnorm_jit(dtype, hidden_size, weight_before_cast_mode, target_sm):
     if weight_before_cast_mode == 1:
-        return _create_wbc1_rmsnorm_jit(dtype, hidden_size)
+        return _create_wbc1_rmsnorm_jit(dtype, hidden_size, target_sm)
     return _create_legacy_rmsnorm_jit(hidden_size)
 
 
-def _allocate_placeholder(shape, dtype):
-    if dtype == cutlass.Float16:
-        return cupy.zeros(shape, dtype=cupy.float16)
-    if dtype == cutlass.BFloat16:
-        # CuPy has no native BF16 storage. CuTe interprets these bits as BF16
-        # after the tensor element type is retagged below.
-        return cupy.zeros(shape, dtype=cupy.uint16)
-    raise ValueError(f"Unsupported RMSNorm dtype: {dtype}")
-
-
-def _to_cute_tensor(array, dtype, *, dynamic_rows):
-    tensor = from_dlpack(array, assumed_align=16)
-    tensor.element_type = dtype
+def _make_placeholder_tensor(shape, dtype, *, dynamic_rows):
+    """Create a storage-free row-major tensor descriptor for the AOT ABI."""
+    if dtype not in (cutlass.Float16, cutlass.BFloat16):
+        raise ValueError(f"Unsupported RMSNorm dtype: {dtype}")
+    # Default stride order: C-contiguous row-major, matching the real path.
+    tensor = aot_placeholders.make_compact_tensor(dtype, shape, assumed_align=16)
     if dynamic_rows:
         # Keep H and the row stride static so the AOT ABI exposes only rows as
         # dynamic and retains the alignment proof for the contiguous axis.
@@ -782,17 +806,13 @@ def _to_cute_tensor(array, dtype, *, dynamic_rows):
     return tensor
 
 
-def compile_rmsnorm(dtype, hidden_size, weight_before_cast):
-    x_storage = _allocate_placeholder((AOT_ROWS, hidden_size), dtype)
-    gamma_storage = _allocate_placeholder((hidden_size,), dtype)
-    output_storage = _allocate_placeholder((AOT_ROWS, hidden_size), dtype)
+def compile_rmsnorm(dtype, hidden_size, weight_before_cast, target_sm):
+    x = _make_placeholder_tensor((AOT_ROWS, hidden_size), dtype, dynamic_rows=True)
+    gamma = _make_placeholder_tensor((hidden_size,), dtype, dynamic_rows=False)
+    output = _make_placeholder_tensor((AOT_ROWS, hidden_size), dtype, dynamic_rows=True)
+    stream = aot_placeholders.make_stream()
 
-    x = _to_cute_tensor(x_storage, dtype, dynamic_rows=True)
-    gamma = _to_cute_tensor(gamma_storage, dtype, dynamic_rows=False)
-    output = _to_cute_tensor(output_storage, dtype, dynamic_rows=True)
-    stream = cuda.CUstream(cupy.cuda.get_current_stream().ptr)
-
-    rmsnorm = _create_rmsnorm_jit(dtype, hidden_size, weight_before_cast)
+    rmsnorm = _create_rmsnorm_jit(dtype, hidden_size, weight_before_cast, target_sm)
     if weight_before_cast == 1:
         return cute.compile(
             rmsnorm,
@@ -818,11 +838,12 @@ def export_rmsnorm(
     dtype,
     hidden_size,
     weight_before_cast,
+    target_sm,
     output_dir,
     file_name,
     function_prefix,
 ):
-    compiled = compile_rmsnorm(dtype, hidden_size, weight_before_cast)
+    compiled = compile_rmsnorm(dtype, hidden_size, weight_before_cast, target_sm)
     os.makedirs(output_dir, exist_ok=True)
     compiled.export_to_c(
         file_path=output_dir,
@@ -847,6 +868,14 @@ def _parse_args():
         required=True,
         help="compile-time arithmetic specialization; retained in the runtime ABI",
     )
+    parser.add_argument(
+        "--target_sm",
+        type=int,
+        default=None,
+        help="SM version of the board this artifact will run on (e.g. 110). "
+        "Selects the compile-time cluster/async-copy geometry. Falls back to "
+        "CUTE_DSL_ARCH when unset; never queries a local GPU.",
+    )
     parser.add_argument("--output_dir", required=True)
     parser.add_argument("--file_name", required=True)
     parser.add_argument("--function_prefix", required=True)
@@ -861,10 +890,12 @@ def main():
             "RMSNorm currently supports AOT export only; pass --export_only."
         )
     dtype = cutlass.Float16 if args.dtype == "fp16" else cutlass.BFloat16
+    target_sm = args.target_sm if args.target_sm is not None else _target_sm()
     export_rmsnorm(
         dtype,
         args.hidden_size,
         args.weight_before_cast,
+        target_sm,
         args.output_dir,
         args.file_name,
         args.function_prefix,

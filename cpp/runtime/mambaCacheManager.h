@@ -26,10 +26,11 @@ namespace trt_edgellm
 namespace rt
 {
 
-//! Per-layer Mamba (recurrent + conv) state manager.
+//! Per-layer Mamba resident-state pool manager.
 //! Each recurrent layer owns two device tensors:
 //!   - recurrent state: [maxBatchSize, recurrentStateNumHeads, recurrentStateHeadDim, recurrentStateSize]
 //!   - conv state:      [maxBatchSize, convDim, convKernel]
+//! The first dimension is a fixed resident-slot pool and is not compacted with the active execution batch.
 //! When numRecurrentLayers == 0 the manager is a no-op and allocates nothing.
 class MambaCacheManager
 {
@@ -112,6 +113,14 @@ public:
     //! @param stream CUDA stream for memset operations.
     void clearStates(cudaStream_t stream);
 
+    //! Zero one resident slot in every recurrent and convolution state layer without moving any other slot.
+    void clearSlot(int32_t slot, cudaStream_t stream);
+
+    //! Restore one resident slot from cached recurrent and convolution state tensors. A missing
+    //! layer entry is zero-filled; extra or incompatible entries are rejected before any write.
+    void restoreSlot(int32_t slot, std::vector<rt::Tensor> const& recurrentStates,
+        std::vector<rt::Tensor> const& convStates, cudaStream_t stream);
+
     //! Copy one batch slot's recurrent states into freshly-allocated tensors (one per layer).
     //! Used to snapshot states when saving a system prompt cache entry.
     //! Returns an empty vector when numRecurrentLayers == 0.
@@ -132,13 +141,15 @@ public:
     //! Mamba plugin stashes the minimal per-token replay inputs here (instead of full-state
     //! snapshots); scatterAcceptedLinearStates reconstructs the accepted recurrent state from them.
     //!   dA: [maxBatchSize, maxIntermediateSeqLen, recurrentStateNumHeads]
-    //!   u:  [maxBatchSize, maxIntermediateSeqLen, recurrentStateNumHeads, recurrentStateHeadDim]
+    //!   u:  [maxBatchSize, maxIntermediateSeqLen, recurrentStateNumHeads, recurrentStateHeadDim] (stores x)
     //!   B:  [maxBatchSize, maxIntermediateSeqLen, recurrentStateNumGroups, recurrentStateSize]
+    //!   dt: [maxBatchSize, maxIntermediateSeqLen, recurrentStateNumHeads]
     //! @param recurrentLayerIdx The recurrent layer index.
     //! @return A reference to the owned device tensor.
     rt::Tensor& getReplayDaState(int32_t recurrentLayerIdx) noexcept;
     rt::Tensor& getReplayUState(int32_t recurrentLayerIdx) noexcept;
     rt::Tensor& getReplayBState(int32_t recurrentLayerIdx) noexcept;
+    rt::Tensor& getReplayDtState(int32_t recurrentLayerIdx) noexcept;
 
     rt::Tensor& getIntermediateRecurrentState(int32_t recurrentLayerIdx) noexcept;
 
@@ -180,23 +191,24 @@ public:
 
     //! Scatter spec-verify intermediate states to main state pools after verify (one
     //! batched launch per state kind).  No-op when spec-verify intermediate states are not enabled.
-    void scatterAcceptedLinearStates(rt::Tensor const& acceptLengths, cudaStream_t stream);
+    void scatterAcceptedLinearStates(
+        rt::Tensor const& acceptLengths, rt::Tensor const& stateIndices, cudaStream_t stream);
 
     //! Scatter DDTree base-verify intermediate states to persistent state pools.
     //! acceptedStateNodeIds shape: [activeBatchSize, maxAcceptLen], INT32 GPU.
     //! Entries with -1 are ignored. The ids should name the tree node whose
     //! intermediate state represents each accepted token.
     //! acceptLengths shape: [activeBatchSize], INT32 GPU.
-    void scatterAcceptedTreeStates(
-        rt::Tensor const& acceptedStateNodeIds, rt::Tensor const& acceptLengths, cudaStream_t stream);
+    void scatterAcceptedTreeStates(rt::Tensor const& acceptedStateNodeIds, rt::Tensor const& acceptLengths,
+        rt::Tensor const& stateIndices, cudaStream_t stream);
 
     //! Chunk impl (the default): commit DDTree recurrent states by
     //! REPLAYING the accepted path from the committed state, consuming the
     //! per-node stash the chunk-form verify wrote into the head of each
     //! layer's intermediate buffer. Conv states still commit via the
     //! checkpoint scatter (conv checkpoints stay valid in this mode).
-    void replayCommitAcceptedTreeStates(
-        rt::Tensor const& acceptedStateNodeIds, rt::Tensor const& acceptLengths, cudaStream_t stream);
+    void replayCommitAcceptedTreeStates(rt::Tensor const& acceptedStateNodeIds, rt::Tensor const& acceptLengths,
+        rt::Tensor const& stateIndices, cudaStream_t stream);
 
 private:
     Config mConfig{};                                //!< Cache configuration
@@ -210,7 +222,10 @@ private:
     std::vector<rt::Tensor> mReplayDaStates;
     std::vector<rt::Tensor> mReplayUStates;
     std::vector<rt::Tensor> mReplayBStates;
+    std::vector<rt::Tensor> mReplayDtStates;
 
+    rt::Tensor mHostStateLayerInfos;
+    rt::Tensor mDeviceStateLayerInfos;
     rt::Tensor mDeviceMtpLayerInfos;
     rt::Tensor mDeviceMambaReplayLayerInfos;
 };

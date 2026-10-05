@@ -206,6 +206,54 @@ class Eagle3Attention(nn.Module):
                                           self.num_heads * self.head_dim)
         return self.o_proj(attn_output), present_key_value
 
+    def forward_ragged(self, hidden_states: torch.Tensor,
+                       past_key_value: torch.Tensor, **m):
+        tokens = hidden_states.shape[0]
+        query_states = self.q_proj(hidden_states)
+        key_states = self.k_proj(hidden_states)
+        value_states = (key_states if self.attention_k_eq_v else
+                        self.v_proj(hidden_states))
+        if self.q_norm is not None:
+            query_states = self.q_norm(
+                query_states.reshape(tokens, self.num_heads,
+                                     self.head_dim)).reshape(tokens, -1)
+        if self.k_norm is not None:
+            key_states = self.k_norm(
+                key_states.reshape(tokens, self.num_kv_heads,
+                                   self.head_dim)).reshape(tokens, -1)
+        if self.v_norm is not None:
+            value_states = self.v_norm(
+                value_states.reshape(tokens, self.num_kv_heads,
+                                     self.head_dim)).reshape(tokens, -1)
+        qkv = (qkv_concat(query_states, key_states, value_states)
+               if self._uses_int4_qkv else torch.cat(
+                   (query_states, key_states, value_states), dim=-1))
+        output, present = attention_plugin(
+            qkv,
+            past_key_value,
+            m["query_lengths"],
+            m["rope_rotary_cos_sin"],
+            m["past_lengths"],
+            m["kv_page_table"],
+            num_q_heads=self.num_heads,
+            num_kv_heads=self.num_kv_heads,
+            head_size=self.head_dim,
+            sliding_window_size=self.sliding_window_size,
+            enable_tree_attention=True,
+            enable_fp8_kv_cache=False,
+            attention_scale=self.attention_scale,
+            enable_context_mask_selector=False,
+            enable_vision_block_attention=False,
+            skip_softmax_scale_factor=0.0,
+            attention_mask=m["packed_attention_mask"],
+            attention_pos_id=m["attention_position_ids"],
+            qkv_scales=[1.0, 1.0, 1.0],
+            query_start_offsets=m["query_start_offsets"],
+            attention_sequence_lengths=m["attention_sequence_lengths"],
+            execution_phase_marker=m["execution_phase_marker"],
+            context_sequence_count_carrier=m["context_sequence_count_carrier"])
+        return self.o_proj(output.reshape(tokens, -1)), present
+
 
 # ---------------------------------------------------------------------------
 # MLP (same as default)
@@ -315,48 +363,188 @@ class Eagle3DecoderLayer(nn.Module):
 
         return hidden_states, present_key_value
 
+    def forward_ragged(self, hidden_states: torch.Tensor,
+                       inputs_embeds: torch.Tensor,
+                       past_key_value: torch.Tensor, **metadata):
+        residual = hidden_states
+        concat_hidden = torch.cat((self.input_layernorm(inputs_embeds),
+                                   self.hidden_norm(hidden_states)),
+                                  dim=-1)
+        attention, present = self.self_attn.forward_ragged(
+            concat_hidden, past_key_value, **metadata)
+        if self.is_gemma4:
+            hidden_states = residual + self.post_attention_layernorm(attention)
+            residual = hidden_states
+            hidden_states = residual + self.post_feedforward_layernorm(
+                self.mlp(self.pre_feedforward_layernorm(hidden_states)))
+            hidden_states = hidden_states * self.layer_scalar.to(
+                dtype=hidden_states.dtype)
+        else:
+            hidden_states = residual + attention
+            hidden_states = hidden_states + self.mlp(
+                self.post_attention_layernorm(hidden_states))
+        return hidden_states, present
+
 
 # ---------------------------------------------------------------------------
 # Eagle3 Draft Model
 # ---------------------------------------------------------------------------
 
 
-def _make_flat_wrapper_eagle3(model: nn.Module, Na: int) -> nn.Module:
-    """Build a flat-signature wrapper for EAGLE3 draft ONNX export.
-
-    Named parameters avoid the PyTorch 2.10 variadic-tuple export bug.
-    """
-    param_names: List[str] = (
-        ["inputs_embeds"] + [f"past_key_values_{i}" for i in range(Na)] + [
-            "rope_rotary_cos_sin", "context_lengths", "kvcache_start_index",
-            "kv_page_table", "last_token_ids", "hidden_states_input",
-            "hidden_states_from_draft", "attention_pos_id", "attention_mask"
-        ])
-
-    past_kv_tuple = "({},)".format(", ".join(
-        f"past_key_values_{i}" for i in range(Na))) if Na else "()"
-
+def _make_flat_wrapper_eagle3_ragged(model: nn.Module, num_layers: int):
+    names = (["inputs_embeds"] +
+             [f"past_key_values_{i}" for i in range(num_layers)] + [
+                 "rope_rotary_cos_sin", "positions", "query_start_offsets",
+                 "query_lengths", "past_lengths", "attention_sequence_lengths",
+                 "state_indices", "execution_phase_marker",
+                 "context_sequence_count_carrier", "kv_page_table",
+                 "logits_indices", "hidden_states_input",
+                 "hidden_states_from_draft", "attention_position_ids",
+                 "packed_attention_mask", "tree_parent_ids", "tree_depths",
+                 "valid_tree_counts"
+             ])
+    kv = "({},)".format(", ".join(f"past_key_values_{i}"
+                                  for i in range(num_layers)))
     body = (
-        f"    logits, hidden_states, present_key_values = self._model(\n"
-        f"        inputs_embeds, {past_kv_tuple}, rope_rotary_cos_sin, "
-        f"context_lengths, kvcache_start_index, kv_page_table, "
-        f"last_token_ids, "
-        f"hidden_states_input, hidden_states_from_draft, "
-        f"attention_pos_id, attention_mask)\n"
-        f"    return (logits, hidden_states) + tuple(present_key_values)\n")
-
-    src = "def _forward(self, {}):\n{}".format(", ".join(param_names), body)
+        f"    logits, hidden_states, present = self._model.forward_ragged(\n"
+        f"        inputs_embeds, {kv}, logits_indices, hidden_states_input, "
+        f"hidden_states_from_draft, rope_rotary_cos_sin=rope_rotary_cos_sin, "
+        f"positions=positions, query_start_offsets=query_start_offsets, "
+        f"query_lengths=query_lengths, "
+        f"past_lengths=past_lengths, "
+        f"attention_sequence_lengths=attention_sequence_lengths, "
+        f"state_indices=state_indices, execution_phase_marker=execution_phase_marker, "
+        f"context_sequence_count_carrier=context_sequence_count_carrier, "
+        f"kv_page_table=kv_page_table, attention_position_ids=attention_position_ids, "
+        f"packed_attention_mask=packed_attention_mask, tree_parent_ids=tree_parent_ids, "
+        f"tree_depths=tree_depths, valid_tree_counts=valid_tree_counts)\n"
+        f"    return (logits, hidden_states) + tuple(present)\n")
     globs: dict = {}
-    exec(src, globs)  # noqa: S102
+    exec("def _forward(self, {}):\n{}".format(", ".join(names), body),
+         globs)  # noqa: S102
 
     class _Wrapper(nn.Module):
 
-        def __init__(self, m: nn.Module) -> None:
+        def __init__(self, m):
             super().__init__()
             self._model = m
 
     _Wrapper.forward = globs["_forward"]
     return _Wrapper(model)
+
+
+def _draft_ragged_export_spec(model: nn.Module, num_layers: int,
+                              target_hidden_size: int, wrapper_factory):
+    config = model.config
+    device = next(itertools.chain(model.parameters(), model.buffers())).device
+    n, q, tokens = 2, 64, 128
+    inputs = torch.zeros(tokens,
+                         config.hidden_size,
+                         dtype=torch.float16,
+                         device=device)
+    kv = tuple(
+        torch.zeros(2,
+                    2,
+                    KV_PAGE_SIZE,
+                    config.num_key_value_heads,
+                    config.head_dim,
+                    dtype=torch.float16,
+                    device=device) for _ in range(num_layers))
+    rotary_dim = int(config.head_dim * config.partial_rotary_factor)
+    if _is_gemma4_model_type(config.model_type):
+        rotary_dim = _rotary_dim_from_rope_config(config, None,
+                                                  config.head_dim)
+    rope = torch.zeros(tokens, rotary_dim, dtype=torch.float32, device=device)
+    positions = torch.arange(q, dtype=torch.int32, device=device).repeat(n)
+    offsets = torch.arange(0, tokens + 1, q, dtype=torch.int32, device=device)
+    lengths = torch.full((n, ), q, dtype=torch.int32, device=device)
+    past = torch.zeros(n, dtype=torch.int32, device=device)
+    state = torch.arange(n, dtype=torch.int32, device=device)
+    phase = torch.zeros(2, dtype=torch.int32, device=device)
+    context_count = torch.empty(n, dtype=torch.int32, device=device)
+    page_table = torch.zeros(n, 2, 2, dtype=torch.int32, device=device)
+    selected = offsets[1:].to(torch.int64) - 1
+    target = torch.zeros(tokens,
+                         target_hidden_size,
+                         dtype=torch.float16,
+                         device=device)
+    draft = torch.zeros(tokens,
+                        config.hidden_size,
+                        dtype=torch.float16,
+                        device=device)
+    mask = torch.zeros(tokens, (q + 31) // 32,
+                       dtype=torch.int32,
+                       device=device)
+    parents = torch.full((tokens, ), -1, dtype=torch.int32, device=device)
+    depths = torch.zeros(tokens, dtype=torch.int32, device=device)
+    args = (inputs, *kv, rope, positions, offsets, lengths, past,
+            lengths.clone(), state, phase, context_count, page_table, selected,
+            target, draft, positions.clone(), mask, parents, depths,
+            lengths.clone())
+    names = (["inputs_embeds"] +
+             [f"past_key_values_{i}" for i in range(num_layers)] + [
+                 "rope_rotary_cos_sin", "positions", "query_start_offsets",
+                 "query_lengths", "past_lengths", "attention_sequence_lengths",
+                 "state_indices", "execution_phase_marker",
+                 "context_sequence_count_carrier", "kv_page_table",
+                 "logits_indices", "hidden_states_input",
+                 "hidden_states_from_draft", "attention_position_ids",
+                 "packed_attention_mask", "tree_parent_ids", "tree_depths",
+                 "valid_tree_counts"
+             ])
+    outputs = ["logits", "hidden_states"
+               ] + [f"present_key_values_{i}" for i in range(num_layers)]
+    token_dim = torch.export.Dim("physical_tokens", min=1, max=8_388_608)
+    seq_dim = torch.export.Dim("num_sequences", min=1, max=256)
+    context_seq_dim = torch.export.Dim("num_context_sequences", min=0, max=256)
+    pages = torch.export.Dim("num_pages", min=1, max=1048576)
+    max_pages = torch.export.Dim("max_pages_per_seq", min=1, max=32768)
+    phase_dim = torch.export.Dim("execution_phase_extent", min=1, max=8)
+    selected_dim = torch.export.Dim("selected_rows", min=1, max=8_388_608)
+    packed_mask_width = torch.export.Dim("packed_mask_width", min=1, max=64)
+    shapes = [{0: token_dim}] + [{1: pages} for _ in range(num_layers)]
+    shapes += [{
+        0: token_dim
+    }, {
+        0: token_dim
+    }, {
+        0: seq_dim + 1
+    }, {
+        0: seq_dim
+    }, {
+        0: seq_dim
+    }, {
+        0: seq_dim
+    }, {
+        0: seq_dim
+    }, {
+        0: phase_dim
+    }, {
+        0: context_seq_dim
+    }, {
+        0: seq_dim,
+        2: max_pages
+    }, {
+        0: selected_dim
+    }, {
+        0: token_dim
+    }, {
+        0: token_dim
+    }, {
+        0: token_dim
+    }, {
+        0: token_dim,
+        1: packed_mask_width
+    }, {
+        0: token_dim
+    }, {
+        0: token_dim
+    }, {
+        0: seq_dim
+    }]
+    wrapped = wrapper_factory(model, num_layers)
+    wrapped.eval()
+    return OnnxSpec(wrapped, args, names, outputs, shapes)
 
 
 class Eagle3DraftModel(nn.Module):
@@ -462,131 +650,36 @@ class Eagle3DraftModel(nn.Module):
 
         return logits, hidden_states, tuple(present_key_values)
 
+    def forward_ragged(self, inputs_embeds: torch.Tensor,
+                       past_key_values: Tuple[torch.Tensor, ...],
+                       logits_indices: torch.Tensor,
+                       hidden_states_from_base: torch.Tensor,
+                       hidden_states_from_draft: torch.Tensor, **metadata):
+        hidden_states = (hidden_states_from_draft.to(torch.float16) +
+                         self.fc(hidden_states_from_base).to(torch.float16))
+        present = []
+        for idx, layer in enumerate(self.layers):
+            hidden_states, present_kv = layer.forward_ragged(
+                hidden_states, inputs_embeds, past_key_values[idx], **metadata)
+            present.append(present_kv)
+        selected = torch.index_select(hidden_states, 0, logits_indices)
+        logits = self.lm_head(self.norm(selected)).to(torch.float32)
+        cap = getattr(self.config, "final_logit_softcapping", None)
+        if cap is not None:
+            logits = torch.tanh(logits / cap) * cap
+        return F.log_softmax(logits, dim=-1), selected, tuple(present)
+
     # ------------------------------------------------------------------
     # ONNX export
     # ------------------------------------------------------------------
 
     def onnx_export_spec(self) -> OnnxSpec:
         """Return all model-specific parameters needed for ONNX export."""
-        config = self.config
-        Na = config.num_hidden_layers
-        target_hidden = config.eagle3_target_hidden_size
-        device = next(itertools.chain(self.parameters(),
-                                      self.buffers())).device
-        dtype16 = torch.float16
-        batch_size, seq_len, past_len, max_pos = (_BATCH_SIZE, _SEQ_LEN,
-                                                  _PAST_LEN, _MAX_POS)
+        return self._ragged_onnx_export_spec()
 
-        inputs_embeds = torch.zeros(batch_size,
-                                    seq_len,
-                                    config.hidden_size,
-                                    dtype=dtype16,
-                                    device=device)
-        # Paged KV pool binding: [2, num_pages, KV_PAGE_SIZE, num_kv_heads, head_dim].
-        past_key_values_list: List[torch.Tensor] = [
-            torch.zeros(2,
-                        1,
-                        KV_PAGE_SIZE,
-                        config.num_key_value_heads,
-                        config.head_dim,
-                        dtype=dtype16,
-                        device=device) for _ in range(Na)
-        ]
-        rotary_dim = int(config.head_dim * config.partial_rotary_factor)
-        if _is_gemma4_model_type(config.model_type):
-            rotary_dim = _rotary_dim_from_rope_config(config, None,
-                                                      config.head_dim)
-        rope_rotary_cos_sin = torch.zeros(batch_size,
-                                          max_pos,
-                                          rotary_dim,
-                                          dtype=torch.float32,
-                                          device=device)
-        context_lengths = torch.zeros(batch_size,
-                                      dtype=torch.int32,
-                                      device=device)
-        kvcache_start_index = torch.zeros(batch_size,
-                                          dtype=torch.int32,
-                                          device=device)
-        kv_page_table = torch.zeros(batch_size,
-                                    2,
-                                    1,
-                                    dtype=torch.int32,
-                                    device=device)
-        last_token_ids = torch.zeros(batch_size,
-                                     1,
-                                     dtype=torch.int64,
-                                     device=device)
-        hidden_states_input = torch.zeros(batch_size,
-                                          seq_len,
-                                          target_hidden *
-                                          config.eagle3_num_target_layers,
-                                          dtype=dtype16,
-                                          device=device)
-        hidden_states_from_draft = torch.zeros(batch_size,
-                                               seq_len,
-                                               config.hidden_size,
-                                               dtype=dtype16,
-                                               device=device)
-        attention_pos_id = torch.zeros(batch_size,
-                                       seq_len,
-                                       dtype=torch.int32,
-                                       device=device)
-        attention_mask = torch.zeros(batch_size,
-                                     seq_len,
-                                     seq_len + past_len,
-                                     dtype=torch.int32,
-                                     device=device)
-
-        args = (inputs_embeds, *past_key_values_list, rope_rotary_cos_sin,
-                context_lengths, kvcache_start_index, kv_page_table,
-                last_token_ids, hidden_states_input, hidden_states_from_draft,
-                attention_pos_id, attention_mask)
-
-        input_names = (
-            ["inputs_embeds"] + [f"past_key_values_{i}" for i in range(Na)] + [
-                "rope_rotary_cos_sin", "context_lengths",
-                "kvcache_start_index", "kv_page_table", "last_token_ids",
-                "hidden_states_input", "hidden_states_from_draft",
-                "attention_pos_id", "attention_mask"
-            ])
-        output_names = (["logits", "hidden_states"] +
-                        [f"present_key_values_{i}" for i in range(Na)])
-
-        batch = torch.export.Dim("batch", min=1, max=256)
-        seq = torch.export.Dim("seq_len", min=1, max=32768)
-        pos = torch.export.Dim("max_pos", min=1, max=32768)
-        rope_batch = torch.export.Dim("rope_batch", min=1, max=256)
-        kv_batch = torch.export.Dim("kv_batch", min=1, max=256)
-        page_batch = torch.export.Dim("page_batch", min=1, max=256)
-        max_pages = torch.export.Dim("max_pages_per_seq", min=1, max=32768)
-        num_pages = torch.export.Dim("num_pages", min=1, max=1048576)
-        eagle_seq = torch.export.Dim("eagle_seq_len", min=1, max=32768)
-        mask_kv_len = torch.export.Dim("mask_kv_len", min=1, max=65536)
-        num_selected = torch.export.Dim("num_selected", min=1, max=256)
-
-        all_shapes: list = [{0: batch, 1: seq}]  # inputs_embeds
-        for _ in range(Na):
-            all_shapes.append({1:
-                               num_pages})  # past_key_values_i (pool-shaped)
-        all_shapes.append({0: rope_batch, 1: pos})  # rope_rotary_cos_sin
-        all_shapes.append({0: batch})  # context_lengths
-        all_shapes.append({0: kv_batch})  # kvcache_start_index
-        all_shapes.append({0: page_batch, 2: max_pages})  # kv_page_table
-        all_shapes.append({0: batch, 1: num_selected})  # last_token_ids
-        all_shapes.append({0: batch, 1: seq})  # hidden_states_input
-        all_shapes.append({0: batch, 1: seq})  # hidden_states_from_draft
-        all_shapes.append({0: batch, 1: eagle_seq})  # attention_pos_id
-        all_shapes.append({
-            0: batch,
-            1: eagle_seq,
-            2: mask_kv_len
-        })  # attention_mask
-
-        wrapped = _make_flat_wrapper_eagle3(self, Na)
-        wrapped.eval()
-
-        return OnnxSpec(wrapped=wrapped,
-                        args=args,
-                        input_names=input_names,
-                        output_names=output_names,
-                        dynamic_shapes=all_shapes)
+    def _ragged_onnx_export_spec(self) -> OnnxSpec:
+        return _draft_ragged_export_spec(
+            self, self.config.num_hidden_layers,
+            self.config.eagle3_target_hidden_size *
+            self.config.eagle3_num_target_layers,
+            _make_flat_wrapper_eagle3_ragged)

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -55,6 +55,9 @@ import numpy as np
 from cutlass.cute.nvgpu import cpasync
 from cutlass.cute.runtime import from_dlpack
 from cutlass.cute.typing import Int32
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from cutedsl_utils import aot_placeholders  # isort: skip
 
 # ---------------------------------------------------------------------------
 # Compile-time kernel constants (shared with gdn_decode.py for compatibility)
@@ -556,17 +559,64 @@ def _to_mtp_cute_tensors(ph, with_cache):
     }
 
 
-def _compile_mtp(n, h, hv, k, v, seq_len, with_cache, stream, gpu_arch=""):
+def _make_aot_mtp_cute_tensors(n, h, hv, k, v, seq_len):
+    def compact(dtype, shape, assumed_align=16):
+        return aot_placeholders.make_compact_tensor(
+            dtype,
+            shape,
+            stride_order=tuple(reversed(range(len(shape)))),
+            assumed_align=assumed_align,
+        )
+
+    q = compact(cutlass.Float16, (n, seq_len, h, k))
+    v_tensor = compact(cutlass.Float16, (n, seq_len, hv, v))
+    a = compact(cutlass.Float16, (n, seq_len, hv))
+    b = compact(cutlass.Float16, (n, seq_len, hv))
+    h0_source = compact(cutlass.Float32, (n, hv, k, v), assumed_align=32)
+    intermediate_states = compact(
+        cutlass.Float32, (n, seq_len, hv, k, v), assumed_align=32
+    )
+    return {
+        "q": _mark_dynamic_4d(q.mark_layout_dynamic(leading_dim=3)),
+        "k": compact(cutlass.Float16, (n, seq_len, h, k)).mark_layout_dynamic(leading_dim=3),
+        "v": _mark_dynamic_4d(v_tensor.mark_layout_dynamic(leading_dim=3)),
+        "a": _mark_dynamic_3d(a.mark_layout_dynamic(leading_dim=2)),
+        "b": _mark_dynamic_3d(b.mark_layout_dynamic(leading_dim=2)),
+        "A_log": compact(cutlass.Float32, (hv,)).mark_layout_dynamic(leading_dim=0),
+        "dt_bias": compact(cutlass.Float16, (hv,)).mark_layout_dynamic(leading_dim=0),
+        "h0_source": _mark_h0_source_dynamic(h0_source),
+        "o": compact(cutlass.Float16, (n, seq_len, hv, v)).mark_layout_dynamic(leading_dim=3),
+        "intermediate_states": (
+            intermediate_states.mark_layout_dynamic(leading_dim=4)
+            .mark_compact_shape_dynamic(mode=0, stride_order=(0, 1, 2, 3, 4))
+            .mark_compact_shape_dynamic(mode=1, stride_order=(0, 1, 2, 3, 4))
+            .mark_compact_shape_dynamic(mode=2, stride_order=(0, 1, 2, 3, 4))
+            .mark_compact_shape_dynamic(mode=3, stride_order=(0, 1, 2, 3, 4))
+        ),
+    }
+
+
+def _compile_mtp(
+    n, h, hv, k, v, seq_len, with_cache, stream, gpu_arch="", export_only=False
+):
     key = (with_cache,)
     if key in _compiled_mtp:
         return _compiled_mtp[key]
 
     run_mtp = _get_jit_mtp_wrapper()
 
-    ph = _make_mtp_placeholder_tensors(n, h, hv, k, v, seq_len, with_cache)
-    t  = _to_mtp_cute_tensors(ph, with_cache)
+    if export_only:
+        t = _make_aot_mtp_cute_tensors(n, h, hv, k, v, seq_len)
+    else:
+        ph = _make_mtp_placeholder_tensors(n, h, hv, k, v, seq_len, with_cache)
+        t = _to_mtp_cute_tensors(ph, with_cache)
 
-    compile_opts = ("--gpu-arch " + gpu_arch) if gpu_arch else None
+    # Only the export path may pin a foreign target arch in the compile
+    # options; a native JIT run must compile for the local GPU (see the
+    # native-vs-cross note in cutedsl_utils/cutedsl_compile_wrapper.py).
+    compile_opts = aot_placeholders.compile_options(
+        f"--gpu-arch={gpu_arch}" if gpu_arch else ""
+    ) if export_only else None
     compiled = cute.compile(
         run_mtp,
         t["h0_source"],
@@ -605,7 +655,7 @@ def export_gdn_decode_mtp(
 
     The cache variant is used for speculative-decoding rollback.
     """
-    stream = cuda.CUstream(cp.cuda.get_current_stream().ptr)
+    stream = aot_placeholders.make_stream()
     os.makedirs(output_dir, exist_ok=True)
 
     fn = file_name + "_cache"
@@ -619,6 +669,7 @@ def export_gdn_decode_mtp(
         with_cache=True,
         stream=stream,
         gpu_arch=gpu_arch,
+        export_only=True,
     )
     print("[gdn_decode_mtp] Compilation time: %.4fs" % (time.time() - t0))
 
@@ -855,9 +906,6 @@ def run_test_mtp(
 
 def main():
     args = _parsed_args
-    if cp.cuda.runtime.getDeviceCount() == 0:
-        raise RuntimeError("GPU required.")
-    cp.random.seed(42)
     np.random.seed(42)
 
     if args.export_only:
@@ -874,6 +922,10 @@ def main():
             cache_only=args.cache_only,
         )
         return
+
+    if cp.cuda.runtime.getDeviceCount() == 0:
+        raise RuntimeError("GPU required.")
+    cp.random.seed(42)
 
     run_test_mtp(
         n=args.n,

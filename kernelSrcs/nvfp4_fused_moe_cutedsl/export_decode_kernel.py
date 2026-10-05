@@ -41,9 +41,6 @@ import argparse
 import os
 import sys
 
-import cupy as cp
-
-
 def _align_up(value: int, alignment: int) -> int:
     return ((value + alignment - 1) // alignment) * alignment
 
@@ -69,10 +66,8 @@ def export_decode_moe_variant(args):
     import cutlass
     import cutlass.cute as cute
 
-    from cute_dsl_utils import cute_compile_options, get_num_sm, make_ptr
+    from cutedsl_utils import aot_placeholders
     from moe_decode_kernel import MoEDecodeKernel
-
-    cp.cuda.Device(0).use()
 
     activation = args.activation
     verbose = getattr(args, "verbose", False)
@@ -293,8 +288,8 @@ def export_decode_moe_variant(args):
     # equals the SM count of the GPU the kernel launches on). The deployed
     # caller passes cudaDevAttrMultiProcessorCount at launch time; the trace
     # value below is a placeholder. This removes the build-GPU dependency the
-    # old constexpr bake had (and the HardwareInfo/GB10 sm_120a pitfall).
-    max_active_clusters = cutlass.Int32(get_num_sm())
+    # old constexpr bake had.
+    max_active_clusters = aot_placeholders.runtime_int32()
 
     ab_dtype = cutlass.Float4E2M1FN
     sf_dtype = cutlass.Float8E4M3FN
@@ -304,40 +299,40 @@ def export_decode_moe_variant(args):
     rows_pad_k = _align_up(_DUMMY_MAX_ROWS, 128)
 
     # Runtime-shaped tensors → pointers
-    a_input_fake = make_ptr(a_dtype, 16, cute.AddressSpace.gmem, assumed_align=16)
-    topk_ids_fake = make_ptr(cutlass.Int32, 4, cute.AddressSpace.gmem, assumed_align=4)
-    topk_weights_fake = make_ptr(cutlass.Float32, 4, cute.AddressSpace.gmem, assumed_align=4)
-    packed_a_fake = make_ptr(ab_dtype, 16, cute.AddressSpace.gmem, assumed_align=16)
-    sfa_fake = make_ptr(sf_dtype, 16, cute.AddressSpace.gmem, assumed_align=16)
-    packed_a_storage_fake = make_ptr(cutlass.Uint8, 16, cute.AddressSpace.gmem, assumed_align=16)
-    scale_storage_fake = make_ptr(cutlass.Uint8, 16, cute.AddressSpace.gmem, assumed_align=16)
+    a_input_fake = aot_placeholders.make_ptr(a_dtype, assumed_align=16)
+    topk_ids_fake = aot_placeholders.make_ptr(cutlass.Int32, assumed_align=4)
+    topk_weights_fake = aot_placeholders.make_ptr(cutlass.Float32, assumed_align=4)
+    packed_a_fake = aot_placeholders.make_ptr(ab_dtype, assumed_align=16)
+    sfa_fake = aot_placeholders.make_ptr(sf_dtype, assumed_align=16)
+    packed_a_storage_fake = aot_placeholders.make_ptr(cutlass.Uint8, assumed_align=16)
+    scale_storage_fake = aot_placeholders.make_ptr(cutlass.Uint8, assumed_align=16)
 
     # Scalar / [1] tensors
-    barrier_count_fake = cute.runtime.make_fake_compact_tensor(cutlass.Int32, (1,), assumed_align=4)
-    barrier_epoch_fake = cute.runtime.make_fake_compact_tensor(cutlass.Int32, (1,), assumed_align=4)
-    active_expert_count_fake = cute.runtime.make_fake_compact_tensor(cutlass.Int32, (1,), assumed_align=4)
+    barrier_count_fake = aot_placeholders.make_compact_tensor(cutlass.Int32, (1,), assumed_align=4)
+    barrier_epoch_fake = aot_placeholders.make_compact_tensor(cutlass.Int32, (1,), assumed_align=4)
+    active_expert_count_fake = aot_placeholders.make_compact_tensor(cutlass.Int32, (1,), assumed_align=4)
 
     # Weight tensors: pointer path (shape-polymorphic). The wrapper builds
     # the cute.Tensor with a runtime ``make_ordered_layout`` so the AOT
     # binary's TMA descriptor is rebuilt at launch from runtime N/K/E.
-    b_w13_fake = make_ptr(ab_dtype, 16, cute.AddressSpace.gmem, assumed_align=16)
-    sfb_w13_fake = make_ptr(sf_dtype, 16, cute.AddressSpace.gmem, assumed_align=16)
-    b_down_fake = make_ptr(ab_dtype, 16, cute.AddressSpace.gmem, assumed_align=16)
-    sfb_down_fake = make_ptr(sf_dtype, 16, cute.AddressSpace.gmem, assumed_align=16)
+    b_w13_fake = aot_placeholders.make_ptr(ab_dtype, assumed_align=16)
+    sfb_w13_fake = aot_placeholders.make_ptr(sf_dtype, assumed_align=16)
+    b_down_fake = aot_placeholders.make_ptr(ab_dtype, assumed_align=16)
+    sfb_down_fake = aot_placeholders.make_ptr(sf_dtype, assumed_align=16)
 
     # Runtime-shaped metadata → pointers
-    row_counts_fake = make_ptr(cutlass.Int32, 4, cute.AddressSpace.gmem, assumed_align=4)
-    weight_expert_ids_fake = make_ptr(cutlass.Int32, 4, cute.AddressSpace.gmem, assumed_align=4)
-    global_to_local_expert_fake = make_ptr(cutlass.Int32, 4, cute.AddressSpace.gmem, assumed_align=4)
-    input_gs_fake = make_ptr(alpha_dtype, 16, cute.AddressSpace.gmem, assumed_align=16)
-    alpha_fake = make_ptr(alpha_dtype, 16, cute.AddressSpace.gmem, assumed_align=16)
-    down_alpha_fake = make_ptr(alpha_dtype, 16, cute.AddressSpace.gmem, assumed_align=16)
-    global_scale_fake = make_ptr(alpha_dtype, 16, cute.AddressSpace.gmem, assumed_align=16)
-    scatter_fake = make_ptr(a_dtype, 16, cute.AddressSpace.gmem, assumed_align=16)
-    token_map_fake = make_ptr(cutlass.Int32, 4, cute.AddressSpace.gmem, assumed_align=4)
-    token_weights_fake = make_ptr(alpha_dtype, 16, cute.AddressSpace.gmem, assumed_align=16)
+    row_counts_fake = aot_placeholders.make_ptr(cutlass.Int32, assumed_align=4)
+    weight_expert_ids_fake = aot_placeholders.make_ptr(cutlass.Int32, assumed_align=4)
+    global_to_local_expert_fake = aot_placeholders.make_ptr(cutlass.Int32, assumed_align=4)
+    input_gs_fake = aot_placeholders.make_ptr(alpha_dtype, assumed_align=16)
+    alpha_fake = aot_placeholders.make_ptr(alpha_dtype, assumed_align=16)
+    down_alpha_fake = aot_placeholders.make_ptr(alpha_dtype, assumed_align=16)
+    global_scale_fake = aot_placeholders.make_ptr(alpha_dtype, assumed_align=16)
+    scatter_fake = aot_placeholders.make_ptr(a_dtype, assumed_align=16)
+    token_map_fake = aot_placeholders.make_ptr(cutlass.Int32, assumed_align=4)
+    token_weights_fake = aot_placeholders.make_ptr(alpha_dtype, assumed_align=16)
 
-    stream = cuda.CUstream(cp.cuda.get_current_stream().ptr)
+    stream = aot_placeholders.make_stream()
 
     print("Compiling fused decode MoE kernel via wrapper...")
     compiled = cute.compile(
@@ -381,7 +376,7 @@ def export_decode_moe_variant(args):
         # Runtime persistent-grid size
         max_active_clusters,
         stream,
-        options=cute_compile_options(),
+        options=aot_placeholders.compile_options("--opt-level 2"),
     )
 
     os.makedirs(args.output_dir, exist_ok=True)

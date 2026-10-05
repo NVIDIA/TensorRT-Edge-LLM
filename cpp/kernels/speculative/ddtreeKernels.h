@@ -37,7 +37,9 @@ constexpr int32_t kDDTreeMaxCandidateTopK{8};
 //! Tensor inputs consumed by ddtreeBuild().
 struct DDTreeBuildInputs
 {
-    rt::Tensor const& draftLogits;  //!< [batch, dflashBlockSize, vocabSize] draft logits.
+    //! Token-major [batch * dflashBlockSize, vocabSize] draft logits. Internal callers with an existing
+    //! rectangular compatibility view may pass [batch, dflashBlockSize, vocabSize].
+    rt::Tensor const& draftLogits;
     rt::Tensor const& rootTokenIds; //!< [batch] last accepted token ids.
     rt::Tensor const& baseLengths;  //!< [batch] committed base lengths before verification.
 
@@ -113,7 +115,8 @@ size_t getDDTreeBuildWorkspaceSize(
 //! tokens on its own root-to-node path.
 //!
 //! Inputs:
-//!     draftLogits [GPU, Float]: [batch, dflashBlockSize, vocabSize].
+//!     draftLogits [GPU, Float]: token-major [batch * dflashBlockSize, vocabSize], or an internal
+//!         [batch, dflashBlockSize, vocabSize] compatibility view.
 //!     rootTokenIds [GPU, Int32]: last accepted token for each batch, [batch].
 //!     baseLengths [GPU, Int32]: committed base length before verify, [batch].
 //!     candidateTopK: DFlash DDTree candidateTopK, wired from draftingTopK.

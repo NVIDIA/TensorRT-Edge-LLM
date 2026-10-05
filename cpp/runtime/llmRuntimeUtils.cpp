@@ -38,6 +38,21 @@ namespace trt_edgellm
 {
 namespace rt
 {
+
+char const* guideTypeName(GuideType type)
+{
+    switch (type)
+    {
+    case GuideType::kJsonObject: return "json_object";
+    case GuideType::kJsonSchema: return "json_schema";
+    case GuideType::kRegex: return "regex";
+    case GuideType::kEbnf: return "ebnf";
+    case GuideType::kStructuralTag: return "structural_tag";
+    case GuideType::kChoice: return "choice";
+    }
+    return "unknown";
+}
+
 namespace
 {
 
@@ -146,6 +161,112 @@ bool computeYarnInvFreq(
     return true;
 }
 
+//! Per-dimension inverse frequencies for Llama-3 scaling, mirroring `apply_rope_scaling` in HF's Llama modeling.
+//!
+//! Each band is classified by its wavelength: fully scaled below the low-frequency cutoff, untouched above the
+//! high-frequency one, and linearly blended between them. The blend is over the *smoothing factor*, so it degenerates
+//! to the two endpoints when the cutoffs coincide.
+bool computeLlama3InvFreq(RopeConfig const& config, int64_t rotaryDim, std::vector<float>& invFreq) noexcept
+{
+    constexpr float kPi = 3.14159265358979323846F;
+
+    if (rotaryDim <= 0 || rotaryDim % 2 != 0)
+    {
+        LOG_ERROR("Llama-3 RoPE requires a positive, even rotaryDim; got %lld.", static_cast<long long>(rotaryDim));
+        return false;
+    }
+    if (!config.llama3.has_value())
+    {
+        LOG_ERROR("Llama-3 RoPE requires its scaling parameters.");
+        return false;
+    }
+
+    Llama3Params const& params = config.llama3.value();
+    if (params.factor <= 0.0F || params.originalMaxPositionEmbeddings <= 0 || params.lowFreqFactor <= 0.0F
+        || params.highFreqFactor <= 0.0F)
+    {
+        LOG_ERROR("Llama-3 RoPE requires positive factor, original_max_position_embeddings and freq factors.");
+        return false;
+    }
+    if (params.highFreqFactor == params.lowFreqFactor)
+    {
+        // The blend below divides by their difference. HF has the same constraint; it is a malformed config rather
+        // than a degenerate-but-valid one, so it is refused instead of silently clamped.
+        LOG_ERROR("Llama-3 RoPE requires low_freq_factor != high_freq_factor.");
+        return false;
+    }
+
+    auto const origMax = static_cast<float>(params.originalMaxPositionEmbeddings);
+    float const lowFreqWavelen = origMax / params.lowFreqFactor;
+    float const highFreqWavelen = origMax / params.highFreqFactor;
+    float const base = config.rotaryTheta;
+    int64_t const halfDim = rotaryDim / 2;
+
+    invFreq.resize(static_cast<size_t>(halfDim));
+    for (int64_t d = 0; d < halfDim; ++d)
+    {
+        float const freq = 1.0F / std::pow(base, 2.0F * static_cast<float>(d) / static_cast<float>(rotaryDim));
+        float const wavelen = 2.0F * kPi / freq;
+
+        float scaled{};
+        if (wavelen > lowFreqWavelen)
+        {
+            scaled = freq / params.factor;
+        }
+        else if (wavelen < highFreqWavelen)
+        {
+            scaled = freq;
+        }
+        else
+        {
+            float const smooth
+                = (origMax / wavelen - params.lowFreqFactor) / (params.highFreqFactor - params.lowFreqFactor);
+            scaled = (1.0F - smooth) * freq / params.factor + smooth * freq;
+        }
+        invFreq[static_cast<size_t>(d)] = scaled;
+    }
+    return true;
+}
+
+//! Build the cos/sin cache for Llama-3 scaling.
+//!
+//! Shares YaRN's kernel: once the per-dimension inverse frequencies are known, both schemes are the same table
+//! build. `mscale` is 1 because Llama-3 rescales frequencies only, leaving attention magnitude alone.
+bool initializeLlama3RopeCosSinCache(rt::Tensor& cosSinCache, RopeConfig const& config, cudaStream_t stream) noexcept
+{
+    int64_t const maxLength = cosSinCache.getShape()[1];
+    int64_t const rotaryDim = cosSinCache.getShape()[2];
+
+    if (rotaryDim != 64 && rotaryDim != 128)
+    {
+        LOG_ERROR("Llama-3 RoPE supports rotaryDim 64 or 128 only; got %lld.", static_cast<long long>(rotaryDim));
+        return false;
+    }
+
+    std::vector<float> invFreq;
+    if (!computeLlama3InvFreq(config, rotaryDim, invFreq))
+    {
+        return false;
+    }
+    int64_t const halfDim = rotaryDim / 2;
+
+    try
+    {
+        rt::Tensor invFreqDevice({halfDim}, DeviceType::kGPU, DataType::kFLOAT, "Llama3Rope::invFreq");
+        CUDA_CHECK(cudaMemcpyAsync(invFreqDevice.rawPointer(), invFreq.data(),
+            static_cast<size_t>(halfDim) * sizeof(float), cudaMemcpyHostToDevice, stream));
+        kernel::initializeYarnCosSin(cosSinCache.dataPointer<float>(), invFreqDevice.dataPointer<float>(),
+            /*mscale=*/1.0F, static_cast<int32_t>(rotaryDim), static_cast<int32_t>(maxLength), stream);
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+    }
+    catch (std::exception const& e)
+    {
+        LOG_ERROR("initializeLlama3RopeCosSinCache kernel launch failed: %s", e.what());
+        return false;
+    }
+    return true;
+}
+
 bool initializeYarnRopeCosSinCache(rt::Tensor& cosSinCache, RopeConfig const& config, cudaStream_t stream) noexcept
 {
     int64_t const maxLength = cosSinCache.getShape()[1];
@@ -214,6 +335,7 @@ std::ostream& operator<<(std::ostream& os, RopeType const& type)
     case RopeType::kMRope: os << "MRope"; break;
     case RopeType::kNoRope: os << "NoRope"; break;
     case RopeType::kYarn: os << "YaRN"; break;
+    case RopeType::kLlama3: os << "Llama3"; break;
     }
     return os;
 }
@@ -236,12 +358,20 @@ std::string formatRopeConfig(RopeConfig const& config)
            << "  betaFast: " << config.yarn->betaFast << "  betaSlow: " << config.yarn->betaSlow
            << "  mscale: " << config.yarn->mscale;
     }
+    if (config.type == RopeType::kLlama3 && config.llama3.has_value())
+    {
+        ss << "  Llama3Config:" << "  factor: " << config.llama3->factor
+           << "  originalMaxPositionEmbeddings: " << config.llama3->originalMaxPositionEmbeddings
+           << "  lowFreqFactor: " << config.llama3->lowFreqFactor
+           << "  highFreqFactor: " << config.llama3->highFreqFactor;
+    }
     return ss.str();
 }
 
 RopeConfig collectRopeConfig(nlohmann::json const& config)
 {
     RopeConfig ropeConfig{};
+    float dynamicNtkAlpha = 0.0F;
 
     // Check for explicit use_rope flag (set by hybrid model export)
     if (config.contains("use_rope") && config["use_rope"].is_boolean() && !config["use_rope"].get<bool>())
@@ -273,11 +403,25 @@ RopeConfig collectRopeConfig(nlohmann::json const& config)
                 // `Qwen2_5_VLVisionConfig` convention ("default" + mrope_section).
                 // Talker uses same config (3D position_ids + interleaved MRoPE) as in PyTorch.
                 ropeConfig.type = RopeType::kMRope;
+                if (mropeSectionIt != ropeScalingIt->end())
+                {
+                    check::check(mropeSectionIt->is_array(), "rope_scaling.mrope_section must be an array");
+                    ropeConfig.mropeSection = mropeSectionIt->get<std::vector<int32_t>>();
+                    check::check(ropeConfig.mropeSection.size() >= 3,
+                        "rope_scaling.mrope_section must contain temporal, height, and width partitions");
+                }
             }
-            else if (ropeTypeStr == "default" || ropeTypeStr == "llama3")
+            else if (ropeTypeStr == "llama3")
             {
-                // Route the llama3 config to default type.
+                ropeConfig.type = RopeType::kLlama3;
+            }
+            else if (ropeTypeStr == "default")
+            {
                 ropeConfig.type = RopeType::kDefault;
+            }
+            else if (ropeTypeStr == "nope")
+            {
+                ropeConfig.type = RopeType::kNoRope;
             }
             else if (ropeTypeStr == "proportional")
             {
@@ -286,6 +430,13 @@ RopeConfig collectRopeConfig(nlohmann::json const& config)
             else if (ropeTypeStr == "dynamic")
             {
                 ropeConfig.type = RopeType::kDynamic;
+                // HunYuan V1 DynamicNTKAlpha: "dynamic" with an "alpha" field statically
+                // rescales the base (applied after rope_theta detection below).
+                auto alphaIt = ropeScalingIt->find("alpha");
+                if (alphaIt != ropeScalingIt->end() && alphaIt->is_number())
+                {
+                    dynamicNtkAlpha = alphaIt->get<float>();
+                }
             }
             else if (ropeTypeStr == "longrope")
             {
@@ -319,6 +470,48 @@ RopeConfig collectRopeConfig(nlohmann::json const& config)
             params.originalMaxPositionEmbeddings = config["original_max_position_embeddings"].get<int32_t>();
 
             ropeConfig.longRope = std::move(params);
+        }
+
+        if (ropeConfig.type == RopeType::kLlama3)
+        {
+            // All four fields are required, as they are in HF: each is a divisor or a band boundary in
+            // computeLlama3InvFreq, and defaulting one builds a plausible cache for a model trained with different
+            // ones. Reading and checking each in place, rather than defaulting now and validating later.
+            Llama3Params params{};
+
+            auto const factorIt = ropeScalingIt->find("factor");
+            check::check(factorIt != ropeScalingIt->end() && factorIt->get<float>() > 0.0F,
+                "rope_scaling.factor must be a positive number for llama3 RoPE");
+            params.factor = factorIt->get<float>();
+
+            auto const lowFreqIt = ropeScalingIt->find("low_freq_factor");
+            auto const highFreqIt = ropeScalingIt->find("high_freq_factor");
+            check::check(lowFreqIt != ropeScalingIt->end() && highFreqIt != ropeScalingIt->end(),
+                "llama3 RoPE requires both low_freq_factor and high_freq_factor");
+            params.lowFreqFactor = lowFreqIt->get<float>();
+            params.highFreqFactor = highFreqIt->get<float>();
+            // Ordering, not just inequality. The two divide the same reference length into the wavelength cutoffs
+            // that decide which bands are scaled, so swapping them moves the scaling onto the bands that should
+            // have been left alone -- silently, since the cache still builds.
+            check::check(params.lowFreqFactor > 0.0F && params.lowFreqFactor < params.highFreqFactor,
+                "llama3 RoPE requires 0 < low_freq_factor < high_freq_factor");
+
+            // transformers moved this inside rope_scaling; older configs keep it at the top level. Accept either,
+            // the same way the yarn branch does. Two separate lookups because iterators into different json
+            // objects cannot be compared against one another.
+            auto const origMaxIt = ropeScalingIt->find("original_max_position_embeddings");
+            if (origMaxIt != ropeScalingIt->end())
+            {
+                params.originalMaxPositionEmbeddings = origMaxIt->get<int32_t>();
+            }
+            else if (config.contains("original_max_position_embeddings"))
+            {
+                params.originalMaxPositionEmbeddings = config["original_max_position_embeddings"].get<int32_t>();
+            }
+            check::check(params.originalMaxPositionEmbeddings > 0,
+                "llama3 RoPE requires a positive original_max_position_embeddings");
+
+            ropeConfig.llama3 = params;
         }
 
         if (ropeConfig.type == RopeType::kYarn)
@@ -408,6 +601,27 @@ RopeConfig collectRopeConfig(nlohmann::json const& config)
         LOG_WARNING("rope_theta is not specified in the model config, using default value: %f", ropeConfig.rotaryTheta);
     }
 
+    // DynamicNTKAlpha (HunYuan V1): unlike HF's factor-based dynamic NTK, the alpha variant
+    // rescales the base once, independent of sequence length:
+    //   base = rope_theta * alpha^(head_dim / (head_dim - 2))
+    if (dynamicNtkAlpha > 0.0F)
+    {
+        float dim = 0.0F;
+        if (config.contains("head_dim"))
+        {
+            dim = config["head_dim"].get<float>();
+        }
+        else if (config.contains("hidden_size") && config.contains("num_attention_heads")
+            && config["num_attention_heads"].get<float>() > 0.0F)
+        {
+            dim = config["hidden_size"].get<float>() / config["num_attention_heads"].get<float>();
+        }
+        check::check(dim > 2.0F,
+            "rope_scaling.alpha requires head_dim > 2 (from head_dim, or hidden_size / num_attention_heads).");
+        ropeConfig.rotaryTheta *= std::pow(dynamicNtkAlpha, dim / (dim - 2.0F));
+        LOG_INFO("DynamicNTKAlpha RoPE: alpha=%f rescales base to %f", dynamicNtkAlpha, ropeConfig.rotaryTheta);
+    }
+
     // Detect MaxPositionEmbeddings
     if (config.contains("max_position_embeddings"))
     {
@@ -447,6 +661,10 @@ bool initializeRopeCosSinCache(rt::Tensor& cosSinCache, RopeConfig const& config
     if (config.type == RopeType::kYarn)
     {
         return initializeYarnRopeCosSinCache(cosSinCache, config, stream);
+    }
+    if (config.type == RopeType::kLlama3)
+    {
+        return initializeLlama3RopeCosSinCache(cosSinCache, config, stream);
     }
     if (config.type == RopeType::kDefault || config.type == RopeType::kDynamic
         || config.type == RopeType::kProportional)
@@ -604,6 +822,8 @@ void compactVector(std::vector<int32_t> const& batchMapping, std::vector<T>& vec
 
 template void compactVector<int8_t>(std::vector<int32_t> const&, std::vector<int8_t>&);
 template void compactVector<int32_t>(std::vector<int32_t> const&, std::vector<int32_t>&);
+template void compactVector<int64_t>(std::vector<int32_t> const&, std::vector<int64_t>&);
+template void compactVector<uint64_t>(std::vector<int32_t> const&, std::vector<uint64_t>&);
 template void compactVector<std::vector<int32_t>>(std::vector<int32_t> const&, std::vector<std::vector<int32_t>>&);
 template void compactVector<std::string>(std::vector<int32_t> const&, std::vector<std::string>&);
 template void compactVector<std::vector<std::string>>(
@@ -612,6 +832,7 @@ template void compactVector<std::unordered_map<int32_t, float>>(
     std::vector<int32_t> const&, std::vector<std::unordered_map<int32_t, float>>&);
 template void compactVector<SlotStreamState>(std::vector<int32_t> const&, std::vector<SlotStreamState>&);
 template void compactVector<LogprobsSlot>(std::vector<int32_t> const&, std::vector<LogprobsSlot>&);
+template void compactVector<ResidentRef>(std::vector<int32_t> const&, std::vector<ResidentRef>&);
 
 // Build batch mapping from finished states
 // Returns a vector mapping old batch indices to new indices (-1 for evicted batches)
@@ -768,7 +989,7 @@ rt::Tensor generateMultimodalIndices(
             }
             else
             {
-                indicesPtr[pos] = 0;
+                indicesPtr[pos] = -1;
             }
         }
     }

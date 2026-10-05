@@ -40,10 +40,16 @@ void SpecCommonStateTracker::initialize(DecodingInferenceContext const& context)
     {
         size_t const inputLength = context.rawBatchedInputIds[static_cast<size_t>(slot)].size();
         int32_t const effectivePrefillLength = context.effectivePrefillLengths[static_cast<size_t>(slot)];
-        ELLM_CHECK(inputLength <= static_cast<size_t>(std::numeric_limits<int32_t>::max())
-                && effectivePrefillLength >= 0 && static_cast<size_t>(effectivePrefillLength) <= inputLength,
+        // Visual-token pruning shortens the materialized KV below the raw input length; empty
+        // prunedPrefillTokens means no pruning ran.
+        int32_t const prunedTokens = slot < static_cast<int32_t>(context.prunedPrefillTokens.size())
+            ? context.prunedPrefillTokens[static_cast<size_t>(slot)]
+            : 0;
+        ELLM_CHECK(inputLength <= static_cast<size_t>(std::numeric_limits<int32_t>::max()) && prunedTokens >= 0
+                && static_cast<size_t>(prunedTokens) <= inputLength && effectivePrefillLength >= 0
+                && static_cast<size_t>(effectivePrefillLength) <= inputLength - static_cast<size_t>(prunedTokens),
             "Speculative prefill length is outside the input sequence");
-        mCommonMaterializedStateLengths[static_cast<size_t>(slot)] = static_cast<int32_t>(inputLength);
+        mCommonMaterializedStateLengths[static_cast<size_t>(slot)] = static_cast<int32_t>(inputLength) - prunedTokens;
     }
 }
 

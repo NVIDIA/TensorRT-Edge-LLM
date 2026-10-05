@@ -32,6 +32,7 @@
 #              Blackwell overlay when the artifact has it (default)
 #   gdn      — enable only the GDN group
 #   f16_moe  — enable the target-specific homogeneous-FP16 MoE group
+#   layernorm — enable the homogeneous FP16/BF16 LayerNorm group
 #   fmha;gdn — semicolon-separated list of groups (CMake list syntax)
 #
 # Usage:
@@ -48,9 +49,12 @@
 #   CUTE_DSL_GDN_ENABLED   — set when the gdn group is active
 #   CUTE_DSL_F16_MOE_ENABLED — set when the f16_moe group is active
 #   CUTE_DSL_SSD_ENABLED   — set when the ssd group is active
+#   CUTE_DSL_LAYERNORM_ENABLED — set when the layernorm group is active
 #   CUTE_DSL_RMSNORM_ENABLED — set when the rmsnorm group is active
 #   CUTE_DSL_NVFP4_A16_BLACKWELL_GEMM_ENABLED — set when the SM110 dense W4A16
 #                                                GEMM group is active
+#   CUTE_DSL_NVFP4_A16_BLACKWELL_MOE_ENABLED — set when the SM110 grouped W4A16
+#                                               MoE GEMM group is active
 #   CUTE_DSL_GEMM_ENABLED  — set when any gemm variant is active
 # ---------------------------------------------------------------------------
 # cmake-format: on
@@ -59,7 +63,7 @@ set(ENABLE_CUTE_DSL
     "fmha"
     CACHE
       STRING
-      "CuTe DSL kernels: OFF, ALL, or semicolon-separated group list (fmha;gdn;rmsnorm)"
+      "CuTe DSL kernels: OFF, ALL, or semicolon-separated group list (fmha;gdn;layernorm;rmsnorm)"
 )
 
 set(CUTE_DSL_ARTIFACT_TAG
@@ -128,6 +132,10 @@ function(_cute_dsl_infer_artifact_tag OUT_VAR ARCH)
     elseif(_embedded_target STREQUAL "auto_thor" OR _embedded_target STREQUAL
                                                     "jetson_thor")
       set(_default_tag "sm_110")
+    elseif(_embedded_target STREQUAL "igx_thor")
+      # IGX Thor can expose its SM110 iGPU and an SM120 dGPU to one installed
+      # runtime, so its artifact carries kernels for both architectures.
+      set(_default_tag "sm_110_sm_120")
     elseif(_embedded_target STREQUAL "jetson_orin")
       set(_default_tag "sm_87")
     endif()
@@ -233,17 +241,6 @@ function(cute_dsl_setup)
     endif()
   endif()
 
-  if(_artifact_tag STREQUAL ""
-     AND "${_arch}" STREQUAL "aarch64"
-     AND DEFINED EMBEDDED_TARGET
-     AND EMBEDDED_TARGET STREQUAL "thor-all")
-    message(
-      FATAL_ERROR
-        "CuTe DSL artifact selection is ambiguous for EMBEDDED_TARGET=thor-all.\n"
-        "Set -DCUTE_DSL_ARTIFACT_TAG=sm_110 or -DCUTE_DSL_ARTIFACT_TAG=sm_121 explicitly."
-    )
-  endif()
-
   set(_static_lib "${_artifact_dir}/libcutedsl_${_arch}.a")
   set(_inc_dir "${_artifact_dir}/include")
   set(_metadata "${_artifact_dir}/metadata.json")
@@ -277,6 +274,7 @@ function(cute_dsl_setup)
 
   # Validate artifacts exist.
   if(NOT EXISTS "${_static_lib}")
+    string(REPLACE "_sm_" ",sm_" _artifact_gpu_arch_arg "${_artifact_tag}")
     message(
       FATAL_ERROR
         "Prebuilt CuTe DSL library not found:\n"
@@ -284,7 +282,7 @@ function(cute_dsl_setup)
         "Expected prebuilt tarball:\n"
         "  ${_prebuilt_dir}/cutedsl_${_arch}_${_artifact_tag}_cuda${_cute_dsl_cuda_major}.tar.gz\n"
         "Generate it with:\n"
-        "  python kernelSrcs/build_cutedsl.py --gpu_arch ${_artifact_tag} --arch ${_arch}\n"
+        "  python kernelSrcs/build_cutedsl.py --gpu_arch ${_artifact_gpu_arch_arg} --arch ${_arch}\n"
         "Artifacts are generated locally under:\n"
         "  cpp/kernels/cuteDSLArtifact/<arch>/<artifact_tag>/")
   endif()
@@ -321,6 +319,20 @@ function(cute_dsl_setup)
         "CuTe DSL artifact tag mismatch: selected '${_artifact_tag}' but "
         "metadata.json in ${_artifact_dir} reports gpu_arch='${_meta_gpu_arch}'."
     )
+  endif()
+
+  set(_meta_gpu_archs)
+  string(JSON _n_meta_gpu_archs ERROR_VARIABLE _meta_gpu_archs_err
+         LENGTH "${_meta_json}" "gpu_archs")
+  if(NOT _meta_gpu_archs_err AND _n_meta_gpu_archs GREATER 0)
+    math(EXPR _last_meta_gpu_arch_idx "${_n_meta_gpu_archs} - 1")
+    foreach(_meta_gpu_arch_idx RANGE ${_last_meta_gpu_arch_idx})
+      string(JSON _one_meta_gpu_arch GET "${_meta_json}" "gpu_archs"
+             ${_meta_gpu_arch_idx})
+      list(APPEND _meta_gpu_archs "${_one_meta_gpu_arch}")
+    endforeach()
+  elseif(NOT _meta_gpu_arch_err)
+    list(APPEND _meta_gpu_archs "${_meta_gpu_arch}")
   endif()
   string(JSON _n_groups LENGTH "${_meta_json}" "groups")
 
@@ -442,10 +454,16 @@ function(cute_dsl_setup)
     endforeach()
   endif()
 
-  # The FP16 MoE and RMSNorm runners link one exact-SM artifact. Parse the
-  # artifact SM for their compile-time guards.
-  if("f16_moe" IN_LIST _active_groups OR "rmsnorm" IN_LIST _active_groups)
-    if(NOT _meta_gpu_arch_err AND _meta_gpu_arch MATCHES "^sm_([0-9]+)$")
+  # The FP16 MoE, LayerNorm, and RMSNorm runners need the artifact SM metadata
+  # for their availability guards. A combined artifact dispatches among all
+  # listed SMs.
+  if("f16_moe" IN_LIST _active_groups
+     OR "layernorm" IN_LIST _active_groups
+     OR "rmsnorm" IN_LIST _active_groups)
+    list(LENGTH _meta_gpu_archs _meta_gpu_arch_count)
+    if(_meta_gpu_arch_count GREATER 1)
+      set(_cute_dsl_multi_arch TRUE)
+    elseif(NOT _meta_gpu_arch_err AND _meta_gpu_arch MATCHES "^sm_([0-9]+)$")
       set(_meta_sm "${CMAKE_MATCH_1}")
     else()
       message(
@@ -469,9 +487,10 @@ function(cute_dsl_setup)
     endforeach()
   endforeach()
 
-  # The optimized Blackwell FMHA kernels are generated for SM100, SM101 and
-  # SM110 only.
-  if(NOT _meta_gpu_arch_err AND _meta_gpu_arch MATCHES "^sm_(100|101|110)$")
+  # The optimized Blackwell FMHA overlay is identified by its variants so a
+  # combined artifact can carry it alongside the portable FMHA-v2 family.
+  list(FIND _variants "fmha_d64" _fmha_blackwell_idx)
+  if(NOT ${_fmha_blackwell_idx} EQUAL -1 AND "fmha" IN_LIST _active_groups)
     foreach(_tgt ${ARG_TARGETS} ${ARG_LINK_TARGETS})
       target_compile_definitions(${_tgt}
                                  PRIVATE "CUTE_DSL_FMHA_BLACKWELL_ENABLED")
@@ -535,18 +554,68 @@ function(cute_dsl_setup)
     )
   endif()
 
-  # Per-family definitions for the FP16 MoE grouped-GEMM modules. Each
-  # target-specific artifact pack contains exactly one of these variants.
+  # Per-family and per-SM definitions for the FP16 MoE grouped-GEMM modules.
   if("f16_moe" IN_LIST _active_groups)
     foreach(_tgt ${ARG_TARGETS} ${ARG_LINK_TARGETS})
-      target_compile_definitions(
-        ${_tgt} PRIVATE "CUTE_DSL_F16_MOE_ARTIFACT_SM=${_meta_sm}")
+      if(_cute_dsl_multi_arch)
+        target_compile_definitions(
+          ${_tgt} PRIVATE "CUTE_DSL_F16_MOE_MULTI_ARCH_ENABLED")
+        foreach(_f16_moe_gpu_arch ${_meta_gpu_archs})
+          if(NOT _f16_moe_gpu_arch MATCHES "^sm_([0-9]+)$")
+            message(
+              FATAL_ERROR
+                "Invalid FP16 MoE multi-SM metadata entry '${_f16_moe_gpu_arch}' in ${_metadata}."
+            )
+          endif()
+          target_compile_definitions(
+            ${_tgt} PRIVATE "CUTE_DSL_F16_MOE_ARTIFACT_SM_${CMAKE_MATCH_1}=1")
+        endforeach()
+      else()
+        target_compile_definitions(
+          ${_tgt} PRIVATE "CUTE_DSL_F16_MOE_ARTIFACT_SM=${_meta_sm}")
+      endif()
     endforeach()
   endif()
   if("rmsnorm" IN_LIST _active_groups)
     foreach(_tgt ${ARG_TARGETS} ${ARG_LINK_TARGETS})
-      target_compile_definitions(
-        ${_tgt} PRIVATE "CUTE_DSL_RMSNORM_ARTIFACT_SM=${_meta_sm}")
+      if(_cute_dsl_multi_arch)
+        target_compile_definitions(
+          ${_tgt} PRIVATE "CUTE_DSL_RMSNORM_MULTI_ARCH_ENABLED")
+        foreach(_rmsnorm_gpu_arch ${_meta_gpu_archs})
+          if(NOT _rmsnorm_gpu_arch MATCHES "^sm_([0-9]+)$")
+            message(
+              FATAL_ERROR
+                "Invalid RMSNorm multi-SM metadata entry '${_rmsnorm_gpu_arch}' in ${_metadata}."
+            )
+          endif()
+          target_compile_definitions(
+            ${_tgt} PRIVATE "CUTE_DSL_RMSNORM_ARTIFACT_SM_${CMAKE_MATCH_1}=1")
+        endforeach()
+      else()
+        target_compile_definitions(
+          ${_tgt} PRIVATE "CUTE_DSL_RMSNORM_ARTIFACT_SM=${_meta_sm}")
+      endif()
+    endforeach()
+  endif()
+  if("layernorm" IN_LIST _active_groups)
+    foreach(_tgt ${ARG_TARGETS} ${ARG_LINK_TARGETS})
+      if(_cute_dsl_multi_arch)
+        target_compile_definitions(
+          ${_tgt} PRIVATE "CUTE_DSL_LAYERNORM_MULTI_ARCH_ENABLED")
+        foreach(_layernorm_gpu_arch ${_meta_gpu_archs})
+          if(NOT _layernorm_gpu_arch MATCHES "^sm_([0-9]+)$")
+            message(
+              FATAL_ERROR
+                "Invalid LayerNorm multi-SM metadata entry '${_layernorm_gpu_arch}' in ${_metadata}."
+            )
+          endif()
+          target_compile_definitions(
+            ${_tgt} PRIVATE "CUTE_DSL_LAYERNORM_ARTIFACT_SM_${CMAKE_MATCH_1}=1")
+        endforeach()
+      else()
+        target_compile_definitions(
+          ${_tgt} PRIVATE "CUTE_DSL_LAYERNORM_ARTIFACT_SM=${_meta_sm}")
+      endif()
     endforeach()
   endif()
 
@@ -1041,6 +1110,38 @@ function(cute_dsl_setup)
     endforeach()
   endif()
 
+  # The SM110 grouped W4A16 MoE runner links the fixed FP16 FC1/FC2 variant set;
+  # a partially regenerated artifact must fail at configure time.
+  if("nvfp4_a16_blackwell_moe" IN_LIST _active_groups)
+    set(_nvfp4_a16_moe_tiles 8 16 32 64 128)
+    set(_nvfp4_a16_moe_found_variants)
+    set(_nvfp4_a16_moe_missing_variants)
+    foreach(_nvfp4_a16_moe_fusion fc1_relu2 fc2_scatter)
+      foreach(_nvfp4_a16_moe_tile ${_nvfp4_a16_moe_tiles})
+        set(_nvfp4_a16_moe_variant
+            "nvfp4_a16_blackwell_moe_${_nvfp4_a16_moe_fusion}_fp16_tm128_tn${_nvfp4_a16_moe_tile}_tk64"
+        )
+        list(FIND _variants "${_nvfp4_a16_moe_variant}" _nvfp4_a16_moe_idx)
+        if(NOT ${_nvfp4_a16_moe_idx} EQUAL -1)
+          list(APPEND _nvfp4_a16_moe_found_variants "${_nvfp4_a16_moe_variant}")
+        else()
+          list(APPEND _nvfp4_a16_moe_missing_variants
+               "${_nvfp4_a16_moe_variant}")
+        endif()
+      endforeach()
+    endforeach()
+    list(LENGTH _nvfp4_a16_moe_missing_variants _nvfp4_a16_moe_missing_count)
+    if(NOT _nvfp4_a16_moe_missing_count EQUAL 0)
+      message(
+        FATAL_ERROR
+          "CuTe DSL: incomplete SM110 grouped W4A16 MoE artifact set in ${_metadata}.\n"
+          "Found: ${_nvfp4_a16_moe_found_variants}\n"
+          "Missing: ${_nvfp4_a16_moe_missing_variants}\n"
+          "Regenerate the nvfp4_a16_blackwell_moe group with both fusions and all token tiles."
+      )
+    endif()
+  endif()
+
   # Umbrella CUTE_DSL_GEMM_ENABLED — set if ANY gemm variant was found. Source
   # files guard the entire GEMM path with this define.
   set(_any_gemm FALSE)
@@ -1086,7 +1187,31 @@ function(cute_dsl_setup)
   # For STATIC libraries, use PUBLIC so executables that link edgellmCore /
   # edgellmKernels also inherit the CuTe DSL archive. Otherwise unresolved AOT
   # wrapper symbols only show up at the final executable link step.
-  set(_link_libs "${_static_lib}")
+  set(_link_libs)
+  string(
+    JSON
+    _dispatch_source_name
+    ERROR_VARIABLE
+    _dispatch_source_err
+    GET
+    "${_meta_json}"
+    "dispatch_source")
+  if(NOT _dispatch_source_err AND NOT _dispatch_source_name STREQUAL "")
+    set(_dispatch_source "${_artifact_dir}/${_dispatch_source_name}")
+    if(NOT EXISTS "${_dispatch_source}")
+      message(
+        FATAL_ERROR "CuTe DSL dispatch source not found: ${_dispatch_source}")
+    endif()
+    if(NOT TARGET trt_edgellm_cutedsl_dispatch)
+      add_library(trt_edgellm_cutedsl_dispatch STATIC "${_dispatch_source}")
+      set_target_properties(trt_edgellm_cutedsl_dispatch
+                            PROPERTIES POSITION_INDEPENDENT_CODE ON)
+      target_include_directories(trt_edgellm_cutedsl_dispatch
+                                 PRIVATE ${CUDA_INCLUDE_DIR})
+    endif()
+    list(APPEND _link_libs trt_edgellm_cutedsl_dispatch)
+  endif()
+  list(APPEND _link_libs "${_static_lib}")
   # The libcudart shim only exists for CUDA 12.0–12.6; outside that range the
   # target is an empty INTERFACE library.
   set(_cudart_shim_lib)

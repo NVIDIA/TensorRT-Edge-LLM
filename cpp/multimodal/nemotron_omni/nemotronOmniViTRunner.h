@@ -122,7 +122,7 @@ private:
 
     //! \brief Preprocess a video frame stack and run the visual engine
     //!
-    //! Runs resize, tubelet packing, embedder GEMM, engine inference and EVS
+    //! Runs preprocessing, tubelet packing, embedder GEMM, engine inference and EVS
     //! pruning. Runs inside preprocess() because the per-tubelet retained
     //! token counts (EVS output) are needed for text placeholder expansion.
     //!
@@ -207,38 +207,34 @@ private:
     //! \return Token ids for the expanded video placeholder
     std::vector<int32_t> buildVideoPlaceholderIds(trt_edgellm::tokenizer::Tokenizer const* tokenizer) const;
 
-    NemotronOmniViTConfig mConfig;                 //!< Nemotron-Omni RADIO ViT configuration
-    std::string mEngineDir{};                      //!< Engine directory (embedder weights)
-    rt::Tensor mVitInput{};                        //!< Engine input: patch embeddings [B, N, vitHidden]
-    rt::Tensor mShuffleIndices{};                  //!< Engine input: pixel-shuffle gather indices [N/s^2, s^2]
-    rt::Tensor mBlockPixels{};                     //!< Normalized CHW pixel staging [frames, 3, H, W]
-    rt::Tensor mGemmRows{};                        //!< Patchified GEMM input rows [B*N, T*3*P*P]
-    rt::Tensor mImageEmbedderWeight{};             //!< Image embedder GEMM weight [vitHidden, 3*P*P]
-    rt::Tensor mVideoEmbedderWeight{};             //!< Video embedder GEMM weight [vitHidden, T*3*P*P]
-    rt::Tensor mPosEmbedImage{};                   //!< Position embedding for the square image grid
-    rt::Tensor mPosEmbedGrid{};                    //!< Position embedding scratch for video grids
-    rt::Tensor mEvsScores{};                       //!< EVS dissimilarity scores [maxTokens] (device)
-    rt::Tensor mEvsGatherIdx{};                    //!< EVS retained-row indices [maxTokens] (device)
-    rt::Tensor mEvsScratch{};                      //!< EVS row-compaction scratch [maxTokens, outHidden]
-    rt::Tensor mImageMean{};                       //!< Image mean tensor
-    rt::Tensor mImageStd{};                        //!< Image standard deviation tensor
-    rt::Tensor mImageDevice{};                     //!< Temporary image buffer for preprocessing
-    rt::Tensor mNormalizedImageDevice{};           //!< Temporary normalized image buffer
-    rt::Tensor mRawImageDevice{};                  //!< Raw (pre-resize) image device buffer for the GPU resize
-    rt::Tensor mResizeTmpDevice{};                 //!< Float scratch (horizontal pass) for the GPU resize
-    rt::imageUtils::ImageData mResizedImageHost{}; //!< Pinned host buffer for the video CPU resize
-    std::vector<float> mPosEmbedRawHost{};         //!< Raw max-resolution pos_embed (host, FP32)
-    int64_t mPosEmbedRawSide{0};                   //!< Raw pos_embed grid side (e.g. 128)
-    std::vector<int64_t> mImageShuffleTable{};     //!< Cached shuffle indices for the square image grid
-    rt::Tensor mShuffleIndicesHost{};              //!< Pinned host staging for the shuffle-index H2D
-    rt::Tensor mEvsGatherIdxHost{};                //!< Pinned host staging for the EVS gather-index H2D
-    rt::Tensor mEvsScoresHost{};                   //!< Pinned host staging for the EVS score D2H
-    rt::Tensor mPosEmbedGridHost{};                //!< Pinned host staging for the pos-embed H2D (image + video)
-    bool mHasVideoEmbedder{false};                 //!< Weight file carries video_embedder weights
-    int64_t mTotalNumBlocks{0};                    //!< Total blocks preprocessed (for batched infer)
-    bool mRequestHasVideo{false};                  //!< Current request carries a video (vs image tiles)
-    std::vector<int64_t> mVideoTubeletCounts{};    //!< Retained token count per video tubelet (EVS output)
-    std::vector<double> mVideoTimestamps{};        //!< Source timestamps (s) of the sampled video frames
+    NemotronOmniViTConfig mConfig;              //!< Nemotron-Omni RADIO ViT configuration
+    std::string mEngineDir{};                   //!< Engine directory (embedder weights)
+    rt::Tensor mVitInput{};                     //!< Engine input: patch embeddings [B, N, vitHidden]
+    rt::Tensor mShuffleIndices{};               //!< Engine input: pixel-shuffle gather indices [N/s^2, s^2]
+    rt::Tensor mBlockPixels{};                  //!< Normalized CHW pixel staging [frames, 3, H, W]
+    rt::Tensor mGemmRows{};                     //!< Patchified GEMM input rows [B*N, T*3*P*P]
+    rt::Tensor mImageEmbedderWeight{};          //!< Image embedder GEMM weight [vitHidden, 3*P*P]
+    rt::Tensor mVideoEmbedderWeight{};          //!< Video embedder GEMM weight [vitHidden, T*3*P*P]
+    rt::Tensor mPosEmbedImage{};                //!< Position embedding for the square image grid
+    rt::Tensor mPosEmbedGrid{};                 //!< Position embedding scratch for video grids
+    rt::Tensor mEvsScores{};                    //!< EVS dissimilarity scores [maxTokens] (device)
+    rt::Tensor mEvsGatherIdx{};                 //!< EVS retained-row indices [maxTokens] (device)
+    rt::Tensor mEvsScratch{};                   //!< EVS row-compaction scratch [maxTokens, outHidden]
+    std::array<float, 3> mImageMean{};          //!< Per-channel normalisation mean, RGB
+    std::array<float, 3> mImageStd{};           //!< Per-channel normalisation standard deviation, RGB
+    rt::Tensor mNormalizedImageDevice{};        //!< Preprocessed frames, [T, H, W, 3] HALF
+    std::vector<float> mPosEmbedRawHost{};      //!< Raw max-resolution pos_embed (host, FP32)
+    int64_t mPosEmbedRawSide{0};                //!< Raw pos_embed grid side (e.g. 128)
+    std::vector<int64_t> mImageShuffleTable{};  //!< Cached shuffle indices for the square image grid
+    rt::Tensor mShuffleIndicesHost{};           //!< Pinned host staging for the shuffle-index H2D
+    rt::Tensor mEvsGatherIdxHost{};             //!< Pinned host staging for the EVS gather-index H2D
+    rt::Tensor mEvsScoresHost{};                //!< Pinned host staging for the EVS score D2H
+    rt::Tensor mPosEmbedGridHost{};             //!< Pinned host staging for the pos-embed H2D (image + video)
+    bool mHasVideoEmbedder{false};              //!< Weight file carries video_embedder weights
+    int64_t mTotalNumBlocks{0};                 //!< Total blocks preprocessed (for batched infer)
+    bool mRequestHasVideo{false};               //!< Current request carries a video (vs image tiles)
+    std::vector<int64_t> mVideoTubeletCounts{}; //!< Retained token count per video tubelet (EVS output)
+    std::vector<double> mVideoTimestamps{};     //!< Source timestamps (s) of the sampled video frames
 };
 
 } // namespace rt

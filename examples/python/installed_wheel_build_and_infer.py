@@ -17,15 +17,31 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import shutil
 import sys
 from pathlib import Path
 from typing import Optional, Sequence, Tuple
 
-import experimental.server as server_api
+import experimental
 import tensorrt_edgellm
 from tensorrt_edgellm._native.load import resolve_payload
+
+_OPTIONAL_MODULES = (
+    "torch",
+    "transformers",
+    "onnx",
+    "onnxscript",
+    "onnx_graphsurgeon",
+    "safetensors",
+    "huggingface_hub",
+    "fastapi",
+    "uvicorn",
+    "av",
+    "datasets",
+    "peft",
+)
 
 
 def _arguments(values: Optional[Sequence[str]] = None) -> argparse.Namespace:
@@ -34,6 +50,13 @@ def _arguments(values: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("engine_dir", type=Path)
     parser.add_argument("--prompt", default="Please introduce NVIDIA.")
     parser.add_argument("--max-tokens", type=int, default=32)
+    parser.add_argument("--workflow",
+                        choices=("base", "server"),
+                        default="server")
+    parser.add_argument(
+        "--require-base-only",
+        action="store_true",
+        help="Reject environments containing optional workflow packages.")
     parser.add_argument("--expected-variant")
     parser.add_argument("--result", type=Path)
     return parser.parse_args(values)
@@ -42,17 +65,76 @@ def _arguments(values: Optional[Sequence[str]] = None) -> argparse.Namespace:
 def _require_installed_package() -> Path:
     environment = Path(sys.prefix).resolve(strict=True)
     package = Path(tensorrt_edgellm.__file__).resolve(strict=True)
-    server = Path(server_api.__file__).resolve(strict=True)
-    for name, path in (("tensorrt_edgellm", package), ("experimental.server",
-                                                       server)):
+    frontend = Path(experimental.__file__).resolve(strict=True)
+    for name, path in (("tensorrt_edgellm", package), ("experimental",
+                                                       frontend)):
         if not path.is_relative_to(environment):
             raise RuntimeError(
                 f"Imported {name} from {path}, outside {environment}.")
     return package
 
 
+def _require_base_only() -> None:
+    present = [
+        name for name in _OPTIONAL_MODULES
+        if importlib.util.find_spec(name) is not None
+    ]
+    if present:
+        raise RuntimeError(
+            "Base-only qualification found optional packages: " +
+            ", ".join(present))
+
+
+def _infer_base(model_dir: Path, engine_dir: Path, prompt: str,
+                max_tokens: int) -> Tuple[str, int]:
+    from tensorrt_edgellm import runtime
+
+    native = runtime.load()
+    llm = native.LLMRuntime(engine_dir=str(engine_dir),
+                            checkpoint_dir=str(model_dir))
+    request = native.create_generation_request(
+        [[native.create_text_message("user", prompt)]],
+        temperature=0.0,
+        max_generate_length=max_tokens,
+    )
+    response = llm.handle_request(request)
+    if (len(response.output_texts) != 1
+            or not response.output_texts[0].strip()
+            or len(response.output_ids) != 1 or not response.output_ids[0]):
+        raise RuntimeError("EdgeLLM returned no generated output.")
+    return response.output_texts[0], len(response.output_ids[0])
+
+
+def _build_and_infer_base(model_dir: Path, engine_dir: Path, prompt: str,
+                          max_tokens: int) -> Tuple[str, int]:
+    from experimental.builder.cli import main as build
+
+    shutil.rmtree(engine_dir, ignore_errors=True)
+    build([
+        "--model-dir",
+        str(model_dir),
+        "--engine-dir",
+        str(engine_dir),
+        "--components",
+        "llm",
+        "--max-input-len",
+        "128",
+        "--max-kv-cache-capacity",
+        "256",
+        "--max-batch-size",
+        "1",
+    ])
+    engines = list(engine_dir.rglob("*.engine"))
+    if not engines or any(path.stat().st_size == 0 for path in engines):
+        raise RuntimeError(
+            "The installed direct builder produced no usable engine.")
+    return _infer_base(model_dir, engine_dir, prompt, max_tokens)
+
+
 def _build_and_infer(model_dir: Path, engine_dir: Path, prompt: str,
                      max_tokens: int) -> Tuple[str, int]:
+    import experimental.server as server_api
+
     shutil.rmtree(engine_dir, ignore_errors=True)
     llm = server_api.LLM(
         model=str(model_dir),
@@ -88,6 +170,10 @@ def main(values: Optional[Sequence[str]] = None) -> int:
     args = _arguments(values)
     if args.max_tokens < 1:
         raise ValueError("--max-tokens must be positive.")
+    if args.require_base_only:
+        if args.workflow != "base":
+            raise ValueError("--require-base-only requires --workflow base.")
+        _require_base_only()
     package = _require_installed_package()
     model_dir = args.model_dir.resolve(strict=True)
     engine_dir = args.engine_dir.resolve()
@@ -97,13 +183,18 @@ def main(values: Optional[Sequence[str]] = None) -> int:
             f"Selected {payload.variant_id}, expected {args.expected_variant}."
         )
 
-    output_text, output_token_count = _build_and_infer(
+    run = _build_and_infer_base if args.workflow == "base" else _build_and_infer
+    output_text, output_token_count = run(
         model_dir,
         engine_dir,
         args.prompt,
         args.max_tokens,
     )
+    if args.require_base_only:
+        _require_base_only()
     result = {
+        "workflow": args.workflow,
+        "base_only": args.require_base_only,
         "package": str(package),
         "variant_id": payload.variant_id,
         "extension": str(payload.extension),

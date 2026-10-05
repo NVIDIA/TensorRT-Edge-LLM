@@ -56,7 +56,7 @@ _attention_plugin_schema = OpSchema(
         OpSchema.FormalParameter(
             name="qkv",
             description=
-            "Packed QKV tensor [B, S, (H_q + 2*H_kv) * D] (concat on last "
+            "Packed QKV tensor [T_exec, (H_q + 2*H_kv) * D] (concat on last "
             "dim of separate Q/K/V projections)",
             type_str="T",
         ),
@@ -66,8 +66,8 @@ _attention_plugin_schema = OpSchema(
             type_str="T_KV",
         ),
         OpSchema.FormalParameter(
-            name="context_lengths",
-            description="Context length tensor",
+            name="query_lengths",
+            description="Valid query tokens per sequence",
             type_str="tensor(int32)",
         ),
         OpSchema.FormalParameter(
@@ -76,9 +76,8 @@ _attention_plugin_schema = OpSchema(
             type_str="tensor(float)",
         ),
         OpSchema.FormalParameter(
-            name="kvcache_start_index",
-            description=
-            "KV cache start index tensor of shape [kv_cache_start_batch_size]",
+            name="past_lengths",
+            description="Committed prefix visible before this invocation",
             type_str="tensor(int32)",
         ),
         OpSchema.FormalParameter(
@@ -131,6 +130,38 @@ _attention_plugin_schema = OpSchema(
             type_str="tensor(int8)",
             param_option=OpSchema.FormalParameterOption.Optional,
         ),
+        OpSchema.FormalParameter(
+            name="swa_kv_cache_mode",
+            description=(
+                "Shape-only runtime SWA storage selector (optional): 1-D INT8 "
+                "dummy whose length is 1 for bounded O(W) storage or 0 for "
+                "full storage; data is never read."),
+            type_str="tensor(int8)",
+            param_option=OpSchema.FormalParameterOption.Optional,
+        ),
+        OpSchema.FormalParameter(
+            name="attention_sinks",
+            description=
+            "Per-Q-head learned attention sink logits supplied as an FP32 engine-weight constant",
+            type_str="tensor(float)",
+            param_option=OpSchema.FormalParameterOption.Optional,
+        ),
+        *[
+            OpSchema.FormalParameter(
+                name=name,
+                description="Unified token-major execution metadata",
+                type_str="tensor(int32)",
+                param_option=OpSchema.FormalParameterOption.Optional,
+            ) for name in ("query_start_offsets", "attention_sequence_lengths",
+                           "execution_phase_marker")
+        ],
+        OpSchema.FormalParameter(
+            name="context_sequence_count_carrier",
+            description=
+            "Shape-only context sequence count carrier; payload is ignored",
+            type_str="tensor(int32)",
+            param_option=OpSchema.FormalParameterOption.Optional,
+        ),
     ],
     outputs=[
         OpSchema.FormalParameter(
@@ -157,6 +188,10 @@ _attention_plugin_schema = OpSchema(
         ),
     ],
     attributes=[
+        OpSchema.Attribute(name="plugin_version",
+                           type=OpSchema.AttrType.STRING,
+                           description="TensorRT Attention plugin version",
+                           required=True),
         OpSchema.Attribute(
             name="num_q_heads",
             type=OpSchema.AttrType.INT,
@@ -212,6 +247,15 @@ _attention_plugin_schema = OpSchema(
             required=False,
         ),
         OpSchema.Attribute(
+            name="supports_bounded_kv_cache",
+            type=OpSchema.AttrType.INT,
+            description=(
+                "Whether this attention layer supports bounded KV storage "
+                "(0(false), 1(true)); runtime mode selects bounded or full "
+                "storage."),
+            required=False,
+        ),
+        OpSchema.Attribute(
             name="qkv_scales",
             type=OpSchema.AttrType.FLOATS,
             description=
@@ -242,6 +286,14 @@ _attention_plugin_schema = OpSchema(
             required=False,
         ),
         OpSchema.Attribute(
+            name="qk_norm_post_rope",
+            type=OpSchema.AttrType.INT,
+            description=
+            "QK-norm order relative to RoPE: 0 = norm then rotate (Qwen3), "
+            "1 = rotate then norm (HunYuan V1). Ignored when enable_qk_norm=0.",
+            required=False,
+        ),
+        OpSchema.Attribute(
             name="rms_norm_eps",
             type=OpSchema.AttrType.FLOAT,
             description=
@@ -253,7 +305,21 @@ _attention_plugin_schema = OpSchema(
             type=OpSchema.AttrType.INT,
             description=
             "Whether this layer reads K/V from a donated (shared) cache; the packed qkv "
-            "input then carries Q only [B, S, Hq*D] (0(false), 1(true)).",
+            "input then carries Q only [T_exec, Hq*D] (0(false), 1(true)).",
+            required=False,
+        ),
+        OpSchema.Attribute(
+            name="enable_contiguous_query_swa",
+            type=OpSchema.AttrType.INT,
+            description=
+            "Whether speculative query rows form a consecutive linear chain for SWA",
+            required=False,
+        ),
+        OpSchema.Attribute(
+            name="enable_attention_sink",
+            type=OpSchema.AttrType.INT,
+            description=
+            "Whether the learned per-query-head attention sink input is enabled",
             required=False,
         ),
     ],
@@ -811,6 +877,86 @@ _nvfp4_a16_gemm_schema = OpSchema(
 )
 
 # ---------------------------------------------------------------------------
+# trt_edgellm::Nvfp4A16BlackwellGemmPlugin (SM110 dense NVFP4-A16 GEMM)
+# ---------------------------------------------------------------------------
+
+_nvfp4_a16_blackwell_gemm_schema = OpSchema(
+    name="Nvfp4A16BlackwellGemmPlugin",
+    domain="trt_edgellm",
+    since_version=_SCHEMA_SINCE_VERSION,
+    doc=("TensorRT SM110 dense NVFP4 (W4A16) GEMM plugin using the "
+         "BLACKWELL_N128_K64_V1 weight layout."),
+    inputs=[
+        OpSchema.FormalParameter(
+            name="activation",
+            description="FP16/BF16 activation [B, S, gemm_k]",
+            type_str="T",
+        ),
+        OpSchema.FormalParameter(
+            name="qweights",
+            description=("Packed E2M1 codes [gemm_n/128, gemm_k/64, "
+                         "128, 32]"),
+            type_str="tensor(int8)",
+        ),
+        OpSchema.FormalParameter(
+            name="block_scales",
+            description=("Raw E4M3 K16 scale bytes [gemm_n/128, gemm_k/64, "
+                         "128, 4]"),
+            type_str="tensor(int8)",
+        ),
+        OpSchema.FormalParameter(
+            name="global_scale",
+            description="Checkpoint FP32 per-tensor multiplier [1]",
+            type_str="tensor(float)",
+        ),
+    ],
+    outputs=[
+        OpSchema.FormalParameter(
+            name="output",
+            description="FP16/BF16 output [B, S, gemm_n]",
+            type_str="T",
+        ),
+    ],
+    type_constraints=[
+        ("T", ["tensor(float16)",
+               "tensor(bfloat16)"], "Activation and output dtype."),
+    ],
+    attributes=[
+        OpSchema.Attribute(
+            name="gemm_n",
+            type=OpSchema.AttrType.INT,
+            description="Padded output feature dimension",
+            required=True,
+        ),
+        OpSchema.Attribute(
+            name="gemm_k",
+            type=OpSchema.AttrType.INT,
+            description="Input feature dimension",
+            required=True,
+        ),
+        OpSchema.Attribute(
+            name="max_m",
+            type=OpSchema.AttrType.INT,
+            description=
+            "Profile token capacity for workspace sizing (0 == auto)",
+            required=False,
+        ),
+        OpSchema.Attribute(
+            name="layout",
+            type=OpSchema.AttrType.INT,
+            description="Weight ABI; 1 means BLACKWELL_N128_K64_V1.",
+            required=True,
+        ),
+        OpSchema.Attribute(
+            name="backend",
+            type=OpSchema.AttrType.INT,
+            description="Dispatch backend; 0 means production auto.",
+            required=True,
+        ),
+    ],
+)
+
+# ---------------------------------------------------------------------------
 # trt_edgellm::causal_conv1d, update_ssm_state
 # ---------------------------------------------------------------------------
 
@@ -832,15 +978,30 @@ _causal_conv1d_schema = OpSchema(
         OpSchema.FormalParameter(name="conv_state",
                                  description="Conv state",
                                  type_str="T"),
-        OpSchema.FormalParameter(name="context_lengths",
-                                 description="Context lengths per batch",
-                                 type_str="T_CL"),
         OpSchema.FormalParameter(
-            name="spec_decode_metadata",
-            description=
-            "Optional speculative metadata: spec_verify_phase_marker, tree_parent_ids, tree_depths",
-            type_str="T_CL",
-            param_option=OpSchema.FormalParameterOption.Variadic),
+            name="query_lengths",
+            description="Valid query lengths per sequence",
+            type_str="T_CL"),
+        *[
+            OpSchema.FormalParameter(
+                name=name,
+                description="Token-major execution metadata",
+                type_str="T_CL")
+            for name in ("query_start_offsets", "state_indices",
+                         "execution_phase_marker")
+        ],
+        OpSchema.FormalParameter(
+            name="context_sequence_count_carrier",
+            description="Shape-only context sequence count carrier",
+            type_str="tensor(int32)"),
+        *[
+            OpSchema.FormalParameter(
+                name=name,
+                description="Optional DDTree metadata",
+                type_str="T_CL",
+                param_option=OpSchema.FormalParameterOption.Optional)
+            for name in ("tree_parent_ids", "tree_depths")
+        ],
     ],
     outputs=[
         OpSchema.FormalParameter(name="output",
@@ -851,7 +1012,7 @@ _causal_conv1d_schema = OpSchema(
                                  type_str="T"),
         OpSchema.FormalParameter(
             name="intermediate_conv_state_out",
-            description="Per-token conv states [batch, seq, dim, width]",
+            description="Per-token conv states [T_exec, dim, width]",
             type_str="T",
             param_option=OpSchema.FormalParameterOption.Optional),
     ],
@@ -860,6 +1021,10 @@ _causal_conv1d_schema = OpSchema(
         ("T_CL", ["tensor(int32)"], ""),
     ],
     attributes=[
+        OpSchema.Attribute(name="plugin_version",
+                           type=OpSchema.AttrType.STRING,
+                           description="TensorRT CausalConv plugin version",
+                           required=True),
         OpSchema.Attribute(name="stride",
                            type=OpSchema.AttrType.INT,
                            description="Stride",
@@ -920,20 +1085,35 @@ _update_ssm_state_schema = OpSchema(
         OpSchema.FormalParameter(name="state",
                                  description="SSM state",
                                  type_str="T"),
-        OpSchema.FormalParameter(name="context_lengths",
-                                 description="Context lengths per batch",
-                                 type_str="T_CL"),
         OpSchema.FormalParameter(
-            name="state_start_index",
-            description=
-            "[0] initial-prefill sentinel or [batch] restored-state marker",
+            name="query_lengths",
+            description="Logical token count per sequence",
             type_str="T_CL"),
         OpSchema.FormalParameter(
-            name="spec_verify_phase_marker",
-            description="Optional shape-only INT32 marker (len 0=ordinary, "
-            "1=verify) enabling per-token intermediate state capture",
-            type_str="T_CL",
-            param_option=OpSchema.FormalParameterOption.Optional),
+            name="query_start_offsets",
+            description="Exclusive token-major offsets with shape [N + 1]",
+            type_str="T_CL"),
+        OpSchema.FormalParameter(
+            name="state_indices",
+            description="Resident state-pool row per active sequence",
+            type_str="T_CL"),
+        OpSchema.FormalParameter(
+            name="execution_phase_marker",
+            description=
+            "Shape-only INT32 execution-phase carrier with extent 1..8",
+            type_str="T_CL"),
+        OpSchema.FormalParameter(
+            name="context_sequence_count_carrier",
+            description="Shape-only context sequence count carrier",
+            type_str="tensor(int32)"),
+        *[
+            OpSchema.FormalParameter(
+                name=name,
+                description="Optional DDTree metadata",
+                type_str="T_CL",
+                param_option=OpSchema.FormalParameterOption.Optional)
+            for name in ("tree_parent_ids", "tree_depths")
+        ],
     ],
     outputs=[
         OpSchema.FormalParameter(name="output",
@@ -945,19 +1125,25 @@ _update_ssm_state_schema = OpSchema(
         OpSchema.FormalParameter(
             name="replay_da",
             description="Optional spec-verify replay stash: per-token decay "
-            "dA [batch, seq, nheads] FP32",
+            "dA [T_exec, nheads] FP32",
             type_str="T_F32",
             param_option=OpSchema.FormalParameterOption.Optional),
         OpSchema.FormalParameter(
             name="replay_u",
-            description="Optional spec-verify replay stash: per-token input "
-            "factor u=dt*x [batch, seq, nheads, dim] FP32",
+            description="Optional spec-verify replay stash: per-token "
+            "unscaled input x [T_exec, nheads, dim] FP32",
             type_str="T_F32",
             param_option=OpSchema.FormalParameterOption.Optional),
         OpSchema.FormalParameter(
             name="replay_b",
             description="Optional spec-verify replay stash: per-token key "
-            "B [batch, seq, ngroups, dstate] FP32",
+            "B [T_exec, ngroups, dstate] FP32",
+            type_str="T_F32",
+            param_option=OpSchema.FormalParameterOption.Optional),
+        OpSchema.FormalParameter(
+            name="replay_dt",
+            description="Optional spec-verify replay stash: per-token dt "
+            "[T_exec, nheads] FP32",
             type_str="T_F32",
             param_option=OpSchema.FormalParameterOption.Optional),
     ],
@@ -968,6 +1154,10 @@ _update_ssm_state_schema = OpSchema(
         ("T_F32", ["tensor(float)"], ""),
     ],
     attributes=[
+        OpSchema.Attribute(name="plugin_version",
+                           type=OpSchema.AttrType.STRING,
+                           description="TensorRT Mamba plugin version",
+                           required=True),
         OpSchema.Attribute(name="dt_softplus",
                            type=OpSchema.AttrType.INT,
                            description="Apply softplus to dt",
@@ -990,6 +1180,12 @@ _update_ssm_state_schema = OpSchema(
             type=OpSchema.AttrType.INT,
             description="Emit per-token intermediate recurrent states (1) or "
             "not (0)",
+            required=False),
+        OpSchema.Attribute(
+            name="use_ddtree",
+            type=OpSchema.AttrType.INT,
+            description=
+            "Evaluate each tree node from its ancestor state and emit replay data",
             required=False),
     ],
 )
@@ -1231,19 +1427,19 @@ _gated_delta_net_schema = OpSchema(
     doc="Qwen3.5 GatedDeltaNet linear attention plugin.",
     inputs=[
         OpSchema.FormalParameter(name="q",
-                                 description="Query [n, seq, h, k]",
+                                 description="Query [T_exec, h, k]",
                                  type_str="T"),
         OpSchema.FormalParameter(name="k",
-                                 description="Key [n, seq, h, k]",
+                                 description="Key [T_exec, h, k]",
                                  type_str="T"),
         OpSchema.FormalParameter(name="v",
-                                 description="Value [n, seq, hv, v]",
+                                 description="Value [T_exec, hv, v]",
                                  type_str="T"),
         OpSchema.FormalParameter(name="a",
-                                 description="A gating tensor [n, seq, hv]",
+                                 description="A gating tensor [T_exec, hv]",
                                  type_str="T"),
         OpSchema.FormalParameter(name="b",
-                                 description="B gating tensor [n, seq, hv]",
+                                 description="B gating tensor [T_exec, hv]",
                                  type_str="T"),
         OpSchema.FormalParameter(name="A_log",
                                  description="A_log [hv]",
@@ -1253,30 +1449,44 @@ _gated_delta_net_schema = OpSchema(
                                  type_str="T"),
         OpSchema.FormalParameter(
             name="h0_source",
-            description="Recurrent state in [n, hv, k, v]",
+            description="Resident recurrent-state pool [R_pool, hv, k, v]",
             type_str="T_A"),
         OpSchema.FormalParameter(
-            name="context_lengths",
-            description="Valid token count per batch row [n]",
+            name="query_lengths",
+            description="Valid query count per execution sequence [N]",
             type_str="T_CL"),
+        *[
+            OpSchema.FormalParameter(
+                name=name,
+                description="Token-major execution metadata",
+                type_str="T_CL")
+            for name in ("query_start_offsets", "state_indices",
+                         "execution_phase_marker")
+        ],
         OpSchema.FormalParameter(
-            name="spec_decode_metadata",
-            description=
-            "Optional speculative metadata: spec_verify_phase_marker, tree_parent_ids, tree_depths",
-            type_str="T_CL",
-            param_option=OpSchema.FormalParameterOption.Variadic),
+            name="context_sequence_count_carrier",
+            description="Shape-only context sequence count carrier",
+            type_str="tensor(int32)"),
+        *[
+            OpSchema.FormalParameter(
+                name=name,
+                description="Optional DDTree metadata",
+                type_str="T_CL",
+                param_option=OpSchema.FormalParameterOption.Optional)
+            for name in ("tree_parent_ids", "tree_depths")
+        ],
     ],
     outputs=[
         OpSchema.FormalParameter(name="o",
-                                 description="Output [n, seq, hv, v]",
+                                 description="Output [T_exec, hv, v]",
                                  type_str="T"),
         OpSchema.FormalParameter(
             name="h0_out",
-            description="Recurrent state out [n, hv, k, v]",
+            description="Aliased resident-state pool [R_pool, hv, k, v]",
             type_str="T_A"),
         OpSchema.FormalParameter(
             name="intermediate_h0_out",
-            description="Per-token recurrent states [n, seq, hv, k, v]",
+            description="Per-token recurrent states [T_exec, hv, k, v]",
             type_str="T_A",
             param_option=OpSchema.FormalParameterOption.Optional),
     ],
@@ -1286,6 +1496,10 @@ _gated_delta_net_schema = OpSchema(
         ("T_CL", ["tensor(int32)"], ""),
     ],
     attributes=[
+        OpSchema.Attribute(name="plugin_version",
+                           type=OpSchema.AttrType.STRING,
+                           description="TensorRT GDN plugin version",
+                           required=True),
         OpSchema.Attribute(name="k_dim",
                            type=OpSchema.AttrType.INT,
                            description="K head dimension",
@@ -1305,6 +1519,11 @@ _gated_delta_net_schema = OpSchema(
             type=OpSchema.AttrType.INT,
             description=
             "Whether tree_parent_ids/tree_depths drive tree-state execution; also enables intermediate state output",
+            required=False),
+        OpSchema.Attribute(
+            name="use_diffusion_state",
+            type=OpSchema.AttrType.INT,
+            description="Enable transactional diffusion denoise/commit phases",
             required=False),
     ],
 )
@@ -1326,12 +1545,12 @@ _int4_moe_plugin_schema = OpSchema(
         OpSchema.FormalParameter(
             name="router_logits",
             description=
-            "Router logits (B*S, E) FP32, from gate GEMM + cast, before softmax",
+            "Router logits [T, E] FP32, from gate GEMM + cast, before softmax",
             type_str="tensor(float)",
         ),
         OpSchema.FormalParameter(
             name="hidden_states",
-            description="Input hidden states (B, S, D)",
+            description="Input hidden states [T, D]",
             type_str="T",
         ),
         OpSchema.FormalParameter(
@@ -1359,7 +1578,7 @@ _int4_moe_plugin_schema = OpSchema(
     outputs=[
         OpSchema.FormalParameter(
             name="output",
-            description="Output tensor (B, S, D)",
+            description="Output tensor [T, D]",
             type_str="T",
         ),
     ],
@@ -1419,9 +1638,9 @@ _nvfp4_moe_plugin_schema = OpSchema(
          "and FP8 block scales in 6D MMA layout."),
     inputs=[
         OpSchema.FormalParameter("router_logits", "T_ROUTER",
-                                 "Router logits [B*S, E] FP32"),
+                                 "Router logits [T, E] FP32"),
         OpSchema.FormalParameter("hidden_states", "T_HIDDEN",
-                                 "Hidden states [B, S, H] FP16"),
+                                 "Hidden states [T, H] FP16"),
         OpSchema.FormalParameter("fc1_qweights", "T_INT8",
                                  "FC1 weights [E, N1, H/2] INT8"),
         OpSchema.FormalParameter(
@@ -1444,8 +1663,7 @@ _nvfp4_moe_plugin_schema = OpSchema(
                                  "Router correction bias [E] FP32"),
     ],
     outputs=[
-        OpSchema.FormalParameter("output", "T_HIDDEN",
-                                 "Output [B, S, H] FP16"),
+        OpSchema.FormalParameter("output", "T_HIDDEN", "Output [T, H] FP16"),
     ],
     type_constraints=[
         ("T_ROUTER", ["tensor(float)"], "FP32 tensors"),
@@ -1487,9 +1705,9 @@ _fp16_moe_plugin_schema = OpSchema(
         "/ routed_scaling_factor attributes."),
     inputs=[
         OpSchema.FormalParameter("router_logits", "T_ROUTER",
-                                 "Router logits [B*S, E] FP32"),
+                                 "Router logits [T, E] FP32"),
         OpSchema.FormalParameter("hidden_states", "T_HIDDEN",
-                                 "Hidden states [B, S, H] FP16"),
+                                 "Hidden states [T, H] FP16"),
         OpSchema.FormalParameter("fc1_weights", "T_HIDDEN",
                                  "FC1 weights [E, N1, H] FP16"),
         OpSchema.FormalParameter("fc2_weights", "T_HIDDEN",
@@ -1501,8 +1719,7 @@ _fp16_moe_plugin_schema = OpSchema(
             param_option=OpSchema.FormalParameterOption.Optional),
     ],
     outputs=[
-        OpSchema.FormalParameter("output", "T_HIDDEN",
-                                 "Output [B, S, H] FP16"),
+        OpSchema.FormalParameter("output", "T_HIDDEN", "Output [T, H] FP16"),
     ],
     type_constraints=[
         ("T_ROUTER", ["tensor(float)"], "FP32 tensors"),
@@ -1543,9 +1760,9 @@ _nvfp4_a16_moe_plugin_schema = OpSchema(
          "per-expert global scales pre-scaled by 2**7."),
     inputs=[
         OpSchema.FormalParameter("router_logits", "T_ROUTER",
-                                 "Router logits [B*S, E] FP32"),
+                                 "Router logits [T, E] FP32"),
         OpSchema.FormalParameter("hidden_states", "T_HIDDEN",
-                                 "Hidden states [B, S, H] FP16"),
+                                 "Hidden states [T, H] FP16"),
         OpSchema.FormalParameter(
             "fc1_qweights", "T_INT8",
             "FC1 Marlin weights [E, H/16, 8*fc1_out] INT8"),
@@ -1564,8 +1781,7 @@ _nvfp4_a16_moe_plugin_schema = OpSchema(
                                  "Router correction bias [E] FP32"),
     ],
     outputs=[
-        OpSchema.FormalParameter("output", "T_HIDDEN",
-                                 "Output [B, S, H] FP16"),
+        OpSchema.FormalParameter("output", "T_HIDDEN", "Output [T, H] FP16"),
     ],
     type_constraints=[
         ("T_ROUTER", ["tensor(float)"], "FP32 tensors"),
@@ -1588,6 +1804,68 @@ _nvfp4_a16_moe_plugin_schema = OpSchema(
 )
 
 # ---------------------------------------------------------------------------
+# trt_edgellm::Nvfp4A16BlackwellMoePlugin (SM110 FP16-A / NVFP4-W4 routed MoE)
+# ---------------------------------------------------------------------------
+
+_nvfp4_a16_blackwell_moe_plugin_schema = OpSchema(
+    name="Nvfp4A16BlackwellMoePlugin",
+    domain="trt_edgellm",
+    since_version=_SCHEMA_SINCE_VERSION,
+    doc=("SM110 NVFP4 (W4A16) routed-MoE plugin: FP16 hidden states, "
+         "BLACKWELL_MOE_N128_K64_V1 expert weights (INT8 view of the E2M1 "
+         "codes and raw E4M3 block scales) and unmodified FP32 per-expert "
+         "global scales. moe_inter_size is the logical intermediate size; "
+         "FC1 N padding lives inside the layout."),
+    inputs=[
+        OpSchema.FormalParameter("router_logits", "T_ROUTER",
+                                 "Router logits [T, E] FP32"),
+        OpSchema.FormalParameter("hidden_states", "T_HIDDEN",
+                                 "Hidden states [T, H] FP16"),
+        OpSchema.FormalParameter(
+            "fc1_qweights", "T_INT8",
+            "FC1 E2M1 codes [E, I_pad/128, H/64, 128, 32] INT8"),
+        OpSchema.FormalParameter(
+            "fc1_block_scales", "T_INT8",
+            "FC1 E4M3 block scales [E, I_pad/128, H/64, 128, 4] INT8"),
+        OpSchema.FormalParameter("fc1_global_scales", "T_ROUTER",
+                                 "FC1 per-expert global scales [E] FP32"),
+        OpSchema.FormalParameter(
+            "fc2_qweights", "T_INT8",
+            "FC2 E2M1 codes [E, H/128, I/64, 128, 32] INT8"),
+        OpSchema.FormalParameter(
+            "fc2_block_scales", "T_INT8",
+            "FC2 E4M3 block scales [E, H/128, I/64, 128, 4] INT8"),
+        OpSchema.FormalParameter("fc2_global_scales", "T_ROUTER",
+                                 "FC2 per-expert global scales [E] FP32"),
+        OpSchema.FormalParameter("e_score_correction_bias", "T_ROUTER",
+                                 "Router correction bias [E] FP32"),
+    ],
+    outputs=[
+        OpSchema.FormalParameter("output", "T_HIDDEN", "Output [T, H] FP16"),
+    ],
+    type_constraints=[
+        ("T_ROUTER", ["tensor(float)"], "FP32 tensors"),
+        ("T_HIDDEN", ["tensor(float16)"], "FP16 tensors"),
+        ("T_INT8", ["tensor(int8)"], "INT8 byte tensors"),
+    ],
+    attributes=[
+        OpSchema.Attribute("num_experts", OpSchema.AttrType.INT),
+        OpSchema.Attribute("top_k", OpSchema.AttrType.INT),
+        OpSchema.Attribute("hidden_size", OpSchema.AttrType.INT),
+        OpSchema.Attribute("moe_inter_size", OpSchema.AttrType.INT),
+        OpSchema.Attribute("activation_type", OpSchema.AttrType.INT),
+        OpSchema.Attribute("n_group", OpSchema.AttrType.INT),
+        OpSchema.Attribute("topk_group", OpSchema.AttrType.INT),
+        OpSchema.Attribute("norm_topk_prob", OpSchema.AttrType.INT),
+        OpSchema.Attribute("routed_scaling_factor", OpSchema.AttrType.FLOAT),
+        OpSchema.Attribute("routing_mode", OpSchema.AttrType.INT),
+        OpSchema.Attribute("max_routed_rows", OpSchema.AttrType.INT),
+        OpSchema.Attribute("layout", OpSchema.AttrType.INT),
+        OpSchema.Attribute("backend", OpSchema.AttrType.INT),
+    ],
+)
+
+# ---------------------------------------------------------------------------
 # trt_edgellm::NvFP4MoEPluginGeforce (SM12x fused, plain [up, gate] concat)
 # ---------------------------------------------------------------------------
 
@@ -1602,9 +1880,9 @@ _nvfp4_moe_plugin_geforce_schema = OpSchema(
          "and target arch differ."),
     inputs=[
         OpSchema.FormalParameter("router_logits", "T_ROUTER",
-                                 "Router logits [B*S, E] FP32"),
+                                 "Router logits [T, E] FP32"),
         OpSchema.FormalParameter("hidden_states", "T_HIDDEN",
-                                 "Hidden states [B, S, H] FP16"),
+                                 "Hidden states [T, H] FP16"),
         OpSchema.FormalParameter(
             "fc1_qweights", "T_INT8",
             "FC1 weights [E, N1, H/2] INT8 (plain [up, gate] concat)"),
@@ -1628,8 +1906,7 @@ _nvfp4_moe_plugin_geforce_schema = OpSchema(
                                  "Router correction bias [E] FP32"),
     ],
     outputs=[
-        OpSchema.FormalParameter("output", "T_HIDDEN",
-                                 "Output [B, S, H] FP16"),
+        OpSchema.FormalParameter("output", "T_HIDDEN", "Output [T, H] FP16"),
     ],
     type_constraints=[
         ("T_ROUTER", ["tensor(float)"], "FP32 tensors"),
@@ -1650,6 +1927,40 @@ _nvfp4_moe_plugin_geforce_schema = OpSchema(
         OpSchema.Attribute("backend", OpSchema.AttrType.INT),
         OpSchema.Attribute("io_dtype", OpSchema.AttrType.INT),
         OpSchema.Attribute("max_routed_rows", OpSchema.AttrType.INT),
+    ],
+)
+
+# ---------------------------------------------------------------------------
+# trt_edgellm::AllReducePlugin
+# ---------------------------------------------------------------------------
+
+_all_reduce_plugin_schema = OpSchema(
+    name="AllReducePlugin",
+    domain="trt_edgellm",
+    since_version=_SCHEMA_SINCE_VERSION,
+    doc="Tensor-parallel all-reduce of an FP16 tensor.",
+    inputs=[
+        OpSchema.FormalParameter(
+            name="input",
+            description="Per-rank FP16 partial result",
+            type_str="tensor(float16)",
+        ),
+    ],
+    outputs=[
+        OpSchema.FormalParameter(
+            name="output",
+            description="All-reduced FP16 result",
+            type_str="tensor(float16)",
+        ),
+    ],
+    type_constraints=[],
+    attributes=[
+        OpSchema.Attribute(
+            name="tp_size",
+            type=OpSchema.AttrType.INT,
+            description="Tensor parallel world size",
+            required=True,
+        ),
     ],
 )
 
@@ -1725,12 +2036,12 @@ _dflash_target_kv_cache_update_schema = OpSchema(
     inputs=[
         OpSchema.FormalParameter(
             name="k_delta",
-            description="K delta [B, L, Hkv, D] after k_norm, no RoPE",
+            description="K delta [T_delta, Hkv, D] after k_norm, no RoPE",
             type_str="T",
         ),
         OpSchema.FormalParameter(
             name="v_delta",
-            description="V delta [B, L, Hkv, D]",
+            description="V delta [T_delta, Hkv, D]",
             type_str="T",
         ),
         OpSchema.FormalParameter(
@@ -1740,19 +2051,19 @@ _dflash_target_kv_cache_update_schema = OpSchema(
             type_str="T",
         ),
         OpSchema.FormalParameter(
-            name="rope_cos_sin",
-            description="RoPE cos/sin [ropeBatch, capacity, rotaryDim] FP32",
+            name="token_aligned_rope_cos_sin",
+            description="RoPE cos/sin [T_delta, rotaryDim] FP32",
             type_str="tensor(float)",
         ),
         OpSchema.FormalParameter(
-            name="delta_start_positions",
-            description="Start positions for delta write [B] INT32",
+            name="delta_positions",
+            description="Absolute positions [T_delta] INT32; padding is -1",
             type_str="tensor(int32)",
         ),
         OpSchema.FormalParameter(
-            name="delta_lengths",
+            name="delta_token_to_sequence",
             description=
-            "Per-batch delta lengths [B] INT32 for multi-batch guard",
+            "Execution sequence owner [T_delta] INT32; padding is -1",
             type_str="tensor(int32)",
         ),
         OpSchema.FormalParameter(
@@ -1777,6 +2088,58 @@ _dflash_target_kv_cache_update_schema = OpSchema(
             ["tensor(float16)"],
             "KV cache data type (FP16 for now).",
         ),
+    ],
+)
+
+_dflash2_grouped_dynamic_conv_schema = OpSchema(
+    name="DFlash2GroupedDynamicConvPlugin",
+    domain="trt_edgellm",
+    since_version=_SCHEMA_SINCE_VERSION,
+    doc="DFlash2 dynamic grouped depthwise convolution.",
+    inputs=[
+        OpSchema.FormalParameter(name="hidden_states",
+                                 description="Activation",
+                                 type_str="T"),
+        OpSchema.FormalParameter(name="delta",
+                                 description="Dynamic coefficients",
+                                 type_str="T"),
+        OpSchema.FormalParameter(name="base_kernel",
+                                 description="Base kernel",
+                                 type_str="T"),
+        OpSchema.FormalParameter(
+            name="residual",
+            description="Optional FP32 fused residual",
+            type_str="tensor(float)",
+            param_option=OpSchema.FormalParameterOption.Optional),
+    ],
+    outputs=[
+        OpSchema.FormalParameter(name="output",
+                                 description="Convolved output",
+                                 type_str="T_OUT")
+    ],
+    type_constraints=[
+        ("T", ["tensor(float16)", "tensor(bfloat16)"], "Activation type."),
+        ("T_OUT", ["tensor(float16)", "tensor(bfloat16)",
+                   "tensor(float)"], "Output type."),
+    ],
+    attributes=[
+        OpSchema.Attribute(name="block_size",
+                           type=OpSchema.AttrType.INT,
+                           description="Fixed proposal block size.",
+                           required=True),
+        OpSchema.Attribute(name="kernel_size",
+                           type=OpSchema.AttrType.INT,
+                           description="Dynamic convolution width.",
+                           required=True),
+        OpSchema.Attribute(name="group_size",
+                           type=OpSchema.AttrType.INT,
+                           description="Channels per coefficient group.",
+                           required=True),
+        OpSchema.Attribute(
+            name="fuse_residual",
+            type=OpSchema.AttrType.INT,
+            description="Whether the FP32 residual input is present.",
+            required=True),
     ],
 )
 
@@ -1871,8 +2234,196 @@ _gemma4_audio_attention_plugin_schema = OpSchema(
     ],
 )
 
+# ---------------------------------------------------------------------------
+# trt_edgellm::QsaAttentionPlugin (Qwen Sparse Attention, prefill + decode)
+# ---------------------------------------------------------------------------
+
+_qsa_attention_plugin_schema = OpSchema(
+    name="QsaAttentionPlugin",
+    domain="trt_edgellm",
+    since_version=_SCHEMA_SINCE_VERSION,
+    doc="Qwen Sparse Attention (QSA) plugin: normal prefill or single-token "
+    "decode, selected by the kvcache_start_index runtime shape. A weight-free "
+    "block-compressed indexer selects the top-`indexer_budget` KV blocks of "
+    "`indexer_compress_ratio` tokens per query token, and a sparse GQA "
+    "attention attends only the listed tokens (no causal mask in the kernel; "
+    "causality lives in the token list). The plugin internally splits the "
+    "packed qkv, applies the per-head Gemma qk-norm + partial RoPE (rotary "
+    "dim 64), and writes the paged KV cache. All 11 inputs are required.",
+    inputs=[
+        OpSchema.FormalParameter(
+            name="qkv",
+            description=
+            "Packed QKV tensor [B, S, (H_q + 2*H_kv) * D] (concat on last "
+            "dim of separate Q/K/V projections)",
+            type_str="T",
+        ),
+        OpSchema.FormalParameter(
+            name="index_qk",
+            description=
+            "Packed indexer q/k projections [B, S, (indexer_n_heads + 1) * "
+            "indexer_head_dim] (index_qk_proj GEMM output; q heads first, "
+            "then the single shared k)",
+            type_str="T",
+        ),
+        OpSchema.FormalParameter(
+            name="past_key_value",
+            description=
+            "Paged KV cache pool [2, num_pages, KV_PAGE_SIZE, H_kv, D + "
+            "indexer_head_dim]; the leading D columns of each row are K/V, "
+            "the tail persists QSA indexer state",
+            type_str="T_KV",
+        ),
+        OpSchema.FormalParameter(
+            name="context_lengths",
+            description=
+            "Per-request valid token counts [B]; in decode the TOTAL length "
+            "including the token being decoded",
+            type_str="tensor(int32)",
+        ),
+        OpSchema.FormalParameter(
+            name="rope_rotary_cos_sin",
+            description=
+            "Shared RoPE table [rope_batch, max_pos, 64] (FP32; cos in "
+            "[0:32], sin in [32:64]); consumed by both the main partial "
+            "rope-64 and the indexer rope",
+            type_str="tensor(float)",
+        ),
+        OpSchema.FormalParameter(
+            name="kvcache_start_index",
+            description=
+            "KV cache start index tensor [kv_batch]; runtime shape [0] "
+            "selects prefill, [B] selects single-token decode (S == 1); the "
+            "values are the past lengths and are not read",
+            type_str="tensor(int32)",
+        ),
+        OpSchema.FormalParameter(
+            name="kv_page_table",
+            description=
+            "Per-request page table of shape [batch, 2, max_pages_per_seq]",
+            type_str="tensor(int32)",
+        ),
+        OpSchema.FormalParameter(
+            name="q_norm_gamma",
+            description=
+            "Main-path per-head RMSNorm gamma for Q (FP16, 1-D, length == "
+            "head_size), PRE-FOLDED as (1 + w) by the exporter. Fed as a "
+            "Constant initializer so TRT bakes it into the engine.",
+            type_str="T",
+        ),
+        OpSchema.FormalParameter(
+            name="k_norm_gamma",
+            description=
+            "Main-path per-head RMSNorm gamma for K (FP16, 1-D, length == "
+            "head_size), PRE-FOLDED as (1 + w). Same conventions as "
+            "q_norm_gamma.",
+            type_str="T",
+        ),
+        OpSchema.FormalParameter(
+            name="indexer_q_norm_gamma",
+            description="Indexer Gemma-norm gamma for q (FP16, 1-D, length == "
+            "indexer_head_dim), RAW w — the CUDA indexer kernel computes "
+            "(1 + w) internally.",
+            type_str="T",
+        ),
+        OpSchema.FormalParameter(
+            name="indexer_k_norm_gamma",
+            description=
+            "Indexer Gemma-norm gamma for the compressed k (FP16, 1-D, "
+            "length == indexer_head_dim), RAW w — the CUDA indexer kernel "
+            "computes (1 + w) internally.",
+            type_str="T",
+        ),
+    ],
+    outputs=[
+        OpSchema.FormalParameter(
+            name="attn_output",
+            description="Attention output [B, S, H_q, D]",
+            type_str="T",
+        ),
+        OpSchema.FormalParameter(
+            name="present_key_value",
+            description=
+            "Updated KV cache pool (aliased in-place to past_key_value; same "
+            "widened layout, indexer-state tails included)",
+            type_str="T_KV",
+        ),
+    ],
+    type_constraints=[
+        (
+            "T",
+            ["tensor(float16)"],
+            "Packed QKV / indexer / gamma data type.",
+        ),
+        (
+            "T_KV",
+            ["tensor(float16)"],
+            "KV cache data type.",
+        ),
+    ],
+    attributes=[
+        OpSchema.Attribute(
+            name="num_q_heads",
+            type=OpSchema.AttrType.INT,
+            description="Number of query heads",
+            required=True,
+        ),
+        OpSchema.Attribute(
+            name="num_kv_heads",
+            type=OpSchema.AttrType.INT,
+            description="Number of key-value heads",
+            required=True,
+        ),
+        OpSchema.Attribute(
+            name="head_size",
+            type=OpSchema.AttrType.INT,
+            description="Size of each attention head",
+            required=True,
+        ),
+        OpSchema.Attribute(
+            name="indexer_n_heads",
+            type=OpSchema.AttrType.INT,
+            description="Number of indexer query heads",
+            required=True,
+        ),
+        OpSchema.Attribute(
+            name="indexer_head_dim",
+            type=OpSchema.AttrType.INT,
+            description="Indexer head dimension",
+            required=True,
+        ),
+        OpSchema.Attribute(
+            name="indexer_budget",
+            type=OpSchema.AttrType.INT,
+            description="Top-k compressed blocks selected per query token",
+            required=True,
+        ),
+        OpSchema.Attribute(
+            name="indexer_compress_ratio",
+            type=OpSchema.AttrType.INT,
+            description="Tokens per compressed indexer block",
+            required=True,
+        ),
+        OpSchema.Attribute(
+            name="attention_scale",
+            type=OpSchema.AttrType.FLOAT,
+            description="Absolute multiplier applied to QK^T before softmax "
+            "(0.0 selects the default 1/sqrt(head_size)).",
+            required=True,
+        ),
+        OpSchema.Attribute(
+            name="rms_norm_eps",
+            type=OpSchema.AttrType.FLOAT,
+            description=
+            "Epsilon for the main-path and indexer Gemma RMSNorm formulas.",
+            required=True,
+        ),
+    ],
+)
+
 _ALL_CUSTOM_SCHEMAS: tuple[OpSchema, ...] = (
     _attention_plugin_schema,
+    _qsa_attention_plugin_schema,
     _vit_attention_plugin_schema,
     _trt_fp4_dynamic_quantize_schema,
     _trt_dequantize_linear_schema,
@@ -1882,6 +2433,7 @@ _ALL_CUSTOM_SCHEMAS: tuple[OpSchema, ...] = (
     _qkv_concat_schema,
     _int4_groupwise_gemm_v2_schema,
     _nvfp4_a16_gemm_schema,
+    _nvfp4_a16_blackwell_gemm_schema,
     _causal_conv1d_schema,
     _update_ssm_state_schema,
     _rotary_embedding_schema,
@@ -1892,10 +2444,13 @@ _ALL_CUSTOM_SCHEMAS: tuple[OpSchema, ...] = (
     _int4_moe_plugin_schema,
     _nvfp4_moe_plugin_schema,
     _nvfp4_a16_moe_plugin_schema,
+    _nvfp4_a16_blackwell_moe_plugin_schema,
     _nvfp4_moe_plugin_geforce_schema,
     _fp16_moe_plugin_schema,
+    _all_reduce_plugin_schema,
     _fused_nvfp4_gemm_allreduce_plugin_schema,
     _dflash_target_kv_cache_update_schema,
+    _dflash2_grouped_dynamic_conv_schema,
     _gemma4_audio_attention_plugin_schema,
 )
 

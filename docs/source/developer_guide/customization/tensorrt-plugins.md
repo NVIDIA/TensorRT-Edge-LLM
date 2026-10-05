@@ -37,18 +37,53 @@ TensorRT plugins are user-defined layers that implement the `IPluginV2DynamicExt
 - `enable_tree_attention`: Boolean flag to enable tree attention for speculative decoding implementations
 - `kv_cache_type`: Data type for KV cache (FP16 or FP8)
 
-**Input Tensors**:
-- `PackedQKV`: Packed tensors from attention Q/K/V projections with layout `[B, S, H, D]`
-- `KVCache`: KVCache tensor with layout `[B, 2, H, S, D]` where `S` is the KVCache capacity for each sequence
-- `ContextLengths`: Describes the length of sequence for each batch.
-- `RopeCosSin`: Pre-computed RoPE (Rotary Position Embedding) cosine/sine cache to apply positional encoding.
-- `KVCacheStartIndex`: Describes the KVCache start index when conducting chunked prefill.
-- `AttentionMask`: (Optional) Bitwise input to describe the attention schema of a speculative draft tree.
-- `AttentionPosIds`: (Optional) Describes the location of the draft tree token within the sequence.
+**Decoder tensor contract (ragged ABI v1)**:
 
-**Output Tensors**:
-- `AttentionOutput`: Result of the attention computation.
-- `KVCache`: Output KVCache tensor (same address as input KVCache tensor).
+| Tensor | Shape | Meaning |
+|---|---:|---|
+| `PackedQKV` / `inputs_embeds` | `[T_exec, hidden]` | Token-major physical rows. QKV is packed on its last dimension. |
+| `positions` | `[T_exec]` | Absolute position for each physical row. Padding uses `-1`. |
+| `query_start_offsets` | `[N + 1]` | Physical row starts. MR1 uses entry padding, so entry `i` starts at `i * S_pad`; these are not compact logical prefix sums. |
+| `query_lengths`, `past_lengths`, `sequence_lengths`, `attention_sequence_lengths` | `[N]` | Logical per-entry lengths. Padding changes `T_exec` and offsets, never these values or request progress. |
+| `state_indices` | `[N]` | Maps current entries to resident KV/recurrent/conv pool rows. Current entry order is independent of resident slot order. |
+| `kv_page_table` | `[N, 2, max_pages_per_sequence]` | Current-entry page-table view into the resident paged KV pools. |
+| `RopeCosSin` and optional multimodal inputs | token-aligned with `T_exec` | RoPE, DeepStack/PLE, vision metadata, tree parent/depth, and similar decoder-side data follow the same physical rows and padding sentinels. |
+| `logits_indices` | `[L]` | Physical token rows selected for logits; this is not a per-batch last-token tensor. |
+| `execution_phase_marker` | `[phase_extent]` | Shape-only carrier; the INT32 payload is ignored. |
+
+`N` is the active entry count, `S_pad` is the homogeneous step's physical
+width, and `T_exec = N * S_pad`. `T_valid = sum(query_lengths)` can be smaller
+than `T_exec`. Attention output is `[T_exec, hidden]`. Past/present KV and
+recurrent/conv state use fixed resident pools and keep the same address; only
+rows selected by `state_indices` participate in the step. Padded rows must not
+read or update persistent state.
+
+The phase marker extent has one shared meaning in Attention, GDN, causal Conv,
+Mamba, and the runtime:
+
+| Extent | Phase |
+|---:|---|
+| 1 | context prefill |
+| 2 | context chunk |
+| 3 | autoregressive decode |
+| 4 | speculative draft proposal |
+| 5 | speculative target verify |
+| 6 | diffusion denoise |
+| 7 | diffusion commit |
+
+Old batch-major engines are not supported by this ABI. Re-export the ONNX model
+and rebuild the engine, and use export, build, plugin, and runtime artifacts
+from a compatible revision. MR1 deliberately keeps the existing plugin creator
+version: compatibility is enforced by ragged engine metadata, bindings, and
+tensor descriptors, not by a dual-ABI plugin implementation.
+
+The packaged experimental decoder `forward()` APIs are supported only through
+their token-major `RaggedDecoderInputs` argument. Remaining batch-major rank-3
+external APIs or plugin inputs in that package belong to standalone vision,
+audio, or action encoder-domain components; they are not a legacy decoder
+fallback. Decoder-internal `[T, heads, channels]` intermediates are valid: they
+preserve token-major ownership and flatten to `[T, hidden]` before crossing the
+decoder plugin boundary.
 
 
 **Application Domains**:

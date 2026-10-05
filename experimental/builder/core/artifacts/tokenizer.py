@@ -28,9 +28,6 @@ RUNTIME_TOKENIZER_FILENAMES = (
     "tokenizer_config.json",
     "tokenizer.model",
     "special_tokens_map.json",
-    "processed_chat_template.json",
-    "chat_template.jinja",
-    "chat_template.json",
 )
 
 

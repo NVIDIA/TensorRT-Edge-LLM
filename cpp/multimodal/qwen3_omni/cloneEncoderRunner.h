@@ -52,16 +52,18 @@ public:
     ~CloneEncoderRunner() noexcept = default;
 
     //! \brief Extract the speaker x-vector from a 24kHz mono waveform.
-    //! \param wav24k    Host PCM float32 in [-1, 1] at 24kHz
+    //! \param wav24k    ``[N]`` Float host tensor, PCM in [-1, 1] at 24kHz
     //! \param xvecOut   GPU tensor [hiddenDim] FP16, written in place (must be preallocated)
-    bool extractSpeakerEmbedding(std::vector<float> const& wav24k, rt::Tensor& xvecOut, cudaStream_t stream);
+    //! \throws std::runtime_error if wav24k is empty or not a host Float tensor
+    bool extractSpeakerEmbedding(rt::Tensor const& wav24k, rt::Tensor& xvecOut, cudaStream_t stream);
 
     //! \brief Encode reference codec codes from a 24kHz mono waveform.
     //! Codes stay on device — consume them via refCodesDevice() (e.g. the codec-embedding
     //! sum kernel reads the engine output in place; no host round-trip).
-    //! \param wav24k    Host PCM float32 in [-1, 1] at 24kHz (truncated to the bucket if longer)
+    //! \param wav24k    ``[N]`` Float host tensor at 24kHz (truncated to the bucket if longer)
     //! \param numFrames Complete frames = floor(min(len, bucket) / downsampleRate)
-    bool encodeReferenceCodes(std::vector<float> const& wav24k, int32_t& numFrames, cudaStream_t stream);
+    //! \throws std::runtime_error if wav24k is empty, not a host Float tensor, or shorter than one frame
+    bool encodeReferenceCodes(rt::Tensor const& wav24k, int32_t& numFrames, cudaStream_t stream);
 
     //! Device pointer to the last encodeReferenceCodes output [bucketFrames, numQuantizers] INT64.
     int64_t const* refCodesDevice() const

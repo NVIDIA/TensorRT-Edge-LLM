@@ -146,17 +146,17 @@ std::tuple<int64_t, int64_t> Qwen3VLViTRunner::computeVisionSpans(
     return {/*totalSeqLen*/ gridT * patchesPerFrame, /*totalGridT*/ gridT};
 }
 
-rt::OptionalInputTensors Qwen3VLViTRunner::getDeepstackFeatures()
+std::vector<std::reference_wrapper<rt::Tensor>> Qwen3VLViTRunner::getDeepstackFeatures()
 {
     if (mNumDeepstackFeatures == 0) // Qwen3.5: no deepstack
     {
         return {};
     }
-    std::vector<std::reference_wrapper<rt::Tensor const>> refs;
+    std::vector<std::reference_wrapper<rt::Tensor>> refs;
     refs.reserve(mDeepstackFeatures.size());
-    for (auto const& tensor : mDeepstackFeatures)
+    for (auto& tensor : mDeepstackFeatures)
     {
-        refs.emplace_back(std::cref(tensor));
+        refs.emplace_back(std::ref(tensor));
     }
     return refs;
 }

@@ -30,6 +30,27 @@ namespace trt_edgellm
 {
 namespace rt
 {
+bool validateRaggedInferenceDims(
+    InferenceDims const& dims, int32_t profileIndex, bool allowSelectBeyondPhysicalTokens) noexcept
+{
+    if (dims.batch <= 0 || dims.seqLen <= 0 || dims.seqLen % dims.batch != 0 || dims.queryOffsetLen != dims.batch + 1
+        || dims.selectLen <= 0 || (!allowSelectBeyondPhysicalTokens && dims.selectLen > dims.seqLen)
+        || dims.attnMaskSeqLen != dims.seqLen || !isExecutionPhaseExtent(dims.executionPhaseLen)
+        || dims.contextSequenceCount < 0 || dims.contextSequenceCount > dims.batch)
+    {
+        return false;
+    }
+    auto const phase = static_cast<ExecutionPhase>(dims.executionPhaseLen);
+    bool const contextPhase = phase == ExecutionPhase::kContextPrefill || phase == ExecutionPhase::kContextChunk;
+    if (phase == ExecutionPhase::kMixedPrefillDecode || dims.contextSequenceCount != (contextPhase ? dims.batch : 0))
+    {
+        return false;
+    }
+    constexpr int32_t kDecodeProfile = 1;
+    bool const vanillaDecode = phase == ExecutionPhase::kAutoregressiveDecode;
+    return profileIndex != kDecodeProfile || !vanillaDecode || dims.seqLen == dims.batch;
+}
+
 namespace
 {
 bool engineHasIOTensor(nvinfer1::ICudaEngine const& engine, char const* tensorName)
@@ -149,12 +170,18 @@ TrtEngineExecutor::TrtEngineExecutor(std::filesystem::path const& enginePath, Te
     auto registerOptionalTreeMetadata = [&](char const* name) {
         if (engineHasInputTensor(*mEngine, name) && !mRegistry.contains(name))
         {
-            mRegistry.addTensor({name, TensorIO::kInput, nvinfer1::DataType::kINT32,
-                {sym(&InferenceDims::batch), sym(&InferenceDims::attnMaskSeqLen)}});
+            mRegistry.addTensor(
+                {name, TensorIO::kInput, nvinfer1::DataType::kINT32, {sym(&InferenceDims::attnMaskSeqLen)}});
         }
     };
     registerOptionalTreeMetadata(binding_names::kTreeParentIds);
     registerOptionalTreeMetadata(binding_names::kTreeDepths);
+    if (engineHasInputTensor(*mEngine, binding_names::kValidTreeCounts)
+        && !mRegistry.contains(binding_names::kValidTreeCounts))
+    {
+        mRegistry.addTensor({binding_names::kValidTreeCounts, TensorIO::kInput, nvinfer1::DataType::kINT32,
+            {sym(&InferenceDims::batch)}});
+    }
 
     if (engineHasInputTensor(*mEngine, binding_names::kSkipSoftmaxScale)
         && !mRegistry.contains(binding_names::kSkipSoftmaxScale))
@@ -225,6 +252,19 @@ TrtEngineExecutor::~TrtEngineExecutor() noexcept
 bool TrtEngineExecutor::prepare(
     int32_t profileIndex, InferenceDims const& dims, TensorMap const& map, cudaStream_t stream)
 {
+    if (mRegistry.contains(binding_names::kExecutionPhaseMarker) && !isExecutionPhaseExtent(dims.executionPhaseLen))
+    {
+        LOG_ERROR("EngineExecutor::prepare: invalid execution phase extent %lld",
+            static_cast<long long>(dims.executionPhaseLen));
+        return false;
+    }
+    bool const hasIndependentDeltaPortal = mRegistry.contains(binding_names::kDFlashTargetHiddenConcat);
+    if (mRegistry.contains(binding_names::kPositions)
+        && !validateRaggedInferenceDims(dims, profileIndex, hasIndependentDeltaPortal))
+    {
+        LOG_ERROR("EngineExecutor::prepare: inconsistent ragged step dimensions for profile %d", profileIndex);
+        return false;
+    }
     if (auto bad = firstInvalidMember(dims, mRegistry.referencedMembers()); bad != nullptr)
     {
         auto const name = dimName(bad);
@@ -441,15 +481,19 @@ bool EngineExecutor::BindingSnapshot::operator==(BindingSnapshot const& rhs) con
 
 size_t TrtEngineExecutor::computeBindingHash() const
 {
-    size_t seed = 0;
-    int32_t const numIO = mEngine->getNbIOTensors();
-    for (int32_t i = 0; i < numIO; ++i)
-    {
-        char const* name = mEngine->getIOTensorName(i);
-        auto const addr = reinterpret_cast<uintptr_t>(mContext->getTensorAddress(name));
-        nvinfer1::Dims const shape = mContext->getTensorShape(name);
+    return computeExecutionGraphKey(
+        reinterpret_cast<uintptr_t>(mEngine.get()), mCurrentProfileIndex, snapshotBindings());
+}
 
-        hash_utils::hashCombine(seed, addr);
+size_t computeExecutionGraphKey(
+    uintptr_t engineIdentity, int32_t profileIndex, EngineExecutor::BindingSnapshot const& snapshot)
+{
+    size_t seed = 0;
+    hash_utils::hashCombine(seed, engineIdentity);
+    hash_utils::hashCombine(seed, profileIndex);
+    for (auto const& [address, shape] : snapshot.bindings)
+    {
+        hash_utils::hashCombine(seed, address);
         hash_utils::hashCombine(seed, shape.nbDims);
         for (int32_t d = 0; d < shape.nbDims; ++d)
         {

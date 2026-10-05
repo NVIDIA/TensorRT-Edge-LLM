@@ -120,10 +120,18 @@ bool shouldUseNonGreedySampling(float temperature, int64_t topK, float topP) noe
  * \param[in] stream CUDA stream to execute the kernel
  * \param[in] philoxSeed Random seed for sampling (default: 42)
  * \param[in] philoxOffset Random offset for sampling (default: 0)
+ * \param[in] rowUniforms Optional GPU FP32 tensor [batch-size]. When supplied,
+ *                         each row uses this request-derived uniform instead of
+ *                         deriving randomness from its transient batch index.
  * \throws std::runtime_error If CUDA operations fail
  */
 void topKtopPSamplingFromLogits(rt::Tensor const& logits, rt::Tensor& selectedIndices, SamplingParams const& params,
-    rt::Tensor& workspace, cudaStream_t stream, uint64_t philoxSeed = 42, uint64_t philoxOffset = 0);
+    rt::Tensor& workspace, cudaStream_t stream, uint64_t philoxSeed = 42, uint64_t philoxOffset = 0,
+    rt::Tensor const* rowUniforms = nullptr);
+
+//! Construct the exact top-p distribution in the original vocabulary order.
+void topPProbabilitiesFromLogits(rt::Tensor const& logits, rt::Tensor& probabilities, float temperature, float topP,
+    rt::Tensor& workspace, cudaStream_t stream);
 
 /*!
  * \brief Apply sparse per-batch logit biases in place before sampling.
@@ -160,6 +168,38 @@ void applyLogitBias(rt::Tensor& logits, rt::Tensor const& tokenIds, rt::Tensor c
  */
 void applyLogitBiasRepeatedRows(rt::Tensor& logits, rt::Tensor const& tokenIds, rt::Tensor const& biasValues,
     rt::Tensor const& offsets, int32_t rowsPerSlot, cudaStream_t stream);
+
+/*!
+ * \brief Sentinel written to grammar-forbidden logits by \ref applyTokenBitmask.
+ *
+ * Not -inf: this sampler has no NaN/inf guards, and an all--inf row makes the
+ * softmax denominator zero (`exp(-inf - (-FLT_MAX))`), which divides by zero
+ * downstream. Not -FLT_MAX either, because logits are scaled by `1/temperature`
+ * first and `-FLT_MAX * 10` overflows straight back to -inf. -1e30 stays finite
+ * until the inverse temperature exceeds ~3e8, and leaves a fully masked row
+ * uniformly random rather than undefined.
+ */
+constexpr float kMaskedLogitValue = -1e30F;
+
+/*!
+ * \brief Zero out grammar-forbidden tokens ahead of sampling.
+ *
+ * The bitmask is dense and bit-packed, one bit per output-vocabulary entry, with a
+ * set bit meaning *allowed*. Its width equals the logits width, so no vocabulary
+ * lookup is needed. Row `r` of the bitmask constrains row `r` of the logits. Rows are
+ * not slots: each slot owns `rowsPerSlot` consecutive rows, exactly as in
+ * \ref applyLogitBiasRepeatedRows.
+ *
+ * \param[in,out] logits Logits [GPU, Float] with shape [num-rows, vocab-size]
+ * \param[in] bitmask Packed mask [GPU, Int32] with shape [>= num-rows, ceil(vocab-size / 32)]
+ * \param[in] rowNeedsMask Per-row flag [GPU, Int32], shape [>= num-rows]; rows set to 0 are
+ *            skipped entirely, so unconstrained requests in a mixed batch cost nothing
+ * \param[in] numRows Number of logits rows to constrain
+ * \param[in] stream CUDA stream to execute the kernel
+ * \throws std::runtime_error If tensor validation or CUDA launch fails
+ */
+void applyTokenBitmask(rt::Tensor& logits, rt::Tensor const& bitmask, rt::Tensor const& rowNeedsMask, int32_t numRows,
+    cudaStream_t stream);
 
 /*!
  * \brief Select all top-K elements from input tensor.
@@ -220,6 +260,9 @@ void selectArgmaxAndComputeEntropy(
  * \throws std::runtime_error if topK and topP are both not set
  */
 size_t getTopKtopPSamplingWorkspaceSize(int32_t batchSize, int32_t vocabSize, SamplingParams const& params);
+
+//! Return the workspace required by topPProbabilitiesFromLogits().
+size_t getTopPProbabilitiesWorkspaceSize(int32_t rows, int32_t vocabSize);
 
 /*!
  * \brief Get workspace size required for selectAllTopK operation (FP32 only).

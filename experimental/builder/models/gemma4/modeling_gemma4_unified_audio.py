@@ -28,7 +28,7 @@ class Gemma4UnifiedAudioEmbedder(Module):
         super().__init__(ctx, "embed_audio")
         hidden_size = int(
             config.get("audio_embed_dim", config.get("hidden_size", 0)))
-        output_size = int(config["output_proj_dims"])
+        output_size = int(config.get("output_proj_dims", hidden_size))
         if hidden_size <= 0 or hidden_size != output_size:
             raise ValueError(
                 "Gemma4 Unified audio_embed_dim must equal output_proj_dims")

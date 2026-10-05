@@ -55,7 +55,7 @@ bool VisualBuilder::build()
     // Without these workarounds, fusing the separate Q/K/V projections that
     // feed ViTAttentionPlugin yields an engine that faults at execution
     // context creation.
-    std::string const lunowudFlags = applyCompileWorkarounds(/*maxBatchSize=*/1);
+    std::string const lunowudFlags = applyCompileWorkarounds();
     if (!lunowudFlags.empty())
     {
         LOG_INFO("Using __LUNOWUD=%s", lunowudFlags.c_str());
@@ -278,7 +278,8 @@ bool VisualBuilder::setupVisualOptimizationProfile(
     case multimodal::ModelType::QWEN3_VL:
     case multimodal::ModelType::QWEN3_5:
     case multimodal::ModelType::QWEN3_OMNI_VISION_ENCODER:
-    case multimodal::ModelType::COSMOS3_EDGE: result = setupQwenViTProfile(*visualProfile, network); break;
+    case multimodal::ModelType::COSMOS3_EDGE:
+    case multimodal::ModelType::MUSE_GLIMMER: result = setupQwenViTProfile(*visualProfile, network); break;
 
     case multimodal::ModelType::INTERNVL:
     case multimodal::ModelType::PHI4MM: result = setupInternPhi4ViTProfile(*visualProfile); break;
@@ -428,6 +429,37 @@ bool VisualBuilder::setupQwenViTProfile(
         result &= setOptimizationProfile(&profile, binding_names::kFastPosEmbWeight, createDims({4, minHW}),
             createDims({4, optHW}), createDims({4, maxHW}));
     }
+    else if (mModelType == multimodal::ModelType::MUSE_GLIMMER)
+    {
+        // Muse window indices span unmerged visual tokens.
+        result &= setOptimizationProfile(
+            &profile, binding_names::kCuWindowSeqlens, createDims({2}), createDims({optHW}), createDims({maxHW}));
+        if (mBuilderConfig.useTrtNativeVitAttn)
+        {
+            bool hasKvLengthsWindow = false;
+            for (int32_t i = 0; i < network.getNbInputs(); ++i)
+            {
+                if (strcmp(network.getInput(i)->getName(), binding_names::kKvLengthsWindow) == 0)
+                {
+                    hasKvLengthsWindow = true;
+                    break;
+                }
+            }
+            if (hasKvLengthsWindow)
+            {
+                result &= setOptimizationProfile(&profile, binding_names::kKvLengthsWindow, createDims({2}),
+                    createDims({optHW}), createDims({maxHW}));
+            }
+        }
+        result &= setOptimizationProfile(
+            &profile, binding_names::kWindowIndex, createDims({minHW}), createDims({optHW}), createDims({maxHW}));
+        result &= setOptimizationProfile(&profile, binding_names::kReverseWindowIndex, createDims({minHW}),
+            createDims({optHW}), createDims({maxHW}));
+        result &= setOptimizationProfile(&profile, binding_names::kFastPosEmbIdx, createDims({4, minHW}),
+            createDims({4, optHW}), createDims({4, maxHW}));
+        result &= setOptimizationProfile(&profile, binding_names::kFastPosEmbWeight, createDims({4, minHW}),
+            createDims({4, optHW}), createDims({4, maxHW}));
+    }
 
     if (!result)
     {
@@ -441,19 +473,27 @@ bool VisualBuilder::setupInternPhi4ViTProfile(nvinfer1::IOptimizationProfile& pr
 {
     bool result = true;
 
-    // For InternVL and Phi-4MM models, each image block contains 256 tokens (16x16 patch grid)
-    // This is model-specific and comes from the vision encoder's patch size configuration
-    constexpr int64_t kBlockLength = 256;
-
-    if (mBuilderConfig.minImageTokens % kBlockLength != 0 || mBuilderConfig.maxImageTokens % kBlockLength != 0)
+    // Phi-4-MM is fixed at 256 tokens per tile.
+    int64_t tokensPerBlock = 256;
+    if (mModelType == multimodal::ModelType::INTERNVL)
     {
-        LOG_ERROR(
-            "minImageTokens and maxImageTokens must be divisible by %ld for InternVL/Phi4-MM ViT model.", kBlockLength);
+        // Pixel shuffle merges scale x scale patches, matching _pixel_shuffle in the exporter.
+        int64_t const patchSize = mModelConfig[kVisionConfigKey]["patch_size"][0].get<int64_t>();
+        double const downsampleRatio = mModelConfig.value("downsample_ratio", 0.5);
+        auto const scale = std::max<int64_t>(1, static_cast<int64_t>(1.0 / downsampleRatio));
+        int64_t const tokensPerSide = mImageSizeH / patchSize / scale;
+        tokensPerBlock = tokensPerSide * tokensPerSide;
+    }
+
+    if (mBuilderConfig.minImageTokens % tokensPerBlock != 0 || mBuilderConfig.maxImageTokens % tokensPerBlock != 0)
+    {
+        LOG_ERROR("minImageTokens (%ld) and maxImageTokens (%ld) must be divisible by %ld for this model.",
+            mBuilderConfig.minImageTokens, mBuilderConfig.maxImageTokens, tokensPerBlock);
         return false;
     }
 
-    int64_t minNumBlocks = mBuilderConfig.minImageTokens / kBlockLength;
-    int64_t maxNumBlocks = mBuilderConfig.maxImageTokens / kBlockLength;
+    int64_t minNumBlocks = mBuilderConfig.minImageTokens / tokensPerBlock;
+    int64_t maxNumBlocks = mBuilderConfig.maxImageTokens / tokensPerBlock;
     int64_t optNumBlocks = (minNumBlocks + maxNumBlocks) / 2;
 
     result &= setOptimizationProfile(&profile, binding_names::kVisualInput,

@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "common/logger.h"
@@ -32,6 +33,7 @@ namespace tokenizer
 using Rank = std::int32_t;
 using TokenToRanks = std::unordered_map<std::string, Rank>;
 using RanksToToken = std::unordered_map<Rank, std::string>;
+using RankSet = std::unordered_set<Rank>;
 
 /**
  * @brief TokenEncoder class for different tokenization encoding algorithms
@@ -64,6 +66,17 @@ public:
      *         false if vocab is empty
      */
     bool initialize(TokenToRanks const& vocab, TokenToRanks const& specialTokens = {});
+
+    //! Replace the ids dropped by `skipSpecialTokens`.
+    void setSkippableSpecialTokenIds(RankSet const& ids)
+    {
+        mSkippableSpecialTokenIds = ids;
+    }
+
+    bool isSkippableSpecial(Rank token) const noexcept
+    {
+        return mSkippableSpecialTokenIds.find(token) != mSkippableSpecialTokenIds.end();
+    }
 
     /**
      * @brief Encode a piece of text using the algorithm
@@ -160,8 +173,11 @@ private:
     Type mType;
     TokenToRanks mEncoder;
     RanksToToken mDecoder;
+    //! Every added token (special or not); needed so they encode atomically.
     TokenToRanks mSpecialTokensEncoder;
     RanksToToken mSpecialTokensDecoder;
+    //! Effective set dropped by `skipSpecialTokens`.
+    RankSet mSkippableSpecialTokenIds;
     size_t mVocabSize;
     bool mByteFallback{false};       //!< Whether to fall back to byte-level tokens (<0xNN>) for unknown tokens
     bool mUseMergePriorities{false}; //!< Whether to use explicit merge priorities instead of vocab rank

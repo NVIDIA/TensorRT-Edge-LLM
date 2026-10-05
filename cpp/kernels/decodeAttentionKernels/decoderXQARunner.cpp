@@ -19,6 +19,7 @@
 #include "common/checkMacros.h"
 #include "common/cudaMacros.h"
 #include "xqaKernelTypes.h"
+#include "xqaLaunchConfig.h"
 
 #include <algorithm>
 #include <array>
@@ -53,7 +54,7 @@ constexpr uint32_t kHEAD_DIM_512_CTA_DIM_X{256U};
 // Max vanilla XQA kernel argument count. No-sliding kernels use one fewer argument.
 constexpr size_t kXQA_KERNEL_PARAM_COUNT{12U};
 // Max spec-decode XQA kernel argument count. No-sliding kernels use one fewer argument.
-constexpr size_t kSPEC_DECODE_XQA_KERNEL_PARAM_COUNT{16U};
+constexpr size_t kSPEC_DECODE_XQA_KERNEL_PARAM_COUNT{17U};
 
 //! @throws std::runtime_error if datatype is unsupported
 XQADataType trtToXqaDataType(nvinfer1::DataType type)
@@ -69,6 +70,13 @@ XQADataType trtToXqaDataType(nvinfer1::DataType type)
     }
     return xqaType;
 }
+
+void validateContiguousQuerySwaKey(XQAJitKey const& key)
+{
+    check::check(!key.contiguousQuerySwa || (key.specDecode && key.slidingWindow),
+        "Contiguous-query XQA SWA requires spec-decode and sliding-window attention.");
+}
+
 struct XQAKernelLoadHashKey
 {
     XQADataType data_type;
@@ -111,13 +119,15 @@ struct XQAKernelRuntimeHashKey
     int32_t num_q_heads_per_kv;
     int32_t beam_size;
     bool sliding_window;
+    bool contiguous_query_swa;
     int32_t tokens_per_page;
 
     bool operator==(XQAKernelRuntimeHashKey const& other) const noexcept
     {
         return q_data_type == other.q_data_type && kv_data_type == other.kv_data_type && head_size == other.head_size
             && num_q_heads_per_kv == other.num_q_heads_per_kv && beam_size == other.beam_size
-            && sliding_window == other.sliding_window && tokens_per_page == other.tokens_per_page;
+            && sliding_window == other.sliding_window && contiguous_query_swa == other.contiguous_query_swa
+            && tokens_per_page == other.tokens_per_page;
     }
 };
 
@@ -126,7 +136,8 @@ XQAKernelRuntimeHashKey getRuntimeHashKeyFromXQAParams(XQALaunchParams const& xq
     constexpr int32_t kBEAM_SIZE{1};
     int32_t numQHeadPerKV = xqaParams.numQheads / xqaParams.numKVheads;
     return {trtToXqaDataType(xqaParams.dataType), trtToXqaDataType(xqaParams.kvDataType), xqaParams.headSize,
-        numQHeadPerKV, kBEAM_SIZE, xqaParams.slidingWinSize > 0, static_cast<int32_t>(xqaParams.kvCache.tokensPerPage)};
+        numQHeadPerKV, kBEAM_SIZE, xqaParams.slidingWinSize > 0, xqaParams.contiguousQuerySwa,
+        static_cast<int32_t>(xqaParams.kvCache.tokensPerPage)};
 }
 
 XQAKernelRuntimeHashKey getRuntimeHashKeyFromXQAParamsSpecDecode(XQALaunchParams const& xqaParams) noexcept
@@ -134,7 +145,8 @@ XQAKernelRuntimeHashKey getRuntimeHashKeyFromXQAParamsSpecDecode(XQALaunchParams
     constexpr int32_t kBEAM_SIZE{1};
     constexpr int32_t kQHEAD_PER_KV = 0; // Tree attention kernel supports any ratio of Q/KV heads.
     return {trtToXqaDataType(xqaParams.dataType), trtToXqaDataType(xqaParams.kvDataType), xqaParams.headSize,
-        kQHEAD_PER_KV, kBEAM_SIZE, xqaParams.slidingWinSize > 0, static_cast<int32_t>(xqaParams.kvCache.tokensPerPage)};
+        kQHEAD_PER_KV, kBEAM_SIZE, xqaParams.slidingWinSize > 0, xqaParams.contiguousQuerySwa,
+        static_cast<int32_t>(xqaParams.kvCache.tokensPerPage)};
 }
 
 std::string formatMissingXQAKernelMessage(char const* kernelName, XQAKernelRuntimeHashKey const& hashKey,
@@ -142,16 +154,19 @@ std::string formatMissingXQAKernelMessage(char const* kernelName, XQAKernelRunti
 {
     return format::fmtstr(
         "No available cubin for %s. Runtime key: sm=%d, q_dtype=%d, kv_dtype=%d, head_size=%d, "
-        "q_heads_per_kv=%d, beam_size=%d, sliding_window=%d. Launch params: q_heads=%d, kv_heads=%d, batch_size=%d, "
-        "kv_cache_capacity=%u, q_seq_len=%d, head_group_size=%d, trt_dtype=%d, trt_kv_dtype=%d. "
+        "q_heads_per_kv=%d, beam_size=%d, sliding_window=%d, contiguous_query_swa=%d, tokens_per_page=%d. Launch "
+        "params: q_heads=%d, kv_heads=%d, batch_size=%d, kv_cache_capacity=%u, q_seq_len=%d, head_group_size=%d, "
+        "trt_dtype=%d, trt_kv_dtype=%d. "
         "Expected JIT cubin key: sm=%d, data_type=%d, kv_data_type=%d, head_size=%d, q_heads_per_kv=%d, "
-        "sliding_window=%d, spec_decode=%d.",
+        "sliding_window=%d, spec_decode=%d, contiguous_query_swa=%d, tokens_per_page=%d.",
         kernelName, smVersion, static_cast<int32_t>(hashKey.q_data_type), static_cast<int32_t>(hashKey.kv_data_type),
         hashKey.head_size, hashKey.num_q_heads_per_kv, hashKey.beam_size, static_cast<int32_t>(hashKey.sliding_window),
-        params.numQheads, params.numKVheads, params.batchSize, params.kvCache.capacity, params.qSeqLen,
-        params.headGroupSize, static_cast<int32_t>(params.dataType), static_cast<int32_t>(params.kvDataType), smVersion,
+        static_cast<int32_t>(hashKey.contiguous_query_swa), hashKey.tokens_per_page, params.numQheads,
+        params.numKVheads, params.batchSize, params.kvCache.capacity, params.qSeqLen, params.headGroupSize,
+        static_cast<int32_t>(params.dataType), static_cast<int32_t>(params.kvDataType), smVersion,
         static_cast<int32_t>(params.dataType), static_cast<int32_t>(params.kvDataType), hashKey.head_size,
-        hashKey.num_q_heads_per_kv, static_cast<int32_t>(hashKey.sliding_window), static_cast<int32_t>(specDecode));
+        hashKey.num_q_heads_per_kv, static_cast<int32_t>(hashKey.sliding_window), static_cast<int32_t>(specDecode),
+        static_cast<int32_t>(hashKey.contiguous_query_swa), hashKey.tokens_per_page);
 }
 
 struct XQAKernelRuntimeHasher
@@ -169,6 +184,8 @@ struct XQAKernelRuntimeHasher
         key ^= s.beam_size;
         key <<= 4;
         key ^= s.sliding_window;
+        key <<= 4;
+        key ^= s.contiguous_query_swa;
         key <<= 8;
         key ^= s.tokens_per_page;
         return key;
@@ -341,32 +358,6 @@ bool isJitKernelSupportedByBuild(XQAJitKey const& key) noexcept
 #endif // SUPPORTS_CLUSTER_LAUNCH
 }
 
-#if SUPPORTS_CLUSTER_LAUNCH
-void launch2CtaHeadDim512ClusterKernel(XQAKernelFuncInfo const& kernelInfo, dim3 const& dimGrid, dim3 const& dimCta,
-    cudaStream_t const& stream, void** kernelParams)
-{
-    CUlaunchAttribute launchAttr{};
-    launchAttr.id = CU_LAUNCH_ATTRIBUTE_CLUSTER_DIMENSION;
-    launchAttr.value.clusterDim.x = kSPLIT_HEAD_DIM_512_CLUSTER_SIZE;
-    launchAttr.value.clusterDim.y = 1U;
-    launchAttr.value.clusterDim.z = 1U;
-
-    CUlaunchConfig launchConfig{};
-    launchConfig.gridDimX = dimGrid.x;
-    launchConfig.gridDimY = dimGrid.y;
-    launchConfig.gridDimZ = dimGrid.z;
-    launchConfig.blockDimX = dimCta.x;
-    launchConfig.blockDimY = dimCta.y;
-    launchConfig.blockDimZ = dimCta.z;
-    launchConfig.sharedMemBytes = kernelInfo.mSharedMemBytes;
-    launchConfig.hStream = stream;
-    launchConfig.attrs = &launchAttr;
-    launchConfig.numAttrs = 1U;
-
-    CUDA_DRIVER_CHECK(cuLaunchKernelEx(&launchConfig, kernelInfo.mDeviceFunction, kernelParams, nullptr));
-}
-#endif // SUPPORTS_CLUSTER_LAUNCH
-
 uint32_t getXQAKernelGridDimX(XQAKernelFuncInfo const& kernelInfo) noexcept
 {
     return kernelInfo.mRequiresClusterLaunch ? kSPLIT_HEAD_DIM_512_CLUSTER_SIZE : 1U;
@@ -379,19 +370,38 @@ dim3 getXQAKernelCtaDim(XQAKernelFuncInfo const& kernelInfo) noexcept
 }
 
 void launchXQAKernel(XQAKernelFuncInfo const& kernelInfo, dim3 const& dimGrid, dim3 const& dimCta,
-    cudaStream_t const& stream, void** kernelParams)
+    cudaStream_t const& stream, void** kernelParams, bool const enablePdl, int32_t const smVersion)
 {
     bool const useClusterLaunch = kernelInfo.mRequiresClusterLaunch;
-#if SUPPORTS_CLUSTER_LAUNCH
-    // Keep the cluster and regular launch paths shared by decode and spec-decode dispatch.
-    if (useClusterLaunch)
+#if !SUPPORTS_CLUSTER_LAUNCH
+    check::check(!useClusterLaunch, "XQA head_dim=512 2CTA cluster kernel is unavailable.");
+#endif // SUPPORTS_CLUSTER_LAUNCH
+
+#if SUPPORTS_CLUSTER_LAUNCH || SUPPORTS_PROGRAMMATIC_DEPENDENT_LAUNCH
+    XQALaunchAttributes launchAttributes
+        = makeXQALaunchAttributes(useClusterLaunch, kSPLIT_HEAD_DIM_512_CLUSTER_SIZE, enablePdl, smVersion);
+    if (launchAttributes.count > 0U)
     {
-        launch2CtaHeadDim512ClusterKernel(kernelInfo, dimGrid, dimCta, stream, kernelParams);
+        CUlaunchConfig launchConfig{};
+        launchConfig.gridDimX = dimGrid.x;
+        launchConfig.gridDimY = dimGrid.y;
+        launchConfig.gridDimZ = dimGrid.z;
+        launchConfig.blockDimX = dimCta.x;
+        launchConfig.blockDimY = dimCta.y;
+        launchConfig.blockDimZ = dimCta.z;
+        launchConfig.sharedMemBytes = kernelInfo.mSharedMemBytes;
+        launchConfig.hStream = stream;
+        launchConfig.attrs = launchAttributes.attrs.data();
+        launchConfig.numAttrs = launchAttributes.count;
+
+        CUDA_DRIVER_CHECK(cuLaunchKernelEx(&launchConfig, kernelInfo.mDeviceFunction, kernelParams, nullptr));
         return;
     }
 #else
-    check::check(!useClusterLaunch, "XQA head_dim=512 2CTA cluster kernel is unavailable.");
-#endif // SUPPORTS_CLUSTER_LAUNCH
+    (void) enablePdl;
+    (void) smVersion;
+#endif // SUPPORTS_CLUSTER_LAUNCH || SUPPORTS_PROGRAMMATIC_DEPENDENT_LAUNCH
+
     CUDA_DRIVER_CHECK(cuLaunchKernel(kernelInfo.mDeviceFunction, dimGrid.x, dimGrid.y, dimGrid.z, dimCta.x, dimCta.y,
         dimCta.z, kernelInfo.mSharedMemBytes, stream, kernelParams, nullptr));
 }
@@ -443,6 +453,7 @@ SpecDecodeXQAKernelParams makeSpecDecodeXQAKernelParams(
     kernelParams[idx++] = &params.numKVheads;
     kernelParams[idx++] = &params.headGroupSize;
     kernelParams[idx++] = &params.qCuSeqLen;
+    kernelParams[idx++] = &params.qSeqLens;
     if (slidingWindow)
     {
         kernelParams[idx++] = &params.slidingWinSize;
@@ -471,6 +482,7 @@ public:
     bool loadJitKernel(XQAJitKey const& key, void const* cubinData, size_t cubinSize)
     {
         check::check(cubinData != nullptr && cubinSize > 0, "Invalid XQA JIT cubin data.");
+        validateContiguousQuerySwaKey(key);
         if (!isJitKernelSupportedByBuild(key))
         {
             return false;
@@ -478,7 +490,8 @@ public:
 
         constexpr int32_t kBEAM_SIZE{1};
         XQAKernelRuntimeHashKey const hashKey{trtToXqaDataType(key.dataType), trtToXqaDataType(key.kvDataType),
-            key.headSize, key.specDecode ? 0 : key.qHeadsPerKv, kBEAM_SIZE, key.slidingWindow, key.tokensPerPage};
+            key.headSize, key.specDecode ? 0 : key.qHeadsPerKv, kBEAM_SIZE, key.slidingWindow, key.contiguousQuerySwa,
+            key.tokensPerPage};
 
         std::lock_guard<std::mutex> lock(mMutex);
         auto const findIter = mFunctions.find(hashKey);
@@ -629,6 +642,7 @@ XQALaunchParams DecoderXQARunner::initXQAParams() noexcept
 
 bool DecoderXQARunner::loadDecodeXQAKernelFromCubin(XQAJitKey const& key, void const* cubinData, size_t cubinSize)
 {
+    validateContiguousQuerySwaKey(key);
     XQAKernelList* xqaKernelList = getXQAKernels(trtToXqaDataType(key.dataType), trtToXqaDataType(key.kvDataType),
         key.sm, key.specDecode, key.tokensPerPage != 0);
     return xqaKernelList != nullptr && xqaKernelList->loadJitKernel(key, cubinData, cubinSize);
@@ -636,6 +650,7 @@ bool DecoderXQARunner::loadDecodeXQAKernelFromCubin(XQAJitKey const& key, void c
 
 void DecoderXQARunner::dispatchXQAKernel(XQALaunchParams& params, cudaStream_t const& stream)
 {
+    check::check(!params.contiguousQuerySwa, "Contiguous-query XQA SWA requires spec-decode dispatch.");
     // Check all device pointers are valid.
     check::check(params.output != nullptr && params.qInputPtr != nullptr && params.kvCache.data != nullptr
             && params.kvCache.sequence_lengths != nullptr
@@ -662,11 +677,13 @@ void DecoderXQARunner::dispatchXQAKernel(XQALaunchParams& params, cudaStream_t c
     dim3 const dimGrid{
         getXQAKernelGridDimX(kernelInfo), static_cast<uint32_t>(mNumKVHeads), static_cast<uint32_t>(mBatchSize)};
     dim3 const dimCta = getXQAKernelCtaDim(kernelInfo);
-    launchXQAKernel(kernelInfo, dimGrid, dimCta, stream, kernelParams.data());
+    launchXQAKernel(kernelInfo, dimGrid, dimCta, stream, kernelParams.data(), params.enablePdl, mSmVersion);
 }
 
 void DecoderXQARunner::dispatchSpecDecodeXQAKernel(XQALaunchParams& params, cudaStream_t const& stream)
 {
+    check::check(!params.contiguousQuerySwa || params.slidingWinSize > 0,
+        "Contiguous-query XQA SWA requires a non-zero sliding-window size.");
     // Check all device pointers are valid.
     check::check(params.output != nullptr && params.qInputPtr != nullptr && params.kvCache.data != nullptr
             && params.kvCache.sequence_lengths != nullptr && params.treeAttnMask != nullptr
@@ -692,5 +709,5 @@ void DecoderXQARunner::dispatchSpecDecodeXQAKernel(XQALaunchParams& params, cuda
     dim3 const dimGrid{getXQAKernelGridDimX(kernelInfo), static_cast<uint32_t>(mNumKVHeads * tokenBlockPerGroup),
         static_cast<uint32_t>(mBatchSize)};
     dim3 const dimCta = getXQAKernelCtaDim(kernelInfo);
-    launchXQAKernel(kernelInfo, dimGrid, dimCta, stream, kernelParams.data());
+    launchXQAKernel(kernelInfo, dimGrid, dimCta, stream, kernelParams.data(), params.enablePdl, mSmVersion);
 }

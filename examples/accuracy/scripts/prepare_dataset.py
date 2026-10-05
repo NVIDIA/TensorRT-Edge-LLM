@@ -43,10 +43,12 @@ from example_datasets.coco import convert_coco_dataset
 from example_datasets.edgellm_dataset import DatasetConfig
 from example_datasets.gsm8k import convert_gsm8k_dataset
 from example_datasets.humaneval import convert_humaneval_dataset
-from example_datasets.librispeech import convert_librispeech_dataset
+from example_datasets.librispeech import (convert_librispeech_dataset,
+                                          create_librispeech_lite_dataset)
 from example_datasets.math500 import convert_math500_dataset
 from example_datasets.mmbench import convert_mmbench_dataset
-from example_datasets.mmlu import convert_mmlu_dataset
+from example_datasets.mmlu import (convert_mmlu_dataset,
+                                   create_mmlu_lite_dataset)
 from example_datasets.mmlu_pro import convert_mmlu_pro_dataset
 from example_datasets.mmmu import (convert_mmmu_dataset,
                                    convert_mmmu_pro_dataset)
@@ -79,6 +81,12 @@ DEFAULT_DATASETS = {
 # Datasets that require manual download — no HuggingFace auto-download.
 # Values are user-facing error messages with download instructions.
 LOCAL_ONLY_DATASETS = {
+    "LibriSpeech_Lite":
+    ("LibriSpeech_Lite requires --dataset_name_or_dir pointing to an "
+     "existing LibriSpeech Full librispeech_clean_test.json file."),
+    "MMLU_Lite":
+    ("MMLU_Lite requires --dataset_name_or_dir pointing to an existing "
+     "MMLU Full mmlu_dataset.json file."),
     "SeedTTSEval":
     ("SeedTTSEval requires --dataset_name_or_dir pointing to a .lst file "
      "(e.g. zh/meta.lst, en/meta.lst). Download from: "
@@ -92,8 +100,10 @@ DEFAULT_MAX_GENERATE_LENGTHS = {
     "GSM8K": 512,
     "HumanEval": 512,
     "LibriSpeech": 256,
+    "LibriSpeech_Lite": 256,
     "MATH500": 512,
     "MMLU": 1,
+    "MMLU_Lite": 1,
     "MMLU_Pro": 1,
     "MMMU": 20,
     "MMMU_VLMEvalkit": 8192,
@@ -175,10 +185,10 @@ def main():
                         required=True,
                         choices=[
                             "AIME", "COCO", "GSM8K", "HumanEval",
-                            "LibriSpeech", "MATH500", "MMBench", "MMLU",
-                            "MMLU_Pro", "MMMU", "MMMU_VLMEvalkit", "MMMU_Pro",
-                            "MMStar", "MTBench", "SeedTTSEval",
-                            "MiniMaxMultilingual", "OmniBench"
+                            "LibriSpeech", "LibriSpeech_Lite", "MATH500",
+                            "MMBench", "MMLU", "MMLU_Lite", "MMLU_Pro", "MMMU",
+                            "MMMU_VLMEvalkit", "MMMU_Pro", "MMStar", "MTBench",
+                            "SeedTTSEval", "MiniMaxMultilingual", "OmniBench"
                         ],
                         help="Dataset type to convert")
 
@@ -263,6 +273,13 @@ def main():
                         default=None,
                         required=False,
                         help="Limit number of samples for quick testing")
+    parser.add_argument(
+        "--lite_sample_count",
+        type=int,
+        default=None,
+        required=False,
+        help=("Total rows for a Lite dataset. Defaults to 2000 for MMLU_Lite "
+              "and 524 (1/5 of test-clean) for LibriSpeech_Lite."))
 
     parser.add_argument(
         "--disable_chat_template",
@@ -301,6 +318,14 @@ def main():
                                  dataset_name_or_dir=dataset_path,
                                  output_dir=args.output_dir,
                                  num_shot=args.num_shot)
+
+        elif args.dataset == "MMLU_Lite":
+            dataset_file, manifest_file = create_mmlu_lite_dataset(
+                input_file=dataset_path,
+                output_dir=args.output_dir,
+                sample_count=args.lite_sample_count or 2000)
+            print(f"Wrote Lite dataset to {dataset_file}")
+            print(f"Wrote reproducibility manifest to {manifest_file}")
 
         elif args.dataset == "MMLU_Pro":
             convert_mmlu_pro_dataset(config=config,
@@ -398,6 +423,13 @@ def main():
             convert_librispeech_dataset(config=config,
                                         dataset_name_or_dir=dataset_path,
                                         output_dir=args.output_dir)
+
+        elif args.dataset == "LibriSpeech_Lite":
+            dataset_file = create_librispeech_lite_dataset(
+                input_file=dataset_path,
+                output_dir=args.output_dir,
+                sample_count=args.lite_sample_count or 524)
+            print(f"Wrote Lite dataset to {dataset_file}")
     except Exception as e:
         print(f"Error converting dataset: {e}", file=sys.stderr)
         sys.exit(1)

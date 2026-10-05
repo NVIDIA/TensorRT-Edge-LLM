@@ -10,6 +10,8 @@ This guide describes the input JSON format for the LLM inference tool. The forma
     "temperature": 1.0,
     "top_p": 0.8,
     "top_k": 50,
+    "sampling_seed": 123456789,
+    "spec_proposal_sampling": "auto",
     "logit_bias": {"123": -100.0},
     "max_generate_length": 256,
     "num_logprobs": 0,
@@ -47,6 +49,16 @@ This guide describes the input JSON format for the LLM inference tool. The forma
 - **`temperature`** (default: 1.0): Sampling temperature (0.0 = deterministic)
 - **`top_p`** (default: 0.8): Nucleus sampling threshold
 - **`top_k`** (default: 50): Top-k sampling parameter
+- **`sampling_seed`** (optional): Stable unsigned 64-bit sampling seed. A
+  request-level value overrides this global default. Speculative proposal,
+  acceptance, residual, and bonus randomness is derived from this seed and
+  absolute output position, so continuous-batching slot changes do not alter
+  those random streams.
+- **`spec_proposal_sampling`** (default: `"auto"`): Proposal policy for
+  speculative decoders that expose their proposal distribution. `"auto"`
+  follows the target policy; `"greedy"` or `"probabilistic"` forces the draft
+  policy while preserving correct target sampling through rejection
+  verification.
 - **`logit_bias`** (optional): Sparse map from token ID to bias value. The top-level map is the default for all requests.
 - **`max_generate_length`** (default: 256): Maximum tokens to generate
 - **`apply_chat_template`** (default: true): Apply chat template formatting
@@ -63,12 +75,18 @@ This guide describes the input JSON format for the LLM inference tool. The forma
 
 ### Request Fields
 - **`messages`** (required): Array of conversation messages
+- **`sampling_seed`** (optional): Overrides the global stable sampling seed for
+  this request.
 - **`lora_name`** (optional): LoRA adapter name from `available_lora_weights`
 - **`save_system_prompt_kv_cache`** (optional): Legacy compatibility field for
   exact system-prompt caching. New deployments should use KV cache reuse.
+  Bounded Gemma4 SWA storage does not preserve the complete contiguous history
+  required by this legacy snapshot API, so the request continues without
+  saving a snapshot.
 - **`disable_spec_decode`** (optional, default: false): Disable EAGLE speculative decoding for this request even if draft engine is loaded
 - **`logit_bias`** (optional): Request-specific sparse logit-bias map. When set, it overrides the top-level `logit_bias` default for this request.
 - **`num_logprobs`** (optional): Overrides the top-level `num_logprobs` default for this request. Applied batch-uniformly (like `disable_spec_decode`): the batch computes at the maximum value requested by any request in it.
+- **`guided_decoding`** (optional): Constrain the output to a schema, pattern, or grammar. Exactly one mode may be set. Like `logit_bias`, a top-level `guided_decoding` applies to every request unless a request overrides it. See [Guided Decoding](../features/guided-decoding.md).
 - **`stop`** (optional): String or array of strings that halt generation when produced in the output. The stop string itself is excluded from the returned text. Each request in a batch may declare its own list independently. Defaults to no stop strings.
 
 ### Message Fields
@@ -254,6 +272,44 @@ bias.
 Token IDs use the full tokenizer vocabulary. With a reduced-vocabulary engine,
 a token omitted from the engine vocabulary cannot be restored by positive
 bias; the runtime ignores that entry and logs a warning.
+
+### Guided Decoding
+
+`guided_decoding` constrains generation token by token so the output is guaranteed to match the guide. Set exactly one of `json_object`, `json_schema`, `regex`, `ebnf`, `structural_tag`, or `choice`.
+
+```json
+{
+    "requests": [
+        {
+            "messages": [
+                {"role": "user", "content": "Give me a person record."}
+            ],
+            "guided_decoding": {
+                "json_schema": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "age": {"type": "integer"}
+                    },
+                    "required": ["name", "age"]
+                }
+            }
+        },
+        {
+            "messages": [
+                {"role": "user", "content": "Answer yes or no."}
+            ],
+            "guided_decoding": {"choice": ["yes", "no"]}
+        }
+    ]
+}
+```
+
+`json_schema` and `structural_tag` accept an inline object, `choice` an inline array, and every mode also accepts an escaped JSON string.
+
+**Speculative decoding limitation:** guided requests are rejected while speculative decoding is active. Set `disable_spec_decode: true` to use vanilla decoding for that batch.
+
+See [Guided Decoding](../features/guided-decoding.md) for all six modes, schema support, and build instructions.
 
 ### Top-N Log-Probabilities
 

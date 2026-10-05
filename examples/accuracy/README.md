@@ -160,6 +160,10 @@ Located in `example_datasets/` directory. Use `scripts/prepare_dataset.py` to co
 - **MiniMaxMultilingual** (`tts_eval.py`): [MiniMax TTS Multilingual Test Set](https://huggingface.co/datasets/MiniMaxAI/TTS-Multilingual-Test-Set) (24 languages)
 - **OmniBench** (`omnibench.py`): [OmniBench](https://huggingface.co/datasets/m-a-p/OmniBench) audio+image+text multimodal understanding (1142 samples)
 
+**Audio ASR:**
+- **LibriSpeech** (`librispeech.py`): Full test-clean split (2620 utterances)
+- **LibriSpeech_Lite** (`librispeech.py`): Deterministic per-speaker JSON subset of an existing Full dataset (524 utterances by default); audio files stay in Full
+
 ### Framework
 - **EdgeLLM Dataset** (`edgellm_dataset.py`): Base class for custom dataset implementations
 

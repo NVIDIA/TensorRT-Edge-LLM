@@ -25,6 +25,7 @@ def build_model(net, bundle, cfg, weights, args) -> None:
         dense_quant=args.dense_quant,
         int4_gemm_plugin_version=args.int4_gemm_plugin_version,
         sm12x=args.sm12x,
+        sm110=args.sm110,
         max_lora_rank=args.max_lora_rank,
     )
     context = BuildContext(net=net,
@@ -36,7 +37,8 @@ def build_model(net, bundle, cfg, weights, args) -> None:
     definition = registry.definition_for(bundle.root_model_type,
                                          args.resolved_component,
                                          args.spec_type,
-                                         args.resolved_spec_role)
+                                         args.resolved_spec_role,
+                                         args.dflash_version)
     model = definition.load().from_config(context)
     if not isinstance(model, NetworkModule):
         raise TypeError(f"{type(model).__name__} must inherit NetworkModule")

@@ -28,9 +28,11 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Tuple
 
-from .config import (REPO_ROOT, cuda_driver_stub, load_matrix, package_version,
-                     require_clean_source, require_variant, run_checked,
-                     sha256, source_revision, source_snapshot, write_json)
+from . import oss
+from .config import (CONTRACT, REPO_ROOT, cuda_driver_stub, load_matrix,
+                     package_version, require_clean_source, require_variant,
+                     run_checked, sha256, source_revision, source_snapshot,
+                     write_json)
 
 
 def _positive_int(value: str) -> int:
@@ -222,9 +224,11 @@ def _pybind11_cmake_dir() -> Path:
 
 
 def _cuda_architecture(row: Mapping[str, Any]) -> str:
-    sm = int(row["gpu_sm"])
-    suffix = "a" if sm in {100, 101, 110, 121} else ""
-    return f"{sm}{suffix}"
+    architectures = []
+    for sm in CONTRACT.matrix_variant_gpu_sms(row):
+        suffix = "a" if sm in {100, 101, 110, 121} else ""
+        architectures.append(f"{sm}{suffix}")
+    return ";".join(architectures)
 
 
 def _cmake_configure_command(args: argparse.Namespace, repo_root: Path,
@@ -246,6 +250,9 @@ def _cmake_configure_command(args: argparse.Namespace, repo_root: Path,
         "-U_Python_*",
         "-UPYTHON_*",
         "-DCMAKE_BUILD_TYPE=Release",
+        f"-DCMAKE_C_FLAGS=-ffile-prefix-map={repo_root}=. -ffile-prefix-map={build_dir}=.",
+        f"-DCMAKE_CXX_FLAGS=-ffile-prefix-map={repo_root}=. -ffile-prefix-map={build_dir}=.",
+        f"-DCMAKE_CUDA_FLAGS=-Xcompiler=-ffile-prefix-map={repo_root}=. -Xcompiler=-ffile-prefix-map={build_dir}=.",
         f"-DCMAKE_CUDA_ARCHITECTURES={cuda_architecture}",
         "-DBUILD_PYTHON_BINDINGS=ON",
         f"-DTRT_PACKAGE_DIR={trt_package_dir}",
@@ -440,6 +447,8 @@ def _payload_manifest(args: argparse.Namespace, repo_root: Path,
     return {
         "schema_version":
         1,
+        "oss_policy_sha256":
+        oss.policy_digest(repo_root),
         "package_version":
         package_version(repo_root),
         "source_revision":
@@ -485,6 +494,57 @@ def _payload_manifest(args: argparse.Namespace, repo_root: Path,
     }
 
 
+def _copy_oss_kernel_inputs(repo_root: Path, staged_source: Path,
+                            row: Mapping[str, Any]) -> None:
+    """Validate the kernel receipt before copying inputs into the source stage."""
+    artifact_path = _cutedsl_inputs(repo_root, row)[0].parent
+    receipt_path = artifact_path / "oss-provenance.json"
+    if not receipt_path.is_file():
+        raise RuntimeError(
+            "CuTe inputs have no OSS provenance; run prepare-cutedsl.")
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    oss.require_policy(receipt, repo_root)
+    if receipt.get("kernel_source_sha256") != oss.tree_digest(staged_source /
+                                                              "kernelSrcs"):
+        raise RuntimeError(
+            "CuTe kernels were not built from these sanitized sources.")
+    # The receipt is not part of the artifact tree it describes.
+    with tempfile.TemporaryDirectory(prefix="edgellm-oss-input-") as temp:
+        artifact_copy = Path(temp) / "artifact"
+        shutil.copytree(artifact_path,
+                        artifact_copy,
+                        ignore=shutil.ignore_patterns("oss-provenance.json"))
+        if oss.tree_digest(artifact_copy) != receipt.get(
+                "artifact_tree_sha256"):
+            raise RuntimeError("Prepared OSS CuTe artifact was modified.")
+        for path in artifact_copy.rglob("*"):
+            if path.is_file():
+                oss.audit_file(path, repo_root)
+        destination = staged_source / artifact_path.relative_to(repo_root)
+        shutil.copytree(artifact_copy, destination)
+
+
+def _stage_build_source(repo_root: Path, build_dir: Path,
+                        row: Mapping[str, Any]) -> Path:
+    """Bind the native build to sanitized sources and verified OSS kernels."""
+    if not oss.enabled():
+        return repo_root
+    build_dir.mkdir(parents=True, exist_ok=True)
+    staged_source = build_dir / "oss-source"
+    with tempfile.TemporaryDirectory(prefix="oss-stage-",
+                                     dir=build_dir) as temp:
+        incoming = oss.stage_source(repo_root, Path(temp) / "source")
+        _copy_oss_kernel_inputs(repo_root, incoming, row)
+        # Preserve header timestamps so successive CPython ABIs reuse native objects.
+        if (staged_source.exists() and oss.tree_digest(staged_source)
+                == oss.tree_digest(incoming)):
+            return staged_source
+        if staged_source.exists():
+            shutil.rmtree(staged_source)
+        shutil.move(incoming, staged_source)
+    return staged_source
+
+
 def main(argv=None) -> None:
     """Configure, build, install, and describe one isolated native payload."""
     args = _arguments(argv)
@@ -492,16 +552,19 @@ def main(argv=None) -> None:
     output_dir, build_dir = _build_directories(args, repo_root)
     payload_rel = (Path("tensorrt_edgellm") / "_native" / "payloads" /
                    args.variant)
-    _build_and_install(args, repo_root, build_dir, output_dir, trt_dir, row,
-                       payload_rel)
+    staged_source = _stage_build_source(repo_root, build_dir, row)
+    _build_and_install(args, staged_source, build_dir, output_dir, trt_dir,
+                       row, payload_rel)
     extension, plugin = _installed_binaries(output_dir, payload_rel)
     metadata_path, _, groups, archive, headers = _cutedsl_inputs(
-        repo_root, row)
+        staged_source, row)
     with tempfile.TemporaryDirectory(prefix="edgellm-debug-") as temporary:
         debug_dir = _extract_debug_symbols(build_dir, Path(temporary),
                                            (extension, plugin))
         evidence_dir = _collect_evidence(output_dir, build_dir, archive,
                                          headers, debug_dir)
+    for binary in (extension, plugin):
+        oss.audit_file(binary, repo_root)
     payload = _payload_manifest(args, repo_root, output_dir, row, revision,
                                 snapshot, extension, plugin, metadata_path,
                                 groups, evidence_dir)

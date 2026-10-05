@@ -179,6 +179,54 @@ void invokePrefillRowAssemble(
 void invokeSumCodecEmbeddings(int64_t const* refCodes, half const* const* tablePtrs, int32_t numFrames,
     int32_t numGroups, int32_t hiddenDim, rt::Tensor& output, cudaStream_t stream);
 
+//! \brief Score hidden rows against a per-row selection of stacked lm_heads.
+//!
+//! output[r] = heads[rowHeadIndices[r]] * hiddens[rowHiddenIndices[r]], for r in [0, rows).
+//! The CodePredictor scores each verify position with the lm_head of its own RVQ
+//! depth, which one plain GEMM per row cannot express.
+//!
+//! Both selectors are per-row tensors rather than a base plus offset, so a
+//! tree-shaped verify window can pass node depths unchanged.
+//!
+//! \param hiddens          Hidden rows [*, hiddenDim] (FP16)
+//! \param heads            Stacked heads [numHeads, outputDim, hiddenDim] (FP16, row-major)
+//! \param rowHiddenIndices Row selector into hiddens [rows] (INT32)
+//! \param rowHeadIndices   Row selector into heads [rows] (INT32)
+//! \param rows             Output row count
+//! \param hiddenDim        Reduction width (must be a multiple of 2)
+//! \param outputDim        Head output width
+//! \param output           Output [rows, outputDim] (FP16)
+//! \param stream           CUDA stream
+void invokeGroupedHeadLinear(half const* hiddens, rt::Tensor const& heads, int32_t const* rowHiddenIndices,
+    int32_t const* rowHeadIndices, int32_t rows, int32_t hiddenDim, int32_t outputDim, rt::Tensor& output,
+    cudaStream_t stream);
+
+//! \brief Gather one codec embedding per verify position, each from its own RVQ table.
+//!
+//! output[b][i] = tables[tableIndices[b][i]][codeIds[b][i * ... ]] for i in [0, rows).
+//! Collapses the per-position embeddingLookup + copy chain the CodePredictor verify
+//! window would otherwise issue, in the same spirit as invokeResidualConnection.
+//!
+//! tableIndices is a per-row selector rather than a base+offset pair so a tree-shaped
+//! verify window can pass its node depths unchanged.
+//!
+//! \param codeIds      Device code ids [batch, codeStride] (INT32); position i reads column i
+//! \param tablePtrs    Device array of per-RVQ-depth table pointers, each [codebook, hiddenDim] (FP16)
+//! \param tableIndices Per-row table selector [batch, rows] (INT32, device)
+//! \param batchSize    Active batch size
+//! \param rows         Verify positions per batch
+//! \param codeStride   Column stride of codeIds
+//! \param hiddenDim    Embedding width
+//! \param output       Output [batch, rows, hiddenDim] (FP16), or the scatter target when
+//!                     outputRowIndices is supplied
+//! \param stream       CUDA stream
+//! \param outputRowIndices Optional per-row destination selector [batch, rows] (INT32, device).
+//!                     nullptr packs the rows contiguously; a negative entry drops its row, which
+//!                     lets one launch cover a ragged per-batch row count.
+void invokeGatherCodecEmbedRows(rt::Tensor const& codeIds, half const* const* tablePtrs, int32_t const* tableIndices,
+    int32_t batchSize, int32_t rows, int32_t codeStride, int32_t hiddenDim, rt::Tensor& output, cudaStream_t stream,
+    int32_t const* outputRowIndices = nullptr);
+
 //! \brief Elementwise FP32 -> FP16 cast on device (small utility for engine-output adaptation)
 void invokeCastFp32ToFp16(float const* input, half* output, int64_t numElements, cudaStream_t stream);
 

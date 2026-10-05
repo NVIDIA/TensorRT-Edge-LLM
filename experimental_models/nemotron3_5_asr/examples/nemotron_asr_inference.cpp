@@ -271,7 +271,7 @@ int main(int argc, char* argv[])
         audio::AudioPCM pcm;
         check::check(audio::loadAudioFile(args.audioFile, /*targetSampleRate=*/16000, pcm),
             "Failed to load audio file: " + args.audioFile);
-        double const audioSeconds = static_cast<double>(pcm.samples.size()) / pcm.sampleRate;
+        double const audioSeconds = static_cast<double>(pcm.numSamples()) / pcm.sampleRate;
 
         int32_t const promptId = args.promptId >= 0 ? args.promptId : runtime.defaultPromptId();
 

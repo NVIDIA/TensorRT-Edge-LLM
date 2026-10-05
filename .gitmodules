@@ -11,3 +11,7 @@
 	path = 3rdParty/NVTX
 	revision = 2fb879e512ed208f83c6aa4d4c96b958789edf49
 	url = https://github.com/NVIDIA/NVTX.git
+[submodule "3rdParty/xgrammar"]
+	path = 3rdParty/xgrammar
+	revision = 5b4e9ce9e72524037ae24ecd831b9b6604d2eb48
+	url = https://github.com/mlc-ai/xgrammar.git

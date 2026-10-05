@@ -26,6 +26,7 @@
 #include "kernels/moe/NvFP4MoEUtils.h"
 #include "kernels/moe/fp4SupportKernels/buildLayout.h"
 #include "kernels/moe/fp4SupportKernels/fp4Quantize.h"
+#include "kernels/moe/nvfp4_cutedsl/nvfp4MoePdlConfig.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -136,6 +137,7 @@ bool useFastDecodeSetup(CuteDslNvfp4MoeSm110Params const& params)
     // set {128, 256}, which fp4Quantize.cu's kMaxDecodeExperts (256) covers.
     return params.numTokens == 1;
 }
+
 } // namespace
 
 bool CuteDslNvfp4MoeSm110Runner::canImplement(int32_t hiddenSize, int32_t moeInterSize, int32_t numExperts,
@@ -167,15 +169,6 @@ bool CuteDslNvfp4MoeSm110Runner::canImplement(int32_t hiddenSize, int32_t moeInt
         return false;
     }
     return true;
-}
-
-int32_t CuteDslNvfp4MoeSm110Runner::selectMmaTilerN(int32_t moeInterSize)
-{
-    (void) moeInterSize;
-    // Default MMA tiler N is 128 (kLevelTileN). The build_cutedsl.py registry
-    // also exports n256 variants — TODO: benchmark n256 vs n128 on Thor and
-    // promote the better one (or pick per moeInterSize) instead of hard-coding.
-    return kLevelTileN;
 }
 
 bool CuteDslNvfp4MoeSm110Runner::ensureKernelModules(CuteDslNvfp4MoeSm110Params const& params, cudaStream_t stream)
@@ -269,6 +262,10 @@ int32_t CuteDslNvfp4MoeSm110Runner::run(CuteDslNvfp4MoeSm110Params const& params
     rt::Tensor inputSFT(
         inputSF, {routedRows, params.hiddenSize / kNvfp4SfVecSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT8);
 
+    // FC1 clears output after its dependency wait. FC2's existing dependent
+    // wait remains the completion and visibility boundary.
+    int64_t const outputElements = static_cast<int64_t>(params.numTokens) * params.hiddenSize;
+
     if (useFastDecodeSetup(params))
     {
         kernel::fp4BuildLayoutAndQuantizeRoutedLinearSFDecode(hiddenT, topkIdsT, inputScaleT, layoutBuffers, inputFP4T,
@@ -283,43 +280,43 @@ int32_t CuteDslNvfp4MoeSm110Runner::run(CuteDslNvfp4MoeSm110Params const& params
     }
     CUDA_CHECK(cudaGetLastError());
 
-    // TODO: route this through to pick between the n128 and n256 wrappers once
-    // we have benchmark data showing n256 is a win for some moeInterSize.
-    int32_t const mmaTilerN = selectMmaTilerN(params.moeInterSize);
-    (void) mmaTilerN;
     int32_t ret = -1;
     int64_t const origM = routedRows;
     int64_t const m = L.permutedM;
     int64_t const n1 = L.fc1InputN;
     int64_t const h = params.hiddenSize;
     int64_t const e = params.numExperts;
+    int32_t const enablePdl = useNvfp4MoePdl(params.enablePdl, getSMVersion()) ? 1 : 0;
 
     if (params.activationType == kACT_RELU2)
     {
         ret = cute_dsl_nvfp4_moe_sm110_fc1_relu2_n128_wrapper(&sFC1Relu2N128.module, inputFP4,
             const_cast<void*>(params.fc1QWeights), inputSF, const_cast<void*>(params.fc1BlocksScale), fc1FP4, fc1SF,
+            params.output, outputElements, /*fuse_output_zero=*/1,
             const_cast<void*>(static_cast<void const*>(params.fc1Alpha)),
             const_cast<void*>(static_cast<void const*>(params.inputGlobalScale)),
             const_cast<void*>(static_cast<void const*>(params.downInputScale)), tileGroup, tileLimit,
-            permutedToExpanded, numTiles, origM, m, n1, h, e, getDeviceMultiProcessorCount(), stream);
+            permutedToExpanded, numTiles, origM, m, n1, h, e, getDeviceMultiProcessorCount(), enablePdl, stream);
     }
     else if (params.activationType == kACT_SWIGLU)
     {
         ret = cute_dsl_nvfp4_moe_sm110_fc1_swiglu_n128_wrapper(&sFC1SwiGLUN128.module, inputFP4,
             const_cast<void*>(params.fc1QWeights), inputSF, const_cast<void*>(params.fc1BlocksScale), fc1FP4, fc1SF,
+            params.output, outputElements, /*fuse_output_zero=*/1,
             const_cast<void*>(static_cast<void const*>(params.fc1Alpha)),
             const_cast<void*>(static_cast<void const*>(params.inputGlobalScale)),
             const_cast<void*>(static_cast<void const*>(params.downInputScale)), tileGroup, tileLimit,
-            permutedToExpanded, numTiles, origM, m, n1, h, e, getDeviceMultiProcessorCount(), stream);
+            permutedToExpanded, numTiles, origM, m, n1, h, e, getDeviceMultiProcessorCount(), enablePdl, stream);
     }
     else if (params.activationType == kACT_GEGLU)
     {
         ret = cute_dsl_nvfp4_moe_sm110_fc1_geglu_n128_wrapper(&sFC1GeGLUN128.module, inputFP4,
             const_cast<void*>(params.fc1QWeights), inputSF, const_cast<void*>(params.fc1BlocksScale), fc1FP4, fc1SF,
+            params.output, outputElements, /*fuse_output_zero=*/1,
             const_cast<void*>(static_cast<void const*>(params.fc1Alpha)),
             const_cast<void*>(static_cast<void const*>(params.inputGlobalScale)),
             const_cast<void*>(static_cast<void const*>(params.downInputScale)), tileGroup, tileLimit,
-            permutedToExpanded, numTiles, origM, m, n1, h, e, getDeviceMultiProcessorCount(), stream);
+            permutedToExpanded, numTiles, origM, m, n1, h, e, getDeviceMultiProcessorCount(), enablePdl, stream);
     }
     else
     {
@@ -333,16 +330,12 @@ int32_t CuteDslNvfp4MoeSm110Runner::run(CuteDslNvfp4MoeSm110Params const& params
     }
     CUDA_CHECK(cudaGetLastError());
 
-    size_t const outputBytes
-        = static_cast<size_t>(params.numTokens) * static_cast<size_t>(params.hiddenSize) * sizeof(__half);
-    CUDA_CHECK(cudaMemsetAsync(params.output, 0, outputBytes, stream));
-
     ret = cute_dsl_nvfp4_moe_sm110_fc2_n128_fp16_wrapper(&sFC2N128Fp16.module, fc1FP4,
         const_cast<void*>(params.fc2QWeights), fc1SF, const_cast<void*>(params.fc2BlocksScale), params.output,
         const_cast<void*>(static_cast<void const*>(params.fc2Alpha)),
         const_cast<void*>(static_cast<void const*>(params.downInputScale)), tileGroup, tileLimit, permutedToExpanded,
         numTiles, const_cast<void*>(static_cast<void const*>(params.topkWeights)), m, h, params.moeInterSize, e,
-        params.numTokens, params.topK, getDeviceMultiProcessorCount(), stream);
+        params.numTokens, params.topK, getDeviceMultiProcessorCount(), enablePdl, stream);
     if (ret != 0)
     {
         LOG_ERROR("CuteDslNvfp4MoeSm110Runner: FC2 kernel returned error code %d", ret);

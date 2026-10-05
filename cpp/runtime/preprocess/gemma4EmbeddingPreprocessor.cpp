@@ -69,7 +69,7 @@ Gemma4EmbeddingPreprocessor::Gemma4EmbeddingPreprocessor(std::filesystem::path c
     mPleOutputViews.reserve(mConfig.numPleInputs);
     for (int32_t idx = 0; idx < mConfig.numPleInputs; ++idx)
     {
-        mPleOutputViews.emplace_back(makeOutputViewForLayer(idx, maxBatchSize, maxSeqLen));
+        mPleOutputViews.emplace_back(makeTokenMajorOutputViewForLayer(idx, maxBatchSize * maxSeqLen));
         tensorMap.set(mPleOutputViews.back().getName(), mPleOutputViews.back());
     }
 
@@ -78,28 +78,27 @@ Gemma4EmbeddingPreprocessor::Gemma4EmbeddingPreprocessor(std::filesystem::path c
         mConfig.numPleInputs, mConfig.pleHiddenSize);
 }
 
-Tensor Gemma4EmbeddingPreprocessor::makeOutputViewForLayer(int32_t layerIdx, int64_t batchSize, int64_t seqLen)
+Tensor Gemma4EmbeddingPreprocessor::makeTokenMajorOutputViewForLayer(int32_t layerIdx, int64_t physicalTokens)
 {
     ELLM_CHECK(layerIdx >= 0 && layerIdx < mConfig.numPleInputs, "Gemma4 PLE layer index out of range");
     auto const outputShape = mPleOutputBuffer.getShape();
-    ELLM_CHECK(batchSize > 0, "Gemma4 PLE batch size must be positive");
-    ELLM_CHECK(seqLen > 0, "Gemma4 PLE sequence length must be positive");
-    ELLM_CHECK(batchSize <= outputShape[1], "Gemma4 PLE batch size exceeds buffer capacity");
-    ELLM_CHECK(seqLen <= outputShape[2], "Gemma4 PLE sequence length exceeds buffer capacity");
+    ELLM_CHECK(physicalTokens > 0, "Gemma4 PLE physical token count must be positive");
+    ELLM_CHECK(
+        physicalTokens <= outputShape[1] * outputShape[2], "Gemma4 PLE physical token count exceeds buffer capacity");
 
     int64_t const layerOutputCapacityBytes = outputShape[1] * outputShape[2] * mConfig.pleHiddenSize
         * static_cast<int64_t>(utils::getTypeSize(mPleTable.getDataType()));
     void* const layerOutputPtr
         = static_cast<void*>(static_cast<char*>(mPleOutputBuffer.rawPointer()) + layerIdx * layerOutputCapacityBytes);
-    return Tensor(layerOutputPtr, Coords{batchSize, seqLen, mConfig.pleHiddenSize}, DeviceType::kGPU,
+    return Tensor(layerOutputPtr, Coords{physicalTokens, mConfig.pleHiddenSize}, DeviceType::kGPU,
         mPleTable.getDataType(), binding_names::formatPleTokenEmbedsName(layerIdx));
 }
 
-void Gemma4EmbeddingPreprocessor::reshapeOutputs(int64_t batchSize, int64_t seqLen)
+void Gemma4EmbeddingPreprocessor::reshapeOutputsTokenMajor(int64_t physicalTokens)
 {
     for (int32_t idx = 0; idx < mConfig.numPleInputs; ++idx)
     {
-        mPleOutputViews[idx] = makeOutputViewForLayer(idx, batchSize, seqLen);
+        mPleOutputViews[idx] = makeTokenMajorOutputViewForLayer(idx, physicalTokens);
     }
 }
 
@@ -107,9 +106,9 @@ void Gemma4EmbeddingPreprocessor::embed(Tensor const& tokenIds, cudaStream_t str
 {
     auto const tokenShape = tokenIds.getShape();
     ELLM_CHECK(tokenShape.getNumDims() == 2, "Gemma4 PLE token IDs must be [batch, seq_len]");
-    reshapeOutputs(tokenShape[0], tokenShape[1]);
     kernel::gemma4PleGather(tokenIds, mPleTable, mPleOutputBuffer, mConfig.numPleInputs, mConfig.pleHiddenSize,
         mConfig.imageTokenId, mConfig.audioTokenId, stream);
+    reshapeOutputsTokenMajor(tokenShape[0] * tokenShape[1]);
 }
 
 } // namespace rt

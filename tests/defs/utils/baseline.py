@@ -19,14 +19,14 @@ Parses a multi-section results CSV from a previous test run and provides
 regression checking against current results.
 
 Accuracy threshold: 5%  (higher-is-better metrics)
-Perf threshold:     20% (board-specific, time/throughput/memory)
+Perf threshold:     50% (temporary default; selected metrics are tighter)
 """
 
 import csv
 import io
 import os
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import AbstractSet, Dict, List, Optional, Tuple
 
 # TODO: Restore thresholds after baselines stabilize
 # Original values: CORRECTNESS=0.01, ROUGE=0.20, PERF=0.20
@@ -35,12 +35,18 @@ ROUGE_ACCURACY_THRESHOLD = float(
     os.environ.get('BASELINE_ROUGE_ACCURACY_THRESHOLD', '0.50'))
 PERF_THRESHOLD = 0.50
 
-# Per-column overrides for PERF_THRESHOLD. minADE drift is well-bounded
-# (paper +/- 5%, quant +/- 10%) so 20% is plenty without waiting for the
-# global threshold to be tightened.
+# Per-column overrides for PERF_THRESHOLD. Keep regression-sensitive metrics
+# strict without changing the temporary default for every legacy baseline.
 _PERF_THRESHOLD_OVERRIDES = {
     'accuracy_minade_3s': 0.20,
     'accuracy_minade_6s': 0.20,
+    'spec_decode_avg_accept_length': 0.15,
+    'spec_decode_acceptance_rate': 0.15,
+    'spec_decode_avg_tokens_per_run': 0.15,
+    'spec_decode_overall_tokens_per_second (tokens/s)': 0.15,
+    'spec_decode_draft_model_prefill_avg_time (ms)': 0.15,
+    'spec_decode_draft_proposal_avg_time (ms)': 0.15,
+    'spec_decode_base_model_verification_avg_time (ms)': 0.15,
 }
 
 ACCURACY_COLUMNS = (
@@ -69,7 +75,8 @@ PERF_LOWER_IS_BETTER = {
 PERF_HIGHER_IS_BETTER = {
     'llm_prefill_tokens_per_second (tokens/s)',
     'llm_generation_excluding_sampling_after_prefill_tokens_per_second (tokens/s)',
-    'spec_decode_avg_acceptance_rate',
+    'spec_decode_avg_accept_length',
+    'spec_decode_acceptance_rate',
     'spec_decode_avg_tokens_per_run',
     'spec_decode_overall_tokens_per_second (tokens/s)',
 }
@@ -102,8 +109,10 @@ _STDOUT_PERF_PATTERNS = [
      ),
     (r'Peak GPU Memory:\s+([\d.]+)\s+MB', 'memory_usage_peak_gpu_memory (MB)'),
     (r'Peak CPU Memory:\s+([\d.]+)\s+MB', 'memory_usage_peak_cpu_memory (MB)'),
-    (r'=== (?:Eagle|MTP|DFlash|JetSpec|DSpark|SpecDecode) Generation ===.*?Average Acceptance Rate:\s+([\d.]+)',
-     'spec_decode_avg_acceptance_rate'),
+    (r'=== (?:Eagle|MTP|DFlash|JetSpec|DSpark|SpecDecode) Generation ===.*?Average Accept Length:\s+([\d.]+)',
+     'spec_decode_avg_accept_length'),
+    (r'=== (?:Eagle|MTP|DFlash|JetSpec|DSpark|SpecDecode) Generation ===.*?Acceptance Rate:\s+([\d.]+)',
+     'spec_decode_acceptance_rate'),
     (r'=== (?:Eagle|MTP|DFlash|JetSpec|DSpark|SpecDecode) Generation ===.*?Average Tokens per Run:\s+([\d.]+)',
      'spec_decode_avg_tokens_per_run'),
     (r'=== (?:Eagle|MTP|DFlash|JetSpec|DSpark|SpecDecode) Generation ===.*?Overall Tokens/Second \(excluding base prefill\):\s+([\d.]+)',
@@ -258,8 +267,13 @@ class BaselineData:
                     f"REGRESSION {line} [threshold {threshold*100:.0f}%]")
         return regressions, summaries
 
-    def check_perf_regression(self, baseline: Dict,
-                              current: Dict) -> Tuple[List[str], List[str]]:
+    def check_perf_regression(
+        self,
+        baseline: Dict,
+        current: Dict,
+        report_only_columns: AbstractSet[str] = frozenset(),
+        threshold_overrides: Optional[Dict[str, float]] = None,
+    ) -> Tuple[List[str], List[str]]:
         """Compare current perf metrics against baseline.
 
         Returns (regressions, summaries).
@@ -268,6 +282,7 @@ class BaselineData:
         """
         regressions = []
         summaries = []
+        thresholds = threshold_overrides or {}
 
         for col in PERF_LOWER_IS_BETTER:
             if col not in baseline or col not in current:
@@ -276,13 +291,16 @@ class BaselineData:
             curr_val = current[col]
             if not isinstance(base_val, (int, float)) or base_val <= 0:
                 continue
-            threshold = _PERF_THRESHOLD_OVERRIDES.get(col, PERF_THRESHOLD)
+            threshold = thresholds.get(
+                col, _PERF_THRESHOLD_OVERRIDES.get(col, PERF_THRESHOLD))
             change_pct = (curr_val - base_val) / base_val * 100
             label = "worse" if change_pct > 0 else "better"
             line = (f"{col} (lower=better): {curr_val:.2f} vs baseline "
                     f"{base_val:.2f} ({change_pct:+.1f}%, {label})")
-            summaries.append(line)
-            if curr_val > base_val * (1 + threshold):
+            report_only = col in report_only_columns
+            summaries.append(line +
+                             (" [informational]" if report_only else ""))
+            if (not report_only and round(change_pct, 1) > threshold * 100):
                 regressions.append(
                     f"REGRESSION {line} [threshold {threshold*100:.0f}%]")
 
@@ -293,13 +311,16 @@ class BaselineData:
             curr_val = current[col]
             if not isinstance(base_val, (int, float)) or base_val <= 0:
                 continue
-            threshold = _PERF_THRESHOLD_OVERRIDES.get(col, PERF_THRESHOLD)
+            threshold = thresholds.get(
+                col, _PERF_THRESHOLD_OVERRIDES.get(col, PERF_THRESHOLD))
             change_pct = (curr_val - base_val) / base_val * 100
             label = "better" if change_pct > 0 else "worse"
             line = (f"{col} (higher=better): {curr_val:.1f} vs baseline "
                     f"{base_val:.1f} ({change_pct:+.1f}%, {label})")
-            summaries.append(line)
-            if curr_val < base_val * (1 - threshold):
+            report_only = col in report_only_columns
+            summaries.append(line +
+                             (" [informational]" if report_only else ""))
+            if (not report_only and round(change_pct, 1) < -threshold * 100):
                 regressions.append(
                     f"REGRESSION {line} [threshold {threshold*100:.0f}%]")
 
@@ -338,13 +359,20 @@ _TEST_FILE_MAP = {
     'vlm': 'tests/defs/test_vlm_pipeline.py',
 }
 
+_TEST_FUNCTION_FILE_MAP = {
+    'test_build_and_run': 'tests/defs/test_builder_pipeline.py',
+}
+
 _CLASS_NAME_MAP = {}
 
 
 def _build_case_name(model_type_value: str, test_func: str,
                      param_str: str) -> str:
-    test_file = _TEST_FILE_MAP.get(
-        model_type_value, f'tests/defs/test_{model_type_value}_pipeline.py')
+    test_file = _TEST_FUNCTION_FILE_MAP.get(test_func)
+    if test_file is None:
+        test_file = _TEST_FILE_MAP.get(
+            model_type_value,
+            f'tests/defs/test_{model_type_value}_pipeline.py')
     class_name = _CLASS_NAME_MAP.get(model_type_value)
     if class_name:
         return f"{test_file}::{class_name}::{test_func}[{param_str}]"

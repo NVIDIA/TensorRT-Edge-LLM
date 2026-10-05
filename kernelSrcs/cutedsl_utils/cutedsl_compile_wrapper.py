@@ -32,6 +32,7 @@ import importlib.util
 import inspect
 import os
 from pathlib import Path
+import re
 import runpy
 import shlex
 import shutil
@@ -205,6 +206,63 @@ if os.environ.get("CUTE_DSL_ARCH"):
     _patch_hardware_info_occupancy_probe()
 
 
+# Per-target shared memory per multiprocessor, in bytes
+# (CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_MULTIPROCESSOR).
+_MAX_SMEM_PER_MP_BYTES = {
+    80: 167936,
+    86: 102400,
+    87: 167936,
+    89: 102400,
+    90: 233472,
+    100: 233472,
+    101: 233472,
+    103: 233472,
+    107: 233472,
+    109: 233472,
+    110: 233472,
+    120: 102400,
+    121: 102400,
+}
+
+
+def _patch_target_smem_per_mp_query(target_gpu_arch: str) -> None:
+    """Answer the min-blocks smem query with the TARGET's static value.
+
+    Kernels launched with ``min_blocks_per_mp > 1`` (int4 GEMV's tuned
+    register-budget hints) make the DSL read
+    CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_MULTIPROCESSOR while tracing.
+    That query needs an initialized CUDA driver — impossible on a GPU-less
+    build host — and even with a GPU it reports the *build* device, not the
+    artifact target. Substitute the target SM's documented value; every
+    other attribute keeps the stock driver behavior.
+    """
+    match = re.search(r"sm_?(\d+)", target_gpu_arch)
+    if match is None:
+        return
+    smem_bytes = _MAX_SMEM_PER_MP_BYTES.get(int(match.group(1)))
+    if smem_bytes is None:
+        return
+
+    from cutlass.base_dsl.runtime import cuda as _dsl_cuda_helpers
+
+    stock_get_device_attribute = _dsl_cuda_helpers.get_device_attribute
+    smem_attr = (
+        _dsl_cuda_helpers.cuda.CUdevice_attribute
+        .CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_MULTIPROCESSOR
+    )
+
+    def get_device_attribute(attribute, device_id: int = 0):
+        if attribute == smem_attr:
+            return smem_bytes
+        return stock_get_device_attribute(attribute, device_id)
+
+    _dsl_cuda_helpers.get_device_attribute = get_device_attribute
+
+
+if _args.gpu_arch:
+    _patch_target_smem_per_mp_query(_args.gpu_arch)
+
+
 def _install_version_hash_workaround() -> None:
     """Avoid importing duplicate helper modules while computing the cache key.
 
@@ -229,7 +287,7 @@ def _install_version_hash_workaround() -> None:
 def _merge_compile_options(existing_options, gpu_arch: str, host_target: str) -> str:
     options = str(existing_options or "").strip()
     extra_options: list[str] = []
-    if gpu_arch:
+    if gpu_arch and "--gpu-arch" not in options:
         extra_options.append(f"--gpu-arch {gpu_arch}")
     if host_target:
         # Quote: the long form ("llvm -mtriple=...") has spaces and the DSL
@@ -317,6 +375,10 @@ def main() -> int:
     cute.compile = compile_with_options
     sys.argv = [str(script), *script_args]
     sys.path.insert(0, str(script.parent))
+    # Kernel scripts import shared helpers (cutedsl_utils.aot_placeholders)
+    # relative to kernelSrcs/, which is not on sys.path under runpy.
+    if str(kernel_src_root) not in sys.path:
+        sys.path.insert(0, str(kernel_src_root))
     runpy.run_path(str(script), run_name="__main__")
     return 0
 

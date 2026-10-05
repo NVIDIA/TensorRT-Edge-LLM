@@ -18,6 +18,7 @@
 #pragma once
 
 #include "common/tensor.h"
+#include "runtime/exec/scheduledStep.h"
 #include "runtime/state/kvPageTable.h"
 
 #include <cuda_runtime_api.h>
@@ -47,7 +48,8 @@ public:
 
     void beginRequest(std::vector<bool> const& actionSlots, std::vector<int64_t> const& mropeDeltas);
     void captureFinished(KVPageTable const& pageTable, Tensor const& deviceKvLengths,
-        std::vector<int8_t> const& finished, std::vector<int32_t> const& originalIndices, cudaStream_t stream);
+        std::vector<int8_t> const& finished, std::vector<int32_t> const& originalIndices,
+        std::vector<ResidentRef> const& residentRefs, cudaStream_t stream);
     //! Consume queued length copies after the caller has synchronized the enqueue stream.
     void completeCapture();
 

@@ -17,6 +17,8 @@
 
 #include "runtime/config/inferenceDims.h"
 
+#include "common/checkMacros.h"
+
 #include <algorithm>
 #include <sstream>
 
@@ -44,9 +46,16 @@ std::string toString(InferenceDims const& dims)
        << ", select_len=" << dims.selectLen << ", attn_seq_len=" << dims.attnMaskSeqLen
        << ", rope_batch=" << dims.ropeBatch << ", packed_mask_len=" << dims.packedMaskLen
        << ", context_mask_selector_len=" << dims.contextMaskSelectorLen << ", start_index_len=" << dims.startIndexLen
-       << ", spec_verify_phase_len=" << dims.specVerifyPhaseLen
-       << ", skip_softmax_scale_len=" << dims.skipSoftmaxScaleLen << "}";
+       << ", execution_phase_len=" << dims.executionPhaseLen << ", skip_softmax_scale_len=" << dims.skipSoftmaxScaleLen
+       << ", swa_kv_cache_mode_len=" << dims.swaKVCacheModeLen << ", query_offset_len=" << dims.queryOffsetLen
+       << ", context_sequence_count=" << dims.contextSequenceCount << "}";
     return ss.str();
+}
+
+ExecutionPhase executionPhase(InferenceDims const& dims)
+{
+    ELLM_CHECK(isExecutionPhaseExtent(dims.executionPhaseLen), "Invalid execution phase extent");
+    return static_cast<ExecutionPhase>(dims.executionPhaseLen);
 }
 
 int64_t InferenceDims::* firstInvalidMember(

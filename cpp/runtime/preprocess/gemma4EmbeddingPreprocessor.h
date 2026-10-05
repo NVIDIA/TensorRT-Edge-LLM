@@ -35,7 +35,7 @@ namespace rt
 //! Runtime preprocessor for Gemma4 E-model per-layer embeddings (PLE).
 //!
 //! Loads the token-identity PLE table from ple_embedding.safetensors, gathers
-//! one [batch, seq_len, ple_hidden_size] tensor per decoder layer from token
+//! one [physical_tokens, ple_hidden_size] tensor per decoder layer from token
 //! IDs, and binds those tensors as ple_token_embeds_{layer_idx} engine inputs.
 class Gemma4EmbeddingPreprocessor
 {
@@ -47,8 +47,8 @@ public:
     //! Gather PLE tensors for the current token-id tensor shape.
     void embed(Tensor const& tokenIds, cudaStream_t stream);
 
-    //! Reshape already-bound output tensors for a CUDA-graph capture shape.
-    void reshapeOutputs(int64_t batchSize, int64_t seqLen);
+    //! Reshape already-bound token-major outputs for an execution or CUDA-graph capture shape.
+    void reshapeOutputsTokenMajor(int64_t physicalTokens);
 
 private:
     LLMEngineConfig mConfig{};
@@ -57,8 +57,7 @@ private:
     //! Non-owned tensor views into mPleOutputBuffer. TensorMap stores pointers to these stable objects.
     std::vector<Tensor> mPleOutputViews{};
 
-    //! Construct a non-owned tensor view for one layer output inside mPleOutputBuffer.
-    Tensor makeOutputViewForLayer(int32_t layerIdx, int64_t batchSize, int64_t seqLen);
+    Tensor makeTokenMajorOutputViewForLayer(int32_t layerIdx, int64_t physicalTokens);
 };
 
 } // namespace rt

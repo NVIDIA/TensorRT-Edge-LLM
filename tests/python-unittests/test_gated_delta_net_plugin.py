@@ -141,26 +141,34 @@ class GDNRunner:
         h, kd, vd, mb, ms = c.heads, c.k_dim, c.v_dim, c.max_batch, c.max_seq
         F16, F32, I32 = trt.float16, trt.float32, trt.int32
         input_specs = [
-            ("q", F16, (-1, -1, h, kd)),
-            ("k", F16, (-1, -1, h, kd)),
-            ("v", F16, (-1, -1, h, vd)),
-            ("a", F16, (-1, -1, h)),
-            ("b", F16, (-1, -1, h)),
+            ("q", F16, (-1, h, kd)),
+            ("k", F16, (-1, h, kd)),
+            ("v", F16, (-1, h, vd)),
+            ("a", F16, (-1, h)),
+            ("b", F16, (-1, h)),
             ("A_log", F32, (h, )),
             ("dt_bias", F16, (h, )),
             ("h0", F32, (-1, h, kd, vd)),
             ("context_lengths", I32, (-1, )),
+            ("query_start_offsets", I32, (-1, )),
+            ("state_indices", I32, (-1, )),
+            ("execution_phase_marker", I32, (-1, )),
+            ("context_sequence_count_carrier", I32, (-1, )),
         ]
         profiles = {
-            "q": ((1, 1, h, kd), (1, 8, h, kd), (mb, ms, h, kd)),
-            "k": ((1, 1, h, kd), (1, 8, h, kd), (mb, ms, h, kd)),
-            "v": ((1, 1, h, vd), (1, 8, h, vd), (mb, ms, h, vd)),
-            "a": ((1, 1, h), (1, 8, h), (mb, ms, h)),
-            "b": ((1, 1, h), (1, 8, h), (mb, ms, h)),
+            "q": ((1, h, kd), (8, h, kd), (mb * ms, h, kd)),
+            "k": ((1, h, kd), (8, h, kd), (mb * ms, h, kd)),
+            "v": ((1, h, vd), (8, h, vd), (mb * ms, h, vd)),
+            "a": ((1, h), (8, h), (mb * ms, h)),
+            "b": ((1, h), (8, h), (mb * ms, h)),
             "A_log": ((h, ), (h, ), (h, )),
             "dt_bias": ((h, ), (h, ), (h, )),
             "h0": ((1, h, kd, vd), (1, h, kd, vd), (mb, h, kd, vd)),
             "context_lengths": ((1, ), (1, ), (mb, )),
+            "query_start_offsets": ((2, ), (mb + 1, ), (mb + 1, )),
+            "state_indices": ((1, ), (mb, ), (mb, )),
+            "execution_phase_marker": ((1, ), (1, ), (8, )),
+            "context_sequence_count_carrier": ((0, ), (1, ), (mb, )),
         }
         self.runner.build(
             input_specs=input_specs,
@@ -176,22 +184,50 @@ class GDNRunner:
         )
 
     def run(self, q, k, v, a, b, A_log, dt_bias, h0, ctx):
-        o = torch.empty_like(v)
-        h0_out = torch.empty_like(h0)
-        self.runner.execute({
-            "q": q,
-            "k": k,
-            "v": v,
-            "a": a,
-            "b": b,
-            "A_log": A_log,
-            "dt_bias": dt_bias,
-            "h0": h0,
-            "context_lengths": ctx,
-            "o": o,
-            "h0_out": h0_out,
-        })
-        return o, h0_out
+        batch, seq = q.shape[:2]
+        tokens = batch * seq
+        o = torch.empty((tokens, self.cfg.heads, self.cfg.v_dim),
+                        dtype=v.dtype,
+                        device=DEV)
+        phase = 3 if seq == 1 else 1
+        carrier_extent = batch if phase == 1 else 0
+        bindings = {
+            "q":
+            q.reshape(tokens, self.cfg.heads, self.cfg.k_dim),
+            "k":
+            k.reshape(tokens, self.cfg.heads, self.cfg.k_dim),
+            "v":
+            v.reshape(tokens, self.cfg.heads, self.cfg.v_dim),
+            "a":
+            a.reshape(tokens, self.cfg.heads),
+            "b":
+            b.reshape(tokens, self.cfg.heads),
+            "A_log":
+            A_log,
+            "dt_bias":
+            dt_bias,
+            "h0":
+            h0,
+            "context_lengths":
+            ctx,
+            "query_start_offsets":
+            torch.arange(0, tokens + 1, seq, dtype=torch.int32, device=DEV),
+            "state_indices":
+            torch.arange(batch, dtype=torch.int32, device=DEV),
+            "execution_phase_marker":
+            torch.empty(phase, dtype=torch.int32, device=DEV),
+            "context_sequence_count_carrier":
+            torch.empty(max(1, carrier_extent), dtype=torch.int32, device=DEV),
+            "o":
+            o,
+            "h0_out":
+            h0,
+        }
+        input_shapes = ({
+            "context_sequence_count_carrier": (0, )
+        } if carrier_extent == 0 else None)
+        self.runner.execute(bindings, input_shapes=input_shapes)
+        return o.reshape(batch, seq, self.cfg.heads, self.cfg.v_dim), h0
 
 
 def _rand(cfg, n, s, gen):

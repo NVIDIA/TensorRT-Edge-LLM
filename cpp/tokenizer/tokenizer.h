@@ -40,42 +40,6 @@ namespace tokenizer
 {
 
 /*!
- * @brief Chat template role configuration
- */
-struct ChatTemplateRole
-{
-    std::string prefix;         //!< Prefix for this role
-    std::string suffix;         //!< Suffix for this role
-    std::string prefixThinking; //!< Prefix when thinking mode is enabled
-    std::string suffixThinking; //!< Suffix when thinking mode is enabled
-    bool trimContent{false};    //!< Trim text content before applying suffix
-};
-
-/*!
- * @brief Chat template content type configuration
- */
-struct ChatTemplateContentType
-{
-    std::string format; //!< Format string for this content type
-};
-
-/*!
- * @brief Chat template configuration
- */
-struct ChatTemplateConfig
-{
-    std::string modelPath;                                   //!< Model path or identifier
-    std::unordered_map<std::string, ChatTemplateRole> roles; //!< Role configurations (system, user, assistant)
-    std::unordered_map<std::string, ChatTemplateContentType>
-        contentTypes;                     //!< Content type configurations (text, image, video)
-    std::string generationPrompt;         //!< Standard generation prompt (thinking disabled)
-    std::string generationPromptThinking; //!< Generation prompt with thinking enabled (optional, model-specific)
-    std::string defaultSystemPrompt;      //!< Default system prompt
-    bool trimContent{false};              //!< Whether to trim whitespace from message content (matches Jinja | trim)
-    std::string promptPrefix;             //!< Emitted once at the very start of a rendered conversation (e.g. BOS text)
-};
-
-/*!
  * @brief Type of text partition for tokenization
  */
 typedef enum TEXT_PART_TYPE
@@ -182,18 +146,11 @@ public:
     /**
      * @brief Load tokenizer from HuggingFace model directory
      * @param modelDir Path to the model directory containing tokenizer files
-     * @param requireChatTemplate When true (default), a missing
-     *        processed_chat_template.json fails the load. Pipelines that only
-     *        decode token ids and never build a chat prompt pass false; the
-     *        sole current caller is the Nemotron-3.5-ASR RNN-T runtime, whose
-     *        checkpoint ships no chat template. (Chat-templated models,
-     *        including thinker-based ASR such as Qwen3-ASR, keep the default.)
-     *        An existing template is still loaded when present.
      * @return true if directory exists, tokenizer.json is found and parsed successfully,
      *         pretokenizer and encoder are created successfully; false if directory doesn't exist,
      *         tokenizer.json is missing/corrupt, or initialization fails
      */
-    bool loadFromHF(std::filesystem::path const& modelDir, bool requireChatTemplate = true);
+    bool loadFromHF(std::filesystem::path const& modelDir);
 
     /*!
      * @brief Get total vocabulary size
@@ -287,6 +244,12 @@ public:
                 }
             }
         }
+        if (mTokenEncoder)
+        {
+            RankSet skippableIds = mSkippableSpecialTokenIds;
+            skippableIds.insert(mAdditionalEosIds.begin(), mAdditionalEosIds.end());
+            mTokenEncoder->setSkippableSpecialTokenIds(skippableIds);
+        }
     }
 
     /*!
@@ -323,42 +286,12 @@ public:
      */
     bool isInitialized() const noexcept;
 
-    /**
-     * @brief Load chat template configuration from JSON file
-     * @param chatTemplateFile Path to the processed_chat_template.json file
-     * @return true if chat template is loaded successfully; false if file doesn't exist or parsing fails
-     */
-    bool loadChatTemplate(std::filesystem::path const& chatTemplateFile);
-
-    /**
-     * @brief Apply chat template to a request
-     * @param request Request object containing messages
-     * @param formattedRequest Output formatted request object that will be populated
-     * @param applyChatTemplate Whether to apply full chat template formatting (with special tokens) or raw
-     * concatenation
-     * @param addGenerationPrompt Whether to add generation prompt at the end (only used when applyChatTemplate is true)
-     * @param enableThinking Whether to enable thinking mode for models that support it
-     * @return true if chat template is applied successfully; false if encountered errors
-     */
-    bool applyChatTemplate(rt::LLMGenerationRequest::Request const& request,
-        rt::LLMGenerationRequest::FormattedRequest& formattedRequest, bool applyChatTemplate = true,
-        bool addGenerationPrompt = true, bool enableThinking = false) const;
-
     /*!
      * @brief Special token string → id map (e.g. Alpamayo trajectory placeholder expansion).
      */
     TokenToRanks const& getSpecialTokensEncoder() const noexcept
     {
         return mSpecialTokensEncoder;
-    }
-
-    /**
-     * @brief Get default system prompt from chat template
-     * @return Default system prompt string
-     */
-    std::string getDefaultSystemPrompt() const noexcept
-    {
-        return mChatTemplate.defaultSystemPrompt;
     }
 
 protected:
@@ -441,9 +374,11 @@ protected:
     std::unique_ptr<PreTokenizer> mPreTokenizer; //!< Pretokenizer for splitting input text
     std::unique_ptr<TokenEncoder> mTokenEncoder; //!< Token encoder for encoding/decoding
 
-    // Special token mappings for fast lookup
-    TokenToRanks mSpecialTokensEncoder;                          //!< Special tokens encoder mapping
-    std::unordered_map<Rank, std::string> mSpecialTokensDecoder; //!< Special tokens decoder mapping
+    // Added-token mappings for fast lookup (special or not: `<think>` is an added
+    // token without the `special` flag and must survive skipSpecialTokens).
+    TokenToRanks mSpecialTokensEncoder;                          //!< Added tokens encoder mapping
+    std::unordered_map<Rank, std::string> mSpecialTokensDecoder; //!< Added tokens decoder mapping
+    RankSet mSkippableSpecialTokenIds; //!< Flagged added tokens plus configured bos/eos/pad/unk ids
 
     // Configuration
     int mNumVocab;                       //!< Total vocabulary size
@@ -453,9 +388,6 @@ protected:
     Rank mUnkId;                         //!< Unknown token ID
     std::vector<Rank> mAdditionalEosIds; //!< Additional EOS token IDs (from config.json)
     Rank mImgContextId;                  //!< Image context token ID
-
-    // Chat template
-    ChatTemplateConfig mChatTemplate; //!< Chat template configuration
 
     // Normalizer: list of (pattern, replacement) pairs applied before pre-tokenization.
     std::vector<std::pair<std::string, std::string>> mNormalizerReplacements;

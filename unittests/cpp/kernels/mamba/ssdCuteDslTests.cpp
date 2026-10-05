@@ -414,7 +414,8 @@ TEST_P(SsdCuteDslTest, CorrectnessVsSerialReference)
     CUDA_CHECK(cudaMemcpy(dD, dHostFp16.data(), nheads * sizeof(half), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(dDtBias, dtBiasHostFp16.data(), nheads * sizeof(half), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(dState, stateHostFp16.data(), stateSize * sizeof(half), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemset(dOutput, 0, outSize * sizeof(half)));
+    // Poison the destination to detect unwritten valid or padded elements.
+    CUDA_CHECK(cudaMemset(dOutput, 0xFF, outSize * sizeof(half)));
 
     // Allocate workspace for chunk scan intermediates
     size_t const wsSize = CuteDslSSDRunner::getWorkspaceSize(batch, seqLen, nheads, dim, dstate, ngroups);
@@ -470,17 +471,24 @@ TEST_P(SsdCuteDslTest, CorrectnessVsSerialReference)
     std::vector<half> gpuOut(outSize);
     CUDA_CHECK(cudaMemcpy(gpuOut.data(), dOutput, outSize * sizeof(half), cudaMemcpyDeviceToHost));
 
+    size_t nonFiniteOutputs = 0;
     float maxDiff = 0.f;
     float refMax = 0.f;
     for (size_t i = 0; i < outSize; ++i)
     {
         float const a = __half2float(gpuOut[i]);
         float const b = __half2float(refOut[i]);
+        if (!std::isfinite(a) || !std::isfinite(b))
+        {
+            ++nonFiniteOutputs;
+            continue;
+        }
         maxDiff = std::max(maxDiff, std::abs(a - b));
         refMax = std::max(refMax, std::abs(b));
     }
     float const relErr = maxDiff / (refMax + 1e-8f);
 
+    EXPECT_EQ(nonFiniteOutputs, 0) << "SSD must write finite outputs, including padded tokens.";
     EXPECT_LT(relErr, 0.05f) << "Relative error " << relErr << " exceeds threshold. "
                              << "maxDiff=" << maxDiff << " refMax=" << refMax;
 
@@ -506,7 +514,8 @@ TEST_P(SsdCuteDslTest, CorrectnessVsSerialReference)
 
 // SM80 test configurations — all D×N combos: {128,64} × {128,64}
 INSTANTIATE_TEST_SUITE_P(SsdCuteDslSM80, SsdCuteDslTest,
-    ::testing::Values(
+    ::testing::Values(SsdCuteDslTestConfig{4, 713, 64, 64, 128, 8, {144, 713, 167, 341}},
+        SsdCuteDslTestConfig{4, 574, 64, 64, 128, 8, {178, 435, 162, 574}},
         // batch, seqLen, nheads, dim, dstate, ngroups
         // D=128, N=128
         SsdCuteDslTestConfig{1, 128, 8, 128, 128, 1}, SsdCuteDslTestConfig{1, 256, 8, 128, 128, 1},
@@ -629,6 +638,11 @@ char const* guardedSsdInputName(GuardedSsdInput guardedInput)
     return "Unknown";
 }
 
+bool supportsBlackwellPersistentSsd(int32_t smVersion)
+{
+    return smVersion == 100 || smVersion == 101 || smVersion == 110;
+}
+
 rt::Tensor makeGpuTensor(int64_t elements, DataType dataType, std::string const& name)
 {
     return rt::Tensor(rt::Coords{elements}, rt::DeviceType::kGPU, dataType, name);
@@ -637,10 +651,8 @@ rt::Tensor makeGpuTensor(int64_t elements, DataType dataType, std::string const&
 // =============================================================================
 // Blackwell test fixture (SM100+, dim=64, dstate=128)
 // =============================================================================
-// The Blackwell kernel is a single persistent kernel that takes pre-computed
-// cumsum_delta and dt_processed as inputs (unlike the SM80 kernel which does
-// cumsum internally). This test verifies end-to-end correctness via
-// CuteDslSSDRunner::run() with smVersion=100.
+// The Blackwell persistent kernel consumes pre-computed cumsum_delta and dt_processed.
+// This test verifies end-to-end correctness through the device-specific CuteDslSSDRunner::run() path.
 
 class SsdCuteDslBlackwellTest : public ::testing::TestWithParam<SsdCuteDslTestConfig>
 {
@@ -669,23 +681,14 @@ TEST_P(SsdCuteDslBlackwellTest, CorrectnessVsSerialReference)
     int32_t const dstate = cfg.dstate;
     int32_t const ngroups = cfg.ngroups;
 
-    int32_t dispatchSmVersion = 100;
-    if (dim == 80)
-    {
-        int device{};
-        CUDA_CHECK(cudaGetDevice(&device));
-        cudaDeviceProp prop{};
-        CUDA_CHECK(cudaGetDeviceProperties(&prop, device));
-        dispatchSmVersion = prop.major * 10 + prop.minor;
-    }
-    if (!CuteDslSSDRunner::canImplement(dim, dstate, dispatchSmVersion))
+    int32_t const smVersion = getSMVersion();
+    if (!CuteDslSSDRunner::canImplement(dim, dstate, smVersion))
     {
         GTEST_SKIP() << "CuteDslSSDRunner cannot implement dim=" << dim << " dstate=" << dstate << " for SM"
-                     << dispatchSmVersion;
+                     << smVersion;
     }
 
-    // Both Blackwell native (dim=64) and SM80 fallback (dim=128) wrappers take fp16
-    // D/state/dt_bias (matches plugin kIN_D_IDX / kIN_DT_BIAS_IDX / kIN_STATE_IDX = kHALF).
+    // Every SSD runner path uses fp16 D/state/dt_bias, matching the plugin input contract.
     // Allocate host data
     std::mt19937 rng(42);
     std::normal_distribution<float> normal(0.f, 0.5f);
@@ -817,7 +820,7 @@ TEST_P(SsdCuteDslBlackwellTest, CorrectnessVsSerialReference)
     params.dim = dim;
     params.dstate = dstate;
     params.ngroups = ngroups;
-    params.smVersion = dispatchSmVersion; // Force Blackwell path for existing variants; use the exact SM for D80.
+    params.smVersion = smVersion;
     params.dt_softplus = true;
     params.has_D = true;
     params.has_z = false;
@@ -924,9 +927,16 @@ int runSsdTmaBoundsCase(GuardedSsdInput guardedInput)
         int32_t constexpr dim = 64;
         int32_t constexpr dstate = 128;
         int32_t constexpr ngroups = 1;
-        if (!CuteDslSSDRunner::canImplement(dim, dstate, 100))
+        int32_t const smVersion = getSMVersion();
+        if (!supportsBlackwellPersistentSsd(smVersion))
         {
-            std::cerr << "CuteDslSSDRunner cannot implement dim=" << dim << " dstate=" << dstate << " for SM100\n";
+            std::cerr << "Blackwell persistent SSD requires SM100, SM101, or SM110\n";
+            return 1;
+        }
+        if (!CuteDslSSDRunner::canImplement(dim, dstate, smVersion))
+        {
+            std::cerr << "CuteDslSSDRunner cannot implement dim=" << dim << " dstate=" << dstate << " for SM"
+                      << smVersion << "\n";
             return 1;
         }
 
@@ -1060,7 +1070,7 @@ int runSsdTmaBoundsCase(GuardedSsdInput guardedInput)
         params.dim = dim;
         params.dstate = dstate;
         params.ngroups = ngroups;
-        params.smVersion = 100;
+        params.smVersion = smVersion;
         params.dt_softplus = true;
         params.has_D = true;
         params.has_z = false;
@@ -1121,9 +1131,15 @@ TEST_P(SsdCuteDslBlackwellTmaBounds, FinalPartialChunkDoesNotReadPastTensor)
 
     int32_t constexpr dim = 64;
     int32_t constexpr dstate = 128;
-    if (!CuteDslSSDRunner::canImplement(dim, dstate, 100))
+    int32_t const smVersion = getSMVersion();
+    if (!supportsBlackwellPersistentSsd(smVersion))
     {
-        GTEST_SKIP() << "CuteDslSSDRunner cannot implement dim=" << dim << " dstate=" << dstate << " for SM100";
+        GTEST_SKIP() << "Blackwell persistent SSD requires SM100, SM101, or SM110";
+    }
+    if (!CuteDslSSDRunner::canImplement(dim, dstate, smVersion))
+    {
+        GTEST_SKIP() << "CuteDslSSDRunner cannot implement dim=" << dim << " dstate=" << dstate << " for SM"
+                     << smVersion;
     }
 
     ::testing::FLAGS_gtest_death_test_style = "threadsafe";
@@ -1240,9 +1256,7 @@ TEST(SsdCuteDslBlackwellD80Bounds, ExactBuffersDoNotOverflow)
 {
     int device{};
     CUDA_CHECK(cudaGetDevice(&device));
-    cudaDeviceProp prop{};
-    CUDA_CHECK(cudaGetDeviceProperties(&prop, device));
-    int32_t const smVersion = prop.major * 10 + prop.minor;
+    int32_t const smVersion = getSMVersion();
     if (!CuteDslSSDRunner::canImplement(80, 128, smVersion))
     {
         GTEST_SKIP() << "D80 kernel requires SM100, SM101, or SM110";
@@ -1276,11 +1290,8 @@ TEST(SsdCuteDslBlackwellD80Bounds, ExactBuffersDoNotOverflow)
 // =============================================================================
 TEST(SsdCuteDslBlackwellChunkedPrefill, StateCarriesAcrossCalls)
 {
-    int device;
-    cudaGetDevice(&device);
-    cudaDeviceProp prop;
-    cudaGetDeviceProperties(&prop, device);
-    if (prop.major < 10)
+    int32_t const smVersion = getSMVersion();
+    if (smVersion < 100)
     {
         GTEST_SKIP() << "Blackwell tests require SM100+ GPU";
     }
@@ -1288,7 +1299,7 @@ TEST(SsdCuteDslBlackwellChunkedPrefill, StateCarriesAcrossCalls)
     int32_t const chunkLen = 256;
     int32_t const totalLen = chunkLen * 2; // 512 -- exercises multi-chunk per call
     int32_t const nheads = 8, dim = 64, dstate = 128, ngroups = 1;
-    if (!CuteDslSSDRunner::canImplement(dim, dstate, 100))
+    if (!CuteDslSSDRunner::canImplement(dim, dstate, smVersion))
     {
         GTEST_SKIP() << "CuteDslSSDRunner cannot implement dim=" << dim << " dstate=" << dstate;
     }
@@ -1321,7 +1332,7 @@ TEST(SsdCuteDslBlackwellChunkedPrefill, StateCarriesAcrossCalls)
     for (auto& v : dtBiasHost)
         v = normal(rng) * 0.1f;
 
-    // Blackwell wrapper takes fp16 D / dt_bias / state (matches plugin contract).
+    // The SSD runner uses fp16 D, dt_bias, and state, matching the plugin input contract.
     std::vector<half> dHostFp16(nheads), dtBiasHostFp16(nheads);
     for (size_t i = 0; i < dHostFp16.size(); ++i)
         dHostFp16[i] = __float2half(dHost[i]);
@@ -1386,7 +1397,7 @@ TEST(SsdCuteDslBlackwellChunkedPrefill, StateCarriesAcrossCalls)
               params.dim = dim;
               params.dstate = dstate;
               params.ngroups = ngroups;
-              params.smVersion = 100;
+              params.smVersion = smVersion;
               params.dt_softplus = true;
               params.has_D = true;
               params.has_z = false;
@@ -1477,22 +1488,22 @@ TEST(SsdCuteDslBlackwellChunkedPrefill, StateCarriesAcrossCalls)
                               << " maxDiff=" << maxDiffS;
 }
 
-// Blackwell test configurations: D=64 (Blackwell TMA kernel) + D=128/N=64 (SM80 fallback)
+// SSD configurations exercised on Blackwell-generation GPUs.
 INSTANTIATE_TEST_SUITE_P(SsdCuteDslBlackwell, SsdCuteDslBlackwellTest,
     ::testing::Values(
         // batch, seqLen, nheads, dim, dstate, ngroups
-        // D=64, N=128: Blackwell persistent kernel (native)
+        // D=64, N=128
         SsdCuteDslTestConfig{1, 128, 8, 64, 128, 1}, SsdCuteDslTestConfig{1, 256, 8, 64, 128, 1},
         SsdCuteDslTestConfig{1, 512, 8, 64, 128, 1}, SsdCuteDslTestConfig{1, 1024, 8, 64, 128, 1},
         SsdCuteDslTestConfig{4, 128, 8, 64, 128, 1}, SsdCuteDslTestConfig{1, 256, 64, 64, 128, 1},
         SsdCuteDslTestConfig{1, 256, 64, 64, 128, 8},
-        // D=64, N=64: Blackwell persistent kernel (native)
+        // D=64, N=64
         SsdCuteDslTestConfig{1, 128, 8, 64, 64, 1}, SsdCuteDslTestConfig{1, 256, 8, 64, 64, 1},
         SsdCuteDslTestConfig{1, 512, 8, 64, 64, 1}, SsdCuteDslTestConfig{4, 128, 8, 64, 64, 1},
-        // D=128, N=128: SM80 cp.async kernel running on Blackwell GPU (fallback)
+        // D=128, N=128
         SsdCuteDslTestConfig{1, 128, 8, 128, 128, 1}, SsdCuteDslTestConfig{1, 256, 8, 128, 128, 1},
         SsdCuteDslTestConfig{1, 1024, 8, 128, 128, 1},
-        // D=128, N=64: SM80 fallback
+        // D=128, N=64
         SsdCuteDslTestConfig{1, 128, 8, 128, 64, 1}, SsdCuteDslTestConfig{1, 256, 8, 128, 64, 1},
         // D=80, N=128: one launch with two D=64 scheduler work tiles. Covers the routing boundary,
         // a partial chunk, multi-chunk execution, poisoned ragged padding, restored state,

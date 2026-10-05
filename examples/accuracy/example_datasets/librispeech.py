@@ -31,6 +31,8 @@ import json
 import os
 import shutil
 import sys
+from collections import defaultdict
+from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
 import numpy as np
@@ -43,6 +45,66 @@ from datasets import Audio, Dataset, load_dataset
 from edgellm_dataset import DatasetConfig, EdgeLLMDataset
 
 _DEFAULT_PROMPT = "Please transcribe the following audio."
+
+
+def select_speaker_prefixes(requests, sample_count):
+    """Select near-equal per-speaker prefixes while preserving source order."""
+    if sample_count <= 0:
+        raise ValueError("sample_count must be positive")
+    if sample_count > len(requests):
+        raise ValueError(
+            f"sample_count ({sample_count}) exceeds request count "
+            f"({len(requests)})")
+
+    speaker_rows = defaultdict(list)
+    for source_index, request in enumerate(requests):
+        if "speaker_id" not in request:
+            raise ValueError(
+                f"Request at source index {source_index} has no speaker_id")
+        speaker_rows[request["speaker_id"]].append((source_index, request))
+
+    speakers = sorted(speaker_rows, key=int)
+    if sample_count < len(speakers):
+        raise ValueError(f"sample_count ({sample_count}) must cover all "
+                         f"{len(speakers)} speakers")
+
+    per_speaker, remainder = divmod(sample_count, len(speakers))
+    selected_rows = []
+    for speaker_index, speaker in enumerate(speakers):
+        quota = per_speaker + (1 if speaker_index < remainder else 0)
+        available = speaker_rows[speaker]
+        if len(available) < quota:
+            raise ValueError(
+                f"Speaker {speaker!r} has {len(available)} rows, fewer than "
+                f"the required prefix quota of {quota}")
+        selected_rows.extend(available[:quota])
+
+    selected_rows.sort(key=lambda row: row[0])
+    return [request for _, request in selected_rows]
+
+
+def create_librispeech_lite_dataset(input_file, output_dir, sample_count=524):
+    """Create deterministic Lite data from an existing LibriSpeech Full JSON.
+
+    Default 524 is 1/5 of test-clean (2620). Only the request list is sliced;
+    audio paths stay as in Full, typically ``librispeech_clean_test/audio/<id>.flac``.
+    """
+    input_file = Path(input_file)
+    output_dir = Path(output_dir)
+    source = json.loads(input_file.read_text(encoding="utf-8"))
+    requests = source.get("requests")
+    if not isinstance(requests, list):
+        raise ValueError("Input dataset must contain a requests list")
+
+    selected = select_speaker_prefixes(requests, sample_count)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    dataset_path = output_dir / "librispeech_clean_test.json"
+    lite = dict(source)
+    lite["requests"] = selected
+    dataset_path.write_text(json.dumps(lite, indent=4, ensure_ascii=False) +
+                            "\n",
+                            encoding="utf-8")
+    return dataset_path
 
 
 class LibriSpeechDataset(EdgeLLMDataset):

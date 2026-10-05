@@ -54,7 +54,7 @@ struct LlmFmhaParams
     float invScaleO{};
     //! Skip-softmax (BLASST) threshold as log2(lambda); 0.0 = disabled. Only the
     //! *_skipsoftmax launchers forward it — the other wrappers have no such argument.
-    float skipSoftmaxThresholdLog2{};
+    float skipSoftmaxScaleFactor{};
     cudaStream_t stream{};
 };
 
@@ -85,7 +85,34 @@ struct LlmFmhaPagedParams
     float invScaleO{};
     //! Skip-softmax (BLASST) threshold as log2(lambda); 0.0 = disabled. Only the
     //! *_skipsoftmax_paged launchers forward it — the other wrappers have no such argument.
-    float skipSoftmaxThresholdLog2{};
+    float skipSoftmaxScaleFactor{};
+    cudaStream_t stream{};
+};
+
+//! Everything the optimized Blackwell packed-Q/O paged descriptors need for one ragged launch.
+struct LlmFmhaRaggedPagedParams
+{
+    void const* qPtr{};
+    void const* pagedKVPoolPtr{};
+    int32_t const* kvCachePageList{};
+    void* oPtr{};
+    int32_t const* cuQSeqLens{};
+    int32_t const* cuKVSeqLens{};
+    int32_t totalQSeqLen{};
+    int32_t maxQSeqLen{};
+    int32_t batchSize{};
+    int32_t numQHeads{};
+    int32_t numKVHeads{};
+    int32_t headDim{};
+    int32_t numFlatPages{};
+    int32_t maxPagesPerSeq{};
+    int32_t tokensPerPage{};
+    int32_t windowSizeLeft{};
+    float attentionScale{};
+    float scaleQ{};
+    float scaleK{};
+    float scaleV{};
+    float invScaleO{};
     cudaStream_t stream{};
 };
 
@@ -134,6 +161,29 @@ struct FmhaV2LlmParams
     //! causal/sliding variants; both set for the bidirectional variants.
     int32_t const* blockBegin{};
     int32_t const* blockEnd{};
+};
+
+//! Everything the packed-Q/O FMHA-v2 paged descriptors need, gathered once per ragged launch.
+struct FmhaV2RaggedPagedParams
+{
+    void const* qPtr{};
+    void const* pagedKVPoolPtr{};
+    int32_t const* kvCachePageList{};
+    void* oPtr{};
+    int32_t const* cuQSeqLens{};
+    int32_t const* cuKVSeqLens{};
+    int32_t totalQSeqLen{};
+    int32_t maxQSeqLen{};
+    int32_t batchSize{};
+    int32_t numQHeads{};
+    int32_t numKVHeads{};
+    int32_t headDim{};
+    int32_t numPages{};
+    int32_t maxPagesPerSeq{};
+    int32_t tokensPerPage{};
+    int32_t windowSizeLeft{};
+    float attentionScale{};
+    cudaStream_t stream{};
 };
 
 //! Everything the FMHA-v2 ViT descriptors need, gathered once per CuteDslFMHAV2Runner ViT run()

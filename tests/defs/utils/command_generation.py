@@ -65,6 +65,23 @@ def _append_context_reuse_options(cmd: List[str], config: TestConfig) -> None:
                    f"{config.context_cache_partial_kv_snapshot_pool_bytes}")
 
 
+def _tp_size(config: TestConfig) -> int:
+    return config.tp_size or 1
+
+
+def _append_tp_build_args(cmd: List[str], tp_size: int, tp_rank: int) -> None:
+    if tp_size <= 1:
+        return
+    cmd.extend([f"--tpSize={tp_size}", f"--tpRank={tp_rank}"])
+
+
+def _append_tp_inference_args(cmd: List[str], config: TestConfig) -> None:
+    tp_size = _tp_size(config)
+    if tp_size <= 1:
+        return
+    cmd.append(f"--tpSize={tp_size}")
+
+
 def _tensorrt_edgellm_module_shell(module: str, args: List[str]) -> str:
     edgellm_root = get_tensorrt_edgellm_root()
     if not edgellm_root:
@@ -428,30 +445,37 @@ def generate_build_commands(
     commands = []
 
     if config.model_type == ModelType.LLM:
-        # LLM build command
-        cmd = [executable_files['llm_build']]
-        cmd.extend([
-            f"--onnxDir={config.get_llm_onnx_dir()}",
-            f"--engineDir={config.get_llm_engine_dir()}",
-            f"--maxInputLen={config.max_input_len}",
-            f"--maxKVCacheCapacity={config.max_seq_len}",
-            f"--maxBatchSize={config.max_batch_size}"
-        ])
+        tp_size = _tp_size(config)
+        if tp_size > 1 and _uses_spec_decode(config):
+            raise ValueError("Tensor-parallel speculative decoding is TBD. ")
 
-        if config.max_kv_pool_pages is not None:
-            cmd.append(f"--maxKVPoolPages={config.max_kv_pool_pages}")
+        for tp_rank in range(tp_size):
+            # LLM build command
+            cmd = [executable_files['llm_build']]
+            cmd.extend([
+                f"--onnxDir={config.get_llm_onnx_dir()}",
+                f"--engineDir={config.get_llm_engine_dir()}",
+                f"--maxInputLen={config.max_input_len}",
+                f"--maxKVCacheCapacity={config.max_seq_len}",
+                f"--maxBatchSize={config.max_batch_size}"
+            ])
+            _append_tp_build_args(cmd, tp_size, tp_rank)
 
-        if _uses_spec_decode(config):
-            cmd.append("--specBase")
-            cmd.append(f"--maxVerifyTreeSize={config.max_verify_tree_size}")
+            if config.max_kv_pool_pages is not None:
+                cmd.append(f"--maxKVPoolPages={config.max_kv_pool_pages}")
 
-        if config.max_lora_rank > 0:
-            cmd.append(f"--maxLoraRank={config.max_lora_rank}")
+            if _uses_spec_decode(config):
+                cmd.append("--specBase")
+                cmd.append(
+                    f"--maxVerifyTreeSize={config.max_verify_tree_size}")
 
-        if config.debug:
-            cmd.append("--debug")
+            if config.max_lora_rank > 0:
+                cmd.append(f"--maxLoraRank={config.max_lora_rank}")
 
-        commands.append((cmd, 1200))
+            if config.debug:
+                cmd.append("--debug")
+
+            commands.append((cmd, 1200))
 
     elif config.model_type == ModelType.VLM:
         # VLM LLM build command
@@ -722,8 +746,15 @@ def generate_inference_commands(
     if config.output_seq_len is not None:
         cmd.append(f"--maxGenerateLength={config.output_seq_len}")
 
+    if config.model_type == ModelType.LLM:
+        _append_tp_inference_args(cmd, config)
+
     if config.debug:
         cmd.append("--debug")
+
+    tp_size = _tp_size(config)
+    if config.model_type == ModelType.LLM and config.md_launch_mode == "mpi":
+        cmd = ["mpirun", "-n", str(tp_size)] + cmd
 
     commands.append((cmd, 6000))
     return commands
@@ -799,11 +830,18 @@ def generate_e2e_bench_commands(
     if config.output_seq_len is not None:
         cmd.append(f"--maxGenerateLength={config.output_seq_len}")
 
+    if config.model_type == ModelType.LLM:
+        _append_tp_inference_args(cmd, config)
+
     # Add warmup if specified
     cmd.append(f"--warmup={config.warmup or 10}")
 
     if config.debug:
         cmd.append("--debug")
+
+    tp_size = _tp_size(config)
+    if config.model_type == ModelType.LLM and config.md_launch_mode == "mpi":
+        cmd = ["mpirun", "-n", str(tp_size)] + cmd
 
     commands.append((cmd, 6000))
     return commands

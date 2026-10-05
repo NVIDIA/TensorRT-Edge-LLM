@@ -17,6 +17,7 @@
 
 #include "runtime/multiDevice/runtimeCoordinator.h"
 
+#include "chatTemplate/chatTemplate.h"
 #include "common/checkMacros.h"
 #include "common/cudaUtils.h"
 #include "common/logger.h"
@@ -28,6 +29,7 @@
 #include "runtime/multiDevice/collectiveGroup.h"
 #include "runtime/multiDevice/multiDevicePluginResourceFactory.h"
 #include "runtime/multiDevice/multiDevicePluginResources.h"
+#include "runtime/runtimeStepper.h"
 #include "tokenizer/tokenizer.h"
 
 #include <algorithm>
@@ -104,6 +106,7 @@ void RuntimeCoordinator::initialize()
     initializeCollectiveResources();
     initializeRankStreams();
     initializeTokenizer();
+    initializeChatTemplate();
     initializeRankRuntimes();
     initializeRequestSynchronization();
     initializeWorkerTaskBuffers();
@@ -280,6 +283,18 @@ void RuntimeCoordinator::initializeTokenizer()
         mTokenizer->setAdditionalEosIds(additionalEos);
         LOG_INFO("Loaded %zu EOS token IDs from config", additionalEos.size());
     }
+}
+
+void RuntimeCoordinator::initializeChatTemplate()
+{
+    ELLM_CHECK(mTokenizer != nullptr, "RuntimeCoordinator tokenizer is not initialized.");
+    mChatTemplate = std::make_unique<chat_template::ChatTemplate>();
+    auto const tokenPiece = [this](tokenizer::Rank tokenId) {
+        return tokenId >= 0 ? mTokenizer->idToPiece(tokenId, false) : std::string{};
+    };
+    ELLM_CHECK(
+        mChatTemplate->load(mConfig.engineDir, tokenPiece(mTokenizer->getBosId()), tokenPiece(mTokenizer->getEosId())),
+        "Failed to load the model-owned chat template from: " + mConfig.engineDir);
 }
 
 void RuntimeCoordinator::initializeRankRuntimes()
@@ -781,13 +796,24 @@ void RuntimeCoordinator::setVisualPrunerConfig(VisualPrunerConfig const& config)
     rootRuntime().setVisualPrunerConfig(config);
 }
 
-bool RuntimeCoordinator::dispatchRequest(
-    LLMGenerationRequest const& request, bool enableProfiling, bool outputThinkerEmbeddings, cudaStream_t stream)
+bool RuntimeCoordinator::supportsBoundaryScheduling() const noexcept
+{
+    return mInlineSingleRank;
+}
+
+bool RuntimeCoordinator::dispatchRequest(LLMGenerationRequest const& request, bool enableProfiling,
+    bool outputThinkerEmbeddings, cudaStream_t stream, GenerationBoundaryHook const& boundaryHook)
 {
     if (mInlineSingleRank)
     {
-        return runInline(request, enableProfiling, outputThinkerEmbeddings, stream);
+        return runInline(request, enableProfiling, outputThinkerEmbeddings, stream, boundaryHook);
     }
+
+    // The boundary-hook control plane never crosses ranks anymore: the stepped command stream
+    // (beginStepped) is how a scheduler drives a multi-rank runtime. A hooked dispatch here would
+    // silently run without admissions on the followers, so it is refused loudly instead.
+    ELLM_CHECK(!boundaryHook,
+        "Boundary hooks are single-rank only; multi-rank scheduling goes through the stepped command stream.");
 
     if (mWorkerFailed.load(std::memory_order_acquire))
     {
@@ -867,8 +893,45 @@ bool RuntimeCoordinator::dispatchRequest(
     return true;
 }
 
-bool RuntimeCoordinator::runInline(
-    LLMGenerationRequest const& request, bool enableProfiling, bool outputThinkerEmbeddings, cudaStream_t stream)
+bool RuntimeCoordinator::supportsSteppedExecution() const noexcept
+{
+    // Single rank only in this release: the stepped step decisions are not yet carried to the
+    // other ranks of a tensor-parallel deployment.
+    return mInlineSingleRank;
+}
+
+std::unique_ptr<SteppedExecution> RuntimeCoordinator::beginStepped(
+    LLMGenerationRequest const& request, RequestId requestId, bool enableProfiling, cudaStream_t stream)
+{
+    ELLM_CHECK(requestId != 0, "Stepped execution requires a nonzero request ID.");
+    if (mInlineSingleRank)
+    {
+        int32_t const rank = mLocalRanks.front();
+        CUDA_CHECK(cudaSetDevice(deviceForRank(rank)));
+        setProfilingEnabled(enableProfiling);
+        cudaStream_t const executionStream = stream != nullptr ? stream : mStreams[rank];
+
+        LLMGenerationRequest prepared;
+        try
+        {
+            prepared = prepareRequestState(request);
+        }
+        catch (std::exception const& e)
+        {
+            LOG_ERROR("[stepped] Failed to prepare request: %s", e.what());
+            return nullptr;
+        }
+        return SteppedRequest::begin(*mRuntimes[rank], std::move(prepared), requestId, executionStream);
+    }
+
+    ELLM_CHECK(false,
+        "Stepped execution is inline single-rank in this change; the thread-parallel command "
+        "stream arrives with the integration part of this series.");
+    return nullptr;
+}
+
+bool RuntimeCoordinator::runInline(LLMGenerationRequest const& request, bool enableProfiling,
+    bool outputThinkerEmbeddings, cudaStream_t stream, GenerationBoundaryHook const& boundaryHook)
 {
     int32_t const rank = mLocalRanks.front();
     CUDA_CHECK(cudaSetDevice(deviceForRank(rank)));
@@ -894,7 +957,7 @@ bool RuntimeCoordinator::runInline(
         // parallelRank=-1 keeps streaming and audio callbacks on that thread.
         mWorkerTask.statuses[rank] = mRuntimes[rank]->handleRequest(mWorkerTask.requests[rank],
                                          mWorkerTask.responses[rank], executionStream, outputThinkerEmbeddings,
-                                         /*tokenBroadcast=*/nullptr, /*parallelRank=*/-1)
+                                         /*tokenBroadcast=*/nullptr, /*parallelRank=*/-1, boundaryHook)
             ? 1
             : 0;
     }
@@ -927,17 +990,18 @@ std::unique_ptr<LLMRankRuntime> RuntimeCoordinator::createRankRuntime(int32_t gl
             globalRank == 0 && mWorldSize == 1, "Injected model artifacts require global rank 0 of world size 1.");
         auto artifacts = std::move(mConfig.modelArtifacts);
         return std::make_unique<LLMRankRuntime>(std::move(*artifacts), mConfig.engineDir, mConfig.multimodalEngineDir,
-            mConfig.loraWeightsMap, mConfig.draftingConfig, mStreams[globalRank], mapping, *mTokenizer,
+            mConfig.loraWeightsMap, mConfig.draftingConfig, mStreams[globalRank], mapping, *mTokenizer, *mChatTemplate,
             mConfig.contextCacheConfig);
     }
     return std::make_unique<LLMRankRuntime>(mConfig.engineDir, mConfig.multimodalEngineDir, mConfig.loraWeightsMap,
-        mConfig.draftingConfig, mStreams[globalRank], mapping, *mTokenizer, mConfig.contextCacheConfig,
+        mConfig.draftingConfig, mStreams[globalRank], mapping, *mTokenizer, *mChatTemplate, mConfig.contextCacheConfig,
         mConfig.checkpointDir, mConfig.draftCheckpointDir);
 }
 
 LLMGenerationRequest RuntimeCoordinator::prepareRequestState(LLMGenerationRequest const& request) const
 {
     ELLM_CHECK(mTokenizer != nullptr, "RuntimeCoordinator tokenizer is not initialized.");
+    ELLM_CHECK(mChatTemplate != nullptr, "RuntimeCoordinator chat template is not initialized.");
 
     LLMGenerationRequest preparedRequest = request;
     int32_t const activeBatchSize = static_cast<int32_t>(preparedRequest.requests.size());
@@ -946,28 +1010,47 @@ LLMGenerationRequest RuntimeCoordinator::prepareRequestState(LLMGenerationReques
 
     for (int32_t i = 0; i < activeBatchSize; ++i)
     {
-        bool const formatted
-            = mTokenizer->applyChatTemplate(preparedRequest.requests[i], preparedRequest.formattedRequests[i],
-                preparedRequest.applyChatTemplate, preparedRequest.addGenerationPrompt, preparedRequest.enableThinking);
+        bool const hasPreTokenizedInput
+            = i < static_cast<int32_t>(request.preTokenizedInputIds.size()) && !request.preTokenizedInputIds[i].empty();
+        if (hasPreTokenizedInput)
+        {
+            preparedRequest.preTokenizedInputIds[i] = request.preTokenizedInputIds[i];
+            if (request.requests[i].messages.empty())
+            {
+                continue;
+            }
+        }
+
+        bool const formatted = mChatTemplate->apply(preparedRequest.requests[i], preparedRequest.formattedRequests[i],
+            chat_template::ChatTemplate::optionsFrom(preparedRequest));
         if (!formatted)
         {
             throw std::runtime_error(format::fmtstr("Failed to apply chat template for request %d in batch.", i));
         }
+        if (hasPreTokenizedInput)
+        {
+            continue;
+        }
 
-        if (i < static_cast<int32_t>(request.preTokenizedInputIds.size()) && !request.preTokenizedInputIds[i].empty())
-        {
-            preparedRequest.preTokenizedInputIds[i] = request.preTokenizedInputIds[i];
-        }
-        else
-        {
-            // The formatted chat request already carries the model template's special-token policy.
-            preparedRequest.preTokenizedInputIds[i]
-                = mTokenizer->encode(preparedRequest.formattedRequests[i].formattedCompleteRequest, false);
-        }
+        // The formatted chat request already carries the model template's special-token policy.
+        preparedRequest.preTokenizedInputIds[i]
+            = mTokenizer->encode(preparedRequest.formattedRequests[i].formattedCompleteRequest, false);
         if (preparedRequest.preTokenizedInputIds[i].empty())
         {
             throw std::runtime_error(format::fmtstr("Failed to tokenize input text for request %d in batch.", i));
         }
+    }
+
+    if (preparedRequest.contextCacheReplayTailLength < 0)
+    {
+        ELLM_CHECK(
+            preparedRequest.contextCacheReplayTailLength == -1, "Context-cache replay-tail sentinel must be -1.");
+        ELLM_CHECK(mConfig.contextCacheConfig.enabled,
+            "Context-cache replay-tail derivation requires the context cache to be enabled.");
+        ELLM_CHECK(activeBatchSize == 1,
+            "Context-cache replay-tail derivation requires a batch containing exactly one request.");
+        preparedRequest.contextCacheReplayTailLength
+            = deriveContextCacheReplayTailLength(preparedRequest, preparedRequest.preTokenizedInputIds.front());
     }
 
     // Preserve the established request contract: callers may inspect the
@@ -975,6 +1058,74 @@ LLMGenerationRequest RuntimeCoordinator::prepareRequestState(LLMGenerationReques
     request.formattedRequests = preparedRequest.formattedRequests;
 
     return preparedRequest;
+}
+
+std::vector<int32_t> RuntimeCoordinator::countPromptTokens(LLMGenerationRequest const& request) const
+{
+    for (auto const& item : request.requests)
+    {
+        ELLM_CHECK(item.imageBuffers.empty() && item.audioBuffers.empty() && !item.pastTrajectory.has_value(),
+            "Prompt token counting is only available for text requests.");
+    }
+
+    // Preserve countPromptTokens()'s read-only behavior even though the shared
+    // preparation path publishes formatted requests for inference callers.
+    LLMGenerationRequest countRequest = request;
+    auto const preparedRequest = prepareRequestState(countRequest);
+    std::vector<int32_t> counts;
+    counts.reserve(preparedRequest.preTokenizedInputIds.size());
+    for (auto const& tokenIds : preparedRequest.preTokenizedInputIds)
+    {
+        ELLM_CHECK(tokenIds.size() <= static_cast<size_t>(std::numeric_limits<int32_t>::max()),
+            "Prompt token count exceeds the int32 range.");
+        counts.push_back(static_cast<int32_t>(tokenIds.size()));
+    }
+    return counts;
+}
+
+int32_t RuntimeCoordinator::deriveContextCacheReplayTailLength(
+    LLMGenerationRequest const& request, std::vector<int32_t> const& promptTokenIds) const
+{
+    ELLM_CHECK(request.requests.size() == 1,
+        "Context-cache replay-tail derivation requires a batch containing exactly one request.");
+    ELLM_CHECK(request.applyChatTemplate && request.addGenerationPrompt,
+        "Context-cache replay-tail derivation requires the model chat template and generation prompt.");
+    ELLM_CHECK(!promptTokenIds.empty(), "Cannot derive a context-cache replay tail from an empty prompt.");
+
+    LLMGenerationRequest::Request committedRequest = request.requests.front();
+    // A generation prompt may include suffix tokens that change once an
+    // assistant turn is committed. Render that committed state once to find
+    // the stable prefix that Hybrid+MTP context reuse may safely retain.
+    Message assistantProbe;
+    assistantProbe.role = "assistant";
+    assistantProbe.contents.push_back(Message::MessageContent{"text", ""});
+    assistantProbe.reasoningContent = "context reuse probe";
+    assistantProbe.hasReasoningContent = true;
+    committedRequest.messages.push_back(std::move(assistantProbe));
+
+    auto options = chat_template::ChatTemplate::optionsFrom(request);
+    options.addGenerationPrompt = false;
+    LLMGenerationRequest::FormattedRequest committedFormatted;
+    ELLM_CHECK(mChatTemplate->apply(committedRequest, committedFormatted, options),
+        "Failed to render the committed prompt while deriving the context-cache replay tail.");
+    auto const committedTokenIds = mTokenizer->encode(committedFormatted.formattedCompleteRequest, false);
+    ELLM_CHECK(!committedTokenIds.empty(),
+        "Failed to tokenize the committed prompt while deriving the context-cache replay tail.");
+
+    size_t commonPrefixLength = 0;
+    size_t const comparedLength = std::min(promptTokenIds.size(), committedTokenIds.size());
+    while (commonPrefixLength < comparedLength
+        && promptTokenIds[commonPrefixLength] == committedTokenIds[commonPrefixLength])
+    {
+        ++commonPrefixLength;
+    }
+    ELLM_CHECK(commonPrefixLength > 0, "Chat template has no stable token prefix for context reuse.");
+
+    // MTP needs one stable successor token after the captured predecessor.
+    size_t const replayTailLength = promptTokenIds.size() - commonPrefixLength + 1;
+    ELLM_CHECK(replayTailLength <= static_cast<size_t>(std::numeric_limits<int32_t>::max()),
+        "Context-cache replay tail exceeds the int32 range.");
+    return static_cast<int32_t>(replayTailLength);
 }
 
 void RuntimeCoordinator::prepareRankRequests(LLMGenerationRequest const& request)

@@ -49,7 +49,7 @@ namespace
 
 } // namespace
 
-std::string applyCompileWorkarounds([[maybe_unused]] int32_t maxBatchSize)
+std::string applyCompileWorkarounds()
 {
     std::string lunowudFlags;
     char const* existingLunowud = std::getenv("__LUNOWUD");
@@ -61,11 +61,15 @@ std::string applyCompileWorkarounds([[maybe_unused]] int32_t maxBatchSize)
     appendLunowudFlag(lunowudFlags, "-peep:match_dual_gemm=off");
 #endif
 #if NV_TENSORRT_MAJOR >= 11
-    // TRT dual-GEMM fusion miscompiles NVFP4 graphs; no known-good 11.x on sm12x
-    if (getSMVersion() / 10 == 12)
+    // Disable a broken TensorRT 11 dual-GEMM fusion on Blackwell.
+    if (getSMVersion() >= 100)
     {
         appendLunowudFlag(lunowudFlags, "-peep:match_dual_gemm=off");
     }
+#endif
+#if NV_TENSORRT_MAJOR > 11 || (NV_TENSORRT_MAJOR == 11 && NV_TENSORRT_MINOR > 0)
+    // CUDA Tile MXFP8 quantization produces NaNs for zero blocks.
+    appendLunowudFlag(lunowudFlags, "-kgen:codegen:cuda_tile=0");
 #endif
 #if NV_TENSORRT_MAJOR >= 11 || (NV_TENSORRT_MAJOR == 10 && NV_TENSORRT_MINOR >= 15)
     appendLunowudFlag(lunowudFlags, "-mlir:autotune:num_threads=1");
@@ -73,10 +77,7 @@ std::string applyCompileWorkarounds([[maybe_unused]] int32_t maxBatchSize)
     appendLunowudFlag(lunowudFlags, "-cask_fusion:async_policy=1");
 #endif
 #if NV_TENSORRT_MAJOR >= 11 || (NV_TENSORRT_MAJOR == 10 && NV_TENSORRT_MINOR >= 13)
-    if (maxBatchSize == 1)
-    {
-        appendLunowudFlag(lunowudFlags, "-peep:fc_h_fusion=off");
-    }
+    appendLunowudFlag(lunowudFlags, "-peep:fc_h_fusion=off");
 #endif
     if (existingLunowud || !lunowudFlags.empty())
     {
@@ -294,7 +295,7 @@ std::pair<std::unique_ptr<nvinfer1::IBuilder>, std::unique_ptr<nvinfer1::INetwor
     return {std::move(builder), std::move(network)};
 }
 
-std::unique_ptr<nvinfer1::IBuilderConfig> createBuilderConfig(nvinfer1::IBuilder* builder)
+std::unique_ptr<nvinfer1::IBuilderConfig> createBuilderConfig(nvinfer1::IBuilder* builder, bool enableAliasedPluginIO)
 {
     if (!builder)
     {
@@ -313,7 +314,14 @@ std::unique_ptr<nvinfer1::IBuilderConfig> createBuilderConfig(nvinfer1::IBuilder
     config->setFlag(nvinfer1::BuilderFlag::kMONITOR_MEMORY);
 #endif
 #if IS_TRT_RTX || NV_TENSORRT_MAJOR >= 11 || (NV_TENSORRT_MAJOR == 10 && NV_TENSORRT_MINOR >= 3)
-    config->setPreviewFeature(nvinfer1::PreviewFeature::kALIASED_PLUGIN_IO_10_03, true);
+    // Only DFlash/DSpark draft engines declare a plugin I/O alias (present KV pool
+    // aliases past KV pool in DFlashTargetKVCacheUpdatePlugin). Every other plugin
+    // returns -1 from getAliasedInput, so enabling this preview elsewhere opts the
+    // engine into an unused path that can force a redundant per-layer KV copy.
+    if (enableAliasedPluginIO)
+    {
+        config->setPreviewFeature(nvinfer1::PreviewFeature::kALIASED_PLUGIN_IO_10_03, true);
+    }
 #endif
 
     return config;

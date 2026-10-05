@@ -235,7 +235,7 @@ the headers.
 | `head_dim` must be 64, 128, 256 or 512 for MTP — it reuses `eagleBaseCommitKVCacheAndAssembleHiddenState` | throws at the first verification round |
 | Unmanaged speculative decoding reserves a fixed 100 tokens of KV before admitting generation | request rejected with no forward at all |
 | `ExternalWeightManager` runs load → validate → register, each once | `registerTensorMapEntries called before weight validation` |
-| `Tokenizer::loadFromHF` needs `processed_chat_template.json` too | load fails |
+| `ChatTemplate::load` requires provider Jinja or an explicit model-native renderer | runtime initialization fails |
 | `PipelineIO::outputLogits` is FP32, not the engine's compute dtype | plausible-looking wrong argmax, no error |
 
 ---

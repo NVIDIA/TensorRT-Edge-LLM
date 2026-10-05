@@ -150,7 +150,9 @@ def checkpoint_weight_bindings(args, cfg, bindings: Sequence[dict],
     has_engine_embedding = any(
         binding.get("role") == "embedding" for binding in bindings)
     if (cfg is not None and externalizes_embedding(args, weights.conversion)
-            and not has_engine_embedding):
+            and not has_engine_embedding
+            and not weights.is_nvfp4("model.embed_tokens")):
+        # NVFP4 embeddings are materialized as FP16 runtime artifacts.
         bindings.append(embedding_binding(weights, cfg))
     if cfg is not None and externalizes_ple(args, cfg):
         bindings.append(ple_embedding_binding(weights, cfg))

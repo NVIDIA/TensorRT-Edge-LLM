@@ -119,8 +119,13 @@ the host. Total selector overhead is ~1–2 ms per prefill and is included in al
 Pruning is applied only when all of the following hold (it silently no-ops otherwise):
 
 - mRoPE VLM engine (Qwen2.5-VL / Qwen3-VL family) with visual input present
-- Batch size 1, fresh KV cache (not combined with system-prompt cache reuse)
-- Not combined with speculative decoding, the Omni Talker, or the VLA action runner
+- Fresh KV cache (not combined with system-prompt cache reuse). Batched prefill is supported:
+  each request in the batch is pruned independently (per-slot selection, then one repack of the
+  batch buffers to the new padded length)
+- Not combined with the Omni Talker or the VLA action runner. Speculative decoding is
+  supported: the base and draft models both operate on the pruned sequence (host token ids and
+  raw multimodal feature rows are compacted alongside the embeddings, so draft prefill
+  re-embeds exactly what the base KV cache holds)
 - At least `minVisualTokens` (default 16) visual tokens in the request
 
 Quality is dataset-dependent: ratio 0.25 is a safe default; re-validate on your own workload

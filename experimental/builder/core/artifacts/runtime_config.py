@@ -18,9 +18,11 @@ from importlib import metadata
 from pathlib import Path
 from typing import Any, Dict
 
-from ...ops.functional.attention import KV_PAGE_SIZE
+from tensorrt_edgellm.dflash import DFlashVersion
+
 from .. import contracts
 from ..config import LAYER_ATTN, LAYER_GDN, LAYER_MAMBA, DeviceConfig
+from ..ragged import builder_config_fields, checked_kv_pool_pages
 
 
 def normalize_rope_scaling(rope_scaling):
@@ -46,6 +48,52 @@ def _edgellm_version() -> str:
     except metadata.PackageNotFoundError:
         raise RuntimeError("could not resolve the Edge-LLM version; install "
                            "the package or use a full source checkout")
+
+
+def _tp_local_kv_layer_configs(kv_layer_configs: list, tp_size: int) -> list:
+    """Return rank-local KV metadata for a tensor-parallel engine."""
+    result = []
+    for index, layer in enumerate(kv_layer_configs):
+        if layer is None:
+            result.append(None)
+            continue
+        num_kv_heads = int(layer["num_kv_heads"])
+        if num_kv_heads % tp_size:
+            raise ValueError(
+                f"TP size {tp_size} does not divide kv_layer_configs[{index}]"
+                f".num_kv_heads={num_kv_heads}")
+        local_layer = dict(layer)
+        local_layer["num_kv_heads"] = num_kv_heads // tp_size
+        result.append(local_layer)
+    return result
+
+
+def _tp_rank_overrides(config: Dict[str, Any], tp_size: int) -> Dict[str, Any]:
+    sharded_dimensions = (
+        "num_attention_heads",
+        "num_key_value_heads",
+        "intermediate_size",
+        "recurrent_state_num_heads",
+        "conv_dim",
+    )
+    dimensions = {
+        name: config[name]
+        for name in sharded_dimensions if name in config
+    }
+    invalid = {
+        name: value
+        for name, value in dimensions.items() if value % tp_size
+    }
+    if invalid:
+        details = ", ".join(f"{name}={value}"
+                            for name, value in sorted(invalid.items()))
+        raise ValueError(
+            f"TP size {tp_size} does not divide runtime dimensions: {details}")
+    overrides = {name: value // tp_size for name, value in dimensions.items()}
+    if "kv_layer_configs" in config:
+        overrides["kv_layer_configs"] = _tp_local_kv_layer_configs(
+            config["kv_layer_configs"], tp_size)
+    return overrides
 
 
 def build_runtime_config(cfg: DeviceConfig, args) -> Dict[str, Any]:
@@ -112,8 +160,10 @@ def build_runtime_config(cfg: DeviceConfig, args) -> Dict[str, Any]:
             "recurrent_state_num_heads": mc.num_heads,
             "recurrent_state_head_dim": mc.head_dim,
             "recurrent_state_size": mc.ssm_state_size,
+            "recurrent_state_num_groups": mc.n_groups,
             "conv_dim": mc.conv_dim,
             "conv_kernel": mc.conv_kernel,
+            "recurrent_spec_verify_mode": "replay",
             "use_rope": cfg.num_attn_layers > 0 and cfg.hybrid_uses_rope,
             "recurrent_state_dtype": "fp16",
             "conv_state_dtype": "fp16",
@@ -141,6 +191,7 @@ def build_runtime_config(cfg: DeviceConfig, args) -> Dict[str, Any]:
             "recurrent_state_num_heads": gc.num_value_heads,
             "recurrent_state_head_dim": gc.key_head_dim,
             "recurrent_state_size": gc.value_head_dim,
+            "recurrent_spec_verify_mode": "snapshot",
             "conv_dim": gc.conv_dim,
             "conv_kernel": gc.conv_kernel,
             "use_rope": cfg.num_attn_layers > 0,
@@ -174,6 +225,13 @@ def build_runtime_config(cfg: DeviceConfig, args) -> Dict[str, Any]:
             out["base_model_hidden_size"] = target_hidden * len(target_layers)
         elif args.spec_type == "mtp":
             out["base_model_hidden_size"] = cfg.hidden_size
+            if cfg.root_model_type == "nemotron_h":
+                out["num_attention_layers"] = cfg.num_attn_layers
+                out["layer_types"] = ["attention"]
+                out["kv_layer_configs"] = [{
+                    "num_kv_heads": cfg.num_key_value_heads,
+                    "head_dim": cfg.head_dim,
+                }]
         elif args.spec_type in ("dflash", "jetspec"):
             targets = cfg.dflash_target_layer_ids or [1, 8, 15, 22, 29]
             out["base_model_hidden_size"] = len(targets) * cfg.hidden_size
@@ -213,12 +271,28 @@ def build_runtime_config(cfg: DeviceConfig, args) -> Dict[str, Any]:
             })
 
     if args.spec_type == "dflash":
-        out["dflash_config"] = {
-            "target_layer_ids": cfg.dflash_target_layer_ids
-            or [1, 8, 15, 22, 29],
-            "block_size": cfg.dflash_block_size,
-            "mask_token_id": cfg.dflash_mask_token_id,
+        dflash = {
+            "version":
+            int(args.dflash_version),
+            "target_layer_ids":
+            cfg.dflash_target_layer_ids or [1, 8, 15, 22, 29],
+            "block_size":
+            cfg.dflash_block_size,
+            "mask_token_id":
+            cfg.dflash_mask_token_id,
+            "supports_probabilistic_sampling":
+            args.dflash_version == DFlashVersion.V2,
         }
+        if args.dflash_version == DFlashVersion.V2:
+            dflash.update({
+                "is_causal": cfg.dflash2_is_causal,
+                "conv_kernel_size": cfg.dflash2_conv_kernel_size,
+                "conv_group_size": cfg.dflash2_conv_group_size,
+                "selector_rank": cfg.dflash2_selector_rank,
+                "selector_top_k": cfg.dflash2_selector_top_k,
+                "selector_file": "dflash2_selector.safetensors",
+            })
+        out["dflash_config"] = dflash
         out["dflash_tree_base"] = cfg.dflash_tree_base
     if args.spec_type == "jetspec":
         out["jetspec_config"] = {
@@ -240,15 +314,19 @@ def build_runtime_config(cfg: DeviceConfig, args) -> Dict[str, Any]:
             cfg.dspark_confidence_head_with_markov,
             "markov_head_type": cfg.dspark_markov_head_type,
             "markov_rank": cfg.dspark_markov_rank,
+            "causal_head": cfg.dspark_causal_proposal,
+            "contiguous_query_swa": cfg.dspark_contiguous_query_swa,
+            "sample_from_anchor": cfg.dspark_sample_from_anchor,
             "heads_file": "dspark_heads.safetensors",
             "heads_info_file": "dspark_heads_info.json",
         }
+        out["dspark_tree_base"] = cfg.dspark_tree_base
     if cfg.eagle_base:
         out["eagle_hidden_state_layers"] = list(cfg.eagle3_target_layer_ids)
 
-    max_kv_pool_pages = args.max_batch_size * (
-        (args.max_kv_cache_capacity + KV_PAGE_SIZE - 1) // KV_PAGE_SIZE)
-    out["builder_config"] = {
+    _, max_kv_pool_pages = checked_kv_pool_pages(args.max_batch_size,
+                                                 args.max_kv_cache_capacity)
+    builder_config = {
         "tp_size": args.tp_size,
         "max_input_len": args.max_input_len,
         "spec_draft": args.resolved_spec_role == contracts.SpecRole.DRAFT,
@@ -257,29 +335,18 @@ def build_runtime_config(cfg: DeviceConfig, args) -> Dict[str, Any]:
         "max_lora_rank": args.max_lora_rank,
         "max_kv_cache_capacity": args.max_kv_cache_capacity,
         "max_kv_pool_pages": max_kv_pool_pages,
-        "max_verify_tree_size": args.max_verify_tree_size,
-        "max_draft_tree_size": args.max_draft_tree_size,
     }
+    builder_config.update(builder_config_fields(cfg, args))
+    if args.resolved_spec_role == contracts.SpecRole.BASE:
+        builder_config["max_verify_tree_size"] = args.max_verify_tree_size
+    if args.resolved_spec_role == contracts.SpecRole.DRAFT:
+        slot_offset = (1 if args.spec_type == "dspark"
+                       and not cfg.dspark_sample_from_anchor else 0)
+        builder_config["max_draft_tree_size"] = (args.max_draft_tree_size -
+                                                 slot_offset)
+    out["builder_config"] = builder_config
     if args.tp_size > 1:
-        dimensions = {
-            "num_attention_heads": cfg.num_attention_heads,
-            "num_key_value_heads": cfg.num_key_value_heads,
-            "intermediate_size": cfg.intermediate_size,
-        }
-        invalid = {
-            name: value
-            for name, value in dimensions.items() if value % args.tp_size
-        }
-        if invalid:
-            details = ", ".join(f"{name}={value}"
-                                for name, value in sorted(invalid.items()))
-            raise ValueError(
-                f"TP size {args.tp_size} does not divide runtime dimensions: {details}"
-            )
-        overrides = {
-            name: value // args.tp_size
-            for name, value in dimensions.items()
-        }
+        overrides = _tp_rank_overrides(out, args.tp_size)
         out["rank_configs"] = [{
             "rank": rank,
             "engine": f"llm_world{args.tp_size}_rank{rank}.engine",

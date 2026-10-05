@@ -19,6 +19,9 @@
 
 #include "common/logger.h"
 
+#include <utility>
+#include <vector>
+
 // miniaudio: single-header library. The implementation lives in this TU only.
 // Disable subsystems we don't need (playback / capture / device I/O / null
 // backend) to keep object size small. We only use the decoder API.
@@ -65,6 +68,22 @@ private:
 //! cap the decoded duration rather than the input bytes.
 constexpr ma_uint64 kMaxDecodedSeconds = 600;
 
+//! Decoded samples and the tensor that views them. The vector stays pageable: an owning host Tensor
+//! would page-lock, and whether the samples are worth page-locking is the caller's decision, made by
+//! handing wrapPcm memory of its choosing.
+struct DecodedPcm
+{
+    explicit DecodedPcm(std::vector<float> samples)
+        : storage(std::move(samples))
+        , view(storage.data(), Coords{static_cast<int64_t>(storage.size())}, DeviceType::kCPU,
+              nvinfer1::DataType::kFLOAT, "decodedPcm")
+    {
+    }
+
+    std::vector<float> storage;
+    Tensor view; //!< Non-owning view of ``storage``; valid for as long as this object lives.
+};
+
 //! Drain an initialised decoder into ``out``.
 //!
 //! WAV / MP3 / FLAC headers advertise total frame count, so query it once
@@ -85,16 +104,21 @@ bool drainDecoder(ma_decoder& decoder, int32_t sampleRate, AudioPCM& out)
             sampleRate);
         return false;
     }
-    out.samples.resize(static_cast<size_t>(totalFrames));
+    std::vector<float> samples(static_cast<size_t>(totalFrames));
 
     ma_uint64 framesRead = 0;
-    ma_result const status = ma_decoder_read_pcm_frames(&decoder, out.samples.data(), totalFrames, &framesRead);
-    out.samples.resize(static_cast<size_t>(framesRead));
+    ma_result const status = ma_decoder_read_pcm_frames(&decoder, samples.data(), totalFrames, &framesRead);
     if (status != MA_SUCCESS && status != MA_AT_END)
     {
         LOG_ERROR("ma_decoder_read_pcm_frames failed: %d", static_cast<int>(status));
         return false;
     }
+    // Headers can advertise more frames than the stream delivers.
+    samples.resize(static_cast<size_t>(framesRead));
+
+    // Aliasing constructor: the pointer is the view, the ownership is the whole DecodedPcm.
+    auto decoded = std::make_shared<DecodedPcm>(std::move(samples));
+    out.samples = std::shared_ptr<Tensor>(decoded, &decoded->view);
     return true;
 }
 
@@ -107,6 +131,11 @@ ma_decoder_config makeConfig(int32_t targetSampleRate)
 }
 
 } // namespace
+
+int64_t AudioPCM::numSamples() const noexcept
+{
+    return samples ? samples->getShape().volume() : 0;
+}
 
 bool loadAudioBytes(uint8_t const* bytes, size_t size, int32_t targetSampleRate, AudioPCM& out)
 {

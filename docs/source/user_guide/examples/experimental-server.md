@@ -9,18 +9,20 @@ Anthropic HTTP APIs. ONNX is not used by this path.
 
 ## Install
 
-Build TensorRT Edge-LLM with Python bindings, then install the package and
-server dependencies in the same environment:
+For a supported target, follow [published-wheel installation](../getting_started/installation.md#published-python-wheel)
+and select `tensorrt-edgellm[server]==0.11.0`. The wheel includes the runtime
+bindings, builder, and plugin; no checkout, `native-build` extra, or CMake build
+is needed. Install the TensorRT Python bindings supported by the target
+platform before launching the server. Run the examples in that environment
+outside a source checkout.
 
-```bash
-cd /path/to/TensorRT-Edge-LLM
-pip install -e ".[server,server-tools,native-build]"
-```
+Alternatively, complete the [source build and server setup](../getting_started/installation.md#install-and-launch-the-python-server).
+Do not reinstall the source package over a published wheel.
 
-For a prebuilt TensorRT Edge-LLM package that already contains the Python
-runtime extension, omit `native-build`. `server-tools` is required only for
-model-native tool chat templates; plain text and multimodal serving use the
-smaller `server` extra. None of these extras installs the PyTorch/ONNX exporter.
+For gated checkpoints, accept the provider's terms and run `hf auth login`.
+The server extra supplies `huggingface-hub` for downloads. Model-provided Jinja
+templates run natively through Pantor Inja; serving does not require Jinja2 or
+the PyTorch/ONNX exporter.
 
 ## Python API
 
@@ -45,6 +47,11 @@ result = llm.chat(
 print(result.text)
 ```
 
+Pass `enable_in_flight_batching=True` together with `max_batch_size` to let
+concurrent `chat()`, `generate()`, and `generate_stream()` calls from several
+threads share the running batch instead of taking turns; see
+[In-Flight Batching](../features/in-flight-batching.md).
+
 Streaming uses the same runtime:
 
 ```python
@@ -67,11 +74,15 @@ tensorrt-edgellm-serve Qwen/Qwen3.5-0.8B \
   --port 8000
 ```
 
+Add `--enable-in-flight-batching --max-batch-size 4` to serve up to four
+requests at once; see [Runtime Concurrency](#runtime-concurrency).
+
 The cache contains downloaded checkpoints and complete, profile-specific
 runtime bundles. A launch reuses a bundle only when the base checkpoint,
 optional draft checkpoint, and build profile all match. A cache miss runs
-`tensorrt-edgellm-build --components all --externalize-weights all` internally
-and publishes the completed bundle atomically. Direct engine and ONNX paths are
+`tensorrt-edgellm-build --components all` internally and publishes the
+completed bundle atomically. The builder's default policy externalizes the
+weight kinds supported by each component. Direct engine and ONNX paths are
 rejected so the server cannot lose the checkpoint-to-runtime association.
 
 Compiled bundles use a 50 GiB least-recently-used cache by default. Set
@@ -109,6 +120,25 @@ tensorrt-edgellm-serve Qwen/Qwen3.5-4B \
   '{"method":"dflash","model":"z-lab/Qwen3.5-4B-DFlash","num_speculative_tokens":3}'
 ```
 
+Muse-Glimmer DFlash and DFlash2 examples:
+
+```bash
+tensorrt-edgellm-serve meta-models/Muse-Glimmer-30B \
+  --cache-dir /data/edgellm-cache \
+  --speculative-config \
+  '{"method":"dflash","model":"meta-models/Muse-Glimmer-30B-assistant"}'
+
+tensorrt-edgellm-serve meta-models/Muse-Glimmer-30B \
+  --cache-dir /data/edgellm-cache \
+  --speculative-config \
+  '{"method":"dflash","model":"incoai/Muse-Glimmer-30B-DFlash2"}'
+
+tensorrt-edgellm-serve RadixArk/Muse-Glimmer-NVFP4 \
+  --cache-dir /data/edgellm-cache \
+  --speculative-config \
+  '{"method":"dflash","model":"incoai/Muse-Glimmer-30B-DFlash2"}'
+```
+
 JetSpec example:
 
 ```bash
@@ -132,7 +162,12 @@ Gemma MTP instead supplies its separate assistant checkpoint as `model`. The
 server defaults MTP, DFlash, JetSpec, and dSpark to their linear contracts.
 Where the method supports branching, setting `--draft-top-k` above 1 selects
 its tree contract and causes the direct builder to compile matching tree-base
-inputs automatically. The
+inputs automatically. `--max-verify-tree-size` and
+`--max-draft-tree-size` set engine profile capacities, while
+`--verify-tree-size` optionally selects a smaller active verification topology.
+For linear MTP (`--draft-top-k 1`), omit `--verify-tree-size`; the server
+derives the active size as `--draft-step + 1`, independently of the larger
+build profile. The
 `disable_spec_decode` request field can disable drafting for one request,
 except with a Gemma MTP verification engine; use a standalone target bundle
 for target-only Gemma inference.
@@ -203,9 +238,52 @@ from the native generation result; normal inference does not run a second
 tokenization pass.
 
 The request contract includes sampling, stop strings, log probabilities,
-`logit_bias`, tools, `parallel_tool_calls`, thinking, and per-request
-speculative disablement. Unsupported fields such as penalties, seed, and
-structured output are rejected rather than ignored. Only `n=1` is supported.
+`logit_bias`, tools, `parallel_tool_calls`, thinking, structured output, and
+per-request speculative disablement. `seed` accepts an unsigned 64-bit request
+seed, and `top_k=-1` disables top-k filtering. `min_p` and text
+`repetition_penalty` are accepted for client compatibility, but the runtime
+currently supports only their defaults (`0.0` and `1.0`); non-default values
+are normalized to those defaults with a server warning. Nonzero
+`frequency_penalty` and `presence_penalty` remain unsupported and are rejected.
+Only `n=1` is supported.
+Provider chat templating and the assistant generation prompt are enabled by
+default. Set `apply_chat_template=false` only for an already formatted prompt,
+or `add_generation_prompt=false` when continuing an existing assistant turn.
+
+### Structured Output
+
+`response_format` constrains the reply to a JSON object or a JSON Schema:
+
+```bash
+curl -s http://localhost:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "messages":[{"role":"user","content":"Give me a person record."}],
+    "response_format":{
+      "type":"json_schema",
+      "json_schema":{"name":"person","schema":{
+        "type":"object",
+        "properties":{"name":{"type":"string"},"age":{"type":"integer"}},
+        "required":["name","age"]}}}
+  }'
+```
+
+`response_format` covers `text`, `json_object`, and `json_schema` — the whole of
+the OpenAI specification. For `regex`, `ebnf`, `structural_tag`, and `choice`,
+use the low-level `guided_decoding` field, which takes the same shape as in a
+request file:
+
+```bash
+  -d '{
+    "messages":[{"role":"user","content":"Answer yes or no."}],
+    "guided_decoding":{"choice":["yes","no"]}
+  }'
+```
+
+Setting both surfaces on one request is rejected rather than one silently
+winning. Streaming works normally, and the assembled output satisfies the guide.
+A schema keyword that the backend accepts but cannot enforce is rejected with a
+400 naming the keyword. See [Guided Decoding](../features/guided-decoding.md).
 
 ### Tool Calls and Thinking
 
@@ -226,6 +304,12 @@ the request sets `enable_thinking=true` or
 Streaming responses emit indexed tool-call deltas as soon as each generated
 call is complete and end with `finish_reason="tool_calls"`.
 
+Qwen3.8's provider template accepts `reasoning_effort` values `xhigh` (the
+provider default), `medium`, and `low` when thinking is enabled. Edge-LLM
+passes the value through unchanged, so an unsupported value fails template
+rendering instead of being remapped. Because Edge-LLM defaults to non-thinking
+requests, set `enable_thinking=true` together with the desired effort.
+
 ### Image, Video, and Audio Input
 
 Serving a multimodal checkpoint builds and attaches its model-specific visual
@@ -236,6 +320,21 @@ tensorrt-edgellm-serve Qwen/Qwen3-VL-2B-Instruct \
   --cache-dir /data/edgellm-cache \
   --allowed-local-media-path /data/media
 ```
+
+Muse-Glimmer image and video chat use its FP16 multimodal checkpoint; the
+NVFP4 checkpoint is text-only:
+
+```bash
+tensorrt-edgellm-serve meta-models/Muse-Glimmer-30B \
+  --cache-dir /data/edgellm-cache \
+  --max-image-tokens 4096 \
+  --max-image-tokens-per-image 4096 \
+  --allowed-local-media-path /data/media
+```
+
+Use an `image_url` block for an image or a `video_url` block for a video.
+Muse-Glimmer samples video at 2 FPS, up to 96 frames; `fps` and `nframes` on
+the video content block override those defaults.
 
 OpenAI content blocks accept `image_url`, `video_url`, `input_audio`, and
 `audio_url` forms described in [Input Format](../format/input-format.md). Data
@@ -333,7 +432,7 @@ When `--api-key` is set, both OpenAI bearer authentication and Anthropic
 
 | Method | Path | Contract |
 |---|---|---|
-| `GET` | `/health`, `/health/ready` | Runtime, queue, and capability state |
+| `GET` | `/health`, `/health/ready` | Runtime, queue, and capability state; under in-flight batching also the scheduler counters (`scheduling`) |
 | `GET` | `/v1/models` | The loaded model |
 | `POST` | `/v1/chat/completions` | OpenAI chat and SSE |
 | `POST` | `/v1/messages` | Anthropic Messages and SSE |
@@ -348,13 +447,27 @@ API.
 
 ## Runtime Concurrency
 
-The current high-level runtime has one mutable generation state. The server
-therefore admits one request at a time and uses a bounded async queue configured
-by `--max-queued-requests` and `--queue-timeout`. Queue overflow and timeout
-return HTTP 429 (Anthropic 529). Streaming disconnects cancel the native channel
-immediately, wait for the native worker to exit, and then release the runtime
-lease. Engines stay resident across HTTP connections; graceful server shutdown
-drains active work and releases the runtime and its device resources.
+By default the server admits one request at a time: the runtime has one mutable
+generation state, and a bounded async queue configured by
+`--max-queued-requests` and `--queue-timeout` holds the rest. Queue overflow and
+timeout return HTTP 429 (Anthropic 529). Streaming disconnects cancel the native
+channel immediately, wait for the native worker to exit, and then release the
+runtime lease. Engines stay resident across HTTP connections; graceful server
+shutdown drains active work and releases the runtime and its device resources.
 
-Continuous batching, chunked prefill scheduling, and tensor parallelism require
-additional native scheduler support and are rejected at launch.
+`--enable-in-flight-batching` replaces the one-at-a-time path with the request
+engine: up to `--max-batch-size` requests decode together, and a new request
+joins the running batch at the next generation boundary instead of waiting for
+it to finish. Admission is then a limit rather than a queue: at most
+`--max-batch-size` plus `--max-queued-requests` requests are in flight, and a
+request past that limit gets an immediate 429. A disconnect cancels the request
+inside the engine, so an abandoned stream stops decoding and frees its seat.
+`/health` reports `in_flight_batching: true`, `max_num_seqs` equal to the batch
+size, and a `scheduling` block with the engine's counters (submitted, completed,
+cancelled, admissions that joined mid-flight, and the reasons a queued request
+had to wait).
+
+Not every deployment can take the flag, and not every request can join a
+running batch; see [In-Flight Batching](../features/in-flight-batching.md) for
+the support matrix. Chunked prefill scheduling and tensor parallelism remain on
+the one-at-a-time path.

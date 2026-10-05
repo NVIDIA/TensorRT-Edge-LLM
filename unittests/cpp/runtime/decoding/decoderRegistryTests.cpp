@@ -38,27 +38,67 @@ rt::LLMGenerationRequest makeSamplingRequest(float temperature, int64_t topK, fl
 TEST(DecoderRegistryPolicyTest, EagleUsesDefaultDecoderOnlyForEffectiveNonGreedySampling)
 {
     auto request = makeSamplingRequest(1.0F, 1, 1.0F);
-    EXPECT_FALSE(rt::shouldSelectDefaultDecoder(rt::DecodingStrategyKind::kEAGLE, request));
+    EXPECT_FALSE(rt::shouldSelectDefaultDecoder(rt::DecodingStrategyKind::kEAGLE, {}, request));
 
     request = makeSamplingRequest(1.0F, 50, 1.0F);
-    EXPECT_TRUE(rt::shouldSelectDefaultDecoder(rt::DecodingStrategyKind::kEAGLE, request));
+    EXPECT_TRUE(rt::shouldSelectDefaultDecoder(rt::DecodingStrategyKind::kEAGLE, {}, request));
 
     // SamplingParams normalizes this common configuration to greedy top-1.
     request = makeSamplingRequest(0.0F, 50, 1.0F);
-    EXPECT_FALSE(rt::shouldSelectDefaultDecoder(rt::DecodingStrategyKind::kEAGLE, request));
+    EXPECT_FALSE(rt::shouldSelectDefaultDecoder(rt::DecodingStrategyKind::kEAGLE, {}, request));
 }
 
 TEST(DecoderRegistryPolicyTest, ExplicitDisableAndOtherSpeculativeModesRemainUnchanged)
 {
     auto request = makeSamplingRequest(1.0F, 50, 1.0F);
-    EXPECT_FALSE(rt::shouldSelectDefaultDecoder(rt::DecodingStrategyKind::kMTP, request));
-    EXPECT_FALSE(rt::shouldSelectDefaultDecoder(rt::DecodingStrategyKind::kDFlash, request));
-    EXPECT_FALSE(rt::shouldSelectDefaultDecoder(rt::DecodingStrategyKind::kGemma4MTP, request));
-    EXPECT_FALSE(rt::shouldSelectDefaultDecoder(rt::DecodingStrategyKind::kDSpark, request));
+    EXPECT_FALSE(rt::shouldSelectDefaultDecoder(rt::DecodingStrategyKind::kMTP, {}, request));
+    EXPECT_FALSE(rt::shouldSelectDefaultDecoder(rt::DecodingStrategyKind::kDFlash, {}, request));
+    EXPECT_FALSE(rt::shouldSelectDefaultDecoder(rt::DecodingStrategyKind::kGemma4MTP, {}, request));
+    EXPECT_FALSE(rt::shouldSelectDefaultDecoder(rt::DecodingStrategyKind::kDSpark, {}, request));
 
     request.disableSpecDecode = true;
-    EXPECT_TRUE(rt::shouldSelectDefaultDecoder(rt::DecodingStrategyKind::kEAGLE, request));
-    EXPECT_TRUE(rt::shouldSelectDefaultDecoder(rt::DecodingStrategyKind::kMTP, request));
+    EXPECT_TRUE(rt::shouldSelectDefaultDecoder(rt::DecodingStrategyKind::kEAGLE, {}, request));
+    EXPECT_TRUE(rt::shouldSelectDefaultDecoder(rt::DecodingStrategyKind::kMTP, {}, request));
+}
+
+TEST(DecoderRegistryPolicyTest, UnsupportedTreeSamplingFallsBackBeforeExecution)
+{
+    rt::DecodingStrategyCapabilities treeGreedyOnly{/*.ownsBaseVerificationCudaGraphs=*/true,
+        /*.supportsLosslessSampling=*/false, /*.maxSamplingSupport=*/0,
+        /*.fallbackToVanillaForNonGreedySampling=*/true};
+
+    auto greedy = makeSamplingRequest(1.0F, 1, 1.0F);
+    EXPECT_FALSE(rt::shouldSelectDefaultDecoder(rt::DecodingStrategyKind::kDFlash, treeGreedyOnly, greedy));
+
+    auto topK = makeSamplingRequest(1.0F, 20, 1.0F);
+    EXPECT_TRUE(rt::shouldSelectDefaultDecoder(rt::DecodingStrategyKind::kDFlash, treeGreedyOnly, topK));
+
+    auto topP = makeSamplingRequest(1.0F, 0, 0.95F);
+    EXPECT_TRUE(rt::shouldSelectDefaultDecoder(rt::DecodingStrategyKind::kDFlash, treeGreedyOnly, topP));
+
+    EXPECT_TRUE(rt::shouldSelectDefaultDecoder(rt::DecodingStrategyKind::kMTP, treeGreedyOnly, topK));
+    EXPECT_TRUE(rt::shouldSelectDefaultDecoder(rt::DecodingStrategyKind::kDSpark, treeGreedyOnly, topK));
+}
+
+TEST(DecoderRegistryPolicyTest, BoundedLosslessDecoderSupportsTopPOnlyAndFallsBackForOversizedTopK)
+{
+    rt::DecodingStrategyCapabilities boundedLossless{/*.ownsBaseVerificationCudaGraphs=*/true,
+        /*.supportsLosslessSampling=*/true, /*.maxSamplingSupport=*/128};
+    rt::DecodingStrategyCapabilities unboundedLossless{/*.ownsBaseVerificationCudaGraphs=*/false,
+        /*.supportsLosslessSampling=*/true, /*.maxSamplingSupport=*/0};
+
+    auto topPOnly = makeSamplingRequest(1.0F, 0, 0.95F);
+    EXPECT_FALSE(rt::shouldSelectDefaultDecoder(rt::DecodingStrategyKind::kDFlash, boundedLossless, topPOnly));
+    EXPECT_FALSE(rt::shouldSelectDefaultDecoder(rt::DecodingStrategyKind::kDSpark, unboundedLossless, topPOnly));
+
+    auto greedy = makeSamplingRequest(1.0F, 0, 1.0F);
+    EXPECT_FALSE(rt::shouldSelectDefaultDecoder(rt::DecodingStrategyKind::kDFlash, boundedLossless, greedy));
+
+    auto boundedTopK = makeSamplingRequest(1.0F, 128, 0.95F);
+    EXPECT_FALSE(rt::shouldSelectDefaultDecoder(rt::DecodingStrategyKind::kDFlash, boundedLossless, boundedTopK));
+
+    auto oversizedTopK = makeSamplingRequest(1.0F, 129, 1.0F);
+    EXPECT_TRUE(rt::shouldSelectDefaultDecoder(rt::DecodingStrategyKind::kDFlash, boundedLossless, oversizedTopK));
 }
 
 } // namespace

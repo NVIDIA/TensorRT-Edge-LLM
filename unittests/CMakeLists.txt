@@ -126,6 +126,8 @@ edgellm_add_unit_test(
   unitTestCommon
   DIRS
   cpp/common
+  cpp/tokenizer
+  cpp/chatTemplate
   cpp/profiling
   cpp/builder
   cpp/sampler
@@ -139,7 +141,10 @@ edgellm_add_unit_test(
   cpp/runtime/config
   cpp/runtime/exec
   cpp/runtime/decoding
-  cpp/runtime/multiDevice)
+  cpp/runtime/multiDevice
+  cpp/runtime/weight)
+
+edgellm_add_unit_test(NAME unitTestScheduler DIRS cpp/scheduler)
 
 edgellm_add_unit_test(NAME unitTestRuntimeState DIRS cpp/runtime/state)
 
@@ -151,6 +156,27 @@ edgellm_add_unit_test(
   cpp/kernels/decodeAttentionKernels cpp/kernels/audioAttentionKernels)
 
 edgellm_add_unit_test(NAME unitTestKernelsMoe DIRS cpp/kernels/moe)
+
+# CuTe DSL AOT wrappers lower extended launches through the runtime's
+# _cudaLaunchKernelEx entry point. Intercept it only when MoE grouped-GEMM
+# artifacts (the NVFP4 MoE group or the Thor NVFP4-A16 MoE group) are linked so
+# ordinary and QNX unit-test builds do not acquire a dependency on that private
+# runtime symbol. CUDA 12.0--12.6 already use this linker seam for the CuTe DSL
+# compatibility shim; both MoE groups target CUDA 12.8+ and therefore have no
+# competing wrapper.
+get_target_property(_moe_unit_test_definitions unitTestKernelsMoe
+                    COMPILE_DEFINITIONS)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux"
+   AND CUDA_CTK_VERSION VERSION_GREATER_EQUAL 12.8
+   AND ("CUTE_DSL_NVFP4_MOE_ENABLED" IN_LIST _moe_unit_test_definitions
+        OR "CUTE_DSL_NVFP4_A16_BLACKWELL_MOE_ENABLED" IN_LIST
+           _moe_unit_test_definitions))
+  target_compile_definitions(unitTestKernelsMoe
+                             PRIVATE EDGELLM_TEST_WRAP_CUTEDSL_LAUNCH)
+  target_link_options(unitTestKernelsMoe PRIVATE
+                      "-Wl,--wrap=_cudaLaunchKernelEx")
+endif()
+unset(_moe_unit_test_definitions)
 
 edgellm_add_unit_test(NAME unitTestKernelsSpeculative DIRS
                       cpp/kernels/speculative)
@@ -171,12 +197,30 @@ edgellm_add_unit_test(
   cpp/kernels/multiDeviceKernels
   cpp/kernels/nvfp4A16BlackwellGemm
   cpp/kernels/nvfp4A16BlackwellGemv
-  cpp/kernels/dart)
+  cpp/kernels/dart
+  cpp/kernels/qsaIndexer)
 
-edgellm_add_unit_test(NAME unitTestPlugins DIRS cpp/plugins/nvfp4A16GemmPlugin)
+edgellm_add_unit_test(
+  NAME unitTestPlugins DIRS cpp/plugins/nvfp4A16GemmPlugin
+  cpp/plugins/nvfp4A16BlackwellMoePlugin cpp/plugins/allReducePlugin)
 
 edgellm_add_unit_test(NAME unitTestCuteDslKernels DIRS
                       kernelSrcs/int4_fp16_gemm_cutedsl)
+
+# The pi0.5 runtime lives outside edgellmCore and is only configured when
+# BUILD_EXPERIMENTAL_MODELS is on. Register the directory either way, so the
+# orphan sweep below does not flag tests this configuration deliberately skips.
+if(TARGET pi05Experimental)
+  edgellm_add_unit_test(NAME unitTestPi05 DIRS experimental_models/pi05)
+  # edgellmBuilder is not part of edgellmCore, and the export-identity tests
+  # reach the pi0.5 component builder.
+  target_link_libraries(unitTestPi05 PRIVATE pi05Experimental edgellmBuilder)
+  target_include_directories(
+    unitTestPi05 PRIVATE ${CMAKE_SOURCE_DIR}/experimental_models/pi05/cpp)
+else()
+  set_property(GLOBAL APPEND PROPERTY EDGELLM_REGISTERED_TEST_DIRS
+                                      experimental_models/pi05)
+endif()
 
 edgellm_add_unit_test(NAME unitTestExamples DIRS examples/utils)
 target_include_directories(unitTestExamples

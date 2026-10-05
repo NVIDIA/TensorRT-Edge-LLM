@@ -21,7 +21,8 @@ import tensorrt as trt
 
 from ...core import config
 from ...ops import (GatedDecoderAttention, GatedDeltaNet, GatedMLP, Linear,
-                    Module, NetworkModule, RMSNorm)
+                    Module, NetworkModule, RaggedDecoderInputs, RMSNorm,
+                    add_ragged_decoder_inputs)
 from ...ops import functional as F
 
 LOGGER = logging.getLogger("builder.qwen3_5")
@@ -56,30 +57,29 @@ class Qwen3_5DecoderLayer(Module):
 
     def forward(self,
                 hidden_states,
-                context_lengths,
+                ragged,
                 past_key_value=None,
                 rope=None,
-                cache_start=None,
-                kv_page_table=None,
                 conv_state=None,
                 recurrent_state=None,
                 attention_mask=None,
                 attention_pos_id=None,
-                spec_metadata=(),
-                use_ddtree=False,
+                tree_parent_ids=None,
+                tree_depths=None,
+                valid_tree_counts=None,
                 collect_intermediate=False):
         normalized = self.input_norm(hidden_states)
         if self.layer_type == config.LAYER_GDN:
             states = self.mixer(normalized, conv_state, recurrent_state,
-                                context_lengths, spec_metadata, use_ddtree,
+                                ragged, tree_parent_ids, tree_depths,
                                 collect_intermediate)
             mixed, conv_out, recurrent_out = states[:3]
             present = (conv_out, recurrent_out, *states[3:])
         else:
             mixed, present = self.mixer(normalized, past_key_value, rope,
-                                        context_lengths, cache_start,
-                                        kv_page_table, attention_mask,
-                                        attention_pos_id)
+                                        ragged, attention_mask,
+                                        attention_pos_id, tree_parent_ids,
+                                        tree_depths, valid_tree_counts)
         hidden_states = hidden_states + mixed
         feed_forward = self.mlp(self.post_norm(hidden_states))
         hidden_states = hidden_states + feed_forward
@@ -124,7 +124,7 @@ class Qwen3_5ForCausalLM(NetworkModule):
         result = {
             "inputs_embeds":
             self.add_input("inputs_embeds", trt.float16,
-                           (-1, -1, cfg.hidden_size)),
+                           (-1, cfg.hidden_size)),
             "past_key_values": [
                 self.add_input(f"past_key_values_{index}", kv_dtype,
                                (2, -1, F.KV_PAGE_SIZE, cfg.num_key_value_heads,
@@ -133,16 +133,7 @@ class Qwen3_5ForCausalLM(NetworkModule):
             ],
             "rope":
             self.add_input("rope_rotary_cos_sin", trt.float32,
-                           (-1, -1, cfg.rotary_dim)),
-            "context_lengths":
-            self.add_input("context_lengths", trt.int32, (-1, )),
-            "cache_start":
-            self.add_input("kvcache_start_index", trt.int32, (-1, )),
-            "kv_page_table":
-            self.add_input("kv_page_table", trt.int32, (-1, 2, -1)),
-            "last_token_ids":
-            self.add_input("last_token_ids", trt.int64,
-                           (-1, -1) if cfg.engine_role == "base" else (-1, 1)),
+                           (-1, cfg.rotary_dim)),
             "conv_states": [
                 self.add_input(f"conv_state_{index}", trt.float16,
                                (-1, conv_dim, conv_kernel))
@@ -154,42 +145,37 @@ class Qwen3_5ForCausalLM(NetworkModule):
                                recurrent_shape) for index in range(state_count)
             ],
         }
+        result.update(add_ragged_decoder_inputs(self.add_input).as_dict())
         if cfg.engine_role == "base":
             result["attention_pos_id"] = self.add_input(
-                "attention_pos_id", trt.int32, (-1, -1))
-            result["attention_mask"] = self.add_input("attention_mask",
-                                                      trt.int32, (-1, -1, -1))
-            modern_hybrid_abi = all(
-                F.supports(name, "use_ddtree")
-                for name in ("causal_conv1d", "gated_delta_net"))
-            result["spec_verify_phase_marker"] = (self.add_input(
-                "spec_verify_phase_marker", trt.int32,
-                (-1, )) if modern_hybrid_abi else None)
+                "attention_position_ids", trt.int32, (-1, ))
+            result["attention_mask"] = self.add_input("packed_attention_mask",
+                                                      trt.int32, (-1, -1))
             if cfg.dflash_tree_base or cfg.mtp_tree_base:
-                if not modern_hybrid_abi:
-                    raise RuntimeError(
-                        "loaded hybrid operations do not support DDTree inputs"
-                    )
                 result["tree_parent_ids"] = self.add_input(
-                    "tree_parent_ids", trt.int32, (-1, -1))
+                    "tree_parent_ids", trt.int32, (-1, ))
                 result["tree_depths"] = self.add_input("tree_depths",
-                                                       trt.int32, (-1, -1))
+                                                       trt.int32, (-1, ))
+                result["valid_tree_counts"] = self.add_input(
+                    "valid_tree_counts", trt.int32, (-1, ))
             else:
                 result["tree_parent_ids"] = None
                 result["tree_depths"] = None
+                result["valid_tree_counts"] = None
         else:
             result.update({
                 "attention_pos_id": None,
                 "attention_mask": None,
-                "spec_verify_phase_marker": None,
                 "tree_parent_ids": None,
                 "tree_depths": None,
+                "valid_tree_counts": None,
             })
         return result
 
     def forward(self, **io):
         outputs = {}
         hidden_states = io["inputs_embeds"]
+        ragged = RaggedDecoderInputs.from_dict(io)
         present_kv = []
         present_conv = []
         present_recurrent = []
@@ -203,18 +189,14 @@ class Qwen3_5ForCausalLM(NetworkModule):
             LOGGER.info("building layer %d/%d", layer_index + 1,
                         len(self.layers))
             if layer_type in (config.LAYER_MAMBA, config.LAYER_GDN):
-                metadata = ()
-                if io["spec_verify_phase_marker"] is not None:
-                    metadata = (io["spec_verify_phase_marker"], )
-                    if io["tree_parent_ids"] is not None:
-                        metadata += (io["tree_parent_ids"], io["tree_depths"])
                 hidden_states, states = layer(
                     hidden_states,
-                    io["context_lengths"],
+                    ragged,
                     conv_state=io["conv_states"][state_index],
                     recurrent_state=io["recurrent_states"][state_index],
-                    spec_metadata=metadata,
-                    use_ddtree=io["tree_parent_ids"] is not None,
+                    tree_parent_ids=io["tree_parent_ids"],
+                    tree_depths=io["tree_depths"],
+                    valid_tree_counts=io["valid_tree_counts"],
                     collect_intermediate=self.cfg.engine_role == "base")
                 present_conv.append(states[0])
                 present_recurrent.append(states[1])
@@ -226,20 +208,21 @@ class Qwen3_5ForCausalLM(NetworkModule):
             elif layer_type == config.LAYER_ATTN:
                 hidden_states, present = layer(
                     hidden_states,
-                    io["context_lengths"],
+                    ragged,
                     io["past_key_values"][attention_index],
                     io["rope"],
-                    io["cache_start"],
-                    io["kv_page_table"],
                     attention_mask=io["attention_mask"],
-                    attention_pos_id=io["attention_pos_id"])
+                    attention_pos_id=io["attention_pos_id"],
+                    tree_parent_ids=io["tree_parent_ids"],
+                    tree_depths=io["tree_depths"],
+                    valid_tree_counts=io["valid_tree_counts"])
                 present_kv.append(present)
                 attention_index += 1
             else:
-                hidden_states, _ = layer(hidden_states, io["context_lengths"])
+                hidden_states, _ = layer(hidden_states, ragged)
             all_hidden_states.append(hidden_states)
         hidden_states = self.norm(hidden_states)
-        selected = F.gather_last_tokens(hidden_states, io["last_token_ids"])
+        selected = F.gather_token_rows(hidden_states, ragged.logits_indices)
         logits = F.cast(self.lm_head(selected), trt.float32)
         outputs["logits"] = logits
         if self.cfg.engine_role == "base":

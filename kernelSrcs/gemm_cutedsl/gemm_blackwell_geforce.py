@@ -55,8 +55,10 @@ import cutlass.pipeline as pipeline
 import cutlass.utils as utils
 import cutlass.utils.hopper_helpers as sm90_utils
 import numpy as np
+from cutedsl_utils import aot_placeholders
 from common import (
     create_bias_tensor,
+    create_fake_row_major_3d_tensor,
     create_row_major_3d_gemm_tensors,
     export_compiled_kernel,
     mark_3d_row_major_dynamic,
@@ -969,18 +971,22 @@ def run(
     print(f"{_tag} export_only={export_only}")
     print(f"{_tag} fused_epilogue={fused_epilogue}")
 
-    if cp.cuda.runtime.getDeviceCount() == 0:
+    if not export_only and cp.cuda.runtime.getDeviceCount() == 0:
         raise RuntimeError("GPU is required to run this example!")
 
-    if not export_only:
+    if export_only:
+        a_tensor = create_fake_row_major_3d_tensor(batch=batch)
+        b_tensor = create_fake_row_major_3d_tensor(batch=batch)
+        c_tensor = create_fake_row_major_3d_tensor(batch=batch)
+        a_cp = b_cp = c_cp = None
+    else:
         cp.random.seed(42)
-    a_cp, b_cp, c_cp = create_row_major_3d_gemm_tensors(
-        m, n, k, batch=batch, fill_random=not export_only, dtype=cp.float16
-    )
-
-    a_tensor = mark_3d_row_major_dynamic(to_cute_tensor(a_cp))
-    b_tensor = mark_3d_row_major_dynamic(to_cute_tensor(b_cp))
-    c_tensor = mark_3d_row_major_dynamic(to_cute_tensor(c_cp))
+        a_cp, b_cp, c_cp = create_row_major_3d_gemm_tensors(
+            m, n, k, batch=batch, fill_random=True, dtype=cp.float16
+        )
+        a_tensor = mark_3d_row_major_dynamic(to_cute_tensor(a_cp))
+        b_tensor = mark_3d_row_major_dynamic(to_cute_tensor(b_cp))
+        c_tensor = mark_3d_row_major_dynamic(to_cute_tensor(c_cp))
 
     # Bias tensor for fused epilogues.
     mBias = None
@@ -999,12 +1005,16 @@ def run(
     # build GPU's occupancy. Export mode traces with a placeholder; run/verify
     # mode probes the local GPU as before.
     if export_only:
-        max_active_clusters = cutlass.Int32(1)
+        max_active_clusters = aot_placeholders.runtime_int32()
     else:
         hardware_info = cutlass.utils.HardwareInfo()
         max_active_clusters = cutlass.Int32(hardware_info.get_max_active_clusters(1))
 
-    current_stream = cuda.CUstream(cp.cuda.get_current_stream().ptr)
+    current_stream = (
+        aot_placeholders.make_stream()
+        if export_only
+        else cuda.CUstream(cp.cuda.get_current_stream().ptr)
+    )
 
     start_time = time.time()
     compiled_gemm = cute.compile(
@@ -1016,6 +1026,11 @@ def run(
         current_stream,
         use_silu=_use_silu,
         mBias=mBias,
+        **(
+            dict(options=aot_placeholders.compile_options())
+            if export_only
+            else {}
+        ),
     )
     compilation_time = time.time() - start_time
     print(f"{_tag} Compilation time: {compilation_time:.4f}s")

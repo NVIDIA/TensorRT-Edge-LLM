@@ -115,6 +115,25 @@ inline bool isGatedActivation(int32_t activationType)
     return activationType == kACT_SWIGLU || activationType == kACT_GEGLU;
 }
 
+bool getTokenCount(Dims const& hidden, int64_t& numTokens) noexcept
+{
+    if (hidden.nbDims == 2 && hidden.d[0] > 0)
+    {
+        numTokens = hidden.d[0];
+        return true;
+    }
+    return false;
+}
+
+bool shapesMatch(Dims const& lhs, Dims const& rhs) noexcept
+{
+    if (lhs.nbDims != rhs.nbDims)
+    {
+        return false;
+    }
+    return std::equal(lhs.d, lhs.d + lhs.nbDims, rhs.d);
+}
+
 //! Number of output rows in FC1 given the gated/non-gated activation.
 inline int32_t fc1OutDim(int32_t moeInterSize, int32_t activationType)
 {
@@ -157,9 +176,15 @@ CuteDslMoeIoDtype toRunnerIoDtype(int32_t ioDtype)
 //! \c max_routed_rows against the optimization profile.
 int32_t computeProfileMaxRoutedRows(int64_t maxNumTokens, int32_t topK)
 {
-    int64_t const routed = maxNumTokens * static_cast<int64_t>(topK);
-    int64_t const capped = std::min(routed, static_cast<int64_t>(std::numeric_limits<int32_t>::max()));
-    return static_cast<int32_t>(std::max<int64_t>(1, capped));
+    if (maxNumTokens <= 0 || topK <= 0)
+    {
+        return 1;
+    }
+    if (maxNumTokens > std::numeric_limits<int32_t>::max() / static_cast<int64_t>(topK))
+    {
+        return std::numeric_limits<int32_t>::max();
+    }
+    return static_cast<int32_t>(maxNumTokens * static_cast<int64_t>(topK));
 }
 #endif // CUTE_DSL_NVFP4_FUSED_MOE_ENABLED
 } // namespace
@@ -399,11 +424,14 @@ int32_t NvFP4MoEPluginGeforce::getOutputShapes(DimsExprs const* inputs, int32_t 
     }
     (void) shapeInputs;
     (void) nbShapeInputs;
-    // Output shares B and S with hidden_states; final dim is the plugin-configured hidden_size.
-    outputs[0].nbDims = 3;
+    if (inputs[kIN_HIDDEN_STATES].nbDims != 2)
+    {
+        LOG_ERROR("NvFP4MoEPluginGeforce: hidden_states must have rank 2");
+        return -1;
+    }
+    outputs[0].nbDims = 2;
     outputs[0].d[0] = inputs[kIN_HIDDEN_STATES].d[0];
-    outputs[0].d[1] = inputs[kIN_HIDDEN_STATES].d[1];
-    outputs[0].d[2] = exprBuilder.constant(static_cast<int64_t>(mHiddenSize));
+    outputs[0].d[1] = exprBuilder.constant(static_cast<int64_t>(mHiddenSize));
     return 0;
 }
 
@@ -454,10 +482,10 @@ bool NvFP4MoEPluginGeforce::supportsFormatCombination(
     {
         if (td.type != DataType::kHALF)
             SFC_REJ("HIDDEN_STATES: type != kHALF");
-        if (td.dims.nbDims != 3)
-            SFC_REJ("HIDDEN_STATES: nbDims != 3");
-        if (td.dims.d[2] != mHiddenSize)
-            SFC_REJ("HIDDEN_STATES: d[2] != mHiddenSize");
+        if (td.dims.nbDims != 2)
+            SFC_REJ("HIDDEN_STATES: nbDims != 2");
+        if (td.dims.d[1] != mHiddenSize)
+            SFC_REJ("HIDDEN_STATES: d[1] != mHiddenSize");
         return true;
     }
     case kIN_FC1_QWEIGHTS:
@@ -551,10 +579,11 @@ bool NvFP4MoEPluginGeforce::supportsFormatCombination(
     {
         if (td.type != DataType::kHALF)
             SFC_REJ("OUT_OUTPUT: type != kHALF");
-        if (td.dims.nbDims != 3)
-            SFC_REJ("OUT_OUTPUT: nbDims != 3");
-        if (td.dims.d[2] != mHiddenSize)
-            SFC_REJ("OUT_OUTPUT: d[2] != mHiddenSize");
+        auto const& hiddenDims = inOut[kIN_HIDDEN_STATES].desc.dims;
+        if (td.dims.nbDims != 2 || !shapesMatch(td.dims, hiddenDims))
+            SFC_REJ("OUT_OUTPUT: shape != HIDDEN_STATES shape");
+        if (td.dims.d[td.dims.nbDims - 1] != mHiddenSize)
+            SFC_REJ("OUT_OUTPUT: last dimension != mHiddenSize");
         return true;
     }
     default: SFC_REJ("default: unknown pos");
@@ -565,26 +594,36 @@ bool NvFP4MoEPluginGeforce::supportsFormatCombination(
 int32_t NvFP4MoEPluginGeforce::configurePlugin(
     DynamicPluginTensorDesc const* in, int32_t nbInputs, DynamicPluginTensorDesc const* out, int32_t nbOutputs) noexcept
 {
-    (void) out;
-    (void) nbOutputs;
-    if (nbInputs != kNbPluginInputs)
+    if (in == nullptr || out == nullptr || nbInputs != kNbPluginInputs || nbOutputs != 1)
     {
-        LOG_ERROR("NvFP4MoEPluginGeforce: expected %d inputs, got %d", kNbPluginInputs, nbInputs);
+        LOG_ERROR("NvFP4MoEPluginGeforce: configurePlugin expected %d inputs and 1 output", kNbPluginInputs);
         return -1;
     }
 
-    if (in[kIN_HIDDEN_STATES].max.nbDims == 3)
+    auto validateProfileEndpoint
+        = [this](Dims const& hidden, Dims const& router, char const* endpoint, int64_t& numTokens) {
+              if (!getTokenCount(hidden, numTokens) || hidden.d[hidden.nbDims - 1] != mHiddenSize || router.nbDims != 2
+                  || router.d[0] != numTokens || router.d[1] != mNumExperts)
+              {
+                  LOG_ERROR("NvFP4MoEPluginGeforce: optimization profile %s dimensions are invalid", endpoint);
+                  return false;
+              }
+              return true;
+          };
+    int64_t minTokens{0};
+    int64_t optTokens{0};
+    int64_t maxTokens{0};
+    if (!validateProfileEndpoint(in[kIN_HIDDEN_STATES].min, in[kIN_ROUTER_LOGITS].min, "minimum", minTokens)
+        || !validateProfileEndpoint(in[kIN_HIDDEN_STATES].opt, in[kIN_ROUTER_LOGITS].opt, "optimum", optTokens)
+        || !validateProfileEndpoint(in[kIN_HIDDEN_STATES].max, in[kIN_ROUTER_LOGITS].max, "maximum", maxTokens))
     {
-        int32_t const hiddenSizeFromShape = static_cast<int32_t>(in[kIN_HIDDEN_STATES].max.d[2]);
-        if (hiddenSizeFromShape != mHiddenSize)
-        {
-            LOG_ERROR(
-                "NvFP4MoEPluginGeforce: hidden_size attribute (%d) does not match "
-                "hidden_states max d[2] (%d). The plugin attribute is authoritative; "
-                "rebuild the ONNX graph or fix the network input shape so they agree.",
-                mHiddenSize, hiddenSizeFromShape);
-            return -1;
-        }
+        return -1;
+    }
+    if (!shapesMatch(out[0].min, in[kIN_HIDDEN_STATES].min) || !shapesMatch(out[0].opt, in[kIN_HIDDEN_STATES].opt)
+        || !shapesMatch(out[0].max, in[kIN_HIDDEN_STATES].max))
+    {
+        LOG_ERROR("NvFP4MoEPluginGeforce: output profile range must match hidden_states");
+        return -1;
     }
     if (static_cast<int32_t>(in[kIN_E_SCORE_CORRECTION_BIAS].max.d[0]) != mNumExperts)
     {
@@ -634,25 +673,16 @@ int32_t NvFP4MoEPluginGeforce::configurePlugin(
     return -1;
 #endif
 
-    // Runtime-dim consistency: router_logits.d[0] must equal hidden_states.d[0] * d[1].
-    int64_t const maxRouter = static_cast<int64_t>(in[kIN_ROUTER_LOGITS].max.d[0]);
-    int64_t const maxB = static_cast<int64_t>(in[kIN_HIDDEN_STATES].max.d[0]);
-    int64_t const maxS = static_cast<int64_t>(in[kIN_HIDDEN_STATES].max.d[1]);
-    if (maxRouter > 0 && maxB > 0 && maxS > 0 && maxRouter != maxB * maxS)
-    {
-        LOG_ERROR(
-            "NvFP4MoEPluginGeforce: router_logits max d[0] (%lld) must equal hidden_states "
-            "max d[0]*d[1] (%lld*%lld)",
-            static_cast<long long>(maxRouter), static_cast<long long>(maxB), static_cast<long long>(maxS));
-        return -1;
-    }
-
 #ifdef CUTE_DSL_NVFP4_FUSED_MOE_ENABLED
     // Resolve and validate \c max_routed_rows against the optimization profile.
-    int64_t const profileMaxHiddenTokens = std::max<int64_t>(0, maxB) * std::max<int64_t>(0, maxS);
-    int64_t const profileMaxTokens = std::max<int64_t>({profileMaxHiddenTokens, std::max<int64_t>(0, maxRouter)});
+    int64_t const profileMaxTokens = maxTokens;
     if (profileMaxTokens > 0)
     {
+        if (mTopK <= 0 || profileMaxTokens > std::numeric_limits<int32_t>::max() / mTopK)
+        {
+            LOG_ERROR("NvFP4MoEPluginGeforce: optimization profile routed rows exceed INT32 capacity");
+            return -1;
+        }
         int32_t const profileMaxRoutedRows = computeProfileMaxRoutedRows(profileMaxTokens, mTopK);
         if (mMaxRoutedRows == 0)
         {
@@ -689,21 +719,30 @@ int32_t NvFP4MoEPluginGeforce::configurePlugin(
 size_t NvFP4MoEPluginGeforce::getWorkspaceSize(DynamicPluginTensorDesc const* inputs, int32_t nbInputs,
     DynamicPluginTensorDesc const* outputs, int32_t nbOutputs) const noexcept
 {
-    (void) outputs;
-    (void) nbOutputs;
-    if (nbInputs != kNbPluginInputs)
+    if (inputs == nullptr || outputs == nullptr || nbInputs != kNbPluginInputs || nbOutputs != 1)
     {
-        LOG_ERROR("NvFP4MoEPluginGeforce: getWorkspaceSize expected %d inputs, got %d", kNbPluginInputs, nbInputs);
+        LOG_ERROR("NvFP4MoEPluginGeforce: getWorkspaceSize expected %d inputs and 1 output", kNbPluginInputs);
         return 0;
     }
-    (void) inputs;
 
 #ifdef CUTE_DSL_NVFP4_FUSED_MOE_ENABLED
     try
     {
-        int64_t const maxHiddenTokens = static_cast<int64_t>(inputs[kIN_HIDDEN_STATES].max.d[0])
-            * static_cast<int64_t>(inputs[kIN_HIDDEN_STATES].max.d[1]);
-        int64_t const maxRouterTokens = static_cast<int64_t>(inputs[kIN_ROUTER_LOGITS].max.d[0]);
+        int64_t maxHiddenTokens{0};
+        if (!getTokenCount(inputs[kIN_HIDDEN_STATES].max, maxHiddenTokens) || mTopK <= 0
+            || maxHiddenTokens > std::numeric_limits<int32_t>::max() / mTopK)
+        {
+            LOG_ERROR("NvFP4MoEPluginGeforce: invalid hidden_states profile maximum");
+            return 0;
+        }
+        auto const& maxRouterDims = inputs[kIN_ROUTER_LOGITS].max;
+        if (maxRouterDims.nbDims != 2 || maxRouterDims.d[0] != maxHiddenTokens || maxRouterDims.d[1] != mNumExperts
+            || !shapesMatch(outputs[0].max, inputs[kIN_HIDDEN_STATES].max))
+        {
+            LOG_ERROR("NvFP4MoEPluginGeforce: profile maximum router/output shapes do not match hidden_states");
+            return 0;
+        }
+        int64_t const maxRouterTokens = static_cast<int64_t>(maxRouterDims.d[0]);
         int64_t const maxTokens64 = std::max(maxHiddenTokens, maxRouterTokens);
         int32_t const maxTokens = static_cast<int32_t>(
             std::min<int64_t>(maxTokens64, static_cast<int64_t>(std::numeric_limits<int32_t>::max())));
@@ -755,6 +794,12 @@ int32_t NvFP4MoEPluginGeforce::enqueue(PluginTensorDesc const* inputDesc, Plugin
 #else
     try
     {
+        if (inputDesc == nullptr || outputDesc == nullptr || inputs == nullptr || outputs == nullptr
+            || outputs[0] == nullptr)
+        {
+            LOG_ERROR("NvFP4MoEPluginGeforce: enqueue received null descriptors or buffers");
+            return -1;
+        }
         if (mIdentityExpertTable == nullptr)
         {
             LOG_ERROR(
@@ -766,30 +811,29 @@ int32_t NvFP4MoEPluginGeforce::enqueue(PluginTensorDesc const* inputDesc, Plugin
         }
 
         PluginTensorDesc const& hiddenDesc = inputDesc[kIN_HIDDEN_STATES];
-        if (hiddenDesc.dims.nbDims != 3)
+        int64_t numTokens64{0};
+        if (!getTokenCount(hiddenDesc.dims, numTokens64)
+            || hiddenDesc.dims.d[hiddenDesc.dims.nbDims - 1] != mHiddenSize)
         {
-            LOG_ERROR("NvFP4MoEPluginGeforce: hidden_states must be 3D, got %d", hiddenDesc.dims.nbDims);
+            LOG_ERROR("NvFP4MoEPluginGeforce: hidden_states must be [T,H] with H=%d", mHiddenSize);
             return -1;
         }
-        int32_t const batch = hiddenDesc.dims.d[0];
-        int32_t const seqLen = hiddenDesc.dims.d[1];
-        if (batch < 1 || seqLen < 1)
+        if (mTopK <= 0 || numTokens64 > std::numeric_limits<int32_t>::max() / mTopK)
         {
-            LOG_ERROR("NvFP4MoEPluginGeforce: batch/seq_len must be >= 1 (got %d, %d)", batch, seqLen);
-            return -1;
-        }
-        int64_t const numTokens64 = static_cast<int64_t>(batch) * static_cast<int64_t>(seqLen);
-        if (numTokens64 > std::numeric_limits<int32_t>::max())
-        {
-            LOG_ERROR(
-                "NvFP4MoEPluginGeforce: batch*seq_len (%lld) overflows int32", static_cast<long long>(numTokens64));
+            LOG_ERROR("NvFP4MoEPluginGeforce: runtime routed rows exceed INT32 capacity");
             return -1;
         }
         int32_t const numTokens = static_cast<int32_t>(numTokens64);
-        if (inputDesc[kIN_ROUTER_LOGITS].dims.d[0] != numTokens)
+        auto const& routerDims = inputDesc[kIN_ROUTER_LOGITS].dims;
+        if (routerDims.nbDims != 2 || routerDims.d[0] != numTokens || routerDims.d[1] != mNumExperts)
         {
-            LOG_ERROR("NvFP4MoEPluginGeforce: router_logits d[0]=%d must equal batch*seq_len=%d",
-                inputDesc[kIN_ROUTER_LOGITS].dims.d[0], numTokens);
+            LOG_ERROR(
+                "NvFP4MoEPluginGeforce: router_logits must be [num_tokens=%d, num_experts=%d]", numTokens, mNumExperts);
+            return -1;
+        }
+        if (!shapesMatch(outputDesc[0].dims, hiddenDesc.dims))
+        {
+            LOG_ERROR("NvFP4MoEPluginGeforce: output shape must match hidden_states");
             return -1;
         }
 
@@ -926,33 +970,35 @@ int32_t NvFP4MoEPluginGeforce::enqueue(PluginTensorDesc const* inputDesc, Plugin
 int32_t NvFP4MoEPluginGeforce::onShapeChange(
     PluginTensorDesc const* in, int32_t nbInputs, PluginTensorDesc const* out, int32_t nbOutputs) noexcept
 {
-    (void) out;
-    (void) nbOutputs;
-    if (in == nullptr || nbInputs <= kIN_HIDDEN_STATES)
+    if (in == nullptr || out == nullptr || nbInputs != kNbPluginInputs || nbOutputs != 1)
     {
-        return 0;
+        LOG_ERROR("NvFP4MoEPluginGeforce: onShapeChange expected %d inputs and 1 output", kNbPluginInputs);
+        return -1;
     }
     auto const& hiddenDims = in[kIN_HIDDEN_STATES].dims;
-    if (hiddenDims.nbDims != 3)
+    int64_t numTokens{0};
+    if (!getTokenCount(hiddenDims, numTokens) || hiddenDims.d[hiddenDims.nbDims - 1] != mHiddenSize || mTopK <= 0
+        || numTokens > std::numeric_limits<int32_t>::max() / mTopK)
     {
-        return 0;
+        LOG_ERROR("NvFP4MoEPluginGeforce: hidden_states must be [T,H] with H=%d", mHiddenSize);
+        return -1;
     }
-    int64_t const batch = static_cast<int64_t>(hiddenDims.d[0]);
-    int64_t const seqLen = static_cast<int64_t>(hiddenDims.d[1]);
-    if (batch <= 0 || seqLen <= 0)
+    auto const& routerDims = in[kIN_ROUTER_LOGITS].dims;
+    if (routerDims.nbDims != 2 || routerDims.d[0] != numTokens || routerDims.d[1] != mNumExperts
+        || !shapesMatch(out[0].dims, hiddenDims))
     {
-        return 0;
+        LOG_ERROR("NvFP4MoEPluginGeforce: runtime router/output shapes do not match hidden_states");
+        return -1;
     }
-    int64_t const routedRows = batch * seqLen * static_cast<int64_t>(mTopK);
+    int64_t const routedRows = numTokens * static_cast<int64_t>(mTopK);
     if (mMaxRoutedRows > 0 && routedRows > static_cast<int64_t>(mMaxRoutedRows))
     {
         LOG_ERROR(
             "NvFP4MoEPluginGeforce::onShapeChange: runtime num_tokens*top_k "
-            "(%lld * %lld * %d = %lld) exceeds the resolved max_routed_rows cap (%d). "
+            "(%lld * %d = %lld) exceeds the resolved max_routed_rows cap (%d). "
             "Rebuild the engine with a profile whose max shapes cover this case, or "
             "pass a larger explicit max_routed_rows attribute.",
-            static_cast<long long>(batch), static_cast<long long>(seqLen), mTopK, static_cast<long long>(routedRows),
-            mMaxRoutedRows);
+            static_cast<long long>(numTokens), mTopK, static_cast<long long>(routedRows), mMaxRoutedRows);
         return -1;
     }
     return 0;

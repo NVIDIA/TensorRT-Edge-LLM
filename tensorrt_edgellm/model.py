@@ -28,15 +28,18 @@ import logging
 import os
 from typing import Callable, Dict, Type
 
+import torch
 import torch.nn as nn
 
 from .checkpoint.checkpoint_utils import load_checkpoint_config_dicts
 from .checkpoint.loader import load_weights
-from .config import (QUANT_FP16, QUANT_INT4_AWQ, QUANT_INT4_AWQ_MODELOPT,
-                     QUANT_INT4_GPTQ, QUANT_MXFP8, QUANT_NVFP4, ModelConfig,
-                     _is_gemma4_assistant_model_type, make_dflash_draft_config,
+from .config import (QUANT_FP16, QUANT_INT4_GPTQ, ModelConfig,
+                     _is_gemma4_assistant_model_type,
+                     make_dflash2_draft_config, make_dflash_draft_config,
                      make_dspark_draft_config, make_jetspec_draft_config,
-                     make_mtp_draft_config, module_quant_type)
+                     make_mtp_draft_config, module_quant_group_size,
+                     module_quant_type)
+from .dflash import DFlashVersion, resolve_dflash_contract
 
 __all__ = [
     "AutoModel", "load_model_config", "register_attention_scale_default",
@@ -47,6 +50,56 @@ __all__ = [
 AttentionScaleDefault = Callable[[int], float]
 _MODEL_REGISTRY: Dict[str, Type[nn.Module]] = {}
 _ATTENTION_SCALE_DEFAULT_REGISTRY: Dict[str, AttentionScaleDefault] = {}
+
+
+def _instantiate_model(model_class: Type[nn.Module],
+                       config: ModelConfig,
+                       device: str,
+                       low_cpu_mem_usage: bool = False) -> nn.Module:
+    if low_cpu_mem_usage:
+        if device != "cpu":
+            raise ValueError("low_cpu_mem_usage requires device='cpu'")
+        with torch.device("meta"):
+            return model_class(config)
+
+    model = model_class(config)
+    model.to(device)
+    return model
+
+
+def _materialize_checkpoint_defaults(model: nn.Module, device: str) -> None:
+    materialize = getattr(model, "materialize_checkpoint_defaults", None)
+    if callable(materialize):
+        materialize(device)
+
+
+# Quantization-scale buffers that model classes register with a safe ``ones``
+# default but that not every checkpoint variant carries: official
+# ``nvidia/*-FP8`` / ``*-NVFP4`` checkpoints omit the attention ``q_scale``
+# (ModelOpt keeps the legacy ``qScale=1.0`` convention), and INT4-AWQ exports
+# omit ``pre_quant_scale`` on the resmoothed q/k/v/gate/up projections. The
+# normal (non-meta) load path simply keeps the registered ``ones`` default when
+# the tensor is absent; under ``low_cpu_mem_usage`` that default lands on the
+# meta device, so restore it explicitly before the strict materialization scan.
+_OPTIONAL_SCALE_DEFAULT_BUFFERS = frozenset(
+    ("q_scale", "k_scale", "v_scale", "pre_quant_scale"))
+
+
+def _materialize_optional_scale_buffers(model: nn.Module, device: str) -> None:
+    """Fill in optional ``ones``-default scale buffers left on the meta device.
+
+    Mirrors the non-``low_cpu_mem_usage`` load path, where a checkpoint that
+    omits one of these buffers keeps the module's registered ``ones`` default.
+    Restricted to the known-optional scale buffer names so a genuinely missing
+    required tensor (e.g. a weight) still trips the strict meta-tensor scan.
+    """
+    for module in model.modules():
+        for name, buf in module.named_buffers(recurse=False):
+            if (name in _OPTIONAL_SCALE_DEFAULT_BUFFERS and buf is not None
+                    and buf.device.type == "meta"):
+                module.register_buffer(
+                    name, torch.ones(buf.shape, dtype=buf.dtype,
+                                     device=device))
 
 
 def standard_attention_scale(head_dim: int) -> float:
@@ -74,13 +127,55 @@ def _is_qwen3_5_mtp_draft_supported(model_type: str) -> bool:
     return model_type in _QWEN3_5_MTP_DRAFT_MODEL_TYPES
 
 
-_GROUP_SIZE_LM_HEAD_QUANTS = frozenset({
-    QUANT_INT4_AWQ,
-    QUANT_INT4_AWQ_MODELOPT,
-    QUANT_INT4_GPTQ,
-    QUANT_MXFP8,
-    QUANT_NVFP4,
-})
+def _inherit_dspark_base_metadata(config: ModelConfig,
+                                  dspark_draft_dir: "str | None") -> None:
+    if not dspark_draft_dir:
+        return
+
+    draft_cfg_path = os.path.join(dspark_draft_dir, "config.json")
+    if not os.path.isfile(draft_cfg_path):
+        raise FileNotFoundError(
+            f"DSpark draft config does not exist: {draft_cfg_path}")
+    _, draft_cfg = load_checkpoint_config_dicts(dspark_draft_dir)
+    dspark_cfg = (draft_cfg.get("dspark_config")
+                  or draft_cfg.get("dflash_config") or {})
+
+    target_layer_ids = (dspark_cfg.get("target_layer_ids")
+                        or draft_cfg.get("target_layer_ids")
+                        or config.dspark_target_layer_ids)
+    config.dspark_target_layer_ids = list(target_layer_ids)
+    config.dspark_block_size = int(
+        dspark_cfg.get("block_size",
+                       draft_cfg.get("block_size", config.dspark_block_size)))
+    default_mask_token_id = (4 if str(draft_cfg.get(
+        "model_type", "")).startswith("gemma4") else
+                             config.dspark_mask_token_id)
+    config.dspark_mask_token_id = int(
+        dspark_cfg.get("mask_token_id",
+                       draft_cfg.get("mask_token_id", default_mask_token_id)))
+    config.dspark_enable_confidence_head = bool(
+        dspark_cfg.get(
+            "enable_confidence_head",
+            draft_cfg.get("enable_confidence_head",
+                          config.dspark_enable_confidence_head)))
+    config.dspark_confidence_head_with_markov = bool(
+        dspark_cfg.get(
+            "confidence_head_with_markov",
+            draft_cfg.get("confidence_head_with_markov",
+                          config.dspark_confidence_head_with_markov)))
+    config.dspark_markov_head_type = str(
+        dspark_cfg.get(
+            "markov_head_type",
+            draft_cfg.get("markov_head_type", config.dspark_markov_head_type)))
+    config.dspark_markov_rank = int(
+        dspark_cfg.get("markov_rank",
+                       draft_cfg.get("markov_rank",
+                                     config.dspark_markov_rank)))
+    config.dspark_sample_from_anchor = bool(
+        dspark_cfg.get(
+            "sample_from_anchor",
+            draft_cfg.get("sample_from_anchor",
+                          config.dspark_sample_from_anchor)))
 
 
 def register_model(model_type: str, model_class: Type[nn.Module],
@@ -155,6 +250,7 @@ class AutoModel:
                         jetspec_draft: bool = False,
                         jetspec_draft_dir: "str | None" = None,
                         dspark_base: bool = False,
+                        dspark_tree_base: bool = False,
                         dspark_draft: bool = False,
                         dspark_draft_dir: "str | None" = None,
                         gemma4_mtp_base: bool = False,
@@ -162,7 +258,8 @@ class AutoModel:
                         gemma4_kv_sharing_map: "list[dict] | None" = None,
                         gemma4_target_kv_cache_quant: "str | None" = None,
                         num_decoder_layers: "int | None" = None,
-                        extra_configs: "dict | None" = None) -> nn.Module:
+                        extra_configs: "dict | None" = None,
+                        low_cpu_mem_usage: bool = False) -> nn.Module:
         """Construct and load a model from *model_dir*.
 
         Reads ``config.json`` via :class:`~config.ModelConfig`, looks up the
@@ -214,6 +311,9 @@ class AutoModel:
             jetspec_draft_dir:
                             Path to the JetSpec draft checkpoint directory.
             dspark_base:    When True, export as DSpark base model.
+            dspark_tree_base:
+                            When True, add DDTree parent/depth metadata inputs
+                            for hybrid DSpark base verification.
             dspark_draft:   When True, build the DSpark draft backbone model.
             dspark_draft_dir:
                             Path to the DSpark draft checkpoint directory.
@@ -235,6 +335,9 @@ class AutoModel:
                             path (e.g. Qwen3); rejected for eagle/mtp/dflash/jetspec/dspark
                             and registered non-default variants. The checkpoint's
                             extra-layer weights are simply skipped by the loader.
+            low_cpu_mem_usage:
+                            Initialize model tensors on the meta device and
+                            materialize them from the checkpoint during load.
 
         Returns:
             Loaded ``nn.Module`` in eval mode.
@@ -267,42 +370,63 @@ class AutoModel:
         if gemma4_mtp_base:
             config.gemma4_mtp_base = True
         if mtp_tree_base:
-            config.mtp_base = True
             config.mtp_tree_base = True
-        elif config.mtp_tree_base:
+        if config.mtp_tree_base and not config.gemma4_mtp_base:
             config.mtp_base = True
         if dflash_base:
             config.dflash_base = True
+            config.dflash_tree_base = True
         if dflash_tree_base:
             config.dflash_base = True
             config.dflash_tree_base = True
         elif config.dflash_tree_base:
             config.dflash_base = True
+        dflash_version = DFlashVersion.V1
         if config.dflash_base:
-            # Read target_layer_ids from DFlash draft checkpoint if provided
-            if not config.dflash_target_layer_ids and dflash_draft_dir:
-                import json
-                draft_cfg_path = os.path.join(dflash_draft_dir, "config.json")
-                if os.path.isfile(draft_cfg_path):
-                    with open(draft_cfg_path) as f:
-                        draft_cfg = json.load(f)
-                    dflash_cfg = draft_cfg.get("dflash_config", {}) or {}
-                    config.dflash_target_layer_ids = dflash_cfg.get(
-                        "target_layer_ids",
-                        draft_cfg.get("target_layer_ids", [1, 8, 15, 22, 29]))
-                    config.dflash_block_size = int(
-                        dflash_cfg.get("block_size",
-                                       draft_cfg.get("block_size", 16)))
-                    default_mask_token_id = (4 if str(
-                        draft_cfg.get("model_type", "")).startswith("gemma4")
-                                             else 248070)
-                    config.dflash_mask_token_id = int(
-                        dflash_cfg.get(
-                            "mask_token_id",
-                            draft_cfg.get("mask_token_id",
-                                          default_mask_token_id)))
+            if dflash_draft_dir:
+                draft_root, draft_llm = load_checkpoint_config_dicts(
+                    dflash_draft_dir)
+                contract = resolve_dflash_contract(draft_root, draft_llm)
+                dflash_version = contract.version
+                config.dflash_version = contract.version
+                config.dflash_target_layer_ids = list(
+                    contract.target_layer_ids)
+                config.dflash_block_size = contract.block_size
+                config.dflash_mask_token_id = contract.mask_token_id
+                if contract.version == DFlashVersion.V2:
+                    draft_config = make_dflash2_draft_config(
+                        dflash_draft_dir,
+                        _default_attention_scale_for_model_dir(
+                            dflash_draft_dir))
+                    if (config.hidden_size != draft_config.hidden_size
+                            or config.vocab_size != draft_config.vocab_size):
+                        raise ValueError(
+                            "DFlash V2 base/draft hidden and vocabulary sizes must match."
+                        )
+                    invalid = [
+                        index for index in contract.target_layer_ids
+                        if index < 0 or index >= config.num_hidden_layers
+                    ]
+                    if invalid:
+                        raise ValueError(
+                            f"DFlash V2 target-layer IDs outside base model: {invalid}"
+                        )
+                    config.dflash2_target_layer_ids = list(
+                        contract.target_layer_ids)
+                    config.dflash2_block_size = contract.block_size
+                    config.dflash2_mask_token_id = contract.mask_token_id
+                    config.dflash2_is_causal = contract.is_causal
+                    config.dflash2_conv_kernel_size = contract.conv_kernel_size
+                    config.dflash2_conv_group_size = contract.conv_group_size
+                    config.dflash2_selector_rank = contract.selector_rank
+                    config.dflash2_selector_top_k = contract.selector_top_k
             if not config.dflash_target_layer_ids:
                 config.dflash_target_layer_ids = [1, 8, 15, 22, 29]
+        elif dflash_draft and dflash_draft_dir:
+            draft_root, draft_llm = load_checkpoint_config_dicts(
+                dflash_draft_dir)
+            dflash_version = resolve_dflash_contract(draft_root,
+                                                     draft_llm).version
         if jetspec_base:
             config.jetspec_base = True
         if jetspec_tree_base:
@@ -344,45 +468,15 @@ class AutoModel:
                 config.jetspec_target_layer_ids)
             config.dflash_block_size = config.jetspec_block_size
             config.dflash_mask_token_id = config.jetspec_mask_token_id
+        if dspark_tree_base:
+            config.dspark_base = True
+            config.dspark_tree_base = True
+        elif config.dspark_tree_base:
+            config.dspark_base = True
         if dspark_base:
             config.dspark_base = True
-            if not config.dspark_target_layer_ids and dspark_draft_dir:
-                import json
-                draft_cfg_path = os.path.join(dspark_draft_dir, "config.json")
-                if os.path.isfile(draft_cfg_path):
-                    with open(draft_cfg_path) as f:
-                        draft_cfg = json.load(f)
-                    dspark_cfg = (draft_cfg.get("dspark_config")
-                                  or draft_cfg.get("dflash_config", {}) or {})
-                    config.dspark_target_layer_ids = (
-                        dspark_cfg.get("target_layer_ids")
-                        or draft_cfg.get("target_layer_ids", []))
-                    config.dspark_block_size = int(
-                        dspark_cfg.get("block_size",
-                                       draft_cfg.get("block_size", 7)))
-                    default_mask_token_id = (4 if str(
-                        draft_cfg.get("model_type", "")).startswith("gemma4")
-                                             else 151669)
-                    config.dspark_mask_token_id = int(
-                        dspark_cfg.get(
-                            "mask_token_id",
-                            draft_cfg.get("mask_token_id",
-                                          default_mask_token_id)))
-                    config.dspark_enable_confidence_head = bool(
-                        dspark_cfg.get(
-                            "enable_confidence_head",
-                            draft_cfg.get("enable_confidence_head", False)))
-                    config.dspark_confidence_head_with_markov = bool(
-                        dspark_cfg.get(
-                            "confidence_head_with_markov",
-                            draft_cfg.get("confidence_head_with_markov",
-                                          False)))
-                    config.dspark_markov_head_type = str(
-                        dspark_cfg.get("markov_head_type",
-                                       draft_cfg.get("markov_head_type", "")))
-                    config.dspark_markov_rank = int(
-                        dspark_cfg.get("markov_rank",
-                                       draft_cfg.get("markov_rank", 0)))
+        if config.dspark_base:
+            _inherit_dspark_base_metadata(config, dspark_draft_dir)
             if not config.dspark_target_layer_ids:
                 raise ValueError(
                     "dspark_base requires DSpark target_layer_ids; pass "
@@ -396,6 +490,7 @@ class AutoModel:
                                          mtp_draft=mtp_draft,
                                          dflash_base=config.dflash_base,
                                          dflash_draft=dflash_draft,
+                                         dflash_version=dflash_version,
                                          jetspec_base=config.jetspec_base,
                                          jetspec_draft=jetspec_draft,
                                          dspark_base=config.dspark_base,
@@ -461,7 +556,8 @@ class AutoModel:
                 dflash_draft_dir)
             config = make_dflash_draft_config(
                 dflash_draft_dir,
-                _default_attention_scale_for_model_dir(dflash_draft_dir))
+                _default_attention_scale_for_model_dir(dflash_draft_dir),
+                target_vocab_size=base_config.vocab_size)
             if base_config.model_type == "nemotron_h":
                 # Nemotron-3.5 target-hidden stays far inside FP16; run fc at the
                 # checkpoint's native NVFP4 rather than the dense-FP16 + FP32
@@ -473,6 +569,27 @@ class AutoModel:
             if not draft_has_lm_head:
                 config = _inherit_dflash_lm_head_quant(config, base_config)
             model_class = DFlashDraftModel
+            model_dir = dflash_draft_dir
+            if key_remap is None:
+                key_remap = (_muse_glimmer_dflash_key_remap
+                             if config.model_type == "muse_glimmer_assistant"
+                             else _dflash_key_remap)
+        elif variant == "dflash2_draft":
+            if dflash_draft_dir is None:
+                raise ValueError(
+                    "DFlash V2 draft requires dflash_draft_dir to be set.")
+            from .models.dflash2 import DFlash2DraftModel
+            base_config = config
+            base_model_dir = model_dir
+            base_tie_word_embeddings = base_config.tie_word_embeddings
+            draft_has_lm_head = _checkpoint_has_dflash_lm_head(
+                dflash_draft_dir)
+            config = make_dflash2_draft_config(
+                dflash_draft_dir,
+                _default_attention_scale_for_model_dir(dflash_draft_dir))
+            if not draft_has_lm_head:
+                config = _inherit_dflash_lm_head_quant(config, base_config)
+            model_class = DFlash2DraftModel
             model_dir = dflash_draft_dir
             if key_remap is None:
                 key_remap = _dflash_key_remap
@@ -515,9 +632,18 @@ class AutoModel:
                 raise ValueError(
                     "dspark_draft requires dspark_draft_dir to be set.")
             from .models.dspark.modeling_dspark_draft import DSparkDraftModel
+            base_config = config
+            base_model_dir = model_dir
+            base_tie_word_embeddings = base_config.tie_word_embeddings
+            draft_has_lm_head = _checkpoint_has_dflash_lm_head(
+                dspark_draft_dir, _dspark_key_remap)
             config = make_dspark_draft_config(
                 dspark_draft_dir,
                 _default_attention_scale_for_model_dir(dspark_draft_dir))
+            if base_config.model_type == "nemotron_h":
+                config.dspark_fc_native_precision = True
+            if not draft_has_lm_head:
+                config = _inherit_dflash_lm_head_quant(config, base_config)
             model_class = DSparkDraftModel
             model_dir = dspark_draft_dir
             if key_remap is None:
@@ -542,6 +668,13 @@ class AutoModel:
                 # dense Qwen3 (default CausalLM). Dense models use the Transformer's
                 # dflash_target_layer_ids parameter to collect target-layer hidden states.
                 model_class = _MODEL_REGISTRY.get(config.model_type, CausalLM)
+                if (key_remap is None
+                        and config.model_type == "hunyuan_v1_dense"):
+                    key_remap = _hunyuan_key_remap
+                if (key_remap is None
+                        and str(config.model_type).startswith("muse_glimmer")):
+                    from .models.muse_glimmer import MUSE_GLIMMER_KEY_REMAP
+                    key_remap = MUSE_GLIMMER_KEY_REMAP
 
         # 4-layer numeric validation: truncate to the first N decoder
         # layers.  The whole pipeline is config-driven (the Transformer builds
@@ -552,12 +685,24 @@ class AutoModel:
         # single config override is sufficient and the modeling code needs no
         # change.  This covers the plain default ``CausalLM`` path (e.g. Qwen3)
         # AND registered hybrid base models (Qwen3.5 linear+full / Gated DeltaNet,
-        # Nemotron-H Mamba), which also build per-layer from ``layer_types``.  The
-        # eagle/mtp/dflash/gemma4-mtp speculative-decoding variants have a
-        # different per-layer structure and remain out of scope.
+        # Nemotron-H Mamba), which also build per-layer from ``layer_types``.
+        #
+        # Single-checkpoint MTP (``--mtp``) is also covered: its draft head reads
+        # only the base's *last* hidden state, which stays well defined after
+        # truncation.  (The draft was trained against the full stack, so its
+        # proposals are near-useless on a truncated base and acceptance collapses
+        # to one token per round -- that costs speed, not correctness, and the
+        # few-layer comparison is about the base model's committed state.)
+        #
+        # The remaining variants stay out of scope because they name specific
+        # target layers -- eagle3_target_layer_ids, dflash_target_layer_ids
+        # (default [1, 8, 15, 22, 29]), jetspec_target_layer_ids -- which a
+        # truncation invalidates outright, so each needs its own answer rather
+        # than a shared one.  The MTP *draft* is likewise excluded: only the base
+        # is compared against the golden.
         if num_decoder_layers is not None:
-            if (eagle_base or config.eagle_base or mtp_base or config.mtp_base
-                    or dflash_base or config.dflash_base or jetspec_base
+            if (eagle_base or config.eagle_base or dflash_base
+                    or config.dflash_base or jetspec_base
                     or config.jetspec_base or dspark_base or config.dspark_base
                     or mtp_draft or dflash_draft or jetspec_draft
                     or dspark_draft or config.is_jetspec_draft
@@ -566,8 +711,8 @@ class AutoModel:
                     or config.gemma4_mtp_draft):
                 raise NotImplementedError(
                     "num_decoder_layers cannot be combined with the "
-                    "eagle/mtp/dflash/jetspec/dspark/gemma4-mtp speculative-decoding variants."
-                )
+                    "eagle/dflash/jetspec/dspark/gemma4-mtp speculative-decoding "
+                    "variants (single-checkpoint MTP base is supported).")
             if not 1 <= num_decoder_layers <= config.num_hidden_layers:
                 raise ValueError(
                     f"num_decoder_layers={num_decoder_layers} out of range "
@@ -580,8 +725,10 @@ class AutoModel:
                 "num_decoder_layers: truncated to first %d decoder layers",
                 num_decoder_layers)
 
-        model = model_class(config)
-        model.to(device)
+        model = _instantiate_model(model_class,
+                                   config,
+                                   device,
+                                   low_cpu_mem_usage=low_cpu_mem_usage)
 
         pre_repack_hook = None
         apply_reduced_vocab_after_load = False
@@ -602,8 +749,8 @@ class AutoModel:
             else:
                 apply_reduced_vocab_after_load = True
 
-        if variant in ("dflash_draft",
-                       "jetspec_draft") and not draft_has_lm_head:
+        if variant in ("dflash_draft", "dflash2_draft", "jetspec_draft",
+                       "dspark_draft") and not draft_has_lm_head:
             next_pre_repack_hook = pre_repack_hook
 
             def _load_pre_repack_dflash_lm_head(loaded_model: nn.Module):
@@ -624,14 +771,29 @@ class AutoModel:
                      key_prefix=key_prefix,
                      pre_repack_hook=pre_repack_hook,
                      mapping=config.mapping)
+        if low_cpu_mem_usage:
+            _materialize_checkpoint_defaults(model, device)
+            _materialize_optional_scale_buffers(model, device)
+            meta_tensors = [
+                name for name, tensor in (*model.named_parameters(),
+                                          *model.named_buffers())
+                if tensor.device.type == "meta"
+            ]
+            if meta_tensors:
+                raise RuntimeError(
+                    "Checkpoint did not materialize model tensors: " +
+                    ", ".join(meta_tensors[:10]))
         refresh_router_bias = getattr(model, "refresh_fp32_router_bias", None)
         if callable(refresh_router_bias):
             refresh_router_bias()
-        if variant in ("dflash_draft", "jetspec_draft"):
+        if variant in ("dflash_draft", "dflash2_draft", "jetspec_draft",
+                       "dspark_draft"):
             if draft_has_lm_head:
                 logging.getLogger(__name__).info(
-                    "%s lm_head source: draft checkpoint buffers",
-                    "JetSpec" if variant == "jetspec_draft" else "DFlash")
+                    "%s lm_head source: draft checkpoint buffers", {
+                        "jetspec_draft": "JetSpec",
+                        "dspark_draft": "DSpark",
+                    }.get(variant, "DFlash"))
         if apply_reduced_vocab_after_load:
             from .vocab_reduction.onnx_export import \
                 apply_reduced_vocab_from_dir
@@ -678,22 +840,18 @@ def _inherit_dflash_lm_head_quant(draft_config: ModelConfig,
 
     draft_quant = draft_config.quant
     base_quant = base_config.quant
-    use_base_group_size = lm_head_quant in _GROUP_SIZE_LM_HEAD_QUANTS
-    if (use_base_group_size and draft_quant.quant_type != QUANT_FP16
-            and draft_quant.group_size != base_quant.group_size):
-        raise ValueError(
-            "DFlash draft cannot share %s base lm_head with a different "
-            "draft quantization group size." % lm_head_quant)
+    lm_head_group_size = module_quant_group_size("lm_head", base_config)
 
     layer_overrides = dict(draft_quant.layer_overrides)
     layer_overrides["lm_head"] = lm_head_quant
     excluded = [name for name in draft_quant.excluded if name != "lm_head"]
+    layer_group_sizes = dict(draft_quant.layer_group_sizes)
+    layer_group_sizes["lm_head"] = lm_head_group_size
     quant_updates = {
         "excluded": excluded,
         "layer_overrides": layer_overrides,
+        "layer_group_sizes": layer_group_sizes,
     }
-    if use_base_group_size:
-        quant_updates["group_size"] = base_quant.group_size
     if lm_head_quant == QUANT_INT4_GPTQ:
         quant_updates[
             "gptq_zero_point_offset"] = base_quant.gptq_zero_point_offset
@@ -713,6 +871,7 @@ def _resolve_model_variant(config: ModelConfig,
                            mtp_draft: bool,
                            dflash_base: bool = False,
                            dflash_draft: bool = False,
+                           dflash_version: DFlashVersion = DFlashVersion.V1,
                            jetspec_base: bool = False,
                            jetspec_draft: bool = False,
                            dspark_base: bool = False,
@@ -728,7 +887,7 @@ def _resolve_model_variant(config: ModelConfig,
         raise ValueError("mtp_base and mtp_draft cannot both be enabled.")
     if dflash_base and dflash_draft:
         raise ValueError(
-            "dflash_base and dflash_draft cannot both be enabled.")
+            "DFlash base and draft variants cannot both be enabled.")
     if jetspec_base and jetspec_draft:
         raise ValueError(
             "jetspec_base and jetspec_draft cannot both be enabled.")
@@ -788,6 +947,8 @@ def _resolve_model_variant(config: ModelConfig,
         return "eagle3_draft"
     if gemma4_mtp_draft:
         return "gemma4_mtp_draft"
+    if dflash_draft and dflash_version == DFlashVersion.V2:
+        return "dflash2_draft"
     if dflash_draft:
         return "dflash_draft"
     if dflash_base:
@@ -809,6 +970,17 @@ def _resolve_model_variant(config: ModelConfig,
     if eagle_base:
         return "eagle_base"
     return "llm"
+
+
+def _hunyuan_key_remap(key: str) -> "str | None":
+    """Remap HunYuan V1 checkpoint keys to the default CausalLM module tree.
+
+    HunYuan names its per-head QK norms ``query_layernorm`` / ``key_layernorm``
+    where the default :class:`Attention` module uses ``q_norm`` / ``k_norm``.
+    """
+    key = key.replace(".self_attn.query_layernorm.", ".self_attn.q_norm.")
+    key = key.replace(".self_attn.key_layernorm.", ".self_attn.k_norm.")
+    return key
 
 
 def _eagle3_key_remap(key: str) -> "str | None":
@@ -961,9 +1133,13 @@ def _load_dflash_quantized_lm_head(model: nn.Module, lm_head: nn.Module,
     optional_tensors = {"g_idx", "int4_act_perm", "pre_quant_scale"}
 
     for target_name in target_state:
-        source_key = next((f"{prefix}.{target_name}"
+        source_names = [target_name]
+        if target_name == "weight_scale":
+            source_names.append("weight_scale_inv")
+        source_key = next((f"{prefix}.{source_name}"
                            for prefix in source_prefixes
-                           if f"{prefix}.{target_name}" in shard_map), None)
+                           for source_name in source_names
+                           if f"{prefix}.{source_name}" in shard_map), None)
         if source_key is None:
             if target_name not in optional_tensors:
                 missing.append(target_name)
@@ -1023,12 +1199,17 @@ def _normalize_dflash_lm_head_tensor_shape(target_name: str, source, target):
         "lm_head=%s" % (target_name, source.shape, target.shape))
 
 
-def _checkpoint_has_dflash_lm_head(model_dir: str) -> bool:
-    """Return whether a DFlash draft checkpoint owns lm_head tensors."""
+def _checkpoint_has_dflash_lm_head(model_dir: str, key_remap=None) -> bool:
+    """Return whether a cached-draft checkpoint owns lm_head tensors.
+
+    ``key_remap`` defaults to the DFlash remap; DSpark passes its own so the
+    check runs against the same key view the loader will use.
+    """
     from .checkpoint.loader import _build_shard_map
 
+    remap = key_remap if key_remap is not None else _dflash_key_remap
     for key in _build_shard_map(model_dir):
-        mapped = _dflash_key_remap(key)
+        mapped = remap(key)
         if mapped is not None and mapped.startswith("lm_head."):
             return True
     return False
@@ -1039,6 +1220,15 @@ def _dflash_key_remap(key: str) -> "str | None":
     if "rotary_emb" in key:
         return None
     return key
+
+
+def _muse_glimmer_dflash_key_remap(key: str) -> "str | None":
+    """Map the Muse-Glimmer assistant fusion projector onto DFlash names."""
+    if key.startswith("encoder.fc."):
+        return key.removeprefix("encoder.")
+    if key.startswith("encoder.output_norm_enc."):
+        return "hidden_norm." + key.removeprefix("encoder.output_norm_enc.")
+    return _dflash_key_remap(key)
 
 
 def _dspark_key_remap(key: str) -> "str | None":

@@ -14,6 +14,7 @@
 # limitations under the License.
 """Embedding artifact writers."""
 
+import logging
 import os
 import shutil
 
@@ -21,7 +22,7 @@ import numpy as np
 
 from .. import contracts, numpy_dtypes
 from ..config import DeviceConfig
-from ..safetensors_np import load_safetensors_tensor
+from ..safetensors_np import SafetensorsStore, load_safetensors_tensor
 from ..weight_policy import (CHECKPOINT_BINDING_ENGINE_EMBEDDING,
                              CHECKPOINT_BINDING_ENGINE_PLE,
                              CHECKPOINT_BINDING_ROLE_EMBEDDING,
@@ -30,6 +31,8 @@ from ..weights import Weights
 from .tensors import save_safetensors
 
 EMBEDDING_KEY = "model.embed_tokens.weight"
+
+logger = logging.getLogger(__name__)
 
 
 def externalizes_embedding(args, weight_conversion) -> bool:
@@ -43,9 +46,48 @@ def externalizes_embedding(args, weight_conversion) -> bool:
     if getattr(weight_conversion, "runtime_embedding_model_dir",
                None) is not None:
         return False
+    externalizes = getattr(weight_conversion, "externalizes_runtime_embedding",
+                           None)
+    if externalizes is not None and not externalizes(args):
+        return False
     writes_embedding = getattr(weight_conversion, "writes_runtime_embedding",
                                None)
     return writes_embedding is None or writes_embedding(args)
+
+
+def write_cached_draft_embedding(output_dir: str, draft_model_dir: str,
+                                 mask_token_id: int,
+                                 embedding_scale: float) -> None:
+    """Fold a cached-draft trained mask-token row into the base embedding."""
+    with SafetensorsStore(draft_model_dir) as draft:
+        draft_key = next(
+            (key
+             for key in ("embed_tokens.weight", "model.embed_tokens.weight")
+             if draft.has(key)), None)
+        if draft_key is None:
+            logger.info("Cached draft shares the base embedding table")
+            return
+        draft_shape = draft.shape(draft_key)
+        draft_row = draft.get_f16_row(draft_key, mask_token_id)
+
+    path = os.path.join(output_dir, "embedding.safetensors")
+    weight = load_safetensors_tensor(path, "embedding")
+    if weight.dtype != np.float16:
+        raise TypeError("cached-draft embedding fold requires FP16 embedding")
+    if weight.ndim != 2 or not 0 <= mask_token_id < weight.shape[0]:
+        raise ValueError(
+            f"mask_token_id {mask_token_id} is outside embedding shape "
+            f"{weight.shape}")
+    if draft_shape != weight.shape:
+        raise ValueError(
+            f"cached draft embedding shape {draft_shape} does not match "
+            f"base embedding shape {weight.shape}")
+
+    weight[mask_token_id] = np.asarray(draft_row * np.float16(embedding_scale),
+                                       dtype=np.float16)
+    temporary_path = path + ".tmp"
+    save_safetensors(temporary_path, {"embedding": weight})
+    os.replace(temporary_path, path)
 
 
 def embedding_binding(weights: Weights, cfg: DeviceConfig) -> dict:
@@ -99,7 +141,11 @@ def ple_embedding_binding(weights: Weights, cfg: DeviceConfig) -> dict:
 
 def write_embedding(weights: Weights, cfg: DeviceConfig, args,
                     engine_dir: str) -> None:
-    weight = weights.f16("model.embed_tokens.weight")
+    # Runtime embeddings are FP16, including dequantized NVFP4 checkpoints.
+    if weights.is_nvfp4("model.embed_tokens"):
+        weight = weights.linear_fp16("model.embed_tokens")[0]
+    else:
+        weight = weights.f16("model.embed_tokens.weight")
     weight = np.ascontiguousarray(weight * np.float16(cfg.embedding_scale))
     path = os.path.join(engine_dir, "embedding.safetensors")
     if args.fp8_embedding:

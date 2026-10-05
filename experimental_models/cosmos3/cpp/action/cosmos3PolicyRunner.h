@@ -47,6 +47,9 @@ struct Cosmos3PolicyConfig
     int32_t videoLatentFrames{0};    //!< latent temporal length t for the policy video latent (profile max).
     int32_t minVideoLatentFrames{1}; //!< smallest latent temporal length the engine's dynamic profile admits.
     int32_t actionChunkSize{0};
+    int32_t stateRows{0};     //!< Clean leading current-state rows (Policy-DROID: 1).
+    int32_t historyLength{0}; //!< Internal leading rows omitted from served output.
+    bool useState{false};
     int32_t rawActionDim{0};
     int32_t maxActionDim{0};
     int32_t numInferenceSteps{0};
@@ -135,10 +138,11 @@ public:
     //! \param undValues   Per-layer frozen conditional UND values, matching layout.
     //! \param undKeysUncond   Optional unconditional (empty-prompt) UND keys for CFG; empty to disable CFG.
     //! \param undValuesUncond Optional unconditional UND values; must pair with undKeysUncond.
-    //! \return Flattened action chunk of shape [B, actionChunkSize, rawActionDim] (row-major), empty on error.
+    //! \param currentState Current model-space state [B, rawActionDim] when stateRows == 1; empty otherwise.
+    //! \return Flattened future-action chunk [B, actionChunkSize, rawActionDim]; clean state rows are omitted.
     std::vector<float> generate(rt::Tensor const& condLatent, std::vector<rt::Tensor> const& undKeys,
         std::vector<rt::Tensor> const& undValues, std::vector<rt::Tensor> const& undKeysUncond,
-        std::vector<rt::Tensor> const& undValuesUncond, cudaStream_t stream);
+        std::vector<rt::Tensor> const& undValuesUncond, std::vector<float> const& currentState, cudaStream_t stream);
 
 private:
     void parseModelConfig(std::string const& configPath);
@@ -183,6 +187,8 @@ private:
     //! \brief Re-inject the clean frame-0 conditioning latent and re-zero the padded action dims
     //! (device-side: one 2D D2D copy + one 2D memset).
     void reinjectConditioning(rt::Tensor const& condLatent, cudaStream_t stream);
+    //! \brief Zero model velocity on clean video/state tokens before the UniPC update.
+    void maskCleanPredictions(cudaStream_t stream);
 
     int32_t mNoiseSeed{0};
     Cosmos3PolicyConfig mConfig{};
@@ -271,6 +277,7 @@ private:
     rt::Tensor mTimestepHost;        //!< [maxB] float, refilled every denoise step.
     rt::Tensor mTokenNoisyMaskHost;  //!< [maxB, numVideoTokens, 1] float.
     rt::Tensor mActionNoisyMaskHost; //!< [maxB, actionChunkSize, 1] float.
+    rt::Tensor mCurrentStateHost;    //!< [maxB, rawActionDim] float, refilled once per request.
 };
 
 } // namespace cosmos3

@@ -76,7 +76,7 @@ void assembleDeepstackEmbedding(rt::Tensor const& inputIds, rt::Tensor const& de
 //!
 //! For each position holding an image/audio placeholder token, writes the running count of that
 //! modality's placeholders seen so far (the row of imageEmbeds/audioEmbeds to insert); other positions
-//! get 0. Counters are global across the whole [batchSize, seqLen] range in batch-major order, matching
+//! get -1. Counters are global across the whole [batchSize, seqLen] range in batch-major order, matching
 //! the host `generateMultimodalIndices` reference. Runs entirely on `stream` — no host round-trip, so
 //! no D2H/H2D copy is needed to feed `embeddingLookup`/`assembleDeepstackEmbedding`.
 //!
@@ -96,6 +96,11 @@ void generateMultimodalIndices(rt::Tensor const& inputIds, rt::Tensor& multimoda
     std::optional<int32_t> imageTokenId = std::nullopt, std::optional<int32_t> audioTokenId = std::nullopt,
     cudaStream_t stream = nullptr, int32_t const* imageBaseOffsets = nullptr,
     int32_t const* audioBaseOffsets = nullptr);
+
+//! Generate contiguous per-request image-block IDs on the device.
+//! Text and padding tokens receive `-1`.
+void generateVisionBlockIds(
+    rt::Tensor const& inputIds, rt::Tensor& visionBlockIds, int32_t imageTokenId, cudaStream_t stream);
 
 //! \brief Gather Gemma4 per-layer token-identity embeddings.
 //!

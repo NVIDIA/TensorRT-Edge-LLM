@@ -123,6 +123,7 @@ void prepareEagleBaseTreeDecodingInputs(rt::Tensor const& baseTreeDecodingMask, 
 //!     activeBatchSize: Number of active sequences in the batch.
 //!     maxDepth: max-depth of acceptedIndices (acceptedIndices.shape[1]).
 //!     kvCacheType: Storage dtype of the per-layer buffers (kHALF or kFP8).
+//!     stateIndices: Execution-row to resident page-table-row mapping [batch].
 //!     stream: CUDA stream to execute the kernel.
 //!     pageTable: Required device page table [batch, 2, maxPagesPerSeq], with K rows followed by
 //!         V rows and V page id equal to K page id + numPages. An unmapped or out-of-plane source
@@ -132,15 +133,16 @@ void prepareEagleBaseTreeDecodingInputs(rt::Tensor const& baseTreeDecodingMask, 
 //!
 //! @throws std::runtime_error if tensors are not located on the GPU, or if datatypes are invalid
 void eagleBaseCommitKVCache(rt::Tensor const& acceptedIndices, rt::Tensor const& acceptLengths,
-    rt::Tensor const& kvCacheLengths, KVLayerInfo const* deviceLayerInfos, int32_t numLayers, int32_t headDim,
-    int32_t maxKVHeads, int32_t activeBatchSize, int32_t maxDepth, nvinfer1::DataType kvCacheType,
-    cudaStream_t stream, int32_t const* pageTable, int32_t numPages, int32_t maxPagesPerSeq);
+    rt::Tensor const& kvCacheLengths, rt::Tensor const& stateIndices, KVLayerInfo const* deviceLayerInfos,
+    int32_t numLayers, int32_t headDim, int32_t maxKVHeads, int32_t activeBatchSize, int32_t residentPoolRows,
+    int32_t maxDepth, nvinfer1::DataType kvCacheType, cudaStream_t stream, int32_t const* pageTable,
+    int32_t numPages, int32_t maxPagesPerSeq);
 
 //! In-place compact the hidden-state buffer to keep only the accepted tokens.
 //!
 //! Updates `hiddenState` inplace from [batch, verify-tree-size, hidden-dim] to
-//! [batch, max-accept-depth, hidden-dim]. Safe because max-accept-depth << verify-tree-size,
-//! so output positions never overwrite unread input data. Layer-agnostic.
+//! [batch, max-accept-depth, hidden-dim]. Each hidden-dimension tile processes batches
+//! in order because a later batch's dense output can overlap an earlier input slab.
 //!
 //! Inputs:
 //!     acceptedIndices [GPU, Int32]: Accepted indices, shape [batch, max-depth].
@@ -151,6 +153,28 @@ void eagleBaseCommitKVCache(rt::Tensor const& acceptedIndices, rt::Tensor const&
 //! @throws std::runtime_error if tensors are not located on the GPU, or if datatypes are invalid
 void eagleBaseAssembleHiddenState(rt::Tensor const& acceptedIndices, rt::Tensor const& acceptLengths,
     rt::Tensor& hiddenState, cudaStream_t stream);
+
+constexpr int32_t kMaxAcceptLengthBudgetsPerLaunch{64};
+
+//! Remaining generation budgets for up to kMaxAcceptLengthBudgetsPerLaunch consecutive slots. Passed to
+//! clampAcceptLengths by value so the budgets ride the launch itself: no staging buffer, no H2D copy and no host
+//! synchronization inside the verify round.
+struct AcceptLengthBudgets
+{
+    int32_t remaining[kMaxAcceptLengthBudgetsPerLaunch];
+};
+
+//! Clamp acceptLengths[slotOffset + i] into [0, budgets.remaining[i]] for i in [0, numSlots).
+//! Inputs:
+//!     acceptLengths [GPU, Int32]: Accept lengths, shape [batch]; updated in place.
+//!     budgets: Remaining generation budget of each slot, indexed relative to slotOffset.
+//!     slotOffset: First slot to clamp.
+//!     numSlots: Number of slots to clamp, at most kMaxAcceptLengthBudgetsPerLaunch.
+//!     stream: CUDA stream to execute the kernel.
+//!
+//! @throws std::runtime_error if the tensor is not on the GPU or not Int32, or if the slot range is out of bounds
+void clampAcceptLengths(rt::Tensor& acceptLengths, AcceptLengthBudgets const& budgets, int32_t slotOffset,
+    int32_t numSlots, cudaStream_t stream);
 
 //! The kernel will initialize the draft table for a new round of drafting.
 //! First-level draft logits are translated to target-vocabulary token ids. During eagle spec-decode draft tree
@@ -244,7 +268,7 @@ void assembleIntermediateData(rt::Tensor const& cuLogProbs, rt::Tensor const& se
 //!     selectedIndices [GPU, Int32]: Selected indices from top logits, shape [batch, draftTopK, draftTopK].
 //!     logProbs [GPU, Float]: Log probabilities of the selected tokens, shape [batch, draftTopK, draftTopK].
 //!     intermediateScores [GPU, Float]: Intermediate scores of the selected tokens, shape [batch, draftTopK].
-//!     vocabMappingTable [GPU, Int32]: The mapping table from draft vocab token to full vocab token, shape [draft-vocab-size].
+//!     vocabMappingTable [GPU, Int32]: Draft-token to target-token offset table, shape [draft-vocab-size].
 //! Outputs:
 //!     draftIdTable [GPU, Int32]: Store the translated token ids. shape [batch, draft-topK, draft-topK]
 //!     draftScoreTable [GPU, Float]: Cumulative scores of the selected tokens, shape [batch, draftTopK, draftTopK].
@@ -279,10 +303,15 @@ void updateDraftTreeFullTables(rt::Tensor const& draftIdTable, rt::Tensor const&
 //! Outputs:
 //!     inputIds [GPU, Int32]: Input ids to the base model. shape [batch, verify-tree-size]
 //!     draftTreeMask [GPU, Int8]: Draft tree mask. shape [batch, verify-tree-size, verify-tree-size]
+//!     parentIds [GPU, Int32, optional]: Parent's row within the verify tree, shape [batch, verify-tree-size].
+//!         The root, and any node whose parent missed the selection, report -1. The mask already carries the
+//!         full ancestor set; this is the immediate predecessor, which reading the mask alone cannot give
+//!         without a scan.
 //!
 //! @throws std::runtime_error if tensors not located on GPU, or tensor datatype or shape is invalid
 void constructVerificationDraftTree(rt::Tensor const& draftIdFullTable, rt::Tensor const& draftParentFullTable,
-    rt::Tensor const& selectedIndices, rt::Tensor& inputIds, rt::Tensor& draftTreeMask, cudaStream_t stream);
+    rt::Tensor const& selectedIndices, rt::Tensor& inputIds, rt::Tensor& draftTreeMask,
+    rt::OptionalOutputTensor const& parentIds, cudaStream_t stream);
 
 // clang-format on
 

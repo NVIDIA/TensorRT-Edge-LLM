@@ -13,6 +13,7 @@ required_platform_releases = [
   "jetson:jp71",
   "jetson:jp72",
   "drive:7.2",
+  "igx-thor:current",
   "dgx-spark:current",
 ]
 
@@ -68,6 +69,12 @@ cuda_major = 12
 [[cutedsl_artifacts]]
 cpu_arch = "aarch64"
 gpu_sm = 110
+cuda_major = 13
+
+# SM110 and SM120 are emitted together for the IGX Thor wheel payload.
+[[cutedsl_artifacts]]
+cpu_arch = "aarch64"
+gpu_sm = 120
 cuda_major = 13
 
 [[cutedsl_artifacts]]
@@ -224,6 +231,21 @@ cmake_args = [
   "-DENABLE_CUTE_DSL=ALL",
   "-DCUDA_TARGET_DIR=/usr/local/cuda/n1/targets/aarch64-linux",
 ]
+
+[[variants]]
+variant_id = "igx-thor-cu13-sm110-sm120"
+platform_family = "igx-thor"
+platform_probe_source = "device-model"
+platform_probe_values = ["NVIDIA IGX Thor"]
+platform_release = "current"
+cpu_arch = "aarch64"
+cuda_runtime_soname = "libcudart.so.13"
+tensorrt_runtime_soname = "libnvinfer.so.10"
+gpu_sm = 110
+cute_dsl_artifact_tag = "sm_110_sm_120"
+cuda_ctk_version = "13.0"
+embedded_target = "igx-thor"
+cmake_args = ["-DAARCH64_BUILD=ON", "-DENABLE_CUTE_DSL=ALL"]
 
 [[variants]]
 variant_id = "dgx-spark-cu13-sm121"

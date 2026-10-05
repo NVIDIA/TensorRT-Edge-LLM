@@ -17,15 +17,17 @@
 
 #pragma once
 
+#include "chatTemplate/chatTemplate.h"
 #include "common/tensor.h"
 #include "kernels/talkerMLPKernels/talkerMLPKernels.h"
 #include "profiling/metrics.h"
+#include "runtime/config/deploymentConfig.h"
 #include "runtime/config/llmEngineConfig.h"
 #include "runtime/exec/engineExecutor.h"
+#include "runtime/exec/raggedBatchBuilder.h"
 #include "runtime/exec/tensorMap.h"
 #include "runtime/llmInferenceRuntime.h"
 #include "runtime/llmRuntimeUtils.h"
-#include "runtime/preprocess/stepPreparer.h"
 #include "runtime/state/pipelineIO.h"
 #include "runtime/state/sharedResources.h"
 #include "tokenizer/tokenizer.h"
@@ -72,6 +74,17 @@ constexpr int32_t kCPSamplingTopK = 50;
 constexpr float kCPSamplingTopP = 0.8f;
 constexpr float kCPSamplingTemperatureNext = 0.9f;
 constexpr float kCPSamplingTopPNext = 1.0f;
+//! Upper bound on positions per CP speculative-decoding verify pass; bounds the SPD workspace.
+constexpr int32_t kCpSpecMaxK = 8;
+//! mCpRowIdx planes: draft hidden/head selectors, then verify hidden/head/table selectors.
+constexpr int32_t kCpRowIdxPlanes = 5;
+
+//! mCpStoreIdx planes: destination row in the codec hidden buffer, then table selector.
+constexpr int32_t kCpStoreIdxPlanes = 2;
+
+//! Philox seed for CP speculative decoding; the offset advances monotonically per draw so a
+//! rerun with the same inputs reproduces the same accept decisions.
+constexpr uint64_t kCpSpecSamplingSeed = 0x51ED270BULL;
 
 // Audio output constants (Qwen3-Omni codec: 12.5 Hz frame rate, 24 kHz mono PCM output)
 constexpr int32_t kAudioSampleRate = 24000;     //!< Output PCM sample rate (Hz)
@@ -138,9 +151,14 @@ public:
     //! @param cloneEncoderDir Optional directory with the voice-clone reference encoder
     //!        engines (speaker_encoder.engine / speech_tokenizer_encoder.engine, Base
     //!        checkpoints). Empty disables voice cloning.
+    //! @param cpSpecVerifySize CodePredictor verify window: one committed RVQ depth plus
+    //!        `cpSpecVerifySize - 1` drafted depths. 0 disables speculation and keeps the
+    //!        autoregressive loop; 1 is rejected because it leaves no draft slot. The runtime
+    //!        falls back to the autoregressive loop when the engine or checkpoint cannot
+    //!        support the requested width.
     Qwen3OmniTTSRuntime(std::string const& talkerEngineDir, std::string const& codePredictorEngineDir,
         std::string const& tokenizerDir, std::string const& cloneEncoderDir, cudaStream_t stream,
-        std::string const& checkpointDir = "");
+        std::string const& checkpointDir = "", int32_t cpSpecVerifySize = 0);
 
     //! @brief Destructor
     ~Qwen3OmniTTSRuntime();
@@ -484,7 +502,7 @@ private:
     bool executeTalkerPrefillStep(rt::Tensor const& inputEmbeds, rt::Tensor& outputLogits,
         rt::Tensor& outputHiddenStates, cudaStream_t stream, std::vector<int64_t> const& perBatchContextLengths = {});
 
-    //! Run a single Talker vanilla decoding step. Wraps TensorMap binding + StepPreparer + EngineExecutor.
+    //! Run a single Talker vanilla decoding step with the shared ragged decoder ABI.
     //! inputEmbeds shape must be [batch, 1, talkerHiddenSize]; outputLogits is auto-reshaped to [batch, vocab].
     bool executeTalkerDecodingStep(
         rt::Tensor const& inputEmbeds, rt::Tensor& outputLogits, rt::Tensor& outputHiddenStates, cudaStream_t stream);
@@ -499,6 +517,48 @@ private:
     bool runCodePredictorGenerationForFrame(int32_t activeBatchSize, std::vector<int32_t> const& codecTokensPerBatch,
         rt::Tensor const& talkerLastHiddenBatched, SamplingParams const& samplingParams,
         std::vector<std::vector<int32_t>>& outputCodesPerBatch, cudaStream_t stream);
+
+    //! Chain speculative-decoding replacement for the per-frame CP decode loop.
+    //!
+    //! Entered after the shared prefill, with code_1 already appended and the prefill hidden
+    //! in mCodePredictorHiddenStatesBuffer. Produces code_2..code_(mNumRvqLayers) with the
+    //! same output distribution as the AR loop: drafts come from reusing lm_head[m+t-1] on
+    //! the hidden that produced code_m, and cpSpecProbabilisticAccept emits exact samples
+    //! from the CP's own truncated distribution.
+    bool runCodePredictorSpecDecodeLoop(int32_t activeBatchSize, SamplingParams const& samplingParams,
+        std::vector<std::vector<int32_t>>& outputCodesPerBatch, cudaStream_t stream);
+
+    //! Fill mCpVerifyInput with the n+1 projected codec embeddings of a verify pass.
+    //!
+    //! Position 0 carries the last finalised code, positions 1..n carry the drafts; position i
+    //! reads codec table (m - 1 + i), matching the AR step that feeds E_{step-2}[c_(step-1)].
+    bool buildCpVerifyInput(int32_t activeBatchSize, int32_t const* hostM, int32_t n, cudaStream_t stream);
+
+    //! Store the raw codec embeddings of newly finalised codes into mCodecHiddensBuffer.
+    //!
+    //! computeResidualConnection fills slots 0 and mNumRvqLayers itself and reads slots
+    //! 1..mNumRvqLayers-1 from here, so speculative decoding must populate them once the
+    //! accept result makes a code final.
+    //! @param codeIds   [batchSize, stride] device ids; row b element i holds code (hostM[b] + mOffset + i).
+    //! @param counts     Per-batch element count, or nullptr for one element per batch.
+    bool storeCodecHiddensForAcceptedCodes(rt::Tensor const& codeIds, int32_t batchSize, int32_t stride,
+        int32_t const* hostM, int32_t mOffset, cudaStream_t stream, int32_t const* counts = nullptr);
+
+    //! Fill the mCpRowIdx planes for one round and upload them in a single H2D.
+    bool uploadCpRowSelectors(int32_t activeBatchSize, int32_t const* hostM, int32_t n, cudaStream_t stream);
+
+    //! Score \p rows hidden rows, each against the lm_head its selector plane names.
+    bool applyRowLmHeads(
+        __half const* hiddens, int32_t hiddenPlane, int32_t headPlane, int32_t rows, cudaStream_t stream);
+
+    //! Append \p seqLen positions to the CP KV cache and return every position's hidden.
+    //!
+    //! Chunked-prefill semantics: unlike executeCodePredictorPrefillStep this does NOT reset
+    //! the KV cache, and it does NOT commit the sequence length — the caller commits the
+    //! accepted length instead. The engine's own logits output is unused; per-position
+    //! logits are produced by applyRowLmHeads from \p outputHiddenStates.
+    bool executeCodePredictorVerifyStep(rt::Tensor const& inputsEmbeds, int32_t const* baseLens,
+        int32_t activeBatchSize, rt::Tensor& outputHiddenStates, cudaStream_t stream);
 
     //! Compute residual connection for one batch element.
     //! @param codecHiddensThisBatch  Per-batch view into mCodecHiddensBuffer: [1, mNumCodesPerFrame, talkerH].
@@ -819,9 +879,11 @@ private:
     int64_t flushPrefillRows(rt::Tensor& output, cudaStream_t stream);
 
     // Voice clone workspace (loaded per request from voiceClonePromptPath)
-    rt::Tensor mVoiceCloneXVector;       //!< [talkerH] FP16 GPU x-vector
-    rt::Tensor mIclFrameSumBuffer;       //!< [maxRefFrames, talkerH] FP16 GPU summed codec embeddings
-    rt::Tensor mIclTablePtrsGpu;         //!< [numGroups] device pointer array for sum kernel
+    rt::Tensor mVoiceCloneXVector; //!< [talkerH] FP16 GPU x-vector
+    rt::Tensor mIclFrameSumBuffer; //!< [maxRefFrames, talkerH] FP16 GPU summed codec embeddings
+    rt::Tensor mIclTablePtrsGpu;   //!< [numGroups] device pointer array for sum kernel
+    //! Pinned staging for the above; a member because the upload outlives the call that issues it.
+    rt::Tensor mIclTablePtrsHost;
     std::vector<int32_t> mIclRefTextIds; //!< Host reference transcript token IDs (assistant-wrapped)
 
     std::unique_ptr<CloneEncoderRunner> mCloneEncoders; //!< Reference encoders (null unless cloneEncoderDir given)
@@ -835,15 +897,18 @@ private:
     int32_t mNumRvqLayers{talker_constants::kDefaultNumRvqLayers};
     int32_t mNumCodesPerFrame{talker_constants::kDefaultNumRvqLayers + 1};
 
-    std::unique_ptr<tokenizer::Tokenizer> mTokenizer; //!< Tokenizer for text-to-token-ID conversion
+    std::unique_ptr<tokenizer::Tokenizer> mTokenizer;           //!< Tokenizer for text-to-token-ID conversion
+    std::unique_ptr<chat_template::ChatTemplate> mChatTemplate; //!< Model-owned prompt renderer
 
     // Talker engine — migrated to EngineExecutor + supporting state
     LLMEngineConfig mTalkerLLMConfig;                  //!< Talker LLM configuration (parsed from config.json)
     std::unique_ptr<EngineExecutor> mTalkerExec;       //!< Talker engine executor
     std::unique_ptr<SharedResources> mTalkerSharedRes; //!< Talker cache managers + RoPE pool + zero buffer
-    std::unique_ptr<PipelineIO> mTalkerPipelineIO; //!< Talker per-step pipeline buffers (selectTokenIdx, contextLen)
-    TensorMap mTalkerTensorMap;                    //!< Talker engine binding map (set once, mutated per-step)
-    std::unique_ptr<StepPreparer> mTalkerStepPreparer; //!< Talker prefill/decode metadata preparer
+    std::unique_ptr<PipelineIO> mTalkerPipelineIO;     //!< Talker per-step pipeline buffers
+    TensorMap mTalkerTensorMap;                        //!< Talker engine binding map (set once, mutated per-step)
+    RaggedExecutionBatch mTalkerRaggedBatch;           //!< Reused Talker ragged-metadata scratch
+    std::vector<int32_t> mTalkerQueryLengths;          //!< Active Talker query lengths on the host
+    std::vector<int32_t> mTalkerPastLengths;           //!< Committed Talker cache lengths on the host
 
     // CodePredictor engine — migrated to EngineExecutor + supporting state
     LLMEngineConfig mCodePredictorConfig;                     //!< CodePredictor LLM configuration
@@ -851,7 +916,9 @@ private:
     std::unique_ptr<SharedResources> mCodePredictorSharedRes; //!< CodePredictor cache + RoPE + zero buffer
     std::unique_ptr<PipelineIO> mCodePredictorPipelineIO;     //!< CodePredictor per-step pipeline buffers
     TensorMap mCodePredictorTensorMap;                        //!< CodePredictor engine binding map (step-invariant)
-    std::unique_ptr<StepPreparer> mCodePredictorStepPreparer; //!< CodePredictor prefill/decode metadata preparer
+    RaggedExecutionBatch mCodePredictorRaggedBatch;           //!< Reused CodePredictor ragged-metadata scratch
+    std::vector<int32_t> mCodePredictorQueryLengths;          //!< Active CodePredictor query lengths on the host
+    std::vector<int32_t> mCodePredictorPastLengths;           //!< Committed CodePredictor cache lengths on the host
 
     //! Shared GPU execution context memory for Talker and CodePredictor (kUSER_MANAGED).
     rt::Tensor mSharedExecContextMemory;
@@ -886,6 +953,15 @@ private:
         OmniNext
     };
     TalkerVariant mTalkerVariant{TalkerVariant::Omni};
+    //! Whether the talker engine emits hidden_states for the last token only rather than
+    //! for the whole sequence. Probed from the engine's declared shape at load time.
+    bool mTalkerHiddenIsGathered{false};
+
+    //! Sequence extent the talker hidden-states buffer needs for a prefill of `seqLen`.
+    int64_t talkerHiddenSeqDim(int64_t seqLen) const
+    {
+        return mTalkerHiddenIsGathered ? 1 : seqLen;
+    }
 
     bool isOmniNext() const noexcept
     {
@@ -982,6 +1058,56 @@ private:
                                                 //!< for up to maxBS active batches so we can do one
                                                 //!< cudaStreamSynchronize per frame instead of one per step
     rt::Tensor mHostCodePredictorContextLength; //!< Host CodePredictor context length [maxBS] INT32
+
+    // ---- CodePredictor speculative decoding (chain). Allocated only when mCpSpecDecodeK > 0. ----
+    //! Verify window the caller asked for, before the capability gates in allocateBuffer().
+    int32_t mCpSpecRequested{0};
+    bool mCpPrefillOnDecodeProfile{true}; //!< Cleared when the engine's generation profile is seq=1.
+    int32_t mCpGenProfileMaxSeq{1};       //!< Widest verify window the CP engine's decode profile accepts
+    rt::Tensor mCpTablePtrsGpu;           //!< Device array of the mNumRvqLayers CodePredictor table pointers
+    //! Pinned staging for the above; a member because the upload outlives the call that issues it.
+    rt::Tensor mCpTablePtrsHost;
+    //! One [kCpRowIdxPlanes, maxBS * K] INT32 buffer uploaded once per round holding the draft
+    //! and verify row selectors. Per-row rather than base+offset, so a tree-shaped verify
+    //! window writes node depths into the same planes without touching the kernels.
+    rt::Tensor mCpRowIdx;
+    rt::Tensor mHostCpRowIdx;
+    //! Scatter selectors for the accepted-code store: plane 0 is the destination row in
+    //! mCodecHiddensBuffer (negative drops the row), plane 1 the RVQ depth's table.
+    rt::Tensor mCpStoreIdx;
+    rt::Tensor mHostCpStoreIdx;
+    rt::Tensor mCpRawCodecEmbedRows; //!< [maxBS * K, talkerHidden] staging for the projected TTS layout
+    //! Whole-frame uniform pool. A round consumes two contiguous slices, so a single fill
+    //! covers the frame; refilled if a frame ever overruns it.
+    rt::Tensor mCpUniformPool;
+    int64_t mCpUniformPoolSize{0};
+    //! Shape the CP executor's TRT bindings currently hold. Verify passes repeat the
+    //! same shape for most of a frame, and rebinding costs more than the pass itself.
+    int32_t mCpBoundBatch{-1};
+    int32_t mCpBoundSeqLen{-1};
+    int32_t mCpSpecDecodeK{0};
+    rt::Tensor mCpDraftProbs;           //!< Draft distributions [maxBS, K-1, codebookSize] FP32
+    rt::Tensor mCpDraftTokenIds;        //!< Sampled drafts [maxBS, K-1] INT32
+    rt::Tensor mCpTargetProbs;          //!< Target distributions [maxBS, K, codebookSize] FP32
+    rt::Tensor mCpVerifyInput;          //!< Verify pass input embeds [maxBS, K, cpHidden] FP16
+    rt::Tensor mCpVerifyHidden;         //!< Verify pass hidden states [maxBS, K, cpHidden] FP16
+    rt::Tensor mCpAcceptedTokenIds;     //!< Accepted codes [maxBS, K] INT32
+    rt::Tensor mCpAcceptLength;         //!< Accepted count per batch [maxBS] INT32
+    rt::Tensor mCpProposalLengths;      //!< Draft slot count per batch [maxBS] INT32
+    rt::Tensor mHostCpAcceptedTokenIds; //!< Pinned host mirror of mCpAcceptedTokenIds
+    rt::Tensor mHostCpAcceptLength;     //!< Pinned host mirror of mCpAcceptLength
+    //! Head output stays FP16: cpSpecTopKTopPProbs is templated on the logit type and reads
+    //! it directly, so the small-vocabulary path never materialises an FP32 logit row.
+    rt::Tensor mCpLogitsFp16;
+    rt::Tensor mCpVerifyCodeIds;     //!< Codes feeding the verify positions [maxBS, K] INT32
+    rt::Tensor mHostCpSpecM;         //!< Per-batch index of the last finalised code [maxBS] INT32
+    rt::Tensor mHostCpSpecBaseLen;   //!< Per-batch committed CP context length [maxBS] INT32
+    rt::Tensor mHostCpProposalLens;  //!< Per-batch draft slot count staged for H2D [maxBS] INT32
+    rt::Tensor mCpSpecCtx;           //!< Draft source: hidden that produced each batch's last code [maxBS, cpHidden]
+    uint64_t mCpSpecRandomOffset{0}; //!< Monotonic philox offset across all SPD draws
+    uint64_t mCpSpecRounds{0};       //!< Verify passes issued, for acceptance accounting
+    uint64_t mCpSpecProposed{0};     //!< Draft slots proposed
+    uint64_t mCpSpecCodes{0};        //!< Codes committed by the speculative loop
 
     // Residual + decode buffers (batched for Talker, batch=1 for CodePredictor)
     rt::Tensor mResidualEmbedBuffer; //!< Residual embedding [maxBS, 1, talkerHidden] FP16

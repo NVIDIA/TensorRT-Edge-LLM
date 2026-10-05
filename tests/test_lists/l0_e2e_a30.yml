@@ -1,0 +1,10 @@
+tests:
+  - tests/defs/test_common.py::test_build_project
+  - tests/defs/test_few_layer_validation.py::test_few_layer_validation[Qwen3-0.6B]
+  - tests/defs/test_few_layer_validation.py::test_few_layer_validation[Qwen3.5-35B-A3B-GPTQ-Int4]
+  - tests/defs/test_builder_pipeline.py::test_build_and_run[Qwen3-ASR-0.6B-fp16-mxsl4096-mxbs1-mxil1024-mnts100-mxts3000-asr_basic]
+  - tests/defs/test_builder_pipeline.py::test_build_and_run[Qwen3-TTS-12Hz-0.6B-CustomVoice-fp16-mxsl4096-mxbs1-mxil4096-tts_basic]
+  - tests/defs/test_builder_pipeline.py::test_build_and_run[Qwen3-1.7B-int4_awq-mxsl2048-eagle-eagle3-int4_awq-mxbs1-mxil1024-mvts8-mdts60-llm_basic]
+  - tests/defs/test_builder_pipeline.py::test_build_and_run[Qwen3.5-0.8B-fp16-mxsl4096-mtp-mxbs1-mxil2048-llm_basic]
+  - tests/defs/test_builder_pipeline.py::test_build_and_run[Qwen3-4B-Instruct-2507-int4_awq-mxsl2048-dflash-zlab-fp16-ddtree-mxbs1-mxil1024-mvts16-mdts16-edtk4-llm_basic]
+  - tests/defs/test_builder_pipeline.py::test_build_and_run[Qwen3-4B-Instruct-2507-int4_awq-mxsl2048-dspark-block7-fp16-ddtree-mxbs1-mxil1024-mvts8-mdts7-edtk2-llm_basic]

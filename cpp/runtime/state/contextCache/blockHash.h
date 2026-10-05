@@ -19,6 +19,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cuda_runtime.h>
 #include <functional>
 #include <optional>
 #include <string_view>
@@ -82,7 +83,11 @@ inline constexpr BlockHash kCHAIN_ROOT{0x9E3779B97F4A7C15ULL, 0xC2B2AE3D27D4EB4F
 
 //! Deterministically hash exact opaque bytes for adapter, media, or isolation identity.
 //! This uses the same non-cryptographic 128-bit FNV-1a primitive as block chaining.
-Hash128 hashOpaqueIdentity(std::string_view bytes);
+//!
+//! When @p stream is non-null and @p cpuOnly is false, payloads above an internal threshold are hashed on the GPU
+//! using a parallel chunked kernel. The result is bit-identical to the CPU path. Callers on hot paths with large
+//! payloads (e.g. VLM image embeddings) should pass a valid stream and set cpuOnly=false.
+Hash128 hashOpaqueIdentity(std::string_view bytes, cudaStream_t stream = nullptr, bool cpuOnly = true);
 
 //! Hash one caller-supplied token block and its non-token identity into its parent chain.
 //!

@@ -166,23 +166,6 @@ def repack_nvfp4_experts(load_expert, num_experts: int, hidden_size: int,
     )
 
 
-def load_gptq_expert_projection(weights, experts_prefix: str,
-                                expert_index: int, projection: str):
-    """Load one Qwen3 GPTQ expert projection in provider layout."""
-    prefix = f"{experts_prefix}.{expert_index}.{projection}"
-    if weights.has(prefix + ".g_idx"):
-        group_index = weights.array(prefix + ".g_idx").reshape(-1)
-        expected = np.arange(group_index.size) // weights.group_size
-        if not np.array_equal(group_index, expected):
-            raise ValueError(
-                f"Qwen3 MoE does not support act-order GPTQ: {prefix}")
-    qzeros = (weights.array(prefix + ".qzeros")
-              if weights.has(prefix + ".qzeros") else np.empty(
-                  (1, 0), dtype=np.int32))
-    return (weights.array(prefix + ".qweight"), qzeros,
-            weights.f16(prefix + ".scales"))
-
-
 def int4_expert_bindings(weights, experts_prefix: str, num_experts: int,
                          group_size: int, zero_point_offset: int) -> dict:
     """Map Qwen3 per-expert GPTQ tensors to Int4MoePlugin inputs."""

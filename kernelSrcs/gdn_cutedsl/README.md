@@ -15,7 +15,7 @@ Exact `supported_sms` per variant live in `kernelSrcs/build_cutedsl.py`
 | `gdn_decode` | 1 | SM80+ | Ampere (SM80), Blackwell (SM110) | small/large-batch dispatch at runtime (threshold n=32) |
 | `gdn_prefill` | > 1 | SM80+ | Ampere (SM80), Blackwell (SM110) | per-row context masking via `context_lengths`; should work on Hopper (SM90) but not yet tested |
 | `gdn_prefill_blackwell` | > 1 | SM100/101/110 | Blackwell (SM110) | uses TMA + warp-level pipeline; requires `cu_seqlens`; not built on Ampere/Hopper/Orin |
-| `gdn_prefill_blackwell_geforce` | > 1 | SM120/121 | GB10 (SM121) | 64-token warp-MMA/TMA path; batch-dense plugin I/O and `context_lengths` |
+| `gdn_prefill_blackwell_geforce` | > 1 | SM120/121 | GB10 (SM121) | 64-token warp-MMA/TMA path; direct indexed resident state and `context_lengths` |
 | `gdn_decode_mtp_cache` | 1..16 | SM80+ | Ampere (SM80), Blackwell (SM110) | linear MTP/DFlash verification with per-step checkpoint cache |
 
 All variants require CUDA 12.6+.
@@ -48,7 +48,7 @@ python3 gdn_decode_mtp.py --n 4 --h 8 --hv 8 --k 128 --v 128 --seq_len 4 --cache
 python3 gdn_prefill_blackwell.py --n 4 --h 8 --hv 8 --k 128 --v 128 --seq_len 128
 
 # Blackwell GeForce prefill (needs an SM120/121 GPU)
-python3 gdn_prefill_sm12x.py --n 1 --h 16 --hv 32 --k 128 --v 128 --seq_len 128
+python3 gdn_prefill_sm12x.py --n 2 --h 16 --hv 32 --k 128 --v 128 --seq_len 128
 
 # AOT export (single variant)
 python3 gdn_decode.py --export_only --output_dir ./out --file_name gdn_decode --function_prefix gdn_decode
@@ -69,12 +69,14 @@ prefill: `full`, `half`, `staggered`; Blackwell prefill: `full`, `half`.
 | `a`, `b` | `(N,1,HV)` | `(N,T,HV)` | FP16 |
 | `A_log` | `(HV,)` | same | FP32 |
 | `dt_bias` | `(HV,)` | same | FP16 |
-| `h0_source` | `(N,HV,K,V)` batch-dense | same | FP32 |
+| `h0_source` | `(R_pool,HV,K,V)` resident pool | same | FP32 |
+| `state_indices` | `(N,)` execution-to-resident map | same | INT32 |
 | `context_lengths` | `(N,)` device | same | INT32 |
 
-Blackwell prefill additionally uses `cu_seqlens` (`(N+1,)` INT32) and separate
-`h0` input/output views; see the generated `gdn_prefill_blackwell.h` and
-`CuteDslGDNRunner` for the exact layout.
+SM100/101/110 prefill additionally uses `cu_seqlens` (`(N+1,)` INT32) and
+separate `h0` input/output views. SM120/121 prefill aliases the resident pool
+for input/output and uses Tensor Map descriptor scratch. See the generated
+headers and `CuteDslGDNRunner` for the exact backend layouts.
 
 DDTree verification is implemented in C++/CUDA chunk form, not as a CuTe DSL
 AOT kernel. It uses `tree_parent_ids` and `tree_depths` (`(N,S)` INT32) plus
@@ -99,5 +101,7 @@ state copies; `run()` repeats that guard defensively. DDTree uses its C++/CUDA
 implementation and does not load a CuTe DSL AOT module.
 `canImplement(kDim, vDim, smVersion)` guards SM80+, K=V=128.
 
-Plugin (`cpp/plugins/gatedDeltaNet/`): 9 inputs — `q, k, v, a, b, A_log,
-dt_bias, h0_source, context_lengths`.
+Plugin (`cpp/plugins/gatedDeltaNet/`): 13 required inputs — `q, k, v, a, b,
+A_log, dt_bias, h0_source, context_lengths, query_start_offsets,
+state_indices, execution_phase_marker, context_sequence_count_carrier`.
+DDTree adds `tree_parent_ids` and `tree_depths`.

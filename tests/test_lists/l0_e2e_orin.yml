@@ -1,0 +1,4 @@
+tests:
+  - tests/defs/test_common.py::test_build_project
+  - tests/defs/test_vlm_pipeline.py::test_engine_build[InternVL3-1B-INT4-AWQ-int4_awq-mxsl2048-mxbs1-mxil1024-mnit256-mxit1024-mxpiit512]
+  - tests/defs/test_vlm_pipeline.py::test_inference[InternVL3-1B-INT4-AWQ-int4_awq-mxsl2048-mxbs1-mxil1024-mnit256-mxit1024-mxpiit512-vlm_basic]

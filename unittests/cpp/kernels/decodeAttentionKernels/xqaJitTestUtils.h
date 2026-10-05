@@ -27,6 +27,6 @@ namespace trt_edgellm
 //! Compile and load an XQA JIT kernel variant for direct runner unit tests.
 bool loadXQAJitKernelForTest(int32_t smVersion, nvinfer1::DataType dataType, nvinfer1::DataType kvDataType,
     int32_t headSize, int32_t numQHeads, int32_t numKVHeads, bool slidingWindow, bool specDecode,
-    int32_t tokensPerPage = 0);
+    int32_t tokensPerPage = 0, bool contiguousQuerySwa = false);
 
 } // namespace trt_edgellm

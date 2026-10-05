@@ -35,6 +35,9 @@ namespace trt_edgellm
 namespace rt
 {
 
+//! Validate the runtime drafting mode against the tree-metadata ABI exported by a hybrid DSpark base engine.
+void validateDsparkTreeMetadataBindings(DeploymentConfig const& deployment, EngineExecutor const& baseExecutor);
+
 //! Everything LLMInferenceRuntime reads off disk before it can assemble itself: the parsed deployment
 //! configuration, the engines, and the weight-shaped files that sit next to them.
 //!
@@ -65,7 +68,7 @@ struct ModelArtifacts
     //! returned artifacts record it as equal to `checkpointDir` in that case.
     static ModelArtifacts loadFromEngineDir(std::filesystem::path const& engineDir,
         std::optional<SpecDecodeDraftingConfig> const& draftingConfig, std::filesystem::path const& checkpointDir,
-        std::filesystem::path const& draftCheckpointDir, cudaStream_t stream);
+        std::filesystem::path const& draftCheckpointDir, bool contextReuseEnabled, cudaStream_t stream);
 };
 
 } // namespace rt

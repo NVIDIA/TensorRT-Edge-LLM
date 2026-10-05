@@ -1,0 +1,5 @@
+tests:
+  - tests/defs/test_common.py::test_build_project
+  - tests/defs/test_llm_pipeline.py::test_engine_build[Qwen3-0.6B-NVFP4-nvfp4-mxsl2048-mxbs1-mxil1024-tp2]
+  - tests/defs/test_llm_pipeline.py::test_inference[Qwen3-0.6B-NVFP4-nvfp4-mxsl2048-mxbs1-mxil1024-tp2-llm_basic]
+  - tests/defs/test_builder_pipeline.py::test_build_and_run[Qwen2.5-0.5B-Instruct-fp16-mxsl2048-mxbs1-mxil1024-llm_basic]

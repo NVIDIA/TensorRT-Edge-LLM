@@ -1,1 +1,2 @@
 *.cubin.cpp linguist-generated=true
+unittests/resources/mel_parity_golden.txt linguist-generated=true

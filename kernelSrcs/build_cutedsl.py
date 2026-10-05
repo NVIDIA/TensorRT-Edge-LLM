@@ -27,19 +27,23 @@ Kernel groups:
   f16_moe          — FP16 grouped FC1/FC2 MoE (Ampere / Blackwell / SM12x)
   nvfp4_moe        — split FC1/FC2 NVFP4 MoE (currently SM110/Thor only)
   nvfp4_a16_blackwell_gemm — SM110 dense NVFP4-weight FP16/BF16 GEMM
+  nvfp4_a16_blackwell_moe  — SM110 grouped (routed-MoE) NVFP4-weight FP16 GEMM:
+                     FC1 relu2-store and FC2 scatter-add variants (tn8/16/32/64/128)
   nvfp4_fused_moe  — End-to-end NvFP4 fused MoE (Blackwell GeForce)
+  layernorm        — homogeneous FP16/BF16 LayerNorm for benchmarked hidden sizes
+                     plus odd-H correctness coverage
   rmsnorm          — FP16/BF16 RMSNorm for production hidden sizes
 
 Usage (run from the repo root):
-  python kernelSrcs/build_cutedsl.py                      # build all groups for this GPU
-  python kernelSrcs/build_cutedsl.py --kernels gdn        # single group
-  python kernelSrcs/build_cutedsl.py --kernels fmha,gdn   # multiple groups
-  python kernelSrcs/build_cutedsl.py --gpu_arch sm_110    # override SM detection
-  python kernelSrcs/build_cutedsl.py --gpu_arch sm_110 --arch aarch64  # cross-compile host objects
-  python kernelSrcs/build_cutedsl.py --clean --verbose    # clean rebuild
+  python kernelSrcs/build_cutedsl.py --gpu_arch sm_100                     # all supported groups
+  python kernelSrcs/build_cutedsl.py --gpu_arch sm_110 --kernels gdn       # single group
+  python kernelSrcs/build_cutedsl.py --gpu_arch sm_110 --kernels fmha,gdn  # multiple groups
+  python kernelSrcs/build_cutedsl.py --gpu_arch sm_110,sm_120              # one dual-SM artifact
+  python kernelSrcs/build_cutedsl.py --gpu_arch sm_110 --arch aarch64      # cross-compile host objects
+  python kernelSrcs/build_cutedsl.py --gpu_arch sm_100 --clean --verbose   # clean rebuild
 
-The GPU SM is auto-detected via cupy / nvidia-smi and only matching variants
-are built.  See KERNEL_VARIANTS below for the full variant list.
+The target GPU SM is explicit so artifact generation can run without a GPU.
+Only matching variants are built. See KERNEL_VARIANTS below for the full list.
 
 Output (under {output_dir}/{arch}/{artifact_tag}/):
   libcutedsl_{arch}.a   — merged static archive (kernel objects + CuTe DSL
@@ -83,10 +87,21 @@ _LLM = ["--is_causal", "--is_persistent", "--export_only", "--bottom_right_align
 _LLM_FP8 = _LLM + ["--in_dtype", "Float8E4M3FN"]
 _LLM_PAGED = _LLM + ["--paged_kv"]
 _LLM_FP8_PAGED = _LLM_FP8 + ["--paged_kv"]
+_LLM_PACKED_PAGED = _LLM_PAGED + ["--packed_q"]
+_LLM_PACKED_FP8_PAGED = _LLM_FP8_PAGED + ["--packed_q"]
 _LLM_DENSE_PAGED = ["--is_persistent", "--export_only", "--paged_kv"]
 _LLM_DENSE_FP8_PAGED = _LLM_DENSE_PAGED + ["--in_dtype", "Float8E4M3FN"]
 _VIT = ["--is_persistent", "--export_only", "--vit_mode"]
 _VIT_FP8 = _VIT + ["--in_dtype", "Float8E4M3FN"]
+# cpp/kernels/qsaAttention/cuteDslQsaSparseRunner.h (kMaxSplits, kPartialRows)
+# sizes the split-K partial workspace from these numbers.
+_QSA_DECODE_MAX_SPLITS = 8
+_QSA_DECODE_M_BLOCK = 16
+# Decode CTA geometry (must match QSA_DECODE_DEFAULT_THREADS /
+# QSA_DECODE_DEFAULT_PIPE_DEPTH in qsa_cutedsl/qsa_sparse_gqa.py): 4 warps per
+# CTA, each with its own 1-stage cp.async gather pipeline.
+_QSA_DECODE_THREADS = 128
+_QSA_DECODE_PIPE_DEPTH = 1
 
 
 @dataclass
@@ -95,15 +110,20 @@ class KernelVariant:
 
     Attributes:
         name:          Unique identifier — used as --file_name / --function_prefix.
-        group:         Logical group ("gdn", "fmha", "f16_moe",
-                       "nvfp4_fused_moe", "nvfp4_moe", "rmsnorm", "ssd",
-                       "nvfp4_a16_blackwell_gemm", or "gemm").
+        group:         Logical group ("gdn", "fmha", "qsa", "f16_moe",
+                       "layernorm", "nvfp4_fused_moe", "nvfp4_moe",
+                       "rmsnorm", "ssd", "nvfp4_a16_blackwell_gemm",
+                       "nvfp4_a16_blackwell_moe", or "gemm").
                        cmake sets CUTE_DSL_<GROUP>_ENABLED for integrated groups.
         supported_sms: Explicit SM whitelist. With --kernels ALL, only variants whose
                        supported_sms contains the detected/requested SM are compiled.
         script:        Kernel script path relative to kernelSrcs/.
         script_args:   Args forwarded verbatim after --output_dir/--file_name/--function_prefix.
                        GDN variants MUST include "--export_only" here.
+        wants_target_sm: Append "--target_sm <sm>" when building the command.
+                       KERNEL_VARIANTS is a module-level constant, so the
+                       resolved target SM is not available when the variant is
+                       constructed and cannot be baked into script_args.
 
     """
     name: str
@@ -111,6 +131,7 @@ class KernelVariant:
     supported_sms: list[int]
     script: str
     script_args: list[str] = field(default_factory=list)
+    wants_target_sm: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -126,12 +147,19 @@ class KernelVariant:
 #   gdn              — Gated Delta Net decode/prefill
 #   fmha             — FP16 Context/ViT FMHA, plus optimized Blackwell
 #                      persistent variants on SM100/101/110.
+#   qsa              — Qwen Sparse Attention (QSA) sparse-GQA prefill +
+#                      split-K decode: per-query top-k token-index gather
+#                      attention (Qwen3.8-Flash-Next).
 #   ssd              — Mamba2 SSM chunk-scan prefill
 #   gemm             — Talker MLP cuBLAS replacement (Ampere/Blackwell/BW GeForce)
 #   f16_moe          — FP16 grouped FC1/FC2 MoE (Ampere/Blackwell/SM12x)
 #   nvfp4_moe        — split FC1/FC2 NVFP4 MoE (currently SM110/Thor only)
 #   nvfp4_a16_blackwell_gemm — SM110 dense W4A16 TCGen5 GEMM (FP16/BF16)
+#   nvfp4_a16_blackwell_moe  — SM110 grouped W4A16 TCGen5 MoE GEMM (FP16):
+#                      FC1 relu2-store + FC2 scatter-add, one weight layout
 #   nvfp4_fused_moe  — End-to-end NvFP4 fused MoE (Blackwell GeForce)
+#   layernorm        — homogeneous FP16/BF16 LayerNorm for benchmarked hidden sizes
+#                      plus odd-H correctness coverage
 #   rmsnorm          — FP16/BF16 RMSNorm for production hidden sizes
 # ---------------------------------------------------------------------------
 KERNEL_VARIANTS = [
@@ -293,6 +321,14 @@ KERNEL_VARIANTS = [
         supported_sms=[100, 101, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,14,128", "--k_shape", "1,1024,1,128"]
+                    + _LLM + ["--skip_softmax_threshold", "1e-6"],
+    ),
+    KernelVariant(
+        name="fmha_d256_skipsoftmax",
+        group="fmha",
+        supported_sms=[100, 101, 110],
+        script="fmha_cutedsl_blackwell/fmha.py",
+        script_args=["--q_shape", "1,1024,16,256", "--k_shape", "1,1024,2,256"]
                     + _LLM + ["--skip_softmax_threshold", "1e-6"],
     ),
     KernelVariant(
@@ -461,6 +497,22 @@ KERNEL_VARIANTS = [
                     + _LLM_PAGED + ["--skip_softmax_threshold", "1e-6"],
     ),
     KernelVariant(
+        name="fmha_d256_skipsoftmax_paged",
+        group="fmha",
+        supported_sms=[100, 101, 110],
+        script="fmha_cutedsl_blackwell/fmha.py",
+        script_args=["--q_shape", "1,1024,16,256", "--k_shape", "1,1024,2,256"]
+                    + _LLM_PAGED + ["--skip_softmax_threshold", "1e-6"],
+    ),
+    KernelVariant(
+        name="fmha_d512_skipsoftmax_paged",
+        group="fmha",
+        supported_sms=[100, 101, 110],
+        script="fmha_cutedsl_blackwell/fmha.py",
+        script_args=["--q_shape", "1,1024,8,512", "--k_shape", "1,1024,1,512"]
+                    + _LLM_PAGED + ["--skip_softmax_threshold", "1e-6"],
+    ),
+    KernelVariant(
         name="fmha_d256_paged",
         group="fmha",
         supported_sms=[100, 101, 110],
@@ -551,6 +603,42 @@ KERNEL_VARIANTS = [
         script_args=["--q_shape", "1,1024,16,256", "--k_shape", "1,1024,2,256"]
                     + _LLM_FP8_PAGED + ["--window_size", "4096,-1"],
     ),
+    # Packed-Q causal paged KV variants. Q/O use [T,H,D] and carry real Q/KV cumulative lengths.
+    *[
+        KernelVariant(
+            name=name,
+            group="fmha",
+            supported_sms=[100, 101, 110],
+            script="fmha_cutedsl_blackwell/fmha.py",
+            script_args=["--q_shape", q_shape, "--k_shape", k_shape] + flags,
+        )
+        for name, q_shape, k_shape, flags in (
+            ("fmha_d64_packed_paged", "1,1024,14,64", "1,1024,1,64", _LLM_PACKED_PAGED),
+            ("fmha_d128_packed_paged", "1,1024,14,128", "1,1024,1,128", _LLM_PACKED_PAGED),
+            ("fmha_d256_packed_paged", "1,1024,16,256", "1,1024,2,256", _LLM_PACKED_PAGED),
+            ("fmha_d512_packed_paged", "1,1024,8,512", "1,1024,1,512", _LLM_PACKED_PAGED),
+            ("fmha_d64_packed_sw_paged", "1,1024,14,64", "1,1024,1,64",
+             _LLM_PACKED_PAGED + ["--window_size", "4096,-1"]),
+            ("fmha_d128_packed_sw_paged", "1,1024,14,128", "1,1024,1,128",
+             _LLM_PACKED_PAGED + ["--window_size", "4096,-1"]),
+            ("fmha_d256_packed_sw_paged", "1,1024,16,256", "1,1024,2,256",
+             _LLM_PACKED_PAGED + ["--window_size", "4096,-1"]),
+            ("fmha_d512_packed_sw_paged", "1,1024,8,512", "1,1024,1,512",
+             _LLM_PACKED_PAGED + ["--window_size", "4096,-1"]),
+            ("fmha_d64_packed_paged_fp8", "1,1024,14,64", "1,1024,1,64", _LLM_PACKED_FP8_PAGED),
+            ("fmha_d128_packed_paged_fp8", "1,1024,14,128", "1,1024,1,128", _LLM_PACKED_FP8_PAGED),
+            ("fmha_d256_packed_paged_fp8", "1,1024,16,256", "1,1024,2,256", _LLM_PACKED_FP8_PAGED),
+            ("fmha_d512_packed_paged_fp8", "1,1024,8,512", "1,1024,1,512", _LLM_PACKED_FP8_PAGED),
+            ("fmha_d64_packed_sw_paged_fp8", "1,1024,14,64", "1,1024,1,64",
+             _LLM_PACKED_FP8_PAGED + ["--window_size", "4096,-1"]),
+            ("fmha_d128_packed_sw_paged_fp8", "1,1024,14,128", "1,1024,1,128",
+             _LLM_PACKED_FP8_PAGED + ["--window_size", "4096,-1"]),
+            ("fmha_d256_packed_sw_paged_fp8", "1,1024,16,256", "1,1024,2,256",
+             _LLM_PACKED_FP8_PAGED + ["--window_size", "4096,-1"]),
+            ("fmha_d512_packed_sw_paged_fp8", "1,1024,8,512", "1,1024,1,512",
+             _LLM_PACKED_FP8_PAGED + ["--window_size", "4096,-1"]),
+        )
+    ],
     KernelVariant(
         name="vit_fmha_d64",
         group="fmha",
@@ -766,6 +854,98 @@ KERNEL_VARIANTS = [
         ],
     ),
     KernelVariant(
+        name="fmha_v2_d64_paged_ragged",
+        group="fmha",
+        supported_sms=[80, 86, 87, 89, 90, 100, 101, 110, 120, 121],
+        script="fmha_v2_cutedsl/fmha.py",
+        script_args=[
+            "--head_dim", "64",
+            "--m_block_size", "128", "--n_block_size", "128", "--num_threads", "128",
+            "--dtype", "Float16", "--is_causal", "--paged_kv_ragged", "--skip_rescale", "--export_only",
+        ],
+    ),
+    KernelVariant(
+        name="fmha_v2_d128_paged_ragged",
+        group="fmha",
+        supported_sms=[80, 86, 87, 89, 90, 100, 101, 110, 120, 121],
+        script="fmha_v2_cutedsl/fmha.py",
+        script_args=[
+            "--head_dim", "128",
+            "--m_block_size", "64", "--n_block_size", "64", "--num_threads", "128",
+            "--dtype", "Float16", "--is_causal", "--paged_kv_ragged", "--skip_rescale", "--export_only",
+        ],
+    ),
+    KernelVariant(
+        name="fmha_v2_d256_paged_ragged",
+        group="fmha",
+        supported_sms=[80, 86, 87, 89, 90, 100, 101, 110, 120, 121],
+        script="fmha_v2_cutedsl/fmha.py",
+        script_args=[
+            "--head_dim", "256",
+            "--m_block_size", "64", "--n_block_size", "32", "--num_threads", "128",
+            "--dtype", "Float16", "--is_causal", "--paged_kv_ragged", "--skip_rescale", "--export_only",
+        ],
+    ),
+    KernelVariant(
+        name="fmha_v2_d512_paged_ragged",
+        group="fmha",
+        supported_sms=[80, 86, 87, 89, 90, 100, 101, 110, 120, 121],
+        script="fmha_v2_cutedsl/fmha.py",
+        script_args=[
+            "--head_dim", "512",
+            "--m_block_size", "32", "--n_block_size", "32", "--num_threads", "64",
+            "--dtype", "Float16", "--is_causal", "--paged_kv_ragged", "--skip_rescale", "--export_only",
+        ],
+    ),
+    KernelVariant(
+        name="fmha_v2_d64_sw_paged_ragged",
+        group="fmha",
+        supported_sms=[80, 86, 87, 89, 90, 100, 101, 110, 120, 121],
+        script="fmha_v2_cutedsl/fmha.py",
+        script_args=[
+            "--head_dim", "64",
+            "--m_block_size", "64", "--n_block_size", "64", "--num_threads", "128",
+            "--dtype", "Float16", "--is_causal", "--paged_kv_ragged", "--window_size_left", "4096",
+            "--skip_rescale", "--export_only",
+        ],
+    ),
+    KernelVariant(
+        name="fmha_v2_d128_sw_paged_ragged",
+        group="fmha",
+        supported_sms=[80, 86, 87, 89, 90, 100, 101, 110, 120, 121],
+        script="fmha_v2_cutedsl/fmha.py",
+        script_args=[
+            "--head_dim", "128",
+            "--m_block_size", "64", "--n_block_size", "64", "--num_threads", "128",
+            "--dtype", "Float16", "--is_causal", "--paged_kv_ragged", "--window_size_left", "4096",
+            "--skip_rescale", "--export_only",
+        ],
+    ),
+    KernelVariant(
+        name="fmha_v2_d256_sw_paged_ragged",
+        group="fmha",
+        supported_sms=[80, 86, 87, 89, 90, 100, 101, 110, 120, 121],
+        script="fmha_v2_cutedsl/fmha.py",
+        script_args=[
+            "--head_dim", "256",
+            "--m_block_size", "64", "--n_block_size", "32", "--num_threads", "128",
+            "--dtype", "Float16", "--is_causal", "--paged_kv_ragged", "--window_size_left", "4096",
+            "--skip_rescale", "--export_only",
+        ],
+    ),
+    KernelVariant(
+        name="fmha_v2_d512_sw_paged_ragged",
+        group="fmha",
+        supported_sms=[80, 86, 87, 89, 90, 100, 101, 110, 120, 121],
+        script="fmha_v2_cutedsl/fmha.py",
+        script_args=[
+            "--head_dim", "512",
+            "--m_block_size", "32", "--n_block_size", "32", "--num_threads", "64",
+            "--dtype", "Float16", "--is_causal", "--paged_kv_ragged", "--window_size_left", "4096",
+            "--skip_rescale", "--export_only",
+        ],
+    ),
+    KernelVariant(
         name="fmha_v2_d64_sw_paged",
         group="fmha",
         supported_sms=[80, 86, 87, 89, 90, 100, 101, 110, 120, 121],
@@ -858,6 +1038,17 @@ KERNEL_VARIANTS = [
         ],
     ),
     KernelVariant(
+        name="fmha_v2_vit_d96",
+        group="fmha",
+        supported_sms=[80, 86, 87, 89, 90, 100, 101, 110, 120, 121],
+        script="fmha_v2_cutedsl/fmha.py",
+        script_args=[
+            "--head_dim", "96",
+            "--m_block_size", "128", "--n_block_size", "64", "--num_threads", "128",
+            "--dtype", "Float16", "--fmha_v2_vit", "--skip_rescale", "--export_only",
+        ],
+    ),
+    KernelVariant(
         name="fmha_v2_vit_d128",
         group="fmha",
         supported_sms=[80, 86, 87, 89, 90, 100, 101, 110, 120, 121],
@@ -927,6 +1118,64 @@ KERNEL_VARIANTS = [
             "--dtype", "Float16", "--is_causal", "--fmha_v2_context", "--vision_block",
             "--window_size_left", "4096", "--num_head", "16", "--kv_group_size", "16",
             "--skip_rescale", "--export_only",
+        ],
+    ),
+    # --- QSA sparse-GQA group (Qwen3.8-Flash-Next prefill + split-K decode) ---
+    # Prefill: one CTA per (query token, kv head); the M tile is the GQA head
+    # group and the KV traversal is a per-row cp.async gather over the
+    # indexer's top-k token-index list.  B/S/H_q/H_kv/topk stay
+    # runtime-dynamic; head_dim and the (Br, Bc, threads) tuning are baked
+    # (the decode variants below also bake MAX_SPLITS).
+    KernelVariant(
+        name="qsa_sparse_d256_fp16",
+        group="qsa",
+        supported_sms=[100, 101, 110],
+        script="qsa_cutedsl/qsa_sparse_gqa.py",
+        script_args=[
+            "--head_dim", "256",
+            "--m_block_size", "16", "--n_block_size", "16", "--num_threads", "32",
+            "--dtype", "Float16", "--export_only",
+        ],
+    ),
+    KernelVariant(
+        name="qsa_sparse_d256_bf16",
+        group="qsa",
+        supported_sms=[100, 101, 110],
+        script="qsa_cutedsl/qsa_sparse_gqa.py",
+        script_args=[
+            "--head_dim", "256",
+            "--m_block_size", "16", "--n_block_size", "16", "--num_threads", "32",
+            "--dtype", "BFloat16", "--export_only",
+        ],
+    ),
+    # Decode: single-launch split-K over the paged pool (widened rows; the
+    # indexer-state tail is never read).  MAX_SPLITS is baked into the grid.
+    KernelVariant(
+        name="qsa_sparse_decode_d256_fp16",
+        group="qsa",
+        supported_sms=[100, 101, 110],
+        script="qsa_cutedsl/qsa_sparse_gqa.py",
+        script_args=[
+            "--head_dim", "256",
+            "--m_block_size", str(_QSA_DECODE_M_BLOCK),
+            "--n_block_size", "16", "--num_threads", str(_QSA_DECODE_THREADS),
+            "--pipe_depth", str(_QSA_DECODE_PIPE_DEPTH),
+            "--dtype", "Float16", "--decode",
+            "--max_splits", str(_QSA_DECODE_MAX_SPLITS), "--export_only",
+        ],
+    ),
+    KernelVariant(
+        name="qsa_sparse_decode_d256_bf16",
+        group="qsa",
+        supported_sms=[100, 101, 110],
+        script="qsa_cutedsl/qsa_sparse_gqa.py",
+        script_args=[
+            "--head_dim", "256",
+            "--m_block_size", str(_QSA_DECODE_M_BLOCK),
+            "--n_block_size", "16", "--num_threads", str(_QSA_DECODE_THREADS),
+            "--pipe_depth", str(_QSA_DECODE_PIPE_DEPTH),
+            "--dtype", "BFloat16", "--decode",
+            "--max_splits", str(_QSA_DECODE_MAX_SPLITS), "--export_only",
         ],
     ),
     # --- NvFP4 MoE group (decomposed FC1/FC2; SM110/Thor today) ---
@@ -1649,6 +1898,28 @@ KERNEL_VARIANTS = [
 ]
 
 
+# LayerNorm is specialized by homogeneous storage dtype and hidden size. The
+# flattened row count and epsilon remain runtime arguments in each AOT ABI.
+_LAYERNORM_SUPPORTED_SMS = [80, 86, 87, 90, 100, 101, 110, 120, 121]
+_LAYERNORM_HIDDEN_SIZES = [4096, 4097, 5120, 7168, 8192]
+for _layernorm_dtype in ("fp16", "bf16"):
+    for _layernorm_hidden_size in _LAYERNORM_HIDDEN_SIZES:
+        KERNEL_VARIANTS.append(
+            KernelVariant(
+                name=f"layernorm_{_layernorm_dtype}_h{_layernorm_hidden_size}",
+                group="layernorm",
+                supported_sms=_LAYERNORM_SUPPORTED_SMS,
+                script="layernorm_cutedsl/layernorm.py",
+                script_args=[
+                    "--dtype", _layernorm_dtype,
+                    "--hidden_size", str(_layernorm_hidden_size),
+                    "--export_only",
+                ],
+                wants_target_sm=True,
+            )
+        )
+
+
 # RMSNorm is specialized by storage dtype, hidden size, and weight-before-cast
 # mode. The row count and epsilon remain runtime arguments in each AOT ABI.
 _RMSNORM_SUPPORTED_SMS = [80, 86, 87, 90, 100, 101, 110, 120, 121]
@@ -1670,6 +1941,7 @@ for _rmsnorm_dtype in ("fp16", "bf16"):
                         "--weight_before_cast", str(_rmsnorm_weight_before_cast),
                         "--export_only",
                     ],
+                    wants_target_sm=True,
                 )
             )
 
@@ -1708,6 +1980,54 @@ for _io_dtype in _NVFP4_A16_BLACKWELL_DTYPES:
                 ],
             )
         )
+
+# ---------------------------------------------------------------------------
+# nvfp4_a16_blackwell_moe group — grouped (routed-MoE) W4A16 TCGen5 GEMM for
+# SM110 (Nvfp4A16BlackwellMoePlugin prefill path).
+#
+# Same mainloop and opaque weight tile as nvfp4_a16_blackwell_gemm, with the
+# expert as the L mode of the weight/scale TMA descriptors:
+#   qweight      [E, N/128, K/64, 128, 32] packed E2M1 bytes
+#   block_scales [E, N/128, K/64, 128, 4]  raw E4M3 bytes
+#   global_scale [E] fp32
+# E, N, K, the padded row count and the token count are runtime arguments.
+# Each variant bakes the fusion (FC1: relu2 + TMA store of the permuted
+# intermediate; FC2: router-weighted red.global scatter-add into [T, N]),
+# the activation dtype and the token (MMA-N) tile.  Only FP16 is baked:
+# the Nemotron 3.5 Lightning export is FP16 and the plugin rejects BF16.
+# The token tile doubles as the per-expert row padding granularity, so the
+# runner picks among these tiles by token count: small tiles (tn8/tn16) cut
+# the padding rows the GEMMs stream at 1-12 routed rows per expert, large
+# tiles amortize dequant/MMA when experts hold dozens of rows.
+# ---------------------------------------------------------------------------
+_NVFP4_A16_BLACKWELL_MOE_TOKEN_TILES = (8, 16, 32, 64, 128)
+_NVFP4_A16_BLACKWELL_MOE_DTYPES = ("fp16", )
+_NVFP4_A16_BLACKWELL_MOE_FUSIONS = (
+    ("fc1_relu2", "relu2_store"),
+    ("fc2_scatter", "scatter_add"),
+)
+
+for _fusion_tag, _fusion_arg in _NVFP4_A16_BLACKWELL_MOE_FUSIONS:
+    for _io_dtype in _NVFP4_A16_BLACKWELL_MOE_DTYPES:
+        for _token_tile in _NVFP4_A16_BLACKWELL_MOE_TOKEN_TILES:
+            KERNEL_VARIANTS.append(
+                KernelVariant(
+                    name=(f"nvfp4_a16_blackwell_moe_{_fusion_tag}_{_io_dtype}_"
+                          f"tm128_tn{_token_tile}_tk64"),
+                    group="nvfp4_a16_blackwell_moe",
+                    supported_sms=[110],
+                    script=("nvfp4_a16_blackwell_moe/"
+                            "nvfp4_a16_blackwell_moe_gemm.py"),
+                    script_args=[
+                        "--io_dtype",
+                        _io_dtype,
+                        "--token_tile",
+                        str(_token_tile),
+                        "--fusion",
+                        _fusion_arg,
+                        "--export_only",
+                    ],
+                ))
 
 
 # ---------------------------------------------------------------------------
@@ -1825,54 +2145,18 @@ def _parse_sm(gpu_arch_str):
     return sm
 
 
-def detect_gpu_sm() -> int:
-    """Auto-detect the current GPU SM.
-
-    Returns the SM as an integer, e.g. 87 for SM87, 100 for SM100, 110 for SM110.
-
-    Detection order:
-      1. cupy.cuda.Device — works on all platforms (Linux, QNX, etc.) since cupy is
-         already a required dependency.  compute_capability returns e.g. "87", "100".
-      2. nvidia-smi --query-gpu=compute_cap — fallback for environments where cupy
-         is not yet importable at this point in the script (rare).
-
-    Raises RuntimeError if both methods fail; caller should re-run with --gpu_arch.
-    """
-    # 1. Try cupy first — platform-agnostic, already a required dep.
-    try:
-        import cupy  # noqa: PLC0415
-        cap = cupy.cuda.Device(0).compute_capability  # e.g. "87", "100", "110"
-        sm = int(cap)
-        if sm > 0:
-            return sm
-    except Exception:
-        pass
-
-    # 2. Fall back to nvidia-smi (Linux/x86; not available on QNX).
-    try:
-        result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=10,
-        )
-    except FileNotFoundError:
-        raise RuntimeError(
-            "Could not detect GPU SM: cupy unavailable and nvidia-smi not found. "
-            "Pass --gpu_arch explicitly (e.g. --gpu_arch sm_87)."
-        )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"nvidia-smi failed: {result.stderr.strip() or result.stdout.strip()}. "
-            "Pass --gpu_arch explicitly to override."
-        )
-    # compute_cap format from nvidia-smi is "8.7" → 87, "10.0" → 100.
-    line = result.stdout.strip().splitlines()[0].strip()
-    parts = line.split(".")
-    if len(parts) != 2 or not parts[0].isdigit() or not parts[1].isdigit():
-        raise RuntimeError(
-            f"Unexpected nvidia-smi compute_cap format: {line!r}. "
-            "Pass --gpu_arch explicitly to override."
-        )
-    return int(parts[0]) * 10 + int(parts[1])
+def _parse_sms(gpu_arch_str):
+    """Parse a comma-separated SM list while preserving its order."""
+    sms = []
+    for token in gpu_arch_str.split(","):
+        if not token.strip():
+            raise ValueError(
+                f"Invalid --gpu_arch {gpu_arch_str!r}: empty SM entry."
+            )
+        sm = _parse_sm(token)
+        if sm not in sms:
+            sms.append(sm)
+    return sms
 
 
 def select_variants(sm: int, kernels_arg: str):
@@ -2189,7 +2473,9 @@ def check_dependencies(sm=None, selected_groups=None, cuda_ver=None):
 # ---------------------------------------------------------------------------
 
 
-def _compile_command(variant, staging_dir, compile_gpu_arch, host_target):
+def _compile_command(
+    variant, staging_dir, compile_gpu_arch, host_target, sm, export_name=None
+):
     script = _SCRIPT_DIR / variant.script
     if compile_gpu_arch or host_target:
         cmd = [
@@ -2206,19 +2492,33 @@ def _compile_command(variant, staging_dir, compile_gpu_arch, host_target):
     else:
         cmd = [sys.executable, str(script)]
 
-    cmd += ["--output_dir", str(staging_dir),
-            "--file_name", variant.name,
-            "--function_prefix", variant.name]
     cmd += variant.script_args
+    if variant.wants_target_sm:
+        # The kernel script cannot resolve this itself: CUTE_DSL_ARCH is unset
+        # for every target in build_cutedsl_tarballs.sh's matrix, so a device
+        # query inside the script would report the build host's GPU.
+        cmd += ["--target_sm", str(sm)]
+    export_name = export_name or variant.name
+    # Keep these last: a few registry entries carry historical output-name
+    # overrides in script_args, while a multi-SM artifact must apply its unique
+    # architecture suffix to every emitted object and C symbol.
+    cmd += ["--output_dir", str(staging_dir),
+            "--file_name", export_name,
+            "--function_prefix", export_name]
     return cmd
 
 
-def _compile_one(variant, staging_dir, verbose, sm, compile_gpu_arch, host_target):
+def _compile_one(
+    variant, staging_dir, verbose, sm, compile_gpu_arch, host_target,
+    export_name=None,
+):
     """Invoke a kernel script to AOT-compile one variant into .o + .h.
 
     Returns (name, ok, elapsed_secs, error_msg).
     """
-    cmd = _compile_command(variant, staging_dir, compile_gpu_arch, host_target)
+    cmd = _compile_command(
+        variant, staging_dir, compile_gpu_arch, host_target, sm, export_name
+    )
 
     t0 = time.monotonic()
     result = subprocess.run(
@@ -2229,8 +2529,9 @@ def _compile_one(variant, staging_dir, verbose, sm, compile_gpu_arch, host_targe
     if result.returncode != 0:
         # Show the head (traceback / first error) rather than the tail, which is typically more diagnostic.
         return variant.name, False, elapsed, (result.stderr or result.stdout or "")[:4000]
-    obj = staging_dir / f"{variant.name}.o"
-    hdr = staging_dir / f"{variant.name}.h"
+    output_stem = export_name or variant.name
+    obj = staging_dir / f"{output_stem}.o"
+    hdr = staging_dir / f"{output_stem}.h"
     if not obj.exists() or not hdr.exists():
         # Some variants (e.g. gdn_decode_mtp --cache_only) produce artifacts with
         # a suffix (e.g. gdn_decode_mtp_cache.o/.h).  Accept any .o + .h pair.
@@ -2263,6 +2564,51 @@ def compile_variants(variants, staging_dirs, jobs, verbose, sm, compile_gpu_arch
     if failures:
         for name, msg in failures:
             print(f"\n  [{name}]\n{msg}")
+        sys.exit(1)
+
+
+def compile_multi_sm_variants(
+    variants_by_sm, staging_dirs, jobs, verbose, compile_gpu_arches, host_target
+):
+    """Compile every selected SM in one shared process pool."""
+    total = sum(len(variants) for variants in variants_by_sm.values())
+    print(
+        f"\nCompiling {total} kernel variant(s) for "
+        f"{len(variants_by_sm)} SM targets (jobs={jobs})..."
+    )
+    failures = []
+    with concurrent.futures.ProcessPoolExecutor(max_workers=jobs) as pool:
+        futures = {}
+        max_variants = max(len(variants) for variants in variants_by_sm.values())
+        for variant_index in range(max_variants):
+            for sm, variants in variants_by_sm.items():
+                if variant_index >= len(variants):
+                    continue
+                variant = variants[variant_index]
+                export_name = _multi_sm_export_name(variant.name, sm)
+                future = pool.submit(
+                    _compile_one,
+                    variant,
+                    staging_dirs[(sm, variant.name)],
+                    verbose,
+                    sm,
+                    compile_gpu_arches[sm],
+                    host_target,
+                    export_name,
+                )
+                futures[future] = (sm, variant)
+
+        for future in concurrent.futures.as_completed(futures):
+            sm, variant = futures[future]
+            _, ok, elapsed, msg = future.result()
+            label = f"SM{sm}/{variant.name}"
+            print(f"  {'✓' if ok else '✗'} {label:<32} ({elapsed:.1f}s)")
+            if not ok:
+                failures.append((label, msg))
+
+    if failures:
+        for label, msg in failures:
+            print(f"\n  [{label}]\n{msg}")
         sys.exit(1)
 
 # ELF e_machine values for validating CuTe DSL runtime static objects.
@@ -2469,7 +2815,6 @@ _METADATA_COMPAT_KEYS = (
     "cutlass_dsl_version",
 )
 
-
 def _load_existing_metadata(metadata_path: Path):
     """Return the parsed existing metadata.json, or None if absent/unreadable."""
     try:
@@ -2518,18 +2863,390 @@ def _check_obj_name_collision(kernel_objs, runtime_objs):
         )
 
 
+def _check_defined_symbol_collision(object_files):
+    """Reject duplicate externally visible definitions before archiving."""
+    result = subprocess.run(
+        ["nm", "-g", "--defined-only"] + [str(path) for path in object_files],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    owners = {}
+    current_object = None
+    for line in result.stdout.splitlines():
+        if line.endswith(":"):
+            current_object = line[:-1]
+            continue
+        fields = line.split()
+        if len(fields) < 2:
+            continue
+        symbol = fields[-1]
+        owners.setdefault(symbol, set()).add(current_object or "<unknown>")
+    duplicates = {
+        symbol: paths for symbol, paths in owners.items() if len(paths) > 1
+    }
+    if duplicates:
+        details = "\n".join(
+            f"  {symbol}: {', '.join(sorted(paths))}"
+            for symbol, paths in sorted(duplicates.items())[:20]
+        )
+        raise RuntimeError(
+            "Duplicate global definitions in multi-SM CuTe DSL objects:\n"
+            f"{details}"
+        )
+
+
+def _multi_sm_artifact_tag(sms):
+    return "_".join(sm_to_artifact_tag(sm) for sm in sms)
+
+
+def _multi_sm_marker(sm):
+    return f"__arch{sm}"
+
+
+def _multi_sm_export_name(variant_name, sm):
+    return f"{variant_name}{_multi_sm_marker(sm)}"
+
+
+_EXTERN_MLIR_PATTERN = re.compile(
+    r"(?m)^void\s+([A-Za-z_][A-Za-z0-9_]*)\s*"
+    r"\(void\s*\*\*\s*(?:args)?\s*"
+    r"(,\s*int32_t\s+num_args)?\s*\)\s*;"
+)
+
+
+def _external_mlir_functions(header_text):
+    functions = []
+    for match in _EXTERN_MLIR_PATTERN.finditer(header_text):
+        name = match.group(1)
+        if name.startswith("_mlir_"):
+            functions.append((name, bool(match.group(2))))
+    return functions
+
+
+def _write_multi_sm_headers_and_dispatch(
+    output_dir, variants_by_sm, staging_dirs, sms
+):
+    """Write canonical headers plus one host-side SM dispatcher.
+
+    Each CuTe DSL object is generated with an architecture-qualified C symbol
+    prefix. The public headers keep their existing ABI; their external MLIR
+    entry points forward to the matching qualified object for the one visible
+    CUDA device.
+    """
+    inc_dir = output_dir / "include"
+    inc_dir.mkdir(exist_ok=True)
+    canonical_headers = {}
+    header_groups = {}
+    symbol_targets = {}
+
+    for sm, variants in variants_by_sm.items():
+        marker = _multi_sm_marker(sm)
+        for variant in variants:
+            staging_dir = staging_dirs[(sm, variant.name)]
+            for header in sorted(staging_dir.glob("*.h")):
+                tagged_name = header.name
+                tagged_text = header.read_text()
+                if marker not in tagged_name or marker not in tagged_text:
+                    raise RuntimeError(
+                        f"{header}: generated multi-SM header is missing marker {marker!r}"
+                    )
+                canonical_name = tagged_name.replace(marker, "")
+                canonical_text = tagged_text.replace(marker, "")
+                previous = canonical_headers.get(canonical_name)
+                if previous is not None and previous != canonical_text:
+                    raise RuntimeError(
+                        f"Generated header ABI differs across SM targets: {canonical_name}"
+                    )
+                canonical_headers[canonical_name] = canonical_text
+                header_groups[canonical_name] = variant.group
+                shutil.copy2(header, inc_dir / tagged_name)
+
+                tagged_functions = _external_mlir_functions(tagged_text)
+                canonical_functions = _external_mlir_functions(canonical_text)
+                if len(tagged_functions) != len(canonical_functions):
+                    raise RuntimeError(
+                        f"Could not normalize external MLIR declarations in {header}"
+                    )
+                for canonical, tagged in zip(canonical_functions, tagged_functions):
+                    canonical_symbol, canonical_has_count = canonical
+                    tagged_symbol, tagged_has_count = tagged
+                    if canonical_has_count != tagged_has_count:
+                        raise RuntimeError(
+                            f"External MLIR signature mismatch in {header}: {canonical_symbol}"
+                        )
+                    targets = symbol_targets.setdefault(
+                        canonical_symbol,
+                        {"has_count": canonical_has_count, "targets": {}},
+                    )
+                    if targets["has_count"] != canonical_has_count:
+                        raise RuntimeError(
+                            f"Conflicting external MLIR signatures for {canonical_symbol}"
+                        )
+                    targets["targets"][sm] = tagged_symbol
+
+    for name, text in canonical_headers.items():
+        (inc_dir / name).write_text(text)
+
+    for group in sorted(set(header_groups.values())):
+        names = sorted(
+            name for name, header_group in header_groups.items()
+            if header_group == group
+        )
+        (inc_dir / f"cutedsl_{group}_all.h").write_text(
+            "#pragma once\n"
+            "// Auto-generated by build_cutedsl.py -- do not edit\n"
+            + "".join(f'#include "{name}"\n' for name in names)
+        )
+
+    umbrella_names = sorted(canonical_headers)
+    (inc_dir / "cutedsl_all.h").write_text(
+        "#pragma once\n"
+        "// Auto-generated by build_cutedsl.py -- do not edit\n"
+        + "".join(f'#include "{name}"\n' for name in umbrella_names)
+    )
+
+    declarations = []
+    definitions = []
+    for canonical_symbol, data in sorted(symbol_targets.items()):
+        has_count = data["has_count"]
+        parameters = "void **args, int32_t numArgs" if has_count else "void **args"
+        arguments = "args, numArgs" if has_count else "args"
+        for tagged_symbol in data["targets"].values():
+            declarations.append(f"void {tagged_symbol}({parameters});")
+
+        body = [f"void {canonical_symbol}({parameters})", "{", "    switch (getProcessDeviceSm())", "    {"]
+        for sm, tagged_symbol in sorted(data["targets"].items()):
+            body.extend(
+                [
+                    f"    case {sm}:",
+                    f"        {tagged_symbol}({arguments});",
+                    "        break;",
+                ]
+            )
+        body.extend(
+            [
+                "    default:",
+                f'        failUnsupportedSm("{canonical_symbol}");',
+                "        break;",
+                "    }",
+                "}",
+            ]
+        )
+        definitions.append("\n".join(body))
+
+    dispatch_source = output_dir / "cutedsl_dispatch.cpp"
+    dispatch_source.write_text(
+        "// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.\n"
+        "// SPDX-License-Identifier: Apache-2.0\n\n"
+        "// Auto-generated by build_cutedsl.py -- do not edit.\n"
+        "#include <cstdint>\n"
+        "#include <cstdlib>\n"
+        "#include <cstdio>\n"
+        "#include <cuda_runtime_api.h>\n\n"
+        "namespace\n"
+        "{\n"
+        "int getProcessDeviceSm()\n"
+        "{\n"
+        "    static int const sm = [] {\n"
+        "        int device{};\n"
+        "        cudaDeviceProp properties{};\n"
+        "        if (cudaGetDevice(&device) != cudaSuccess\n"
+        "            || cudaGetDeviceProperties(&properties, device) != cudaSuccess)\n"
+        "        {\n"
+        "            return -1;\n"
+        "        }\n"
+        "        return properties.major * 10 + properties.minor;\n"
+        "    }();\n"
+        "    return sm;\n"
+        "}\n\n"
+        "[[noreturn]] void failUnsupportedSm(char const* symbol)\n"
+        "{\n"
+        "    std::fprintf(stderr,\n"
+        '        "CuTe DSL multi-SM dispatch failed for %s on the current CUDA device\\n", symbol);\n'
+        "    std::abort();\n"
+        "}\n"
+        "} // namespace\n\n"
+        "extern \"C\"\n"
+        "{\n"
+        + "\n".join(sorted(set(declarations)))
+        + "\n\n"
+        + "\n\n".join(definitions)
+        + "\n} // extern \"C\"\n"
+    )
+    return dispatch_source
+
+
 # ---------------------------------------------------------------------------
 # Main build logic
 # ---------------------------------------------------------------------------
 
+
+def _build_multi_sm(args, sms):
+    host_arch = detect_arch()
+    arch = detect_arch(args.arch)
+    artifact_tag = _multi_sm_artifact_tag(sms)
+    output_dir = Path(args.output_dir) / arch / artifact_tag
+    host_target = default_host_target_for_arch(arch, host_arch)
+    compile_gpu_arches = {sm: default_compile_gpu_arch(sm) for sm in sms}
+    variants_by_sm = {sm: select_variants(sm, args.kernels) for sm in sms}
+    groups_selected = sorted(
+        {variant.group for variants in variants_by_sm.values() for variant in variants}
+    )
+
+    print(f"Build host  : {host_arch}")
+    print(f"Target arch : {arch}")
+    print(f"Build mode  : {'cross' if arch != host_arch else 'native'}")
+    print(f"GPU SMs     : {', '.join(f'SM{sm}' for sm in sms)} (explicit offline targets)")
+    print(
+        "Compile arch: "
+        + ", ".join(compile_gpu_arches[sm] for sm in sms)
+    )
+    if host_target:
+        print(f"Host target : {host_target}")
+    print(f"Artifact tag: {artifact_tag}")
+    print(f"Output dir  : {output_dir}")
+
+    print("\nChecking dependencies...")
+    (
+        dsl_ver,
+        lib_dir,
+        cuda_ver,
+        host_cuda_ver,
+        cupy_pkg,
+        cupy_ver,
+        dsl_cuda_version,
+    ) = check_dependencies(
+        selected_groups=groups_selected, cuda_ver=args.cuda_version
+    )
+    runtime_libs_version = args.runtime_libs_version or dsl_ver
+
+    print(f"Groups      : {groups_selected}")
+    for sm, variants in variants_by_sm.items():
+        print(f"SM{sm} variants: {[variant.name for variant in variants]}")
+
+    if output_dir.exists() and not args.clean:
+        raise RuntimeError(
+            f"Multi-SM artifact already exists: {output_dir}\n"
+            "Re-run with --clean so its dispatch table and archive remain atomic."
+        )
+    root_staging = Path(tempfile.mkdtemp(prefix="cutedsl_multi_sm_build_"))
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    staged_output_dir = Path(
+        tempfile.mkdtemp(
+            prefix=f".{artifact_tag}.publishing-", dir=output_dir.parent
+        )
+    )
+    try:
+        staging_dirs = {}
+        for sm, variants in variants_by_sm.items():
+            for variant in variants:
+                staging_dir = root_staging / f"sm{sm}" / variant.name
+                staging_dir.mkdir(parents=True)
+                staging_dirs[(sm, variant.name)] = staging_dir
+
+        compile_multi_sm_variants(
+            variants_by_sm,
+            staging_dirs,
+            args.jobs,
+            args.verbose,
+            compile_gpu_arches,
+            host_target,
+        )
+
+        kernel_obj_files = []
+        canonical_variants = set()
+        for sm, variants in variants_by_sm.items():
+            marker = _multi_sm_marker(sm)
+            for variant in variants:
+                objects = sorted(staging_dirs[(sm, variant.name)].glob("*.o"))
+                kernel_obj_files.extend(objects)
+                canonical_variants.update(obj.stem.replace(marker, "") for obj in objects)
+
+        runtime_archive = resolve_static_runtime_archive(
+            arch,
+            host_arch,
+            lib_dir.parent if lib_dir else None,
+            cuda_ver,
+            runtime_libs_version,
+            root_staging,
+        )
+        runtime_obj_dir = root_staging / "runtime_objs"
+        runtime_obj_dir.mkdir()
+        subprocess.run(
+            ["ar", "x", str(runtime_archive)],
+            cwd=str(runtime_obj_dir),
+            check=True,
+        )
+        runtime_objs = sorted(runtime_obj_dir.glob("*.o"))
+        _check_obj_name_collision(kernel_obj_files, runtime_objs)
+        _check_defined_symbol_collision(kernel_obj_files + runtime_objs)
+
+        lib_path = staged_output_dir / f"libcutedsl_{arch}.a"
+        subprocess.run(
+            ["ar", "rcs", str(lib_path)]
+            + [str(obj) for obj in kernel_obj_files]
+            + [str(obj) for obj in runtime_objs],
+            check=True,
+        )
+        dispatch_source = _write_multi_sm_headers_and_dispatch(
+            staged_output_dir, variants_by_sm, staging_dirs, sms
+        )
+        print(f"\n  Created {lib_path.name} ({lib_path.stat().st_size // 1024} KB)")
+        print(f"  Created {dispatch_source.name}")
+        print(
+            f"  Embedded static runtime: {runtime_archive} "
+            f"({runtime_archive.stat().st_size // 1024} KB)"
+        )
+
+        metadata = {
+            "arch": arch,
+            "artifact_tag": artifact_tag,
+            "gpu_arch": artifact_tag,
+            "gpu_archs": [sm_to_artifact_tag(sm) for sm in sms],
+            "compile_gpu_arch": ",".join(
+                compile_gpu_arches[sm] for sm in sms
+            ),
+            "compile_gpu_archs": [compile_gpu_arches[sm] for sm in sms],
+            "wrapper_gpu_arch": ",".join(
+                compile_gpu_arches[sm] for sm in sms
+            ),
+            "host_target": host_target,
+            "cuda_version": cuda_ver,
+            "cuda_package_variant": _cuda_package_variant(cuda_ver),
+            "host_cuda_version": host_cuda_ver,
+            "cutlass_dsl_version": dsl_ver,
+            "cutlass_dsl_cuda_version": dsl_cuda_version,
+            "cupy_package": cupy_pkg,
+            "cupy_version": cupy_ver,
+            "runtime_libs_version": runtime_libs_version,
+            "build_date": datetime.now(timezone.utc).isoformat(),
+            "groups": groups_selected,
+            "variants": sorted(canonical_variants),
+            "runtime_static_archive": _RUNTIME_STATIC_ARCHIVE,
+            "dispatch_source": dispatch_source.name,
+        }
+        (staged_output_dir / "metadata.json").write_text(
+            json.dumps(metadata, indent=2) + "\n"
+        )
+
+        if output_dir.exists():
+            shutil.rmtree(output_dir)
+        staged_output_dir.rename(output_dir)
+    finally:
+        shutil.rmtree(root_staging, ignore_errors=True)
+        shutil.rmtree(staged_output_dir, ignore_errors=True)
+
+    print(f"\nDone. Artifacts written to: {output_dir}")
+
+
 def build(args):
-    # Resolve SM: explicit override or auto-detect from the running GPU.
-    if args.gpu_arch:
-        sm = _parse_sm(args.gpu_arch)
-        sm_source = "--gpu_arch override"
-    else:
-        sm = detect_gpu_sm()
-        sm_source = "auto-detected"
+    # Resolve SM from the explicit offline target (no GPU probing).
+    sms = _parse_sms(args.gpu_arch)
+    if len(sms) > 1:
+        _build_multi_sm(args, sms)
+        return
+    sm = sms[0]
 
     host_arch = detect_arch()
     arch = detect_arch(args.arch)
@@ -2543,7 +3260,7 @@ def build(args):
     print(f"Build host  : {host_arch}")
     print(f"Target arch : {arch}")
     print(f"Build mode  : {'cross' if is_cross_compile else 'native'}")
-    print(f"GPU SM      : SM{sm} ({sm_source})")
+    print(f"GPU SM      : SM{sm} (explicit offline target)")
     if compile_gpu_arch:
         print(f"Compile arch: {compile_gpu_arch}")
     if host_target:
@@ -2720,17 +3437,18 @@ def main():
     )
     p.add_argument(
         "--gpu_arch",
-        default=None,
-        help="Override target GPU SM (e.g. sm_87, sm_100). "
-             "Default: auto-detect via cupy / nvidia-smi. "
-             "Used only for variant filtering — never forwarded to kernel scripts.",
+        required=True,
+        help="Target GPU SM (e.g. sm_87, sm_100), or a comma-separated list "
+             "for one runtime-dispatched artifact (e.g. sm_110,sm_120). "
+             "Required: artifact generation is offline and never probes a GPU. "
+             "Each value selects variants and the corresponding AOT compile architecture.",
     )
     p.add_argument(
         "--kernels",
         default="ALL",
         help="Which kernels to build: ALL (default), a group name "
              "(fmha | gdn | f16_moe | nvfp4_moe | "
-             "nvfp4_a16_blackwell_gemm | nvfp4_fused_moe | rmsnorm | ssd | gemm | "
+             "nvfp4_a16_blackwell_gemm | nvfp4_fused_moe | layernorm | rmsnorm | ssd | gemm | "
              "int4_fp16_gemm), or a comma-separated list "
              "of group names. "
              "Variants whose supported_sms does not include the target SM are skipped.",
@@ -2752,7 +3470,7 @@ def main():
         "-j", "--jobs",
         type=int,
         default=_default_jobs(),
-        help="Parallel compile jobs (use -j 1 if GPU memory is limited). "
+        help="Parallel compile jobs. "
              "Default: the number of CPUs available to this process.",
     )
     p.add_argument(

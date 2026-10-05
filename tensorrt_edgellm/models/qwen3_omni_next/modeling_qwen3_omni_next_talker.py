@@ -15,12 +15,9 @@
 """Qwen3-Next Omni Talker — Talker CausalLM that also emits hidden_states
 for the CodePredictor residual.
 """
-import dataclasses
-import inspect
 from typing import Tuple
 
 import torch
-import torch.nn as nn
 
 from ..default.modeling_default import OnnxSpec
 from ..qwen3_5.modeling_qwen3_5_text import Qwen3_5CausalLM
@@ -28,39 +25,10 @@ from ..qwen3_5.modeling_qwen3_5_text import Qwen3_5CausalLM
 __all__ = ["Qwen3OmniNextTalkerCausalLM"]
 
 
-def _wrap_with_hidden_states(base: nn.Module) -> nn.Module:
-    """Return a wrapper whose ``forward`` has the same positional signature
-    as ``base.forward`` but returns ``(logits, hidden_states, *rest)``.
-
-    ``torch.export`` matches ``dynamic_shapes`` against the number of
-    positional parameters in ``forward``, so ``*args`` does not work - we
-    codegen a matching signature from the base wrapper.
-    """
-    sig = inspect.signature(base.forward)
-    names = [
-        n for n, p in sig.parameters.items()
-        if p.kind is p.POSITIONAL_OR_KEYWORD
-    ]
-    args_call = ", ".join(names)
-    src = (f"def _forward(self, {args_call}):\n"
-           f"    out = self._base({args_call})\n"
-           f"    hidden = self._base._model._talker_last_hidden\n"
-           f"    return (out[0], hidden) + tuple(out[1:])\n")
-    globs: dict = {}
-    exec(src, globs)  # noqa: S102
-
-    class _Wrapper(nn.Module):
-
-        def __init__(self, b: nn.Module) -> None:
-            super().__init__()
-            self._base = b
-
-    _Wrapper.forward = globs["_forward"]
-    return _Wrapper(base)
-
-
 class Qwen3OmniNextTalkerCausalLM(Qwen3_5CausalLM):
     """Talker CausalLM that also surfaces its post-gather hidden_states."""
+
+    emit_hidden_states = True
 
     def forward(
             self,
@@ -87,10 +55,4 @@ class Qwen3OmniNextTalkerCausalLM(Qwen3_5CausalLM):
         return (logits, present_kv, present_conv, present_rec)
 
     def onnx_export_spec(self) -> OnnxSpec:
-        spec = super().onnx_export_spec()
-        return dataclasses.replace(
-            spec,
-            wrapped=_wrap_with_hidden_states(spec.wrapped),
-            output_names=[spec.output_names[0], "hidden_states"] +
-            list(spec.output_names[1:]),
-        )
+        return super().onnx_export_spec()

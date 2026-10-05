@@ -39,6 +39,8 @@ namespace exampleUtils
  *     "temperature": float,                   // optional, default 1.0
  *     "top_p": float,                         // optional, default 0.8
  *     "top_k": int,                           // optional, default 50
+ *     "sampling_seed": uint64,                 // optional stable default seed
+ *     "spec_proposal_sampling": str,           // auto (default), greedy, or probabilistic
  *     "logit_bias": {token_id: bias},         // optional default for all requests
  *     "max_generate_length": int,             // optional, default 256
  *     "diffusion_config": {                    // optional DiffusionGemma runtime overrides
@@ -59,6 +61,8 @@ namespace exampleUtils
  *         "num_logprobs": int,                // optional, overrides top-level default (batch runs at max)
  *         "save_system_prompt_kv_cache": bool,
  *         "disable_spec_decode": bool,
+ *         "sampling_seed": uint64,             // optional per-request override,
+ *         "context_cache_lookup_policy": str,  // optional per-request override,
  *         "messages": [
  *           {"role": "...", "content": "..."},
  *           {"role": "...", "content": [{"type":"text", "text":"..."},

@@ -17,6 +17,8 @@
 
 #pragma once
 
+#include "common/pagedKvTypes.h"
+
 #include <cstdint>
 #include <exception>
 #include <functional>
@@ -26,12 +28,6 @@ namespace trt_edgellm
 namespace rt
 {
 
-//! Host identity of one K/V page pair local to one typed KV pool.
-//!
-//! For an attention backend this is the logical K-half page ID. The runtime adapter emits both the K ID and the
-//! pool-absolute V ID derived from the pool-half offset when it builds the kernel's [K, V] page-table row. Base and
-//! draft pools have independent ID spaces.
-using PageId = int32_t;
 //! Host cache-record identity.
 using RecordId = uint64_t;
 

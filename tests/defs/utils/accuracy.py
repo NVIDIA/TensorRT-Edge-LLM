@@ -46,17 +46,20 @@ def check_accuracy_with_dataset(output_json_file,
     # Datasets that use ROUGE score (with "reference" field)
     ROUGE_DATASETS = [
         "gsm8k", "gsm8k_10", "mmstar", "llm_basic", "llm_lora",
-        "llm_context_reuse", "vlm_basic", "vlm_lora", "cosmos3_reasoner"
+        "llm_context_reuse", "llm_sliding_window", "vlm_basic", "vlm_lora",
+        "cosmos3_reasoner"
     ]
 
     # Datasets that use correctness/accuracy (with "answer" field)
     CORRECTNESS_DATASETS = [
-        "mmlu_0", "mmlu_5", "mmlu_pro", "mmmu", "mmmu_pro_4", "mmmu_pro_10",
-        "mmmu_pro_vision", "OmniBench"
+        "mmlu_0", "mmlu_5", "mmlu_5_lite", "mmlu_pro", "mmmu", "mmmu_pro_4",
+        "mmmu_pro_10", "mmmu_pro_vision", "OmniBench"
     ]
 
     # Datasets that use WER (Word Error Rate) for ASR / LibriSpeech
-    WER_DATASETS = ["librispeech_clean_test", "asr_basic"]
+    WER_DATASETS = [
+        "librispeech_clean_test", "librispeech_clean_test_lite", "asr_basic"
+    ]
 
     # Datasets that use minADE for VLA trajectory prediction.
     MINADE_DATASETS = ["alpamayo_action_644", "alpamayo_action_chat"]
@@ -75,6 +78,7 @@ def check_accuracy_with_dataset(output_json_file,
         "llm_basic": (0.25, 0.20),
         "llm_lora": (0.25, 0.20),
         "llm_context_reuse": (0.25, 0.20),
+        "llm_sliding_window": (0.25, 0.20),
         "vlm_basic": (0.25, 0.20),
         "vlm_lora": (0.25, 0.20),
         "cosmos3_reasoner": (0.40, 0.25),
@@ -84,6 +88,7 @@ def check_accuracy_with_dataset(output_json_file,
     ACCURACY_THRESHOLDS = {
         "mmlu_0": 0.30,  # 0-shot MMLU
         "mmlu_5": 0.35,  # 5-shot MMLU - expect better with examples
+        "mmlu_5_lite": 0.35,  # 5-shot MMLU Lite
         "mmlu_pro": 0.12,  # MMLU Pro - harder, lower threshold
         "mmmu": 0.30,  # Multimodal understanding
         "mmmu_pro_4": 0.30,  # MMMU Pro with 4 options
@@ -95,6 +100,7 @@ def check_accuracy_with_dataset(output_json_file,
     # WER threshold (%). Lower is better; pass if WER <= threshold.
     WER_THRESHOLDS = {
         "librispeech_clean_test": 25.0,
+        "librispeech_clean_test_lite": 25.0,
         "asr_basic": 25.0,
     }
 
@@ -130,10 +136,22 @@ def check_accuracy_with_dataset(output_json_file,
                 rouge_dir = os.path.join(edge_llm_cache_dir, 'rouge')
                 if os.path.exists(rouge_dir):
                     cmd.extend(['--rouge_dir', rouge_dir])
+            hf_cache = os.path.join(
+                os.path.dirname(os.path.abspath(output_json_file)),
+                '.hf_cache')
+            os.makedirs(hf_cache, exist_ok=True)
+            hf_cache_env = {
+                'HF_HOME': hf_cache,
+                'HF_MODULES_CACHE': os.path.join(hf_cache, 'modules'),
+                'HF_EVALUATE_CACHE': os.path.join(hf_cache, 'evaluate'),
+                'HF_METRICS_CACHE': os.path.join(hf_cache, 'metrics'),
+                'HF_DATASETS_CACHE': os.path.join(hf_cache, 'datasets'),
+            }
             cmd_result = run_command(cmd,
                                      remote_config=None,
                                      timeout=600,
-                                     logger=logger)
+                                     logger=logger,
+                                     env_vars=hf_cache_env)
 
             if not cmd_result['success']:
                 raise RuntimeError(

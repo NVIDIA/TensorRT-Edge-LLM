@@ -165,3 +165,34 @@ def test_stream_parser_flushes_untagged_provider_format(tmp_path):
     assert len(events) == 1
     assert events[0]["type"] == "tool_call"
     assert json.loads(events[0]["tool_call"].arguments) == {"city": "Paris"}
+
+
+def test_parses_muse_glimmer_atem_tool_call(tmp_path):
+    text = ("<atem:function_calls>\n"
+            '<atem:invoke name="get_weather">\n'
+            '<atem:parameter name="city">Paris</atem:parameter>\n'
+            "</atem:invoke>\n</atem:function_calls>")
+    parsed = parse_assistant_output(text, _config(), str(tmp_path))
+    assert parsed.content == ""
+    assert len(parsed.tool_calls) == 1
+    assert parsed.tool_calls[0].name == "get_weather"
+    assert json.loads(parsed.tool_calls[0].arguments) == {"city": "Paris"}
+
+
+def test_streams_muse_glimmer_atem_tool_call(tmp_path):
+    parser = stream_assistant_output(_config(), str(tmp_path))
+    events = []
+    for chunk in (
+            "<atem:function_",
+            'calls>\n<atem:invoke name="get_weather">\n',
+            '<atem:parameter name="city">Par',
+            "is</atem:parameter>\n</atem:invoke>\n</atem:function_calls>",
+    ):
+        events.extend(parser.feed(chunk))
+    events.extend(parser.flush())
+    calls = [
+        event["tool_call"] for event in events if event["type"] == "tool_call"
+    ]
+    assert len(calls) == 1
+    assert calls[0].name == "get_weather"
+    assert json.loads(calls[0].arguments) == {"city": "Paris"}

@@ -19,6 +19,7 @@
 #include "common/stringUtils.h"
 #include "embeddingKernels.h"
 #include "kernels/common/vectorizedTypes.cuh"
+#include <cub/block/block_scan.cuh>
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
 #include <limits>
@@ -323,52 +324,137 @@ void launchGemma4PleGather(int32_t const* inputIds, T const* pleTable, T* output
         seqLen, vocabSize, numLayers, pleHiddenSize, imageTokenId, audioTokenId);
 }
 
-// Generate multimodal indices on-device: for each image/audio placeholder position, store the running
-// count of that modality's placeholders seen so far (its row in imageEmbeds/audioEmbeds); other
-// positions get 0. The counters are global across the whole [batchSize, seqLen] range in batch-major
-// order (they are not reset per row), matching the host reference. The scan is inherently sequential, so
-// a single thread performs it; the buffer is a prefill-length row of ints and this runs once per prefill,
-// avoiding any device<->host copy to build the indices.
-//
-// When KV cache prefix reuse trims media tokens from the beginning of a sequence, the embedding tensor
-// still contains rows for those prefix media items. Per-batch-item base offsets (imageBaseOffsets,
-// audioBaseOffsets) shift the counters so suffix tokens index past the prefix rows. At each batch
-// boundary (every seqLen positions), the counter resets to that batch item's base offset.
+constexpr int32_t kMetadataScanThreads{256};
+
+template <bool PerBatchOffsets>
 __global__ void generateMultimodalIndicesKernel(int32_t const* inputIds, int32_t* multimodalIndices, int64_t seqLen,
     int32_t batchSize, int32_t imageTokenId, int32_t audioTokenId, int32_t const* imageBaseOffsets,
     int32_t const* audioBaseOffsets)
 {
-    if (blockIdx.x != 0 || threadIdx.x != 0)
+    using BlockScan = cub::BlockScan<int32_t, kMetadataScanThreads>;
+    __shared__ typename BlockScan::TempStorage scanStorage;
+    __shared__ int32_t imageBase;
+    __shared__ int32_t audioBase;
+
+    int32_t const batch = PerBatchOffsets ? static_cast<int32_t>(blockIdx.x) : 0;
+    int64_t const begin = PerBatchOffsets ? static_cast<int64_t>(batch) * seqLen : 0;
+    int64_t const end = PerBatchOffsets ? begin + seqLen : static_cast<int64_t>(batchSize) * seqLen;
+    if (threadIdx.x == 0)
+    {
+        imageBase = PerBatchOffsets && imageBaseOffsets != nullptr ? imageBaseOffsets[batch] : 0;
+        audioBase = PerBatchOffsets && audioBaseOffsets != nullptr ? audioBaseOffsets[batch] : 0;
+    }
+    __syncthreads();
+
+    for (int64_t tile = begin; tile < end; tile += kMetadataScanThreads)
+    {
+        int64_t const position = tile + threadIdx.x;
+        bool const valid = position < end;
+        int32_t const tokenId = valid ? inputIds[position] : -1;
+        int32_t const isAudio = valid && audioTokenId >= 0 && tokenId == audioTokenId;
+        int32_t const isImage = valid && !isAudio && imageTokenId >= 0 && tokenId == imageTokenId;
+        int32_t imagePrefix{};
+        int32_t imageCount{};
+        BlockScan(scanStorage).ExclusiveSum(isImage, imagePrefix, imageCount);
+        if (valid && isImage)
+        {
+            multimodalIndices[position] = imageBase + imagePrefix;
+        }
+        __syncthreads();
+        int32_t audioPrefix{};
+        int32_t audioCount{};
+        BlockScan(scanStorage).ExclusiveSum(isAudio, audioPrefix, audioCount);
+        if (valid)
+        {
+            multimodalIndices[position] = isAudio ? audioBase + audioPrefix
+                : isImage                         ? multimodalIndices[position]
+                                                  : -1;
+        }
+        __syncthreads();
+        if (threadIdx.x == 0)
+        {
+            imageBase += imageCount;
+            audioBase += audioCount;
+        }
+        __syncthreads();
+    }
+}
+
+template <bool PerBatchOffsets>
+__global__ void generateSingleModalityIndicesKernel(int32_t const* inputIds, int32_t* multimodalIndices, int64_t seqLen,
+    int32_t batchSize, int32_t tokenId, int32_t const* baseOffsets)
+{
+    using BlockScan = cub::BlockScan<int32_t, kMetadataScanThreads>;
+    __shared__ typename BlockScan::TempStorage scanStorage;
+    __shared__ int32_t base;
+
+    int32_t const batch = PerBatchOffsets ? static_cast<int32_t>(blockIdx.x) : 0;
+    int64_t const begin = PerBatchOffsets ? static_cast<int64_t>(batch) * seqLen : 0;
+    int64_t const end = PerBatchOffsets ? begin + seqLen : static_cast<int64_t>(batchSize) * seqLen;
+    if (threadIdx.x == 0)
+    {
+        base = PerBatchOffsets ? baseOffsets[batch] : 0;
+    }
+    __syncthreads();
+
+    for (int64_t tile = begin; tile < end; tile += kMetadataScanThreads)
+    {
+        int64_t const position = tile + threadIdx.x;
+        bool const matches = position < end && inputIds[position] == tokenId;
+        int32_t prefix{};
+        int32_t count{};
+        BlockScan(scanStorage).ExclusiveSum(static_cast<int32_t>(matches), prefix, count);
+        if (matches)
+        {
+            multimodalIndices[position] = base + prefix;
+        }
+        __syncthreads();
+        if (threadIdx.x == 0)
+        {
+            base += count;
+        }
+        __syncthreads();
+    }
+}
+
+__global__ void generateVisionBlockIdsKernel(
+    int32_t const* inputIds, int32_t* visionBlockIds, int64_t batchSize, int64_t seqLen, int32_t imageTokenId)
+{
+    using BlockScan = cub::BlockScan<int32_t, kMetadataScanThreads>;
+    __shared__ typename BlockScan::TempStorage scanStorage;
+    __shared__ int32_t blockBase;
+    int64_t const batch = blockIdx.x;
+    if (batch >= batchSize)
     {
         return;
     }
-    int32_t imageIndex = (imageBaseOffsets != nullptr) ? imageBaseOffsets[0] : 0;
-    int32_t audioIndex = (audioBaseOffsets != nullptr) ? audioBaseOffsets[0] : 0;
-    for (int32_t batch = 0; batch < batchSize; ++batch)
+
+    int64_t const base = batch * seqLen;
+    if (threadIdx.x == 0)
     {
-        if (batch > 0)
+        blockBase = 0;
+    }
+    __syncthreads();
+    for (int64_t tile = 0; tile < seqLen; tile += kMetadataScanThreads)
+    {
+        int64_t const position = tile + threadIdx.x;
+        bool const valid = position < seqLen;
+        bool const isVision = valid && inputIds[base + position] == imageTokenId;
+        bool const startsBlock = isVision && (position == 0 || inputIds[base + position - 1] != imageTokenId);
+        int32_t precedingBlocks{};
+        int32_t tileBlocks{};
+        BlockScan(scanStorage).ExclusiveSum(static_cast<int32_t>(startsBlock), precedingBlocks, tileBlocks);
+        if (valid)
         {
-            imageIndex = (imageBaseOffsets != nullptr) ? imageBaseOffsets[batch] : imageIndex;
-            audioIndex = (audioBaseOffsets != nullptr) ? audioBaseOffsets[batch] : audioIndex;
+            int32_t const currentBlock = blockBase + precedingBlocks - (startsBlock ? 0 : 1);
+            visionBlockIds[base + position] = isVision ? currentBlock : -1;
         }
-        int64_t const rowStart = static_cast<int64_t>(batch) * seqLen;
-        for (int64_t col = 0; col < seqLen; ++col)
+        __syncthreads();
+        if (threadIdx.x == 0)
         {
-            int64_t const pos = rowStart + col;
-            int32_t const tokenId = inputIds[pos];
-            if (audioTokenId >= 0 && tokenId == audioTokenId)
-            {
-                multimodalIndices[pos] = audioIndex++;
-            }
-            else if (imageTokenId >= 0 && tokenId == imageTokenId)
-            {
-                multimodalIndices[pos] = imageIndex++;
-            }
-            else
-            {
-                multimodalIndices[pos] = 0;
-            }
+            blockBase += tileBlocks;
         }
+        __syncthreads();
     }
 }
 
@@ -385,9 +471,79 @@ void generateMultimodalIndices(rt::Tensor const& inputIds, rt::Tensor& multimoda
 
     int32_t const batchSize = static_cast<int32_t>(inputShape[0]);
     int64_t const seqLen = inputShape[1];
-    generateMultimodalIndicesKernel<<<1, 1, 0, stream>>>(inputIds.dataPointer<int32_t>(),
-        multimodalIndices.dataPointer<int32_t>(), seqLen, batchSize, imageTokenId.value_or(-1),
-        audioTokenId.value_or(-1), imageBaseOffsets, audioBaseOffsets);
+    bool const imageHasOffsets = imageBaseOffsets != nullptr;
+    bool const audioHasOffsets = audioBaseOffsets != nullptr;
+    if (imageHasOffsets == audioHasOffsets)
+    {
+        if (imageHasOffsets)
+        {
+            generateMultimodalIndicesKernel<true><<<batchSize, kMetadataScanThreads, 0, stream>>>(
+                inputIds.dataPointer<int32_t>(), multimodalIndices.dataPointer<int32_t>(), seqLen, batchSize,
+                imageTokenId.value_or(-1), audioTokenId.value_or(-1), imageBaseOffsets, audioBaseOffsets);
+        }
+        else
+        {
+            generateMultimodalIndicesKernel<false><<<1, kMetadataScanThreads, 0, stream>>>(
+                inputIds.dataPointer<int32_t>(), multimodalIndices.dataPointer<int32_t>(), seqLen, batchSize,
+                imageTokenId.value_or(-1), audioTokenId.value_or(-1), nullptr, nullptr);
+        }
+    }
+    else
+    {
+        CUDA_CHECK(cudaMemsetAsync(
+            multimodalIndices.rawPointer(), 0xFF, static_cast<size_t>(inputShape.volume()) * sizeof(int32_t), stream));
+        if (imageTokenId.has_value())
+        {
+            if (imageHasOffsets)
+            {
+                generateSingleModalityIndicesKernel<true>
+                    <<<batchSize, kMetadataScanThreads, 0, stream>>>(inputIds.dataPointer<int32_t>(),
+                        multimodalIndices.dataPointer<int32_t>(), seqLen, batchSize, *imageTokenId, imageBaseOffsets);
+            }
+            else
+            {
+                generateSingleModalityIndicesKernel<false>
+                    <<<1, kMetadataScanThreads, 0, stream>>>(inputIds.dataPointer<int32_t>(),
+                        multimodalIndices.dataPointer<int32_t>(), seqLen, batchSize, *imageTokenId, nullptr);
+            }
+        }
+        if (audioTokenId.has_value())
+        {
+            if (audioHasOffsets)
+            {
+                generateSingleModalityIndicesKernel<true>
+                    <<<batchSize, kMetadataScanThreads, 0, stream>>>(inputIds.dataPointer<int32_t>(),
+                        multimodalIndices.dataPointer<int32_t>(), seqLen, batchSize, *audioTokenId, audioBaseOffsets);
+            }
+            else
+            {
+                generateSingleModalityIndicesKernel<false>
+                    <<<1, kMetadataScanThreads, 0, stream>>>(inputIds.dataPointer<int32_t>(),
+                        multimodalIndices.dataPointer<int32_t>(), seqLen, batchSize, *audioTokenId, nullptr);
+            }
+        }
+    }
+    CUDA_CHECK(cudaGetLastError());
+}
+
+void generateVisionBlockIds(
+    rt::Tensor const& inputIds, rt::Tensor& visionBlockIds, int32_t imageTokenId, cudaStream_t stream)
+{
+    auto const shape = inputIds.getShape();
+    check::check(shape.getNumDims() == 2, "inputIds must be 2D tensor");
+    check::check(inputIds.getDeviceType() == rt::DeviceType::kGPU, "inputIds must be a GPU tensor");
+    check::check(inputIds.getDataType() == nvinfer1::DataType::kINT32, "inputIds must have INT32 dtype");
+    check::check(visionBlockIds.getDeviceType() == rt::DeviceType::kGPU
+            && visionBlockIds.getDataType() == nvinfer1::DataType::kINT32
+            && visionBlockIds.getShape().volume() == shape.volume(),
+        "visionBlockIds must be an equally-sized GPU INT32 tensor");
+    check::check(imageTokenId >= 0, "imageTokenId must be non-negative");
+
+    int64_t const batchSize = shape[0];
+    int64_t const seqLen = shape[1];
+    generateVisionBlockIdsKernel<<<batchSize, kMetadataScanThreads, 0, stream>>>(
+        inputIds.dataPointer<int32_t>(), visionBlockIds.dataPointer<int32_t>(), batchSize, seqLen, imageTokenId);
+    CUDA_CHECK(cudaGetLastError());
 }
 
 void assembleDeepstackEmbedding(rt::Tensor const& inputIds, rt::Tensor const& deepstackFeatures,
@@ -453,7 +609,8 @@ void embeddingLookup(rt::Tensor const& inputIds, rt::Tensor const& embeddingTabl
 
     check::check(inputShape.getNumDims() == 2, "inputIds must be 2D tensor [batchSize, seqLen]");
     check::check(embeddingShape.getNumDims() == 2, "embeddingTable must be 2D tensor [vocabSize, hiddenSize]");
-    check::check(outputShape.getNumDims() == 3, "output must be 3D tensor [batchSize, seqLen, hiddenSize]");
+    check::check(outputShape.getNumDims() == 2 || outputShape.getNumDims() == 3,
+        "output must be token-major [physicalTokens, hiddenSize] or [batchSize, seqLen, hiddenSize]");
 
     int64_t const batchSize = inputShape[0];
     int64_t const seqLen = inputShape[1];
@@ -461,9 +618,17 @@ void embeddingLookup(rt::Tensor const& inputIds, rt::Tensor const& embeddingTabl
     int64_t const hiddenSize = embeddingShape[1];
 
     // Validate output shape
-    check::check(outputShape[0] == batchSize, "Output batch size mismatch");
-    check::check(outputShape[1] == seqLen, "Output sequence length mismatch");
-    check::check(outputShape[2] == hiddenSize, "Output hidden size mismatch");
+    if (outputShape.getNumDims() == 2)
+    {
+        check::check(outputShape[0] == batchSize * seqLen, "Output physical token count mismatch");
+        check::check(outputShape[1] == hiddenSize, "Output hidden size mismatch");
+    }
+    else
+    {
+        check::check(outputShape[0] == batchSize, "Output batch size mismatch");
+        check::check(outputShape[1] == seqLen, "Output sequence length mismatch");
+        check::check(outputShape[2] == hiddenSize, "Output hidden size mismatch");
+    }
 
     // Validate common data types for required inputs
     check::check(inputIds.getDataType() == nvinfer1::DataType::kINT32, "inputIds must be INT32");

@@ -24,6 +24,7 @@
 #include "multimodal/gemma4/gemma4UnifiedVisionRunner.h"
 #include "multimodal/gemma4/gemma4ViTRunner.h"
 #include "multimodal/internvl/internViTRunner.h"
+#include "multimodal/muse_glimmer/museGlimmerViTRunner.h"
 #include "multimodal/nemotron_omni/nemotronOmniAudioRunner.h"
 #include "multimodal/nemotron_omni/nemotronOmniViTRunner.h"
 #include "multimodal/phi4mm/phi4mmViTRunner.h"
@@ -191,6 +192,11 @@ std::unique_ptr<MultimodalRunner> MultimodalRunner::create(std::string const& mu
         multimodalRunner = makeInitializedQwenViTRunner<Cosmos3EdgeViTRunner>(
             multimodalEngineDir, llmMaxBatchSize, llmMaxPositionEmbeddings, stream, checkpointDir);
     }
+    else if (modelType == multimodal::ModelType::MUSE_GLIMMER)
+    {
+        multimodalRunner = makeInitializedQwenViTRunner<MuseGlimmerViTRunner>(
+            multimodalEngineDir, llmMaxBatchSize, llmMaxPositionEmbeddings, stream, checkpointDir);
+    }
     else if (modelType == multimodal::ModelType::QWEN3_OMNI_AUDIO_ENCODER
         || modelType == multimodal::ModelType::QWEN3_OMNI_NEXT_AUDIO_ENCODER)
     {
@@ -252,7 +258,7 @@ rt::Tensor& MultimodalRunner::getOutputEmbedding()
     return mOutputEmbedding;
 }
 
-rt::OptionalInputTensors MultimodalRunner::getDeepstackFeatures()
+std::vector<std::reference_wrapper<rt::Tensor>> MultimodalRunner::getDeepstackFeatures()
 {
     return {};
 }

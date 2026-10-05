@@ -22,6 +22,7 @@ import tensorrt as trt
 from ...ops import Embedding, GatedExperts, Linear, Module, NetworkModule
 from ...ops import functional as F
 from ...ops import pack_qkv
+from ...ops.ragged import RaggedDecoderInputs, add_ragged_decoder_inputs
 from . import weights as weight_conversion
 
 
@@ -38,7 +39,7 @@ class DiffusionGemmaRMSNorm(Module):
         self.eps = eps
         self.with_scale = with_scale
 
-    def forward(self, hidden_states, rank: int = 3):
+    def forward(self, hidden_states, rank: int = 2):
         weight = (self.weights.f32(self.key("weight")) if self.with_scale else
                   np.ones(self.cfg.hidden_size, dtype=np.float32))
         return F.rms_norm(hidden_states,
@@ -83,26 +84,26 @@ class DiffusionGemmaAttention(Module):
         self.k_norm = DiffusionGemmaRMSNorm(ctx, self.key("k_norm"),
                                             ctx.cfg.rms_norm_eps)
 
-    def forward(self, hidden_states, past_key_value, rope, context_lengths,
-                cache_start, kv_page_table, context_mask_selector):
+    def forward(self, hidden_states, past_key_value, rope, ragged,
+                context_mask_selector):
         cfg = self.cfg
         query = self.q_proj(hidden_states)
         key = self.k_proj(hidden_states)
         value = key if self.k_eq_v else self.v_proj(hidden_states)
 
-        query = query.reshape((0, 0, cfg.num_attention_heads, self.head_dim))
-        query = self.q_norm(query, 4).reshape(
-            (0, 0, cfg.num_attention_heads * self.head_dim))
-        key = key.reshape((0, 0, self.num_kv_heads, self.head_dim))
-        key = self.k_norm(key, 4).reshape(
-            (0, 0, self.num_kv_heads * self.head_dim))
-        value = value.reshape((0, 0, self.num_kv_heads, self.head_dim))
+        query = query.reshape((0, cfg.num_attention_heads, self.head_dim))
+        query = self.q_norm(query, 3).reshape(
+            (0, cfg.num_attention_heads * self.head_dim))
+        key = key.reshape((0, self.num_kv_heads, self.head_dim))
+        key = self.k_norm(key, 3).reshape(
+            (0, self.num_kv_heads * self.head_dim))
+        value = value.reshape((0, self.num_kv_heads, self.head_dim))
         value = F.rms_norm(value,
                            np.ones(self.head_dim, dtype=np.float32),
                            cfg.rms_norm_eps,
-                           rank=4,
+                           rank=3,
                            weight_before_cast=True)
-        value = value.reshape((0, 0, self.num_kv_heads * self.head_dim))
+        value = value.reshape((0, self.num_kv_heads * self.head_dim))
 
         qkv = pack_qkv(query, key, value, self.v_proj or self.k_proj)
         qkv_scales = list(self.weights.qkv_scales(self.prefix))
@@ -111,10 +112,8 @@ class DiffusionGemmaAttention(Module):
         attention, present = F.attention(
             qkv,
             past_key_value,
-            context_lengths,
             rope,
-            cache_start,
-            kv_page_table,
+            ragged,
             num_q_heads=cfg.num_attention_heads,
             num_kv_heads=self.num_kv_heads,
             head_size=self.head_dim,
@@ -125,6 +124,8 @@ class DiffusionGemmaAttention(Module):
             attention_scale=cfg.attention_scaling,
             context_mask_selector=context_mask_selector,
         )
+        attention = attention.reshape(
+            (0, cfg.num_attention_heads * self.head_dim))
         return self.o_proj(attention), present
 
 
@@ -281,13 +282,12 @@ class DiffusionGemmaDecoderLayer(Module):
         self.encoder_scalar = ctx.weights.f16(self.key("encoder_layer_scalar"))
         self.decoder_scalar = ctx.weights.f16(self.key("decoder_layer_scalar"))
 
-    def forward(self, hidden_states, phase_is_encoder, past, rope,
-                context_lengths, cache_start, kv_page_table,
-                context_mask_selector):
+    def forward(self, hidden_states, ragged, past, rope, context_mask_selector,
+                token_phase):
         residual = hidden_states
         attention, present = self.self_attn(
-            self.input_layernorm(hidden_states), past, rope, context_lengths,
-            cache_start, kv_page_table, context_mask_selector)
+            self.input_layernorm(hidden_states), past, rope, ragged,
+            context_mask_selector)
         hidden_states = residual + self.post_attention_layernorm(attention)
 
         residual = hidden_states
@@ -299,11 +299,11 @@ class DiffusionGemmaDecoderLayer(Module):
         hidden_states = residual + self.post_feedforward_layernorm(dense +
                                                                    routed)
 
-        encoder = hidden_states * F.constant(
-            self.encoder_scalar.reshape(1, 1, 1), "encoder_layer_scalar")
-        decoder = hidden_states * F.constant(
-            self.decoder_scalar.reshape(1, 1, 1), "decoder_layer_scalar")
-        phase = phase_is_encoder.reshape((-1, 1, 1)).equal(np.int32(1))
+        encoder = hidden_states * F.constant(self.encoder_scalar.reshape(1, 1),
+                                             "encoder_layer_scalar")
+        decoder = hidden_states * F.constant(self.decoder_scalar.reshape(1, 1),
+                                             "decoder_layer_scalar")
+        phase = token_phase.reshape((-1, 1)).equal(np.int32(1))
         return F.select(phase, encoder, decoder), present
 
 
@@ -354,14 +354,12 @@ class DiffusionGemmaForBlockDiffusion(NetworkModule):
         io: Dict[str, object] = {
             "inputs_embeds":
             self.add_input("inputs_embeds", trt.float16,
-                           (-1, -1, cfg.hidden_size)),
-            "phase_is_encoder":
-            self.add_input("phase_is_encoder", trt.int32, (-1, )),
+                           (-1, cfg.hidden_size)),
             "canvas_ids":
-            self.add_input("canvas_ids", trt.int32, (-1, -1)),
+            self.add_input("canvas_ids", trt.int32, (-1, )),
             "prev_self_conditioning_embeds":
             self.add_input("prev_self_conditioning_embeds", trt.float16,
-                           (-1, -1, cfg.hidden_size)),
+                           (-1, cfg.hidden_size)),
             "self_conditioning_temperature":
             self.add_input("self_conditioning_temperature", trt.float32,
                            (1, )),
@@ -372,37 +370,36 @@ class DiffusionGemmaForBlockDiffusion(NetworkModule):
                      cfg.layer_head_dim(index)))
                 for index in range(cfg.num_hidden_layers)
             ],
-            "context_lengths":
-            self.add_input("context_lengths", trt.int32, (-1, )),
-            "cache_start":
-            self.add_input("kvcache_start_index", trt.int32, (-1, )),
-            "kv_page_table":
-            self.add_input("kv_page_table", trt.int32, (-1, 2, -1)),
-            "select_token_indices":
-            self.add_input("select_token_indices", trt.int64, (-1, -1)),
             "context_mask_selector":
             self.add_input("context_mask_selector", trt.int32, (-1, )),
+            "phase_is_encoder":
+            self.add_input("phase_is_encoder", trt.int32, (1, )),
+            "select_token_indices":
+            self.add_input("select_token_indices", trt.int64, (-1, )),
         }
+        io.update(
+            add_ragged_decoder_inputs(self.add_input,
+                                      include_logits_indices=False).as_dict())
         if cfg.uses_dual_rope:
             sliding_dim = cfg.rope_rotary_dim(cfg.sliding_rope_config,
                                               cfg.head_dim)
             full_dim = cfg.rope_rotary_dim(cfg.full_rope_config,
                                            cfg.global_head_dim or cfg.head_dim)
             io["rope_sliding"] = self.add_input("rope_rotary_cos_sin_sliding",
-                                                trt.float32,
-                                                (-1, -1, sliding_dim))
+                                                trt.float32, (-1, sliding_dim))
             io["rope_full"] = self.add_input("rope_rotary_cos_sin_full",
-                                             trt.float32, (-1, -1, full_dim))
+                                             trt.float32, (-1, full_dim))
         else:
             io["rope"] = self.add_input("rope_rotary_cos_sin", trt.float32,
-                                        (-1, -1, cfg.rotary_dim))
+                                        (-1, cfg.rotary_dim))
         return io
 
     def forward(self, **io):
         token_embeds = self.embed_tokens(io["canvas_ids"])
         conditioned = self.self_conditioning(
             token_embeds, io["prev_self_conditioning_embeds"])
-        phase = io["phase_is_encoder"].reshape((-1, 1, 1)).equal(np.int32(1))
+        ragged = RaggedDecoderInputs.from_dict(io)
+        phase = io["phase_is_encoder"].reshape((1, 1)).equal(np.int32(1))
         hidden_states = F.select(phase, io["inputs_embeds"], conditioned)
 
         present = []
@@ -414,21 +411,19 @@ class DiffusionGemmaForBlockDiffusion(NetworkModule):
                 rope = io["rope"]
             hidden_states, layer_present = layer(
                 hidden_states,
-                io["phase_is_encoder"],
+                ragged,
                 io["past"][index],
                 rope,
-                io["context_lengths"],
-                io["cache_start"],
-                io["kv_page_table"],
                 io["context_mask_selector"],
+                token_phase,
             )
             present.append(layer_present)
 
         hidden_states = self.norm(hidden_states)
-        selected = F.gather_last_tokens(hidden_states,
-                                        io["select_token_indices"])
+        selected = F.gather_token_rows(hidden_states,
+                                       io["select_token_indices"])
         embedding_weight = self.embed_tokens.weight.reshape(
-            (1, self.cfg.vocab_size, self.cfg.hidden_size))
+            (self.cfg.vocab_size, self.cfg.hidden_size))
         logits = selected.matmul(embedding_weight,
                                  rhs_op=trt.MatrixOperation.TRANSPOSE).cast(
                                      trt.float32)
@@ -438,8 +433,8 @@ class DiffusionGemmaForBlockDiffusion(NetworkModule):
             logits = (logits / cap).tanh() * cap
 
         temperature = io["self_conditioning_temperature"].reshape(
-            (1, 1, 1)).maximum(np.float32(1.0e-6))
-        probabilities = (logits / temperature).softmax(2).cast(trt.float16)
+            (1, 1)).maximum(np.float32(1.0e-6))
+        probabilities = (logits / temperature).softmax(1).cast(trt.float16)
         next_conditioning = probabilities.matmul(embedding_weight)
 
         outputs = {

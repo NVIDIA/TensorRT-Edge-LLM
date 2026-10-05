@@ -351,6 +351,9 @@ struct SlotStreamState
     //! Channel (null ⇒ streaming disabled for this slot).
     std::shared_ptr<StreamChannel> channel;
 
+    //! Non-streaming detokenization policy. Streaming slots read this from their channel.
+    bool skipSpecialTokens{true};
+
     //! Count of tokens whose piece bytes have been fed through emitDelta.
     size_t sentTokenCount{0};
 

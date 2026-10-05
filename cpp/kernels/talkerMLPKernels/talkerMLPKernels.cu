@@ -653,6 +653,105 @@ __global__ void sumCodecEmbeddingsKernel(int64_t const* __restrict__ refCodes,
     }
 }
 
+__global__ void groupedHeadLinearKernel(half const* __restrict__ hiddens, half const* __restrict__ heads,
+    int32_t const* __restrict__ rowHiddenIndices, int32_t const* __restrict__ rowHeadIndices, int32_t hiddenDim,
+    int32_t outputDim, half* __restrict__ output)
+{
+    int32_t const row = blockIdx.y;
+    extern __shared__ half2 sHidden[];
+
+    int32_t const half2Dim = hiddenDim / 2;
+    half2 const* const hiddenSrc
+        = reinterpret_cast<half2 const*>(hiddens + static_cast<int64_t>(rowHiddenIndices[row]) * hiddenDim);
+    for (int32_t d = threadIdx.x; d < half2Dim; d += blockDim.x)
+    {
+        sHidden[d] = hiddenSrc[d];
+    }
+    __syncthreads();
+
+    int32_t const lane = threadIdx.x & 31;
+    int32_t const warpsPerBlock = blockDim.x >> 5;
+    int32_t const outIdx = blockIdx.x * warpsPerBlock + (threadIdx.x >> 5);
+    if (outIdx >= outputDim)
+    {
+        return;
+    }
+
+    half2 const* const weightRow = reinterpret_cast<half2 const*>(
+        heads + (static_cast<int64_t>(rowHeadIndices[row]) * outputDim + outIdx) * hiddenDim);
+    float acc = 0.0F;
+    for (int32_t d = lane; d < half2Dim; d += 32)
+    {
+        float2 const h = __half22float2(sHidden[d]);
+        float2 const w = __half22float2(weightRow[d]);
+        acc += h.x * w.x + h.y * w.y;
+    }
+    for (int32_t offset = 16; offset > 0; offset >>= 1)
+    {
+        acc += __shfl_down_sync(0xFFFFFFFFU, acc, offset);
+    }
+    if (lane == 0)
+    {
+        output[static_cast<int64_t>(row) * outputDim + outIdx] = __float2half(acc);
+    }
+}
+
+void invokeGroupedHeadLinear(half const* hiddens, rt::Tensor const& heads, int32_t const* rowHiddenIndices,
+    int32_t const* rowHeadIndices, int32_t rows, int32_t hiddenDim, int32_t outputDim, rt::Tensor& output,
+    cudaStream_t stream)
+{
+    check::check(hiddenDim % 2 == 0, "hiddenDim must be even: the kernel stages the row as half2");
+
+    constexpr int32_t kBlock = 256;
+    int32_t const warpsPerBlock = kBlock / 32;
+    dim3 const grid((outputDim + warpsPerBlock - 1) / warpsPerBlock, rows);
+    size_t const smem = static_cast<size_t>(hiddenDim / 2) * sizeof(half2);
+    groupedHeadLinearKernel<<<grid, kBlock, smem, stream>>>(hiddens, static_cast<half const*>(heads.rawPointer()),
+        rowHiddenIndices, rowHeadIndices, hiddenDim, outputDim, static_cast<half*>(output.rawPointer()));
+    CUDA_CHECK(cudaPeekAtLastError());
+}
+
+__global__ void gatherCodecEmbedRowsKernel(int32_t const* __restrict__ codeIds,
+    half const* const* __restrict__ tablePtrs, int32_t const* __restrict__ tableIndices,
+    int32_t const* __restrict__ outputRowIndices, int32_t rows, int32_t codeStride, int32_t hiddenDim,
+    half* __restrict__ output)
+{
+    int32_t const batchIdx = blockIdx.y;
+    int32_t const row = blockIdx.x;
+    int64_t const slot = static_cast<int64_t>(batchIdx) * rows + row;
+    int64_t outputRow = slot;
+    if (outputRowIndices != nullptr)
+    {
+        int32_t const mapped = outputRowIndices[slot];
+        if (mapped < 0)
+        {
+            return;
+        }
+        outputRow = mapped;
+    }
+
+    int32_t const code = codeIds[static_cast<int64_t>(batchIdx) * codeStride + row];
+    half const* const table = tablePtrs[tableIndices[slot]];
+    half const* const srcRow = table + static_cast<int64_t>(code) * hiddenDim;
+    half* const dstRow = output + outputRow * hiddenDim;
+
+    for (int32_t d = threadIdx.x; d < hiddenDim; d += blockDim.x)
+    {
+        dstRow[d] = srcRow[d];
+    }
+}
+
+void invokeGatherCodecEmbedRows(rt::Tensor const& codeIds, half const* const* tablePtrs, int32_t const* tableIndices,
+    int32_t batchSize, int32_t rows, int32_t codeStride, int32_t hiddenDim, rt::Tensor& output, cudaStream_t stream,
+    int32_t const* outputRowIndices)
+{
+    dim3 const block(std::min(hiddenDim, 256));
+    dim3 const grid(rows, batchSize);
+    gatherCodecEmbedRowsKernel<<<grid, block, 0, stream>>>(codeIds.dataPointer<int32_t>(), tablePtrs, tableIndices,
+        outputRowIndices, rows, codeStride, hiddenDim, static_cast<half*>(output.rawPointer()));
+    CUDA_CHECK(cudaPeekAtLastError());
+}
+
 void invokeSumCodecEmbeddings(int64_t const* refCodes, half const* const* tablePtrs, int32_t numFrames,
     int32_t numGroups, int32_t hiddenDim, rt::Tensor& output, cudaStream_t stream)
 {

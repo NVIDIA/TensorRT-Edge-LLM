@@ -231,6 +231,7 @@ protected:
         ContextCacheSequenceAdmission seq;
         seq.tokenIds = tokens;
         seq.perPositionMediaHash = perPositionMediaHash;
+        seq.resident = ResidentRef{0, 1};
         admission.sequences.push_back(std::move(seq));
         return mCoordinator->beginRequest(admission, DecodingKvHeadroom{1, 0}, mStream);
     }

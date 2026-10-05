@@ -25,7 +25,7 @@ endif()
 
 project(
   tensorrt_edgellm_sdk
-  VERSION 0.10.1
+  VERSION 0.11.0
   LANGUAGES ${_EDGELLM_PROJECT_LANGUAGES})
 
 if(EDGELLM_PYTHON_ONLY_WHEEL)
@@ -232,6 +232,8 @@ target_link_options(commonLibraryExt INTERFACE
 #                       SM110-only ``Nvfp4MoePlugin``
 #   nvfp4_fused_moe  -- SM12x (consumer Blackwell / Spark GB10) fused NVFP4
 #                       MoE; consumed by ``NvFP4MoEPluginGeforce``
+#   layernorm        -- homogeneous FP16/BF16 LayerNorm for benchmarked hidden
+#                       sizes plus odd-H correctness coverage
 #   rmsnorm          -- FP16/BF16 RMSNorm for supported production hidden sizes
 #   semicolon-separated group list (e.g. -DENABLE_CUTE_DSL=fmha;gdn)
 # cmake-format: on
@@ -239,8 +241,12 @@ set(ENABLE_CUTE_DSL
     "fmha"
     CACHE
       STRING
-      "CuTe DSL kernels: fmha (default), ALL, or semicolon-separated group list (fmha;gdn;f16_moe;rmsnorm)"
+      "CuTe DSL kernels: fmha (default), ALL, or semicolon-separated group list (fmha;gdn;f16_moe;layernorm;rmsnorm)"
 )
+
+# Guided decoding: defines XGRAMMAR_INCLUDE_DIRS and the xgrammarCore target.
+# Must precede add_subdirectory(cpp) so edgellmCore can link it.
+include(${CMAKE_SOURCE_DIR}/cmake/GuidedDecoding.cmake)
 
 # Build Core libraries of the project. attentionPlugin shared library and
 # edgellmCore/edgellmBuilder static library will be generated.

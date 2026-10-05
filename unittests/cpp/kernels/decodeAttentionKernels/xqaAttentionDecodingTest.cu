@@ -38,8 +38,10 @@ using namespace trt_edgellm;
 
 void TestXQAAttentionDecodingAccuracy(int32_t batchSize, int32_t numQHeads, int32_t numKVHeads, int32_t headSize,
     int32_t kvCacheCapacity, bool useFp8Cache = false, int32_t slidingWindowSize = 0,
-    std::optional<float> attentionScale = std::nullopt, int32_t fixedContextLen = 0)
+    std::optional<float> attentionScale = std::nullopt, int32_t fixedContextLen = 0,
+    std::optional<std::vector<float>> const& attentionSinks = std::nullopt)
 {
+    ASSERT_FALSE(attentionSinks.has_value() && attentionSinks->size() != static_cast<size_t>(numQHeads));
     float const resolvedAttentionScale = attentionScale.value_or(1.0F / std::sqrt(static_cast<float>(headSize)));
     int32_t smVersion = getSMVersion();
     applyThorSMRenumberWAR(smVersion);
@@ -91,15 +93,36 @@ void TestXQAAttentionDecodingAccuracy(int32_t batchSize, int32_t numQHeads, int3
         std::vector<half> qi(numQHeads * headSize * qSequenceLength);
         std::vector<half> ki(numKVHeads * headSize * kvLength);
         std::vector<half> vi(numKVHeads * headSize * kvLength);
-        uniformFloatInitialization(qi, -1.0F, 1.0F);
-        uniformFloatInitialization(ki, -1.0F, 1.0F);
-        uniformFloatInitialization(vi, -1.0F, 1.0F);
+        if (attentionSinks.has_value())
+        {
+            constexpr int32_t kMODULUS = 257;
+            constexpr float kSCALE = 1.0F / 128.0F;
+            for (size_t idx = 0; idx < qi.size(); ++idx)
+            {
+                qi[idx] = __float2half(
+                    static_cast<float>((static_cast<int32_t>(idx % kMODULUS) * 37 + i * 17) % kMODULUS - 128) * kSCALE);
+            }
+            for (size_t idx = 0; idx < ki.size(); ++idx)
+            {
+                ki[idx] = __float2half(
+                    static_cast<float>((static_cast<int32_t>(idx % kMODULUS) * 29 + i * 19) % kMODULUS - 128) * kSCALE);
+                vi[idx] = __float2half(
+                    static_cast<float>((static_cast<int32_t>(idx % kMODULUS) * 31 + i * 23) % kMODULUS - 128) * kSCALE);
+            }
+        }
+        else
+        {
+            uniformFloatInitialization(qi, -1.0F, 1.0F);
+            uniformFloatInitialization(ki, -1.0F, 1.0F);
+            uniformFloatInitialization(vi, -1.0F, 1.0F);
+        }
 
         int32_t const attentionLength = slidingWindowSize > 0 ? std::min(kvLength, slidingWindowSize) : kvLength;
         auto kiRef = sliceKVWindow(ki, numKVHeads, headSize, kvLength, slidingWindowSize);
         auto viRef = sliceKVWindow(vi, numKVHeads, headSize, kvLength, slidingWindowSize);
         auto ref = casualAttentionRef<half>(qi, kiRef, viRef, qSequenceLength, attentionLength, numQHeads, numKVHeads,
-            headSize, resolvedAttentionScale);
+            headSize, resolvedAttentionScale, std::nullopt, 1.0F, 1.0F, 0, /*contiguousQuerySwa=*/false,
+            attentionSinks);
 
         // Add data from batch to input Tensors
         qInput.insert(qInput.end(), qi.begin(), qi.end());
@@ -127,6 +150,7 @@ void TestXQAAttentionDecodingAccuracy(int32_t batchSize, int32_t numQHeads, int3
     thrust::device_vector<half> kvInputDevice(kvInput);
     thrust::device_vector<half> outDevice(outReference.size(), 0.0F);
     thrust::device_vector<int32_t> kvCacheLengthDevice(kvCacheLengths);
+    thrust::device_vector<float> attentionSinksDevice(attentionSinks.value_or(std::vector<float>{}));
 
     EXPECT_TRUE(
         trt_edgellm::canCompileXQAKernel(numQHeads, numKVHeads, headSize, smVersion, DataType::kHALF, DataType::kHALF));
@@ -140,6 +164,8 @@ void TestXQAAttentionDecodingAccuracy(int32_t batchSize, int32_t numQHeads, int3
     params.kvCache.sequence_lengths = thrust::raw_pointer_cast(kvCacheLengthDevice.data());
     params.kvCache.capacity = kvCacheCapacity;
     params.output = thrust::raw_pointer_cast(outDevice.data());
+    params.attentionSinks
+        = attentionSinks.has_value() ? thrust::raw_pointer_cast(attentionSinksDevice.data()) : nullptr;
     params.attentionScale = resolvedAttentionScale;
     params.slidingWinSize = slidingWindowSize > 0 ? static_cast<uint32_t>(slidingWindowSize) : 0U;
 
@@ -255,7 +281,8 @@ void TestXQAAttentionDecodingAccuracy(int32_t batchSize, int32_t numQHeads, int3
             auto kiRef = sliceKVWindow(ki, numKVHeads, headSize, kvLength, slidingWindowSize);
             auto viRef = sliceKVWindow(vi, numKVHeads, headSize, kvLength, slidingWindowSize);
             auto ref = casualAttentionRef<__nv_fp8_e4m3>(qi, kiRef, viRef, qSequenceLength, attentionLength, numQHeads,
-                numKVHeads, headSize, resolvedAttentionScale, std::nullopt, kScaleQuantOrig, vScaleQuantOrig);
+                numKVHeads, headSize, resolvedAttentionScale, std::nullopt, kScaleQuantOrig, vScaleQuantOrig, 0,
+                /*contiguousQuerySwa=*/false, attentionSinks);
             outReferenceFp8.insert(outReferenceFp8.end(), ref.begin(), ref.end());
         }
 
@@ -273,6 +300,8 @@ void TestXQAAttentionDecodingAccuracy(int32_t batchSize, int32_t numQHeads, int3
         paramsFp8.kvCache.sequence_lengths = thrust::raw_pointer_cast(kvCacheLengthDevice.data());
         paramsFp8.kvCache.capacity = kvCacheCapacity;
         paramsFp8.output = thrust::raw_pointer_cast(outFp8Device.data());
+        paramsFp8.attentionSinks
+            = attentionSinks.has_value() ? thrust::raw_pointer_cast(attentionSinksDevice.data()) : nullptr;
         paramsFp8.attentionScale = resolvedAttentionScale;
         paramsFp8.kScale = kScaleQuantOrig;
         paramsFp8.vScale = vScaleQuantOrig;
@@ -303,11 +332,11 @@ void TestXQAAttentionDecodingAccuracy(int32_t batchSize, int32_t numQHeads, int3
             {
                 numClose++;
             }
-            if (isnan(__half2float(outFp8Host[i])) || isinf(__half2float(outFp8Host[i])))
+            if (!std::isfinite(__half2float(outFp8Host[i])))
             {
                 NanValueDetectedFp8 = true;
             }
-            EXPECT_FALSE(isnan(__half2float(outFp8Host[i])));
+            EXPECT_TRUE(std::isfinite(__half2float(outFp8Host[i])));
         }
         float const matchRate = static_cast<float>(numClose) / static_cast<float>(outHost.size());
         std::cout << "XQA Attention Decoding test. [FP8 KV cache] batch_size: " << batchSize
@@ -370,6 +399,13 @@ TEST(XQAAttentionDecodingTest, accuracyKVRatio8HeadDim256)
     TestXQAAttentionDecodingAccuracy(2, 16, 2, 256, 512);
 }
 
+TEST(XQAAttentionDecodingTest, accuracyKVRatio16HeadDim256)
+{
+    TestXQAAttentionDecodingAccuracy(1, 16, 1, 256, 1024);
+    TestXQAAttentionDecodingAccuracy(2, 16, 1, 256, 512);
+    TestXQAAttentionDecodingAccuracy(1, 32, 2, 256, 512, false, 0, std::nullopt, 274);
+}
+
 TEST(XQAAttentionDecodingTest, accuracyKVRatio8HeadDim512)
 {
     TestXQAAttentionDecodingAccuracy(1, 16, 2, 512, 256);
@@ -409,6 +445,17 @@ TEST(XQAAttentionDecodingTest, configurableAttentionScale)
     TestXQAAttentionDecodingAccuracy(1, 8, 1, 256, 1024, false, 512, 0.37F);
     TestXQAAttentionDecodingAccuracy(1, 8, 1, 512, 256, false, 0, 1.0F);
     TestXQAAttentionDecodingAccuracy(1, 8, 1, 512, 256, false, 0, 0.37F);
+}
+
+TEST(XQAAttentionDecodingTest, attentionSinkAccuracy)
+{
+    constexpr int32_t kNUM_Q_HEADS = 32;
+    std::vector<float> attentionSinks(kNUM_Q_HEADS);
+    for (int32_t headIdx = 0; headIdx < kNUM_Q_HEADS; ++headIdx)
+    {
+        attentionSinks[headIdx] = static_cast<float>(headIdx - kNUM_Q_HEADS / 2) * 0.125F;
+    }
+    TestXQAAttentionDecodingAccuracy(1, kNUM_Q_HEADS, 2, 128, 256, false, 0, std::nullopt, 129, attentionSinks);
 }
 
 #if SUPPORTS_FP8

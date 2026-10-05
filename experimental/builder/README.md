@@ -19,14 +19,22 @@ in PyTorch ZIP `.bin` checkpoints are also supported.
 
 ## Install
 
+For a supported target, use a [base wheel](../../docs/source/user_guide/getting_started/installation.md#minimal-installation-advanced).
+It includes the builder and selects its bundled plugin automatically; skip
+the source-build steps below. Run commands in the activated wheel environment
+outside a source checkout.
+
+### From source
+
 Install the repository package and the TensorRT Python wheel that matches the
 TensorRT libraries used to compile Edge-LLM:
 
 ```bash
 python3 -m venv --system-site-packages .venv
-.venv/bin/python -m pip install --upgrade pip
-.venv/bin/python -m pip install .
-.venv/bin/python -m pip install \
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install .
+python -m pip install \
   /path/to/TensorRT/python/tensorrt-<version>-cp312-none-linux_x86_64.whl
 ```
 
@@ -46,14 +54,18 @@ cmake --build build -j16
 
 ## Build Every Component
 
+The following commands work with either installation. A source install defaults
+to `build/libNvInfer_edgellm_plugin.so`; use `--plugin-path` only for a different
+source-build location. A published wheel resolves its packaged plugin without
+that option.
+
 The default component selection is `all`. One command discovers the checkpoint
 family and builds each component in runtime order:
 
 ```bash
-.venv/bin/tensorrt-edgellm-build \
+tensorrt-edgellm-build \
   --model-dir /path/to/checkpoint \
   --engine-dir /path/to/engines \
-  --plugin-path /path/to/build/libNvInfer_edgellm_plugin.so \
   --max-input-len 2048 \
   --max-kv-cache-capacity 4096 \
   --max-batch-size 1
@@ -62,11 +74,10 @@ family and builds each component in runtime order:
 `--components` is only needed for an intentional partial rebuild:
 
 ```bash
-.venv/bin/tensorrt-edgellm-build \
+tensorrt-edgellm-build \
   --model-dir /path/to/checkpoint \
   --engine-dir /path/to/engines \
-  --components visual,audio \
-  --plugin-path /path/to/build/libNvInfer_edgellm_plugin.so
+  --components visual,audio
 ```
 
 The available components are `llm`, `dllm`, `visual`, `audio`, `talker`,
@@ -186,22 +197,20 @@ non-LLM components declared by the target checkpoint.
 EAGLE3 uses a paired draft checkpoint:
 
 ```bash
-.venv/bin/tensorrt-edgellm-build \
+tensorrt-edgellm-build \
   --model-dir /path/to/target \
   --draft-model-dir /path/to/eagle3-draft \
   --spec-type eagle3 \
-  --engine-dir /path/to/engines \
-  --plugin-path /path/to/build/libNvInfer_edgellm_plugin.so
+  --engine-dir /path/to/engines
 ```
 
 Qwen3.5 native MTP reads the draft layers from the target checkpoint:
 
 ```bash
-.venv/bin/tensorrt-edgellm-build \
+tensorrt-edgellm-build \
   --model-dir /path/to/qwen3.5-checkpoint \
   --spec-type mtp \
-  --engine-dir /path/to/engines \
-  --plugin-path /path/to/build/libNvInfer_edgellm_plugin.so
+  --engine-dir /path/to/engines
 ```
 
 Do not pass `--draft-model-dir` for native Qwen MTP. The draft engine prefers
@@ -224,34 +233,45 @@ llm_inference \
 DFlash uses its paired draft checkpoint and model-owned DFlash cache contract:
 
 ```bash
-.venv/bin/tensorrt-edgellm-build \
+tensorrt-edgellm-build \
   --model-dir /path/to/target \
   --draft-model-dir /path/to/dflash-draft \
   --spec-type dflash \
-  --engine-dir /path/to/engines \
-  --plugin-path /path/to/build/libNvInfer_edgellm_plugin.so
+  --engine-dir /path/to/engines
 ```
+
+DFlash V2 checkpoints use the same user-visible DFlash mode. Their
+checkpoint-owned fixed linear selector contract rejects `--tree-base`:
+
+```bash
+tensorrt-edgellm-build \
+  --model-dir /path/to/qwen3.8-target \
+  --draft-model-dir /path/to/qwen3.8-dflash2-draft \
+  --spec-type dflash \
+  --engine-dir /path/to/engines
+```
+
+The checkpoint architecture selects V2; its dynamic-convolution and
+candidate-selector plugin contracts are built and validated together.
 
 dSpark uses a paired Qwen3 target and draft checkpoint:
 
 ```bash
-.venv/bin/tensorrt-edgellm-build \
+tensorrt-edgellm-build \
   --model-dir /path/to/qwen3-target \
   --draft-model-dir /path/to/dspark-draft \
   --spec-type dspark \
-  --engine-dir /path/to/engines \
-  --plugin-path /path/to/build/libNvInfer_edgellm_plugin.so
+  --engine-dir /path/to/engines
 ```
 
 Gemma4 MTP uses the matched assistant checkpoint:
 
 ```bash
-.venv/bin/tensorrt-edgellm-build \
+tensorrt-edgellm-build \
   --model-dir /path/to/gemma4-target \
   --draft-model-dir /path/to/gemma4-assistant \
   --spec-type gemma4_mtp \
-  --engine-dir /path/to/engines \
-  --plugin-path /path/to/build/libNvInfer_edgellm_plugin.so
+  --engine-dir /path/to/engines
 ```
 
 The Gemma assistant owns its model layers and output projection. If a provider
@@ -339,9 +359,10 @@ The explicit registry currently includes Llama, Mistral, Qwen2, Qwen3,
 Qwen3-MoE, Qwen2/2.5/3-VL, Qwen3.5 dense and MoE, Qwen3-ASR, Qwen3-Omni,
 Qwen3-Omni-Next, Qwen3-TTS, InternVL3/3.5, Phi-4 Multimodal,
 Nemotron-H/Omni, Gemma4 and Gemma4 Unified, DiffusionGemma, Cosmos3, and
-Alpamayo. EAGLE3, MTP, DFlash, dSpark, and Gemma4 assistant drafts use
-model-owned speculative definitions. Unsupported `model_type` values fail
-before a TensorRT network is created and report the registered choices.
+Alpamayo. EAGLE3, MTP, DFlash/DFlash2, JetSpec, DSpark, and Gemma4 assistant
+drafts use model-owned speculative definitions. Unsupported `model_type`
+values fail before a TensorRT network is created and report the registered
+choices.
 
 The user guide contains an explicit
 [implementation, CI, and known-gap matrix](../../docs/source/user_guide/getting_started/direct-engine-builder.md#support-and-validation-status).

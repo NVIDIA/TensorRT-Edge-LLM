@@ -299,7 +299,7 @@ std::vector<float> computePagedV2Reference(std::vector<half> const& q, std::vect
 void TestContextAttentionPagedAccuracy(int32_t headDim, int32_t numQHeads, int32_t numKVHeads, int32_t seqLenQ,
     int32_t seqLenKCapacity, int32_t windowSizeLeft = INT_MAX,
     std::optional<float> requestedAttentionScale = std::nullopt, std::vector<int32_t> seqLensQ = {},
-    std::vector<int32_t> seqLensK = {}, bool nanPoison = false)
+    std::vector<int32_t> seqLensK = {}, bool nanPoison = false, bool packedQ = false)
 {
     int32_t constexpr kTOKENS_PER_PAGE = 128;
     int32_t const batchSize = seqLensQ.empty() ? (seqLensK.empty() ? 1 : static_cast<int32_t>(seqLensK.size()))
@@ -419,10 +419,31 @@ void TestContextAttentionPagedAccuracy(int32_t headDim, int32_t numQHeads, int32
         }
     }
 
-    rt::Tensor qTensor({batchSize, seqLenQ, numQHeads, headDim}, rt::DeviceType::kGPU, DataType::kHALF);
+    int32_t totalQSeqLen = 0;
+    for (int32_t const qSeqLen : seqLensQ)
+    {
+        totalQSeqLen += qSeqLen;
+    }
+    int32_t const maxQSeqLen = *std::max_element(seqLensQ.begin(), seqLensQ.end());
+    std::vector<half> packedQHost;
+    if (packedQ)
+    {
+        packedQHost.reserve(static_cast<size_t>(totalQSeqLen) * numQHeads * headDim);
+        for (int32_t batch = 0; batch < batchSize; ++batch)
+        {
+            size_t const begin = pagedV2BshdIndex(batch, 0, 0, 0, seqLenQ, numQHeads, headDim);
+            size_t const count = static_cast<size_t>(seqLensQ[static_cast<size_t>(batch)]) * numQHeads * headDim;
+            packedQHost.insert(packedQHost.end(), qHost.begin() + begin, qHost.begin() + begin + count);
+        }
+    }
+    rt::Tensor qTensor(
+        packedQ ? rt::Coords{totalQSeqLen, numQHeads, headDim} : rt::Coords{batchSize, seqLenQ, numQHeads, headDim},
+        rt::DeviceType::kGPU, DataType::kHALF);
     rt::Tensor poolTensor({numFlatPages, kTOKENS_PER_PAGE, numKVHeads, headDim}, rt::DeviceType::kGPU, DataType::kHALF);
     rt::Tensor pageListTensor({batchSize, 2, maxPagesPerSeq}, rt::DeviceType::kGPU, DataType::kINT32);
-    rt::Tensor outputPaged({batchSize, seqLenQ, numQHeads, headDim}, rt::DeviceType::kGPU, DataType::kHALF);
+    rt::Tensor outputPaged(
+        packedQ ? rt::Coords{totalQSeqLen, numQHeads, headDim} : rt::Coords{batchSize, seqLenQ, numQHeads, headDim},
+        rt::DeviceType::kGPU, DataType::kHALF);
     rt::Tensor cuQSeqLensTensor({batchSize + 1}, rt::DeviceType::kGPU, DataType::kINT32);
     rt::Tensor cuKVSeqLensTensor({batchSize + 1}, rt::DeviceType::kGPU, DataType::kINT32);
     std::vector<int32_t> cuQSeqLens(static_cast<size_t>(batchSize + 1), 0);
@@ -434,17 +455,33 @@ void TestContextAttentionPagedAccuracy(int32_t headDim, int32_t numQHeads, int32
         cuKVSeqLens[static_cast<size_t>(batch + 1)]
             = cuKVSeqLens[static_cast<size_t>(batch)] + seqLensK[static_cast<size_t>(batch)];
     }
-    copyHostToDevice(qTensor, qHost);
+    copyHostToDevice(qTensor, packedQ ? packedQHost : qHost);
     copyHostToDevice(poolTensor, poolHost);
     copyHostToDevice(pageListTensor, pageList);
     copyHostToDevice(cuQSeqLensTensor, cuQSeqLens);
     copyHostToDevice(cuKVSeqLensTensor, cuKVSeqLens);
 
     CuteDslFMHAV2Runner runner(numQHeads, numKVHeads, headDim, batchSize, seqLenQ, capacity);
-    ASSERT_TRUE(runner.runPaged(qTensor.rawPointer(), poolTensor.rawPointer(), pageListTensor.dataPointer<int32_t>(),
-        outputPaged.rawPointer(), cuQSeqLensTensor.dataPointer<int32_t>(), cuKVSeqLensTensor.dataPointer<int32_t>(),
-        numFlatPages, maxPagesPerSeq, kTOKENS_PER_PAGE, nullptr, attentionScale, windowSizeLeft));
-    CUDA_CHECK(cudaStreamSynchronize(nullptr));
+    if (packedQ)
+    {
+#if CUDA_VERSION < 12000
+        GTEST_SKIP() << "FMHA-v2 paged-ragged kernels require CUDA 12+ CuTe DSL artifacts.";
+#endif
+    }
+    cudaStream_t stream = nullptr;
+    auto const runPaged = [&]() {
+        return packedQ
+            ? runner.runPagedRagged(qTensor.rawPointer(), poolTensor.rawPointer(),
+                  pageListTensor.dataPointer<int32_t>(), outputPaged.rawPointer(),
+                  cuQSeqLensTensor.dataPointer<int32_t>(), cuKVSeqLensTensor.dataPointer<int32_t>(), totalQSeqLen,
+                  maxQSeqLen, numFlatPages, maxPagesPerSeq, kTOKENS_PER_PAGE, stream, attentionScale, windowSizeLeft)
+            : runner.runPaged(qTensor.rawPointer(), poolTensor.rawPointer(), pageListTensor.dataPointer<int32_t>(),
+                  outputPaged.rawPointer(), cuQSeqLensTensor.dataPointer<int32_t>(),
+                  cuKVSeqLensTensor.dataPointer<int32_t>(), numFlatPages, maxPagesPerSeq, kTOKENS_PER_PAGE, stream,
+                  attentionScale, windowSizeLeft);
+    };
+    ASSERT_TRUE(runPaged());
+    CUDA_CHECK(cudaStreamSynchronize(stream));
     CUDA_CHECK(cudaGetLastError());
 
     auto const actual = copyDeviceToHost<half>(outputPaged);
@@ -461,7 +498,12 @@ void TestContextAttentionPagedAccuracy(int32_t headDim, int32_t numQHeads, int32
                 for (int32_t dim = 0; dim < headDim; ++dim)
                 {
                     size_t const idx = pagedV2BshdIndex(batch, seq, head, dim, seqLenQ, numQHeads, headDim);
-                    float const actualValue = __half2float(actual[idx]);
+                    size_t const actualIdx = packedQ
+                        ? (static_cast<size_t>(cuQSeqLens[static_cast<size_t>(batch)] + seq) * numQHeads + head)
+                                * headDim
+                            + dim
+                        : idx;
+                    float const actualValue = __half2float(actual[actualIdx]);
                     ASSERT_TRUE(isclose(actualValue, expected[idx], 1e-2F, 1e-2F))
                         << "Paged FMHA-v2 mismatch at index=" << idx << " batch=" << batch << " seq=" << seq
                         << " D=" << headDim << " SqCapacity=" << seqLenQ
@@ -491,6 +533,15 @@ void assertPagedCapability(int32_t headDim, CuteDslFMHAV2MaskType maskType)
 
 TEST(ContextAttentionTest, fmhaV2CapabilityContract)
 {
+#if !defined(CUTE_DSL_FMHA_ENABLED)
+    EXPECT_FALSE(CuteDslFMHAV2Runner::canImplement(8, 2, 64, 100, DataType::kHALF, CuteDslFMHAV2MaskType::kCAUSAL));
+    EXPECT_FALSE(
+        CuteDslFMHAV2Runner::canImplementPaged(8, 2, 64, 100, DataType::kHALF, CuteDslFMHAV2MaskType::kCAUSAL));
+    EXPECT_FALSE(
+        CuteDslFMHAV2Runner::canImplementPagedRagged(8, 2, 64, 100, DataType::kHALF, CuteDslFMHAV2MaskType::kCAUSAL));
+    return;
+#endif
+
     std::vector<int32_t> const supportedSMs{80, 86, 87, 89, 90, 100, 101, 110, 120, 121};
     std::vector<int32_t> const supportedHeadDims{64, 128, 256, 512};
 
@@ -502,6 +553,15 @@ TEST(ContextAttentionTest, fmhaV2CapabilityContract)
                 8, 2, headDim, smVersion, DataType::kHALF, CuteDslFMHAV2MaskType::kCAUSAL));
             EXPECT_TRUE(CuteDslFMHAV2Runner::canImplementPaged(
                 8, 2, headDim, smVersion, DataType::kHALF, CuteDslFMHAV2MaskType::kSLIDING_CAUSAL));
+#if defined(CUTE_DSL_FMHA_ENABLED) && CUDA_VERSION >= 12000
+            EXPECT_TRUE(CuteDslFMHAV2Runner::canImplementPagedRagged(
+                8, 2, headDim, smVersion, DataType::kHALF, CuteDslFMHAV2MaskType::kCAUSAL));
+            EXPECT_TRUE(CuteDslFMHAV2Runner::canImplementPagedRagged(
+                8, 2, headDim, smVersion, DataType::kHALF, CuteDslFMHAV2MaskType::kSLIDING_CAUSAL));
+#else
+            EXPECT_FALSE(CuteDslFMHAV2Runner::canImplementPagedRagged(
+                8, 2, headDim, smVersion, DataType::kHALF, CuteDslFMHAV2MaskType::kCAUSAL));
+#endif
             EXPECT_TRUE(CuteDslFMHAV2Runner::canImplement(
                 8, 2, headDim, smVersion, DataType::kHALF, CuteDslFMHAV2MaskType::kCAUSAL));
             EXPECT_TRUE(CuteDslFMHAV2Runner::canImplement(
@@ -533,6 +593,10 @@ TEST(ContextAttentionTest, fmhaV2CapabilityContract)
         CuteDslFMHAV2Runner::canImplementPaged(8, 2, 64, 121, DataType::kFLOAT, CuteDslFMHAV2MaskType::kCAUSAL));
     EXPECT_FALSE(
         CuteDslFMHAV2Runner::canImplementPaged(7, 2, 64, 121, DataType::kHALF, CuteDslFMHAV2MaskType::kCAUSAL));
+    EXPECT_FALSE(
+        CuteDslFMHAV2Runner::canImplementPagedRagged(8, 2, 64, 121, DataType::kFP8, CuteDslFMHAV2MaskType::kCAUSAL));
+    EXPECT_FALSE(
+        CuteDslFMHAV2Runner::canImplementPagedRagged(8, 2, 64, 121, DataType::kHALF, CuteDslFMHAV2MaskType::kPADDING));
 }
 
 TEST(ContextAttentionTest, pagedAllHeadDimsCausal)
@@ -591,6 +655,48 @@ TEST(ContextAttentionTest, pagedD128RaggedSlidingScrambledPoisonedPageTables)
 {
     TestContextAttentionPagedAccuracy(
         128, 8, 2, 33, 129, 63, std::nullopt, std::vector<int32_t>{17, 33}, std::vector<int32_t>{65, 129});
+}
+
+TEST(ContextAttentionTest, pagedPackedRaggedCold)
+{
+    TestContextAttentionPagedAccuracy(
+        64, 8, 2, 128, 128, INT_MAX, std::nullopt, std::vector<int32_t>{128}, std::vector<int32_t>{128}, false, true);
+}
+
+TEST(ContextAttentionTest, pagedPackedRaggedChunk)
+{
+    TestContextAttentionPagedAccuracy(
+        64, 8, 2, 65, 257, INT_MAX, std::nullopt, std::vector<int32_t>{65}, std::vector<int32_t>{257}, false, true);
+}
+
+TEST(ContextAttentionTest, pagedPackedRaggedHeterogeneous)
+{
+    TestContextAttentionPagedAccuracy(64, 8, 2, 129, 129, INT_MAX, std::nullopt, std::vector<int32_t>{1, 63, 129},
+        std::vector<int32_t>{1, 63, 129}, false, true);
+}
+
+TEST(ContextAttentionTest, pagedPackedRaggedSlidingWindow)
+{
+    TestContextAttentionPagedAccuracy(
+        64, 8, 2, 129, 129, 63, std::nullopt, std::vector<int32_t>{129}, std::vector<int32_t>{129}, false, true);
+}
+
+TEST(ContextAttentionTest, pagedPackedRaggedD128)
+{
+    TestContextAttentionPagedAccuracy(
+        128, 8, 2, 65, 129, INT_MAX, std::nullopt, std::vector<int32_t>{65}, std::vector<int32_t>{65}, false, true);
+}
+
+TEST(ContextAttentionTest, pagedPackedRaggedD256)
+{
+    TestContextAttentionPagedAccuracy(
+        256, 8, 2, 33, 129, INT_MAX, std::nullopt, std::vector<int32_t>{33}, std::vector<int32_t>{33}, false, true);
+}
+
+TEST(ContextAttentionTest, pagedPackedRaggedD512)
+{
+    TestContextAttentionPagedAccuracy(
+        512, 4, 1, 17, 129, INT_MAX, std::nullopt, std::vector<int32_t>{17}, std::vector<int32_t>{17}, false, true);
 }
 
 TEST(ContextAttentionTest, pagedAllHeadDimsSliding)

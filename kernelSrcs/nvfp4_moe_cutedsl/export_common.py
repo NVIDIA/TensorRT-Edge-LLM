@@ -50,42 +50,6 @@ def resolve_activation_type(name):
     return mapping[name]
 
 
-def get_max_active_clusters(cluster_shape_mn: tuple[int, int]):
-    """Trace-time seed for the runtime max_active_clusters wrapper argument.
-
-    max_active_clusters is now a RUNTIME kernel argument: the deployed caller
-    passes the launch GPU's value (SM count // cluster size). This seed uses
-    the pure multiprocessor-count attribute instead of HardwareInfo's
-    dummy-occupancy-kernel probe, which is invalid under foreign-arch compiles
-    (e.g. sm_110a exports on a non-Thor build GPU).
-    """
-    import cutlass
-
-    sm_count = cutlass.utils.HardwareInfo().get_device_multiprocessor_count()
-    return cutlass.Int32(sm_count // (cluster_shape_mn[0] * cluster_shape_mn[1]))
-
-
-def make_ptr(dtype, value: int, assumed_align: int | None = None):
-    import cutlass.cute as cute
-
-    from cute_utils import make_ptr as cute_make_ptr
-
-    return cute_make_ptr(dtype, value, cute.AddressSpace.gmem, assumed_align=assumed_align)
-
-
-def allocate(shape, dtype, buffers: list):
-    import cupy as cp
-
-    buf = cp.zeros(shape, dtype=dtype)
-    buffers.append(buf)
-    return buf
-
-
-def atom_scale_bytes(rows: int, cols: int, experts: int = 1) -> int:
-    scale_cols = cols // SF_VEC_SIZE
-    return 32 * 4 * ((rows + M_TILE_SIZE - 1) // M_TILE_SIZE) * 4 * ((scale_cols + 3) // 4) * experts
-
-
 def verify_export(output_dir: str, file_name: str) -> tuple[str, str]:
     header = Path(output_dir) / f"{file_name}.h"
     obj = Path(output_dir) / f"{file_name}.o"

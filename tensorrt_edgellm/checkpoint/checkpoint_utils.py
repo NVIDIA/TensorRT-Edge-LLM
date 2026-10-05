@@ -47,9 +47,6 @@ RUNTIME_TOKENIZER_FILENAMES: Tuple[str, ...] = (
     "tokenizer_config.json",
     "tokenizer.model",
     "special_tokens_map.json",
-    "processed_chat_template.json",
-    "chat_template.jinja",
-    "chat_template.json",
 )
 
 
@@ -269,6 +266,29 @@ def load_checkpoint_config_dicts(
         if key not in llm and val is not None:
             llm[key] = val
 
+    # Sliding-window compatibility: HF attention configs (e.g. Qwen3Config) null
+    # out sliding_window unless the legacy use_sliding_window flag is set, but
+    # checkpoints on the newer convention declare per-layer "sliding_attention"
+    # in layer_types and omit that flag. The patch-back above only fills ABSENT
+    # keys, so the nulled window would survive. Treat layer_types as the
+    # authority and recover the raw value; a checkpoint that deliberately
+    # disables its window reports full_attention layers and is untouched.
+    if llm.get("sliding_window") is None:
+        for source in (llm, raw):
+            layer_types = source.get("layer_types")
+            if not isinstance(layer_types, list):
+                continue
+            if "sliding_attention" not in layer_types:
+                continue
+            raw_window = raw.get("sliding_window")
+            if raw_window is None:
+                sub = raw.get("text_config")
+                raw_window = sub.get("sliding_window") if isinstance(
+                    sub, dict) else None
+            if raw_window is not None:
+                llm["sliding_window"] = raw_window
+            break
+
     # VLM / transformers v5 rope compatibility: rope_scaling may be null
     # while rope_parameters carries the real config (transformers v5
     # convention), and either may live only in a nested sub-config
@@ -382,6 +402,19 @@ def _apply_global_model_fields(out: Dict[str, Any],
             out[field] = global_llm_config[field]
 
 
+def _tp_global_kv_layer_configs(local_configs: list, tp_size: int) -> list:
+    global_configs = []
+    for layer in local_configs:
+        if layer is None:
+            global_configs.append(None)
+            continue
+        global_layer = dict(layer)
+        if "num_kv_heads" in global_layer:
+            global_layer["num_kv_heads"] *= tp_size
+        global_configs.append(global_layer)
+    return global_configs
+
+
 def build_runtime_llm_config_dict(
         model: "CausalLM",
         global_llm_config: Any = None,
@@ -474,33 +507,6 @@ def build_runtime_llm_config_dict(
             "enable_moe_block": bool(config.enable_moe_block),
         })
 
-    local_shape_values = {
-        field: out[field]
-        for field in _RANK_LOCAL_OVERRIDE_FIELDS if field in out
-    }
-
-    if world_size > 1 or tp_size > 1:
-        # Only TP exports need a shared world-level view. Single-device and
-        # specialized exports (for example reduced-layer validation, MTP
-        # draft, and TTS code-predictor models) must retain model.config
-        # because it describes the ONNX graph that was actually exported.
-        _apply_global_model_fields(out, global_llm_config)
-
-        config_overrides: Dict[str, Any] = {}
-        for field, local_value in local_shape_values.items():
-            if out.get(field) != local_value:
-                config_overrides[field] = local_value
-
-        rank_config: Dict[str, Any] = {
-            "rank": rank,
-        }
-        if tp_rank != rank:
-            rank_config["tp_rank"] = tp_rank
-        if config_overrides:
-            rank_config["config_overrides"] = config_overrides
-        out["rank_configs"] = _merge_rank_config(existing_rank_configs,
-                                                 rank_config)
-
     if config.is_diffusion_gemma:
         diffusion_cfg = (config.diffusion.to_dict()
                          if config.diffusion is not None else {})
@@ -529,6 +535,10 @@ def build_runtime_llm_config_dict(
             },
         })
 
+    attention_layer_types = (getattr(config, "attention_layer_types", []) if
+                             (str(config.model_type).startswith("gemma4")
+                              or config.is_diffusion_gemma) else [])
+
     # Heterogeneous head dimensions (e.g. Gemma4: sliding=256, global=512)
     if config.global_head_dim and config.global_head_dim != config.head_dim:
         out["global_head_dim"] = config.global_head_dim
@@ -540,29 +550,6 @@ def build_runtime_llm_config_dict(
                 and config.num_global_key_value_heads
                 != config.num_key_value_heads):
             out["num_global_key_value_heads"] = config.num_global_key_value_heads
-        out["layer_types"] = config.layer_types
-        # Emit kv_layer_configs so C++ runtime sizes per-layer KV cache correctly.
-        # The C++ parser expects "attention"/"mamba" strings in layer_types when
-        # kv_layer_configs is present, so emit a normalised copy.
-        norm_lt: list = []
-        kv_cfgs: list = []
-        full_attention_kv_heads = (config.num_global_key_value_heads
-                                   if use_global_kv_heads else
-                                   config.num_key_value_heads)
-        for lt in config.layer_types:
-            norm_lt.append("attention")  # all layers are attention in Gemma4
-            if lt == "full_attention":
-                kv_cfgs.append({
-                    "num_kv_heads": full_attention_kv_heads,
-                    "head_dim": config.global_head_dim
-                })
-            else:
-                kv_cfgs.append({
-                    "num_kv_heads": config.num_key_value_heads,
-                    "head_dim": config.head_dim
-                })
-        out["layer_types"] = norm_lt
-        out["kv_layer_configs"] = kv_cfgs
         # Per-layer-type RoPE: extract global attention RoPE parameters from
         # rope_scaling.full_attention (Gemma4: theta=1000000, prf=0.25).
         full_attn_rope = (rope_scaling or {}).get("full_attention", {})
@@ -654,11 +641,19 @@ def build_runtime_llm_config_dict(
     # Emit canonical per-layer config consumed by the C++ HybridCacheManager.
     # Only attention and linear-attention layers carry KV/recurrent state and
     # must appear in the per-layer routing table. MLP/MoE layers are skipped.
+    # Pure-attention Gemma4 models also need this table when sliding layers use
+    # a different cache capacity.
     _emit_kv_table = config.layer_types and (
-        config.is_hybrid or config.num_attn_layers != config.num_hidden_layers)
+        config.is_hybrid or config.num_attn_layers != config.num_hidden_layers
+        or attention_layer_types)
     if _emit_kv_table:
         from ..config import (_VALID_ATTENTION_LAYER_TYPES, LAYER_ATTN,
                               LAYER_GDN, LAYER_MAMBA)
+
+        gemma4_kv_layer_config = None
+        if attention_layer_types:
+            from ..models.gemma4.modeling_gemma4_text import \
+                _gemma4_kv_layer_config as gemma4_kv_layer_config
 
         # ``config.layer_types`` normalizes recurrent layers to LAYER_GDN /
         # LAYER_MAMBA, but attention layers keep their raw HF type (e.g.
@@ -672,21 +667,14 @@ def build_runtime_llm_config_dict(
         for layer_idx, lt in enumerate(config.layer_types):
             if lt in attention_types:
                 normalized_layer_types.append("attention")
-                num_kv_heads = config.num_key_value_heads
-                head_dim = config.head_dim
-                if (str(config.model_type).startswith("gemma4")
-                        and config.attention_layer_types):
-                    attention_type = config.attention_layer_types[layer_idx]
-                    if attention_type == "full_attention":
-                        if config.global_head_dim:
-                            head_dim = config.global_head_dim
-                        if (config.attention_k_eq_v
-                                and config.num_global_key_value_heads):
-                            num_kv_heads = config.num_global_key_value_heads
-                kv_layer_configs.append({
-                    "num_kv_heads": num_kv_heads,
-                    "head_dim": head_dim,
-                })
+                if gemma4_kv_layer_config is not None:
+                    layer_config = gemma4_kv_layer_config(config, layer_idx)
+                else:
+                    layer_config = {
+                        "num_kv_heads": config.num_key_value_heads,
+                        "head_dim": config.head_dim,
+                    }
+                kv_layer_configs.append(layer_config)
             elif lt in (LAYER_MAMBA, LAYER_GDN):
                 normalized_layer_types.append("mamba")
                 kv_layer_configs.append(None)
@@ -709,8 +697,8 @@ def build_runtime_llm_config_dict(
         })
 
     if config.is_mtp_draft:
-        # MTP draft shares vocab with base (no reduced vocab) and receives
-        # base hidden states of size hidden_size (not 3x like EAGLE3).
+        # draft_vocab_size stays the full vocab; reduced_vocab_size, if set,
+        # narrows only the logits width. Base hidden states use hidden_size.
         out.update({
             "draft_vocab_size": config.vocab_size,
             "base_model_hidden_size": config.hidden_size,
@@ -776,27 +764,33 @@ def build_runtime_llm_config_dict(
             list(config.kv_sharing_map),
         })
 
-    if config.is_dflash_draft:
-        out.update({
-            "draft_vocab_size":
-            config.vocab_size,
-            "base_model_hidden_size":
-            len(config.dflash_target_layer_ids) * config.hidden_size,
-            "dflash_config": {
-                "target_layer_ids": list(config.dflash_target_layer_ids),
-                "block_size": config.dflash_block_size,
-                "mask_token_id": config.dflash_mask_token_id,
-            },
-        })
-
-    if config.dflash_base:
-        out.update({
-            "dflash_config": {
-                "target_layer_ids": list(config.dflash_target_layer_ids),
-                "block_size": config.dflash_block_size,
-                "mask_token_id": config.dflash_mask_token_id,
-            },
-        })
+    is_dflash = config.is_dflash_draft or config.dflash_base
+    if is_dflash:
+        version = int(config.dflash_version)
+        dflash = {
+            "version": version,
+            "target_layer_ids": list(config.dflash_target_layer_ids),
+            "block_size": config.dflash_block_size,
+            "mask_token_id": config.dflash_mask_token_id,
+            "supports_probabilistic_sampling": version == 2,
+        }
+        if version == 2:
+            dflash.update({
+                "is_causal": bool(config.dflash2_is_causal),
+                "conv_kernel_size": config.dflash2_conv_kernel_size,
+                "conv_group_size": config.dflash2_conv_group_size,
+                "selector_rank": config.dflash2_selector_rank,
+                "selector_top_k": config.dflash2_selector_top_k,
+                "selector_file": "dflash2_selector.safetensors",
+            })
+        out["dflash_config"] = dflash
+        if config.is_dflash_draft:
+            out.update({
+                "draft_vocab_size":
+                config.vocab_size,
+                "base_model_hidden_size":
+                len(config.dflash_target_layer_ids) * config.hidden_size,
+            })
 
     if config.is_jetspec_draft:
         out.update({
@@ -832,6 +826,9 @@ def build_runtime_llm_config_dict(
             config.dspark_confidence_head_with_markov,
             "markov_head_type": config.dspark_markov_head_type,
             "markov_rank": config.dspark_markov_rank,
+            "causal_head": bool(config.dspark_causal_proposal),
+            "contiguous_query_swa": bool(config.sliding_window_size > 0),
+            "sample_from_anchor": config.dspark_sample_from_anchor,
             "heads_file": "dspark_heads.safetensors",
             "heads_info_file": "dspark_heads_info.json",
         }
@@ -855,6 +852,7 @@ def build_runtime_llm_config_dict(
                 config.dspark_confidence_head_with_markov,
                 "markov_head_type": config.dspark_markov_head_type,
                 "markov_rank": config.dspark_markov_rank,
+                "sample_from_anchor": config.dspark_sample_from_anchor,
             },
         })
 
@@ -863,7 +861,7 @@ def build_runtime_llm_config_dict(
         target_layers = list(config.eagle3_target_layer_ids)
         if not target_layers:
             n_layers = config.num_hidden_layers
-            target_layers = [2, n_layers // 2, n_layers - 4]
+            target_layers = [2, n_layers // 2, n_layers - 3]
         out["eagle_hidden_state_layers"] = target_layers
 
     if config.reduced_vocab_size:
@@ -896,6 +894,50 @@ def build_runtime_llm_config_dict(
                     f"the dtype of the dummy state tensor its export_onnx "
                     f"builds and the dtype mandated by the plugin schema.")
             out[key] = _torch_dtype_to_config_str(torch_dtype)
+
+    if world_size > 1 or tp_size > 1:
+        # Rank-local fields are emitted throughout this function. Capture
+        # them only after the complete runtime config has been assembled,
+        # then restore the shared top-level model view.
+        override_fields = list(_RANK_LOCAL_OVERRIDE_FIELDS)
+        if config.gdn_cfg is not None:
+            override_fields.extend(("recurrent_state_num_heads", "conv_dim"))
+        local_shape_values = {
+            field: out[field]
+            for field in override_fields if field in out
+        }
+        if "kv_layer_configs" in out:
+            local_shape_values["kv_layer_configs"] = [
+                dict(layer) if layer is not None else None
+                for layer in out["kv_layer_configs"]
+            ]
+
+        # Only TP exports need a shared world-level view. Single-device and
+        # specialized exports (for example reduced-layer validation, MTP
+        # draft, and TTS code-predictor models) must retain model.config
+        # because it describes the ONNX graph that was actually exported.
+        _apply_global_model_fields(out, global_llm_config)
+        if isinstance(global_llm_config, dict):
+            if config.gdn_cfg is not None:
+                for field in ("recurrent_state_num_heads", "conv_dim"):
+                    if field in local_shape_values:
+                        out[field] = local_shape_values[field] * tp_size
+            if "kv_layer_configs" in local_shape_values:
+                out["kv_layer_configs"] = _tp_global_kv_layer_configs(
+                    local_shape_values["kv_layer_configs"], tp_size)
+
+        config_overrides: Dict[str, Any] = {}
+        for field, local_value in local_shape_values.items():
+            if out.get(field) != local_value:
+                config_overrides[field] = local_value
+
+        rank_config: Dict[str, Any] = {"rank": rank}
+        if tp_rank != rank:
+            rank_config["tp_rank"] = tp_rank
+        if config_overrides:
+            rank_config["config_overrides"] = config_overrides
+        out["rank_configs"] = _merge_rank_config(existing_rank_configs,
+                                                 rank_config)
 
     return out
 
@@ -1004,7 +1046,7 @@ def write_runtime_artifacts(model: "CausalLM",
                             reduced_vocab_dir: str = "",
                             config_filename: str = "config.json",
                             write_shared_artifacts: bool = True) -> None:
-    """Write the runtime config, ``embedding.safetensors``, tokenizer copies, chat template.
+    """Write runtime config and the shared model-input artifacts.
 
     ``config_filename`` selects the filename for the runtime config. Use
     the default ``"config.json"`` for single-device exports, or
@@ -1018,8 +1060,7 @@ def write_runtime_artifacts(model: "CausalLM",
 
     from tensorrt_edgellm._safetensors_io import save_file
 
-    from ..chat_template import (process_chat_template,
-                                 write_fallback_processed_chat_template)
+    from ..chat_template import write_chat_template
 
     os.makedirs(out_dir, exist_ok=True)
 
@@ -1057,20 +1098,27 @@ def write_runtime_artifacts(model: "CausalLM",
     if root_cfg.get("vision_config"):
         cfg_json["vision_config"] = root_cfg["vision_config"]
     # Propagate eos_token_id so the C++ runtime can stop on any EOS
-    # token (e.g. Gemma4 uses [1, 106]). Check config.json first,
-    # then fall back to generation_config.json (some models only set
-    # eos_token_id there).
-    eos = root_cfg.get("eos_token_id")
-    if eos is None and model_dir:
+    # token (e.g. Gemma4 uses [1, 106]). Union config.json with
+    # generation_config.json: HF generate stops on the generation_config
+    # set, which may extend the model config's single EOS (e.g. HunYuan
+    # adds <|extra_5|> alongside <|eos|>), and some models only set
+    # eos_token_id in one of the two files.
+    def _eos_ids(value) -> "list[int]":
+        if isinstance(value, list):
+            return [int(x) for x in value]
+        if isinstance(value, int):
+            return [value]
+        return []
+
+    eos_ids = _eos_ids(root_cfg.get("eos_token_id"))
+    if model_dir:
         gen_cfg_path = os.path.join(model_dir, "generation_config.json")
         if os.path.exists(gen_cfg_path):
             with open(gen_cfg_path) as _gf:
                 gen_cfg = json.load(_gf)
-            eos = gen_cfg.get("eos_token_id")
-    if isinstance(eos, list):
-        cfg_json["eos_token_id"] = [int(x) for x in eos]
-    elif isinstance(eos, int):
-        cfg_json["eos_token_id"] = [eos]
+            eos_ids += _eos_ids(gen_cfg.get("eos_token_id"))
+    if eos_ids:
+        cfg_json["eos_token_id"] = list(dict.fromkeys(eos_ids))
 
     with open(cfg_path, "w") as f:
         json.dump(cfg_json, f, indent=2)
@@ -1079,16 +1127,13 @@ def write_runtime_artifacts(model: "CausalLM",
     if not write_shared_artifacts:
         return
 
-    # EAGLE3 draft models don't need embedding.safetensors — the C++ runtime
-    # uses the base model's shared embedding table (the builder already skips
-    # copying for draft models).
-    if (model.config.is_eagle3_draft or model.config.is_mtp_draft
-            or model.config.is_gemma4_mtp_draft):
-        kind = ("EAGLE3 draft"
-                if model.config.is_eagle3_draft else "Gemma4 MTP draft"
-                if model.config.is_gemma4_mtp_draft else "MTP draft")
+    engine_role = _determine_engine_role(model.config)
+
+    # Every speculative draft shares the base model's embedding table.
+    if engine_role == "draft":
+        kind = _determine_spec_decode_type(model.config)
         logger.info(
-            "%s: skipping embedding.safetensors (uses base model embedding)",
+            "%s draft: skipping embedding.safetensors (uses base model embedding)",
             kind)
     else:
         embed = getattr(model, "embed_tokens", None)
@@ -1099,7 +1144,9 @@ def write_runtime_artifacts(model: "CausalLM",
             embed = getattr(getattr(model, "backbone", None), "embeddings",
                             None)
         if embed is not None:
-            weight = embed.weight.data.detach().cpu()
+            runtime_weight = getattr(embed, "runtime_weight", None)
+            weight = (runtime_weight() if callable(runtime_weight) else
+                      embed.weight.data).detach().cpu()
             embedding_scale = _runtime_embedding_scale(model)
             if embedding_scale != 1.0:
                 weight = weight * embedding_scale
@@ -1144,7 +1191,7 @@ def write_runtime_artifacts(model: "CausalLM",
 
     # Alpamayo-R1: tokenizer lives in the VLM checkpoint, not in model_dir.
     # Build it first so that tokenizer files exist before the copy loop
-    # (which is a no-op for Alpamayo) and before process_chat_template.
+    # (which is a no-op for Alpamayo) and before write_chat_template.
     if root_cfg.get("model_type") == "alpamayo_r1":
         _build_alpamayo_tokenizer(root_cfg, out_dir)
 
@@ -1184,8 +1231,5 @@ def write_runtime_artifacts(model: "CausalLM",
     from ..vocab_reduction.onnx_export import copy_reduced_vocab_artifacts
     copy_reduced_vocab_artifacts(model, out_dir, reduced_vocab_dir)
 
-    template_dst = os.path.join(out_dir, "processed_chat_template.json")
-    if not os.path.exists(template_dst) and model_dir:
-        process_chat_template(model_dir, out_dir)
-    if not os.path.exists(template_dst):
-        write_fallback_processed_chat_template(model_dir, out_dir)
+    if engine_role != "draft":
+        write_chat_template(model_dir, out_dir)

@@ -91,25 +91,59 @@ bool QwenViTRunner::validateAndFillConfig(std::string const& engineDir)
     if (mModelType != multimodal::ModelType::QWEN2_5_VL && mModelType != multimodal::ModelType::QWEN2_VL
         && mModelType != multimodal::ModelType::QWEN3_VL && mModelType != multimodal::ModelType::QWEN3_5
         && mModelType != multimodal::ModelType::QWEN3_OMNI_VISION_ENCODER
-        && mModelType != multimodal::ModelType::COSMOS3_EDGE)
+        && mModelType != multimodal::ModelType::COSMOS3_EDGE && mModelType != multimodal::ModelType::MUSE_GLIMMER)
     {
         LOG_ERROR("Invalid model type: %s", modelTypeStr.c_str());
         return false;
     }
 
-    mConfig.visionStartTokenId = jsonConfig["vision_start_token_id"].get<int32_t>();
+    bool const isMuseGlimmer = mModelType == multimodal::ModelType::MUSE_GLIMMER;
+    if (isMuseGlimmer)
+    {
+        mConfig.visionStartTokenId = jsonConfig.value("vision_start_token_id", 0);
+    }
+    else
+    {
+        mConfig.visionStartTokenId = jsonConfig["vision_start_token_id"].get<int32_t>();
+    }
     mConfig.visionEndTokenId = jsonConfig.value("vision_end_token_id", 0);
     mConfig.imageTokenId = jsonConfig["image_token_id"].get<int32_t>();
-    mConfig.videoTokenId = jsonConfig["video_token_id"].get<int32_t>();
+    mConfig.videoTokenId
+        = isMuseGlimmer ? jsonConfig.value("video_token_id", 0) : jsonConfig["video_token_id"].get<int32_t>();
 
     auto const& subConfig = (jsonConfig.contains("text_config") && jsonConfig["text_config"].is_object())
         ? jsonConfig["text_config"]
         : jsonConfig;
-    mConfig.vocabSize = subConfig["vocab_size"].get<int32_t>();
-    mConfig.mropeTheta = subConfig["rope_theta"].get<float>();
+    // Cosmos3-Edge stores RoPE fields under text_config.rope_parameters.
+    auto const& ropeParams = (subConfig.contains("rope_scaling") && subConfig["rope_scaling"].is_object())
+        ? subConfig["rope_scaling"]
+        : (subConfig.contains("rope_parameters") && subConfig["rope_parameters"].is_object())
+        ? subConfig["rope_parameters"]
+        : subConfig;
+    if (isMuseGlimmer)
+    {
+        mConfig.vocabSize = subConfig.value("vocab_size", int32_t{0});
+        mConfig.mropeTheta = subConfig.value("rope_theta", 10000.0F);
+    }
+    else
+    {
+        mConfig.vocabSize = subConfig["vocab_size"].get<int32_t>();
+        if (subConfig.contains("rope_theta") && subConfig["rope_theta"].is_number())
+        {
+            mConfig.mropeTheta = subConfig["rope_theta"].get<float>();
+        }
+        else if (ropeParams.contains("rope_theta") && ropeParams["rope_theta"].is_number())
+        {
+            mConfig.mropeTheta = ropeParams["rope_theta"].get<float>();
+        }
+        else
+        {
+            LOG_ERROR("Failed to parse rope_theta in text_config");
+            return false;
+        }
+    }
 
-    // Read mrope_section from rope_parameters or rope_scaling
-    auto const& ropeParams = subConfig.contains("rope_scaling") ? subConfig["rope_scaling"] : subConfig;
+    // Read mrope_section from rope_parameters or rope_scaling.
     if (ropeParams.contains("mrope_section"))
     {
         auto section = ropeParams["mrope_section"].get<std::vector<int32_t>>();
@@ -119,7 +153,20 @@ bool QwenViTRunner::validateAndFillConfig(std::string const& engineDir)
             mConfig.mropeSectionW = section[2];
         }
     }
-    if (mConfig.mropeSectionH <= 0 || mConfig.mropeSectionW <= 0)
+    if (isMuseGlimmer)
+    {
+        // Muse-Glimmer uses 1D RoPE; image tokens take sequential positions, so
+        // the spatial mrope_section split does not apply. Default to 1.
+        if (mConfig.mropeSectionH <= 0)
+        {
+            mConfig.mropeSectionH = 1;
+        }
+        if (mConfig.mropeSectionW <= 0)
+        {
+            mConfig.mropeSectionW = 1;
+        }
+    }
+    else if (mConfig.mropeSectionH <= 0 || mConfig.mropeSectionW <= 0)
     {
         LOG_ERROR("Failed to parse mrope_section in text_config. Got H=%d, W=%d", mConfig.mropeSectionH,
             mConfig.mropeSectionW);
@@ -270,32 +317,14 @@ bool QwenViTRunner::allocateBuffer(cudaStream_t stream)
         return false;
     }
 
-    // Copy image mean and std to device to be used in normalizeImage
-    auto nbBytes = mConfig.imageMean.size() * sizeof(float);
-    auto channels = math::cast<int64_t>(mConfig.imageMean.size());
-    mImageMean = rt::Tensor({channels}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "QwenViTRunner::mImageMean");
-    mImageStd = rt::Tensor({channels}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT, "QwenViTRunner::mImageStd");
-    CUDA_CHECK(
-        cudaMemcpyAsync(mImageMean.rawPointer(), mConfig.imageMean.data(), nbBytes, cudaMemcpyHostToDevice, stream));
-    CUDA_CHECK(
-        cudaMemcpyAsync(mImageStd.rawPointer(), mConfig.imageStd.data(), nbBytes, cudaMemcpyHostToDevice, stream));
+    ELLM_CHECK(mConfig.imageMean.size() == 3 && mConfig.imageStd.size() == 3,
+        "QwenViTRunner: image mean and std shall each have three components.");
+    mImageMean = {mConfig.imageMean[0], mConfig.imageMean[1], mConfig.imageMean[2]};
+    mImageStd = {mConfig.imageStd[0], mConfig.imageStd[1], mConfig.imageStd[2]};
 
-    // Pre-allocate temporary image buffers for preprocessing
     int64_t const maxImagePixels = mVitInput.getShape().volume();
-    mImageDevice
-        = rt::Tensor({maxImagePixels}, rt::DeviceType::kGPU, nvinfer1::DataType::kUINT8, "QwenViTRunner::mImageDevice");
     mNormalizedImageDevice = rt::Tensor(
         {maxImagePixels}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF, "QwenViTRunner::mNormalizedImageDevice");
-
-    // GPU image-resize scratch, sized for the actual dimensions per request.
-    int64_t const kMaxRawPixels = kernel::kGpuResizeMaxRawDim * kernel::kGpuResizeMaxRawDim;
-    // Horizontal-pass scratch holds [rawH, outW, C] floats. smart resize preserves aspect ratio, so
-    // rawH * outW <= sqrt(frameBudget * rawH * rawW) <= sqrt(frameBudget * kMaxRawPixels).
-    int64_t const frameBudget = mConfig.maxHW * mConfig.patchSize * mConfig.patchSize;
-    int64_t const kMaxResizeTmpElems = static_cast<int64_t>(std::sqrt(static_cast<double>(frameBudget) * kMaxRawPixels)
-                                           * kernel::kGpuResizeScratchMargin)
-        * channels;
-    kernel::allocateResizeScratch(channels, kMaxResizeTmpElems, mRawImageDevice, mResizeTmpDevice);
 
     // Pre-allocate tensors for MRoPE position IDs
     auto const mropePosType = usesFractionalMRopePositions() ? nvinfer1::DataType::kFLOAT : nvinfer1::DataType::kINT64;
@@ -355,22 +384,21 @@ void QwenViTRunner::formatPatch(
     int64_t const nSourceFrames = image.frames;
     int64_t const tPadded = totalGridT * mConfig.temporalPatchSize;
 
-    check::check(mImageDevice.reshape({tPadded, height, width, channels}), "Tensor reshape failed");
     check::check(mNormalizedImageDevice.reshape({tPadded, height, width, channels}), "Tensor reshape failed");
 
-    // imagePreprocess resized the source frames into the leading slots; replicate the last one into the
-    // temporal-padding slots (device-to-device).
-    int64_t const resizedFrameBytes = height * width * channels;
-    auto* const base = static_cast<unsigned char*>(mImageDevice.rawPointer());
+    // imagePreprocess preprocessed the source frames into the leading slots; replicate the last one into
+    // the temporal-padding slots (device-to-device).
+    int64_t const resizedFrameBytes = height * width * channels * static_cast<int64_t>(sizeof(half));
+    auto* const base = static_cast<unsigned char*>(mNormalizedImageDevice.rawPointer());
     for (int64_t i = nSourceFrames; i < tPadded; ++i)
     {
         CUDA_CHECK(cudaMemcpyAsync(base + i * resizedFrameBytes, base + (nSourceFrames - 1) * resizedFrameBytes,
             resizedFrameBytes, cudaMemcpyDeviceToDevice, stream));
     }
 
-    kernel::normalizeImage(mImageDevice, mImageMean, mImageStd, mNormalizedImageDevice, stream);
     kernel::transposeToPatchQwenViT(mNormalizedImageDevice, mVitInput, prevPatchBase * mConfig.inputDim,
-        mConfig.temporalPatchSize, mConfig.patchSize, mConfig.mergeSize, stream);
+        mConfig.temporalPatchSize, mConfig.patchSize, vitInputMergeSize(), vitPatchTemporalFirst(),
+        vitPatchChannelLast(), stream);
 }
 
 void QwenViTRunner::buildCuSeqlens(
@@ -451,17 +479,16 @@ void QwenViTRunner::imagePreprocess(rt::LLMGenerationRequest const& request, std
             {
                 auto [resizedHeight, resizedWidth]
                     = getResizedImageSize(image.frames, image.isVideo, image.height, image.width);
-                kernel::copyImageToDeviceAndResize(image.data(), image.frames, image.height, image.width,
-                    image.channels, mRawImageDevice, mResizeTmpDevice, mImageDevice, resizedHeight, resizedWidth,
-                    stream);
+                rt::imageUtils::resizeAndNormalizeToRgb(image, 0, image.frames, mImageMean, mImageStd,
+                    mNormalizedImageDevice, resizedHeight, resizedWidth, stream);
                 formatPatch(image.resizedMeta(resizedHeight, resizedWidth), spans, totalSeqLength, stream);
             }
             else
             {
                 LOG_DEBUG("Skipping resize for pre-resized image/video %ldx%ld (frames=%ld)", image.height, image.width,
                     image.frames);
-                kernel::copyImageToDeviceAndResize(image.data(), image.frames, image.height, image.width,
-                    image.channels, mRawImageDevice, mResizeTmpDevice, mImageDevice, image.height, image.width, stream);
+                rt::imageUtils::resizeAndNormalizeToRgb(image, 0, image.frames, mImageMean, mImageStd,
+                    mNormalizedImageDevice, image.height, image.width, stream);
                 formatPatch(image, spans, totalSeqLength, stream);
             }
             ++imageCount;
@@ -521,11 +548,7 @@ void QwenViTRunner::imagePreprocess(rt::LLMGenerationRequest const& request, std
         if (mHasRotaryPosEmb)
         {
             check::check(mRotaryPosEmb.reshape({totalSeqLength, mConfig.vitPosEmbDim}), "Tensor reshape failed");
-            for (auto const& s : spans)
-            {
-                kernel::initRotaryPosEmbQwenViT(mRotaryPosEmb, {s.vit.gridT, s.vit.gridH, s.vit.gridW},
-                    mConfig.mergeSize, s.vit.patchStart, 10000.0f, 1.0f, stream);
-            }
+            buildRotaryPosEmb(spans, stream);
         }
 
         // Build model-specific ViT inputs.
@@ -764,13 +787,25 @@ bool QwenViTRunner::preprocess(rt::LLMGenerationRequest const& request,
         }
         if (!imageOnly)
         {
-            if (!mropeCosSinOut.has_value())
-            {
-                LOG_ERROR("mropeCosSinOut is required when imageOnly=false.");
-                return false;
-            }
+            // Splice the image-token placeholders into the input IDs for all
+            // models (needed so image embeddings land at the right positions).
             textPreprocess(request, batchedInputIds, spans, spansPerRequest, tokenizer);
-            generateMropeParams(batchedInputIds, spans, spansPerRequest, mropeCosSinOut.value().get(), stream);
+            if (mModelType == multimodal::ModelType::MUSE_GLIMMER)
+            {
+                // Muse-Glimmer uses 1D per-layer RoPE with standard sequential
+                // positions (image tokens advance like text), so there is no
+                // Qwen 3D M-RoPE cos/sin to produce here; the LLM engine applies
+                // RoPE from its own rope cache.
+            }
+            else
+            {
+                if (!mropeCosSinOut.has_value())
+                {
+                    LOG_ERROR("mropeCosSinOut is required when imageOnly=false.");
+                    return false;
+                }
+                generateMropeParams(batchedInputIds, spans, spansPerRequest, mropeCosSinOut.value().get(), stream);
+            }
         }
     }
     catch (std::exception const& e)
@@ -780,8 +815,8 @@ bool QwenViTRunner::preprocess(rt::LLMGenerationRequest const& request,
         {
             LOG_ERROR("Failed: %s", e.what());
         }
-        // Drain async H2D copies that may still read the request's image buffers, so the caller can
-        // safely release them after the failure -- including when the error propagates.
+        // Preprocessing reads the request's image buffers in place, so drain the stream before the
+        // caller may release them after the failure -- including when the error propagates.
         cudaStreamSynchronize(stream);
         if (actionable)
         {
@@ -813,7 +848,7 @@ bool QwenViTRunner::preprocessSystemPrompt(std::string const& systemPrompt, toke
         return false;
     }
 
-    // systemPrompt is already formatted by tokenizer's applyChatTemplate
+    // systemPrompt is already formatted by the runtime-owned chat-template renderer.
     std::vector<int32_t> ids = tokenizer->encode(systemPrompt);
     if (ids.empty())
     {
@@ -922,7 +957,31 @@ bool QwenViTRunner::bindExtraInputShapes()
     return true;
 }
 
-rt::OptionalInputTensors QwenViTRunner::getDeepstackFeatures()
+int64_t QwenViTRunner::vitInputMergeSize() const
+{
+    return mConfig.mergeSize;
+}
+
+bool QwenViTRunner::vitPatchTemporalFirst() const
+{
+    return false;
+}
+
+bool QwenViTRunner::vitPatchChannelLast() const
+{
+    return false;
+}
+
+void QwenViTRunner::buildRotaryPosEmb(std::vector<VisionSpan> const& spans, cudaStream_t stream)
+{
+    for (auto const& s : spans)
+    {
+        kernel::initRotaryPosEmbQwenViT(mRotaryPosEmb, {s.vit.gridT, s.vit.gridH, s.vit.gridW}, mConfig.mergeSize,
+            s.vit.patchStart, 10000.0f, 1.0f, stream);
+    }
+}
+
+std::vector<std::reference_wrapper<rt::Tensor>> QwenViTRunner::getDeepstackFeatures()
 {
     return {};
 }

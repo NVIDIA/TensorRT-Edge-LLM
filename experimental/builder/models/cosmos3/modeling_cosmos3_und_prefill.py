@@ -160,7 +160,7 @@ class Cosmos3UndPrefillModel(NetworkModule):
             self.add_input("rope_rotary_cos_sin", trt.float32,
                            (-1, -1, self.head_dim)),
             "attention_pos_id":
-            self.add_input("attention_pos_id", trt.int32, (-1, -1)),
+            self.add_input("attention_position_ids", trt.int32, (-1, -1)),
         }
 
     def forward(self, inputs_embeds, rope_rotary_cos_sin, attention_pos_id):

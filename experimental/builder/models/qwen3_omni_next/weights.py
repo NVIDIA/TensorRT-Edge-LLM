@@ -14,10 +14,15 @@
 # limitations under the License.
 """Qwen3-Omni-Next checkpoint conversion and expert packing."""
 
+import collections
+import io
+import json
 import os
+import pickle
 import tempfile
 import threading
-from typing import Dict
+import zipfile
+from typing import Dict, NamedTuple, Tuple
 
 import numpy as np
 
@@ -46,12 +51,162 @@ _WRAPPERS = (
 )
 _CODEC_STAGES: Dict[str, tempfile.TemporaryDirectory] = {}
 _CODEC_STAGE_LOCK = threading.Lock()
+_CODEC_RESIDUAL_SLOTS = {
+    "act1": "0",
+    "conv1": "1",
+    "act2": "2",
+    "conv2": "3",
+}
+
+# Release name first; some checkpoints ship the same payload as ``code2wav/``.
+# Also duplicated in tensorrt_edgellm's quantization/qwen3_omni.py and
+# scripts/export.py, which this tree does not import.
+VOCODER_DIR_ALIASES = ("codec_decode_online", "code2wav")
+
+
+class _CodecTensor(NamedTuple):
+    storage_key: str
+    storage_elements: int
+    storage_offset: int
+    shape: Tuple[int, ...]
+    stride: Tuple[int, ...]
+    dtype: str
+    itemsize: int
+
+
+def _rebuild_codec_tensor(storage, storage_offset, shape, stride,
+                          requires_grad, backward_hooks, *metadata):
+    del requires_grad, backward_hooks, metadata
+    storage_key, storage_elements, dtype, itemsize = storage
+    return _CodecTensor(str(storage_key), int(storage_elements),
+                        int(storage_offset),
+                        tuple(int(value) for value in shape),
+                        tuple(int(value) for value in stride), dtype,
+                        int(itemsize))
+
+
+class _CodecUnpickler(pickle.Unpickler):
+    """Decode the provider's tensor metadata without importing PyTorch."""
+
+    def find_class(self, module, name):
+        if (module, name) == ("collections", "OrderedDict"):
+            return collections.OrderedDict
+        if (module, name) == ("torch._utils", "_rebuild_tensor_v2"):
+            return _rebuild_codec_tensor
+        if (module, name) == ("torch", "FloatStorage"):
+            return ("F32", 4)
+        raise pickle.UnpicklingError(
+            f"unsupported codec checkpoint global {module}.{name}")
+
+    def persistent_load(self, value):
+        if not isinstance(value, tuple) or len(value) != 5:
+            raise pickle.UnpicklingError(
+                f"invalid codec checkpoint storage reference: {value!r}")
+        tag, storage_type, key, location, elements = value
+        del location
+        if tag != "storage" or storage_type != ("F32", 4):
+            raise pickle.UnpicklingError(
+                f"unsupported codec checkpoint storage: {value!r}")
+        dtype, itemsize = storage_type
+        return str(key), int(elements), dtype, itemsize
+
+
+def _contiguous_stride(shape: Tuple[int, ...]) -> Tuple[int, ...]:
+    stride = []
+    elements = 1
+    for dimension in reversed(shape):
+        stride.append(elements)
+        elements *= dimension
+    return tuple(reversed(stride))
+
+
+def _write_codec_safetensors(source: str, destination: str) -> None:
+    """Stream the provider's PyTorch ZIP tensors into safetensors."""
+    with zipfile.ZipFile(source) as archive:
+        pickle_members = [
+            name for name in archive.namelist() if name.endswith("/data.pkl")
+        ]
+        if len(pickle_members) != 1:
+            raise ValueError(
+                f"Qwen3-Omni-Next codec expected one data.pkl in {source}")
+        pickle_member = pickle_members[0]
+        archive_root = pickle_member[:-len("/data.pkl")]
+        byteorder_member = f"{archive_root}/byteorder"
+        if (byteorder_member in archive.namelist()
+                and archive.read(byteorder_member).strip() != b"little"):
+            raise ValueError(
+                f"Qwen3-Omni-Next codec uses unsupported byte order in {source}"
+            )
+
+        state = _CodecUnpickler(io.BytesIO(archive.read(pickle_member))).load()
+        if isinstance(state, dict) and isinstance(state.get("model"), dict):
+            state = state["model"]
+        if isinstance(state, dict) and isinstance(state.get("generator"),
+                                                  dict):
+            state = state["generator"]
+        if not isinstance(state, dict):
+            raise TypeError(
+                f"Qwen3-Omni-Next codec expected a tensor dict in {source}")
+
+        if any(key.startswith("generator.") for key in state):
+            state = collections.OrderedDict((key[len("generator."):], value)
+                                            for key, value in state.items()
+                                            if key.startswith("generator."))
+
+        header = {}
+        offset = 0
+        for name, tensor in state.items():
+            if not isinstance(name, str) or not isinstance(
+                    tensor, _CodecTensor):
+                raise TypeError(
+                    "Qwen3-Omni-Next codec archive contains non-tensor entries"
+                )
+            if tensor.stride != _contiguous_stride(tensor.shape):
+                raise ValueError(
+                    f"Qwen3-Omni-Next codec tensor {name!r} is not contiguous")
+            elements = int(np.prod(tensor.shape, dtype=np.int64))
+            nbytes = elements * tensor.itemsize
+            member = f"{archive_root}/data/{tensor.storage_key}"
+            storage = archive.getinfo(member)
+            storage_end = (tensor.storage_offset + elements) * tensor.itemsize
+            if storage_end > storage.file_size:
+                raise ValueError(
+                    f"Qwen3-Omni-Next codec tensor {name!r} exceeds its storage"
+                )
+            header[name] = {
+                "dtype": tensor.dtype,
+                "shape": list(tensor.shape),
+                "data_offsets": [offset, offset + nbytes],
+            }
+            offset += nbytes
+
+        header_bytes = json.dumps(header,
+                                  separators=(",", ":")).encode("utf-8")
+        temporary = destination + ".tmp"
+        with open(temporary, "wb") as output:
+            output.write(len(header_bytes).to_bytes(8, "little"))
+            output.write(header_bytes)
+            for name, tensor in state.items():
+                elements = int(np.prod(tensor.shape, dtype=np.int64))
+                remaining = elements * tensor.itemsize
+                member = f"{archive_root}/data/{tensor.storage_key}"
+                with archive.open(member) as storage:
+                    storage.seek(tensor.storage_offset * tensor.itemsize)
+                    while remaining:
+                        data = storage.read(min(remaining, 16 << 20))
+                        if not data:
+                            raise OSError(
+                                f"short read for codec tensor {name!r}")
+                        output.write(data)
+                        remaining -= len(data)
+        os.replace(temporary, destination)
 
 
 def _codec_source(model_dir: str) -> str:
-    nested = os.path.join(model_dir, "codec_decode_online")
-    if os.path.isfile(os.path.join(nested, "model_weights.pt")):
-        return nested
+    for name in VOCODER_DIR_ALIASES:
+        nested = os.path.join(model_dir, name)
+        if os.path.isfile(os.path.join(nested, "model_weights.pt")):
+            return nested
     if os.path.isfile(os.path.join(model_dir, "model_weights.pt")):
         return model_dir
     return ""
@@ -65,37 +220,11 @@ def _stage_codec_checkpoint(source_dir: str) -> str:
         if cached is not None:
             return cached.name
 
-        import torch
-
         source = os.path.join(source_dir, "model_weights.pt")
-        state = torch.load(source, map_location="cpu", weights_only=True)
-        if isinstance(state, dict) and isinstance(state.get("model"), dict):
-            state = state["model"]
-        if isinstance(state, dict) and isinstance(state.get("generator"),
-                                                  dict):
-            state = state["generator"]
-        if not isinstance(state, dict):
-            raise TypeError(
-                f"Qwen3-Omni-Next codec expected a tensor dict in {source}")
-
-        generator = any(key.startswith("generator.") for key in state)
-        if generator:
-            state = {
-                key[len("generator."):]: value
-                for key, value in state.items() if key.startswith("generator.")
-            }
-        non_tensors = [
-            key for key, value in state.items()
-            if not isinstance(value, torch.Tensor)
-        ]
-        if non_tensors:
-            raise TypeError(
-                "Qwen3-Omni-Next codec archive contains non-tensor entries: " +
-                ", ".join(non_tensors[:8]))
-
         stage = tempfile.TemporaryDirectory(
             prefix="edgellm-qwen3-omni-next-codec-")
-        torch.save(state, os.path.join(stage.name, "pytorch_model.bin"))
+        _write_codec_safetensors(source,
+                                 os.path.join(stage.name, "model.safetensors"))
         _CODEC_STAGES[source_dir] = stage
         return stage.name
 
@@ -142,6 +271,21 @@ def resolve_candidates(name: str, *, component: str, spec_type: str,
         candidates.extend(
             (f"talker.code_predictor.model.talker_projection.{suffix}",
              f"code_predictor.model.talker_projection.{suffix}"))
+    if component == "code2wav" and name.startswith("decoder."):
+        parts = name.split(".")
+        if (len(parts) > 5 and parts[2] == "block"
+                and parts[4] in _CODEC_RESIDUAL_SLOTS):
+            candidates.append(".".join((
+                "decoder",
+                "model",
+                parts[1],
+                "block",
+                parts[3],
+                "block",
+                _CODEC_RESIDUAL_SLOTS[parts[4]],
+                *parts[5:],
+            )))
+        candidates.append("decoder.model." + name[len("decoder."):])
     if name == "lm_head.weight" and quant_type == "fp16":
         candidates.extend(
             ("thinker.model.embed_tokens.weight", "model.embed_tokens.weight",
@@ -243,24 +387,6 @@ def repack_nvfp4_experts(load_expert, num_experts: int, hidden_size: int,
         group_size,
         fc1_layout,
     )
-
-
-def load_gptq_expert_projection(weights, experts_prefix: str,
-                                expert_index: int, projection: str):
-    """Load one GPTQ expert while rejecting unsupported act-order layouts."""
-    prefix = f"{experts_prefix}.{expert_index}.{projection}"
-    if weights.has(prefix + ".g_idx"):
-        group_index = weights.array(prefix + ".g_idx").reshape(-1)
-        expected = np.arange(group_index.size) // weights.group_size
-        if not np.array_equal(group_index, expected):
-            raise ValueError(
-                "Qwen3-Omni-Next does not support act-order GPTQ: "
-                f"{prefix}")
-    qzeros = (weights.array(prefix + ".qzeros")
-              if weights.has(prefix + ".qzeros") else np.empty(
-                  (1, 0), dtype=np.int32))
-    return (weights.array(prefix + ".qweight"), qzeros,
-            weights.f16(prefix + ".scales"))
 
 
 def prepare_fp16_experts(weights, experts_prefix: str, num_experts: int,

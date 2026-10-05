@@ -23,6 +23,7 @@
 #include "runtime/config/deploymentConfig.h"
 #include "runtime/decoding/decodingStrategy.h"
 #include "runtime/hybridCacheManager.h"
+#include "runtime/imageUtils.h"
 #include "runtime/llmRuntimeUtils.h"
 #include "runtime/state/contextCache/contextCacheDeployment.h"
 #include "runtime/state/contextCache/hybridSnapshotStorage.h"
@@ -34,6 +35,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstring>
 #include <memory>
 #include <numeric>
 #include <optional>
@@ -57,6 +59,30 @@ std::vector<int32_t> makeTokens(int32_t count)
     std::vector<int32_t> tokens(static_cast<size_t>(count));
     std::iota(tokens.begin(), tokens.end(), 1);
     return tokens;
+}
+
+constexpr int32_t kIMAGE_TOKEN_ID{4242};
+constexpr int64_t kIMAGE_EXTENT{2};
+
+//! One contiguous placeholder run, so the single image buffer covers every media position.
+std::vector<int32_t> makeImageTokens()
+{
+    return {1, 2, kIMAGE_TOKEN_ID, kIMAGE_TOKEN_ID, 3, 4, 5, 6};
+}
+
+LLMGenerationRequest makeImageRequest(rt::DeviceType device)
+{
+    Tensor pixels({1, kIMAGE_EXTENT, kIMAGE_EXTENT, 3}, device, DataType::kUINT8);
+    if (device == rt::DeviceType::kCPU)
+    {
+        std::memset(pixels.dataPointer<unsigned char>(), 0x5A, static_cast<size_t>(kIMAGE_EXTENT * kIMAGE_EXTENT * 3));
+    }
+
+    LLMGenerationRequest::Request sequence;
+    sequence.imageBuffers.emplace_back(std::move(pixels));
+    LLMGenerationRequest request;
+    request.requests.push_back(std::move(sequence));
+    return request;
 }
 
 LLMEngineConfig makeAttentionConfig(char const* modelType, int32_t layers = 1)
@@ -238,6 +264,24 @@ TEST_F(ContextCacheRequestTests, ColdPublishThenWarmLookupPreservesLoraIdentity)
     ASSERT_TRUE(isolated->finish());
 }
 
+TEST_F(ContextCacheRequestTests, RequestLookupPolicyOverridesBatchDefaultPerSequence)
+{
+    DecodingInferenceContext producerContext = makeContext({makeTokens(129)}, mStream);
+    auto producer = begin(producerContext);
+    ASSERT_TRUE(producer.has_value());
+    completeRuntimePrefill(*producer, producerContext);
+    ASSERT_TRUE(producer->finish());
+
+    LLMGenerationRequest request{};
+    request.requests.resize(2);
+    request.requests[0].contextCacheLookupPolicy = ContextCacheLookupPolicy::kBypass;
+    DecodingInferenceContext context = makeContext({makeTokens(130), makeTokens(130)}, mStream);
+    auto mixed = ContextCacheRequest::begin(*mCoordinator, request, context, false, DecodingKvHeadroom{1, 0});
+    ASSERT_TRUE(mixed.has_value());
+    EXPECT_EQ(mixed->prefillStarts(), (std::vector<int32_t>{0, kTOKENS_PER_PAGE}));
+    ASSERT_TRUE(mixed->finish());
+}
+
 TEST_F(ContextCacheRequestTests, VanillaDecodePublishesOneTokenPageBoundaryAndRejectsPairingMisuse)
 {
     DecodingInferenceContext context = makeContext({makeTokens(255)}, mStream);
@@ -289,7 +333,7 @@ TEST_F(ContextCacheRequestTests, CancelledAndErrorSlotsAreNotPublished)
     ASSERT_TRUE(request->finish());
 }
 
-TEST_F(ContextCacheRequestTests, BatchCompactionUsesThePreparedMapping)
+TEST_F(ContextCacheRequestTests, BatchCompactionPreservesSchedulerOwnedResidentSlots)
 {
     DecodingInferenceContext context = makeContext({makeTokens(8), makeTokens(9)}, mStream);
     auto request = begin(context);
@@ -305,8 +349,14 @@ TEST_F(ContextCacheRequestTests, BatchCompactionUsesThePreparedMapping)
                   cudaMemcpyDeviceToHost),
         cudaSuccess);
     EXPECT_EQ(uploadedMapping, (std::vector<int32_t>{-1, 0}));
-    ASSERT_TRUE(request->completeBatchCompaction());
-    EXPECT_TRUE(std::equal(survivingRow.begin(), survivingRow.end(), mPageTable->hostRow(0)));
+    int32_t const survivorReuse = request->reuseTokenLength(1);
+    ASSERT_TRUE(request->completeBatchCompaction({-1, 0}));
+    EXPECT_TRUE(std::all_of(mPageTable->hostRow(0), mPageTable->hostRow(0) + mPageTable->maxPagesPerSeq(),
+        [](PageId page) { return page == kUNUSED_PAGE_ENTRY; }));
+    EXPECT_TRUE(std::equal(survivingRow.begin(), survivingRow.end(), mPageTable->hostRow(1)));
+    EXPECT_EQ(request->prefillStarts().size(), 1U)
+        << "execution-row metadata must compact with the surviving logical sequence";
+    EXPECT_EQ(request->reuseTokenLength(0), survivorReuse);
     ASSERT_TRUE(request->finish());
 }
 
@@ -332,6 +382,80 @@ TEST_F(ContextCacheRequestTests, AdmissionUsesValidatedCoordinatorContract)
     auto vanilla = begin(context);
     ASSERT_TRUE(vanilla.has_value());
     ASSERT_TRUE(vanilla->finish());
+}
+
+TEST_F(ContextCacheRequestTests, FullyCommittedContractPublishesCommittedDecodeState)
+{
+    DecodingInferenceContext context = makeContext({makeTokens(kTOKENS_PER_PAGE)}, mStream);
+    LLMGenerationRequest requestConfig{};
+    std::optional<ContextCacheRequest> request = ContextCacheRequest::begin(*mCoordinator, requestConfig, context,
+        /*speculativeRequest=*/false, DecodingKvHeadroom{1, 0}, {}, DecodingTokenStateContract::kFullyCommitted,
+        ContextCacheCommitPolicy::kIncludingGeneratedTokens);
+    ASSERT_TRUE(request.has_value());
+
+    ASSERT_TRUE(request->preparePrefill());
+    context.tokenIds[0] = context.rawBatchedInputIds[0];
+    context.effectivePrefillLengths[0] = static_cast<int32_t>(context.tokenIds[0].size());
+    ASSERT_TRUE(request->enqueuePrefillCaptures());
+    ASSERT_EQ(cudaStreamSynchronize(context.stream), cudaSuccess);
+    ASSERT_TRUE(request->completePrefill(context, {}));
+    ContextCacheMetrics const afterPrefill = mCoordinator->metrics();
+    EXPECT_GT(afterPrefill.publicationAttempts, 0U);
+
+    ASSERT_TRUE(request->prepareDecodeStep(context, DecodingKvHeadroom{1, 0}));
+    for (int32_t token = 0; token < kTOKENS_PER_PAGE; ++token)
+    {
+        context.tokenIds[0].push_back(9101 + token);
+    }
+    context.currentGenerateLengths[0] = kTOKENS_PER_PAGE;
+    context.finishedStates[0] = 1;
+    context.slotStreams[0].terminalReason = FinishReason::kLength;
+    ASSERT_TRUE(request->completeDecodeStep(context, {}));
+    EXPECT_GT(mCoordinator->metrics().publicationAttempts, afterPrefill.publicationAttempts);
+    ASSERT_TRUE(request->finish());
+}
+
+TEST_F(ContextCacheRequestTests, HostImageKeysThePlaceholderRunOnItsPixels)
+{
+    DecodingInferenceContext context = makeContext({makeImageTokens()}, mStream);
+    LLMGenerationRequest const request = makeImageRequest(rt::DeviceType::kCPU);
+
+    std::optional<ContextCacheRequest> admitted = ContextCacheRequest::begin(
+        *mCoordinator, request, context, false, DecodingKvHeadroom{1, 0}, {kIMAGE_TOKEN_ID});
+    ASSERT_TRUE(admitted.has_value());
+    EXPECT_EQ(mCoordinator->metrics().mediaAwareSequences, 1U);
+    EXPECT_EQ(mCoordinator->metrics().lookupBypassSequences, 0U);
+    ASSERT_TRUE(admitted->finish());
+}
+
+TEST_F(ContextCacheRequestTests, ImageTheHostCannotReadBypassesRatherThanFails)
+{
+    DecodingInferenceContext context = makeContext({makeImageTokens()}, mStream);
+    LLMGenerationRequest const request = makeImageRequest(rt::DeviceType::kGPU);
+
+    // Admitted rather than thrown out of, and bypassed rather than keyed on the placeholder run,
+    // which every image shares.
+    std::optional<ContextCacheRequest> admitted = ContextCacheRequest::begin(
+        *mCoordinator, request, context, false, DecodingKvHeadroom{1, 0}, {kIMAGE_TOKEN_ID});
+    ASSERT_TRUE(admitted.has_value());
+    EXPECT_EQ(mCoordinator->metrics().lookupBypassSequences, 1U);
+    EXPECT_EQ(mCoordinator->metrics().mediaAwareSequences, 0U);
+    ASSERT_TRUE(admitted->finish());
+}
+
+TEST_F(ContextCacheRequestTests, ImageBypassPreservesSchedulerOwnedResidentSlot)
+{
+    DecodingInferenceContext context = makeContext({makeImageTokens()}, mStream);
+    context.residentRefs[0] = ResidentRef{2, 7};
+    LLMGenerationRequest const request = makeImageRequest(rt::DeviceType::kGPU);
+
+    std::optional<ContextCacheRequest> admitted = ContextCacheRequest::begin(
+        *mCoordinator, request, context, false, DecodingKvHeadroom{1, 0}, {kIMAGE_TOKEN_ID});
+    ASSERT_TRUE(admitted.has_value());
+    EXPECT_EQ(mCoordinator->metrics().lookupBypassSequences, 1U);
+    EXPECT_TRUE(std::any_of(mPageTable->hostRow(2), mPageTable->hostRow(2) + mPageTable->maxPagesPerSeq(),
+        [](PageId page) { return page != kUNUSED_PAGE_ENTRY; }));
+    ASSERT_TRUE(admitted->finish());
 }
 
 class ContextCacheRequestHybridTests : public ::testing::Test

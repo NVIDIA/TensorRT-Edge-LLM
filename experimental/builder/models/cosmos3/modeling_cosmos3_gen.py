@@ -167,14 +167,14 @@ class Cosmos3GenModel(NetworkModule):
         self.latent_channel = int(self.config.get("latent_channel", 48))
         self.patch_size = int(self.config.get("latent_patch_size", 2))
         self.max_action_dim = int(self.config.get("max_action_dim", 64))
-        if self.geometry.latent_h % self.patch_size:
-            raise ValueError("Cosmos3 latent height is not patch-aligned")
-        if self.geometry.latent_w % self.patch_size:
-            raise ValueError("Cosmos3 latent width is not patch-aligned")
-        self.video_tokens = (self.geometry.latent_t *
-                             (self.geometry.latent_h // self.patch_size) *
-                             (self.geometry.latent_w // self.patch_size))
-        self.gen_tokens = self.video_tokens + self.geometry.action_chunk_size
+        self.patch_height = ((self.geometry.latent_h + self.patch_size - 1) //
+                             self.patch_size)
+        self.patch_width = ((self.geometry.latent_w + self.patch_size - 1) //
+                            self.patch_size)
+        self.video_tokens = (self.geometry.latent_t * self.patch_height *
+                             self.patch_width)
+        self.action_tokens = self.geometry.action_token_count
+        self.gen_tokens = self.video_tokens + self.action_tokens
         self.proj_in = Linear(ctx, "proj_in", rank=3, tensor_parallel=False)
         self.proj_out = Linear(ctx, "proj_out", rank=3, tensor_parallel=False)
         self.time_embedder = Cosmos3TimestepEmbedding(ctx, self.hidden_size)
@@ -201,9 +201,8 @@ class Cosmos3GenModel(NetworkModule):
                            (batch, self.latent_channel, self.geometry.latent_t,
                             self.geometry.latent_h, self.geometry.latent_w)),
             "action_latent":
-            self.add_input(
-                "action_latent", trt.float32,
-                (batch, self.geometry.action_chunk_size, self.max_action_dim)),
+            self.add_input("action_latent", trt.float32,
+                           (batch, self.action_tokens, self.max_action_dim)),
             "timestep":
             self.add_input("timestep", trt.float32, (batch, )),
             "token_noisy_mask":
@@ -211,12 +210,12 @@ class Cosmos3GenModel(NetworkModule):
                            (batch, self.video_tokens, 1)),
             "action_noisy_mask":
             self.add_input("action_noisy_mask", trt.float32,
-                           (batch, self.geometry.action_chunk_size, 1)),
+                           (batch, self.action_tokens, 1)),
             "rope_rotary_cos_sin":
             self.add_input("rope_rotary_cos_sin", trt.float32,
                            (batch, self.gen_tokens, self.head_dim)),
             "attention_pos_id":
-            self.add_input("attention_pos_id", trt.int32,
+            self.add_input("attention_position_ids", trt.int32,
                            (batch, self.gen_tokens)),
             "und_keys": [
                 self.add_input(f"und_k_layer{index:02d}", trt.float16,
@@ -234,8 +233,14 @@ class Cosmos3GenModel(NetworkModule):
         batch, channels = 0, self.latent_channel
         time = self.geometry.latent_t
         patch = self.patch_size
-        height = self.geometry.latent_h // patch
-        width = self.geometry.latent_w // patch
+        if self.patch_height * patch != self.geometry.latent_h:
+            zero_row = latent.slice_axis(3, 0, 1, 5) * np.float16(0.0)
+            latent = F.concatenate((latent, zero_row), 3)
+        if self.patch_width * patch != self.geometry.latent_w:
+            zero_column = latent.slice_axis(4, 0, 1, 5) * np.float16(0.0)
+            latent = F.concatenate((latent, zero_column), 4)
+        height = self.patch_height
+        width = self.patch_width
         latent = latent.reshape(
             (batch, channels, time, height, patch, width, patch))
         latent = latent.transpose((0, 2, 3, 5, 4, 6, 1))
@@ -244,13 +249,19 @@ class Cosmos3GenModel(NetworkModule):
 
     def _unpatchify(self, tokens):
         patch = self.patch_size
-        height = self.geometry.latent_h // patch
-        width = self.geometry.latent_w // patch
+        height = self.patch_height
+        width = self.patch_width
         tokens = tokens.reshape((0, self.geometry.latent_t, height, width,
                                  patch, patch, self.latent_channel))
         tokens = tokens.transpose((0, 6, 1, 2, 4, 3, 5))
-        return tokens.reshape((0, self.latent_channel, self.geometry.latent_t,
-                               self.geometry.latent_h, self.geometry.latent_w))
+        tokens = tokens.reshape(
+            (0, self.latent_channel, self.geometry.latent_t, height * patch,
+             width * patch))
+        if height * patch != self.geometry.latent_h:
+            tokens = tokens.slice_axis(3, 0, self.geometry.latent_h, 5)
+        if width * patch != self.geometry.latent_w:
+            tokens = tokens.slice_axis(4, 0, self.geometry.latent_w, 5)
+        return tokens
 
     def forward(self, video_latent, action_latent, timestep, token_noisy_mask,
                 action_noisy_mask, rope_rotary_cos_sin, attention_pos_id,

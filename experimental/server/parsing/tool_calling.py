@@ -287,6 +287,7 @@ _MARKER_FAMILIES: Tuple[_MarkerFamily, ...] = (
     _MarkerFamily(("<toolcalls>", ), ("</toolcalls>", )),
     _MarkerFamily(("<function_call>", ), ("</function_call>", )),
     _MarkerFamily(("<function_calls>", ), ("</function_calls>", )),
+    _MarkerFamily(("<atem:function_calls>", ), ("</atem:function_calls>", )),
     _MarkerFamily(("<function=", ), ("</function>", ),
                   open_is_prefix=True,
                   strippable=False),
@@ -745,6 +746,10 @@ _RAW_HEAD_RE = re.compile(
     r'^\s*\{\s*"name"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"arguments"\s*:\s*(\{)',
     re.S)
 _PARAM_RE = re.compile(r"<parameter=([^>]+)>(.*?)</parameter>", re.S)
+_ATEM_INVOKE_RE = re.compile(
+    r'<atem:invoke\s+name="([^"]+)">(.*?)</atem:invoke>', re.S)
+_ATEM_PARAM_RE = re.compile(
+    r'<atem:parameter\s+name="([^"]+)">(.*?)</atem:parameter>', re.S)
 
 
 class StreamingToolParser:
@@ -1100,6 +1105,9 @@ def _parser_name_for_model(model_dir: str) -> str:
 
 def _parse_tool_block(block: str, tool_config: ToolConfig) -> List[ToolCall]:
     body = _strip_tool_tags(block)
+    calls = _parse_atem_calls(body, tool_config)
+    if calls:
+        return calls
     calls = _parse_qwen_xml_calls(body, tool_config)
     if calls:
         return calls
@@ -1228,6 +1236,26 @@ def _parse_qwen_xml_calls(text: str,
             ToolCall(id=_new_call_id(),
                      name=name,
                      arguments=_arguments_to_json(args)))
+    return calls
+
+
+def _parse_atem_calls(text: str, tool_config: ToolConfig) -> List[ToolCall]:
+    calls = []
+    for match in _ATEM_INVOKE_RE.finditer(text):
+        name = match.group(1)
+        if not _tool_name_allowed(name, tool_config):
+            continue
+        parameter_types = _param_types_for(name, tool_config)
+        arguments: Dict[str, Any] = {}
+        for parameter in _ATEM_PARAM_RE.finditer(match.group(2)):
+            parameter_name = parameter.group(1)
+            value = parameter.group(2)
+            arguments[parameter_name] = _coerce_param(
+                value, parameter_types.get(parameter_name))
+        calls.append(
+            ToolCall(id=_new_call_id(),
+                     name=name,
+                     arguments=_arguments_to_json(arguments)))
     return calls
 
 

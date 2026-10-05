@@ -28,18 +28,7 @@ __all__ = [
 
 
 class Qwen3OmniNextVisualMerger(VisionPatchMerger):
-    """Next merger using native ``ln_q`` and numbered MLP checkpoint keys."""
-
-    def __init__(self, ctx, prefix: str, hidden_size: int, merge_unit: int,
-                 postshuffle_norm: bool) -> None:
-        super().__init__(ctx,
-                         prefix,
-                         hidden_size,
-                         merge_unit,
-                         postshuffle_norm,
-                         norm_name="ln_q",
-                         fc1_name="mlp.0",
-                         fc2_name="mlp.2")
+    """Qwen3-Omni-Next visual patch merger."""
 
 
 class Qwen3OmniNextVisualBlock(VisionTransformerBlock):

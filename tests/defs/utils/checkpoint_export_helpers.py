@@ -16,9 +16,9 @@
 
 Used by both ``test_model_export.py`` and standalone exporter tests.
 
-The checkpoint exporter handles chat templates internally — it reads the checkpoint's
-``tokenizer_config.json`` and writes ``processed_chat_template.json``
-alongside the exported ONNX, so no ``--chat_template`` argument is needed.
+The checkpoint exporter handles chat templates internally. It materializes the
+model-owned ``chat_template.jinja`` (or an explicit manual renderer marker)
+alongside the exported graph, so no template argument is needed.
 """
 
 import logging

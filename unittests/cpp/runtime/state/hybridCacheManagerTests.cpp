@@ -21,11 +21,39 @@
 #include <cuda_fp16.h>
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <type_traits>
+
 using namespace trt_edgellm;
 using namespace nvinfer1;
 
 namespace
 {
+
+template <typename T, typename = void>
+struct HasResidentMovementApi : std::false_type
+{
+};
+
+template <typename T>
+struct HasResidentMovementApi<T, std::void_t<decltype(&T::compactBatch)>> : std::true_type
+{
+};
+
+template <typename T, typename = void>
+struct HasResidentSlotMovementApi : std::false_type
+{
+};
+
+template <typename T>
+struct HasResidentSlotMovementApi<T, std::void_t<decltype(&T::compactBatchSlotState)>> : std::true_type
+{
+};
+
+static_assert(!HasResidentMovementApi<rt::HybridCacheManager>::value,
+    "resident state must not expose execution-row physical compaction");
+static_assert(!HasResidentSlotMovementApi<rt::HybridCacheManager>::value,
+    "resident state must not expose execution-row slot compaction");
 
 // Fill every element of one batch slot with a given half value.
 void fillSlotHalf(rt::Tensor& tensor, int32_t batchIdx, float value)
@@ -152,26 +180,6 @@ rt::KVCacheManager::Config makeUniformKVConfig(
     int32_t numLayers, int32_t maxBatch, int32_t maxSeq, int32_t numKVHeads, int32_t headDim)
 {
     std::vector<rt::KVLayerConfig> layers(numLayers, rt::KVLayerConfig{numKVHeads, headDim});
-    return rt::KVCacheManager::Config{numLayers, maxBatch, maxSeq, layers, DataType::kHALF};
-}
-
-// Build a heterogeneous KV config where the first half uses (h0, d0) and the second half uses (h1, d1).
-rt::KVCacheManager::Config makeHeteroKVConfig(
-    int32_t numLayers, int32_t maxBatch, int32_t maxSeq, int32_t h0, int32_t d0, int32_t h1, int32_t d1)
-{
-    std::vector<rt::KVLayerConfig> layers;
-    layers.reserve(numLayers);
-    for (int32_t i = 0; i < numLayers; ++i)
-    {
-        if (i < numLayers / 2)
-        {
-            layers.push_back({h0, d0});
-        }
-        else
-        {
-            layers.push_back({h1, d1});
-        }
-    }
     return rt::KVCacheManager::Config{numLayers, maxBatch, maxSeq, layers, DataType::kHALF};
 }
 
@@ -326,147 +334,59 @@ TEST(HybridCacheManagerTests, ResetAndCommitTracksActiveBatchAndEmptyFlag)
     EXPECT_EQ(lengths[1], 12);
 }
 
-// --- Compaction: attention-only, oldBatch < maxBatch ------------------------
-
-TEST(HybridCacheManagerTests, CompactBatchUniformKVSmallerThanMax)
+TEST(HybridCacheManagerTests, ClearingResidentStateDoesNotClearLogicalLengthRow)
 {
     cudaStream_t stream{nullptr};
-
-    int32_t const maxBatch = 8;
-    int32_t const oldBatch = 4;
-    int32_t const newBatch = 2;
-    int32_t const numLayers = 3;
-    int32_t const maxSeqLen = 32;
-
+    int32_t const maxBatch = 3;
     rt::HybridCacheManager::Config cfg{};
-    cfg.layerTypes.assign(numLayers, rt::HybridCacheManager::LayerType::kAttention);
-    // headDim must be one of {64, 128, 256, 512} — the batched kernel is template-dispatched.
-    cfg.kvConfig = makeUniformKVConfig(numLayers, maxBatch, maxSeqLen, 2, 64);
+    cfg.layerTypes.assign(1, rt::HybridCacheManager::LayerType::kAttention);
+    cfg.kvConfig = makeUniformKVConfig(1, maxBatch, 16, 1, 64);
     cfg.mambaConfig = makeMambaConfig(0, maxBatch);
     cfg.maxBatchSize = maxBatch;
 
     rt::HybridCacheManager mgr(cfg, stream);
+    std::vector<int32_t> const hostLengths{11, 22};
+    rt::Tensor lengths({2}, rt::DeviceType::kCPU, DataType::kINT32);
+    std::memcpy(lengths.rawPointer(), hostLengths.data(), hostLengths.size() * sizeof(int32_t));
+    mgr.resetForNewSequences(lengths, stream);
 
-    // Mark the live prefix [0, maxSeqLen) of each slot in every layer (both K and V halves) with
-    // value = (layerIdx + 1) * 10 + slot. Compaction only moves the live prefix, so only that range
-    // is seeded (and checked below).
-    for (int32_t L = 0; L < numLayers; ++L)
-    {
-        for (int32_t b = 0; b < oldBatch; ++b)
-        {
-            fillSlotTokenRangeNhd(mgr, L, b, 0, maxSeqLen, static_cast<float>((L + 1) * 10 + b));
-        }
-    }
-
-    // Keep slot 1 -> new 0, slot 3 -> new 1. Evict 0 and 2.
-    auto mapping = uploadMapping({-1, 0, -1, 1});
-
-    // Live length per slot (equal to maxSeqLen here) drives how much of each row compaction copies.
-    std::vector<int32_t> hostLens(oldBatch, maxSeqLen);
-    rt::Tensor reuseLens({oldBatch}, rt::DeviceType::kCPU, DataType::kINT32);
-    std::memcpy(reuseLens.rawPointer(), hostLens.data(), hostLens.size() * sizeof(int32_t));
-    mgr.resetForNewSequences(reuseLens, stream);
-
-    mgr.compactBatch(mapping, oldBatch, newBatch, stream);
+    // Logical row 1 may be backed by resident slot 2 after an earlier eviction. Releasing
+    // resident slot 1 must not mutate the survivor's execution-aligned length row.
+    mgr.clearResidentSlot(/*slot=*/1, stream);
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
-    // Active slots [0, newBatch) should carry old slots 1 and 3's values in both K and V halves,
-    // over the live prefix [0, maxSeqLen).
-    for (int32_t L = 0; L < numLayers; ++L)
-    {
-        expectSlotTokenRangeEqNhd(
-            mgr, L, 0, 0, maxSeqLen, static_cast<float>((L + 1) * 10 + 1), "L=" + std::to_string(L) + " newSlot=0");
-        expectSlotTokenRangeEqNhd(
-            mgr, L, 1, 0, maxSeqLen, static_cast<float>((L + 1) * 10 + 3), "L=" + std::to_string(L) + " newSlot=1");
-    }
-
-    // Lengths compacted: all entries are maxSeqLen, so new slots should also be maxSeqLen.
-    mgr.setActiveBatchSize(newBatch);
-    auto lens = copyDeviceToHost<int32_t>(mgr.getKVCacheLengths());
-    ASSERT_EQ(lens.size(), static_cast<size_t>(newBatch));
-    EXPECT_EQ(lens[0], maxSeqLen);
-    EXPECT_EQ(lens[1], maxSeqLen);
+    auto const actual = copyDeviceToHost<int32_t>(mgr.getKVCacheLengths());
+    EXPECT_EQ(actual, hostLengths);
 }
 
-// Regression for review finding #8: compaction must copy only each survivor's live prefix, not the
-// full capPadded*H*D row. Proven by poisoning the destination row's padded tail (beyond the live
-// length) before compaction and asserting it is left untouched afterwards — a full-row copy (the
-// pre-fix behavior) would instead overwrite that tail with the survivor's own padded-tail garbage.
-TEST(HybridCacheManagerTests, CompactBatchCopiesOnlyLivePrefixNotFullCapacity)
+TEST(HybridCacheManagerTests, CompactingLogicalLengthsPreservesNonContiguousResidentSlots)
 {
     cudaStream_t stream{nullptr};
-
-    int32_t const maxBatch = 8;
-    int32_t const oldBatch = 4;
-    int32_t const newBatch = 2;
-    int32_t const numLayers = 2;
-    int32_t const maxSeqLen = 32; // capPadded rounds up to one 128-token page (> maxSeqLen).
-
+    int32_t const maxBatch = 3;
     rt::HybridCacheManager::Config cfg{};
-    cfg.layerTypes.assign(numLayers, rt::HybridCacheManager::LayerType::kAttention);
-    cfg.kvConfig = makeUniformKVConfig(numLayers, maxBatch, maxSeqLen, 2, 64);
+    cfg.layerTypes.assign(1, rt::HybridCacheManager::LayerType::kAttention);
+    cfg.kvConfig = makeUniformKVConfig(1, maxBatch, 16, 1, 64);
     cfg.mambaConfig = makeMambaConfig(0, maxBatch);
     cfg.maxBatchSize = maxBatch;
 
     rt::HybridCacheManager mgr(cfg, stream);
-    int32_t const capPadded = static_cast<int32_t>(mgr.getSeparateKVCache(0).first.getShape()[1]);
-    ASSERT_GT(capPadded, maxSeqLen) << "test requires padding beyond the live length to be meaningful";
+    std::vector<int32_t> const hostLengths{11, 22, 33};
+    rt::Tensor lengths({3}, rt::DeviceType::kCPU, DataType::kINT32);
+    std::memcpy(lengths.rawPointer(), hostLengths.data(), hostLengths.size() * sizeof(int32_t));
+    mgr.resetForNewSequences(lengths, stream);
 
-    // Slot 2 (live length 5) -> new slot 0. Slot 3 (live length 20) -> new slot 1. Slots 0 and 1
-    // are evicted AND double as the physical destination rows (compaction is in-place, so new slot
-    // k's physical row is row k) — choosing survivors at rows >= newBatch keeps source and
-    // destination rows disjoint, so poisoning rows 0/1 up front can't clobber a survivor's own data.
-    int32_t const liveLen2 = 5;
-    int32_t const liveLen3 = 20;
-    constexpr float kPoison = -7.0f;
-    constexpr float kGarbage = 777.0f;
-
-    for (int32_t L = 0; L < numLayers; ++L)
-    {
-        // Destination rows: poison entirely so any spurious write beyond the live length is detectable.
-        fillSlotNhd(mgr, L, 0, kPoison);
-        fillSlotNhd(mgr, L, 1, kPoison);
-
-        // Survivors: live prefix carries real data; the padded tail carries garbage that must NOT move.
-        float const v2 = static_cast<float>((L + 1) * 10 + 2);
-        float const v3 = static_cast<float>((L + 1) * 10 + 3);
-        fillSlotTokenRangeNhd(mgr, L, 2, 0, liveLen2, v2);
-        fillSlotTokenRangeNhd(mgr, L, 2, liveLen2, capPadded, kGarbage);
-        fillSlotTokenRangeNhd(mgr, L, 3, 0, liveLen3, v3);
-        fillSlotTokenRangeNhd(mgr, L, 3, liveLen3, capPadded, kGarbage);
-    }
-
-    std::vector<int32_t> hostLens{0, 0, liveLen2, liveLen3};
-    rt::Tensor reuseLens({oldBatch}, rt::DeviceType::kCPU, DataType::kINT32);
-    std::memcpy(reuseLens.rawPointer(), hostLens.data(), hostLens.size() * sizeof(int32_t));
-    mgr.resetForNewSequences(reuseLens, stream);
-
-    auto mapping = uploadMapping({-1, -1, 0, 1});
-    mgr.compactBatch(mapping, oldBatch, newBatch, stream);
+    auto const mapping = uploadMapping({0, -1, 1});
+    mgr.compactKVCacheLengths(mapping, /*oldBatch=*/3, /*newBatch=*/2, stream);
+    mgr.clearResidentSlot(/*retired resident slot=*/1, stream);
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
-    for (int32_t L = 0; L < numLayers; ++L)
-    {
-        float const v2 = static_cast<float>((L + 1) * 10 + 2);
-        float const v3 = static_cast<float>((L + 1) * 10 + 3);
-
-        // Live prefix moved onto the destination slot.
-        expectSlotTokenRangeEqNhd(mgr, L, 0, 0, liveLen2, v2, "L=" + std::to_string(L) + " newSlot=0 live prefix");
-        expectSlotTokenRangeEqNhd(mgr, L, 1, 0, liveLen3, v3, "L=" + std::to_string(L) + " newSlot=1 live prefix");
-
-        // Padded tail beyond the live length was left untouched (still the destination row's
-        // poison) — proves the copy did not move the full capPadded row.
-        expectSlotTokenRangeEqNhd(
-            mgr, L, 0, liveLen2, capPadded, kPoison, "L=" + std::to_string(L) + " newSlot=0 padded tail");
-        expectSlotTokenRangeEqNhd(
-            mgr, L, 1, liveLen3, capPadded, kPoison, "L=" + std::to_string(L) + " newSlot=1 padded tail");
-    }
+    EXPECT_EQ(copyDeviceToHost<int32_t>(mgr.getKVCacheLengths()), (std::vector<int32_t>{11, 33}));
 }
 
 // Validates that lengths compaction carries the correct per-slot values even
 // when they differ. Uses a trivial 1-layer KV config so we isolate the
 // generic `compactTensorBatch` path for the shared KV lengths tensor.
-TEST(HybridCacheManagerTests, CompactBatchSharedLengthsCarriesPerSlotValues)
+TEST(HybridCacheManagerTests, CompactExecutionLengthsCarriesPerSlotValues)
 {
     cudaStream_t stream{nullptr};
 
@@ -490,7 +410,7 @@ TEST(HybridCacheManagerTests, CompactBatchSharedLengthsCarriesPerSlotValues)
 
     // Keep slot 1 -> 0, slot 3 -> 1.
     auto mapping = uploadMapping({-1, 0, -1, 1});
-    mgr.compactBatch(mapping, oldBatch, newBatch, stream);
+    mgr.compactKVCacheLengths(mapping, oldBatch, newBatch, stream);
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
     mgr.setActiveBatchSize(newBatch);
@@ -500,7 +420,7 @@ TEST(HybridCacheManagerTests, CompactBatchSharedLengthsCarriesPerSlotValues)
     EXPECT_EQ(lens[1], 14);
 }
 
-TEST(HybridCacheManagerTests, CompactBatchSlotStateLeavesGlobalKVPagesInPlace)
+TEST(HybridCacheManagerTests, CompactExecutionLengthsLeavesResidentKVInPlace)
 {
     cudaStream_t stream{nullptr};
     int32_t const maxBatch = 2;
@@ -521,7 +441,7 @@ TEST(HybridCacheManagerTests, CompactBatchSlotStateLeavesGlobalKVPagesInPlace)
     mgr.resetForNewSequences(reuseLens, stream);
 
     auto mapping = uploadMapping({-1, 0});
-    mgr.compactBatchSlotState(mapping, maxBatch, /*newBatch=*/1, stream);
+    mgr.compactKVCacheLengths(mapping, maxBatch, /*newBatch=*/1, stream);
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
     expectSlotTokenRangeEqNhd(mgr, 0, 0, 0, maxSeqLen, 10.0F, "global page row 0");
@@ -532,63 +452,7 @@ TEST(HybridCacheManagerTests, CompactBatchSlotStateLeavesGlobalKVPagesInPlace)
     EXPECT_EQ(lens.front(), 7);
 }
 
-TEST(HybridCacheManagerTests, CompactBatchHeterogeneousHeadDim)
-{
-    cudaStream_t stream{nullptr};
-
-    int32_t const maxBatch = 4;
-    int32_t const oldBatch = 4;
-    int32_t const newBatch = 2;
-    int32_t const numLayers = 4; // first half headDim=64, second half headDim=128 (two HeadDimGroups)
-
-    rt::HybridCacheManager::Config cfg{};
-    cfg.layerTypes.assign(numLayers, rt::HybridCacheManager::LayerType::kAttention);
-    cfg.kvConfig = makeHeteroKVConfig(numLayers, maxBatch, 32, /*h0=*/4, /*d0=*/64, /*h1=*/2, /*d1=*/128);
-    cfg.mambaConfig = makeMambaConfig(0, maxBatch);
-    cfg.maxBatchSize = maxBatch;
-
-    rt::HybridCacheManager mgr(cfg, stream);
-
-    int32_t const maxSeqLen = 32;
-    for (int32_t L = 0; L < numLayers; ++L)
-    {
-        for (int32_t b = 0; b < oldBatch; ++b)
-        {
-            fillSlotTokenRangeNhd(mgr, L, b, 0, maxSeqLen, static_cast<float>((L + 1) * 100 + b));
-        }
-    }
-
-    // Keep slots 0 and 2, drop 1 and 3.
-    auto mapping = uploadMapping({0, -1, 1, -1});
-
-    std::vector<int32_t> hostLens(oldBatch, maxSeqLen);
-    rt::Tensor reuseLens({oldBatch}, rt::DeviceType::kCPU, DataType::kINT32);
-    std::memcpy(reuseLens.rawPointer(), hostLens.data(), hostLens.size() * sizeof(int32_t));
-    mgr.resetForNewSequences(reuseLens, stream);
-
-    mgr.compactBatch(mapping, oldBatch, newBatch, stream);
-    CUDA_CHECK(cudaStreamSynchronize(stream));
-
-    for (int32_t L = 0; L < numLayers; ++L)
-    {
-        // Slot 0 stays in place; slot 1 receives old slot 2 (live prefix [0, maxSeqLen) only).
-        expectSlotTokenRangeEqNhd(
-            mgr, L, 0, 0, maxSeqLen, static_cast<float>((L + 1) * 100 + 0), "L=" + std::to_string(L) + " newSlot=0");
-        expectSlotTokenRangeEqNhd(
-            mgr, L, 1, 0, maxSeqLen, static_cast<float>((L + 1) * 100 + 2), "L=" + std::to_string(L) + " newSlot=1");
-    }
-}
-
-// --- P0 regression: hybrid model, oldBatch < maxBatchSize -------------------
-//
-// Before the reshape-compact-reshape workaround in hybridCacheManager.cpp,
-// compactTensorBatch on Mamba state tensors (allocated at [maxBatchSize, ...])
-// fired `srcShape[0] == oldActiveBatch` and crashed. This test locks that path
-// in: it drives a mixed KV+Mamba config with oldBatch (4) strictly less than
-// maxBatchSize (8) and verifies that (a) no exception is thrown, (b) KV +
-// Mamba states are compacted correctly, and (c) Mamba tensor shapes are
-// restored to maxBatchSize after compaction.
-TEST(HybridCacheManagerTests, CompactBatchHybridRegressionOldBatchLessThanMax)
+TEST(HybridCacheManagerTests, CompactingHybridExecutionLengthsDoesNotMoveResidentState)
 {
     cudaStream_t stream{nullptr};
 
@@ -608,8 +472,6 @@ TEST(HybridCacheManagerTests, CompactBatchHybridRegressionOldBatchLessThanMax)
 
     rt::HybridCacheManager mgr(cfg, stream);
 
-    // Seed KV caches (NHD: fill both K and V halves of each row, over the live prefix [0, maxSeqLen)
-    // that compaction is expected to copy — see maxSeqLen/hostLens below).
     int32_t const maxSeqLen = 32;
     std::vector<int32_t> const kvLayerAbs{0, 2};
     for (size_t idx = 0; idx < kvLayerAbs.size(); ++idx)
@@ -621,8 +483,6 @@ TEST(HybridCacheManagerTests, CompactBatchHybridRegressionOldBatchLessThanMax)
         }
     }
 
-    // Seed Mamba states (recurrent + conv) for all slots including inactive
-    // ones beyond oldBatch. The compaction code must not touch those.
     std::vector<int32_t> const mambaLayerAbs{1, 3};
     for (size_t idx = 0; idx < mambaLayerAbs.size(); ++idx)
     {
@@ -636,7 +496,6 @@ TEST(HybridCacheManagerTests, CompactBatchHybridRegressionOldBatchLessThanMax)
         }
     }
 
-    // Keep old slot 1 -> new 0, old slot 3 -> new 1; evict 0 and 2.
     auto mapping = uploadMapping({-1, 0, -1, 1});
 
     std::vector<int32_t> hostLens(oldBatch, maxSeqLen);
@@ -644,35 +503,34 @@ TEST(HybridCacheManagerTests, CompactBatchHybridRegressionOldBatchLessThanMax)
     std::memcpy(reuseLens.rawPointer(), hostLens.data(), hostLens.size() * sizeof(int32_t));
     mgr.resetForNewSequences(reuseLens, stream);
 
-    // The bug before the fix: this would throw from compactTensorBatch's
-    // `srcShape[0] == oldActiveBatch` check on the first Mamba state.
-    ASSERT_NO_THROW(mgr.compactBatch(mapping, oldBatch, newBatch, stream));
+    ASSERT_NO_THROW(mgr.compactKVCacheLengths(mapping, oldBatch, newBatch, stream));
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
-    // KV: new slot 0 <- old 1, new slot 1 <- old 3 (both halves, live prefix [0, maxSeqLen)).
     for (size_t idx = 0; idx < kvLayerAbs.size(); ++idx)
     {
         int32_t const L = kvLayerAbs[idx];
-        expectSlotTokenRangeEqNhd(
-            mgr, L, 0, 0, maxSeqLen, static_cast<float>(L * 10 + 1 + 1), "kv L=" + std::to_string(L) + " newSlot=0");
-        expectSlotTokenRangeEqNhd(
-            mgr, L, 1, 0, maxSeqLen, static_cast<float>(L * 10 + 3 + 1), "kv L=" + std::to_string(L) + " newSlot=1");
+        for (int32_t slot = 0; slot < oldBatch; ++slot)
+        {
+            expectSlotTokenRangeEqNhd(mgr, L, slot, 0, maxSeqLen, static_cast<float>(L * 10 + slot + 1),
+                "kv L=" + std::to_string(L) + " residentSlot=" + std::to_string(slot));
+        }
     }
 
-    // Mamba: active slots compacted; tensor shape restored to maxBatch.
     for (size_t idx = 0; idx < mambaLayerAbs.size(); ++idx)
     {
         int32_t const L = mambaLayerAbs[idx];
         rt::Tensor& rec = mgr.getRecurrentState(L);
         rt::Tensor& conv = mgr.getConvState(L);
 
-        EXPECT_EQ(rec.getShape()[0], maxBatch) << "recurrent shape[0] not restored to maxBatch";
-        EXPECT_EQ(conv.getShape()[0], maxBatch) << "conv shape[0] not restored to maxBatch";
-
-        expectSlotEqHalf(rec, 0, static_cast<float>(L * 100 + 1 + 1), "rec L=" + std::to_string(L) + " newSlot=0");
-        expectSlotEqHalf(rec, 1, static_cast<float>(L * 100 + 3 + 1), "rec L=" + std::to_string(L) + " newSlot=1");
-        expectSlotEqHalf(conv, 0, static_cast<float>(L * 1000 + 1 + 1), "conv L=" + std::to_string(L) + " newSlot=0");
-        expectSlotEqHalf(conv, 1, static_cast<float>(L * 1000 + 3 + 1), "conv L=" + std::to_string(L) + " newSlot=1");
+        EXPECT_EQ(rec.getShape()[0], maxBatch);
+        EXPECT_EQ(conv.getShape()[0], maxBatch);
+        for (int32_t slot = 0; slot < maxBatch; ++slot)
+        {
+            expectSlotEqHalf(rec, slot, static_cast<float>(L * 100 + slot + 1),
+                "rec L=" + std::to_string(L) + " residentSlot=" + std::to_string(slot));
+            expectSlotEqHalf(conv, slot, static_cast<float>(L * 1000 + slot + 1),
+                "conv L=" + std::to_string(L) + " residentSlot=" + std::to_string(slot));
+        }
     }
 }
 
@@ -777,49 +635,9 @@ TEST(HybridCacheManagerTests, CaptureRestoreWithExtraRetainedPages)
         "capture/restore with extra retained pages");
 }
 
-TEST(HybridCacheManagerTests, CompactBatchWithExtraRetainedPagesUsesPhysicalVHalfOffset)
-{
-    cudaStream_t stream{nullptr};
-    int32_t const maxBatch = 3;
-    int32_t const oldBatch = 3;
-    int32_t const newBatch = 2;
-    int32_t const maxSeq = 32;
-    int64_t const computedMinimumActivePages = rt::computeMinimumKvPoolPages(maxBatch, maxSeq);
-    ASSERT_LE(computedMinimumActivePages, rt::kMAX_KV_POOL_PAGES);
-    int32_t const minimumActivePages = static_cast<int32_t>(computedMinimumActivePages);
-
-    rt::HybridCacheManager::Config cfg{};
-    cfg.layerTypes.assign(1, rt::HybridCacheManager::LayerType::kAttention);
-    cfg.kvConfig = makeUniformKVConfig(/*numLayers=*/1, maxBatch, maxSeq, /*numKVHeads=*/2, /*headDim=*/64);
-    cfg.kvConfig.numPages = minimumActivePages + 4;
-    cfg.mambaConfig = makeMambaConfig(/*numLayers=*/0, maxBatch);
-    cfg.maxBatchSize = maxBatch;
-
-    rt::HybridCacheManager mgr(cfg, stream);
-    fillSlotNhd(mgr, /*absLayer=*/0, /*slot=*/0, 10.0F);
-    fillSlotNhd(mgr, /*absLayer=*/0, /*slot=*/1, 20.0F);
-    fillSlotNhd(mgr, /*absLayer=*/0, /*slot=*/2, 30.0F);
-    std::vector<int32_t> const hostLengths(oldBatch, maxSeq);
-    rt::Tensor lengths({oldBatch}, rt::DeviceType::kCPU, DataType::kINT32);
-    std::memcpy(lengths.rawPointer(), hostLengths.data(), hostLengths.size() * sizeof(int32_t));
-    mgr.resetForNewSequences(lengths, stream);
-
-    auto const mapping = uploadMapping({-1, 0, 1});
-    mgr.compactBatch(mapping, oldBatch, newBatch, stream);
-    CUDA_CHECK(cudaStreamSynchronize(stream));
-
-    expectSlotTokenRangeEqNhd(
-        mgr, /*absLayer=*/0, /*slot=*/0, /*startTok=*/0, maxSeq, 20.0F, "compact slot 0 with extra retained pages");
-    expectSlotTokenRangeEqNhd(
-        mgr, /*absLayer=*/0, /*slot=*/1, /*startTok=*/0, maxSeq, 30.0F, "compact slot 1 with extra retained pages");
-}
-
 // --- Parametrized headDim coverage -----------------------------------------
 //
-// Exercises the batched save/restore (captureKVCache + restoreKVCache) and
-// compact (compactBatch) paths across every headDim the batched kernels claim
-// to support. Prior to this coverage the suite only ran 64/128, which missed
-// a HEAD_DIM=512 corruption (kSLEN_PER_WARP=0 in the legacy copy kernel).
+// Exercises capture/restore across every supported head dimension.
 
 class HybridCacheManagerHeadDimTest : public ::testing::TestWithParam<int32_t>
 {
@@ -885,51 +703,6 @@ TEST_P(HybridCacheManagerHeadDimTest, CaptureRestoreRoundTrip)
     }
 }
 
-TEST_P(HybridCacheManagerHeadDimTest, CompactBatchUniform)
-{
-    int32_t const headDim = GetParam();
-    cudaStream_t stream{nullptr};
-
-    int32_t const maxBatch = 4;
-    int32_t const oldBatch = 4;
-    int32_t const newBatch = 2;
-    int32_t const numLayers = 2;
-    int32_t const maxSeqLen = 32;
-
-    rt::HybridCacheManager::Config cfg{};
-    cfg.layerTypes.assign(numLayers, rt::HybridCacheManager::LayerType::kAttention);
-    cfg.kvConfig = makeUniformKVConfig(numLayers, maxBatch, maxSeqLen, /*numKVHeads=*/2, headDim);
-    cfg.mambaConfig = makeMambaConfig(0, maxBatch);
-    cfg.maxBatchSize = maxBatch;
-
-    rt::HybridCacheManager mgr(cfg, stream);
-
-    for (int32_t L = 0; L < numLayers; ++L)
-    {
-        for (int32_t b = 0; b < oldBatch; ++b)
-        {
-            fillSlotTokenRangeNhd(mgr, L, b, 0, maxSeqLen, static_cast<float>((L + 1) * 10 + b));
-        }
-    }
-
-    auto mapping = uploadMapping({-1, 0, -1, 1});
-    std::vector<int32_t> hostLens(oldBatch, maxSeqLen);
-    rt::Tensor reuseLens({oldBatch}, rt::DeviceType::kCPU, DataType::kINT32);
-    std::memcpy(reuseLens.rawPointer(), hostLens.data(), hostLens.size() * sizeof(int32_t));
-    mgr.resetForNewSequences(reuseLens, stream);
-
-    mgr.compactBatch(mapping, oldBatch, newBatch, stream);
-    CUDA_CHECK(cudaStreamSynchronize(stream));
-
-    for (int32_t L = 0; L < numLayers; ++L)
-    {
-        expectSlotTokenRangeEqNhd(mgr, L, 0, 0, maxSeqLen, static_cast<float>((L + 1) * 10 + 1),
-            "headDim=" + std::to_string(headDim) + " L=" + std::to_string(L) + " newSlot=0");
-        expectSlotTokenRangeEqNhd(mgr, L, 1, 0, maxSeqLen, static_cast<float>((L + 1) * 10 + 3),
-            "headDim=" + std::to_string(headDim) + " L=" + std::to_string(L) + " newSlot=1");
-    }
-}
-
 INSTANTIATE_TEST_SUITE_P(AllSupportedHeadDims, HybridCacheManagerHeadDimTest, ::testing::Values(64, 128, 256, 512),
     [](::testing::TestParamInfo<int32_t> const& info) { return "headDim" + std::to_string(info.param); });
 
@@ -957,6 +730,87 @@ TEST(HybridCacheManagerTests, ConstructPureMambaNoAttentionLayers)
     EXPECT_EQ(mgr.getMambaCacheManager().numLayers(), numMamba);
 }
 
+TEST(HybridCacheManagerTests, ClearResidentStateSlotDoesNotMoveOrModifySurvivors)
+{
+    cudaStream_t stream{nullptr};
+    int32_t constexpr maxSlots = 4;
+    int32_t constexpr numLayers = 3;
+    auto config = makeMambaConfig(numLayers, maxSlots);
+    rt::MambaCacheManager manager(config, stream);
+
+    for (int32_t layer = 0; layer < numLayers; ++layer)
+    {
+        auto& recurrent = manager.getRecurrentState(layer);
+        auto& conv = manager.getConvState(layer);
+        for (int32_t slot = 0; slot < maxSlots; ++slot)
+        {
+            fillSlotHalf(recurrent, slot, 10.0F * layer + slot + 1.0F);
+            fillSlotHalf(conv, slot, 10.0F * layer + slot + 5.0F);
+        }
+    }
+
+    manager.clearSlot(2, stream);
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+
+    for (int32_t layer = 0; layer < numLayers; ++layer)
+    {
+        auto const& recurrent = manager.getRecurrentState(layer);
+        auto const& conv = manager.getConvState(layer);
+        for (int32_t slot = 0; slot < maxSlots; ++slot)
+        {
+            float const recurrentExpected = slot == 2 ? 0.0F : 10.0F * layer + slot + 1.0F;
+            float const convExpected = slot == 2 ? 0.0F : 10.0F * layer + slot + 5.0F;
+            expectSlotEqHalf(recurrent, slot, recurrentExpected, "recurrent");
+            expectSlotEqHalf(conv, slot, convExpected, "convolution");
+        }
+    }
+
+    manager.clearStates(stream);
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    for (int32_t layer = 0; layer < numLayers; ++layer)
+    {
+        for (int32_t slot = 0; slot < maxSlots; ++slot)
+        {
+            expectSlotEqHalf(manager.getRecurrentState(layer), slot, 0.0F, "recurrent");
+            expectSlotEqHalf(manager.getConvState(layer), slot, 0.0F, "convolution");
+        }
+    }
+    EXPECT_THROW(manager.clearSlot(maxSlots, stream), std::runtime_error);
+}
+
+TEST(HybridCacheManagerTests, RestoreResidentStateTargetsTheSelectedNonIdentitySlot)
+{
+    cudaStream_t stream{};
+    ASSERT_EQ(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), cudaSuccess);
+    int32_t constexpr maxSlots = 4;
+    auto config = makeMambaConfig(1, maxSlots);
+    rt::MambaCacheManager manager(config, stream);
+    ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
+    auto& recurrent = manager.getRecurrentState(0);
+    auto& conv = manager.getConvState(0);
+
+    fillSlotHalf(recurrent, 1, 31.0F);
+    fillSlotHalf(conv, 1, 41.0F);
+    auto savedRecurrent = manager.captureRecurrentStates(1, stream);
+    auto savedConv = manager.captureConvStates(1, stream);
+    ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
+
+    for (int32_t slot = 0; slot < maxSlots; ++slot)
+    {
+        fillSlotHalf(recurrent, slot, slot + 1.0F);
+        fillSlotHalf(conv, slot, slot + 11.0F);
+    }
+    manager.restoreSlot(3, savedRecurrent, savedConv, stream);
+    ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
+
+    for (int32_t slot = 0; slot < maxSlots; ++slot)
+    {
+        expectSlotEqHalf(recurrent, slot, slot == 3 ? 31.0F : slot + 1.0F, "recurrent");
+        expectSlotEqHalf(conv, slot, slot == 3 ? 41.0F : slot + 11.0F, "conv");
+    }
+    ASSERT_EQ(cudaStreamDestroy(stream), cudaSuccess);
+}
+
 // --- FP8 capture/restore contract -------------------------------------------
 //
 // FP8 save/restore is not implemented — the batched copy kernel only
@@ -978,4 +832,40 @@ TEST(HybridCacheManagerTests, CaptureKVCacheRejectsFp8)
     rt::HybridCacheManager mgr(cfg, stream);
 
     EXPECT_THROW(mgr.captureKVCache(0, 8, stream), std::exception);
+}
+
+TEST(HybridCacheManagerTests, MaterializesExecutionLengthsWithoutMovingResidentState)
+{
+    cudaStream_t stream{};
+    CUDA_CHECK(cudaStreamCreate(&stream));
+    constexpr int32_t maxBatch = 3;
+    rt::HybridCacheManager::Config cfg{};
+    cfg.layerTypes.assign(2, rt::HybridCacheManager::LayerType::kAttention);
+    cfg.layerTypes.push_back(rt::HybridCacheManager::LayerType::kMamba);
+    cfg.kvConfig = makeUniformKVConfig(/*numLayers=*/2, maxBatch, /*maxSeq=*/128, /*numKVHeads=*/4, /*headDim=*/64);
+    cfg.mambaConfig = makeMambaConfig(/*numLayers=*/1, maxBatch);
+    cfg.maxBatchSize = maxBatch;
+    rt::HybridCacheManager mgr(cfg, stream);
+
+    std::vector<int32_t> const reuse{31, 32, 33};
+    rt::Tensor reuseT({3}, rt::DeviceType::kCPU, DataType::kINT32);
+    std::memcpy(reuseT.rawPointer(), reuse.data(), reuse.size() * sizeof(int32_t));
+    mgr.resetForNewSequences(reuseT, stream);
+
+    fillSlotHalf(mgr.getRecurrentState(2), 0, 4.0F);
+    fillSlotHalf(mgr.getRecurrentState(2), 1, 5.0F);
+    fillSlotHalf(mgr.getRecurrentState(2), 2, 6.0F);
+
+    std::vector<int32_t> const pastLengths{7, 11};
+    rt::Tensor devicePastLengths({2}, rt::DeviceType::kGPU, DataType::kINT32);
+    CUDA_CHECK(cudaMemcpyAsync(devicePastLengths.rawPointer(), pastLengths.data(), pastLengths.size() * sizeof(int32_t),
+        cudaMemcpyHostToDevice, stream));
+    mgr.materializeExecutionLengths(devicePastLengths, stream);
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    EXPECT_EQ(copyDeviceToHost<int32_t>(mgr.getKVCacheLengths()), pastLengths);
+    EXPECT_EQ(mgr.getActiveBatchSize(), 2);
+    expectSlotEqHalf(mgr.getRecurrentState(2), 0, 4.0F, "recurrent");
+    expectSlotEqHalf(mgr.getRecurrentState(2), 1, 5.0F, "recurrent");
+    expectSlotEqHalf(mgr.getRecurrentState(2), 2, 6.0F, "recurrent");
+    CUDA_CHECK(cudaStreamDestroy(stream));
 }

@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import json
+import os
 from types import SimpleNamespace
 
 import numpy as np
@@ -262,6 +263,39 @@ def test_nvfp4_weight_layout_takes_precedence_over_activation_precision():
             quantization.QUANT_NVFP4)
 
 
+def test_mixed_precision_preserves_module_group_sizes():
+    dominant, group_size, overrides, group_sizes = (
+        quantization._parse_mixed_precision(
+            {
+                "model.layers.0.self_attn.o_proj": {
+                    "quant_algo": "FP8",
+                    "group_size": 1
+                },
+                "model.layers.1.self_attn.o_proj": {
+                    "quant_algo": "FP8",
+                    "group_size": 1
+                },
+                "model.layers.0.mlp.gate_proj": {
+                    "quant_algo": "NVFP4",
+                    "group_size": 16
+                },
+            }, None))
+
+    assert dominant == quantization.QUANT_FP8
+    assert group_size == 1
+    assert overrides["layers.0.mlp.gate_proj"] == quantization.QUANT_NVFP4
+    assert group_sizes["layers.0.mlp.gate_proj"] == 16
+
+    config = quantization.QuantConfig(quant_type=dominant,
+                                      group_size=group_size,
+                                      layer_overrides=overrides,
+                                      layer_group_sizes=group_sizes,
+                                      is_mixed_precision=True)
+    assert config.module_group_size("model.layers.0.mlp.gate_proj") == 16
+    assert config.module_group_size("model.layers.0.self_attn.o_proj") == 1
+    assert config.is_quantized is True
+
+
 def test_unknown_compressed_tensor_format_is_not_fp16(tmp_path):
     embedded = {
         "quantization_config": {
@@ -308,6 +342,87 @@ def test_tp_external_fp16_shard_recipe_is_rank_neutral(mode, source_shape,
         "axis": shard_axis,
         "size": 2,
     }
+
+
+def test_tp_runtime_kv_metadata_uses_rank_local_head_counts():
+    # Keep the TensorRT-dependent runtime-config import out of module scope so
+    # non-TensorRT test jobs can still collect this shared test module.
+    from experimental.builder.core.artifacts.runtime_config import \
+        _tp_rank_overrides
+
+    global_config = {
+        "num_attention_heads":
+        24,
+        "num_key_value_heads":
+        4,
+        "intermediate_size":
+        17408,
+        "recurrent_state_num_heads":
+        48,
+        "conv_dim":
+        10240,
+        "kv_layer_configs": [
+            {
+                "num_kv_heads": 4,
+                "head_dim": 128,
+            },
+            None,
+            {
+                "num_kv_heads": 8,
+                "head_dim": 256,
+            },
+        ],
+    }
+
+    overrides = _tp_rank_overrides(global_config, 2)
+
+    assert overrides["recurrent_state_num_heads"] == 24
+    assert overrides["conv_dim"] == 5120
+    assert overrides["kv_layer_configs"] == [
+        {
+            "num_kv_heads": 2,
+            "head_dim": 128,
+        },
+        None,
+        {
+            "num_kv_heads": 4,
+            "head_dim": 256,
+        },
+    ]
+    assert global_config["kv_layer_configs"][0]["num_kv_heads"] == 4
+
+
+def test_tp_segmented_column_shard_preserves_qkv_layout():
+    weight = np.arange(20 * 4, dtype=np.float16).reshape(20, 4)
+    scale = np.arange(20 * 2, dtype=np.uint8).reshape(20, 2)
+    descriptor = LinearWeights(
+        quantization.QUANT_NVFP4,
+        weight,
+        weight_scale=scale,
+        group_size=4,
+        logical_out_features=20,
+        logical_in_features=8,
+    )
+
+    rank0 = Weights.shard_linear(descriptor,
+                                 "column",
+                                 2,
+                                 0,
+                                 output_segments=(4, 4, 12))
+    rank1 = Weights.shard_linear(descriptor,
+                                 "column",
+                                 2,
+                                 1,
+                                 output_segments=(4, 4, 12))
+
+    assert np.array_equal(rank0.weight,
+                          weight[[0, 1, 4, 5, 8, 9, 10, 11, 12, 13]])
+    assert np.array_equal(rank1.weight,
+                          weight[[2, 3, 6, 7, 14, 15, 16, 17, 18, 19]])
+    assert np.array_equal(rank0.weight_scale,
+                          scale[[0, 1, 4, 5, 8, 9, 10, 11, 12, 13]])
+    assert np.array_equal(rank1.weight_scale,
+                          scale[[2, 3, 6, 7, 14, 15, 16, 17, 18, 19]])
 
 
 def test_tp_nvfp4_row_parallel_shards_scale_on_input_axis():
@@ -401,3 +516,35 @@ def test_tp_default_bakes_small_fp16_parameters():
     assert fully_external.wants(weight_policy.EXTERNAL_WEIGHT_EMBEDDING)
     assert fully_external.wants(weight_policy.EXTERNAL_WEIGHT_LM_HEAD)
     assert fully_external.wants(weight_policy.EXTERNAL_WEIGHT_FP16)
+
+
+@pytest.mark.parametrize("trt_version, disable_cuda_tile", [
+    ("10.16.0", False),
+    ("11.0.1.7", False),
+    ("11.1.0", True),
+    ("11.3.1.7", True),
+    ("12.0.0", True),
+])
+def test_compile_workarounds_are_scoped_to_the_build(monkeypatch, trt_version,
+                                                     disable_cuda_tile):
+    from experimental.builder.core import builder
+
+    def sm80():
+        return (8, 0)
+
+    monkeypatch.setattr(builder, "trt",
+                        SimpleNamespace(__version__=trt_version))
+    monkeypatch.setattr(builder, "_active_cuda_compute_capability", sm80)
+    monkeypatch.delenv("__LUNOWUD", raising=False)
+
+    with builder._compile_workarounds(max_batch_size=4) as flags:
+        assert "-mlir:autotune:num_threads=1" in flags
+        assert ("-kgen:codegen:cuda_tile=0" in flags) == disable_cuda_tile
+        assert os.environ["__LUNOWUD"] == flags
+    assert "__LUNOWUD" not in os.environ
+
+    monkeypatch.setenv("__LUNOWUD", "-user:flag")
+    with builder._compile_workarounds(max_batch_size=1) as flags:
+        assert flags.startswith("-user:flag ")
+        assert "-peep:fc_h_fusion=off" in flags
+    assert os.environ["__LUNOWUD"] == "-user:flag"

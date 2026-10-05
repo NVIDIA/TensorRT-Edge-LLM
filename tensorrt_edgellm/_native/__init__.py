@@ -23,6 +23,10 @@ class NativeDetectionError(NativeRuntimeError):
     """Raised when the current platform cannot be identified safely."""
 
 
+class TensorRTDependencyError(NativeDetectionError):
+    """Raised when the required TensorRT Python/runtime package is unusable."""
+
+
 class NativeSelectionError(NativeRuntimeError):
     """Raised when no unique compatible payload exists."""
 
@@ -46,4 +50,5 @@ __all__ = [
     "NativeManifestNotFoundError",
     "NativeRuntimeError",
     "NativeSelectionError",
+    "TensorRTDependencyError",
 ]

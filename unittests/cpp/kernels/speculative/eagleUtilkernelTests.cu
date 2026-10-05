@@ -20,9 +20,11 @@
 #include "kernels/speculative/eagleUtilKernels.h"
 #include "runtime/state/kvPageTable.h"
 #include "testUtils.h"
+#include <algorithm>
 #include <cmath>
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
+#include <stdexcept>
 #include <vector>
 
 using namespace trt_edgellm;
@@ -588,7 +590,7 @@ TEST(EagleKernels, PrepareEagleAcceptDecodeTokenInputs)
     int32_t expectedContextLenBatch0 = 100 + maxAcceptedTokenNum; // 108
 
     // Expected for batch 1: 3 tokens
-    int64_t expectedSelectIndexBatch1 = 2;
+    int64_t expectedSelectIndexBatch1 = maxAcceptedTokenNum + 2;
     int32_t expectedContextLenBatch1 = 200 + maxAcceptedTokenNum; // 208
 
     for (int32_t batchSize : {1, 2, 4, 8})
@@ -632,7 +634,7 @@ TEST(EagleKernels, PrepareEagleAcceptDecodeTokenInputs)
         // Verify all batches have correct select indices and context lengths
         for (int32_t b = 0; b < batchSize; b++)
         {
-            EXPECT_EQ(actualSelectIndices[b], inputAcceptedTokenNums[b] - 1);
+            EXPECT_EQ(actualSelectIndices[b], b * maxAcceptedTokenNum + inputAcceptedTokenNums[b] - 1);
             // Context length uses maxAcceptedTokenNum (padded length) for correct XQA attention range
             EXPECT_EQ(actualContextLengths[b], inputSequenceStartIndices[b] + maxAcceptedTokenNum);
         }
@@ -887,11 +889,33 @@ TEST(EagleKernels, ConstructVerificationDraftTree)
     copyHostToDevice<int32_t>(draftParentFullTableDevice, inputDraftParentFullTable);
     copyHostToDevice<int32_t>(selectedIndicesDevice, inputSelectedIndices);
 
+    auto parentIdsDevice = rt::Tensor({batchSize, verifyTreeSize}, rt::DeviceType::kGPU, DataType::kINT32);
     constructVerificationDraftTree(draftIdFullTableDevice, draftParentFullTableDevice, selectedIndicesDevice,
-        inputIdsDevice, draftTreeMaskDevice, stream);
+        inputIdsDevice, draftTreeMaskDevice, std::ref(parentIdsDevice), stream);
 
     auto const actualIds = copyDeviceToHost<int32_t>(inputIdsDevice);
     auto const actualMask = copyDeviceToHost<int8_t>(draftTreeMaskDevice);
+    auto const actualParents = copyDeviceToHost<int32_t>(parentIdsDevice);
+
+    // The mask carries every ancestor plus the node itself. Nodes precede their descendants, so
+    // the immediate parent is the highest-numbered ancestor below the node -- derived here rather
+    // than hard-coded, which is what makes this fail if the kernel reports a different ancestor.
+    for (int b = 0; b < batchSize; b++)
+    {
+        for (int i = 0; i < verifyTreeSize; i++)
+        {
+            int expectedParent = -1;
+            for (int j = 0; j < i; j++)
+            {
+                if (actualMask[b * verifyTreeSize * verifyTreeSize + i * verifyTreeSize + j] != 0)
+                {
+                    expectedParent = j;
+                }
+            }
+            EXPECT_EQ(actualParents[b * verifyTreeSize + i], expectedParent)
+                << "Batch " << b << " parent mismatch at position " << i;
+        }
+    }
 
     // ========== Comprehensive verification for Batch 0 ==========
     // Verify token IDs for batch 0
@@ -944,10 +968,17 @@ static rt::Tensor uploadLayerInfos(std::vector<KVLayerInfo> const& hostInfos, cu
     return deviceInfos;
 }
 
+static rt::Tensor uploadStateIndices(std::vector<int32_t> const& hostIndices)
+{
+    rt::Tensor result({static_cast<int64_t>(hostIndices.size())}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    copyHostToDevice<int32_t>(result, hostIndices);
+    return result;
+}
+
 // ============================================================================
 // Test 8: eagleBaseAssembleHiddenState (split out from the old combined kernel)
 // Description: Test inplace compaction of accepted tokens from stride=draftTreeSize to stride=maxDepth
-// Key test: Verify multi-batch scenario where Batch 1+ needs to move ALL tokens including position 0
+// Key test: Verify multi-batch compaction where Batch 1 output overlaps Batch 0 input rows.
 // ============================================================================
 TEST(EagleKernels, EagleBaseAssembleHiddenState)
 {
@@ -966,6 +997,7 @@ TEST(EagleKernels, EagleBaseAssembleHiddenState)
         // Test with 2 batches to verify compaction with stride change
         int32_t batchSize = 2;
 
+        // Batch 1 writes dense output rows [6, 8], overlapping Batch 0 input row 7.
         // Batch 0: accept positions [0, 3, 7] (length=3)
         // Batch 1: accept positions [0, 2, 5] (length=3)
         std::vector<int32_t> inputAcceptedIndices = {
@@ -1114,9 +1146,11 @@ TEST(EagleKernels, EagleBaseCommitKVCacheHeterogeneousLayers)
         pageTable.setIdentity();
         pageTable.upload(stream);
 
-        eagleBaseCommitKVCache(acceptedIndicesDevice, acceptLengthsDevice, kvCacheLengthsDevice,
+        auto const stateIndicesDevice = uploadStateIndices({0});
+        eagleBaseCommitKVCache(acceptedIndicesDevice, acceptLengthsDevice, kvCacheLengthsDevice, stateIndicesDevice,
             static_cast<KVLayerInfo const*>(deviceInfos.rawPointer()), numLayers, headDim, maxKVHeads, activeBatchSize,
-            maxDepth, DataType::kHALF, stream, pageTable.kernelView().dataPointer<int32_t>(), numPages, maxPagesPerSeq);
+            maxBatchSize, maxDepth, DataType::kHALF, stream, pageTable.kernelView().dataPointer<int32_t>(), numPages,
+            maxPagesPerSeq);
 
         CUDA_CHECK(cudaStreamSynchronize(stream));
 
@@ -1160,10 +1194,9 @@ TEST(EagleKernels, EagleBaseCommitKVCacheHeterogeneousLayers)
 }
 
 // ============================================================================
-// Test 8e: eagleBaseCommitKVCache with a non-identity (scrambled) page table
-// Description: a real permutation must route each slot's accepted-KV writes/reads through the
-// physical pages named by the table. This swaps the two slots' physical K/V pages and straddles
-// a page boundary on slot 0.
+// Test 8e: eagleBaseCommitKVCache with non-identity execution-to-resident mapping
+// Description: logical rows [0, 1] execute resident slots [1, 0]. Accepted-KV reads and writes
+// must use the resident page-table rows while per-sequence lengths remain logical-row aligned.
 // ============================================================================
 TEST(EagleKernels, EagleBaseCommitKVCacheNonIdentityPageTableRemapsPhysicalPages)
 {
@@ -1228,19 +1261,17 @@ TEST(EagleKernels, EagleBaseCommitKVCacheNonIdentityPageTableRemapsPhysicalPages
     copyHostToDevice<int32_t>(acceptLengthsDevice, inputAcceptLengths);
     copyHostToDevice<int32_t>(kvCacheLengthsDevice, inputKvCacheLengths);
 
-    // Full swap: slot 0's logical pages [0,1] land on physical pages [2,3] (slot 1's identity
-    // range); slot 1's logical pages [0,1] land on physical pages [0,1] (slot 0's identity range).
-    // Neither slot maps to its own identity range, and no physical page is targeted twice.
+    // The page table is resident-slot indexed. The state-index permutation below maps logical
+    // row 0 to resident slot 1 and logical row 1 to resident slot 0.
     rt::KVPageTable pageTable(maxBatchSize, maxPagesPerSeq, numPages);
-    std::vector<int32_t> const slot0Pages = {2, 3};
-    std::vector<int32_t> const slot1Pages = {0, 1};
-    pageTable.setRow(0, slot0Pages.data(), maxPagesPerSeq);
-    pageTable.setRow(1, slot1Pages.data(), maxPagesPerSeq);
+    pageTable.setIdentity();
     pageTable.upload(stream);
 
-    eagleBaseCommitKVCache(acceptedIndicesDevice, acceptLengthsDevice, kvCacheLengthsDevice,
+    auto const stateIndicesDevice = uploadStateIndices({1, 0});
+    eagleBaseCommitKVCache(acceptedIndicesDevice, acceptLengthsDevice, kvCacheLengthsDevice, stateIndicesDevice,
         static_cast<KVLayerInfo const*>(deviceInfos.rawPointer()), numLayers, headDim, maxKVHeads, activeBatchSize,
-        maxDepth, DataType::kHALF, stream, pageTable.kernelView().dataPointer<int32_t>(), numPages, maxPagesPerSeq);
+        maxBatchSize, maxDepth, DataType::kHALF, stream, pageTable.kernelView().dataPointer<int32_t>(), numPages,
+        maxPagesPerSeq);
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
     auto const host = copyDeviceToHost<half>(layerCache);
@@ -1317,9 +1348,11 @@ TEST(EagleKernels, EagleBaseCommitKVCacheSkipsWrongPlanePageIds)
     copyHostToDevice<int32_t>(pageTable,
         {4, 1, rt::kUNUSED_PAGE_ENTRY, rt::kUNUSED_PAGE_ENTRY, rt::kUNUSED_PAGE_ENTRY, rt::kUNUSED_PAGE_ENTRY, 0, 6});
 
-    eagleBaseCommitKVCache(acceptedIndicesDevice, acceptLengthsDevice, kvCacheLengthsDevice,
+    auto const stateIndicesDevice = uploadStateIndices({0, 1});
+    eagleBaseCommitKVCache(acceptedIndicesDevice, acceptLengthsDevice, kvCacheLengthsDevice, stateIndicesDevice,
         static_cast<KVLayerInfo const*>(deviceInfos.rawPointer()), /*numLayers=*/1, headDim, numKVHeads,
-        activeBatchSize, maxDepth, DataType::kHALF, stream, pageTable.dataPointer<int32_t>(), numPages, maxPagesPerSeq);
+        activeBatchSize, activeBatchSize, maxDepth, DataType::kHALF, stream, pageTable.dataPointer<int32_t>(), numPages,
+        maxPagesPerSeq);
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
     auto const host = copyDeviceToHost<half>(layerCache);
@@ -1406,9 +1439,11 @@ TEST(EagleKernels, EagleBaseCommitKVCacheAcceptRollbackTreeNodes)
     pageTable.setIdentity();
     pageTable.upload(stream);
 
-    eagleBaseCommitKVCache(acceptedIndicesDevice, acceptLengthsDevice, kvCacheLengthsDevice,
+    auto const stateIndicesDevice = uploadStateIndices({0, 1});
+    eagleBaseCommitKVCache(acceptedIndicesDevice, acceptLengthsDevice, kvCacheLengthsDevice, stateIndicesDevice,
         static_cast<KVLayerInfo const*>(deviceInfos.rawPointer()), numLayers, headDim, maxKVHeads, activeBatchSize,
-        maxDepth, DataType::kHALF, stream, pageTable.kernelView().dataPointer<int32_t>(), numPages, maxPagesPerSeq);
+        maxBatchSize, maxDepth, DataType::kHALF, stream, pageTable.kernelView().dataPointer<int32_t>(), numPages,
+        maxPagesPerSeq);
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
     auto const host = copyDeviceToHost<half>(layerCache);
@@ -1929,4 +1964,61 @@ TEST(EagleKernels, PrepareEagleBaseTreeDecodingInputs)
             EXPECT_EQ(actualSelectIndices[i], i);
         }
     }
+}
+
+// ============================================================================
+// Test: clampAcceptLengths
+// Description: Clamp device accept lengths into [0, remaining budget] per slot; budgets are kernel arguments.
+// ============================================================================
+TEST(EagleKernels, ClampAcceptLengthsAppliesPerSlotBudgets)
+{
+    cudaStream_t stream = nullptr;
+    std::vector<int32_t> const acceptLengths{5, 3, 4, 0, -1, 7};
+    std::vector<int32_t> const budgets{2, 3, 9, 4, 5, 0};
+    std::vector<int32_t> const expected{2, 3, 4, 0, 0, 0};
+    int32_t const batchSize = static_cast<int32_t>(acceptLengths.size());
+
+    auto acceptLengthsDevice = rt::Tensor({batchSize}, rt::DeviceType::kGPU, DataType::kINT32);
+    copyHostToDevice<int32_t>(acceptLengthsDevice, acceptLengths);
+
+    AcceptLengthBudgets acceptLengthBudgets{};
+    std::copy(budgets.begin(), budgets.end(), acceptLengthBudgets.remaining);
+    clampAcceptLengths(acceptLengthsDevice, acceptLengthBudgets, /*slotOffset=*/0, batchSize, stream);
+
+    EXPECT_EQ(copyDeviceToHost<int32_t>(acceptLengthsDevice), expected);
+}
+
+TEST(EagleKernels, ClampAcceptLengthsHonorsSlotOffsetAndRange)
+{
+    cudaStream_t stream = nullptr;
+    constexpr int32_t tailSlots = 8;
+    int32_t const batchSize = kMaxAcceptLengthBudgetsPerLaunch + tailSlots;
+    std::vector<int32_t> const acceptLengths(batchSize, 10);
+    auto acceptLengthsDevice = rt::Tensor({batchSize}, rt::DeviceType::kGPU, DataType::kINT32);
+    copyHostToDevice<int32_t>(acceptLengthsDevice, acceptLengths);
+
+    AcceptLengthBudgets acceptLengthBudgets{};
+    for (int32_t i = 0; i < tailSlots; ++i)
+    {
+        acceptLengthBudgets.remaining[i] = i;
+    }
+    clampAcceptLengths(acceptLengthsDevice, acceptLengthBudgets, kMaxAcceptLengthBudgetsPerLaunch, tailSlots, stream);
+
+    auto const actual = copyDeviceToHost<int32_t>(acceptLengthsDevice);
+    for (int32_t i = 0; i < kMaxAcceptLengthBudgetsPerLaunch; ++i)
+    {
+        EXPECT_EQ(actual[i], 10) << "slot " << i << " outside the clamped range was modified";
+    }
+    for (int32_t i = 0; i < tailSlots; ++i)
+    {
+        EXPECT_EQ(actual[kMaxAcceptLengthBudgetsPerLaunch + i], i);
+    }
+
+    EXPECT_THROW(
+        clampAcceptLengths(acceptLengthsDevice, acceptLengthBudgets, batchSize - tailSlots + 1, tailSlots, stream),
+        std::runtime_error);
+    EXPECT_THROW(
+        clampAcceptLengths(acceptLengthsDevice, acceptLengthBudgets, 0, kMaxAcceptLengthBudgetsPerLaunch + 1, stream),
+        std::runtime_error);
+    EXPECT_THROW(clampAcceptLengths(acceptLengthsDevice, acceptLengthBudgets, 0, 0, stream), std::runtime_error);
 }

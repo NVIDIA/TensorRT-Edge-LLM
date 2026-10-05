@@ -13,8 +13,17 @@ tests:
   # Package import and introspection contracts
   - tests/python-unittests/test_package_api.py
 
+  # Benchmark tools
+  - tests/python-unittests/test_online_benchmark.py
+
   # ONNX-less builder checkpoint contracts
   - tests/python-unittests/test_direct_builder_checkpoint_contract.py
+  - tests/python-unittests/test_direct_builder_skip_softmax.py
+  - tests/python-unittests/test_checkpoint_loader_shard.py
+
+  - tests/python-unittests/test_chat_template_extraction.py::test_direct_process_chat_template_preserves_trim_contract
+  - tests/python-unittests/test_export_kv_page_table.py::test_tp_runtime_config_preserves_global_gdn_metadata
+  - tests/python-unittests/test_export_kv_page_table.py::test_nvfp4_tp_gemm_allreduce_target_export
 
   # AttentionPlugin tests (custom plugin vs PyTorch reference)
   - tests/python-unittests/test_attention_plugin.py::test_cutedsl_lazy_module_failure_propagates_before_attention_mutation
@@ -59,6 +68,7 @@ tests:
   - tests/python-unittests/test_attention_plugin.py::test_ragged_prefill_batch_invariance
   - tests/python-unittests/test_attention_plugin.py::test_batch_permutation_invariance_decode
   - tests/python-unittests/test_attention_plugin.py::test_tree_attention
+  - tests/python-unittests/test_attention_plugin.py::test_tree_attention_diffusion_phase
   - tests/python-unittests/test_attention_plugin.py::test_tree_attention_head512_prefill_then_decode
   - tests/python-unittests/test_attention_plugin.py::test_tree_attention_topology
   - tests/python-unittests/test_attention_plugin.py::test_prefill_decode_handoff
@@ -74,6 +84,29 @@ tests:
   - tests/python-unittests/test_sliding_window_attention_plugin.py::test_sliding_window_prefill_head256
   - tests/python-unittests/test_sliding_window_attention_plugin.py::test_sliding_window_prefill_head512
   - tests/python-unittests/test_sliding_window_attention_plugin.py::test_sliding_window_decode
+  - tests/python-unittests/test_sliding_window_attention_plugin.py::test_bounded_swa_ragged_prefill_scrambled_page_table
+  - tests/python-unittests/test_sliding_window_attention_plugin.py::test_bounded_swa_decode_scrambled_page_table
+  - tests/python-unittests/test_sliding_window_attention_plugin.py::test_bounded_swa_long_normal_prefill_with_sparse_page_table
+  - tests/python-unittests/test_sliding_window_attention_plugin.py::test_bounded_swa_shared_kv_long_chunk_uses_current_donor_kv
+  - tests/python-unittests/test_sliding_window_attention_plugin.py::test_swa_capable_full_cache_decode_scrambled_page_table
+  - tests/python-unittests/test_attention_plugin.py::test_head512_vision_chunked_prefill_rejected
+  - tests/python-unittests/test_attention_plugin.py::test_head512_shared_vision_prefill_reads_donor_cache
+
+  # QsaAttentionPlugin (Qwen Sparse Attention prefill + decode) tests
+  # (test_reference_* are CPU-only torch reference self-tests)
+  - tests/python-unittests/test_qsa_attention_plugin.py::test_reference_dense_equivalence
+  - tests/python-unittests/test_qsa_attention_plugin.py::test_reference_index_list_invariants
+  - tests/python-unittests/test_qsa_attention_plugin.py::test_reference_sparse_regime_differs_from_dense
+  - tests/python-unittests/test_qsa_attention_plugin.py::test_reference_decode_step_matches_prefill_rows
+  - tests/python-unittests/test_qsa_attention_plugin.py::test_plugin_dense_equivalence_prefill
+  - tests/python-unittests/test_qsa_attention_plugin.py::test_plugin_sparse_prefill
+  - tests/python-unittests/test_qsa_attention_plugin.py::test_plugin_kv_write_through
+  - tests/python-unittests/test_qsa_attention_plugin.py::test_plugin_determinism
+  - tests/python-unittests/test_qsa_attention_plugin.py::test_plugin_decode_ragged_batch
+  - tests/python-unittests/test_qsa_attention_plugin.py::test_plugin_decode_pool_tail_state
+  - tests/python-unittests/test_qsa_attention_plugin.py::test_plugin_decode_nan_tail_poisoning
+  - tests/python-unittests/test_qsa_attention_plugin.py::test_plugin_decode_s_gt1_rejected
+  - tests/python-unittests/test_qsa_attention_plugin.py::test_plugin_decode_graph_capture_smoke
 
   # Mamba selective-state-update (update_ssm_state) plugin tests
   - tests/python-unittests/test_mamba_plugin.py::test_decode
@@ -105,9 +138,12 @@ tests:
   - tests/python-unittests/test_gated_delta_net_plugin.py::test_prefill_decode_handoff
 
   # Marlin MoE plugin tests
-  - tests/python-unittests/test_nvfp4_a16_moe_plugin.py::test_qwen_softmax_swiglu_decode_and_prefill_dynamic_engine
-  - tests/python-unittests/test_nvfp4_a16_moe_plugin.py::test_nemotron_sigmoid_group_relu2_decode_and_prefill_dynamic_engine
+  - tests/python-unittests/test_nvfp4_a16_moe_plugin.py::test_qwen_softmax_swiglu_token_count_boundary_dynamic_engine
+  - tests/python-unittests/test_nvfp4_a16_moe_plugin.py::test_nemotron_sigmoid_group_relu2_token_count_boundary_dynamic_engine
+  - tests/python-unittests/test_nvfp4_a16_moe_plugin.py::test_w4a16_rejects_rank3_hidden_states
+  - tests/python-unittests/test_nvfp4_a16_moe_plugin.py::test_int4_rejects_rank3_hidden_states
   - tests/python-unittests/test_nvfp4_a16_moe_plugin.py::test_int4_fp16_swiglu_preserves_legacy_rounding
+  - tests/python-unittests/test_nvfp4_a16_moe_plugin.py::test_int4_build_rejects_profile_exceeding_routed_row_capacity
   - tests/python-unittests/test_nvfp4_a16_moe_plugin.py::test_build_rejects_insufficient_max_routed_rows
   - tests/python-unittests/test_nvfp4_a16_moe_plugin.py::test_build_rejects_unsupported_activation_or_routing
   - tests/python-unittests/test_nvfp4_a16_moe_plugin.py::test_build_rejects_wrong_hidden_state_dtype
@@ -116,17 +152,63 @@ tests:
   - tests/python-unittests/test_nvfp4_a16_moe_plugin.py::test_build_rejects_unsupported_num_experts
   - tests/python-unittests/test_nvfp4_a16_moe_plugin.py::test_create_plugin_accepts_256_experts
 
+  - tests/python-unittests/test_nvfp4_a16_blackwell_moe_layout.py::test_offsets_match_repack
+  - tests/python-unittests/test_nvfp4_a16_blackwell_moe_layout.py::test_roundtrip_dequant_is_bit_exact
+  - tests/python-unittests/test_nvfp4_a16_blackwell_moe_layout.py::test_repack_is_pure_byte_permutation
+  - tests/python-unittests/test_nvfp4_a16_blackwell_moe_layout.py::test_experts_stack_nemotron_shapes
+  - tests/python-unittests/test_nvfp4_a16_blackwell_moe_layout.py::test_fc1_pad_rows_are_zero_codes_and_zero_scales
+  - tests/python-unittests/test_nvfp4_a16_blackwell_moe_layout.py::test_rejects_invalid_shapes_and_ragged_lists
+  - tests/python-unittests/test_nvfp4_a16_blackwell_moe_layout.py::test_real_checkpoint_layer1_expert0_spot_check
+  - tests/python-unittests/test_nvfp4_a16_blackwell_moe_plugin.py::test_small_relu2_sigmoid_decode_and_prefill_dynamic_engine
+  - tests/python-unittests/test_nvfp4_a16_blackwell_moe_plugin.py::test_nemotron_shape_decode_and_prefill_dynamic_engine
+  - tests/python-unittests/test_nvfp4_a16_blackwell_moe_plugin.py::test_grouped_routing_decode_and_prefill_dynamic_engine
+  - tests/python-unittests/test_nvfp4_a16_blackwell_moe_plugin.py::test_rank3_hidden_states_are_rejected
+  - tests/python-unittests/test_nvfp4_a16_blackwell_moe_plugin.py::test_build_on_non_thor_gpu_is_rejected
+  - tests/python-unittests/test_nvfp4_a16_blackwell_moe_plugin.py::test_build_rejects_marlin_layout_and_unknown_backend
+  - tests/python-unittests/test_nvfp4_a16_blackwell_moe_plugin.py::test_build_rejects_unsupported_activation_or_routing
+  - tests/python-unittests/test_nvfp4_a16_blackwell_moe_plugin.py::test_build_rejects_misaligned_dimensions
+  - tests/python-unittests/test_nvfp4_a16_blackwell_moe_plugin.py::test_build_rejects_bf16_hidden_or_fp16_global_scales
+  - tests/python-unittests/test_nvfp4_a16_blackwell_moe_plugin.py::test_create_plugin_accepts_nemotron_contract
+
   # Marlin dense NVFP4 (W4A16) GEMM plugin tests
   - tests/python-unittests/test_nvfp4_a16_gemm_plugin.py::test_dense_nvfp4_a16_gemm_decode_and_prefill
   - tests/python-unittests/test_nvfp4_a16_gemm_plugin.py::test_dense_nvfp4_a16_gemm_auto_max_m
   - tests/python-unittests/test_nvfp4_a16_gemm_plugin.py::test_build_rejects_misaligned_dimensions
-  - tests/python-unittests/test_nvfp4_a16_official_lm_head.py::test_mixed_precision_w4a16_lm_head_is_nvfp4_a16
+  - tests/python-unittests/test_nvfp4_a16_official_lm_head.py::test_mixed_precision_w4a16_dispatch_is_model_specific
   - tests/python-unittests/test_nvfp4_a16_official_lm_head.py::test_parse_quant_keeps_excluded_fp16_lm_head
   - tests/python-unittests/test_nvfp4_a16_official_lm_head.py::test_parse_quant_does_not_invent_lm_head_override
   - tests/python-unittests/test_nvfp4_a16_official_lm_head.py::test_repack_nvfp4_a16_gated_moe_shapes
 
   # FP16 MoE plugin tests (softmax + sigmoid-group-topk routing)
   - tests/python-unittests/test_fp16_moe_plugin.py::test_fp16_moe_decode_and_prefill_dynamic_engine
+  - tests/python-unittests/test_fp16_moe_plugin.py::test_fp16_moe_rejects_rank3_hidden_states
+
+  # SM110 NVFP4 W4A4 MoE plugin tests
+  - tests/python-unittests/test_nvfp4_moe_plugin.py::test_rank2_is_stable_after_engine_round_trip
+  - tests/python-unittests/test_nvfp4_moe_plugin.py::test_rank3_hidden_states_are_rejected
+
+  # Token-major MoE frontend/export contracts
+  - tests/python-unittests/test_moe_frontend_rank_contract.py
+  - tests/python-unittests/test_experimental_decoder_rank_contract.py::test_nvfp4_moe_preserves_token_major_plugin_contract
+  - tests/python-unittests/test_experimental_decoder_rank_contract.py::test_other_moe_variants_preserve_token_major_plugin_contract
+  - tests/python-unittests/test_experimental_decoder_rank_contract.py::test_experimental_moe_rejects_rank3_hidden_states
+  - tests/python-unittests/test_nemotron_h_ragged_export.py::test_nemotron_h_moe_exports_token_major_hidden_states
+  - tests/python-unittests/test_nemotron_h_ragged_export.py::test_nemotron_h_spec_base_logits_selection_has_independent_dynamic_axis
+  - tests/python-unittests/test_nemotron_h_ragged_export.py::test_nemotron_h_mtp_draft_exports_token_major_attention
+  - tests/python-unittests/test_qwen35_ragged_export.py::test_omni_next_moe_mtp_base_runs_token_major_wrapper
+
+  # Token-major and legacy QKV concat plugin contracts
+  - tests/python-unittests/test_qkv_concat_plugin.py
+
+  # Dense NVFP4 TP2 export contract shared by Qwen and other dense models
+  - tests/python-unittests/test_quantize_activations.py::test_tp2_dense_nvfp4_token_matrix_exports_rank2_gemm
+
+  # LayerNorm plugin tests
+  - tests/python-unittests/test_layernorm_plugin.py
+  - tests/python-unittests/test_layernorm_kernel_config.py
+
+  # CuTe DSL build-registry helpers (CPU only)
+  - tests/python-unittests/test_build_cutedsl_helpers.py
 
   # ViT attention plugin tests
   - tests/python-unittests/test_vit_attention_plugin.py::test_ragged_prefill_batch_sizes
@@ -140,20 +222,19 @@ tests:
   - tests/python-unittests/test_gemma4_audio_attention_plugin.py::test_batch
   - tests/python-unittests/test_gemma4_audio_attention_plugin.py::test_ragged_padding_poison
 
-  # Hardcoded chat template JSON contracts
-  - tests/python-unittests/test_chat_template_json.py::test_qwen3_omni_media_wrapped_with_boundary_tokens
-  - tests/python-unittests/test_chat_template_json.py::test_qwen3asr_audio_wrapped_with_boundary_tokens
+  # Provider Jinja chat-template contract
+  - tests/python-unittests/test_chat_template_extraction.py
 
   # Experimental checkpoint-direct server
   - tests/python-unittests/test_server_config.py
   - tests/python-unittests/test_server_model_cache.py
   - tests/python-unittests/test_server_requests.py
   - tests/python-unittests/test_server_runtime.py
-  - tests/python-unittests/test_tool_chat_template.py
   - tests/python-unittests/test_tool_calling.py
   - tests/python-unittests/test_anthropic_compat.py
   - tests/python-unittests/test_experimental_server_audio.py
   - tests/python-unittests/test_experimental_server_logit_bias.py
+  - tests/python-unittests/test_experimental_server_guided_decoding.py
 
   # Audio preprocessing (C++ mel FE vs HF transformers; skips without the
   # pybind runtime / transformers / soundfile)
@@ -243,3 +324,8 @@ tests:
   - tests/python-unittests/test_pipeline_context_reuse.py::test_context_reuse_fixture_has_strict_prefix_seed
   - tests/python-unittests/test_pipeline_context_reuse.py::test_context_reuse_cold_and_hit_outputs_are_token_identical
   - tests/python-unittests/test_pipeline_context_reuse.py::test_spec_prefill_evict_fixture_and_survivor_equivalence
+
+  # pi0.5 action comparator tests
+  - tests/python-unittests/test_pi05_action_comparator.py::test_a_bad_second_entry_is_not_diluted_by_a_good_first
+  - tests/python-unittests/test_pi05_action_comparator.py::test_a_single_entry_passes
+  - tests/python-unittests/test_pi05_action_comparator.py::test_every_entry_must_clear_the_ceiling

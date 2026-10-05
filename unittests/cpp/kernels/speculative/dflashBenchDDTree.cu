@@ -270,7 +270,7 @@ CpuReference buildCpuReference(DDTreeCase const& testCase)
         for (int32_t node = 0; node < testCase.verifySize; ++node)
         {
             int32_t const nodeIndex = treeOffset + node;
-            expected.selectTokenIndices[nodeIndex] = node;
+            expected.selectTokenIndices[nodeIndex] = nodeIndex;
             if (node >= validCount)
             {
                 continue;

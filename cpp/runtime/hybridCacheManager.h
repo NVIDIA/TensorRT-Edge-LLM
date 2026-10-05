@@ -120,6 +120,9 @@ public:
     //! @return {kView, vView}, each shaped [maxBatch, capPadded, numKVHeads, headDim].
     std::pair<rt::Tensor, rt::Tensor> getSeparateKVCache(int32_t absLayerIdx);
 
+    //! Describe the physical pool and logical sequence geometry used by an attention layer.
+    KVLayerStorageMetadata getKVLayerStorageMetadata(int32_t absLayerIdx) const;
+
     //! Get the recurrent state for a given absolute layer index (must be a Mamba layer).
     //! @param absLayerIdx Absolute decoder-layer index.
     //! @return Reference to the per-layer recurrent state tensor.
@@ -203,6 +206,15 @@ public:
     //! @throws std::runtime_error if out of range [0, maxBatchSize].
     void setActiveBatchSize(int32_t newActiveBatchSize);
 
+    //! Restore a previously validated batch-size view from an exception guard.
+    void restoreActiveBatchSize(int32_t activeBatchSize) noexcept;
+
+    //! Materialize the logical lengths for the next contiguous execution batch.
+    //!
+    //! The source is indexed by execution row. This updates only the transient length input read
+    //! by the engines; KV pages and recurrent state remain indexed by their resident slots.
+    void materializeExecutionLengths(rt::Tensor const& executionLengths, cudaStream_t stream);
+
     //! @brief Check if KV cache for all sequences is empty.
     //! @return True if no prefill has been committed yet.
     bool getKVCacheAllEmpty() const noexcept;
@@ -211,16 +223,11 @@ public:
     // Compaction
     // ------------------------------------------------------------------
 
-    //! Compact both KV caches and Mamba states after batch eviction.
-    //! @param batchMapping GPU tensor [oldBatch], mapping[i] = newBatchIdx or -1 (evicted).
-    //! @param oldBatch Batch size before eviction.
-    //! @param newBatch Batch size after eviction.
-    //! @param stream CUDA stream.
-    void compactBatch(rt::Tensor const& batchMapping, int32_t oldBatch, int32_t newBatch, cudaStream_t stream);
+    //! Compact execution-row-aligned KV lengths without moving resident slot state.
+    void compactKVCacheLengths(rt::Tensor const& batchMapping, int32_t oldBatch, int32_t newBatch, cudaStream_t stream);
 
-    //! Compact only slot-addressed sequence lengths and recurrent/conv state. Global paged KV remains in place;
-    //! callers using non-identity page tables compact those table rows separately.
-    void compactBatchSlotState(rt::Tensor const& batchMapping, int32_t oldBatch, int32_t newBatch, cudaStream_t stream);
+    //! Clear one retired resident row's recurrent/convolution state without moving survivors.
+    void clearResidentSlot(int32_t slot, cudaStream_t stream);
 
     // ------------------------------------------------------------------
     // System prompt cache

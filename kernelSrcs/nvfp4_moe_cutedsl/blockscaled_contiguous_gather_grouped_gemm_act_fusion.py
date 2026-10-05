@@ -42,7 +42,6 @@ from cutlass.cute.nvgpu import cpasync, tcgen05
 from moe_compat import ActivationType, is_gated_activation
 from custom_pipeline import PipelineCpAsyncUmma
 from cute_utils import (
-    EDGELLM_ENABLE_PDL,
     fmin,
     griddepcontrol_launch_dependents,
     griddepcontrol_wait,
@@ -264,6 +263,7 @@ class BlockScaledContiguousGatherGroupedGemmKernel:
         ...     num_non_exiting_tiles=num_non_exiting_tiles,
         ...     alpha=alpha,
         ...     max_active_clusters=max_active_clusters,
+        ...     enable_pdl=cutlass.Int32(1),
         ...     stream=stream,
         ... )
     """
@@ -629,6 +629,9 @@ class BlockScaledContiguousGatherGroupedGemmKernel:
         sfa: cute.Tensor,
         sfb: Union[cute.Tensor, Tuple[cute.Tensor, ...]],
         sfc_tensor: Optional[cute.Tensor],
+        output_ptr: cute.Pointer,
+        output_elements: cutlass.Int64,
+        fuse_output_zero: cutlass.Int32,
         input_global_scale_tensor: cute.Tensor,
         down_input_scale_tensor: Optional[cute.Tensor],
         tile_idx_to_expert_idx: cute.Tensor,
@@ -637,6 +640,7 @@ class BlockScaledContiguousGatherGroupedGemmKernel:
         num_non_exiting_tiles: cute.Tensor,
         alpha: Union[cute.Tensor, Tuple[cute.Tensor, ...]],
         max_active_clusters: cutlass.Int32,
+        enable_pdl: cutlass.Int32,
         stream: cuda.CUstream,
         epilogue_op: cutlass.Constexpr = lambda x: x,
     ):
@@ -682,6 +686,12 @@ class BlockScaledContiguousGatherGroupedGemmKernel:
         :type sfb: cute.Tensor
         :param sfc_tensor: Scale factor tensor C for quantized output (None if not quantizing)
         :type sfc_tensor: Optional[cute.Tensor]
+        :param output_ptr: Contiguous FP16 output pointer
+        :type output_ptr: cute.Pointer
+        :param output_elements: Number of FP16 output elements
+        :type output_elements: cutlass.Int64
+        :param fuse_output_zero: Clear output_ptr before FC1 work when nonzero
+        :type fuse_output_zero: cutlass.Int32
         :param input_global_scale_tensor: Per-expert input activation global scale tensor
         :type input_global_scale_tensor: cute.Tensor
         :param down_input_scale_tensor: Per-expert down/FC2 activation global scale tensor
@@ -701,6 +711,8 @@ class BlockScaledContiguousGatherGroupedGemmKernel:
         :type alpha: cute.Tensor
         :param max_active_clusters: Maximum number of active clusters
         :type max_active_clusters: cutlass.Int32
+        :param enable_pdl: Whether the launch permits programmatic stream serialization
+        :type enable_pdl: cutlass.Int32
         :param stream: CUDA stream for asynchronous execution
         :type stream: cuda.CUstream
         :param epilogue_op: Optional elementwise lambda function to apply to the output tensor
@@ -985,6 +997,9 @@ class BlockScaledContiguousGatherGroupedGemmKernel:
             tma_atom_c,
             tma_tensor_c,
             sfc_tensor,
+            output_ptr,
+            output_elements,
+            fuse_output_zero,
             input_global_scale_tensor,
             down_input_scale_tensor,
             tile_idx_to_expert_idx,
@@ -1009,7 +1024,7 @@ class BlockScaledContiguousGatherGroupedGemmKernel:
             smem=self.shared_storage.size_in_bytes(),
             stream=stream,
             min_blocks_per_mp=1,
-            use_pdl=EDGELLM_ENABLE_PDL,
+            use_pdl=enable_pdl,
         )
         return
 
@@ -1070,6 +1085,9 @@ class BlockScaledContiguousGatherGroupedGemmKernel:
         tma_atom_c: cute.CopyAtom,
         mC_mnl: cute.Tensor,
         mSFC_mnl: Optional[cute.Tensor],
+        output_ptr: cute.Pointer,
+        output_elements: cutlass.Int64,
+        fuse_output_zero: cutlass.Int32,
         input_global_scale_tensor: cute.Tensor,
         down_input_scale_tensor: Optional[cute.Tensor],
         tile_idx_to_expert_idx: cute.Tensor,
@@ -1473,6 +1491,33 @@ class BlockScaledContiguousGatherGroupedGemmKernel:
             self.cta_sync_barrier.arrive_and_wait()
 
         griddepcontrol_wait()
+
+        # FC2 accumulates into the FP16 output with atomics. When the generated
+        # artifact advertises this ABI, clear its active output slice here so the
+        # FC1 -> FC2 PDL boundary also carries the clear's completion and memory
+        # visibility. The runner only enables this path for a 16-byte-aligned
+        # output whose element count is a multiple of eight FP16 values.
+        grid_dim_x, grid_dim_y, grid_dim_z = cute.arch.grid_dim()
+        block_linear_idx = cutlass.Int64(bidx) + cutlass.Int64(grid_dim_x) * (
+            cutlass.Int64(bidy) + cutlass.Int64(grid_dim_y) * cutlass.Int64(bidz)
+        )
+        thread_linear_idx = block_linear_idx * self.threads_per_cta + cutlass.Int64(tidx)
+        grid_thread_count = (
+            cutlass.Int64(grid_dim_x)
+            * cutlass.Int64(grid_dim_y)
+            * cutlass.Int64(grid_dim_z)
+            * self.threads_per_cta
+        )
+        # A Vector[8 x fp16] is a single 16-byte global store.  Use the
+        # low-level store rather than Tensor.__setitem__: the latter expands to
+        # a type-conditional path that cannot be lowered in this
+        # warp-specialized kernel when the address is runtime-derived.
+        fused_output_vectors = (output_elements // 8) * cutlass.Int64(fuse_output_zero)
+        zero_f16x8 = cute.full((8,), 0.0, dtype=cutlass.Float16).to_vector()
+        vector_idx = thread_linear_idx
+        while vector_idx < fused_output_vectors:
+            cute.arch.store(output_ptr + vector_idx * cutlass.Int64(8), zero_f16x8)
+            vector_idx += grid_thread_count
 
         #
         # Specialized Schedule Warp
@@ -3782,6 +3827,9 @@ class BlockScaledContiguousGatherGroupedGemmKernel:
         b_sf_ptr_tuple: Tuple[cute.Pointer, ...],
         c_ptr: cute.Pointer,
         c_sf_ptr: cute.Pointer,
+        output_ptr: cute.Pointer,
+        output_elements: cutlass.Int64,
+        fuse_output_zero: cutlass.Int32,
         alpha_ptr_tuple: Tuple[cute.Pointer, ...],
         input_global_scale_ptr: cute.Pointer,
         down_input_scale_ptr: cute.Pointer,
@@ -3797,6 +3845,7 @@ class BlockScaledContiguousGatherGroupedGemmKernel:
         tile_size: cutlass.Constexpr,
         scaling_vector_size: cutlass.Constexpr,
         max_active_clusters: cutlass.Int32,
+        enable_pdl: cutlass.Int32,
         stream: cuda.CUstream,
         epilogue_op: cutlass.Constexpr = lambda x: x,
         activation_type: cutlass.Constexpr = ActivationType.Swiglu,
@@ -3833,7 +3882,6 @@ class BlockScaledContiguousGatherGroupedGemmKernel:
                 order=(2, 1, 4, 0, 3, 5),
             ),
         )
-
         # B / alpha tensors for the single expert weight tensor (l_0 == l).
         alpha_0 = cute.make_tensor(alpha_ptr_tuple[0], layout=cute.make_layout((l_0,)))
         b_0 = cute.make_tensor(
@@ -3921,6 +3969,9 @@ class BlockScaledContiguousGatherGroupedGemmKernel:
             a_sf,
             tuple(b_sf_tuple),
             c_sf,
+            output_ptr,
+            output_elements,
+            fuse_output_zero,
             input_global_scale,
             down_input_scale,
             tile_idx_to_group_idx,
@@ -3929,6 +3980,7 @@ class BlockScaledContiguousGatherGroupedGemmKernel:
             num_non_exiting_tiles,
             tuple(alpha_tuple),
             max_active_clusters=max_active_clusters,
+            enable_pdl=enable_pdl,
             stream=stream,
             epilogue_op=epilogue_op,
         )

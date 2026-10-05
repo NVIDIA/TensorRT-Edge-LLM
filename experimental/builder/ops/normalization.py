@@ -29,7 +29,7 @@ class RMSNorm(Module):
                  ctx: BuildContext,
                  prefix: str,
                  eps: Optional[float] = None,
-                 rank: int = 3,
+                 rank: Optional[int] = None,
                  *,
                  unit_offset: bool = False) -> None:
         super().__init__(ctx, prefix)
@@ -43,11 +43,13 @@ class RMSNorm(Module):
                   else self.weights.f16(self.key("weight")))
         if self.unit_offset:
             weight = weight + np.float16(1.0)
-        return F.rms_norm(hidden_states,
-                          weight,
-                          self.eps,
-                          self.rank if rank is None else rank,
-                          weight_before_cast=self.unit_offset)
+        return F.rms_norm(
+            hidden_states,
+            weight,
+            self.eps,
+            (self.rank if self.rank is not None else hidden_states.ndim)
+            if rank is None else rank,
+            weight_before_cast=self.unit_offset)
 
 
 class LayerNorm(Module):
@@ -57,11 +59,13 @@ class LayerNorm(Module):
                  ctx: BuildContext,
                  prefix: str,
                  eps: float,
-                 rank: int = 3) -> None:
+                 rank: Optional[int] = None) -> None:
         super().__init__(ctx, prefix)
         self.eps = eps
         self.rank = rank
 
     def forward(self, hidden_states, rank: Optional[int] = None):
+        resolved_rank = ((self.rank if self.rank is not None else
+                          hidden_states.ndim) if rank is None else rank)
         return F.normalization(hidden_states, self.prefix, self.eps,
-                               self.rank if rank is None else rank)
+                               resolved_rank)

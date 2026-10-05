@@ -21,6 +21,7 @@ import tensorrt as trt
 from ...ops import (DecoderLayer, DecoderModel, Linear, NetworkModule,
                     QKNormDecoderAttention)
 from ...ops import functional as F
+from ...ops.ragged import RaggedDecoderInputs, add_ragged_decoder_inputs
 
 
 class Qwen3OmniTalkerAttention(QKNormDecoderAttention):
@@ -51,10 +52,10 @@ class Qwen3OmniTalker(NetworkModule):
         cfg = self.cfg
         kv_dtype = (trt.DataType.FP8
                     if cfg.kv_cache_quant == "fp8" else trt.float16)
-        return {
+        io = {
             "inputs_embeds":
             self.add_input("inputs_embeds", trt.float16,
-                           (-1, -1, cfg.hidden_size)),
+                           (-1, cfg.hidden_size)),
             "past_key_values": [
                 self.add_input(f"past_key_values_{index}", kv_dtype,
                                (2, -1, F.KV_PAGE_SIZE, cfg.num_key_value_heads,
@@ -63,23 +64,17 @@ class Qwen3OmniTalker(NetworkModule):
             ],
             "rope":
             self.add_input("rope_rotary_cos_sin", trt.float32,
-                           (-1, -1, cfg.rotary_dim)),
-            "context_lengths":
-            self.add_input("context_lengths", trt.int32, (-1, )),
-            "cache_start":
-            self.add_input("kvcache_start_index", trt.int32, (-1, )),
-            "kv_page_table":
-            self.add_input("kv_page_table", trt.int32, (-1, 2, -1)),
-            "last_token_ids":
-            self.add_input("last_token_ids", trt.int64, (-1, 1)),
+                           (-1, cfg.rotary_dim)),
         }
+        io.update(add_ragged_decoder_inputs(self.add_input).as_dict())
+        return io
 
-    def forward(self, inputs_embeds, past_key_values, rope, context_lengths,
-                cache_start, kv_page_table, last_token_ids):
-        hidden, present, _ = self.model(inputs_embeds, past_key_values, rope,
-                                        context_lengths, cache_start,
-                                        kv_page_table, [])
-        selected = F.gather_last_tokens(hidden, last_token_ids)
+    def forward(self, **io):
+        ragged = RaggedDecoderInputs.from_dict(io)
+        hidden, present, _ = self.model(io["inputs_embeds"],
+                                        io["past_key_values"], io["rope"],
+                                        ragged)
+        selected = F.gather_token_rows(hidden, ragged.logits_indices)
         outputs = {
             "logits": self.codec_head(selected).cast(trt.float32),
             "hidden_states": hidden,

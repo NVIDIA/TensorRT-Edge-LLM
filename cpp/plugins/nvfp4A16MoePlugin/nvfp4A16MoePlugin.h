@@ -33,7 +33,7 @@ namespace plugins
  *
  * max_routed_rows is the capacity of the padded Marlin routing arrays, not only the number of selected slots.
  * A runtime shape with T tokens requires at most T * top_k + num_experts * (block_size - 1) rows, where block_size
- * is 8 for S == 1 and 32 otherwise.
+ * is 8 for T <= 8 and 32 otherwise.
  */
 class Nvfp4A16MoePlugin : public nvinfer1::IPluginV3,
                           public nvinfer1::IPluginV3OneCore,

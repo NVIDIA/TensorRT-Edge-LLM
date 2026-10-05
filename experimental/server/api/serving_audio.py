@@ -184,6 +184,12 @@ class OpenAIServingSpeech:
             raise ModelNotFoundError(
                 f"model {request.model!r} is not served by this process")
         if not self._client.capabilities.speech:
+            layout = getattr(self._client.llm, "bundle_layout", None)
+            if (self._client.capabilities.in_flight_batching
+                    and getattr(layout, "has_speech", False)):
+                raise UnsupportedFeatureError(
+                    "speech output is unavailable under in-flight batching; "
+                    "start the server without --enable-in-flight-batching")
             raise UnsupportedFeatureError(
                 "the loaded model has no speech-generation components")
         if request.speed != 1.0:

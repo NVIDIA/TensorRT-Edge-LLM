@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -37,12 +37,14 @@ import torch.nn.functional as F
 from ..config import (QUANT_FP8, QUANT_FP16, QUANT_INT4_AWQ,
                       QUANT_INT4_AWQ_MODELOPT, QUANT_INT4_GPTQ, QUANT_INT8_SQ,
                       QUANT_MXFP8, QUANT_NVFP4, QUANT_NVFP4_A16, Mapping,
-                      ModelConfig, module_quant_type)
-from .ops import (fp8_dequantize, fp8_quantize, fused_nvfp4_gemm_allreduce,
-                  int4_gemm_plugin_version, int4_groupwise_gemm,
-                  int4_groupwise_gemm_v2, int8_sq_act_qdq, int8_sq_weight_dq,
-                  mxfp8_act_qdq, mxfp8_weight_dq, nvfp4_a16_gemm,
-                  nvfp4_act_qdq, nvfp4_dequantize)
+                      ModelConfig, module_quant_group_size, module_quant_type)
+from .ops import (all_reduce, fp8_dequantize, fp8_quantize,
+                  fused_nvfp4_gemm_allreduce, int4_gemm_plugin_version,
+                  int4_groupwise_gemm, int4_groupwise_gemm_v2, int8_sq_act_qdq,
+                  int8_sq_weight_dq, mxfp8_act_qdq, mxfp8_weight_dq,
+                  nvfp4_a16_blackwell_gemm, nvfp4_a16_gemm, nvfp4_act_qdq,
+                  nvfp4_dequantize, use_blackwell_nvfp4_a16_gemm,
+                  use_generic_nvfp4_gemm_allreduce)
 
 logger = logging.getLogger(__name__)
 
@@ -77,12 +79,13 @@ __all__ = [
     "RowParallelLinear",
     "is_nvfp4_linear",
     "is_int4_linear",
+    "is_nvfp4_a16_linear",
     "FP16Linear",
     "FP8Linear",
     "MXFP8Linear",
     "AWQLinear",
     "ModelOptAWQPrepackedLinear",
-    "NVFP4A16MarlinLinear",
+    "NVFP4A16Linear",
     "GPTQLinear",
     "INT8SQLinear",
     "TPMode",
@@ -105,6 +108,11 @@ class TPMode(str, Enum):
 
 class LinearBase(nn.Module):
     """Common base for quantized / TP-aware linear layers."""
+
+    # Overwritten per instance by :func:`make_linear` from
+    # ``QuantConfig.quantize_activations``. The class default keeps directly
+    # constructed layers on the checkpoint's own recipe.
+    quantize_activations: bool = True
 
     def tp_split_dim(self, attr: str) -> Optional[int]:
         """Axis to shard *attr* along under TP, or None if replicated.
@@ -189,6 +197,22 @@ class FP16Linear(LinearBase):
         bias = self.bias if self.bias is not None else None
         return F.linear(hidden_states, self.weight, bias)
 
+    def tp_split_dim(self, attr: str) -> Optional[int]:
+        """Shard rule when make_linear tags this layer col/row (tp_size>1).
+
+        weight is [out_features, in_features]: column-parallel shards the
+        output dim 0 (bias, also [out], shards on 0); row-parallel shards the
+        input dim 1 (bias is replicated and added once after the AllReduce).
+        Plain FP16Linear has no scale buffers, so weight/bias are the only
+        shardable attrs.
+        """
+        tp_mode = getattr(self, "tp_mode", TPMode.REPLICATED)
+        if tp_mode == TPMode.COL:
+            return 0 if attr in ("weight", "bias") else None
+        if tp_mode == TPMode.ROW:
+            return 1 if attr == "weight" else None
+        return None
+
 
 # ---------------------------------------------------------------------------
 # FP8Linear
@@ -228,13 +252,15 @@ class FP8Linear(LinearBase):
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         _require_fp16_input(hidden_states, "FP8Linear")
-        # Activation: ONNX QuantizeLinear -> FP8 + DequantizeLinear -> FP16
-        hidden_states_q = fp8_quantize(hidden_states, self.input_scale)
-        hidden_states_dq = fp8_dequantize(hidden_states_q, self.input_scale)
+        if self.quantize_activations:
+            # ONNX QuantizeLinear -> FP8 + DequantizeLinear -> FP16
+            hidden_states = fp8_dequantize(
+                fp8_quantize(hidden_states, self.input_scale),
+                self.input_scale)
         # Weight: DQ FP8 -> FP16 (standard ONNX DequantizeLinear)
         w_fp16 = fp8_dequantize(self.weight, self.weight_scale)
         bias = self.bias.to(torch.float16) if self.bias is not None else None
-        return F.linear(hidden_states_dq, w_fp16, bias)
+        return F.linear(hidden_states, w_fp16, bias)
 
 
 # ---------------------------------------------------------------------------
@@ -286,34 +312,52 @@ class NVFP4LinearMethod(LinearMethodBase):
         else:
             module.bias = None
 
-    def apply(self, module: "LinearBase", x: torch.Tensor) -> torch.Tensor:
+    def _apply_without_bias(self, module: "LinearBase",
+                            x: torch.Tensor) -> torch.Tensor:
         _require_fp16_input(x, type(module).__name__)
         if getattr(module, "_pqs_active", False):
             x = x * module.pre_quant_scale
-        # Activation: DynQ + 2x trt::DQ -> float16 activations
-        x_dq = nvfp4_act_qdq(x, module.input_scale)
+        # Weight-only leaves the activation in fp16 and drops input_scale; the
+        # weight path is identical either way.
+        x_dq = nvfp4_act_qdq(
+            x, module.input_scale) if module.quantize_activations else x
         # Weight: 2xstandard-ONNX DQ -> w_dq (float16)
         w_dq = nvfp4_dequantize(module.weight, module.weight_scale,
                                 module.weight_scale_2, module.group_size)
-        bias = module.bias.to(
-            torch.float16) if module.bias is not None else None
-        return F.linear(x_dq, w_dq, bias)
+        return F.linear(x_dq, w_dq, None)
+
+    def apply(self, module: "LinearBase", x: torch.Tensor) -> torch.Tensor:
+        out = self._apply_without_bias(module, x)
+        if module.bias is not None:
+            out = out + module.bias.to(torch.float16)
+        return out
 
     def apply_linear_allreduce(self, module: "LinearBase",
                                x: torch.Tensor) -> torch.Tensor:
         _require_fp16_input(x, type(module).__name__)
-        if getattr(module, "_pqs_active", False):
-            x = x * module.pre_quant_scale
-        # Single op: TRT_FP4DynamicQuantize + DequantizeLinear +
-        # FusedNvfp4GemmAllReducePlugin. Output is FP16, already AllReduced.
-        out = fused_nvfp4_gemm_allreduce(
-            x,
-            module.input_scale,
-            module.weight,
-            module.weight_scale,
-            module.weight_scale_2,
-            tp_size=module.tp_size,
-        )
+        if use_generic_nvfp4_gemm_allreduce():
+            out = all_reduce(self._apply_without_bias(module, x),
+                             module.tp_size)
+        elif not module.quantize_activations:
+            # The fused plugin quantizes the activation internally, so weight-only
+            # cannot be expressed here; failing loudly beats a TP run that keeps
+            # W4A4 on its row-parallel linears alone.
+            raise NotImplementedError(
+                "--no-quantize-activations is not supported by "
+                "FusedNvfp4GemmAllReduce (row-parallel TP)")
+        else:
+            if getattr(module, "_pqs_active", False):
+                x = x * module.pre_quant_scale
+            # Single op: TRT_FP4DynamicQuantize + DequantizeLinear +
+            # FusedNvfp4GemmAllReducePlugin. Output is FP16 and AllReduced.
+            out = fused_nvfp4_gemm_allreduce(
+                x,
+                module.input_scale,
+                module.weight,
+                module.weight_scale,
+                module.weight_scale_2,
+                tp_size=module.tp_size,
+            )
         if module.bias is not None:
             out = out + module.bias.to(torch.float16)
         return out
@@ -481,12 +525,13 @@ class MXFP8Linear(LinearBase):
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         _require_fp16_input(hidden_states, "MXFP8Linear")
-        # Activation: DynQ + DQ -> float16
-        hidden_states_dq = mxfp8_act_qdq(hidden_states)
+        if self.quantize_activations:
+            hidden_states = mxfp8_act_qdq(
+                hidden_states)  # DynQ + DQ -> float16
         # Weight: DQ FP8+E8M0 -> float16
         w_dq = mxfp8_weight_dq(self.weight, self.weight_scale, self.block_size)
         bias = self.bias.to(torch.float16) if self.bias is not None else None
-        return F.linear(hidden_states_dq, w_dq, bias)
+        return F.linear(hidden_states, w_dq, bias)
 
 
 # ---------------------------------------------------------------------------
@@ -608,26 +653,30 @@ class ModelOptAWQPrepackedLinear(LinearBase):
 
 
 # ---------------------------------------------------------------------------
-# NVFP4A16MarlinLinear  (compressed-tensors NVFP4 W4A16, dense Marlin)
+# NVFP4A16Linear  (compressed-tensors NVFP4 W4A16, dense target-selected GEMM)
 # ---------------------------------------------------------------------------
 
 
-class NVFP4A16MarlinLinear(LinearBase):
-    """Dense NVFP4 (W4A16) linear backed by the Marlin ``Nvfp4A16GemmPlugin``.
+class NVFP4A16Linear(LinearBase):
+    """Dense NVFP4 (W4A16) linear with target-selected plugin identity.
 
-    Checkpoint buffers (ModelOpt ``W4A16_NVFP4``) load raw and are transformed
-    in place by :func:`repacking.repack_nvfp4_a16_marlin_linear`:
+    Checkpoint buffers (ModelOpt ``W4A16_NVFP4``) load raw. Explicit SM110
+    exports transform them into ``BLACKWELL_N128_K64_V1`` and emit
+    ``Nvfp4A16BlackwellGemmPlugin``. Other targets preserve the Marlin repack
+    and ``Nvfp4A16GemmPlugin``. Both decisions use
+    :func:`ops.use_blackwell_nvfp4_a16_gemm` so the buffer layout and ONNX node
+    stay paired.
 
-      ``weight``         [N, K//2]  uint8  -> ``qweight``      [1, K//16, 8*N_pad] int8
-      ``weight_scale``   [N, K//16] f8e4m3 -> ``block_scales`` [1, K//16, N_pad]    int8
-      ``weight_scale_2`` scalar     f32    -> ``global_scale`` [1]                   fp16
+    Marlin buffers are ``qweight [1,K/16,8*N_pad]``, block scales
+    ``[1,K/16,N_pad]``, and a pre-scaled FP16 global multiplier. Blackwell
+    buffers are ``qweight [N_pad/128,K/64,128,32]``, block scales
+    ``[N_pad/128,K/64,128,4]``, and the original FP32 global multiplier.
 
     ``out_features`` is the logical N; the plugin emits the padded width and the
     forward slices back to ``out_features``.
 
-    Activations stay FP16 end-to-end: the Marlin kernel has an FP16 (half2)
-    E2M1 path, so no BF16 cast is needed. ``global_scale`` is repacked as FP16
-    (pre-scaled by ``2**7``).
+    Marlin accepts FP16 activations. Blackwell accepts FP16 or BF16 and
+    preserves the activation dtype at the output.
     """
 
     def __init__(
@@ -658,21 +707,36 @@ class NVFP4A16MarlinLinear(LinearBase):
             self.register_buffer("bias", torch.empty(out_features))
         else:
             self.bias = None
+        self._use_blackwell_gemm = use_blackwell_nvfp4_a16_gemm()
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        _require_fp16_input(hidden_states, "NVFP4A16MarlinLinear")
-        out = nvfp4_a16_gemm(
-            hidden_states,
-            self.qweight,
-            self.block_scales,
-            self.global_scale,
-            self.n_padded,
-            self.in_features,
-        )
+        if self._use_blackwell_gemm:
+            if hidden_states.dtype not in (torch.float16, torch.bfloat16):
+                raise TypeError(
+                    "NVFP4A16Linear Blackwell GEMM expects float16 or "
+                    f"bfloat16 input, got {hidden_states.dtype}")
+            out = nvfp4_a16_blackwell_gemm(
+                hidden_states,
+                self.qweight,
+                self.block_scales,
+                self.global_scale,
+                self.n_padded,
+                self.in_features,
+            )
+        else:
+            _require_fp16_input(hidden_states, "NVFP4A16Linear")
+            out = nvfp4_a16_gemm(
+                hidden_states,
+                self.qweight,
+                self.block_scales,
+                self.global_scale,
+                self.n_padded,
+                self.in_features,
+            )
         if self.n_padded != self.out_features:
             out = out[..., :self.out_features]
         if self.bias is not None:
-            out = out + self.bias.to(torch.float16)
+            out = out + self.bias.to(hidden_states.dtype)
         return out
 
 
@@ -769,6 +833,7 @@ class INT8SQLinear(LinearBase):
 
         x_smooth = x16 * pre_quant_scale                      # Mul
         x_dq = QDQ(x_smooth, input_scale)                     # Q + DQ + Cast
+                                                              #   (W8A8 only)
         w_dq = DequantizeLinear(weight, weight_scale, axis=0)  # DQ + Cast
         output = F.linear(x_dq, w_dq)                         # MatMul
     """
@@ -796,15 +861,16 @@ class INT8SQLinear(LinearBase):
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         _require_fp16_input(hidden_states, "INT8SQLinear")
-        # SmoothQuant activation smoothing (Mul in ONNX)
-        hidden_states_smooth = hidden_states * self.pre_quant_scale
-        # Activation QDQ: QuantizeLinear + DequantizeLinear (per-tensor INT8)
-        hidden_states_dq = int8_sq_act_qdq(hidden_states_smooth,
-                                           self.input_scale)
+        # SmoothQuant activation smoothing (Mul in ONNX). Applied in both regimes:
+        # the stored weight already carries the matching inverse scale.
+        hidden_states = hidden_states * self.pre_quant_scale
+        if self.quantize_activations:
+            # QuantizeLinear + DequantizeLinear (per-tensor INT8)
+            hidden_states = int8_sq_act_qdq(hidden_states, self.input_scale)
         # Weight dequantize: DequantizeLinear (per-channel, axis=0)
         w_dq = int8_sq_weight_dq(self.weight, self.weight_scale)
         bias = self.bias.to(torch.float16) if self.bias is not None else None
-        return F.linear(hidden_states_dq, w_dq, bias)
+        return F.linear(hidden_states, w_dq, bias)
 
 
 # ---------------------------------------------------------------------------
@@ -816,6 +882,11 @@ def is_int4_linear(module: nn.Module) -> bool:
     """Return whether *module* emits an INT4 groupwise GEMM plugin."""
     return isinstance(module,
                       (AWQLinear, ModelOptAWQPrepackedLinear, GPTQLinear))
+
+
+def is_nvfp4_a16_linear(module: nn.Module) -> bool:
+    """Return whether *module* is an NVFP4 W4A16 dense GEMM linear."""
+    return isinstance(module, NVFP4A16Linear)
 
 
 def make_linear(
@@ -848,43 +919,44 @@ def make_linear(
                        Only takes effect when ``config.tp_size > 1``.
     """
     quant_type = module_quant_type(module_name, config)
+    group_size = module_quant_group_size(module_name, config)
 
     # NVFP4 routes through the new composition design.
     tp_mode = TPMode(tp_mode)
     if quant_type == QUANT_NVFP4:
-        method = NVFP4LinearMethod(group_size=config.quant.group_size)
+        method = NVFP4LinearMethod(group_size=group_size)
         if config.tp_size == 1:
-            return ReplicatedLinear(in_features, out_features, bias,
-                                    torch.float16, config.mapping, method)
-        if tp_mode == TPMode.ROW:
-            return RowParallelLinear(in_features, out_features, bias,
+            layer = ReplicatedLinear(in_features, out_features, bias,
                                      torch.float16, config.mapping, method)
-        return ColumnParallelLinear(in_features,
-                                    out_features,
-                                    bias,
-                                    torch.float16,
-                                    config.mapping,
-                                    method,
-                                    tp_mode=tp_mode)
+        elif tp_mode == TPMode.ROW:
+            layer = RowParallelLinear(in_features, out_features, bias,
+                                      torch.float16, config.mapping, method)
+        else:
+            layer = ColumnParallelLinear(in_features,
+                                         out_features,
+                                         bias,
+                                         torch.float16,
+                                         config.mapping,
+                                         method,
+                                         tp_mode=tp_mode)
+        layer.quantize_activations = config.quant.quantize_activations
+        return layer
 
     if quant_type == QUANT_FP16:
         layer = FP16Linear(in_features, out_features, bias)
     elif quant_type == QUANT_FP8:
         layer = FP8Linear(in_features, out_features, bias)
     elif quant_type == QUANT_MXFP8:
-        layer = MXFP8Linear(in_features, out_features, config.quant.group_size,
-                            bias)
+        layer = MXFP8Linear(in_features, out_features, group_size, bias)
     elif quant_type == QUANT_INT4_AWQ:
-        layer = AWQLinear(in_features, out_features, config.quant.group_size,
-                          bias)
+        layer = AWQLinear(in_features, out_features, group_size, bias)
     elif quant_type == QUANT_INT4_AWQ_MODELOPT:
         layer = ModelOptAWQPrepackedLinear(in_features, out_features,
-                                           config.quant.group_size, bias)
+                                           group_size, bias)
     elif quant_type == QUANT_NVFP4_A16:
-        layer = NVFP4A16MarlinLinear(in_features, out_features,
-                                     config.quant.group_size, bias)
+        layer = NVFP4A16Linear(in_features, out_features, group_size, bias)
     elif quant_type == QUANT_INT4_GPTQ:
-        layer = GPTQLinear(in_features, out_features, config.quant.group_size,
+        layer = GPTQLinear(in_features, out_features, group_size,
                            config.quant.gptq_zero_point_offset, bias)
     elif quant_type == QUANT_INT8_SQ:
         layer = INT8SQLinear(in_features, out_features, bias)
@@ -893,4 +965,5 @@ def make_linear(
 
     # Tag with TP sharding mode so the checkpoint loader can shard on assignment.
     layer.tp_mode = tp_mode if config.tp_size > 1 else TPMode.REPLICATED
+    layer.quantize_activations = config.quant.quantize_activations
     return layer

@@ -453,7 +453,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--nemo-evaluator-bin", default="nemo-evaluator")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=0)
-    parser.add_argument("--startup-timeout", type=int, default=600)
+    parser.add_argument("--startup-timeout", type=int, default=1800)
     parser.add_argument("--max-input-len", type=int, default=2048)
     parser.add_argument("--max-batch-size", type=int, default=1)
     parser.add_argument(

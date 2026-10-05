@@ -29,6 +29,9 @@ from __future__ import annotations
 import os
 from typing import Tuple
 
+import cutlass
+import cutlass.cute as cute
+from cutedsl_utils import aot_placeholders
 from cutlass.cute.runtime import from_dlpack
 
 
@@ -52,6 +55,27 @@ def mark_lock_1d(arr, *, assumed_align: int = 16):
     """Mark the 1D int32 serial-split-K semaphore array (one entry per tile)."""
     tensor = from_dlpack(arr, assumed_align=assumed_align)
     return tensor.mark_compact_shape_dynamic(mode=0, stride_order=(0,), divisibility=1)
+
+
+def make_row_major_2d_placeholder(dtype, *, assumed_align: int = 16):
+    """Create a storage-free dynamic row-major descriptor for AOT export."""
+    tensor = aot_placeholders.make_compact_tensor(
+        dtype,
+        (cute.sym_int32(), cute.sym_int32(divisibility=8)),
+        stride_order=(1, 0),
+        assumed_align=assumed_align,
+    )
+    return tensor
+
+
+def make_lock_placeholder(*, assumed_align: int = 16):
+    """Create a storage-free dynamic split-K semaphore descriptor."""
+    return aot_placeholders.make_compact_tensor(
+        cutlass.Int32,
+        (cute.sym_int32(),),
+        stride_order=(0,),
+        assumed_align=assumed_align,
+    )
 
 
 def export_compiled_kernel(

@@ -142,11 +142,29 @@ TEST(ContextCacheDeploymentTests, ClassifiesSupportedVanillaHybridAndPureRecurre
     EXPECT_FALSE(recurrentProfile.specReuseContract.has_value());
 }
 
-TEST(ContextCacheDeploymentTests, RejectsBlockDiffusion)
+TEST(ContextCacheDeploymentTests, AdmitsPromptOnlyBlockDiffusionAndRejectsUnsupportedVariants)
 {
     DeploymentConfig deployment{makeAttentionConfig(), std::nullopt, std::nullopt};
     deployment.base.isDiffusionBackbone = true;
 
+    ContextCacheDeploymentProfile const profile = validateContextCacheDeployment(deployment);
+    EXPECT_EQ(profile.baseStateKind, ContextCacheModelStateKind::kAttentionOnly);
+    EXPECT_FALSE(profile.isSpeculative());
+
+    deployment.base.numLinearAttnLayers = 1;
+    deployment.base.numDecoderLayers += 1;
+    deployment.base.layerTypes.push_back(HybridCacheManager::LayerType::kMamba);
+    deployment.base.recurrentStateNumHeads = 16;
+    deployment.base.recurrentStateHeadDim = 32;
+    deployment.base.recurrentStateSize = 64;
+    deployment.base.convDim = 256;
+    deployment.base.convKernel = 4;
+    EXPECT_THROW(validateContextCacheDeployment(deployment), std::runtime_error);
+
+    deployment = DeploymentConfig{makeAttentionConfig(), std::nullopt, std::nullopt};
+    deployment.base.isDiffusionBackbone = true;
+    deployment.base.specDecodeType = SpecDecodeMode::kEAGLE;
+    deployment.base.isSpecDecodeBase = true;
     EXPECT_THROW(validateContextCacheDeployment(deployment), std::runtime_error);
 }
 

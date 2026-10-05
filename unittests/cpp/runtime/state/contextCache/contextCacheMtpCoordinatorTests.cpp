@@ -143,7 +143,7 @@ protected:
         mDraftCache = std::make_unique<HybridCacheManager>(makeCacheConfig(*mDeployment.draft), mStream);
         mBasePageTable = makePageTable(*mBaseCache);
         mDraftPageTable = makePageTable(*mDraftCache);
-        mHidden = std::make_unique<Tensor>(Coords{kMAX_BATCH, kMAX_SEQUENCE_LENGTH, kHIDDEN_SIZE},
+        mHidden = std::make_unique<Tensor>(Coords{kMAX_BATCH * kMAX_SEQUENCE_LENGTH, kHIDDEN_SIZE},
             trt_edgellm::rt::DeviceType::kGPU, DataType::kHALF, "ContextCacheMtpCoordinatorTests::hidden");
         ASSERT_EQ(cudaStreamSynchronize(mStream), cudaSuccess);
         createCoordinator();
@@ -211,7 +211,7 @@ protected:
         admission.speculativeRequest = speculativeRequest;
         DecodingKvHeadroom const headroom = speculativeRequest ? DecodingKvHeadroom{4, 2} : DecodingKvHeadroom{1, 0};
         admission.lookupPolicy = lookupPolicy;
-        admission.sequences.push_back(ContextCacheSequenceAdmission{std::move(tokens), {}});
+        admission.sequences.push_back(ContextCacheSequenceAdmission{std::move(tokens), {}, {}, ResidentRef{0, 1}});
         ContextCacheCoordinator::BeginRequestResult result = mCoordinator->beginRequest(admission, headroom, mStream);
         EXPECT_EQ(result.status, ContextCacheCoordinatorStatus::kOk);
         EXPECT_TRUE(result.admission.has_value());

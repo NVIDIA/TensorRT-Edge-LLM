@@ -1,5 +1,6 @@
-# Runtime-only server dependencies. Install the project extras `server-tools`
-# for tool chat templates and `native-build` when compiling pybind bindings.
+# Runtime-only server dependencies. Install the project extra `server-tools`
+# when building engines from checkpoints and `native-build` when compiling
+# pybind bindings from a source checkout.
 fastapi==0.139.2
 uvicorn==0.51.0
 huggingface-hub>=1.5.0,<2.0

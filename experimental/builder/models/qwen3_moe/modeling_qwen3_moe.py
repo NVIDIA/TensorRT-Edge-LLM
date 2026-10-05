@@ -32,6 +32,7 @@ from ...ops import (BuildContext, GatedExperts, GatedMLP, Linear, Module,
                     NetworkModule, RMSNorm, Tensor, TopKRouter)
 from ...ops import functional as F
 from ...ops import prepare_gated_int4_weights, prepare_gated_nvfp4_weights
+from ...ops.ragged import RaggedDecoderInputs, add_ragged_decoder_inputs
 from . import weights as weight_conversion
 from .modeling_qwen3_moe_layers import Qwen3MoeAttention
 
@@ -105,9 +106,8 @@ class Qwen3MoeSparseMoeBlock(Module):
         elif cfg.quant_type == quantization.QUANT_INT4_GPTQ:
 
             def materialize_int4():
-                load_projection = partial(
-                    weight_conversion.load_gptq_expert_projection,
-                    self.weights, self.experts.prefix)
+                load_projection = partial(self.weights.gptq_expert_projection,
+                                          self.experts.prefix)
                 return prepare_gated_int4_weights(self.ctx, load_projection)
 
             moe_weights = self.weights.parameter_value(
@@ -158,17 +158,14 @@ class Qwen3MoeDecoderLayer(Module):
         hidden_states: Tensor,
         past_key_value: Tensor,
         rope_rotary_cos_sin: Tensor,
-        context_lengths: Tensor,
-        kvcache_start_index: Tensor,
-        kv_page_table: Tensor,
+        ragged: RaggedDecoderInputs,
         attention_mask: Tensor = None,
         attention_pos_id: Tensor = None,
     ) -> Tuple[Tensor, Tensor]:
         normed = self.input_layernorm(hidden_states)
         attn_output, present_key_value = self.self_attn(
-            normed, past_key_value, rope_rotary_cos_sin, context_lengths,
-            kvcache_start_index, kv_page_table, attention_mask,
-            attention_pos_id)
+            normed, past_key_value, rope_rotary_cos_sin, ragged,
+            attention_mask, attention_pos_id)
         hidden_states = hidden_states + attn_output
 
         normed = self.post_attention_layernorm(hidden_states)
@@ -196,9 +193,7 @@ class Qwen3MoeModel(Module):
         inputs_embeds: Tensor,
         past_key_values: List[Tensor],
         rope_rotary_cos_sin: Tensor,
-        context_lengths: Tensor,
-        kvcache_start_index: Tensor,
-        kv_page_table: Tensor,
+        ragged: RaggedDecoderInputs,
         attention_mask: Tensor = None,
         attention_pos_id: Tensor = None,
     ) -> Tuple[Tensor, List[Tensor], List[Tensor]]:
@@ -210,9 +205,7 @@ class Qwen3MoeModel(Module):
                         len(self.layers))
             hidden_states, present = layer(hidden_states,
                                            past_key_values[layer_idx],
-                                           rope_rotary_cos_sin,
-                                           context_lengths,
-                                           kvcache_start_index, kv_page_table,
+                                           rope_rotary_cos_sin, ragged,
                                            attention_mask, attention_pos_id)
             present_key_values.append(present)
             all_hidden_states.append(hidden_states)
@@ -236,7 +229,7 @@ class Qwen3MoeForCausalLM(NetworkModule):
         hidden = cfg.hidden_size
         result = {
             "inputs_embeds":
-            self.add_input("inputs_embeds", trt.float16, (-1, -1, hidden)),
+            self.add_input("inputs_embeds", trt.float16, (-1, hidden)),
             "past_key_values": [
                 self.add_input(f"past_key_values_{i}", kv_dtype,
                                (2, -1, F.KV_PAGE_SIZE, cfg.num_key_value_heads,
@@ -245,35 +238,27 @@ class Qwen3MoeForCausalLM(NetworkModule):
             ],
             "rope_rotary_cos_sin":
             self.add_input("rope_rotary_cos_sin", trt.float32,
-                           (-1, -1, cfg.rotary_dim)),
-            "context_lengths":
-            self.add_input("context_lengths", trt.int32, (-1, )),
-            "kvcache_start_index":
-            self.add_input("kvcache_start_index", trt.int32, (-1, )),
-            "kv_page_table":
-            self.add_input("kv_page_table", trt.int32, (-1, 2, -1)),
-            "last_token_ids":
-            self.add_input("last_token_ids", trt.int64,
-                           (-1, -1) if cfg.engine_role == "base" else (-1, 1)),
+                           (-1, cfg.rotary_dim)),
         }
+        result.update(add_ragged_decoder_inputs(self.add_input).as_dict())
         if cfg.engine_role == "base":
             result["attention_pos_id"] = self.add_input(
-                "attention_pos_id", trt.int32, (-1, -1))
-            result["attention_mask"] = self.add_input("attention_mask",
-                                                      trt.int32, (-1, -1, -1))
+                "attention_position_ids", trt.int32, (-1, ))
+            result["attention_mask"] = self.add_input("packed_attention_mask",
+                                                      trt.int32, (-1, -1))
         else:
             result["attention_pos_id"] = None
             result["attention_mask"] = None
         return result
 
     def forward(self, **io):
+        ragged = RaggedDecoderInputs.from_dict(io)
         outputs = {}
         hidden_states, present_key_values, all_hidden_states = self.model(
             io["inputs_embeds"], io["past_key_values"],
-            io["rope_rotary_cos_sin"], io["context_lengths"],
-            io["kvcache_start_index"], io["kv_page_table"],
-            io["attention_mask"], io["attention_pos_id"])
-        selected = F.gather_last_tokens(hidden_states, io["last_token_ids"])
+            io["rope_rotary_cos_sin"], ragged, io["attention_mask"],
+            io["attention_pos_id"])
+        selected = F.gather_token_rows(hidden_states, ragged.logits_indices)
         logits16 = self.lm_head(selected)
         logits = F.cast(logits16, trt.float32)
 

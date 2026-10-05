@@ -112,3 +112,16 @@ TEST(SystemPromptKVCacheTests, RejectsEmptyTokenizedPrompt)
     auto const inputIds = makeInputIds(8);
     EXPECT_THROW(computeSystemPromptReuse(makeCache(0, 1), inputIds), std::exception);
 }
+
+TEST(SystemPromptKVCacheTests, ReuseRequiresAnExactSizeSafeTokenPrefix)
+{
+    SystemPromptKVCache cache;
+    cache.tokenizedPrompt = {1, 2, 3};
+
+    EXPECT_TRUE(hasReusableSystemPromptPrefix(cache, {1, 2, 3, 4}));
+    EXPECT_FALSE(hasReusableSystemPromptPrefix(cache, {1, 9, 3, 4}));
+    EXPECT_FALSE(hasReusableSystemPromptPrefix(cache, {1, 2}));
+    EXPECT_FALSE(hasReusableSystemPromptPrefix(cache, {1, 2, 3}));
+    cache.tokenizedPrompt.clear();
+    EXPECT_FALSE(hasReusableSystemPromptPrefix(cache, {1}));
+}

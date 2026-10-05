@@ -30,7 +30,8 @@ from typing import List, Tuple
 import torch
 from torch import nn
 
-from ..default.modeling_default import CausalLM, Transformer
+from ..default.modeling_default import (CausalLM, Transformer,
+                                        _concat_hidden_in_provider_order)
 from ..linear import make_linear
 
 __all__ = ["Qwen3OmniLanguageModel"]
@@ -57,6 +58,25 @@ class Qwen3OmniDenseTransformer(Transformer):
         self.accept_hidden_layer: int = int(
             getattr(config, "accept_hidden_layer", -1))
         self.emitted_hidden_states: "torch.Tensor | None" = None
+        self._ragged_captured_hidden_states: "torch.Tensor | None" = None
+
+    def _after_ragged_layer(self, hidden_states: torch.Tensor,
+                            layer_index: int) -> None:
+        if (self.accept_hidden_layer >= 1
+                and layer_index == self.accept_hidden_layer - 1):
+            self._ragged_captured_hidden_states = hidden_states
+
+    def forward_ragged(self, *args, **kwargs) -> Tuple:
+        self._ragged_captured_hidden_states = None
+        outputs = super().forward_ragged(*args, **kwargs)
+        normed = outputs[0]
+        captured = self._ragged_captured_hidden_states
+        if captured is not None:
+            self.last_pre_norm_hidden_states = captured
+            self.emitted_hidden_states = captured
+        else:
+            self.emitted_hidden_states = normed
+        return outputs
 
     def forward(
         self,
@@ -75,7 +95,7 @@ class Qwen3OmniDenseTransformer(Transformer):
         hidden_states = inputs_embeds
         present_key_values_list: List[torch.Tensor] = []
         all_hidden_states: list = []
-        dflash_hidden_list: list = []
+        dflash_hidden_by_layer: dict[int, torch.Tensor] = {}
         dflash_target_set = set(dflash_target_layer_ids or [])
 
         target_layer = self.accept_hidden_layer
@@ -98,7 +118,7 @@ class Qwen3OmniDenseTransformer(Transformer):
             present_key_values_list.append(next_key_value)
 
             if layer_index in dflash_target_set:
-                dflash_hidden_list.append(hidden_states)
+                dflash_hidden_by_layer[layer_index] = hidden_states
 
             if layer_index < len(deepstack_embeds):
                 hidden_states = hidden_states + deepstack_embeds[layer_index]
@@ -108,8 +128,8 @@ class Qwen3OmniDenseTransformer(Transformer):
 
         self.last_pre_norm_hidden_states = (captured if captured is not None
                                             else hidden_states)
-        self.dflash_hidden_concat = (torch.cat(dflash_hidden_list, dim=-1)
-                                     if dflash_hidden_list else None)
+        self.dflash_hidden_concat = _concat_hidden_in_provider_order(
+            dflash_hidden_by_layer, dflash_target_layer_ids)
 
         normed = self.norm(hidden_states)
 
@@ -181,3 +201,7 @@ class Qwen3OmniLanguageModel(CausalLM):
             hidden_states, last_token_ids)
         logits = self.lm_head(selected_hidden_states).to(torch.float32)
         return logits, self.model.emitted_hidden_states, present_key_values
+
+    def _ragged_emitted_hidden(self) -> torch.Tensor:
+        emitted_hidden = self.model.emitted_hidden_states
+        return emitted_hidden.reshape(-1, emitted_hidden.shape[-1])

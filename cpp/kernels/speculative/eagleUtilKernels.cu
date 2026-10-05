@@ -65,7 +65,8 @@ __global__ void prepareEagleDraftProposalMiscInputKernel(int32_t const* draftTre
     // to proceed with the next round.
     for (int32_t i = tIdx; i < selectTokenLength; i += blockSize)
     {
-        selectTokenIndices[batchIdx * selectTokenLength + i] = draftTreeSize - selectTokenLength + i;
+        selectTokenIndices[batchIdx * selectTokenLength + i]
+            = static_cast<int64_t>(batchIdx) * paddedDraftTreeSize + draftTreeSize - selectTokenLength + i;
     }
 }
 
@@ -164,7 +165,7 @@ __global__ void assembleCasualTreeAndSelectIndicesKernel(int32_t const* sequence
     }
     if (threadIdx.x == 0)
     {
-        selectTokenIndices[batchIdx] = acceptedTokenNum - 1;
+        selectTokenIndices[batchIdx] = static_cast<int64_t>(batchIdx) * maxAcceptedTokenNum + acceptedTokenNum - 1;
         // Use maxAcceptedTokenNum (padded length) instead of acceptedTokenNum (actual length).
         // This ensures the attention kernel computes the correct context K range:
         //   cacheSeqLen = sequenceStartIndices + maxAcceptedTokenNum
@@ -429,7 +430,7 @@ __global__ void updateDraftTreeFullTablesKernel(int32_t const* draftIdTable, flo
 
 __global__ void constructVerificationDraftTreeKernel(int32_t const* draftIdFullTable,
     int32_t const* draftParentFullTable, int32_t const* selectedIndices, int32_t* inputIds, int8_t* draftTreeMask,
-    int32_t const fullTableLength, int32_t const verifyTreeSize)
+    int32_t* parentIds, int32_t const fullTableLength, int32_t const verifyTreeSize)
 {
     int32_t const batchIdx = blockIdx.x;
     int32_t const tIdx = threadIdx.x;
@@ -497,6 +498,13 @@ __global__ void constructVerificationDraftTreeKernel(int32_t const* draftIdFullT
     for (int32_t i = 0; i < attendIter; i++)
     {
         draftTreeMask[verifyTreeOffset + attendedIndices[i]] = 1;
+    }
+
+    if (parentIds != nullptr)
+    {
+        // The walk above matches the immediate predecessor first, so attendedIndices[1] is the
+        // parent's row. The root, and a node whose parent missed the selection, report -1.
+        parentIds[verifyTreeCTAOffset + tIdx] = attendIter >= 2 ? attendedIndices[1] : -1;
     }
 }
 
@@ -670,8 +678,9 @@ __device__ __forceinline__ int64_t eagleResolveKVOffset(int32_t kvSel, int32_t h
 template <int32_t HEAD_DIM, int32_t MAX_PATH, typename KV_T>
 __global__ void eagleBaseCommitKVCacheBatchedKernel(int32_t const* __restrict__ acceptedIndices,
     int32_t const* __restrict__ acceptLengths, int32_t const* __restrict__ kvCacheLengths,
-    KVLayerInfo const* __restrict__ layerInfos, int32_t const activeBatchSize, int32_t const maxDepth,
-    int32_t const* __restrict__ pageTable, int32_t const numPages, int32_t const maxPagesPerSeq)
+    int32_t const* __restrict__ stateIndices, KVLayerInfo const* __restrict__ layerInfos, int32_t const activeBatchSize,
+    int32_t const residentPoolRows, int32_t const maxDepth, int32_t const* __restrict__ pageTable,
+    int32_t const numPages, int32_t const maxPagesPerSeq)
 {
     static_assert(HEAD_DIM == 64 || HEAD_DIM == 128 || HEAD_DIM == 256 || HEAD_DIM == 512,
         "Only HEAD_DIM = 64, 128, 256 or 512 are supported");
@@ -706,6 +715,11 @@ __global__ void eagleBaseCommitKVCacheBatchedKernel(int32_t const* __restrict__ 
     }
 
     int32_t const kvBatchIdx = headIdx / (2 * numKVHeads);
+    int32_t const residentBatchIdx = stateIndices[kvBatchIdx];
+    if (residentBatchIdx < 0 || residentBatchIdx >= residentPoolRows)
+    {
+        return;
+    }
     int32_t const kvHeadIdx = headIdx % (2 * numKVHeads);
     int32_t const kvSel = kvHeadIdx / numKVHeads; // 0 = K-half, 1 = V-half
     int32_t const headInKv = kvHeadIdx % numKVHeads;
@@ -722,7 +736,7 @@ __global__ void eagleBaseCommitKVCacheBatchedKernel(int32_t const* __restrict__ 
         int32_t const acceptedIdx = acceptedIndices[kvBatchIdx * maxDepth + i];
         if (acceptedIdx >= 0 && acceptedIdx + pastKvCacheLength < maxSeqLen)
         {
-            int64_t const srcOffset = eagleResolveKVOffset<HEAD_DIM>(kvSel, headInKv, numKVHeads, kvBatchIdx,
+            int64_t const srcOffset = eagleResolveKVOffset<HEAD_DIM>(kvSel, headInKv, numKVHeads, residentBatchIdx,
                 pastKvCacheLength + acceptedIdx, pageTable, numPages, maxPagesPerSeq, tIdx * DVec<half>::vec_size);
             if (srcOffset >= 0)
             {
@@ -745,7 +759,7 @@ __global__ void eagleBaseCommitKVCacheBatchedKernel(int32_t const* __restrict__ 
     // PHASE 2: Write from local temp buffer to final positions
     for (int32_t i = 1; i < actualAcceptLength; ++i)
     {
-        int64_t const dstOffset = eagleResolveKVOffset<HEAD_DIM>(kvSel, headInKv, numKVHeads, kvBatchIdx,
+        int64_t const dstOffset = eagleResolveKVOffset<HEAD_DIM>(kvSel, headInKv, numKVHeads, residentBatchIdx,
             pastKvCacheLength + i, pageTable, numPages, maxPagesPerSeq, tIdx * DVec<half>::vec_size);
         if (dstOffset >= 0)
         {
@@ -762,20 +776,7 @@ __global__ void eagleBaseAssembleHiddenStateKernel(int32_t const* acceptedIndice
 {
     DVec<half> tempBuffer[MAX_PATH];
 
-    // The kernel performs INPLACE compaction of accepted tokens within the same buffer.
-    // Since maxAcceptDepth (e.g., 7) << numTokens (e.g., 60), we can safely write compacted
-    // data at the beginning of each batch's region without overwriting unread data.
-    //
-    // Assumptions:
-    //     1. Each thread copies 16 bytes of data (half[8]), each warp copies 512 bytes (half[256]) per iteration.
-    //     2. Each CTA contains 128 threads (4 warps), total of 128*8=1024 elements.
-    //         Since hiddenDim can be very large, each CTA handles part of a batch.
-    //     3. acceptedIndices has layout [batch, max-depth]
-    //     4. hiddenState buffer has layout [batch, num-tokens, hidden-dim]
-    //     5. Output will be compacted inplace to [batch, actual-accept-length, hidden-dim]
-
-    int32_t const batchIdx = blockIdx.x;
-    int32_t const dimIdx = blockIdx.y * blockDim.x + threadIdx.x;
+    int32_t const dimIdx = blockIdx.x * blockDim.x + threadIdx.x;
     int32_t const startIdx = dimIdx * DVec<half>::vec_size;
 
     if (startIdx >= hiddenDim)
@@ -783,55 +784,57 @@ __global__ void eagleBaseAssembleHiddenStateKernel(int32_t const* acceptedIndice
         return;
     }
 
-    int32_t const actualAcceptLength = acceptLengths[batchIdx];
-
-    // Input uses stride=numTokens (e.g., verifyTreeSize=60)
-    int32_t const inputOffset = batchIdx * numTokens * hiddenDim;
-
-    // The accepted token lengths are usually not equal. We will pad the output till
-    // maxAcceptDepth instead of making it a true ragged tensor.
-    int32_t const outputOffset = batchIdx * maxDepth * hiddenDim;
-
-    // PHASE 1: Collect all accepted tokens from INPUT layout (stride=numTokens)
-    // Read from positions scattered in the input space (e.g., [0, 3, 5, 12, ...])
-    for (int32_t i = 0; i < actualAcceptLength; ++i)
+    // Dense in-place output for batch b overlaps the input slab of earlier batches.
+    // A single CTA owns each hidden-dimension tile and visits batches in order, so it
+    // always consumes an earlier slab before a later batch can overwrite that tile.
+    for (int32_t batchIdx = 0; batchIdx < batchSize; ++batchIdx)
     {
-        int32_t const acceptedIdx = acceptedIndices[batchIdx * maxDepth + i];
-        if (acceptedIdx >= 0 && acceptedIdx < numTokens)
+        int32_t const actualAcceptLength = max(0, min(acceptLengths[batchIdx], maxDepth));
+        int32_t const inputOffset = batchIdx * numTokens * hiddenDim;
+        int32_t const outputOffset = batchIdx * maxDepth * hiddenDim;
+
+        for (int32_t i = 0; i < actualAcceptLength; ++i)
         {
-            int32_t const srcOffset = inputOffset + acceptedIdx * hiddenDim + startIdx;
-            tempBuffer[i].load(hiddenState + srcOffset);
+            int32_t const acceptedIdx = acceptedIndices[batchIdx * maxDepth + i];
+            if (acceptedIdx >= 0 && acceptedIdx < numTokens)
+            {
+                int32_t const srcOffset = inputOffset + acceptedIdx * hiddenDim + startIdx;
+                tempBuffer[i].load(hiddenState + srcOffset);
+            }
+            else
+            {
+                tempBuffer[i] = DVec<half>{};
+            }
         }
-    }
-
-    // PHASE 2: Write to compacted OUTPUT layout (stride=maxDepth)
-    // Write to consecutive positions in the compacted space (e.g., [0, 1, 2, 3, ...])
-    // This is safe because outputOffset <= inputOffset (since maxDepth < numTokens)
-    for (int32_t i = 0; i < actualAcceptLength; ++i)
-    {
-        int32_t const dstOffset = outputOffset + i * hiddenDim + startIdx;
-        tempBuffer[i].store(hiddenState + dstOffset);
+        for (int32_t i = 0; i < actualAcceptLength; ++i)
+        {
+            int32_t const dstOffset = outputOffset + i * hiddenDim + startIdx;
+            tempBuffer[i].store(hiddenState + dstOffset);
+        }
     }
 }
 
 void eagleBaseCommitKVCache(rt::Tensor const& acceptedIndices, rt::Tensor const& acceptLengths,
-    rt::Tensor const& kvCacheLengths, KVLayerInfo const* deviceLayerInfos, int32_t numLayers, int32_t headDim,
-    int32_t maxKVHeads, int32_t activeBatchSize, int32_t maxDepth, nvinfer1::DataType kvCacheType, cudaStream_t stream,
-    int32_t const* pageTable, int32_t numPages, int32_t maxPagesPerSeq)
+    rt::Tensor const& kvCacheLengths, rt::Tensor const& stateIndices, KVLayerInfo const* deviceLayerInfos,
+    int32_t numLayers, int32_t headDim, int32_t maxKVHeads, int32_t activeBatchSize, int32_t residentPoolRows,
+    int32_t maxDepth, nvinfer1::DataType kvCacheType, cudaStream_t stream, int32_t const* pageTable, int32_t numPages,
+    int32_t maxPagesPerSeq)
 {
     check::check(acceptedIndices.getDeviceType() == rt::DeviceType::kGPU
             && acceptLengths.getDeviceType() == rt::DeviceType::kGPU
-            && kvCacheLengths.getDeviceType() == rt::DeviceType::kGPU,
+            && kvCacheLengths.getDeviceType() == rt::DeviceType::kGPU
+            && stateIndices.getDeviceType() == rt::DeviceType::kGPU,
         "Device type shall all be GPU for these tensors.");
     check::check(acceptedIndices.getDataType() == DataType::kINT32 && acceptLengths.getDataType() == DataType::kINT32
-            && kvCacheLengths.getDataType() == DataType::kINT32,
-        "acceptedIndices, acceptLengths, and kvCacheLengths should be INT32.");
+            && kvCacheLengths.getDataType() == DataType::kINT32 && stateIndices.getDataType() == DataType::kINT32,
+        "acceptedIndices, acceptLengths, kvCacheLengths, and stateIndices should be INT32.");
     check::check(kvCacheType == DataType::kHALF || kvCacheType == DataType::kFP8, "kvCacheType should be HALF or FP8.");
     check::check(deviceLayerInfos != nullptr, "deviceLayerInfos must not be null.");
     check::check(pageTable != nullptr, "pageTable must not be null.");
     check::check(numPages > 0, "numPages must be positive.");
     check::check(numPages <= rt::kMAX_KV_POOL_PAGES, "numPages exceeds the supported paged-KV pool limit.");
     check::check(maxPagesPerSeq > 0, "maxPagesPerSeq must be positive.");
+    check::check(residentPoolRows > 0, "residentPoolRows must be positive.");
 
     if (numLayers == 0 || activeBatchSize == 0)
     {
@@ -841,9 +844,12 @@ void eagleBaseCommitKVCache(rt::Tensor const& acceptedIndices, rt::Tensor const&
     auto const acceptIndicesShape = acceptedIndices.getShape();
     auto const acceptLengthsShape = acceptLengths.getShape();
     auto const kvCacheLengthsShape = kvCacheLengths.getShape();
+    auto const stateIndicesShape = stateIndices.getShape();
     check::check(acceptIndicesShape.getNumDims() == 2, "acceptedIndices should be 2D tensor [batch, max-depth].");
     check::check(acceptLengthsShape.getNumDims() == 1, "acceptLengths should be 1D tensor [batch].");
     check::check(kvCacheLengthsShape.getNumDims() == 1, "kvCacheLengths should be 1D tensor [batch].");
+    check::check(stateIndicesShape.getNumDims() == 1, "stateIndices should be 1D tensor [batch].");
+    check::check(stateIndicesShape[0] == activeBatchSize, "stateIndices length must match activeBatchSize.");
     check::check(
         static_cast<int32_t>(acceptIndicesShape[1]) == maxDepth, "acceptedIndices second dim must match maxDepth.");
 
@@ -865,6 +871,7 @@ void eagleBaseCommitKVCache(rt::Tensor const& acceptedIndices, rt::Tensor const&
     int32_t const* acceptedIndicesPtr = acceptedIndices.dataPointer<int32_t>();
     int32_t const* acceptLengthsPtr = acceptLengths.dataPointer<int32_t>();
     int32_t const* kvCacheLengthsPtr = kvCacheLengths.dataPointer<int32_t>();
+    int32_t const* stateIndicesPtr = stateIndices.dataPointer<int32_t>();
 
     switch (headDim)
     {
@@ -873,14 +880,16 @@ void eagleBaseCommitKVCache(rt::Tensor const& acceptedIndices, rt::Tensor const&
         {
             eagleBaseCommitKVCacheBatchedKernel<64, kEagleMaxAcceptedPathLength, half>
                 <<<gridDim1, blockDim1, 0, stream>>>(acceptedIndicesPtr, acceptLengthsPtr, kvCacheLengthsPtr,
-                    deviceLayerInfos, activeBatchSize, maxDepth, pageTable, numPages, maxPagesPerSeq);
+                    stateIndicesPtr, deviceLayerInfos, activeBatchSize, residentPoolRows, maxDepth, pageTable, numPages,
+                    maxPagesPerSeq);
         }
         else
         {
 #if SUPPORTS_FP8
             eagleBaseCommitKVCacheBatchedKernel<64, kEagleMaxAcceptedPathLength, __nv_fp8_e4m3>
                 <<<gridDim1, blockDim1, 0, stream>>>(acceptedIndicesPtr, acceptLengthsPtr, kvCacheLengthsPtr,
-                    deviceLayerInfos, activeBatchSize, maxDepth, pageTable, numPages, maxPagesPerSeq);
+                    stateIndicesPtr, deviceLayerInfos, activeBatchSize, residentPoolRows, maxDepth, pageTable, numPages,
+                    maxPagesPerSeq);
 #else
             throw std::runtime_error("FP8 KV cache requested but CUDA_VERSION < 11080 (cuda_fp8.h unavailable).");
 #endif
@@ -891,14 +900,16 @@ void eagleBaseCommitKVCache(rt::Tensor const& acceptedIndices, rt::Tensor const&
         {
             eagleBaseCommitKVCacheBatchedKernel<128, kEagleMaxAcceptedPathLength, half>
                 <<<gridDim1, blockDim1, 0, stream>>>(acceptedIndicesPtr, acceptLengthsPtr, kvCacheLengthsPtr,
-                    deviceLayerInfos, activeBatchSize, maxDepth, pageTable, numPages, maxPagesPerSeq);
+                    stateIndicesPtr, deviceLayerInfos, activeBatchSize, residentPoolRows, maxDepth, pageTable, numPages,
+                    maxPagesPerSeq);
         }
         else
         {
 #if SUPPORTS_FP8
             eagleBaseCommitKVCacheBatchedKernel<128, kEagleMaxAcceptedPathLength, __nv_fp8_e4m3>
                 <<<gridDim1, blockDim1, 0, stream>>>(acceptedIndicesPtr, acceptLengthsPtr, kvCacheLengthsPtr,
-                    deviceLayerInfos, activeBatchSize, maxDepth, pageTable, numPages, maxPagesPerSeq);
+                    stateIndicesPtr, deviceLayerInfos, activeBatchSize, residentPoolRows, maxDepth, pageTable, numPages,
+                    maxPagesPerSeq);
 #else
             throw std::runtime_error("FP8 KV cache requested but CUDA_VERSION < 11080 (cuda_fp8.h unavailable).");
 #endif
@@ -909,14 +920,16 @@ void eagleBaseCommitKVCache(rt::Tensor const& acceptedIndices, rt::Tensor const&
         {
             eagleBaseCommitKVCacheBatchedKernel<256, kEagleMaxAcceptedPathLength, half>
                 <<<gridDim1, blockDim1, 0, stream>>>(acceptedIndicesPtr, acceptLengthsPtr, kvCacheLengthsPtr,
-                    deviceLayerInfos, activeBatchSize, maxDepth, pageTable, numPages, maxPagesPerSeq);
+                    stateIndicesPtr, deviceLayerInfos, activeBatchSize, residentPoolRows, maxDepth, pageTable, numPages,
+                    maxPagesPerSeq);
         }
         else
         {
 #if SUPPORTS_FP8
             eagleBaseCommitKVCacheBatchedKernel<256, kEagleMaxAcceptedPathLength, __nv_fp8_e4m3>
                 <<<gridDim1, blockDim1, 0, stream>>>(acceptedIndicesPtr, acceptLengthsPtr, kvCacheLengthsPtr,
-                    deviceLayerInfos, activeBatchSize, maxDepth, pageTable, numPages, maxPagesPerSeq);
+                    stateIndicesPtr, deviceLayerInfos, activeBatchSize, residentPoolRows, maxDepth, pageTable, numPages,
+                    maxPagesPerSeq);
 #else
             throw std::runtime_error("FP8 KV cache requested but CUDA_VERSION < 11080 (cuda_fp8.h unavailable).");
 #endif
@@ -927,14 +940,16 @@ void eagleBaseCommitKVCache(rt::Tensor const& acceptedIndices, rt::Tensor const&
         {
             eagleBaseCommitKVCacheBatchedKernel<512, kEagleMaxAcceptedPathLength, half>
                 <<<gridDim1, blockDim1, 0, stream>>>(acceptedIndicesPtr, acceptLengthsPtr, kvCacheLengthsPtr,
-                    deviceLayerInfos, activeBatchSize, maxDepth, pageTable, numPages, maxPagesPerSeq);
+                    stateIndicesPtr, deviceLayerInfos, activeBatchSize, residentPoolRows, maxDepth, pageTable, numPages,
+                    maxPagesPerSeq);
         }
         else
         {
 #if SUPPORTS_FP8
             eagleBaseCommitKVCacheBatchedKernel<512, kEagleMaxAcceptedPathLength, __nv_fp8_e4m3>
                 <<<gridDim1, blockDim1, 0, stream>>>(acceptedIndicesPtr, acceptLengthsPtr, kvCacheLengthsPtr,
-                    deviceLayerInfos, activeBatchSize, maxDepth, pageTable, numPages, maxPagesPerSeq);
+                    stateIndicesPtr, deviceLayerInfos, activeBatchSize, residentPoolRows, maxDepth, pageTable, numPages,
+                    maxPagesPerSeq);
 #else
             throw std::runtime_error("FP8 KV cache requested but CUDA_VERSION < 11080 (cuda_fp8.h unavailable).");
 #endif
@@ -979,16 +994,44 @@ void eagleBaseAssembleHiddenState(
     constexpr uint32_t threadsPerBlock = 128;
     int32_t const numTokens = hiddenStateShape[1];
     int32_t const hiddenDim = hiddenStateShape[2];
+    check::check(maxDepth <= numTokens, "maxDepth must not exceed the number of verify tokens.");
     check::check(hiddenDim % vecSize == 0, "hiddenDim must be divisible by vecSize.");
 
     uint32_t const dimPerBlock = threadsPerBlock * vecSize;
-    uint32_t const gridY = (hiddenDim + dimPerBlock - 1) / dimPerBlock;
+    uint32_t const gridX = (hiddenDim + dimPerBlock - 1) / dimPerBlock;
     dim3 const blockDim2(threadsPerBlock);
-    dim3 const gridDim2{batchSize, gridY};
+    dim3 const gridDim2{gridX};
 
     eagleBaseAssembleHiddenStateKernel<kEagleMaxAcceptedPathLength><<<gridDim2, blockDim2, 0, stream>>>(
         acceptedIndices.dataPointer<int32_t>(), acceptLengths.dataPointer<int32_t>(), hiddenState.dataPointer<half>(),
         batchSize, maxDepth, numTokens, hiddenDim);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+__global__ void clampAcceptLengthsKernel(
+    int32_t* acceptLengths, AcceptLengthBudgets const budgets, int32_t slotOffset, int32_t numSlots)
+{
+    int32_t const slot = static_cast<int32_t>(threadIdx.x);
+    if (slot < numSlots)
+    {
+        int32_t const acceptLength = acceptLengths[slotOffset + slot];
+        acceptLengths[slotOffset + slot] = max(0, min(acceptLength, budgets.remaining[slot]));
+    }
+}
+
+void clampAcceptLengths(rt::Tensor& acceptLengths, AcceptLengthBudgets const& budgets, int32_t slotOffset,
+    int32_t numSlots, cudaStream_t stream)
+{
+    check::check(acceptLengths.getDeviceType() == rt::DeviceType::kGPU, "acceptLengths shall reside on the GPU.");
+    check::check(acceptLengths.getDataType() == DataType::kINT32, "acceptLengths should be INT32.");
+    check::check(acceptLengths.getShape().getNumDims() == 1, "acceptLengths should be 1D tensor [batch].");
+    check::check(numSlots > 0 && numSlots <= kMaxAcceptLengthBudgetsPerLaunch,
+        "numSlots must be in [1, kMaxAcceptLengthBudgetsPerLaunch].");
+    check::check(slotOffset >= 0 && static_cast<int64_t>(slotOffset) + numSlots <= acceptLengths.getShape()[0],
+        "Clamped slot range exceeds acceptLengths.");
+
+    clampAcceptLengthsKernel<<<1, kMaxAcceptLengthBudgetsPerLaunch, 0, stream>>>(
+        acceptLengths.dataPointer<int32_t>(), budgets, slotOffset, numSlots);
     CUDA_CHECK(cudaGetLastError());
 }
 
@@ -1235,7 +1278,8 @@ void updateDraftTreeFullTables(rt::Tensor const& draftIdTable, rt::Tensor const&
 }
 
 void constructVerificationDraftTree(rt::Tensor const& draftIdFullTable, rt::Tensor const& draftParentFullTable,
-    rt::Tensor const& selectedIndices, rt::Tensor& inputIds, rt::Tensor& draftTreeMask, cudaStream_t stream)
+    rt::Tensor const& selectedIndices, rt::Tensor& inputIds, rt::Tensor& draftTreeMask,
+    rt::OptionalOutputTensor const& parentIds, cudaStream_t stream)
 {
     check::check(draftIdFullTable.getDeviceType() == rt::DeviceType::kGPU
             && draftParentFullTable.getDeviceType() == rt::DeviceType::kGPU
@@ -1259,7 +1303,8 @@ void constructVerificationDraftTree(rt::Tensor const& draftIdFullTable, rt::Tens
     dim3 gridDim{static_cast<uint32_t>(batchSize)};
     constructVerificationDraftTreeKernel<<<gridDim, blockDim, 0, stream>>>(draftIdFullTable.dataPointer<int32_t>(),
         draftParentFullTable.dataPointer<int32_t>(), selectedIndices.dataPointer<int32_t>(),
-        inputIds.dataPointer<int32_t>(), draftTreeMask.dataPointer<int8_t>(), fullTableLength, verifyTreeSize);
+        inputIds.dataPointer<int32_t>(), draftTreeMask.dataPointer<int8_t>(),
+        parentIds.has_value() ? parentIds->get().dataPointer<int32_t>() : nullptr, fullTableLength, verifyTreeSize);
 }
 
 } // namespace kernel

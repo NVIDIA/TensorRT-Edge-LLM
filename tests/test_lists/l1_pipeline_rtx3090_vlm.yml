@@ -115,8 +115,8 @@ tests:
   - tests/defs/test_vlm_pipeline.py::TestVLMPipeline::test_e2e_bench[Phi-4-multimodal-instruct-int4_awq-mxsl8192-mxbs2-mxil7168-mnit256-mxit6400-mxpiit1280-coco-bs1]
   - tests/defs/test_vlm_pipeline.py::TestVLMPipeline::test_e2e_bench[Phi-4-multimodal-instruct-int4_awq-mxsl8192-mxbs2-mxil7168-mnit256-mxit6400-mxpiit1280-coco-bs2]
 
-  - tests/defs/test_vlm_pipeline.py::TestVLMPipeline::test_engine_build[InternVL3-1B-GPTQ-Int4-int4_gptq-mxsl12288-mxbs2-mxil12288-mnit256-mxit12288-mxpiit1792]
-  - tests/defs/test_vlm_pipeline.py::TestVLMPipeline::test_e2e_bench[InternVL3-1B-GPTQ-Int4-int4_gptq-mxsl12288-mxbs2-mxil12288-mnit256-mxit12288-mxpiit1792-mmmu-bs1]
+  - tests/defs/test_vlm_pipeline.py::TestVLMPipeline::test_engine_build[InternVL3-1B-INT4-AWQ-int4_awq-mxsl12288-mxbs2-mxil12288-mnit256-mxit12288-mxpiit1792]
+  - tests/defs/test_vlm_pipeline.py::TestVLMPipeline::test_e2e_bench[InternVL3-1B-INT4-AWQ-int4_awq-mxsl12288-mxbs2-mxil12288-mnit256-mxit12288-mxpiit1792-mmmu-bs1]
 
   - tests/defs/test_vlm_pipeline.py::TestVLMPipeline::test_engine_build[Qwen2.5-VL-7B-Instruct-fp16-mxsl8192-eagle-v2-fp16-mxbs4-mxil7168-mnit128-mxit6400-mxpiit1280]
   - tests/defs/test_vlm_pipeline.py::TestVLMPipeline::test_e2e_bench[Qwen2.5-VL-7B-Instruct-fp16-mxsl8192-eagle-v2-fp16-mxbs4-mxil7168-mnit128-mxit6400-mxpiit1280-coco-bs4]

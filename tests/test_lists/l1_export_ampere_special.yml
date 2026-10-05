@@ -11,7 +11,7 @@ tests:
 
   # GPTQ pre-quantized exports
   - tests/defs/test_checkpoint_export.py::test_checkpoint_export[Qwen3-30B-A3B-GPTQ-Int4-int4_gptq]
-  - tests/defs/test_checkpoint_export.py::test_checkpoint_export[InternVL3-1B-GPTQ-Int4-int4_gptq]
+  - tests/defs/test_checkpoint_export.py::test_checkpoint_export[InternVL3-1B-INT4-AWQ-int4_awq]
 
   # LoRA exports
   - tests/defs/test_checkpoint_export.py::test_checkpoint_export[Qwen3-VL-4B-Instruct-fp16-lora]

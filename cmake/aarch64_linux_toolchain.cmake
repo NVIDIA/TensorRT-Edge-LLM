@@ -1,5 +1,5 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES.
-# All rights reserved. SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION &
+# AFFILIATES. All rights reserved. SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may not
 # use this file except in compliance with the License. You may obtain a copy of
@@ -65,6 +65,15 @@ if("${EMBEDDED_TARGET}" STREQUAL "auto-thor")
 elseif("${EMBEDDED_TARGET}" STREQUAL "jetson-thor")
   set_ifndef(CUDA_CTK_VERSION 13.0)
   set(CMAKE_CUDA_ARCHITECTURES 110a)
+  set(CUDA_DIR
+      /usr/local/cuda/targets/sbsa-linux
+      CACHE STRING "CUDA toolkit dir")
+elseif("${EMBEDDED_TARGET}" STREQUAL "igx-thor")
+  set_ifndef(CUDA_CTK_VERSION 13.0)
+  if(CUDA_CTK_VERSION VERSION_LESS 13.0)
+    message(FATAL_ERROR "EMBEDDED_TARGET=igx-thor requires CUDA 13 or newer.")
+  endif()
+  set(CMAKE_CUDA_ARCHITECTURES 110a 120)
   set(CUDA_DIR
       /usr/local/cuda/targets/sbsa-linux
       CACHE STRING "CUDA toolkit dir")

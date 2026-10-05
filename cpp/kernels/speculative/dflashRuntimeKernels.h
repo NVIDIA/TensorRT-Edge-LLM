@@ -28,31 +28,28 @@ namespace kernel
 
 /// Launch the DFlash target KV cache update kernel.
 ///
-/// Applies RoPE to k_delta and writes k_rope + v_delta into the paged KV pool
-/// at positions [deltaStart, deltaStart + deltaLen) for each batch element.
+/// Applies RoPE to token-major K deltas and writes K/V deltas into their owning sequences' paged KV cache.
 ///
-/// @param kDelta       [B, deltaLen, numKVHeads, headDim] FP16, k_normed, no RoPE
-/// @param vDelta       [B, deltaLen, numKVHeads, headDim] FP16
+/// @param kDelta       [numDeltaTokens, numKVHeads, headDim] FP16, k_normed, no RoPE
+/// @param vDelta       [numDeltaTokens, numKVHeads, headDim] FP16
 /// @param kvCache      Paged KV pool [2, numPages, kTOKENS_PER_PAGE, numKVHeads, headDim] FP16 (in/out).
-/// @param cosSinCache  [cosSinBatch, cosSinSeqLen, rotaryDim] FP32
-/// @param deltaStartPositions [B] INT32
+/// @param tokenAlignedCosSin [numDeltaTokens, rotaryDim] FP32
+/// @param deltaPositions [numDeltaTokens] absolute KV positions; negative values are padding
+/// @param deltaTokenToSequence [numDeltaTokens] owning sequence indices; negative values are padding
 /// @param pageTable    [B, 2, maxPagesPerSeq] canonical page ids: K in [0, numPages), V in
 ///                     [numPages, 2 * numPages). Unmapped or out-of-plane ids skip that cache plane.
+/// @param numDeltaTokens Physical token-major row count
 /// @param batchSize    ACTIVE batch size
-/// @param deltaLen     number of delta tokens per batch
 /// @param numKVHeads   number of KV heads
 /// @param headDim      head dimension
 /// @param rotaryDim    rotary embedding dimension
-/// @param cosSinBatch  cos/sin cache batch size (1 or B)
-/// @param cosSinSeqLen cos/sin cache sequence length
 /// @param numPages     Number of physical pages in each KV plane
 /// @param maxPagesPerSeq Logical pages per sequence; positions outside this capacity are skipped
 /// @param stream       CUDA stream
-/// @param deltaLengths  [B] INT32, per-batch delta lengths (skip t >= deltaLengths[b])
-void launchDFlashTargetKVCacheUpdate(half const* kDelta, half const* vDelta, half* kvCache, float const* cosSinCache,
-    int32_t const* deltaStartPositions, int32_t const* deltaLengths, int32_t const* pageTable, int32_t batchSize,
-    int32_t deltaLen, int32_t numKVHeads, int32_t headDim, int32_t rotaryDim, int32_t cosSinBatch, int32_t cosSinSeqLen,
-    int32_t numPages, int32_t maxPagesPerSeq, cudaStream_t stream);
+void launchDFlashTargetKVCacheUpdate(half const* kDelta, half const* vDelta, half* kvCache,
+    float const* tokenAlignedCosSin, int32_t const* deltaPositions, int32_t const* deltaTokenToSequence,
+    int32_t const* pageTable, int32_t numDeltaTokens, int32_t batchSize, int32_t numKVHeads, int32_t headDim,
+    int32_t rotaryDim, int32_t numPages, int32_t maxPagesPerSeq, cudaStream_t stream);
 
 /// Validate that a RoPE cos/sin cache covers every position DFlash's target-KV update can write.
 ///
@@ -82,7 +79,21 @@ void checkDFlashRopeCapacity(int32_t cosSinSeqLen, int32_t kvCapacity);
 /// @param stream       CUDA stream
 void launchDFlashPrepareProposalInputs(int32_t const* oldDraftCacheLengths, int32_t const* deltaLengths,
     int32_t blockSize, int32_t* packedAttentionMask, int32_t* attentionPosId, int32_t* contextLengths,
-    bool causalProposalMask, int32_t batchSize, cudaStream_t stream);
+    int32_t* positions, int32_t* queryStartOffsets, int32_t* queryLengths, int32_t* pastLengths,
+    int32_t* attentionSequenceLengths, int32_t const* stateIndices, bool causalProposalMask, int32_t batchSize,
+    cudaStream_t stream);
+
+void launchDFlashPrepareDeltaMetadata(int32_t const* oldDraftCacheLengths, int32_t const* deltaLengths,
+    int32_t deltaWidth, int32_t* deltaPositions, int32_t* deltaTokenToSequence, int32_t batchSize, cudaStream_t stream);
+
+void launchDFlashGatherDeltaRope(float const* source, float* output, int32_t const* deltaPositions,
+    int32_t const* deltaTokenToSequence, int32_t const* stateIndices, int32_t numDeltaTokens, int32_t batchSize,
+    int32_t sourceRows, int32_t cacheCapacity, int32_t rotaryDim, cudaStream_t stream);
+
+void launchPrepareSpecRaggedMetadata(int32_t const* attentionPositions, int32_t const* committedPastLengths,
+    int32_t const* validCounts, int32_t queryWidth, int32_t* positions, int32_t* queryStartOffsets,
+    int32_t* queryLengths, int32_t* pastLengths, int32_t* attentionSequenceLengths, int32_t* treeParentIds,
+    int32_t* treeDepths, bool synthesizeLinearTree, int32_t batchSize, cudaStream_t stream);
 
 /// Launch kernel to prepare DFlash base verification attention inputs.
 ///
@@ -102,6 +113,11 @@ void launchDFlashPrepareProposalInputs(int32_t const* oldDraftCacheLengths, int3
 void launchDFlashPrepareBaseVerifyInputs(int32_t const* baseKVCacheLengths, int32_t verifySize,
     int32_t* packedAttentionMask, int32_t* attentionPosId, int64_t* selectTokenIndices, int32_t* contextLengths,
     int32_t batchSize, cudaStream_t stream);
+
+/// Populate tree metadata for a linear verification path.
+/// Node zero is the root; every later node has the previous node as its parent.
+void launchDFlashBuildLinearTreeMetadata(
+    int32_t* treeParentIds, int32_t* treeDepths, int32_t batchSize, int32_t verifySize, cudaStream_t stream);
 
 /// Launch kernel to build DFlash linear verification inputs for EAGLE accept.
 ///

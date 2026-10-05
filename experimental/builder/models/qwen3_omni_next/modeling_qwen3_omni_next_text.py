@@ -21,7 +21,8 @@ import tensorrt as trt
 
 from ...core import config
 from ...ops import (GatedDecoderAttention, GatedDeltaNet, GatedMLP, Linear,
-                    Module, NetworkModule, RMSNorm)
+                    Module, NetworkModule, RaggedDecoderInputs, RMSNorm,
+                    add_ragged_decoder_inputs)
 from ...ops import functional as F
 
 LOGGER = logging.getLogger("builder.qwen3_omni_next.thinker")
@@ -32,6 +33,48 @@ __all__ = [
     "Qwen3OmniNextThinkerModel",
     "Qwen3OmniNextThinker",
 ]
+
+
+class Qwen3OmniNextGatedDeltaNet(GatedDeltaNet):
+    """Provider-fused Qwen3-Next linear-attention projections."""
+
+    replicated_controls = False
+
+    def _init_input_projections(self) -> None:
+        self.in_proj_qkvz = Linear(self.ctx, self.key("in_proj_qkvz"))
+        self.in_proj_ba = Linear(self.ctx, self.key("in_proj_ba"))
+
+    def _project_inputs(self, hidden_states):
+        gdn = self.cfg.gdn_cfg
+        if gdn.num_value_heads % gdn.num_key_heads:
+            raise ValueError(
+                "Qwen3-Omni-Next value heads must divide into key heads")
+        values_per_key = gdn.num_value_heads // gdn.num_key_heads
+        value_group = values_per_key * gdn.value_head_dim
+        qkvz_group = 2 * gdn.key_head_dim + 2 * value_group
+
+        qkvz = self.in_proj_qkvz(hidden_states).reshape(
+            (0, gdn.num_key_heads, qkvz_group))
+        ba = self.in_proj_ba(hidden_states).reshape(
+            (0, gdn.num_key_heads, 2 * values_per_key))
+
+        offset = 0
+        query = qkvz[:, :, offset:offset + gdn.key_head_dim]
+        offset += gdn.key_head_dim
+        key = qkvz[:, :, offset:offset + gdn.key_head_dim]
+        offset += gdn.key_head_dim
+        value = qkvz[:, :, offset:offset + value_group]
+        offset += value_group
+        gate = qkvz[:, :, offset:offset + value_group]
+        beta = ba[:, :, :values_per_key]
+        alpha = ba[:, :, values_per_key:]
+
+        mixed = F.concatenate((query.reshape(
+            (0, gdn.key_dim)), key.reshape(
+                (0, gdn.key_dim)), value.reshape((0, gdn.value_dim))), 1)
+        return (mixed, gate.reshape(
+            (0, gdn.value_dim)), beta.reshape((0, gdn.num_value_heads)),
+                alpha.reshape((0, gdn.num_value_heads)))
 
 
 class Qwen3OmniNextAttention(GatedDecoderAttention):
@@ -59,7 +102,8 @@ class Qwen3OmniNextDecoderLayer(Module):
             unit_offset=True)
         self.mlp = self.mlp_class(ctx, self.key("mlp"))
         if layer_type == config.LAYER_GDN:
-            self.mixer = GatedDeltaNet(ctx, self.key("linear_attn"))
+            self.mixer = Qwen3OmniNextGatedDeltaNet(ctx,
+                                                    self.key("linear_attn"))
         elif layer_type == config.LAYER_ATTN:
             self.mixer = Qwen3OmniNextAttention(ctx, self.key("self_attn"))
         else:
@@ -68,30 +112,29 @@ class Qwen3OmniNextDecoderLayer(Module):
 
     def forward(self,
                 hidden_states,
-                context_lengths,
+                ragged,
                 past_key_value=None,
                 rope=None,
-                cache_start=None,
-                kv_page_table=None,
                 conv_state=None,
                 recurrent_state=None,
                 attention_mask=None,
                 attention_pos_id=None,
-                spec_metadata=(),
-                use_ddtree=False,
+                tree_parent_ids=None,
+                tree_depths=None,
+                valid_tree_counts=None,
                 collect_intermediate=False):
         normalized = self.input_layernorm(hidden_states)
         if self.layer_type == config.LAYER_GDN:
             states = self.mixer(normalized, conv_state, recurrent_state,
-                                context_lengths, spec_metadata, use_ddtree,
+                                ragged, tree_parent_ids, tree_depths,
                                 collect_intermediate)
             mixed, conv_out, recurrent_out = states[:3]
             present = (conv_out, recurrent_out, *states[3:])
         else:
             mixed, present = self.mixer(normalized, past_key_value, rope,
-                                        context_lengths, cache_start,
-                                        kv_page_table, attention_mask,
-                                        attention_pos_id)
+                                        ragged, attention_mask,
+                                        attention_pos_id, tree_parent_ids,
+                                        tree_depths, valid_tree_counts)
         hidden_states = hidden_states + mixed
         hidden_states = hidden_states + self.mlp(
             self.post_attention_layernorm(hidden_states))
@@ -154,7 +197,7 @@ class Qwen3OmniNextThinker(NetworkModule):
         io = {
             "inputs_embeds":
             self.add_input("inputs_embeds", trt.float16,
-                           (-1, -1, cfg.hidden_size)),
+                           (-1, cfg.hidden_size)),
             "past_key_values": [
                 self.add_input(f"past_key_values_{index}", kv_dtype,
                                (2, -1, F.KV_PAGE_SIZE, cfg.num_key_value_heads,
@@ -163,16 +206,7 @@ class Qwen3OmniNextThinker(NetworkModule):
             ],
             "rope":
             self.add_input("rope_rotary_cos_sin", trt.float32,
-                           (-1, -1, cfg.rotary_dim)),
-            "context_lengths":
-            self.add_input("context_lengths", trt.int32, (-1, )),
-            "cache_start":
-            self.add_input("kvcache_start_index", trt.int32, (-1, )),
-            "kv_page_table":
-            self.add_input("kv_page_table", trt.int32, (-1, 2, -1)),
-            "last_token_ids":
-            self.add_input("last_token_ids", trt.int64,
-                           (-1, -1) if cfg.engine_role == "base" else (-1, 1)),
+                           (-1, cfg.rotary_dim)),
             "conv_states": [
                 self.add_input(f"conv_state_{index}", trt.float16,
                                (-1, gdn.conv_dim, gdn.conv_kernel))
@@ -186,45 +220,40 @@ class Qwen3OmniNextThinker(NetworkModule):
             ],
             "deepstack_embeds": [
                 self.add_input(f"deepstack_embeds_{index}", trt.float16,
-                               (-1, -1, cfg.hidden_size))
+                               (-1, cfg.hidden_size))
                 for index in range(cfg.num_deepstack_features)
             ],
         }
+        io.update(add_ragged_decoder_inputs(self.add_input).as_dict())
         if cfg.engine_role == "base":
-            io["attention_pos_id"] = self.add_input("attention_pos_id",
-                                                    trt.int32, (-1, -1))
-            io["attention_mask"] = self.add_input("attention_mask", trt.int32,
-                                                  (-1, -1, -1))
-            modern_hybrid_abi = all(
-                F.supports(name, "use_ddtree")
-                for name in ("causal_conv1d", "gated_delta_net"))
-            io["spec_verify_phase_marker"] = (self.add_input(
-                "spec_verify_phase_marker", trt.int32,
-                (-1, )) if modern_hybrid_abi else None)
+            io["attention_pos_id"] = self.add_input("attention_position_ids",
+                                                    trt.int32, (-1, ))
+            io["attention_mask"] = self.add_input("packed_attention_mask",
+                                                  trt.int32, (-1, -1))
             if cfg.dflash_tree_base or cfg.mtp_tree_base:
-                if not modern_hybrid_abi:
-                    raise RuntimeError(
-                        "loaded hybrid operations do not support DDTree inputs"
-                    )
                 io["tree_parent_ids"] = self.add_input("tree_parent_ids",
-                                                       trt.int32, (-1, -1))
+                                                       trt.int32, (-1, ))
                 io["tree_depths"] = self.add_input("tree_depths", trt.int32,
-                                                   (-1, -1))
+                                                   (-1, ))
+                io["valid_tree_counts"] = self.add_input(
+                    "valid_tree_counts", trt.int32, (-1, ))
             else:
                 io["tree_parent_ids"] = None
                 io["tree_depths"] = None
+                io["valid_tree_counts"] = None
         else:
             io.update({
                 "attention_pos_id": None,
                 "attention_mask": None,
-                "spec_verify_phase_marker": None,
                 "tree_parent_ids": None,
                 "tree_depths": None,
+                "valid_tree_counts": None,
             })
         return io
 
     def forward(self, **io):
         hidden_states = io["inputs_embeds"]
+        ragged = RaggedDecoderInputs.from_dict(io)
         present_kv = []
         present_conv = []
         present_recurrent = []
@@ -239,18 +268,14 @@ class Qwen3OmniNextThinker(NetworkModule):
             LOGGER.debug("building Thinker layer %d/%d", layer_index + 1,
                          len(self.model.layers))
             if layer_type == config.LAYER_GDN:
-                metadata = ()
-                if io["spec_verify_phase_marker"] is not None:
-                    metadata = (io["spec_verify_phase_marker"], )
-                    if io["tree_parent_ids"] is not None:
-                        metadata += (io["tree_parent_ids"], io["tree_depths"])
                 hidden_states, states = layer(
                     hidden_states,
-                    io["context_lengths"],
+                    ragged,
                     conv_state=io["conv_states"][state_index],
                     recurrent_state=io["recurrent_states"][state_index],
-                    spec_metadata=metadata,
-                    use_ddtree=io["tree_parent_ids"] is not None,
+                    tree_parent_ids=io["tree_parent_ids"],
+                    tree_depths=io["tree_depths"],
+                    valid_tree_counts=io["valid_tree_counts"],
                     collect_intermediate=self.cfg.engine_role == "base")
                 present_conv.append(states[0])
                 present_recurrent.append(states[1])
@@ -262,13 +287,14 @@ class Qwen3OmniNextThinker(NetworkModule):
             else:
                 hidden_states, present = layer(
                     hidden_states,
-                    io["context_lengths"],
+                    ragged,
                     past_key_value=io["past_key_values"][attention_index],
                     rope=io["rope"],
-                    cache_start=io["cache_start"],
-                    kv_page_table=io["kv_page_table"],
                     attention_mask=io["attention_mask"],
-                    attention_pos_id=io["attention_pos_id"])
+                    attention_pos_id=io["attention_pos_id"],
+                    tree_parent_ids=io["tree_parent_ids"],
+                    tree_depths=io["tree_depths"],
+                    valid_tree_counts=io["valid_tree_counts"])
                 present_kv.append(present)
                 attention_index += 1
             if layer_index < len(io["deepstack_embeds"]):
@@ -277,7 +303,7 @@ class Qwen3OmniNextThinker(NetworkModule):
             all_hidden.append(hidden_states)
 
         normed_hidden = self.model.norm(hidden_states)
-        selected = F.gather_last_tokens(normed_hidden, io["last_token_ids"])
+        selected = F.gather_token_rows(normed_hidden, ragged.logits_indices)
         outputs = {
             "logits": self.lm_head(selected).cast(trt.float32),
             "hidden_states": self.model.emitted_hidden(normed_hidden,

@@ -22,7 +22,8 @@ from typing import Any, Dict, List, Optional
 
 from conftest import RemoteConfig
 
-_SENSITIVE_ENV_KEY_PARTS = ("TOKEN", "PASSWORD", "SECRET", "API_KEY")
+_SENSITIVE_ENV_KEY_PARTS = ("TOKEN", "PASSWORD", "SECRET", "API_KEY",
+                            "SSHPASS")
 _SHARED_STORAGE_UMASK = "0000"
 
 

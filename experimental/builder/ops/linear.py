@@ -15,12 +15,12 @@
 """Checkpoint-backed dense projection shared by model families."""
 
 from dataclasses import replace
-from typing import Optional
+from typing import Optional, Sequence
 
 import numpy as np
 import tensorrt as trt
 
-from ..core import weight_policy
+from ..core import quantization, weight_policy
 from . import functional as F
 from .module import BuildContext, Module
 
@@ -44,25 +44,33 @@ class Linear(Module):
         "gate_up_proj",
         "in_proj",
         "in_proj_qkv",
+        "in_proj_qkvz",
         "in_proj_z",
         "in_proj_b",
         "in_proj_a",
+        "in_proj_ba",
     ))
 
-    def __init__(self,
-                 ctx: BuildContext,
-                 prefix: str,
-                 rank: int = 3,
-                 *,
-                 tensor_parallel: bool = True,
-                 tp_mode: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        ctx: BuildContext,
+        prefix: str,
+        rank: Optional[int] = None,
+        *,
+        tensor_parallel: bool = True,
+        tp_mode: Optional[str] = None,
+        tp_output_segments: Sequence[int] = ()
+    ) -> None:
         super().__init__(ctx, prefix)
         self.rank = rank
         self.tensor_parallel = tensor_parallel
         self.explicit_tp_mode = tp_mode
+        self.tp_output_segments = tuple(
+            int(size) for size in tp_output_segments)
 
     def forward(self, hidden_states, rank: Optional[int] = None):
-        rank = self.rank if rank is None else rank
+        rank = (self.rank if self.rank is not None else
+                hidden_states.ndim) if rank is None else rank
         if not self.tensor_parallel:
             output = F.linear_from_weights(hidden_states,
                                            self.weight_descriptor(),
@@ -73,21 +81,32 @@ class Linear(Module):
 
         tp_mode = self._tp_mode()
         quant_type = self.quant_type()
+        if quant_type == quantization.QUANT_NVFP4_A16:
+            if self.cfg.tp_size > 1:
+                raise NotImplementedError(
+                    "NVFP4-A16 tensor parallelism is not implemented")
+            descriptor = self._full_descriptor(quant_type, False)
+            output = F.nvfp4_a16_linear_from_weights(hidden_states, descriptor,
+                                                     rank,
+                                                     self.ctx.options.sm110)
+            output = self._apply_static_adapter(hidden_states, output,
+                                                "replicated", rank)
+            if self._uses_lora():
+                output = F.dynamic_lora(hidden_states, output, self.prefix,
+                                        descriptor.in_features,
+                                        descriptor.out_features)
+            return output
         # The fused CuTeDSL kernels currently target SM100/101/103/110. SM12x
         # uses TensorRT's NVFP4 Q/DQ matmul followed by the generic all-reduce.
         use_fused_nvfp4_tp = (tp_mode == "row" and self.cfg.tp_size > 1
                               and quant_type == "nvfp4"
                               and not self.has_adapter()
                               and not self.ctx.options.sm12x)
-        full_descriptor = self.weights.linear_descriptor(
-            self.prefix,
-            quant_type,
-            external_kind=(weight_policy.EXTERNAL_WEIGHT_NVFP4_TP
-                           if use_fused_nvfp4_tp else ""),
-        )
+        full_descriptor = self._full_descriptor(quant_type, use_fused_nvfp4_tp)
         descriptor = self.weights.shard_linear(full_descriptor, tp_mode,
                                                self.cfg.tp_size,
-                                               self.cfg.tp_rank)
+                                               self.cfg.tp_rank,
+                                               self.tp_output_segments)
         if use_fused_nvfp4_tp:
             sharded_weights = replace(descriptor, bias=None, bias_recipe=None)
             return F.fused_nvfp4_gemm_all_reduce(
@@ -117,7 +136,8 @@ class Linear(Module):
         if self.has_adapter():
             raise ValueError(
                 f"{self.prefix}: FP32 projection does not support adapters")
-        rank = self.rank if rank is None else rank
+        rank = (self.rank if self.rank is not None else
+                hidden_states.ndim) if rank is None else rank
         output = F.linear_f32_from_weights(hidden_states,
                                            self.weight_descriptor(),
                                            self.prefix, rank)
@@ -139,13 +159,25 @@ class Linear(Module):
 
     def weight_descriptor(self):
         """Load and tensor-parallel shard the base projection weights."""
-        descriptor = self.weights.linear_descriptor(self.prefix,
-                                                    self.quant_type())
+        descriptor = self._full_descriptor(self.quant_type(), False)
         if not self.tensor_parallel:
             return descriptor
         tp_mode = self._tp_mode()
         return self.weights.shard_linear(descriptor, tp_mode, self.cfg.tp_size,
-                                         self.cfg.tp_rank)
+                                         self.cfg.tp_rank,
+                                         self.tp_output_segments)
+
+    def _full_descriptor(self, quant_type: str, use_fused_nvfp4_tp: bool):
+        # Runtime checkpoint recipes describe one contiguous TP shard, so
+        # segmented GDN Q/K/V projections remain engine constants.
+        if self.tp_output_segments and self.cfg.tp_size > 1:
+            return self.weights.linear(self.prefix, quant_type)
+        return self.weights.linear_descriptor(
+            self.prefix,
+            quant_type,
+            external_kind=(weight_policy.EXTERNAL_WEIGHT_NVFP4_TP
+                           if use_fused_nvfp4_tp else ""),
+        )
 
     def has_adapter(self) -> bool:
         """Whether this projection needs model or runtime LoRA handling."""
@@ -202,6 +234,11 @@ class DynamicLinear(Module):
         self.in_features = in_features
 
     def forward(self, hidden_states, weight):
-        weight = weight.reshape((1, -1, self.in_features))
+        if hidden_states.rank < 2:
+            raise ValueError(
+                "DynamicLinear input must have at least two dimensions")
+        weight_shape = ((1, ) * (hidden_states.rank - 2) +
+                        (-1, self.in_features))
+        weight = weight.reshape(weight_shape)
         return hidden_states.matmul(weight,
                                     rhs_op=trt.MatrixOperation.TRANSPOSE)

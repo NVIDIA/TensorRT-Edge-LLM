@@ -127,13 +127,12 @@ void fusedFp32ToSfAtom(
 #endif // SUPPORTS_FP8
 
 // ---------------------------------------------------------------------------
-// Fused FP8E4M3 × FP32_scalar → UE4M3 + SfAtom repack (single kernel, no memset)
+// E4M3 block-scale repack into the SfAtom layout (single kernel, no memset)
 // ---------------------------------------------------------------------------
 
 #if SUPPORTS_FP8
-__global__ void fusedFp8ToSfAtomKernel(__nv_fp8_e4m3 const* __restrict__ fp8Scales,
-    float const* __restrict__ fp32Global, uint8_t* __restrict__ output, int numRows, int numKBlocks, int numNAtoms,
-    int numKAtoms)
+__global__ void repackE4m3ScalesToSfAtomKernel(__nv_fp8_e4m3 const* __restrict__ fp8Scales,
+    uint8_t* __restrict__ output, int numRows, int numKBlocks, int numNAtoms, int numKAtoms)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int totalSlots = numNAtoms * 128 * numKAtoms * 4;
@@ -153,9 +152,9 @@ __global__ void fusedFp8ToSfAtomKernel(__nv_fp8_e4m3 const* __restrict__ fp8Scal
 
     if (n < numRows && k_sf < numKBlocks)
     {
-        float fp8Val = static_cast<float>(fp8Scales[n * numKBlocks + k_sf]);
-        float combined = (fp32Global != nullptr) ? fp8Val * (*fp32Global) : fp8Val;
-        output[phys] = fp32ToUe4m3(combined);
+        // A raw byte copy. UE4M3 and E4M3 encode the non-negative values a
+        // checkpoint stores identically, so no arithmetic belongs here.
+        output[phys] = reinterpret_cast<uint8_t const*>(fp8Scales)[n * numKBlocks + k_sf];
     }
     else
     {
@@ -163,21 +162,21 @@ __global__ void fusedFp8ToSfAtomKernel(__nv_fp8_e4m3 const* __restrict__ fp8Scal
     }
 }
 
-void fusedFp8ToSfAtom(__nv_fp8_e4m3 const* fp8Scales, float const* fp32Global, uint8_t* tiledOut, int32_t numRows,
-    int32_t numKBlocks, cudaStream_t stream)
+void repackE4m3ScalesToSfAtom(
+    __nv_fp8_e4m3 const* fp8Scales, uint8_t* tiledOut, int32_t numRows, int32_t numKBlocks, cudaStream_t stream)
 {
     int numNAtoms = (numRows + 127) / 128;
     int numKAtoms = (numKBlocks + 3) / 4;
     int totalSlots = checkedLaunchElementCount(
-        static_cast<int64_t>(numNAtoms) * 128 * static_cast<int64_t>(numKAtoms) * 4, "fusedFp8ToSfAtom");
+        static_cast<int64_t>(numNAtoms) * 128 * static_cast<int64_t>(numKAtoms) * 4, "repackE4m3ScalesToSfAtom");
     if (totalSlots == 0)
         return;
 
     constexpr int kBlockSize = 256;
     int blocks = (totalSlots + kBlockSize - 1) / kBlockSize;
 
-    fusedFp8ToSfAtomKernel<<<blocks, kBlockSize, 0, stream>>>(
-        fp8Scales, fp32Global, tiledOut, numRows, numKBlocks, numNAtoms, numKAtoms);
+    repackE4m3ScalesToSfAtomKernel<<<blocks, kBlockSize, 0, stream>>>(
+        fp8Scales, tiledOut, numRows, numKBlocks, numNAtoms, numKAtoms);
     CUDA_CHECK(cudaGetLastError());
 }
 #endif // SUPPORTS_FP8

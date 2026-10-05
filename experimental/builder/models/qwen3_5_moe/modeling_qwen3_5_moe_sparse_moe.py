@@ -57,7 +57,37 @@ class Qwen3_5MoeSparseMoeBlock(Module):
     def forward(self, hidden_states: Tensor) -> Tensor:
         cfg = self.cfg
         router_logits = self.gate(hidden_states)
-        if cfg.quant_type == quantization.QUANT_NVFP4:
+        expert_quant_type = self.weights.module_quant_type(
+            self.experts.key("0.up_proj"))
+        if expert_quant_type == quantization.QUANT_FP16:
+            moe_weights = self.weights.parameter_value(
+                "fp16",
+                self.experts.prefix,
+                lambda: weight_conversion.fp16_expert_specs(
+                    self.weights, self.experts.prefix, cfg.num_experts),
+                lambda: weight_conversion.prepare_fp16_experts(
+                    self.weights,
+                    self.experts.prefix,
+                    cfg.num_experts,
+                    cfg.hidden_size,
+                    cfg.moe_intermediate_size,
+                ),
+            )
+            bindings = weight_conversion.fp16_expert_bindings(
+                self.weights, self.experts.prefix, cfg.num_experts)
+            routed = F.fp16_moe(
+                router_logits,
+                hidden_states,
+                moe_weights,
+                cfg.num_experts,
+                cfg.num_experts_per_tok,
+                cfg.hidden_size,
+                cfg.moe_intermediate_size,
+                weight_prefix=self.experts.prefix,
+                weight_bindings=bindings,
+                norm_topk_prob=self.norm_topk_prob,
+            )
+        elif expert_quant_type == quantization.QUANT_NVFP4:
             moe_weights = self.weights.parameter_value(
                 "nvfp4_moe",
                 self.experts.prefix,
@@ -86,12 +116,11 @@ class Qwen3_5MoeSparseMoeBlock(Module):
                                  self.ctx.options.sm12x,
                                  weight_prefix=self.experts.prefix,
                                  weight_bindings=bindings)
-        elif cfg.quant_type == quantization.QUANT_INT4_GPTQ:
+        elif expert_quant_type == quantization.QUANT_INT4_GPTQ:
 
             def materialize_int4():
-                load_projection = partial(
-                    weight_conversion.load_gptq_expert_projection,
-                    self.weights, self.experts.prefix)
+                load_projection = partial(self.weights.gptq_expert_projection,
+                                          self.experts.prefix)
                 return prepare_gated_int4_weights(self.ctx, load_projection)
 
             moe_weights = self.weights.parameter_value(
@@ -117,8 +146,9 @@ class Qwen3_5MoeSparseMoeBlock(Module):
                 weight_bindings=bindings,
                 zero_point_offset=cfg.quant.gptq_zero_point_offset)
         else:
-            raise ValueError("Qwen MoE experts require NVFP4 or INT4 GPTQ; "
-                             f"got {cfg.quant_type!r}")
+            raise ValueError(
+                "Qwen3.5 MoE experts require FP16, NVFP4, or INT4 GPTQ; "
+                f"got {expert_quant_type!r}")
         shared = self.shared_expert(hidden_states)
         gate = self.shared_expert_gate(hidden_states).sigmoid()
         return routed + shared * gate

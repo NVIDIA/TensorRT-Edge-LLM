@@ -33,9 +33,12 @@ class ReasoningParser:
 
     def __init__(self,
                  start_token: str = "<think>",
-                 end_token: str = "</think>") -> None:
+                 end_token: str = "</think>",
+                 *,
+                 always_enabled: bool = False) -> None:
         self.start_token = start_token
         self.end_token = end_token
+        self.always_enabled = always_enabled
 
     def extract(self, text: str) -> Tuple[Optional[str], Optional[str]]:
         """Split output even when generation starts inside a reasoning span."""
@@ -115,6 +118,127 @@ class StreamingReasoningParser:
             self._buffer = ""
 
 
+_MUSE_REASONING_START = " to=self<|message|>"
+_MUSE_CHANNEL_START = "<|eom|><|start|>assistant to="
+_MUSE_MESSAGE_START = "<|message|>"
+_MUSE_END = "<|eot|>"
+
+
+class MuseGlimmerReasoningParser(ReasoningParser):
+    """Split Muse-Glimmer's ATEM assistant channels."""
+
+    def __init__(self) -> None:
+        super().__init__(_MUSE_REASONING_START,
+                         _MUSE_CHANNEL_START,
+                         always_enabled=True)
+
+    @staticmethod
+    def _drop_recipient(text: str) -> str:
+        if _MUSE_MESSAGE_START in text:
+            text = text.partition(_MUSE_MESSAGE_START)[2]
+        return text.removesuffix(_MUSE_END)
+
+    def extract(self, text: str) -> Tuple[Optional[str], Optional[str]]:
+        if text.startswith(self.start_token):
+            candidate = text[len(self.start_token):]
+        elif self.start_token in text:
+            candidate = text.partition(self.start_token)[2]
+        else:
+            content = self._drop_recipient(text)
+            return None, content or None
+        if self.end_token not in candidate:
+            return candidate or None, None
+        reasoning, _, content = candidate.partition(self.end_token)
+        content = self._drop_recipient(content)
+        return reasoning or None, content or None
+
+    def stream(
+            self,
+            *,
+            allow_implicit: bool = True
+    ) -> "MuseGlimmerStreamingReasoningParser":
+        del allow_implicit
+        return MuseGlimmerStreamingReasoningParser()
+
+
+class MuseGlimmerStreamingReasoningParser:
+    """Incrementally split ATEM reasoning and recipient headers."""
+
+    def __init__(self) -> None:
+        self._state = "header"
+        self._buffer = ""
+
+    def feed(self, text: str) -> Iterable[ReasoningDelta]:
+        self._buffer += text
+        while self._buffer:
+            if self._state == "header":
+                if _MUSE_REASONING_START.startswith(self._buffer):
+                    return
+                if self._buffer.startswith(_MUSE_REASONING_START):
+                    self._buffer = self._buffer[len(_MUSE_REASONING_START):]
+                    self._state = "reasoning"
+                    continue
+                if self._buffer.startswith(" to="):
+                    marker = self._buffer.find(_MUSE_MESSAGE_START)
+                    if marker < 0:
+                        return
+                    self._buffer = self._buffer[marker +
+                                                len(_MUSE_MESSAGE_START):]
+                self._state = "content"
+                continue
+
+            if self._state == "reasoning":
+                marker = self._buffer.find(_MUSE_CHANNEL_START)
+                if marker >= 0:
+                    if marker:
+                        yield ReasoningDelta("reasoning",
+                                             self._buffer[:marker])
+                    self._buffer = self._buffer[marker +
+                                                len(_MUSE_CHANNEL_START):]
+                    self._state = "recipient"
+                    continue
+                keep = len(_MUSE_CHANNEL_START) - 1
+                if len(self._buffer) <= keep:
+                    return
+                yield ReasoningDelta("reasoning", self._buffer[:-keep])
+                self._buffer = self._buffer[-keep:]
+                return
+
+            if self._state == "recipient":
+                marker = self._buffer.find(_MUSE_MESSAGE_START)
+                if marker < 0:
+                    return
+                self._buffer = self._buffer[marker + len(_MUSE_MESSAGE_START):]
+                self._state = "content"
+                continue
+
+            marker = self._buffer.find(_MUSE_END)
+            if marker >= 0:
+                if marker:
+                    yield ReasoningDelta("content", self._buffer[:marker])
+                self._buffer = self._buffer[marker + len(_MUSE_END):]
+                continue
+            keep = len(_MUSE_END) - 1
+            if len(self._buffer) <= keep:
+                return
+            yield ReasoningDelta("content", self._buffer[:-keep])
+            self._buffer = self._buffer[-keep:]
+            return
+
+    def flush(self) -> Iterable[ReasoningDelta]:
+        if not self._buffer:
+            return
+        field = "reasoning" if self._state == "reasoning" else "content"
+        if self._state in {"header", "recipient"}:
+            self._buffer = MuseGlimmerReasoningParser._drop_recipient(
+                self._buffer)
+        elif self._state == "content":
+            self._buffer = self._buffer.removesuffix(_MUSE_END)
+        if self._buffer:
+            yield ReasoningDelta(field, self._buffer)
+        self._buffer = ""
+
+
 class ReasoningParserRegistry:
     """Resolve explicit parser names or infer one from model metadata.
 
@@ -129,6 +253,7 @@ class ReasoningParserRegistry:
             "none": None,
             "qwen3": thinking,
             "deepseek_r1": thinking,
+            "muse_glimmer": MuseGlimmerReasoningParser(),
             "nemotron": thinking,
         }
 
@@ -150,6 +275,8 @@ class ReasoningParserRegistry:
     def _for_model(model_dir: str) -> str:
         """Infer a parser from config metadata, with basename as fallback."""
         identifiers = _model_identifiers(model_dir)
+        if any("muse_glimmer" in value for value in identifiers):
+            return "muse_glimmer"
         if any("nemotron" in value for value in identifiers):
             return "nemotron"
         if any("deepseek" in value for value in identifiers):

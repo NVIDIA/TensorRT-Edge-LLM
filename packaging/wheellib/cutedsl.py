@@ -17,12 +17,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import shutil
 import tarfile
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
 
+from . import oss
 from .config import REPO_ROOT, load_matrix, require_variant, sha256
 
 
@@ -114,14 +116,35 @@ def prepare_artifact(variant: str, artifact_dir: Path, destination: Path,
     _, rows = load_matrix(matrix_path.resolve())
     row = require_variant(rows, variant)
     archive_path = _verified_archive(artifact_dir, _artifact_name(row))
+    receipt = None
+    if oss.enabled():
+        receipt_path = archive_path.with_name(archive_path.name + ".oss.json")
+        if not receipt_path.is_file():
+            raise RuntimeError(
+                "CuTe artifact has no OSS provenance; run build-oss-cutedsl.")
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        oss.require_policy(receipt)
+        if receipt.get("archive_sha256") != sha256(archive_path):
+            raise RuntimeError("CuTe OSS provenance archive digest mismatch.")
     root = str(row["cute_dsl_artifact_tag"])
     target = destination.resolve() / str(row["cpu_arch"])
+    required = target / root
+    if required.exists():
+        shutil.rmtree(required)
     with tarfile.open(archive_path, "r:gz") as archive:
         members = archive.getmembers()
         _validate_archive_members(members, root)
         _extract_members(archive, members, target)
     required = target / root
     _validate_extracted_artifact(required, row)
+    if receipt is not None:
+        if oss.tree_digest(required) != receipt.get("artifact_tree_sha256"):
+            raise RuntimeError("CuTe OSS extracted artifact digest mismatch.")
+        for path in required.rglob("*"):
+            if path.is_file():
+                oss.audit_file(path)
+        (required / "oss-provenance.json").write_text(
+            json.dumps(receipt, sort_keys=True) + "\n", encoding="utf-8")
     return required
 
 

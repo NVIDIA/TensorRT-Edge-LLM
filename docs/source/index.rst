@@ -46,8 +46,11 @@ and action models on NVIDIA edge platforms.
    user_guide/features/FP8KV.md
    user_guide/features/fp8-embedding.md
    user_guide/features/streaming.md
+   user_guide/features/guided-decoding.md
    user_guide/features/visual-token-pruning.md
    user_guide/features/kv-cache-reuse.md
+   user_guide/features/in-flight-batching.md
+   user_guide/features/codepredictor-speculative-decoding.md
 
 .. toctree::
    :maxdepth: 2
@@ -73,6 +76,7 @@ and action models on NVIDIA edge platforms.
    developer_guide/software-design/cpp-runtime-overview.md
    developer_guide/software-design/llm-inference-runtime.md
    developer_guide/software-design/llm-streaming.md
+   developer_guide/software-design/in-flight-batching.md
    developer_guide/software-design/memory-monitoring.md
    developer_guide/software-design/openai-server.md
 
@@ -82,6 +86,7 @@ and action models on NVIDIA edge platforms.
 
    developer_guide/models/cosmos3.md
    developer_guide/models/nemotron3_5_asr.md
+   developer_guide/models/pi05.md
 
 .. toctree::
    :maxdepth: 2

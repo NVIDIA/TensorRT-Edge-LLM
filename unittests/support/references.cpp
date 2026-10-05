@@ -58,9 +58,13 @@ template std::vector<__nv_fp8_e4m3> sliceKVWindow(std::vector<__nv_fp8_e4m3> con
 template <typename T>
 std::vector<half> casualAttentionRef(std::vector<half> const& q, std::vector<T> const& k, std::vector<T> const& v,
     int32_t const qlen, int32_t kvlen, int32_t numQHeads, int32_t numKVHeads, int32_t headSize, float attentionScale,
-    std::optional<std::vector<int32_t>> const& treeAttnMask, float const kScaleQuantOrig, float const vScaleQuantOrig)
+    std::optional<std::vector<int32_t>> const& treeAttnMask, float const kScaleQuantOrig, float const vScaleQuantOrig,
+    int32_t slidingWindowSize, bool contiguousQuerySwa, std::optional<std::vector<float>> const& attentionSinks)
 {
     assert(qlen <= kvlen);
+    assert(numKVHeads > 0 && numQHeads % numKVHeads == 0);
+    assert(!treeAttnMask.has_value() || treeAttnMask->size() >= static_cast<size_t>(qlen) * static_cast<size_t>(qlen));
+    assert(!attentionSinks.has_value() || attentionSinks->size() >= static_cast<size_t>(numQHeads));
     int32_t const numQheadPerKV = numQHeads / numKVHeads;
     auto qoIndexer = [numQHeads, headSize](int32_t tokenIdx, int32_t qHeadIdx, int32_t valIdx) {
         // Q and Out Tensor has layout of [QToken, Qhead, featureVal]
@@ -76,11 +80,26 @@ std::vector<half> casualAttentionRef(std::vector<half> const& q, std::vector<T> 
     {
         for (int32_t qHeadIdx = 0; qHeadIdx < numQHeads; ++qHeadIdx)
         {
-            std::vector<float> attnScores(kvlen, 0.0F);
-            float maxVal = -std::numeric_limits<half>::infinity();
+            float const negativeInfinity = -std::numeric_limits<float>::infinity();
+            std::vector<float> attnScores(kvlen, negativeInfinity);
+            float maxVal = negativeInfinity;
             int32_t kvHeadIdx = qHeadIdx / numQheadPerKV;
+            int32_t const kvStartIdxForQ = kvlen - qlen;
+            int32_t const windowStart = contiguousQuerySwa && slidingWindowSize > 0
+                ? std::max(0, kvStartIdxForQ + tokenIdx + 1 - slidingWindowSize)
+                : 0;
             for (int32_t kvIdx = 0; kvIdx < kvlen; ++kvIdx)
             {
+                bool const maskedByWindow = kvIdx < windowStart;
+                bool const isQueryToken = kvIdx >= kvStartIdxForQ;
+                bool const maskedByTree = isQueryToken && treeAttnMask.has_value()
+                    && (*treeAttnMask)[tokenIdx * qlen + kvIdx - kvStartIdxForQ] == 0;
+                if (maskedByWindow || maskedByTree)
+                {
+                    continue;
+                }
+
+                float score = 0.0F;
                 for (int32_t valIdx = 0; valIdx < headSize; ++valIdx)
                 {
                     float qVal = __half2float(q[qoIndexer(tokenIdx, qHeadIdx, valIdx)]);
@@ -96,44 +115,48 @@ std::vector<half> casualAttentionRef(std::vector<half> const& q, std::vector<T> 
                     {
                         kvVal = __half2float(k[kvIndexer(kvIdx, kvHeadIdx, valIdx)]); // half -> FP32
                     }
-                    attnScores[kvIdx] += qVal * kvVal * attentionScale;
+                    score += qVal * kvVal * attentionScale;
                 }
 
-                maxVal = std::max(maxVal, attnScores[kvIdx]);
+                attnScores[kvIdx] = score;
+                maxVal = std::max(maxVal, score);
             }
-            // Apply Mask for casual and tree mask
-            if (qlen > 1 && treeAttnMask.has_value())
+
+            if (attentionSinks.has_value())
             {
-                int32_t const kvStartIdxForQ = kvlen - qlen;
-                auto const treeMasks = treeAttnMask.value();
-                for (int32_t maskQIdx = 0; maskQIdx < qlen; ++maskQIdx)
+                maxVal = std::max(maxVal, (*attentionSinks)[qHeadIdx]);
+            }
+            if (maxVal == negativeInfinity)
+            {
+                continue;
+            }
+
+            float sumExp = attentionSinks.has_value() ? std::exp((*attentionSinks)[qHeadIdx] - maxVal) : 0.0F;
+            for (int32_t kvIdx = 0; kvIdx < kvlen; ++kvIdx)
+            {
+                if (attnScores[kvIdx] != negativeInfinity)
                 {
-                    int32_t const mask = treeMasks[tokenIdx * qlen + maskQIdx];
-                    if (mask == 0)
-                    {
-                        // Set to -1e5 to make softmax result close to 0
-                        attnScores[kvStartIdxForQ + maskQIdx] = -5e5;
-                    }
+                    attnScores[kvIdx] = std::exp(attnScores[kvIdx] - maxVal);
+                    sumExp += attnScores[kvIdx];
                 }
             }
-            // Compute softmax using attnScores - maxVal
-            float sumExp = 0.0F;
             for (int32_t kvIdx = 0; kvIdx < kvlen; ++kvIdx)
             {
-                attnScores[kvIdx] = std::exp(attnScores[kvIdx] - maxVal);
-                sumExp += attnScores[kvIdx];
-            }
-            for (int32_t kvIdx = 0; kvIdx < kvlen; ++kvIdx)
-            {
-                attnScores[kvIdx] /= sumExp;
+                if (attnScores[kvIdx] != negativeInfinity)
+                {
+                    attnScores[kvIdx] /= sumExp;
+                }
             }
 
-            // Compute BMM2 Attn_score @ V
             for (int32_t valIdx = 0; valIdx < headSize; ++valIdx)
             {
                 float outVal = 0.0F;
                 for (int32_t kvIdx = 0; kvIdx < kvlen; ++kvIdx)
                 {
+                    if (attnScores[kvIdx] == negativeInfinity)
+                    {
+                        continue;
+                    }
                     float vVal;
 #if SUPPORTS_FP8
                     if constexpr (std::is_same_v<T, __nv_fp8_e4m3>)
@@ -161,13 +184,15 @@ std::vector<half> casualAttentionRef(std::vector<half> const& q, std::vector<T> 
 template std::vector<half> casualAttentionRef<half>(std::vector<half> const& q, std::vector<half> const& k,
     std::vector<half> const& v, int32_t const qlen, int32_t kvlen, int32_t numQHeads, int32_t numKVHeads,
     int32_t headSize, float attentionScale, std::optional<std::vector<int32_t>> const& treeAttnMask,
-    float const kScaleQuantOrig, float const vScaleQuantOrig);
+    float const kScaleQuantOrig, float const vScaleQuantOrig, int32_t slidingWindowSize, bool contiguousQuerySwa,
+    std::optional<std::vector<float>> const& attentionSinks);
 
 #if SUPPORTS_FP8
 template std::vector<half> casualAttentionRef<__nv_fp8_e4m3>(std::vector<half> const& q,
     std::vector<__nv_fp8_e4m3> const& k, std::vector<__nv_fp8_e4m3> const& v, int32_t const qlen, int32_t kvlen,
     int32_t numQHeads, int32_t numKVHeads, int32_t headSize, float attentionScale,
-    std::optional<std::vector<int32_t>> const& treeAttnMask, float const kScaleQuantOrig, float const vScaleQuantOrig);
+    std::optional<std::vector<int32_t>> const& treeAttnMask, float const kScaleQuantOrig, float const vScaleQuantOrig,
+    int32_t slidingWindowSize, bool contiguousQuerySwa, std::optional<std::vector<float>> const& attentionSinks);
 #endif
 
 std::vector<half> ropeRef(std::vector<half> const& input, int32_t const numHeads, int32_t const headSize,
@@ -956,7 +981,8 @@ EagleAcceptResult eagleAcceptRef(std::vector<float> const& logits, std::vector<i
 
 void transposeToPatchQwenReference(std::vector<half> const& originalImage, std::vector<half>& patch,
     int32_t const inputOffset, int32_t const T, int32_t const height, int32_t const width, int32_t const channels,
-    int32_t const temporalPatchSize, int32_t const patchSize, int32_t const mergeSize)
+    int32_t const temporalPatchSize, int32_t const patchSize, int32_t const mergeSize, bool const temporalFirst,
+    bool const channelLast)
 {
     assert(originalImage.size() == static_cast<size_t>(T) * height * width * channels);
     assert(patch.size() == originalImage.size());
@@ -996,8 +1022,12 @@ void transposeToPatchQwenReference(std::vector<half> const& originalImage, std::
                                         int32_t dstHW = gt * gridH * gridW * mergeSize * mergeSize
                                             + gh * gridW * mergeSize * mergeSize + gw * mergeSize * mergeSize
                                             + mergeH * mergeSize + mergeW;
-                                        int32_t dstDim = c * temporalPatchSize * patchSize * patchSize
-                                            + t * patchSize * patchSize + patchH * patchSize + patchW;
+                                        int32_t const dstDim = channelLast
+                                            ? ((patchH * patchSize + patchW) * channels + c) * temporalPatchSize + t
+                                            : (temporalFirst ? t * channels * patchSize * patchSize
+                                                          + c * patchSize * patchSize + patchH * patchSize + patchW
+                                                             : c * temporalPatchSize * patchSize * patchSize
+                                                          + t * patchSize * patchSize + patchH * patchSize + patchW);
                                         patch[dstHW * channels * temporalPatchSize * patchSize * patchSize + dstDim]
                                             = value;
                                     }

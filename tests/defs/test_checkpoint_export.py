@@ -133,7 +133,9 @@ def _requires_ddtree_state_inputs(model_dir):
 
 def _verify_tree_base_inputs(mode, onnx_path, model_dir):
     input_names = _onnx_graph_input_names(onnx_path)
-    expected_attention_inputs = {"attention_pos_id", "attention_mask"}
+    expected_attention_inputs = {
+        "attention_position_ids", "packed_attention_mask"
+    }
     missing = expected_attention_inputs - input_names
     if missing:
         pytest.fail(
@@ -675,6 +677,8 @@ def test_checkpoint_dspark_export(test_param: str, test_logger,
 
     tmp_base = tempfile.mkdtemp(prefix="dspark_base_export_")
     tmp_draft = tempfile.mkdtemp(prefix="dspark_draft_export_")
+    use_tree_base = config.is_dspark_tree
+    base_export_flag = "--dspark-tree-base" if use_tree_base else "--dspark-base"
 
     try:
         base_cmd = [
@@ -683,7 +687,7 @@ def test_checkpoint_dspark_export(test_param: str, test_logger,
             "tensorrt_edgellm.scripts.export",
             base_torch_dir,
             tmp_base,
-            "--dspark-base",
+            base_export_flag,
             "--dspark-draft-dir",
             draft_torch_dir,
         ]
@@ -727,6 +731,8 @@ def test_checkpoint_dspark_export(test_param: str, test_logger,
     base_onnx = os.path.join(llm_onnx_dir, "model.onnx")
     if not os.path.exists(base_onnx):
         pytest.fail(f"DSpark base ONNX not found: {base_onnx}")
+    if use_tree_base:
+        _verify_tree_base_inputs("DSpark", base_onnx, base_torch_dir)
 
     draft_onnx = os.path.join(draft_onnx_dir, "model.onnx")
     if not os.path.exists(draft_onnx):
@@ -740,7 +746,7 @@ def test_checkpoint_dspark_export(test_param: str, test_logger,
 
 def test_checkpoint_mtp_export(test_param: str, test_logger,
                                env_config: EnvironmentConfig):
-    """Export MTP base + draft from a single checkpoint via --mtp flag."""
+    """Export an MTP base and its embedded or paired assistant draft."""
 
     config = TestConfig.from_param_string(
         test_param, infer_checkpoint_export_model_type(test_param),
@@ -935,10 +941,10 @@ def test_checkpoint_lora_export(test_param: str, test_logger,
 
 def test_llm_loader_tp_export(test_param: str, test_logger,
                               env_config: EnvironmentConfig):
-    """Export per-rank ONNX for TP=2 via tensorrt_edgellm.scripts.export --tp-size 2.
+    """Export per-rank ONNX via tensorrt_edgellm.scripts.export --tp-size N.
 
     Validates:
-      - Per-rank files exist: model_world2_rank{0,1}.onnx and matching .data
+      - Per-rank files exist: model_world{N}_rank{i}.onnx and matching .data
       - Each rank's external-data file has distinct content (regression
         guard for the per-rank filename collision in onnx/export.py
         _fix_initializer_dtypes — without the fix both ranks share
@@ -948,6 +954,10 @@ def test_llm_loader_tp_export(test_param: str, test_logger,
 
     config = TestConfig.from_param_string(test_param, ModelType.LLM,
                                           TaskType.EXPORT, env_config)
+    tp_size = config.tp_size or 0
+    if tp_size < 2:
+        pytest.fail("test_llm_loader_tp_export needs a tp<N> parameter with "
+                    f"N > 1, got: {test_param}")
     export_env_vars = config.get_export_env_vars() or None
 
     torch_dir = config.get_torch_model_dir()
@@ -966,12 +976,12 @@ def test_llm_loader_tp_export(test_param: str, test_logger,
             torch_dir,
             tmp_dir,
             "--tp-size",
-            "2",
+            str(tp_size),
         ]
         _run_checkpoint_export(export_cmd,
                                600,
                                test_logger,
-                               f"TP=2 export for {config.model_name}",
+                               f"TP={tp_size} export for {config.model_name}",
                                env_vars=export_env_vars)
 
         llm_output = os.path.join(tmp_dir, "llm")
@@ -985,8 +995,9 @@ def test_llm_loader_tp_export(test_param: str, test_logger,
 
     # Validate per-rank files exist and external-data files are distinct.
     rank_files = []
-    for rank in (0, 1):
-        onnx_path = os.path.join(llm_onnx_dir, f"model_world2_rank{rank}.onnx")
+    for rank in range(tp_size):
+        onnx_path = os.path.join(llm_onnx_dir,
+                                 f"model_world{tp_size}_rank{rank}.onnx")
         data_path = onnx_path + ".data"
         if not os.path.exists(onnx_path):
             pytest.fail(f"Missing per-rank ONNX: {onnx_path}")
@@ -994,13 +1005,10 @@ def test_llm_loader_tp_export(test_param: str, test_logger,
             pytest.fail(f"Missing per-rank external data: {data_path}")
         rank_files.append((onnx_path, data_path))
 
-    # Distinct .data content — catches the model.onnx.data collision bug.
     md5s = []
     for _, data_path in rank_files:
         with open(data_path, "rb") as f:
             md5s.append(hashlib.md5(f.read()).hexdigest())
-    if md5s[0] == md5s[1]:
+    if len(set(md5s)) != tp_size:
         pytest.fail(
-            f"TP=2 rank0 and rank1 external-data files have identical content "
-            f"({md5s[0]}); per-rank sharding collapsed (likely the "
-            f"model.onnx.data filename collision in onnx/export.py)")
+            f"TP={tp_size} external-data files should all be distinct.")

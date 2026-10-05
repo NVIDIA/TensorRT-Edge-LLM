@@ -19,6 +19,7 @@
 
 #include "common/tensor.h"
 #include "runtime/hybridCacheManager.h"
+#include "runtime/state/residentSlotPool.h"
 
 #include <cstdint>
 #include <memory>
@@ -30,6 +31,8 @@ namespace trt_edgellm
 {
 namespace rt
 {
+
+class KVPageTable;
 
 //! @brief Per-request debug dumper for 4-layer numeric validation.
 //!
@@ -47,9 +50,8 @@ namespace rt
 //!
 //! The two variables are XOR-coupled: setting exactly one is an error.
 //!
-//! Per-layer tensors are dumped full-length over the active-batch prefix (no truncation here);
-//! the comparison tool slices each sequence to its valid length in PyTorch using the dumped
-//! context_lengths.
+//! Per-layer tensors are gathered from resident slots into execution order. The comparison tool
+//! slices each sequence to its valid length in PyTorch using the dumped context_lengths.
 //!
 //! Safetensors layout (single file, all rounds):
 //!   round_{r}.logits               [activeBatch, vocab]                          (native dtype)
@@ -58,8 +60,12 @@ namespace rt
 //!   round_{r}.context_lengths      [activeBatch]                                 int32
 //!   round_{r}.generated_token_ids  [activeBatch]                                 int32
 //!
-//! Scope (POC): base model + vanilla decoding only. Hooked from
-//! ``runBaseModelPrefill`` (round 0) and ``VanillaDecoder::decodeStep``.
+//! Scope: the base model under vanilla or speculative decoding. Hooked from
+//! ``runBaseModelPrefill`` (round 0), ``VanillaDecoder::decodeStep``, and -- via
+//! ``decoder_utils::dumpSpecRound`` -- a speculative decoder's verification step. A speculative
+//! round commits a variable number of tokens per sequence, so its ``context_lengths`` differ
+//! between rows of the same round; the comparison tool pairs each row with the golden round of
+//! the same length rather than by round index.
 //!
 //! Optionally also drives teacher-forcing: when ``EDGELLM_FORCE_TOKENS_FILE`` is set the
 //! dumper overrides each step's sampled token with the golden's (see applyForcedTokens()),
@@ -77,14 +83,32 @@ public:
     //!
     //! Synchronises @p stream first, so the KV cache and logits are final.
     //! @param cacheManager       Base-model KV cache manager.
+    //! @param pageTable          Full-capacity base-model KV page table.
+    //! @param swaPageTable       Independent sparse page table for reduced SWA layers, or nullptr.
     //! @param logits             Device logits tensor [activeBatch, vocab].
     //! @param validLengths       Per-sequence valid KV/sequence length this round.
+    //! @param originalIndices    Execution row -> original request row mapping used for reporting.
+    //! @param residentRefs       Execution row -> persistent resident slot mapping used to gather state.
     //! @param generatedTokenIds  Host int32 [activeBatch] tokens sampled this round
     //!                           (may be nullptr to skip).
     //! @param activeBatchSize    Number of active sequences this round.
     //! @param stream             CUDA stream.
-    void dumpRound(HybridCacheManager& cacheManager, Tensor const& logits, std::vector<int32_t> const& validLengths,
-        int32_t const* generatedTokenIds, int32_t activeBatchSize, cudaStream_t stream);
+    void dumpRound(HybridCacheManager& cacheManager, KVPageTable const& pageTable, KVPageTable const* swaPageTable,
+        Tensor const& logits, std::vector<int32_t> const& validLengths, std::vector<int32_t> const& originalIndices,
+        std::vector<ResidentRef> const& residentRefs, int32_t const* generatedTokenIds, int32_t activeBatchSize,
+        cudaStream_t stream);
+
+    //! @brief Record how much of each sequence was restored from the context cache instead of
+    //! executed. Call once from prefill, before the first dumpRound().
+    //!
+    //! Indexed by *original* request row, which is why it survives batch compaction: prefill runs
+    //! before any sequence can finish, so there the active slot and the original row coincide.
+    //!
+    //! A request that reuses a cached prefix only executes the suffix after it, so the runtime's
+    //! token list counts fewer tokens than the cache actually holds. Every dumped
+    //! ``context_lengths`` adds this back, which is what keeps the dump comparable to a golden
+    //! that prefilled the whole sequence.
+    void setReusedPrefixLengths(std::vector<int32_t> lengths);
 
     //! @brief Write all buffered rounds to a single safetensors file.
     //! @param stream CUDA stream (forwarded to the safetensors writer).
@@ -97,10 +121,46 @@ public:
     //! forced token (if any) is what the caller then commits. This decouples the numeric
     //! comparison from greedy argmax stability — a near-tie argmax flip no longer diverges the
     //! two sides, while the dump still surfaces where the runtime *would* have diverged.
+    //! Sequences are addressed across the whole run, not per request: the force-tokens file
+    //! holds one line per sequence in request order, so a run that issues several requests (the
+    //! context-reuse validation sends one per shared-prefix prompt) still lines up with a golden
+    //! that batched them all.
     //! @param genLengths      Per-sequence count of tokens generated so far (== the index to force).
+    //! @param originalIndices ``context.batchIndexMapping``; see dumpRound().
     //! @param tokenIds        Host array [activeBatchSize] of sampled tokens, overwritten in place.
     //! @param activeBatchSize Number of active sequences.
-    void applyForcedTokens(std::vector<int32_t> const& genLengths, int32_t* tokenIds, int32_t activeBatchSize);
+    void applyForcedTokens(std::vector<int32_t> const& genLengths, std::vector<int32_t> const& originalIndices,
+        int32_t* tokenIds, int32_t activeBatchSize);
+
+    //! @brief True when teacher-forcing tokens were supplied.
+    bool hasForcedTokens() const noexcept
+    {
+        return !mForcedTokens.empty();
+    }
+
+    //! @brief Teacher-forcing for a speculative round: trim the acceptance so the tokens this
+    //! round commits are the golden's.
+    //!
+    //! A speculative round commits several tokens at once, so overwriting them the way
+    //! applyForcedTokens() does would leave their KV entries describing the tokens the draft
+    //! actually proposed. Only slots ``[0, acceptLength - 1)`` have a committed cache entry --
+    //! the last accepted token is the bonus token, whose entry is written next round -- so on the
+    //! first slot @p j that disagrees with the golden the acceptance is trimmed to ``j + 1``,
+    //! which drops that slot's cache entry, and only then is the token replaced.
+    //!
+    //! Call *before* the KV-cache commit, unlike applyForcedTokens().
+    //! @param genLengths       Per-sequence count of tokens generated so far.
+    //! @param originalIndices  ``context.batchIndexMapping``; see dumpRound().
+    //! @param acceptLengths    Host [activeBatchSize] accept lengths, trimmed in place.
+    //! @param acceptedTokenIds Host [activeBatchSize, maxAcceptDepth] tokens, overwritten in place.
+    //! @param ownTokens        Out: each sequence's own token at the slot that ends up last, i.e.
+    //!                         what it would have committed there without forcing.
+    //! @param activeBatchSize  Number of active sequences.
+    //! @param maxAcceptDepth   Row stride of @p acceptedTokenIds.
+    //! @return true if any sequence was trimmed (the caller must then push the arrays back).
+    bool applyForcedAcceptance(std::vector<int32_t> const& genLengths, std::vector<int32_t> const& originalIndices,
+        int32_t* acceptLengths, int32_t* acceptedTokenIds, std::vector<int32_t>& ownTokens, int32_t activeBatchSize,
+        int32_t maxAcceptDepth);
 
 private:
     LayerDebugger(std::set<int32_t> layers, std::string dir, std::vector<std::vector<int32_t>> forcedTokens);
@@ -110,12 +170,23 @@ private:
     //! warning when forcing is enabled, since it overrides the model's own sampled tokens.
     static std::vector<std::vector<int32_t>> readForcedTokensFromEnv();
 
+    //! @brief Original request row for an active slot, via ``context.batchIndexMapping``.
+    static int32_t originalRow(std::vector<int32_t> const& originalIndices, int32_t slot);
+
+    //! @brief This request's first row in the force-tokens file, claimed on first use.
+    //!
+    //! First use is always prefill, where the active batch is still the full request, so the
+    //! claim covers every one of its sequences even if some finish later.
+    int32_t forcedRowBase(int32_t activeBatchSize);
+
     std::set<int32_t> mLayers;                       //!< Absolute decoder-layer indices to dump KV for.
     std::string mDir;                                //!< Output directory.
     int32_t mRequestIdx{0};                          //!< Per-process request index (unique filenames).
     int32_t mRound{0};                               //!< Next round index to assign.
     std::vector<Tensor> mTensors;                    //!< Accumulated tensors across rounds.
     std::vector<std::vector<int32_t>> mForcedTokens; //!< Teacher-forcing tokens (empty = disabled).
+    std::vector<int32_t> mReusedPrefix;              //!< Context-cache prefix by original row (empty = none).
+    int32_t mForcedRowBase{-1};                      //!< Force-tokens row of this request's first sequence.
 };
 
 } // namespace rt

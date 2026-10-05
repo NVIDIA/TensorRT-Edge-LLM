@@ -14,9 +14,8 @@
 # limitations under the License.
 """RoboLab policy-server wrapper for the Edge-LLM Cosmos3 policy.
 
-Exposes the observation -> action-chunk contract over HTTP + JSON so a RoboLab
-``InferenceClient`` (Isaac Lab / Isaac Sim, x86-only) can drive the Edge-LLM
-Cosmos3 policy running on a remote target. See ``policy_server.py`` for
-the server, ``cosmos3_client.py`` for the RoboLab client subclass, and
-``selftest.py`` for a local mock self-test that runs without Isaac Sim.
+Exposes the observation -> action-chunk contract over HTTP + JSON and over the
+OpenPI WebSocket protocol used by RoboLab's official Cosmos3 client. See
+``policy_server.py`` for the backend, ``openpi_server.py`` for the parity
+transport, and ``selftest.py`` for a local mock self-test without Isaac Sim.
 """

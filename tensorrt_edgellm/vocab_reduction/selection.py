@@ -74,8 +74,23 @@ def extract_d2t_required_tokens(d2t_tensor: torch.Tensor,
     return required_tokens
 
 
-def get_special_tokens(tokenizer: Any) -> Set[int]:
-    """Return special token IDs that must stay available at runtime."""
+def _eos_ids_from(value: Any) -> Set[int]:
+    """Normalize an eos_token_id config value (int or list) to a set of ids."""
+    if isinstance(value, int):
+        return {value}
+    if isinstance(value, (list, tuple)):
+        return {int(item) for item in value}
+    return set()
+
+
+def get_special_tokens(tokenizer: Any, config: Any = None) -> Set[int]:
+    """Return special token IDs that must stay available at runtime.
+
+    The full EOS stop set matters: the runtime unions ``eos_token_id`` from
+    config.json and generation_config.json (models like HunYuan declare extra
+    stop tokens there), and guided decoding needs those ids present in the
+    reduced vocabulary to stop on them.
+    """
     special_tokens = set()
 
     eos_token_id = tokenizer.eos_token_id
@@ -85,6 +100,9 @@ def get_special_tokens(tokenizer: Any) -> Set[int]:
             raise ValueError(
                 "Tokenizer must have eos_token_id or pad_token_id")
     special_tokens.add(int(eos_token_id))
+
+    if config is not None:
+        special_tokens |= _eos_ids_from(getattr(config, "eos_token_id", None))
 
     if tokenizer.bos_token_id is not None:
         special_tokens.add(int(tokenizer.bos_token_id))
@@ -228,13 +246,20 @@ def input_aware_filter(dataset: Any, tokenizer: Any, config: Any,
     return final_selected
 
 
-def reduce_vocab_size(tokenizer: Any,
-                      config: Any,
-                      dataset: Any,
-                      reduced_vocab_size: int,
-                      d2t_tensor: Optional[torch.Tensor] = None,
-                      method: str = "frequency") -> torch.Tensor:
-    """Create a reduced-vocabulary map from calibration data."""
+def reduce_vocab_size(
+        tokenizer: Any,
+        config: Any,
+        dataset: Any,
+        reduced_vocab_size: int,
+        d2t_tensor: Optional[torch.Tensor] = None,
+        method: str = "frequency",
+        extra_required_tokens: Optional[Set[int]] = None) -> torch.Tensor:
+    """Create a reduced-vocabulary map from calibration data.
+
+    ``extra_required_tokens`` forces additional ids into the map (e.g. the
+    generation_config.json EOS stop set, which the runtime unions with the
+    model config's EOS).
+    """
     vocab_size = get_vocab_size(config)
     if reduced_vocab_size >= vocab_size:
         raise ValueError(
@@ -245,7 +270,11 @@ def reduce_vocab_size(tokenizer: Any,
         raise ValueError(
             f"method must be 'frequency' or 'input_aware', got {method!r}")
 
-    required = get_special_tokens(tokenizer)
+    required = get_special_tokens(tokenizer, config)
+    if extra_required_tokens:
+        required.update(
+            int(token_id) for token_id in extra_required_tokens
+            if 0 <= int(token_id) < vocab_size)
 
     if d2t_tensor is not None:
         if reduced_vocab_size <= len(d2t_tensor):

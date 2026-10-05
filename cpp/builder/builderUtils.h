@@ -81,9 +81,8 @@ std::string printOptimizationProfile(nvinfer1::IOptimizationProfile const* profi
 
 //! Apply TensorRT compile workarounds via the __LUNOWUD environment variable.
 //! Must be called before createInferBuilder.
-//! @param maxBatchSize Max batch size of the engine being built
 //! @return The applied __LUNOWUD flag string (empty if none)
-std::string applyCompileWorkarounds(int32_t maxBatchSize);
+std::string applyCompileWorkarounds();
 
 //! Create TensorRT builder and network definition with strongly typed flag.
 //! @return Pair of builder and network, or {nullptr, nullptr} on failure
@@ -91,8 +90,12 @@ std::pair<std::unique_ptr<nvinfer1::IBuilder>, std::unique_ptr<nvinfer1::INetwor
 
 //! Create TensorRT builder config with optimized settings.
 //! @param builder TensorRT builder object
+//! @param enableAliasedPluginIO Enable the kALIASED_PLUGIN_IO preview. Only the
+//!        DFlash/DSpark draft engines declare aliased plugin I/O; every other
+//!        plugin returns -1 from getAliasedInput, so leave this off elsewhere.
 //! @return Builder config with monitor memory flag enabled (TRT >= 10.6)
-std::unique_ptr<nvinfer1::IBuilderConfig> createBuilderConfig(nvinfer1::IBuilder* builder);
+std::unique_ptr<nvinfer1::IBuilderConfig> createBuilderConfig(
+    nvinfer1::IBuilder* builder, bool enableAliasedPluginIO = false);
 
 //! Parse ONNX model and create parser.
 //! @param network TensorRT network definition to populate

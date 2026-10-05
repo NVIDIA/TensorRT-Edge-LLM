@@ -28,6 +28,8 @@ namespace rt
 namespace dflash_utils
 {
 
+inline constexpr int32_t kDFlash2MaxSamplingSupport{128};
+
 enum class ProposalAttentionPolicy : int32_t
 {
     kBidirectional,

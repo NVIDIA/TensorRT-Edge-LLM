@@ -1,4 +1,4 @@
-# Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
 
 # Redistribution and use in source and binary forms, with or without
@@ -38,7 +38,6 @@ import cutlass.utils.blockscaled_layout as blockscaled_utils
 from cutlass.cute.nvgpu import cpasync, tcgen05
 
 from cute_utils import (
-    EDGELLM_ENABLE_PDL,
     atomic_add_func,
     blk_reduce_bf16,
     blk_reduce_fp16,
@@ -197,7 +196,8 @@ class Sm100BlockScaledContiguousGroupedGemmFinalizeFusionKernel:
         ...     sf_vec_size=16, mma_tiler_mn=(256, 128), cluster_shape_mn=(2, 1)
         ... )
         >>> gemm(
-        ...     a_tensor, b_tensor, sfa_tensor, sfb_tensor, out_tensor, max_active_clusters, stream
+        ...     a_tensor, b_tensor, sfa_tensor, sfb_tensor, out_tensor,
+        ...     max_active_clusters, cutlass.Int32(1), stream
         ... )
     """
 
@@ -502,6 +502,7 @@ class Sm100BlockScaledContiguousGroupedGemmFinalizeFusionKernel:
         alpha: Union[cute.Tensor, Tuple[cute.Tensor, ...]],
         down_input_scale: cute.Tensor,
         max_active_clusters: cutlass.Int32,
+        enable_pdl: cutlass.Int32,
         stream: cuda.CUstream,
         permuted_idx_to_expanded_idx: cute.Tensor,
         token_final_scales: cute.Tensor,
@@ -535,6 +536,8 @@ class Sm100BlockScaledContiguousGroupedGemmFinalizeFusionKernel:
         :type down_input_scale: cute.Tensor
         :param max_active_clusters: Maximum number of active clusters
         :type max_active_clusters: cutlass.Int32
+        :param enable_pdl: Whether the launch permits programmatic stream serialization
+        :type enable_pdl: cutlass.Int32
         :param stream: CUDA stream for asynchronous execution
         :type stream: cuda.CUstream
         :param permuted_idx_to_expanded_idx: Mapping from permuted index to expanded index, shape (permuted_m,)
@@ -843,7 +846,7 @@ class Sm100BlockScaledContiguousGroupedGemmFinalizeFusionKernel:
             smem=self.shared_storage.size_in_bytes(),
             stream=stream,
             min_blocks_per_mp=1,
-            use_pdl=EDGELLM_ENABLE_PDL,
+            use_pdl=enable_pdl,
         )
         return
 
@@ -2238,6 +2241,8 @@ class Sm100BlockScaledContiguousGroupedGemmFinalizeFusionKernel:
                                 sC[epi_tidx, None, 0],
                                 cutlass.Int32(self.copy_size),
                             )
+                    cute.arch.cp_async_bulk_commit_group()
+                    cute.arch.cp_async_bulk_wait_group(0, read=True)
                     self.epilog_sync_barrier.arrive_and_wait()
 
                 # Advance to next tile
@@ -2810,6 +2815,7 @@ class Sm100BlockScaledContiguousGroupedGemmFinalizeFusionKernel:
         tile_size: cutlass.Constexpr,
         scaling_vector_size: cutlass.Constexpr,
         max_active_clusters: cutlass.Int32,
+        enable_pdl: cutlass.Int32,
         stream: cuda.CUstream,
         epilogue_op: cutlass.Constexpr = lambda x: x,
     ):
@@ -2933,6 +2939,7 @@ class Sm100BlockScaledContiguousGroupedGemmFinalizeFusionKernel:
             tuple(alpha_tuple),
             down_input_scale,
             max_active_clusters=max_active_clusters,
+            enable_pdl=enable_pdl,
             stream=stream,
             permuted_idx_to_expanded_idx=permuted_idx_to_expanded_idx,
             token_final_scales=token_final_scales,

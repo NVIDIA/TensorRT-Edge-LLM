@@ -90,4 +90,28 @@ TEST(BenchLoggerTest, DDTreeCsvIncludesAlignedIdentityColumns)
     std::filesystem::remove(output);
 }
 
+TEST(BenchLoggerTest, DraftAcceptOutputIsSelfDescribing)
+{
+    BenchOutputParams params;
+    params.mode = BenchMode::kEAGLE_DRAFT_ACCEPT;
+    params.batchSize = 1;
+    params.osl = 1;
+    params.draftStep = 3;
+    params.acceptLen = 4;
+    params.pastKVLen = 2064;
+
+    EXPECT_EQ(modeToString(params.mode), "eagle_draft_accept");
+    EXPECT_EQ(buildLayerCsvPath("out", params), "out/layer_eagle_draft_accept_draftstep3_acceptlen4_pastkvlen2064.csv");
+    EXPECT_EQ(buildE2ECsvPath("out", params), "out/e2e_eagle_draft_accept_draftstep3_acceptlen4_pastkvlen2064.csv");
+
+    std::filesystem::path const output = std::filesystem::temp_directory_path() / "benchLoggerTest_draftAccept.csv";
+    writeE2ECsv(output.string(), params, 2.0F, 1);
+
+    EXPECT_EQ(readFile(output),
+        "mode,batch_size,osl,e2e_time_ms,per_token_ms,throughput_tps,draft_step,accept_len,past_kv_len\n"
+        "eagle_draft_accept,1,1,2.0000,2.0000,500.0000,3,4,2064\n");
+
+    std::filesystem::remove(output);
+}
+
 } // namespace

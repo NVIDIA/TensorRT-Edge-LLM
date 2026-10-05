@@ -339,7 +339,7 @@ std::vector<double> referenceVerifyOutput(ChunkProblem const& p, float scale, bo
 //! the raw inputs with the same staging the verify stash applies (k as
 //! fp32(fp16 k)*invK, g/beta fp32, v as fp16).
 std::vector<double> referenceReplayState(
-    ChunkProblem const& p, float scale, bool useL2Norm, std::vector<int32_t> const& acceptedPath)
+    ChunkProblem const& p, float scale, bool useL2Norm, std::vector<std::vector<int32_t>> const& acceptedPaths)
 {
     int32_t const N = p.numNodes;
     std::vector<double> h(static_cast<size_t>(p.batch) * p.hv * kDk * kDv);
@@ -354,7 +354,7 @@ std::vector<double> referenceReplayState(
             RefState const s = referencePrep(p, bi, iHv, scale, useL2Norm);
             int32_t const iH = iHv / (p.hv / p.h);
             double* hd = h.data() + (static_cast<size_t>(bi) * p.hv + iHv) * kDk * kDv;
-            for (int32_t node : acceptedPath)
+            for (int32_t node : acceptedPaths[bi])
             {
                 double const g = static_cast<double>(std::exp(static_cast<float>(s.logg[node])));
                 double const beta = s.beta[node];
@@ -463,13 +463,19 @@ void expectClose(double actual, double ref, double absTol, double relTol, std::s
 // Verify (prep + apply) vs host reference
 // ============================================================================
 
-class GdnTreeChunkVerifyTest : public ::testing::TestWithParam<int32_t>
+struct GdnTreeChunkVerifyParams
+{
+    int32_t numNodes;
+    bool useL2Norm;
+};
+
+class GdnTreeChunkVerifyTest : public ::testing::TestWithParam<GdnTreeChunkVerifyParams>
 {
 };
 
 TEST_P(GdnTreeChunkVerifyTest, MatchesReference)
 {
-    int32_t const numNodes = GetParam();
+    auto const [numNodes, useL2Norm] = GetParam();
     ChunkProblem p{};
     p.batch = 2;
     p.numNodes = numNodes;
@@ -480,9 +486,9 @@ TEST_P(GdnTreeChunkVerifyTest, MatchesReference)
 
     float const scale = 1.f / std::sqrt(static_cast<float>(kDk));
     DeviceRun dev;
-    dev.run(p, scale, /*useL2Norm=*/true);
+    dev.run(p, scale, useL2Norm);
 
-    std::vector<double> const ref = referenceVerifyOutput(p, scale, true);
+    std::vector<double> const ref = referenceVerifyOutput(p, scale, useL2Norm);
     std::vector<__half> const out = downloadVec(dev.dO, static_cast<size_t>(p.batch) * numNodes * p.hv * kDv);
 
     int32_t mismatches = 0;
@@ -526,8 +532,77 @@ TEST_P(GdnTreeChunkVerifyTest, MatchesReference)
     }
 }
 
-// 33 exercises the nPad > N wmma padding paths; 4 exercises tiny trees.
-INSTANTIATE_TEST_SUITE_P(NodeCounts, GdnTreeChunkVerifyTest, ::testing::Values(4, 16, 33, 48, 64));
+// N=7 is the chain-6 production shape. N=16/17 straddle the specialized
+// two-warp apply dispatch boundary, while 33 exercises WMMA row padding.
+INSTANTIATE_TEST_SUITE_P(Configurations, GdnTreeChunkVerifyTest,
+    ::testing::Values(GdnTreeChunkVerifyParams{1, true}, GdnTreeChunkVerifyParams{4, true},
+        GdnTreeChunkVerifyParams{7, true}, GdnTreeChunkVerifyParams{16, true}, GdnTreeChunkVerifyParams{17, true},
+        GdnTreeChunkVerifyParams{32, true}, GdnTreeChunkVerifyParams{33, true}, GdnTreeChunkVerifyParams{48, true},
+        GdnTreeChunkVerifyParams{64, true}, GdnTreeChunkVerifyParams{7, false}));
+
+TEST(GdnTreeChunkVerifyRegressionTest, CorrelatedChainUsesSubstitutedRows)
+{
+    constexpr int32_t kNumNodes{7};
+    ChunkProblem p{};
+    p.batch = 1;
+    p.numNodes = kNumNodes;
+    p.h = 1;
+    p.hv = 1;
+    p.addInvalidNode = false;
+    p.generate(/*seed=*/2026);
+
+    for (int32_t n = 0; n < kNumNodes; ++n)
+    {
+        p.parents[n] = n - 1;
+    }
+    std::fill(p.q.begin(), p.q.end(), __float2half(1.f));
+    std::fill(p.k.begin(), p.k.end(), __float2half(1.f));
+    std::fill(p.v.begin(), p.v.end(), __float2half(0.5f));
+    std::fill(p.a.begin(), p.a.end(), __float2half(-10.f));
+    std::fill(p.b.begin(), p.b.end(), __float2half(10.f));
+    std::fill(p.dtBias.begin(), p.dtBias.end(), __float2half(0.f));
+    std::fill(p.logA.begin(), p.logA.end(), -10.f);
+    std::fill(p.h0.begin(), p.h0.end(), 0.f);
+
+    float const scale = 1.f / std::sqrt(static_cast<float>(kDk));
+    DeviceRun dev;
+    dev.run(p, scale, /*useL2Norm=*/true);
+
+    std::vector<double> const ref = referenceVerifyOutput(p, scale, true);
+    std::vector<__half> const out = downloadVec(dev.dO, ref.size());
+    size_t const deepestNode = static_cast<size_t>(kNumNodes - 1) * kDv;
+    expectClose(__half2float(out[deepestNode]), ref[deepestNode], 2e-2, 2e-2, "deepest chain node");
+}
+
+TEST(GdnTreeChunkVerifyRegressionTest, SameDepthSiblingsMatchReference)
+{
+    constexpr int32_t kNumNodes{17};
+    ChunkProblem p{};
+    p.batch = 1;
+    p.numNodes = kNumNodes;
+    p.h = 1;
+    p.hv = 1;
+    p.addInvalidNode = false;
+    p.generate(/*seed=*/2027);
+
+    for (int32_t n = 1; n < kNumNodes; ++n)
+    {
+        p.parents[n] = (n - 1) / 2;
+    }
+    std::fill(p.q.begin(), p.q.end(), __float2half(1.f));
+    std::fill(p.k.begin(), p.k.end(), __float2half(1.f));
+
+    float const scale = 1.f / std::sqrt(static_cast<float>(kDk));
+    DeviceRun dev;
+    dev.run(p, scale, /*useL2Norm=*/true);
+
+    std::vector<double> const ref = referenceVerifyOutput(p, scale, true);
+    std::vector<__half> const out = downloadVec(dev.dO, ref.size());
+    for (size_t i = 0; i < ref.size(); ++i)
+    {
+        expectClose(__half2float(out[i]), ref[i], 2e-2, 2e-2, "same-depth sibling element " + std::to_string(i));
+    }
+}
 
 // ============================================================================
 // Verify -> replay commit end-to-end (stash handoff) vs host reference
@@ -536,6 +611,13 @@ INSTANTIATE_TEST_SUITE_P(NodeCounts, GdnTreeChunkVerifyTest, ::testing::Values(4
 TEST(GdnTreeChunkReplayTest, VerifyThenReplayMatchesReference)
 {
     constexpr int32_t kNumLayers = 2;
+    constexpr int32_t kStatePoolRows = 4;
+    constexpr int32_t kBatch = 2;
+    constexpr int32_t kH = 2;
+    constexpr int32_t kHv = 6;
+    std::vector<int32_t> const hostStateIndices{2, 0};
+    std::vector<std::vector<int32_t>> const paths{
+        {0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30}, {0, 17, 23, 31, 39, 47}};
     ChunkProblem probs[kNumLayers];
     float const scale = 1.f / std::sqrt(static_cast<float>(kDk));
 
@@ -544,42 +626,46 @@ TEST(GdnTreeChunkReplayTest, VerifyThenReplayMatchesReference)
     for (int32_t layer = 0; layer < kNumLayers; ++layer)
     {
         auto& p = probs[layer];
-        p.batch = 1;
+        p.batch = kBatch;
         p.numNodes = 48;
-        p.h = 2;
-        p.hv = 4;
+        p.h = kH;
+        p.hv = kHv;
         p.addInvalidNode = false;
         p.generate(/*seed=*/777 + layer);
+        for (int32_t batchIdx = 0; batchIdx < kBatch; ++batchIdx)
+        {
+            for (size_t i = 1; i < paths[batchIdx].size(); ++i)
+            {
+                p.parents[batchIdx * p.numNodes + paths[batchIdx][i]] = paths[batchIdx][i - 1];
+            }
+        }
         devs[layer].run(p, scale, /*useL2Norm=*/true);
 
-        // Persistent recurrent state starts at h0 and is committed in place.
-        persistent[layer] = uploadVec(probs[layer].h0);
-    }
-
-    // Accepted path: a root-to-leaf chain in layer 0's tree (trees differ per
-    // layer only in the stash contents; the accepted indices are shared).
-    std::vector<int32_t> path;
-    {
-        // Walk from the last node up to the root, then reverse.
-        int32_t iter = probs[0].numNodes - 1;
-        while (iter >= 0 && static_cast<int32_t>(path.size()) < kGDN_TREE_CHUNK_MAX_ACCEPT)
+        size_t const rowElements = probs[layer].h0.size() / kBatch;
+        std::vector<float> statePool(static_cast<size_t>(kStatePoolRows) * rowElements, -17.F);
+        for (int32_t batchIdx = 0; batchIdx < kBatch; ++batchIdx)
         {
-            path.push_back(iter);
-            iter = probs[0].parents[iter];
+            auto const inputBegin = probs[layer].h0.begin() + static_cast<size_t>(batchIdx) * rowElements;
+            auto const outputBegin = statePool.begin() + static_cast<size_t>(hostStateIndices[batchIdx]) * rowElements;
+            std::copy(inputBegin, inputBegin + rowElements, outputBegin);
         }
-        std::reverse(path.begin(), path.end());
+        persistent[layer] = uploadVec(statePool);
     }
-    int32_t const acceptLen = static_cast<int32_t>(path.size());
-    ASSERT_GE(acceptLen, 2);
 
-    std::vector<int32_t> hostIndices(kGDN_TREE_CHUNK_MAX_ACCEPT, 0);
-    for (int32_t i = 0; i < acceptLen; ++i)
+    std::vector<int32_t> hostIndices(static_cast<size_t>(kBatch) * kGDN_TREE_CHUNK_MAX_ACCEPT, 0);
+    std::vector<int32_t> hostLens(kBatch);
+    for (int32_t batchIdx = 0; batchIdx < kBatch; ++batchIdx)
     {
-        hostIndices[i] = path[i];
+        hostLens[batchIdx] = static_cast<int32_t>(paths[batchIdx].size());
+        for (size_t i = 0; i < paths[batchIdx].size(); ++i)
+        {
+            hostIndices[static_cast<size_t>(batchIdx) * kGDN_TREE_CHUNK_MAX_ACCEPT + i] = paths[batchIdx][i];
+        }
     }
+    ASSERT_EQ(hostLens[0], kGDN_TREE_CHUNK_MAX_ACCEPT);
     int32_t* dIndices = uploadVec(hostIndices);
-    std::vector<int32_t> const hostLens{acceptLen};
     int32_t* dLens = uploadVec(hostLens);
+    int32_t* dStateIndices = uploadVec(hostStateIndices);
 
     std::vector<MtpLayerInfo> infos(kNumLayers);
     for (int32_t layer = 0; layer < kNumLayers; ++layer)
@@ -591,26 +677,46 @@ TEST(GdnTreeChunkReplayTest, VerifyThenReplayMatchesReference)
     }
     MtpLayerInfo* dInfos = uploadVec(infos);
 
-    ASSERT_EQ(gdnTreeReplayCommitBatched(dInfos, kNumLayers, stashRowBytes(2, 4), dIndices, dLens, /*batch=*/1,
-                  kGDN_TREE_CHUNK_MAX_ACCEPT, probs[0].numNodes, /*h=*/2, /*hv=*/4, nullptr),
+    ASSERT_EQ(gdnTreeReplayCommitBatched(dInfos, kNumLayers, stashRowBytes(kH, kHv), dIndices, dLens, dStateIndices,
+                  kBatch, kStatePoolRows, kGDN_TREE_CHUNK_MAX_ACCEPT, probs[0].numNodes, kH, kHv, nullptr),
         cudaSuccess);
     ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
     ASSERT_EQ(cudaGetLastError(), cudaSuccess);
 
     for (int32_t layer = 0; layer < kNumLayers; ++layer)
     {
-        std::vector<double> const ref = referenceReplayState(probs[layer], scale, true, path);
-        std::vector<float> const out = downloadVec(persistent[layer], ref.size());
-        for (size_t i = 0; i < ref.size(); ++i)
+        std::vector<double> const ref = referenceReplayState(probs[layer], scale, true, paths);
+        size_t const rowElements = ref.size() / kBatch;
+        std::vector<float> const out
+            = downloadVec(persistent[layer], static_cast<size_t>(kStatePoolRows) * rowElements);
+        for (int32_t batchIdx = 0; batchIdx < kBatch; ++batchIdx)
         {
-            // The replay chain is fp32 with an fp16 v; the stash k/g/beta are
-            // fp32 rounded once.
-            expectClose(out[i], ref[i], 2e-3, 2e-3, "layer " + std::to_string(layer) + " elem " + std::to_string(i));
+            for (size_t i = 0; i < rowElements; ++i)
+            {
+                // The replay chain is fp32 with an fp16 v; the stash k/g/beta are
+                // fp32 rounded once.
+                size_t const refIdx = static_cast<size_t>(batchIdx) * rowElements + i;
+                size_t const outIdx = static_cast<size_t>(hostStateIndices[batchIdx]) * rowElements + i;
+                expectClose(out[outIdx], ref[refIdx], 2e-3, 2e-3,
+                    "layer " + std::to_string(layer) + " batch " + std::to_string(batchIdx) + " elem "
+                        + std::to_string(i));
+            }
+        }
+        for (int32_t slot = 0; slot < kStatePoolRows; ++slot)
+        {
+            if (std::find(hostStateIndices.begin(), hostStateIndices.end(), slot) != hostStateIndices.end())
+            {
+                continue;
+            }
+            auto const begin = out.begin() + static_cast<size_t>(slot) * rowElements;
+            EXPECT_TRUE(std::all_of(begin, begin + rowElements, [](float value) { return value == -17.F; }))
+                << "Unselected resident slot changed: layer=" << layer << " slot=" << slot;
         }
         cudaFree(persistent[layer]);
     }
     cudaFree(dIndices);
     cudaFree(dLens);
+    cudaFree(dStateIndices);
     cudaFree(dInfos);
 }
 
@@ -633,6 +739,8 @@ TEST(GdnTreeChunkReplayTest, ZeroAcceptLengthLeavesStateUnchanged)
     int32_t* dIndices = uploadVec(hostIndices);
     std::vector<int32_t> const hostLens{0};
     int32_t* dLens = uploadVec(hostLens);
+    std::vector<int32_t> const hostStateIndices{0};
+    int32_t* dStateIndices = uploadVec(hostStateIndices);
 
     std::vector<MtpLayerInfo> infos(1);
     infos[0].recurrentDst = persistent;
@@ -641,8 +749,8 @@ TEST(GdnTreeChunkReplayTest, ZeroAcceptLengthLeavesStateUnchanged)
     infos[0].convSrc = nullptr;
     MtpLayerInfo* dInfos = uploadVec(infos);
 
-    ASSERT_EQ(gdnTreeReplayCommitBatched(dInfos, 1, stashRowBytes(2, 4), dIndices, dLens, 1, kGDN_TREE_CHUNK_MAX_ACCEPT,
-                  p.numNodes, 2, 4, nullptr),
+    ASSERT_EQ(gdnTreeReplayCommitBatched(dInfos, 1, stashRowBytes(2, 4), dIndices, dLens, dStateIndices, 1,
+                  /*residentPoolRows=*/1, kGDN_TREE_CHUNK_MAX_ACCEPT, p.numNodes, 2, 4, nullptr),
         cudaSuccess);
     ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
     ASSERT_EQ(cudaGetLastError(), cudaSuccess);
@@ -655,5 +763,66 @@ TEST(GdnTreeChunkReplayTest, ZeroAcceptLengthLeavesStateUnchanged)
     cudaFree(persistent);
     cudaFree(dIndices);
     cudaFree(dLens);
+    cudaFree(dStateIndices);
     cudaFree(dInfos);
+}
+
+TEST(GdnTreeChunkReplayTest, InvalidAcceptedPathLeavesPersistentStateUnchanged)
+{
+    ChunkProblem p{};
+    p.batch = 1;
+    p.numNodes = 16;
+    p.h = 2;
+    p.hv = 4;
+    p.addInvalidNode = false;
+    p.generate(/*seed=*/5150);
+
+    float const scale = 1.f / std::sqrt(static_cast<float>(kDk));
+    DeviceRun dev;
+    dev.run(p, scale, true);
+
+    struct InvalidPath
+    {
+        int32_t acceptLength;
+        int32_t acceptedNode;
+        int32_t declaredNumNodes;
+    };
+    std::vector<InvalidPath> const invalidPaths{
+        {kGDN_TREE_CHUNK_MAX_ACCEPT + 1, 0, p.numNodes},
+        // Node 15 exists in the allocated stash, but is outside the declared [0, 15) tree. This
+        // validates the declared node domain without relying on an out-of-bounds device read.
+        {1, p.numNodes - 1, p.numNodes - 1},
+    };
+
+    cudaStream_t stream{};
+    ASSERT_EQ(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), cudaSuccess);
+    for (auto const& invalid : invalidPaths)
+    {
+        float* persistent = uploadVec(p.h0);
+        std::vector<int32_t> hostIndices(kGDN_TREE_CHUNK_MAX_ACCEPT, 0);
+        hostIndices[0] = invalid.acceptedNode;
+        int32_t* dIndices = uploadVec(hostIndices);
+        int32_t* dLens = uploadVec(std::vector<int32_t>{invalid.acceptLength});
+        int32_t* dStateIndices = uploadVec(std::vector<int32_t>{0});
+        std::vector<MtpLayerInfo> infos(1);
+        infos[0].recurrentDst = persistent;
+        infos[0].recurrentSrc = dev.dStash;
+        MtpLayerInfo* dInfos = uploadVec(infos);
+
+        ASSERT_EQ(gdnTreeReplayCommitBatched(dInfos, 1, stashRowBytes(2, 4), dIndices, dLens, dStateIndices, 1,
+                      /*residentPoolRows=*/1, kGDN_TREE_CHUNK_MAX_ACCEPT, invalid.declaredNumNodes, 2, 4, stream),
+            cudaSuccess);
+        ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
+        ASSERT_EQ(cudaGetLastError(), cudaSuccess);
+
+        std::vector<float> const out = downloadVec(persistent, p.h0.size());
+        EXPECT_EQ(out, p.h0) << "malformed accepted path committed persistent state: length=" << invalid.acceptLength
+                             << " node=" << invalid.acceptedNode << " numNodes=" << invalid.declaredNumNodes;
+        cudaFree(persistent);
+        cudaFree(dIndices);
+        cudaFree(dLens);
+        cudaFree(dStateIndices);
+        cudaFree(dInfos);
+    }
+    ASSERT_EQ(cudaStreamDestroy(stream), cudaSuccess);
 }

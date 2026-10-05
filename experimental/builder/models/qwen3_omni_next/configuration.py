@@ -19,6 +19,7 @@ from dataclasses import replace
 from typing import Any, Dict
 
 from ...core import contracts, quantization, weight_policy
+from .weights import VOCODER_DIR_ALIASES
 
 _TALKER_TYPES = frozenset((
     "qwen3_omni_next_talker",
@@ -116,9 +117,15 @@ def _load_code2wav_config(codec_dir: str) -> Dict[str, Any]:
 def prepare_root(model_dir: str, root: dict) -> dict:
     """Attach the separately shipped online-codec configuration."""
     root = dict(root)
-    codec_dir = os.path.join(model_dir, "codec_decode_online")
-    if os.path.isdir(codec_dir):
-        root["_code2wav_config"] = _load_code2wav_config(codec_dir)
+    # Gate on the payload, not on isdir: a partial directory would otherwise
+    # abort every component build, vocoder or not.
+    for name in VOCODER_DIR_ALIASES:
+        codec_dir = os.path.join(model_dir, name)
+        if all(
+                os.path.isfile(os.path.join(codec_dir, f))
+                for f in ("config.yaml", "model_weights.pt")):
+            root["_code2wav_config"] = _load_code2wav_config(codec_dir)
+            break
     return root
 
 
@@ -178,8 +185,8 @@ def component_config(root: dict, component: contracts.Component) -> dict:
             return codec
         if model_type == "qwen3_omni_next_code2wav":
             return root.get("code2wav_config") or root
-        raise ValueError(
-            "Qwen3-Omni-Next checkpoint has no codec_decode_online directory")
+        raise ValueError("Qwen3-Omni-Next checkpoint has no vocoder directory "
+                         f"({' or '.join(VOCODER_DIR_ALIASES)})")
     raise ValueError(f"Qwen3-Omni-Next has no {component.value} configuration")
 
 

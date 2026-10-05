@@ -87,13 +87,13 @@ def _add_common_args(parser):
     parser.add_argument(
         "--cp_quantization",
         default=None,
-        choices=["fp8"],
+        choices=["fp8", "nvfp4"],
         help=("Quantize the Talker CodePredictor "
-              "(talker.code_predictor.*) of Qwen3-Omni, Qwen3-TTS, or "
-              "Qwen3-Omni Next (qwen3_omni_next, dense and MoE).  Only fp8 "
-              "is exposed today; down_proj and the per-codebook lm_heads "
-              "are kept unquantized (see FP8_CP in "
-              "quantization_configs.py).  When unset CP stays at fp16."),
+              "(talker.code_predictor.*) of Qwen3-Omni or Qwen3-TTS, dense "
+              "and MoE.  down_proj, the per-codebook lm_heads and "
+              "talker_projection are kept unquantized in both modes (see "
+              "_cp_entries in quantization_configs.py).  When unset CP stays "
+              "at fp16."),
     )
     parser.add_argument("--kv_cache_quantization",
                         default=None,
@@ -140,6 +140,11 @@ def main():
               ">=0.45 configs) and share in_proj_qkv's per-tensor scales so "
               "export fuses qkv/z/b/a into a single NVFP4 GEMM."))
     llm_parser.add_argument(
+        "--quantize_gemma4_down_proj",
+        action="store_true",
+        help=("Gemma4 int4_awq/nvfp4 only: force-quantize down_proj to 4-bit. "
+              "Off by default -- down_proj stays fp16 to preserve accuracy."))
+    llm_parser.add_argument(
         "--mtp_draft_dir",
         default=None,
         help=
@@ -178,9 +183,10 @@ def main():
             audio_dataset=args.audio_dataset,
             num_samples=args.num_samples,
             fuse_gdn_qkvzba_scales=args.fuse_gdn_qkvzba_scales,
+            quantize_gemma4_down_proj=args.quantize_gemma4_down_proj,
         )
     elif args.command == "draft":
-        if _is_dflash_or_jetspec_draft(args.draft_model_dir):
+        if _is_dflash_family_draft(args.draft_model_dir):
             _validate_dflash_quant_args(parser, args)
             from ..quantization.models.dflash_draft import \
                 quantize_and_export_dflash_draft
@@ -213,13 +219,19 @@ def main():
             )
 
 
-def _is_dflash_or_jetspec_draft(draft_model_dir: str) -> bool:
+def _is_dflash_family_draft(draft_model_dir: str) -> bool:
     cfg_path = os.path.join(draft_model_dir, "config.json")
     if not os.path.isfile(cfg_path):
         return False
     with open(cfg_path, encoding="utf-8") as f:
         cfg = json.load(f)
-    return bool(cfg.get("dflash_config") or cfg.get("jetspec_config"))
+    # DSpark drafts share the DFlash backbone; the Markov/confidence sidecar
+    # tensors pass through the same quantization path unquantized.
+    is_dspark = bool(
+        cfg.get("dspark_config") or cfg.get("markov_head_type")
+        or "Qwen3DSparkModel" in (cfg.get("architectures") or []))
+    return bool(
+        cfg.get("dflash_config") or cfg.get("jetspec_config") or is_dspark)
 
 
 def _validate_dflash_quant_args(parser, args) -> None:

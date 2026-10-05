@@ -16,18 +16,117 @@
 
 import numpy as np
 
+from ...core.weights import ParameterSpec
 from ...weight_packing import nvfp4 as nvfp4_pack
+
+_MTP_INTERMEDIATE_ALIGNMENT = 128
+
+
+def quant_type_for_algorithm(algorithm: str, default: str) -> str:
+    """Select weight-only NVFP4 for Nemotron W4A16 checkpoints."""
+    if default == "nvfp4" and "W4A16" in algorithm:
+        return "nvfp4_a16"
+    return default
+
+
+def writes_runtime_embedding(args) -> bool:
+    """Native MTP drafts consume the base model's embedding sidecar."""
+    return not (args.resolved_spec_role.value == "draft"
+                and args.spec_type == "mtp")
+
+
+def externalizes_runtime_embedding(args) -> bool:
+    """Keep cached-draft base embeddings patchable as a runtime sidecar."""
+    return not (args.resolved_spec_role.value == "base"
+                and args.spec_type in ("dflash", "dspark"))
 
 
 def resolve_candidates(name: str, *, component: str, spec_type: str,
                        spec_role: str, quant_type: str):
     """Map frontend tensor names to Nemotron-H checkpoint aliases."""
-    del component, spec_type, spec_role
+    del component
+    candidates = []
+    if spec_role == "draft" and spec_type == "mtp":
+        candidates.append(f"mtp.{name}")
     if name == "model.embed_tokens.weight":
-        return ("backbone.embeddings.weight", )
+        candidates.append("backbone.embeddings.weight")
     if name == "lm_head.weight" and quant_type == "fp16":
-        return ("backbone.embeddings.weight", )
-    return ()
+        candidates.append("backbone.embeddings.weight")
+    return tuple(candidates)
+
+
+def prepare_mtp_fp16_experts(weights, experts_prefix: str, num_experts: int,
+                             hidden_size: int, intermediate_size: int) -> dict:
+    """Pad and stack Nemotron-H's non-gated BF16 MTP experts as FP16."""
+    padded_intermediate = (
+        (intermediate_size + _MTP_INTERMEDIATE_ALIGNMENT - 1) //
+        _MTP_INTERMEDIATE_ALIGNMENT) * _MTP_INTERMEDIATE_ALIGNMENT
+    fc1_weights = []
+    fc2_weights = []
+    for expert in range(num_experts):
+        prefix = f"{experts_prefix}.{expert}"
+        up = weights.f16(prefix + ".up_proj.weight")
+        down = weights.f16(prefix + ".down_proj.weight")
+        if up.shape != (intermediate_size, hidden_size):
+            raise ValueError(
+                f"{prefix}.up_proj has shape {up.shape}, expected "
+                f"{(intermediate_size, hidden_size)}")
+        if down.shape != (hidden_size, intermediate_size):
+            raise ValueError(
+                f"{prefix}.down_proj has shape {down.shape}, expected "
+                f"{(hidden_size, intermediate_size)}")
+        padded_up = np.zeros((padded_intermediate, hidden_size), np.float16)
+        padded_up[:intermediate_size] = up
+        padded_down = np.zeros((hidden_size, padded_intermediate), np.float16)
+        padded_down[:, :intermediate_size] = down
+        fc1_weights.append(padded_up)
+        fc2_weights.append(padded_down)
+    return {
+        "fc1_weights": np.stack(fc1_weights),
+        "fc2_weights": np.stack(fc2_weights),
+        "padded_intermediate": padded_intermediate,
+    }
+
+
+def mtp_fp16_expert_specs(num_experts: int, hidden_size: int,
+                          intermediate_size: int) -> dict:
+    """Describe the padded non-gated MTP expert buffers."""
+    padded_intermediate = (
+        (intermediate_size + _MTP_INTERMEDIATE_ALIGNMENT - 1) //
+        _MTP_INTERMEDIATE_ALIGNMENT) * _MTP_INTERMEDIATE_ALIGNMENT
+    return {
+        "fc1_weights":
+        ParameterSpec((num_experts, padded_intermediate, hidden_size),
+                      np.float16),
+        "fc2_weights":
+        ParameterSpec((num_experts, hidden_size, padded_intermediate),
+                      np.float16),
+        "padded_intermediate":
+        padded_intermediate,
+    }
+
+
+def mtp_fp16_expert_bindings(weights, experts_prefix: str,
+                             num_experts: int) -> dict:
+    """Map MTP ReLU2 experts into padded FP16 plugin buffers."""
+    fc1_names = []
+    fc2_names = []
+    for expert in range(num_experts):
+        prefix = f"{experts_prefix}.{expert}"
+        fc1_names.append(prefix + ".up_proj.weight")
+        fc2_names.append(prefix + ".down_proj.weight")
+    return {
+        "fc1_weights":
+        weights.checkpoint_binding(fc1_names,
+                                   "fp16",
+                                   "fp16_moe_fc1_relu2",
+                                   num_experts=num_experts),
+        "fc2_weights":
+        weights.checkpoint_binding(fc2_names,
+                                   "fp16",
+                                   "fp16_moe_fc2",
+                                   num_experts=num_experts),
+    }
 
 
 def repack_nvfp4_experts(load_expert,

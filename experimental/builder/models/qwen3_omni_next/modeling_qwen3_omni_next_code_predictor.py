@@ -21,6 +21,7 @@ import tensorrt as trt
 from ...ops import (DynamicLinear, FP32GatedMLP, GatedDecoderAttention, Module,
                     NetworkModule, RMSNorm)
 from ...ops import functional as F
+from ...ops.ragged import RaggedDecoderInputs, add_ragged_decoder_inputs
 
 __all__ = [
     "Qwen3OmniNextCodePredictorAttention",
@@ -55,11 +56,9 @@ class Qwen3OmniNextCodePredictorDecoderLayer(Module):
             ctx, self.key("self_attn"))
         self.mlp = Qwen3OmniNextCodePredictorMLP(ctx, self.key("mlp"))
 
-    def forward(self, hidden_states, past_key_value, rope, context_lengths,
-                cache_start, kv_page_table):
+    def forward(self, hidden_states, past_key_value, rope, ragged):
         attention, present = self.self_attn(
-            self.input_layernorm(hidden_states), past_key_value, rope,
-            context_lengths, cache_start, kv_page_table)
+            self.input_layernorm(hidden_states), past_key_value, rope, ragged)
         hidden_states = hidden_states + attention
         hidden_states = hidden_states + self.mlp(
             self.post_attention_layernorm(hidden_states))
@@ -82,13 +81,11 @@ class Qwen3OmniNextCodePredictorModel(Module):
                             ctx.cfg.rms_norm_eps,
                             unit_offset=True)
 
-    def forward(self, hidden_states, past_key_values, rope, context_lengths,
-                cache_start, kv_page_table):
+    def forward(self, hidden_states, past_key_values, rope, ragged):
         present = []
         for index, layer in enumerate(self.layers):
             hidden_states, cache = layer(hidden_states, past_key_values[index],
-                                         rope, context_lengths, cache_start,
-                                         kv_page_table)
+                                         rope, ragged)
             present.append(cache)
         return self.norm(hidden_states), present
 
@@ -112,10 +109,10 @@ class Qwen3OmniNextCodePredictor(NetworkModule):
         if num_heads < 1:
             raise ValueError(
                 "Qwen3-Omni-Next CodePredictor requires num_code_groups > 1")
-        return {
+        io = {
             "inputs_embeds":
             self.add_input("inputs_embeds", trt.float16,
-                           (-1, -1, cfg.hidden_size)),
+                           (-1, cfg.hidden_size)),
             "past_key_values": [
                 self.add_input(f"past_key_values_{index}", kv_dtype,
                                (2, -1, F.KV_PAGE_SIZE, cfg.num_key_value_heads,
@@ -124,31 +121,25 @@ class Qwen3OmniNextCodePredictor(NetworkModule):
             ],
             "rope":
             self.add_input("rope_rotary_cos_sin", trt.float32,
-                           (-1, -1, cfg.rotary_dim)),
-            "context_lengths":
-            self.add_input("context_lengths", trt.int32, (-1, )),
-            "cache_start":
-            self.add_input("kvcache_start_index", trt.int32, (-1, )),
-            "kv_page_table":
-            self.add_input("kv_page_table", trt.int32, (-1, 2, -1)),
-            "last_token_ids":
-            self.add_input("last_token_ids", trt.int64, (-1, 1)),
+                           (-1, cfg.rotary_dim)),
             "lm_heads":
             self.add_input("lm_heads", trt.float16,
                            (num_heads, cfg.vocab_size, cfg.hidden_size)),
             "lm_head_idx":
             self.add_input("lm_head_idx", trt.int32, (1, )),
         }
+        io.update(add_ragged_decoder_inputs(self.add_input).as_dict())
+        return io
 
-    def forward(self, inputs_embeds, past_key_values, rope, context_lengths,
-                cache_start, kv_page_table, last_token_ids, lm_heads,
-                lm_head_idx):
-        hidden_states, present = self.model(inputs_embeds, past_key_values,
-                                            rope, context_lengths, cache_start,
-                                            kv_page_table)
-        selected = F.gather_last_tokens(hidden_states, last_token_ids)
-        head = lm_heads.gather(lm_head_idx.cast(trt.int64), 0).reshape(
-            (self.cfg.vocab_size, self.cfg.hidden_size))
+    def forward(self, **io):
+        ragged = RaggedDecoderInputs.from_dict(io)
+        hidden_states, present = self.model(io["inputs_embeds"],
+                                            io["past_key_values"], io["rope"],
+                                            ragged)
+        selected = F.gather_token_rows(hidden_states, ragged.logits_indices)
+        head = io["lm_heads"].gather(io["lm_head_idx"].cast(trt.int64),
+                                     0).reshape((self.cfg.vocab_size,
+                                                 self.cfg.hidden_size))
         outputs = {
             "logits": self.dynamic_head(selected, head).cast(trt.float32),
             "hidden_states": hidden_states,

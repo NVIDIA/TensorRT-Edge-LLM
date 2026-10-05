@@ -20,6 +20,7 @@
 #include "common/tensor.h"
 #include "profiling/metrics.h"
 #include "runtime/config/deploymentConfig.h"
+#include "runtime/generationBoundary.h"
 #include "runtime/llmRuntimeUtils.h"
 #include "runtime/modelArtifacts.h"
 #include "runtime/multiDevice/parallelConfig.h"
@@ -38,6 +39,9 @@ namespace trt_edgellm
 {
 namespace rt
 {
+
+class SteppedExecution;
+class SteppedRequest;
 
 class LLMRankRuntime;
 class RuntimeCoordinator;
@@ -91,7 +95,7 @@ public:
     bool captureDecodingCUDAGraph(cudaStream_t stream);
 
     bool handleRequest(LLMGenerationRequest const& request, LLMGenerationResponse& response, cudaStream_t stream,
-        bool outputThinkerEmbeddings = false);
+        bool outputThinkerEmbeddings = false, GenerationBoundaryHook const& boundaryHook = {});
 
     /*! \brief Return the input size for an explicit text token-count request. */
     std::vector<int32_t> countPromptTokens(LLMGenerationRequest const& request) const;
@@ -115,6 +119,31 @@ public:
     int32_t getBaseModelPrefillLength() const;
     std::vector<std::vector<int32_t>> const& getBaseModelInputTokenIds() const;
     bool hasDraftModel() const;
+
+    //! @brief Whether the deployment can take boundary admissions (see LLMRankRuntime).
+    bool supportsSeatedAdmission() const;
+
+    //! @brief The engine's built batch dimension (see LLMRankRuntime::maxBatchSize).
+    int32_t maxBatchSize() const;
+
+    //! True when in-flight admission can ride this runtime's boundary hooks: single rank, or
+    //! thread-launched tensor parallelism where scheduling decisions are relayed across the rank
+    //! threads. MPI-launched ranks are other processes and are not covered.
+    bool supportsBoundaryScheduling() const noexcept;
+
+    //! True when this runtime can hand out stepped requests (inline single-rank only in this release).
+    bool supportsSteppedExecution() const noexcept;
+
+    //! Open one request under the stepped control plane; see RuntimeCoordinator::beginStepped.
+    std::unique_ptr<SteppedExecution> beginStepped(
+        LLMGenerationRequest const& request, RequestId requestId, cudaStream_t stream);
+
+    //! @brief Ranks this runtime spans. 1 when it runs on a single device.
+    //!
+    //! Exposed because a caller's own structure can depend on it: a scheduler that varies which
+    //! requests take part in a step has to keep that decision identical on every rank, or the
+    //! collectives inside a forward pass disagree on their shapes.
+    int32_t worldSize() const noexcept;
 
     //! True when this runtime instance owns the requested global rank.
     bool ownsGlobalRank(int32_t globalRank) const noexcept;

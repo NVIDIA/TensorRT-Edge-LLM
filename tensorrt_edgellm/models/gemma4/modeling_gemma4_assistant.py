@@ -38,25 +38,33 @@ _DUMMY_ROPE_CACHE_LEN = 4096
 
 def _make_gemma4_assistant_flat_wrapper(model: nn.Module,
                                         num_layers: int) -> nn.Module:
-    """Build a flat-signature wrapper for Gemma4 assistant ONNX export."""
-    param_names: List[str] = ([
-        "inputs_embeds",
-        "hidden_states_input",
-        "context_lengths",
-        "kv_page_table",
-        "rope_rotary_cos_sin_sliding",
-        "rope_rotary_cos_sin_full",
-    ] + [f"past_key_values_{i}" for i in range(num_layers)])
+    """Build the token-major Gemma4 assistant ONNX wrapper."""
+    param_names: List[str] = (
+        ["inputs_embeds", "hidden_states_input"] +
+        [f"past_key_values_{i}" for i in range(num_layers)] + [
+            "rope_rotary_cos_sin_sliding", "rope_rotary_cos_sin_full",
+            "positions", "query_start_offsets", "query_lengths",
+            "past_lengths", "attention_sequence_lengths", "state_indices",
+            "execution_phase_marker", "context_sequence_count_carrier",
+            "kv_page_table"
+        ])
 
     past_kv_tuple = "({},)".format(", ".join(
         f"past_key_values_{i}"
         for i in range(num_layers))) if num_layers else "()"
-    body = (f"    logits, hidden_states = self._model(\n"
-            f"        inputs_embeds, hidden_states_input, context_lengths,\n"
-            f"        kv_page_table,\n"
-            f"        rope_rotary_cos_sin_sliding, rope_rotary_cos_sin_full,\n"
-            f"        {past_kv_tuple})\n"
-            f"    return logits, hidden_states\n")
+    body = (
+        f"    logits, hidden_states = self._model.forward_ragged(\n"
+        f"        inputs_embeds, hidden_states_input, {past_kv_tuple},\n"
+        f"        rope_rotary_cos_sin_sliding=rope_rotary_cos_sin_sliding,\n"
+        f"        rope_rotary_cos_sin_full=rope_rotary_cos_sin_full,\n"
+        f"        positions=positions, query_start_offsets=query_start_offsets,\n"
+        f"        query_lengths=query_lengths,\n"
+        f"        past_lengths=past_lengths,\n"
+        f"        attention_sequence_lengths=attention_sequence_lengths,\n"
+        f"        state_indices=state_indices, execution_phase_marker=execution_phase_marker,\n"
+        f"        context_sequence_count_carrier=context_sequence_count_carrier,\n"
+        f"        kv_page_table=kv_page_table)\n"
+        f"    return logits, hidden_states\n")
 
     src = "def _forward(self, {}):\n{}".format(", ".join(param_names), body)
     globs: dict = {}
@@ -184,6 +192,44 @@ class Gemma4SharedKVAttention(nn.Module):
             attn_output.reshape(batch_size, seq_len,
                                 self.num_heads * self.head_dim))
 
+    def forward_ragged(self, hidden_states: torch.Tensor,
+                       target_past_key_value: torch.Tensor,
+                       rope_rotary_cos_sin: torch.Tensor,
+                       **metadata) -> torch.Tensor:
+        physical_tokens = hidden_states.shape[0]
+        query_states = self.q_norm(
+            self.q_proj(hidden_states).reshape(
+                physical_tokens, self.num_heads,
+                self.head_dim)).reshape(physical_tokens,
+                                        self.num_heads * self.head_dim)
+        attn_output, _ = attention_plugin(
+            query_states,
+            target_past_key_value,
+            metadata["query_lengths"],
+            rope_rotary_cos_sin,
+            metadata["past_lengths"],
+            metadata["kv_page_table"],
+            num_q_heads=self.num_heads,
+            num_kv_heads=self.num_kv_heads,
+            head_size=self.head_dim,
+            sliding_window_size=self.sliding_window_size,
+            enable_tree_attention=False,
+            enable_fp8_kv_cache=self.enable_fp8_kv_cache,
+            attention_scale=self.attention_scale,
+            enable_context_mask_selector=False,
+            enable_vision_block_attention=False,
+            skip_softmax_scale_factor=0.0,
+            qkv_scales=[1.0, 1.0, 1.0],
+            enable_kv_shared=1,
+            query_start_offsets=metadata["query_start_offsets"],
+            attention_sequence_lengths=metadata["attention_sequence_lengths"],
+            execution_phase_marker=metadata["execution_phase_marker"],
+            context_sequence_count_carrier=metadata[
+                "context_sequence_count_carrier"])
+        return self.o_proj(
+            attn_output.reshape(physical_tokens,
+                                self.num_heads * self.head_dim))
+
 
 class Gemma4AssistantDecoderLayer(nn.Module):
     """Gemma4 assistant decoder layer with shared target-KV attention."""
@@ -219,7 +265,23 @@ class Gemma4AssistantDecoderLayer(nn.Module):
         hidden_states = self.pre_feedforward_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
         hidden_states = self.post_feedforward_layernorm(hidden_states)
-        return (residual + hidden_states) * self.layer_scalar
+        return ((residual + hidden_states) * self.layer_scalar).to(
+            hidden_states.dtype)
+
+    def forward_ragged(self, hidden_states: torch.Tensor,
+                       target_past_key_value: torch.Tensor,
+                       rope_rotary_cos_sin: torch.Tensor,
+                       **metadata) -> torch.Tensor:
+        residual = hidden_states
+        attn_output = self.self_attn.forward_ragged(
+            self.input_layernorm(hidden_states), target_past_key_value,
+            rope_rotary_cos_sin, **metadata)
+        hidden_states = residual + self.post_attention_layernorm(attn_output)
+        residual = hidden_states
+        hidden_states = self.post_feedforward_layernorm(
+            self.mlp(self.pre_feedforward_layernorm(hidden_states)))
+        return ((residual + hidden_states) * self.layer_scalar).to(
+            torch.float16)
 
 
 class Gemma4AssistantMaskedEmbedder(nn.Module):
@@ -265,14 +327,15 @@ class Gemma4AssistantMaskedEmbedder(nn.Module):
 
     def forward(self, hidden_states: torch.Tensor,
                 lm_head_weight: torch.Tensor) -> torch.Tensor:
-        full_logits = F.linear(hidden_states, lm_head_weight)
+        full_logits = F.linear(hidden_states,
+                               lm_head_weight.to(hidden_states.dtype))
         centroid_logits = self.centroids(hidden_states)
         _, top_k_indices = torch.topk(centroid_logits,
                                       k=self.centroid_intermediate_top_k,
                                       dim=-1)
 
         token_to_centroid = self.token_to_centroid.view(
-            1, 1, self.vocab_size, 1)
+            *([1] * (full_logits.ndim - 1)), self.vocab_size, 1)
         selected_centroids = top_k_indices.unsqueeze(-2)
         selected_mask = (token_to_centroid == selected_centroids).any(dim=-1)
 
@@ -322,7 +385,8 @@ class Gemma4AssistantForCausalLM(nn.Module):
         past_key_values: Tuple[torch.Tensor, ...],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         hidden_states = self.pre_projection(
-            torch.cat((inputs_embeds, hidden_states_input), dim=-1))
+            torch.cat((inputs_embeds, hidden_states_input),
+                      dim=-1)).to(torch.float16)
         for layer_idx, layer in enumerate(self.model.layers):
             rope_rotary_cos_sin = (
                 rope_rotary_cos_sin_full if layer.self_attn.attention_type
@@ -330,15 +394,40 @@ class Gemma4AssistantForCausalLM(nn.Module):
             hidden_states = layer(hidden_states, past_key_values[layer_idx],
                                   kv_page_table, context_lengths,
                                   rope_rotary_cos_sin)
+        hidden_states = self.model.norm(hidden_states).to(torch.float16)
+        if self.masked_embedding is not None:
+            logits = self.masked_embedding(hidden_states,
+                                           self.model.embed_tokens.weight)
+        else:
+            logits = F.linear(
+                hidden_states,
+                self.model.embed_tokens.weight.to(hidden_states.dtype))
+        logits = logits.to(torch.float32)
+        feedback_hidden = self.post_projection(hidden_states)
+        return logits[:, -1, :], feedback_hidden
+
+    def forward_ragged(self, inputs_embeds: torch.Tensor,
+                       hidden_states_input: torch.Tensor,
+                       past_key_values: Tuple[torch.Tensor, ...],
+                       rope_rotary_cos_sin_sliding: torch.Tensor,
+                       rope_rotary_cos_sin_full: torch.Tensor, **metadata):
+        hidden_states = self.pre_projection(
+            torch.cat((inputs_embeds, hidden_states_input), dim=-1))
+        for layer_idx, layer in enumerate(self.model.layers):
+            rope = (rope_rotary_cos_sin_full if layer.self_attn.attention_type
+                    == "full_attention" else rope_rotary_cos_sin_sliding)
+            hidden_states = layer.forward_ragged(hidden_states,
+                                                 past_key_values[layer_idx],
+                                                 rope, **metadata)
         hidden_states = self.model.norm(hidden_states)
         if self.masked_embedding is not None:
             logits = self.masked_embedding(hidden_states,
                                            self.model.embed_tokens.weight)
         else:
-            logits = F.linear(hidden_states, self.model.embed_tokens.weight)
-        logits = logits.to(torch.float32)
-        feedback_hidden = self.post_projection(hidden_states)
-        return logits[:, -1, :], feedback_hidden
+            logits = F.linear(
+                hidden_states,
+                self.model.embed_tokens.weight.to(hidden_states.dtype))
+        return logits.to(torch.float32), self.post_projection(hidden_states)
 
     def onnx_export_spec(self) -> OnnxSpec:
         """Return the Gemma4 assistant ONNX I/O contract."""
@@ -349,34 +438,27 @@ class Gemma4AssistantForCausalLM(nn.Module):
         device = next(itertools.chain(self.parameters(),
                                       self.buffers())).device
         dtype16 = torch.float16
-        batch_size, seq_len, max_pos = (_DUMMY_BATCH_SIZE, _DUMMY_SEQ_LEN,
-                                        _DUMMY_ROPE_CACHE_LEN)
+        batch_size, seq_len = _DUMMY_BATCH_SIZE, _DUMMY_SEQ_LEN
+        physical_tokens = batch_size * seq_len
 
-        inputs_embeds = torch.zeros(batch_size,
-                                    seq_len,
+        inputs_embeds = torch.zeros(physical_tokens,
                                     config.backbone_hidden_size,
                                     dtype=dtype16,
                                     device=device)
-        hidden_states_input = torch.zeros(batch_size,
-                                          seq_len,
+        hidden_states_input = torch.zeros(physical_tokens,
                                           config.backbone_hidden_size,
                                           dtype=dtype16,
                                           device=device)
-        context_lengths = torch.zeros(batch_size,
-                                      dtype=torch.int32,
-                                      device=device)
         sliding_rotary_dim = _rotary_dim_from_rope_config(
             config, config.sliding_rope_config, config.head_dim)
         full_rotary_dim = _rotary_dim_from_rope_config(
             config, config.full_rope_config, config.global_head_dim
             or config.head_dim)
-        rope_rotary_cos_sin_sliding = torch.zeros(batch_size,
-                                                  max_pos,
+        rope_rotary_cos_sin_sliding = torch.zeros(physical_tokens,
                                                   sliding_rotary_dim,
                                                   dtype=torch.float32,
                                                   device=device)
-        rope_rotary_cos_sin_full = torch.zeros(batch_size,
-                                               max_pos,
+        rope_rotary_cos_sin_full = torch.zeros(physical_tokens,
                                                full_rotary_dim,
                                                dtype=torch.float32,
                                                device=device)
@@ -402,51 +484,79 @@ class Gemma4AssistantForCausalLM(nn.Module):
                                     dtype=torch.int32,
                                     device=device)
 
-        args = (inputs_embeds, hidden_states_input, context_lengths,
-                kv_page_table, rope_rotary_cos_sin_sliding,
-                rope_rotary_cos_sin_full, *past_key_values_list)
-        input_names = [
-            "inputs_embeds",
-            "hidden_states_input",
-            "context_lengths",
-            "kv_page_table",
-            "rope_rotary_cos_sin_sliding",
-            "rope_rotary_cos_sin_full",
-        ] + [f"past_key_values_{i}" for i in range(num_layers)]
+        positions = torch.zeros(physical_tokens,
+                                dtype=torch.int32,
+                                device=device)
+        query_start_offsets = torch.arange(batch_size + 1,
+                                           dtype=torch.int32,
+                                           device=device)
+        query_lengths = torch.ones(batch_size,
+                                   dtype=torch.int32,
+                                   device=device)
+        past_lengths = torch.zeros(batch_size,
+                                   dtype=torch.int32,
+                                   device=device)
+        attention_sequence_lengths = torch.ones(batch_size,
+                                                dtype=torch.int32,
+                                                device=device)
+        state_indices = torch.arange(batch_size,
+                                     dtype=torch.int32,
+                                     device=device)
+        execution_phase_marker = torch.zeros(4,
+                                             dtype=torch.int32,
+                                             device=device)
+        context_sequence_count_carrier = torch.empty(0,
+                                                     dtype=torch.int32,
+                                                     device=device)
+
+        args = (inputs_embeds, hidden_states_input, *past_key_values_list,
+                rope_rotary_cos_sin_sliding, rope_rotary_cos_sin_full,
+                positions, query_start_offsets, query_lengths, past_lengths,
+                attention_sequence_lengths, state_indices,
+                execution_phase_marker, context_sequence_count_carrier,
+                kv_page_table)
+        input_names = (
+            ["inputs_embeds", "hidden_states_input"] +
+            [f"past_key_values_{i}" for i in range(num_layers)] + [
+                "rope_rotary_cos_sin_sliding", "rope_rotary_cos_sin_full",
+                "positions", "query_start_offsets", "query_lengths",
+                "past_lengths", "attention_sequence_lengths", "state_indices",
+                "execution_phase_marker", "context_sequence_count_carrier",
+                "kv_page_table"
+            ])
         output_names = ["logits", "hidden_states"]
 
-        batch = torch.export.Dim("batch", min=1, max=256)
-        pos = torch.export.Dim("max_pos", min=1, max=32768)
-        rope_batch = torch.export.Dim("rope_batch", min=1, max=256)
+        tokens = torch.export.Dim("physical_tokens", min=1, max=8_388_608)
+        batch = torch.export.Dim("num_sequences", min=1, max=256)
         page_batch = torch.export.Dim("page_batch", min=1, max=256)
         max_pages = torch.export.Dim("max_pages_per_seq", min=1, max=32768)
         num_pages = torch.export.Dim("num_pages", min=1, max=1048576)
 
-        dynamic_shapes: list = [
-            {
-                0: batch
-            },
-            {
-                0: batch
-            },
-            {
-                0: batch
-            },
-            {
-                0: page_batch,
-                2: max_pages
-            },
-            {
-                0: rope_batch,
-                1: pos
-            },
-            {
-                0: rope_batch,
-                1: pos
-            },
-        ]
-        for _ in range(num_layers):
-            dynamic_shapes.append({1: num_pages})
+        phase_extent = torch.export.Dim("execution_phase_extent", min=1, max=8)
+        dynamic_shapes: list = [{0: tokens}, {0: tokens}]
+        dynamic_shapes += [{1: num_pages} for _ in range(num_layers)]
+        dynamic_shapes += [{
+            0: tokens
+        }, {
+            0: tokens
+        }, {
+            0: tokens
+        }, {
+            0: batch + 1
+        }, {
+            0: batch
+        }, {
+            0: batch
+        }, {
+            0: batch
+        }, {
+            0: batch
+        }, {
+            0: phase_extent
+        }, {}, {
+            0: page_batch,
+            2: max_pages
+        }]
 
         wrapped = _make_gemma4_assistant_flat_wrapper(self, num_layers)
         wrapped.eval()

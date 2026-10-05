@@ -51,6 +51,7 @@ class _FakeLLM:
         self.close_count = 0
         self.last_audio_params = None
         self.last_sampling_params = None
+        self.last_request_options = None
         self.next_text = "answer"
         Path(self.model_dir).mkdir(parents=True)
         visual = Path(self.bundle_dir) / "visual"
@@ -81,9 +82,10 @@ class _FakeLLM:
         from experimental.server.runtime.engine_layout import inspect_bundle
         self.bundle_layout = inspect_bundle(self.bundle_dir)
 
-    def _make_generation_request(self, messages, params, **_kwargs):
+    def _make_generation_request(self, messages, params, **kwargs):
         self.prepared_messages = messages
         self.last_sampling_params = params
+        self.last_request_options = kwargs
         self.prepare_count += 1
         return object()
 
@@ -193,6 +195,92 @@ def test_video_model_family_nemotron(tmp_path):
     image_only._media_dir = str(root)
     with pytest.raises(ValueError, match="video input is not supported"):
         image_only._video_model_family()
+
+
+def test_video_model_family_muse(tmp_path):
+    eng = _engine()
+    root = tmp_path / "muse"
+    (root / "visual").mkdir(parents=True)
+    (root / "visual" /
+     "config.json").write_text('{"model_type": "muse_glimmer_vision"}')
+    (root / "visual" / "visual.engine").touch()
+    llm = eng.LLM.__new__(eng.LLM)
+    llm._media_dir = str(root)
+    assert llm._video_model_family() == "muse"
+
+
+def test_cosmos3_reasoner_routes_native_video_file(monkeypatch, tmp_path):
+    # Cosmos3 uses the Qwen-compatible native video decoder and visual runner.
+    eng = _engine()
+    root = tmp_path / "cosmos3"
+    (root / "visual").mkdir(parents=True)
+    (root / "visual" /
+     "config.json").write_text('{"model_type": "cosmos3_edge_vision"}')
+    (root / "visual" / "visual.engine").touch()
+    llm = eng.LLM.__new__(eng.LLM)
+    llm._media_dir = str(root)
+    assert llm._video_model_family() == "qwen"
+    captured = {}
+
+    def fake_load_video_buffer(rt,
+                               item,
+                               family,
+                               frame_limits=None,
+                               budget=None,
+                               pixel_budget=None,
+                               cu_budget=None):
+        captured.update(item=item, family=family)
+        return _FakeVideoBuffer(item["video_url"]["url"], frames=8), 0, 0, 0
+
+    import experimental.server.media.video_sampling as vs_mod
+    monkeypatch.setattr(vs_mod, "load_video_buffer", fake_load_video_buffer)
+    buffers = eng._load_image_buffers(None, [{
+        "role":
+        "user",
+        "content": [{
+            "type": "video_url",
+            "video_url": {
+                "url": "example.mp4"
+            }
+        }],
+    }], llm._video_model_family, lambda: {})
+
+    assert captured == {
+        "item": {
+            "type": "video_url",
+            "video_url": {
+                "url": "example.mp4"
+            }
+        },
+        "family": "qwen",
+    }
+    assert [buffer.video for buffer in buffers] == ["example.mp4"]
+
+
+def test_cosmos3_reasoner_uses_single_frame_temporal_patches(tmp_path):
+    eng = _engine()
+    visual = tmp_path / "cosmos3" / "visual"
+    visual.mkdir(parents=True)
+    (visual / "config.json").write_text(
+        json.dumps({
+            "model_type": "cosmos3_edge_vision",
+            "builder_config": {
+                "min_image_tokens": 4,
+                "max_image_tokens": 1024,
+                "max_image_tokens_per_image": 512,
+            },
+        }))
+    # Cosmos3's processor intentionally omits temporal_patch_size. The C++
+    # runner defaults it to one, so server-side accounting must do the same.
+    (visual / "preprocessor_config.json").write_text(
+        json.dumps({
+            "patch_size": 16,
+            "merge_size": 2,
+        }))
+    llm = eng.LLM.__new__(eng.LLM)
+    llm._media_dir = str(tmp_path / "cosmos3")
+
+    assert llm._video_frame_limits()["temporal_patch_size"] == 1
 
 
 def test_load_image_buffers_nemotron_minimum():
@@ -570,6 +658,83 @@ def test_chat_forwards_context_cache_request_policies(client_and_llm):
     assert not llm.last_sampling_params.cache_generated_tokens
 
 
+def test_chat_normalizes_unsupported_sampling_fields_and_forwards_seed(
+        client_and_llm, caplog):
+    client, llm = client_and_llm
+    seed = (1 << 64) - 1
+    response = client.post("/v1/chat/completions",
+                           json={
+                               "messages": [{
+                                   "role": "user",
+                                   "content": "Describe the video",
+                               }],
+                               "seed":
+                               seed,
+                               "top_k":
+                               -1,
+                               "min_p":
+                               0.2,
+                               "repetition_penalty":
+                               1.2,
+                           })
+
+    assert response.status_code == 200, response.text
+    assert llm.last_sampling_params.seed == seed
+    assert llm.last_sampling_params.top_k == -1
+    assert "min_p=0.2 is unsupported; using default 0.0" in caplog.text
+    assert ("repetition_penalty=1.2 is unsupported; using default 1.0"
+            in caplog.text)
+
+
+def test_chat_template_is_default_on_and_request_configurable(client_and_llm):
+    client, llm = client_and_llm
+    body = {"messages": [{"role": "user", "content": "Hello"}]}
+
+    response = client.post("/v1/chat/completions", json=body)
+    assert response.status_code == 200, response.text
+    assert llm.last_request_options["apply_chat_template"] is True
+    assert llm.last_request_options["add_generation_prompt"] is True
+
+    body.update({
+        "apply_chat_template": False,
+        "add_generation_prompt": False,
+    })
+    response = client.post("/v1/chat/completions", json=body)
+    assert response.status_code == 200, response.text
+    assert llm.last_request_options["apply_chat_template"] is False
+    assert llm.last_request_options["add_generation_prompt"] is False
+
+
+def test_qwen38_reasoning_controls_reach_native_template(client_and_llm):
+    client, llm = client_and_llm
+    body = {
+        "messages": [{
+            "role": "user",
+            "content": "Solve 23 * 9."
+        }],
+        "enable_thinking": True,
+        "reasoning_effort": "low",
+    }
+
+    response = client.post("/v1/chat/completions", json=body)
+
+    assert response.status_code == 200, response.text
+    assert llm.last_sampling_params.enable_thinking is True
+    assert llm.last_sampling_params.reasoning_effort == "low"
+
+    body.pop("enable_thinking")
+    body.pop("reasoning_effort")
+    body["chat_template_kwargs"] = {
+        "enable_thinking": True,
+        "reasoning_effort": "medium",
+    }
+    response = client.post("/v1/chat/completions", json=body)
+
+    assert response.status_code == 200, response.text
+    assert llm.last_sampling_params.enable_thinking is True
+    assert llm.last_sampling_params.reasoning_effort == "medium"
+
+
 def test_openai_tools_and_reasoning_fields(client_and_llm):
     client, _ = client_and_llm
     response = client.post("/v1/chat/completions",
@@ -739,8 +904,8 @@ def test_tool_call_delta_does_not_wait_for_native_stream_end(tmp_path):
 
 
 def test_streaming_with_tools_keeps_plain_text_incremental(client_and_llm):
-    # #719 regression: tools + tool_choice=auto + stream must not buffer a
-    # plain-text answer until generation ends.
+    # Tools with automatic selection must not buffer a plain-text streaming
+    # answer until generation ends.
     client, llm = client_and_llm
 
     def word_stream(_messages, _params, **_kwargs):
@@ -1041,9 +1206,8 @@ def _stream_logprob_request(client, case, extra):
                          ids=["off", "on", "on+top"])
 def test_streaming_logprobs_hold_across_tool_and_thinking_combos(
         client_and_llm, case, extra):
-    # #719 follow-up: both streaming paths dropped the logprobs of any delta
-    # whose bytes the tool or reasoning parser withheld, while the
-    # non-streaming path returned them for the same request.
+    # Both streaming paths must retain logprobs for deltas whose bytes the tool
+    # or reasoning parser withholds, matching the non-streaming response.
     client, llm = client_and_llm
     pieces = _LOGPROB_CASES[case]
     llm.generate_stream = _stream_with_logprobs(pieces)
@@ -1634,6 +1798,8 @@ def test_native_errors_map_to_protocol_status(client_and_llm, marker, status):
     ("max_tokens", 2.5),
     ("temperature", "hot"),
     ("top_p", 2.0),
+    ("min_p", 1.1),
+    ("repetition_penalty", 0),
 ])
 def test_sampling_schema_rejects_invalid_values(client_and_llm, field, value):
     client, _ = client_and_llm
@@ -1647,6 +1813,22 @@ def test_sampling_schema_rejects_invalid_values(client_and_llm, field, value):
                            })
     assert response.status_code == 400
     assert field in response.text
+
+
+@pytest.mark.parametrize("seed", [-1, 1 << 64],
+                         ids=["negative", "exceeds-uint64"])
+def test_sampling_schema_rejects_seed_outside_uint64(client_and_llm, seed):
+    client, _ = client_and_llm
+    response = client.post("/v1/chat/completions",
+                           json={
+                               "messages": [{
+                                   "role": "user",
+                                   "content": "Hello"
+                               }],
+                               "seed": seed,
+                           })
+    assert response.status_code == 400
+    assert "seed" in response.text
 
 
 def test_stream_include_usage_requires_boolean(client_and_llm):

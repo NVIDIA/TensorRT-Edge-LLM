@@ -361,7 +361,7 @@ __global__ void buildDDTreeKernel(int32_t const* __restrict__ rootTokenIds, int3
         nodeScores[treeOffset + nodeIdx] = -INFINITY;
         verifyTokenIds[treeOffset + nodeIdx] = 0;
         verifyPositionIds[treeOffset + nodeIdx] = 0;
-        selectTokenIndices[treeOffset + nodeIdx] = nodeIdx;
+        selectTokenIndices[treeOffset + nodeIdx] = treeOffset + nodeIdx;
         nextCandidateSlot[nodeIdx] = 0;
     }
     for (int32_t maskIdx = tid; maskIdx < verifySize * packedMaskLen; maskIdx += blockDim.x)
@@ -580,12 +580,28 @@ void ddtreeBuild(DDTreeBuildParams const& params)
     auto const ancestorMaskShape = ancestorMask.getShape();
     auto const contextLengthsShape = contextLengths.getShape();
     auto const selectTokenIndicesShape = selectTokenIndices.getShape();
-    check::check(logitsShape.getNumDims() == 3, "draftLogits must be [batch, dflashBlockSize, vocabSize].");
+    auto const rootTokenShape = rootTokenIds.getShape();
+    check::check(rootTokenShape.getNumDims() == 1 && rootTokenShape[0] > 0, "rootTokenIds must be [batch].");
     check::check(nodeShape.getNumDims() == 2, "nodeTokenIds must be [batch, verifySize].");
 
-    int32_t const batchSize = static_cast<int32_t>(logitsShape[0]);
-    int32_t const dflashBlockSize = static_cast<int32_t>(logitsShape[1]);
-    int32_t const vocabSize = static_cast<int32_t>(logitsShape[2]);
+    int32_t const batchSize = static_cast<int32_t>(rootTokenShape[0]);
+    int32_t dflashBlockSize{0};
+    int32_t vocabSize{0};
+    if (logitsShape.getNumDims() == 2)
+    {
+        check::check(logitsShape[0] % batchSize == 0,
+            "Token-major draftLogits row count must be divisible by the active batch size.");
+        dflashBlockSize = static_cast<int32_t>(logitsShape[0] / batchSize);
+        vocabSize = static_cast<int32_t>(logitsShape[1]);
+    }
+    else
+    {
+        check::check(logitsShape.getNumDims() == 3 && logitsShape[0] == batchSize,
+            "draftLogits must be token-major [batch * dflashBlockSize, vocabSize] or an internal "
+            "[batch, dflashBlockSize, vocabSize] view.");
+        dflashBlockSize = static_cast<int32_t>(logitsShape[1]);
+        vocabSize = static_cast<int32_t>(logitsShape[2]);
+    }
     int32_t const verifySize = static_cast<int32_t>(nodeShape[1]);
     int32_t const packedMaskLen = (verifySize + kMaskBitsPerWord - 1) / kMaskBitsPerWord;
     int32_t const firstCandidateLogitsRow = params.firstCandidateLogitsRow;
@@ -621,8 +637,6 @@ void ddtreeBuild(DDTreeBuildParams const& params)
     check::check(candidateTopK > 0 && candidateTopK <= kDDTreeMaxCandidateTopK,
         "DDTree candidateTopK must be in [1, " + std::to_string(kDDTreeMaxCandidateTopK) + "].");
     check::check(candidateTopK <= vocabSize, "DDTree candidateTopK must not exceed vocabSize.");
-    check::check(rootTokenIds.getShape().getNumDims() == 1 && rootTokenIds.getShape()[0] == batchSize,
-        "rootTokenIds must be [batch].");
     check::check(baseLengths.getShape().getNumDims() == 1 && baseLengths.getShape()[0] == batchSize,
         "baseLengths must be [batch].");
     check::check(nodeDepths.getShape() == nodeShape && parentIds.getShape() == nodeShape

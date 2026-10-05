@@ -29,26 +29,27 @@ namespace trt_edgellm
 namespace
 {
 
-using CacheKey = std::tuple<int32_t, int32_t, int32_t, int32_t, int32_t, int32_t, bool, bool>;
+using CacheKey = std::tuple<int32_t, int32_t, int32_t, int32_t, int32_t, int32_t, bool, bool, bool>;
 
 CacheKey makeCacheKey(XQAJitKey const& key)
 {
     return {key.sm, static_cast<int32_t>(key.dataType), static_cast<int32_t>(key.kvDataType), key.headSize,
-        key.qHeadsPerKv, key.tokensPerPage, key.slidingWindow, key.specDecode};
+        key.qHeadsPerKv, key.tokensPerPage, key.slidingWindow, key.specDecode, key.contiguousQuerySwa};
 }
 
 } // namespace
 
 bool loadXQAJitKernelForTest(int32_t smVersion, nvinfer1::DataType dataType, nvinfer1::DataType kvDataType,
-    int32_t headSize, int32_t numQHeads, int32_t numKVHeads, bool slidingWindow, bool specDecode, int32_t tokensPerPage)
+    int32_t headSize, int32_t numQHeads, int32_t numKVHeads, bool slidingWindow, bool specDecode, int32_t tokensPerPage,
+    bool contiguousQuerySwa)
 {
     if (numKVHeads == 0 || numQHeads % numKVHeads != 0)
     {
         return false;
     }
 
-    XQAJitKey const key{
-        smVersion, dataType, kvDataType, headSize, numQHeads / numKVHeads, tokensPerPage, slidingWindow, specDecode};
+    XQAJitKey const key{smVersion, dataType, kvDataType, headSize, numQHeads / numKVHeads, tokensPerPage, slidingWindow,
+        specDecode, contiguousQuerySwa};
     CacheKey const cacheKey = makeCacheKey(key);
 
     static std::mutex sMutex;

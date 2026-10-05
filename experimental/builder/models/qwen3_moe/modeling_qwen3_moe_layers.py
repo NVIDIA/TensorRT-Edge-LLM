@@ -20,6 +20,7 @@ from ...core import quantization
 from ...ops import BuildContext, Linear, Module, RMSNorm, Tensor
 from ...ops import functional as F
 from ...ops import pack_qkv
+from ...ops.ragged import RaggedDecoderInputs
 from . import weights as weight_conversion
 
 __all__ = [
@@ -78,37 +79,35 @@ class Qwen3MoeAttention(Module):
         hidden_states: Tensor,
         past_key_value: Tensor,
         rope_rotary_cos_sin: Tensor,
-        context_lengths: Tensor,
-        kvcache_start_index: Tensor,
-        kv_page_table: Tensor,
+        ragged: RaggedDecoderInputs,
         attention_mask: Tensor = None,
         attention_pos_id: Tensor = None,
     ) -> Tuple[Tensor, Tensor]:
         cfg = self.cfg
         q, k, v = self.project_qkv(hidden_states)
 
-        q4 = q.reshape((0, 0, cfg.num_attention_heads, cfg.head_dim))
-        q = self.q_norm(q4, rank=4).reshape(
-            (0, 0, cfg.num_attention_heads * cfg.head_dim))
-        k4 = k.reshape((0, 0, cfg.num_key_value_heads, cfg.head_dim))
-        k = self.k_norm(k4, rank=4).reshape(
-            (0, 0, cfg.num_key_value_heads * cfg.head_dim))
+        q3 = q.reshape((0, cfg.num_attention_heads, cfg.head_dim))
+        q = self.q_norm(q3, rank=3).reshape(
+            (0, cfg.num_attention_heads * cfg.head_dim))
+        k3 = k.reshape((0, cfg.num_key_value_heads, cfg.head_dim))
+        k = self.k_norm(k3, rank=3).reshape(
+            (0, cfg.num_key_value_heads * cfg.head_dim))
 
         qkv = pack_qkv(q, k, v, self.v_proj)
         attn, present_key_value = F.attention(
             qkv,
             past_key_value,
-            context_lengths,
             rope_rotary_cos_sin,
-            kvcache_start_index,
-            kv_page_table,
+            ragged,
             num_q_heads=cfg.num_attention_heads,
             num_kv_heads=cfg.num_key_value_heads,
             head_size=cfg.head_dim,
             sliding_window_size=cfg.sliding_window_size,
             enable_fp8_kv_cache=cfg.kv_cache_quant == "fp8",
             qkv_scales=self.weights.qkv_scales(self.prefix),
+            skip_softmax_scale_factor=cfg.skip_softmax_scale_factor,
             attention_mask=attention_mask,
             attention_pos_id=attention_pos_id,
         )
+        attn = attn.reshape((0, cfg.num_attention_heads * cfg.head_dim))
         return self.o_proj(attn), present_key_value

@@ -54,22 +54,27 @@ bool uploadHostMelFp32ToFp16Gpu(
     return true;
 }
 
-bool uploadHostPcmF32ToGpu(std::vector<float> const& hostPcm, rt::Tensor& devOut, cudaStream_t stream)
+bool uploadHostPcmF32ToGpu(rt::Tensor const& hostPcm, rt::Tensor& devOut, cudaStream_t stream)
 {
-    if (hostPcm.empty())
+    int64_t const numSamples = hostPcm.getShape().volume();
+    if (numSamples == 0)
     {
         LOG_ERROR("uploadHostPcmF32ToGpu: empty PCM.");
         return false;
     }
-    int64_t const numSamples = static_cast<int64_t>(hostPcm.size());
+    if (hostPcm.getDeviceType() != rt::DeviceType::kCPU || hostPcm.getDataType() != nvinfer1::DataType::kFLOAT)
+    {
+        LOG_ERROR("uploadHostPcmF32ToGpu: PCM must be a host Float tensor.");
+        return false;
+    }
     if (!devOut.reshape({numSamples}))
     {
         LOG_ERROR("uploadHostPcmF32ToGpu: PCM (%ld samples) exceeds the pre-allocated staging capacity.",
             static_cast<long>(numSamples));
         return false;
     }
-    CUDA_CHECK(cudaMemcpyAsync(devOut.rawPointer(), hostPcm.data(), static_cast<size_t>(numSamples) * sizeof(float),
-        cudaMemcpyHostToDevice, stream));
+    CUDA_CHECK(cudaMemcpyAsync(devOut.rawPointer(), hostPcm.rawPointer(),
+        static_cast<size_t>(numSamples) * sizeof(float), cudaMemcpyHostToDevice, stream));
     return true;
 }
 

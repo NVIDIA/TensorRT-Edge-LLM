@@ -1,0 +1,5 @@
+tests:
+  - tests/defs/test_common.py::test_build_project
+  - tests/defs/test_few_layer_validation.py::test_few_layer_validation[NVIDIA-Nemotron-3-Nano-4B-NVFP4]
+  - tests/defs/test_few_layer_validation.py::test_few_layer_validation[Qwen3.5-0.8B-ContextReuse]
+  - tests/defs/test_builder_pipeline.py::test_build_and_run[Qwen3-8B-nvfp4-mxsl2048-jetspec-hf-fp16-ddtree-mxbs1-mxil1024-mvts128-mdts128-edtk7-llm_basic]

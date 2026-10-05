@@ -143,7 +143,8 @@ def resolve_payload(
     """Select and verify one payload without importing its extension."""
     root = (package_root or Path(__file__).resolve().parents[1]).resolve()
     manifest_file = manifest_path or root / "_native" / "variants.json"
-    selected = select_variant(detector(), load_manifest(manifest_file))
+    manifest = load_manifest(manifest_file)
+    selected = select_variant(detector(), manifest)
     extension = _safe_payload_path(root, str(selected["extension"]))
     plugin = _safe_payload_path(root, str(selected["plugin"]))
     _verify_hash(extension, str(selected["extension_sha256"]), "Extension")

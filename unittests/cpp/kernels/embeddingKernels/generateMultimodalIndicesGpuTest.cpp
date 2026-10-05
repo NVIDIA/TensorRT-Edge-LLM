@@ -78,7 +78,7 @@ TEST(GenerateMultimodalIndicesGpu, BasicNoOffset)
     cudaDeviceSynchronize();
 
     auto result = readBack(output);
-    EXPECT_EQ(result, (std::vector<int32_t>{0, 0, 1, 0, 2, 0}));
+    EXPECT_EQ(result, (std::vector<int32_t>{-1, 0, 1, -1, 2, -1}));
 }
 
 // Single batch with image offset: simulates prefix having 3 image tokens reused.
@@ -99,7 +99,7 @@ TEST(GenerateMultimodalIndicesGpu, SingleBatchImageOffset)
 
     auto result = readBack(output);
     // Image tokens should get indices 3 and 4 (not 0 and 1)
-    EXPECT_EQ(result, (std::vector<int32_t>{0, 3, 0, 4, 0}));
+    EXPECT_EQ(result, (std::vector<int32_t>{-1, 3, -1, 4, -1}));
 }
 
 // Single batch with audio offset.
@@ -118,7 +118,7 @@ TEST(GenerateMultimodalIndicesGpu, SingleBatchAudioOffset)
     cudaDeviceSynchronize();
 
     auto result = readBack(output);
-    EXPECT_EQ(result, (std::vector<int32_t>{5, 0, 6}));
+    EXPECT_EQ(result, (std::vector<int32_t>{5, -1, 6}));
 }
 
 // Multi-image KV reuse: img0 (3 tokens) entirely in prefix, img1 (2 tokens) in suffix.
@@ -140,7 +140,7 @@ TEST(GenerateMultimodalIndicesGpu, MultiImagePrefixReuse)
 
     auto result = readBack(output);
     // img1 tokens get indices 3, 4 (skipping img0's 3 rows)
-    EXPECT_EQ(result, (std::vector<int32_t>{3, 4, 0}));
+    EXPECT_EQ(result, (std::vector<int32_t>{3, 4, -1}));
 }
 
 // Multi-batch with different prefix reuse per batch.
@@ -169,7 +169,7 @@ TEST(GenerateMultimodalIndicesGpu, MultiBatchDifferentOffsets)
     auto result = readBack(output);
     // Batch 0: img tokens get 4, 5
     // Batch 1: img tokens get 6, 7, 8
-    EXPECT_EQ(result, (std::vector<int32_t>{4, 5, 0, 0, 6, 7, 8, 0}));
+    EXPECT_EQ(result, (std::vector<int32_t>{4, 5, -1, -1, 6, 7, 8, -1}));
 }
 
 // Multi-batch with both image and audio offsets.
@@ -195,7 +195,20 @@ TEST(GenerateMultimodalIndicesGpu, MultiBatchMixedMediaOffsets)
     auto result = readBack(output);
     // Batch 0: img→2, audio→1
     // Batch 1: audio→2, img→3, img→4
-    EXPECT_EQ(result, (std::vector<int32_t>{2, 1, 0, 0, 2, 3, 4, 0}));
+    EXPECT_EQ(result, (std::vector<int32_t>{2, 1, -1, -1, 2, 3, 4, -1}));
+}
+
+TEST(GenerateMultimodalIndicesGpu, MissingAudioOffsetsKeepGlobalAudioIndices)
+{
+    auto ids = makeGpuIds({kImageTok, kAudioTok, kTextTok, kAudioTok, kImageTok, kTextTok}, 2, 3);
+    rt::Tensor output({2, 3}, rt::DeviceType::kGPU, DataType::kINT32);
+
+    auto imageOffsets = makeGpuOffsets({4, 5});
+    kernel::generateMultimodalIndices(
+        ids, output, kImageTok, kAudioTok, nullptr, imageOffsets.dataPointer<int32_t>(), nullptr);
+    cudaDeviceSynchronize();
+
+    EXPECT_EQ(readBack(output), (std::vector<int32_t>{4, 0, -1, 1, 5, -1}));
 }
 
 // Null offsets (no prefix reuse) should behave identically to the original kernel.
@@ -210,7 +223,7 @@ TEST(GenerateMultimodalIndicesGpu, NullOffsetsMatchesOriginal)
 
     auto result = readBack(output);
     // Global counter: batch0 gets 0, 1; batch1 continues at 2, 3
-    EXPECT_EQ(result, (std::vector<int32_t>{0, 0, 1, 2, 0, 3}));
+    EXPECT_EQ(result, (std::vector<int32_t>{0, -1, 1, 2, -1, 3}));
 }
 
 // Zero offsets should behave the same as null offsets for batch size 1.
@@ -227,5 +240,44 @@ TEST(GenerateMultimodalIndicesGpu, ZeroOffsetsSingleBatch)
     cudaDeviceSynchronize();
 
     auto result = readBack(output);
-    EXPECT_EQ(result, (std::vector<int32_t>{0, 0, 1}));
+    EXPECT_EQ(result, (std::vector<int32_t>{0, -1, 1}));
+}
+
+TEST(GenerateVisionBlockIdsGpu, UnequalRowsKeepRequestLocalBlocksAndPaddingSentinels)
+{
+    auto ids = makeGpuIds(
+        {kTextTok, kImageTok, kImageTok, kTextTok, kImageTok, kTextTok, kImageTok, kImageTok, kTextTok, -1, -1, -1}, 2,
+        6);
+    rt::Tensor output({2, 6}, rt::DeviceType::kGPU, DataType::kINT32);
+
+    kernel::generateVisionBlockIds(ids, output, kImageTok, nullptr);
+    cudaDeviceSynchronize();
+
+    EXPECT_EQ(readBack(output), (std::vector<int32_t>{-1, 0, 0, -1, 1, -1, 0, 0, -1, -1, -1, -1}));
+}
+
+TEST(GenerateVisionBlockIdsGpu, VisionRunsCrossScanTiles)
+{
+    constexpr int32_t seqLen = 521;
+    std::vector<int32_t> ids(seqLen, kTextTok);
+    for (int32_t i = 250; i < 270; ++i)
+    {
+        ids[i] = kImageTok;
+    }
+    for (int32_t i = 510; i < seqLen; ++i)
+    {
+        ids[i] = kImageTok;
+    }
+    auto input = makeGpuIds(ids, 1, seqLen);
+    rt::Tensor output({1, seqLen}, rt::DeviceType::kGPU, DataType::kINT32);
+
+    kernel::generateVisionBlockIds(input, output, kImageTok, nullptr);
+    cudaDeviceSynchronize();
+
+    auto const result = readBack(output);
+    for (int32_t i = 0; i < seqLen; ++i)
+    {
+        int32_t const expected = i >= 250 && i < 270 ? 0 : (i >= 510 ? 1 : -1);
+        EXPECT_EQ(result[i], expected) << "position=" << i;
+    }
 }

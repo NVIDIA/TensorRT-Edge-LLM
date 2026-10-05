@@ -10,6 +10,11 @@ This guide provides two independent ways to run the image-capable
 Complete [Installation](installation.md) first. You do not need to complete the
 ONNX workflow before using the Python server.
 
+Before building engines or launching inference, verify that the target has at
+least the deployed model size plus 2 GB of available device memory. KV cache,
+multimodal components, speculative draft engines, and larger batch or sequence
+profiles can require more.
+
 ```bash
 export WORKSPACE_DIR=$HOME/tensorrt-edgellm-workspace/Qwen3.5-0.8B
 mkdir -p "$WORKSPACE_DIR"
@@ -110,24 +115,25 @@ reason.
 
 ## Option 2: One-line Python server
 
-The server does not consume the ONNX engines from Option 1. First complete the
-[C++ source build with the optional Python frontend enabled](installation.md#optional-python-frontend),
-including `BUILD_PYTHON_BINDINGS=ON`. After the native build finishes,
-[install Edge-LLM and the server dependencies](installation.md#install-and-launch-the-python-server).
+The server does not consume the ONNX engines from Option 1. Install a
+[published wheel with the `server` extra](installation.md#published-python-wheel),
+or complete the [source build and server setup](installation.md#install-and-launch-the-python-server).
+The wheel path does not require a source checkout or native build.
 
-With that environment active, launch from the repository root. The first
-launch downloads the checkpoint, builds every component required by the model,
-and stores the runtime bundle in the server cache. The media option grants
-access only to the example-image directory.
+Activate that environment. For a wheel install, launch outside a source
+checkout; for a source install, use the repository root. The first launch
+downloads the checkpoint, builds its required components, and stores the runtime
+bundle in the server cache. Set the media directory to one containing an image
+you want to query:
 
 ```bash
-tensorrt-edgellm-serve Qwen/Qwen3.5-0.8B --allowed-local-media-path "$PWD/examples/multimodal/pics"
+tensorrt-edgellm-serve Qwen/Qwen3.5-0.8B --allowed-local-media-path /absolute/path/to/images
 ```
 
-In another terminal, run the request from the repository root:
+In another terminal, use an image inside that directory on the server machine:
 
 ```bash
-IMAGE_PATH=$(realpath examples/multimodal/pics/red_panda.jpeg)
+IMAGE_PATH=/absolute/path/to/images/example.jpeg
 
 curl -s http://127.0.0.1:8000/v1/chat/completions \
   -H "Content-Type: application/json" \

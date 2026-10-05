@@ -45,11 +45,16 @@ class _ReleasingStreamingResponse(StreamingResponse):
 async def health(request: Request):
     client = request.app.state.engine_client
     caps = client.capabilities
+    scheduling = None
+    getter = getattr(client.llm, "get_scheduling_metrics", None)
+    if getter is not None:
+        scheduling = getter()
     return {
         "status": "healthy",
         "model": client.model_name,
         "active_requests": client.active_requests,
         "queued_requests": client.queued_requests,
+        "scheduling": scheduling,
         "capabilities": {
             "chat": caps.chat,
             "transcription": caps.transcription,
@@ -64,6 +69,7 @@ async def health(request: Request):
             "speculative_decoding": caps.speculative_decoding,
             "speculative_method": caps.speculative_method,
             "context_reuse": caps.context_reuse,
+            "in_flight_batching": caps.in_flight_batching,
         },
     }
 

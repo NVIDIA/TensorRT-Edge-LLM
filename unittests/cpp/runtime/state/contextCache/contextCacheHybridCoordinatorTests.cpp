@@ -171,7 +171,8 @@ protected:
     ContextCacheCoordinator::AdmissionResult begin(std::vector<int32_t> tokens, BlockKeyExtras keyExtras = {})
     {
         ContextCacheBatchAdmission admission;
-        admission.sequences.push_back(ContextCacheSequenceAdmission{std::move(tokens), std::move(keyExtras)});
+        admission.sequences.push_back(
+            ContextCacheSequenceAdmission{std::move(tokens), std::move(keyExtras), {}, ResidentRef{0, 1}});
         ContextCacheCoordinator::BeginRequestResult result
             = mCoordinator->beginRequest(admission, DecodingKvHeadroom{1, 0}, mStream);
         EXPECT_EQ(result.status, ContextCacheCoordinatorStatus::kOk);

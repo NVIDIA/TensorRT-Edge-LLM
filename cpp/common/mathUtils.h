@@ -17,6 +17,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <limits>
 #include <stdexcept>
 #include <type_traits>
@@ -245,6 +246,31 @@ constexpr T cast(S s)
         throw OverflowError("integer cast overflow: value exceeds target type maximum");
     }
     return static_cast<T>(s);
+}
+
+//! @brief Smallest power of two that is >= @p value.
+//!
+//! Ring buffers size themselves this way so an index can be reduced with a mask instead of a
+//! modulo. C++20 would spell this std::bit_ceil; this project builds as C++17.
+//!
+//! @throws OverflowError if the result is not representable in int32_t.
+inline int32_t ceilToPowerOfTwo(int32_t value)
+{
+    if (value <= 1)
+    {
+        return 1;
+    }
+    constexpr int32_t kMaxPowerOfTwo = 1 << 30;
+    if (value > kMaxPowerOfTwo)
+    {
+        throw OverflowError("ceilToPowerOfTwo: no power of two of this size fits in int32_t");
+    }
+    int32_t rounded = 1;
+    while (rounded < value)
+    {
+        rounded <<= 1;
+    }
+    return rounded;
 }
 
 } // namespace math

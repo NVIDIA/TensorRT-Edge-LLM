@@ -26,6 +26,43 @@ pytestmark = pytest.mark.skipif(
     reason=f"TensorRT/torch CUDA not available: {IMPORT_ERROR}")
 
 
+@pytest.mark.parametrize("num_tokens", [1, 62])
+def test_qkv_concat_preserves_token_major_rows(num_tokens):
+    widths = (64, 16, 16)
+    input_specs = [(name, trt.float16, (-1, width))
+                   for name, width in zip(("q", "k", "v"), widths)]
+    profiles = {
+        name: ((1, width), (8, width), (64, width))
+        for name, width in zip(("q", "k", "v"), widths)
+    }
+
+    runner = PluginRunner()
+    runner.build(input_specs=input_specs,
+                 output_names=["qkv"],
+                 plugin_name="QkvConcatPlugin",
+                 plugin_version="1",
+                 plugin_fields=[],
+                 profiles=profiles)
+
+    generator = torch.Generator().manual_seed(1701 + num_tokens)
+    inputs = {
+        name:
+        torch.randn((num_tokens, width),
+                    generator=generator,
+                    dtype=torch.float16).to("cuda")
+        for name, width in zip(("q", "k", "v"), widths)
+    }
+    output = torch.empty((num_tokens, sum(widths)),
+                         dtype=torch.float16,
+                         device="cuda")
+    runner.execute({**inputs, "qkv": output})
+
+    torch.testing.assert_close(output,
+                               torch.cat(tuple(inputs.values()), dim=-1),
+                               rtol=0,
+                               atol=0)
+
+
 @pytest.mark.parametrize("batch_size,seq_len", [(1, 1), (1, 62), (3, 7)])
 def test_qkv_concat_preserves_every_token_row(batch_size, seq_len):
     widths = (64, 16, 16)
