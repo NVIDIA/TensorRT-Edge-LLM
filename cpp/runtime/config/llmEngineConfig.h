@@ -90,7 +90,7 @@ struct LLMEngineConfig
     int32_t hiddenSize{}; //!< Model hidden dimension
     //! Width of the engine's `hidden_states` output. Differs from hiddenSize when the graph projects the hidden
     //! states before emitting them (InternVLA-N1 emits its 768-wide bridge tensor). Optional
-    //! `output_hidden_size` key; defaults to hiddenSize.
+    //! `output_hidden_size` key; 0 means hiddenSize. Read it through emittedHiddenSize().
     int32_t outputHiddenSize{};
     int32_t outputVocabSize{};         //!< Actual output vocab (reduced if vocab reduction active)
     int32_t numAttentionLayers{};      //!< Number of attention layers needing KV cache
@@ -356,6 +356,11 @@ struct LLMEngineConfig
     //! even for MRope models — this matches the pre-migration behavior in
     //! both runtimes (reset is a binding placeholder, not an inference step).
     InferenceDims resetDims() const;
+
+    int32_t emittedHiddenSize() const noexcept
+    {
+        return outputHiddenSize > 0 ? outputHiddenSize : hiddenSize;
+    }
 };
 
 //! Parse a `config.json` file (the same format used by the existing runtime)

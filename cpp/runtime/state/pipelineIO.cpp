@@ -764,7 +764,7 @@ PipelineIO PipelineIO::createForLLM(LLMEngineConfig const& cfg, cudaStream_t str
     // streaming consumers (Qwen3-Omni Talker) read it; if the engine emits
     // hidden_states but no consumer is set, the buffer is harmless write-target;
     // if the engine has no hidden_states output the binding is silently skipped.
-    io.outputHiddenStates = Tensor({cfg.maxPhysicalTokens, cfg.outputHiddenSize}, DeviceType::kGPU,
+    io.outputHiddenStates = Tensor({cfg.maxPhysicalTokens, cfg.emittedHiddenSize()}, DeviceType::kGPU,
         nvinfer1::DataType::kHALF, "PipelineIO::outputHiddenStates");
 
     if (cfg.ropeConfig.type == RopeType::kMRope)

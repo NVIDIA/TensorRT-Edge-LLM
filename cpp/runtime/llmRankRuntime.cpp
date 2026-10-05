@@ -2201,7 +2201,7 @@ std::unique_ptr<LLMRankRuntime::SteppedGeneration> LLMRankRuntime::beginGenerati
         int32_t const prefillSequenceLength
             = *std::max_element(context.effectivePrefillLengths.begin(), context.effectivePrefillLengths.end());
         mPipelineIO->streamingPrefill.populateFromPrefill(mPipelineIO->inputsEmbeds, mPipelineIO->outputHiddenStates,
-            activeBatchSize, prefillSequenceLength, mDeployment.base.hiddenSize, mDeployment.base.outputHiddenSize,
+            activeBatchSize, prefillSequenceLength, mDeployment.base.hiddenSize, mDeployment.base.emittedHiddenSize(),
             mMaxRuntimeBatchSize, mDeployment.base.maxSupportedInputLength, stream);
         mLastPrefillLength = prefillSequenceLength;
         mLastInputTokenIds = context.rawBatchedInputIds;
