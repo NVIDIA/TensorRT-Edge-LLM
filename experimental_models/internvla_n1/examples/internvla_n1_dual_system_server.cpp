@@ -158,7 +158,7 @@ void fillRequest(
     request.applyChatTemplate = false;
     for (auto const& p : imagePaths)
     {
-        auto image = rt::imageUtils::loadImageFromFile(p);
+        auto image = rt::imageUtils::loadRgbImageFromFile(p);
         if (image.buffer != nullptr)
         {
             request.requests[0].imageBuffers.push_back(std::move(image));
