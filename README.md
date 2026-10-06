@@ -153,4 +153,4 @@ We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.
 
 ---
 
-<!-- Temporary change to validate copy-pr-bot and CPU runner access. -->
+<!-- Temporary change to validate automatic copy-pr-bot sync and CPU runner access. -->
