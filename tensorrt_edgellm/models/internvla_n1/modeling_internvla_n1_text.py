@@ -44,10 +44,10 @@ engine was judged worth the prefix-read contract.
 
 from typing import Tuple
 
+import torch
 import torch.nn as nn
 
-from ..default import modeling_default
-from ..default.modeling_default import CausalLM, OnnxSpec
+from ..default.modeling_default import CausalLM
 from ..linear import make_linear
 
 #: ``LatentEmbSize`` in the reference implementation. InternVLA-N1 checkpoints do
@@ -95,29 +95,33 @@ class InternVLAN1LanguageModel(CausalLM):
                         module_name="cond_projector.2"),
         )
 
-    def onnx_export_spec(self) -> OnnxSpec:
-        """Trace with a real sequence.
-
-        The default dummy sequence is one token (``_SEQ_LEN``), which would make
-        the ``[-n_query:]`` slice below a no-op at trace time and risks it being
-        specialized away. Raising the constant around the parent call keeps every
-        derived dummy (rope table, context lengths, last-token ids) consistent,
-        which rebuilding ``spec.args`` by hand would not.
+    def forward_ragged(self, inputs_embeds, past_key_values,
+                       rope_rotary_cos_sin, positions, query_start_offsets,
+                       *args, **kwargs) -> Tuple:
+        """Token-major export path; emits ``z_latents`` under ``hidden_states``.
 
         The emitted tensor keeps the name ``hidden_states``. Renaming it to
         ``z_latents`` reads better but breaks the runtime: ``engineExecutor``
         requires every engine I/O tensor to be registry-bound, and the registry
-        knows ``binding_names::kOutputHiddenStates``. The role is unchanged --
-        this is still the tensor the next stage consumes -- so the name stays and
-        the contents are what differ.
+        knows ``binding_names::kOutputHiddenStates``.
         """
-        saved = modeling_default._SEQ_LEN
-        modeling_default._SEQ_LEN = max(saved, self.n_query + 1)
-        try:
-            spec = super().onnx_export_spec()
-        finally:
-            modeling_default._SEQ_LEN = saved
-        return spec
+        logits, hidden_states, present_key_values = super().forward_ragged(
+            inputs_embeds, past_key_values, rope_rotary_cos_sin, positions,
+            query_start_offsets, *args, **kwargs)
+        # The latent queries are the trailing ``n_query`` tokens of each
+        # sequence; ``query_start_offsets[1:]`` holds each sequence's end row.
+        # Decode steps carry fewer than ``n_query`` tokens and their bridge is
+        # never read, so rows are clamped rather than validated.
+        ends = query_start_offsets[1:].to(torch.int64)
+        steps = torch.arange(-self.n_query,
+                             0,
+                             dtype=torch.int64,
+                             device=ends.device)
+        rows = (ends.unsqueeze(1) +
+                steps.unsqueeze(0)).reshape(-1).clamp(min=0)
+        traj = torch.index_select(hidden_states, 0, rows)
+        z_latents = self.model.cond_projector(self.model.norm(traj))
+        return logits, z_latents, present_key_values
 
     def forward(self, *args, **kwargs) -> Tuple:
         logits, hidden_states, present_key_values = super().forward(
