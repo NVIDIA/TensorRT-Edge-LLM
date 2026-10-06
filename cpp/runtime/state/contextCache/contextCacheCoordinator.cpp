@@ -983,8 +983,17 @@ ContextCacheCoordinator::AcquireSequenceResult ContextCacheCoordinator::acquireS
     auto const planningStart = std::chrono::steady_clock::now();
     Hash128 const* mediaHashPtr
         = admission.perPositionMediaHash.empty() ? nullptr : admission.perPositionMediaHash.data();
-    std::vector<BlockHash> const hashes = hashRequestFullBlocks(
+    std::vector<BlockHash> hashes = hashRequestFullBlocks(
         admission.tokenIds.data(), admission.tokenIds.size(), admission.keyExtras, mediaHashPtr);
+    if (admission.privateTailTokens > 0)
+    {
+        ELLM_CHECK(!usesCheckpointReuse() && !speculativeRequest,
+            "A private prompt tail is supported only by attention-only, non-speculative context reuse");
+        // Lookup only matches pages that end before the private tail; publication still covers the whole prompt.
+        size_t const maxLookupBlocks
+            = static_cast<size_t>(std::max(0, inputTokenCount - admission.privateTailTokens) / kTOKENS_PER_PAGE);
+        hashes.resize(std::min(hashes.size(), maxLookupBlocks));
+    }
     std::vector<HybridCheckpointCandidate> hybridCandidates;
     if (usesCheckpointReuse() && lookupPolicy == ContextCacheLookupPolicy::kUseCache)
     {

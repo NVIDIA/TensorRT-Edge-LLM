@@ -50,8 +50,11 @@ ContextCacheLookupPolicy contextCacheLookupPolicy(
                return std::any_of(sequence.imageBuffers.begin(), sequence.imageBuffers.end(),
                    [](imageUtils::ImageData const& image) { return image.data() == nullptr; });
            });
+    // Hidden-state capture of every position needs the whole prompt computed; capture of a trailing span only
+    // needs that span, which admission keeps private.
+    bool const capturesAllPositions = outputThinkerEmbeddings && request.hiddenCaptureTailTokens <= 0;
     bool const requiresBypass = request.contextCacheLookupPolicy == ContextCacheLookupPolicy::kBypass
-        || request.generateAudio || outputThinkerEmbeddings || mediaUnreadable;
+        || request.generateAudio || capturesAllPositions || mediaUnreadable;
     return requiresBypass ? ContextCacheLookupPolicy::kBypass : ContextCacheLookupPolicy::kUseCache;
 }
 
@@ -236,6 +239,7 @@ std::optional<ContextCacheRequest> ContextCacheRequest::begin(ContextCacheCoordi
                 images, audio, context.stream);
         sequence.resident = context.residentRefs[seqIdx];
         sequence.lookupPolicy = sequenceLookupPolicy;
+        sequence.privateTailTokens = context.outputThinkerEmbeddings ? request.hiddenCaptureTailTokens : 0;
         admission.sequences.push_back(std::move(sequence));
     }
 
