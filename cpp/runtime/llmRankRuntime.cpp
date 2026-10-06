@@ -3334,7 +3334,8 @@ bool LLMRankRuntime::runBaseModelPrefill(
             "Ragged base hidden-state output reshape failed");
     }
     check::check(mPipelineIO->outputHiddenStates.isEmpty()
-            || mPipelineIO->outputHiddenStates.reshape({batch.shape.physicalTokens, mDeployment.base.hiddenSize}),
+            || mPipelineIO->outputHiddenStates.reshape(
+                {batch.shape.physicalTokens, mDeployment.base.emittedHiddenSize()}),
         "Ragged hidden-state output reshape failed");
     for (Tensor& deepstack : mPipelineIO->deepstackEmbeds)
     {
