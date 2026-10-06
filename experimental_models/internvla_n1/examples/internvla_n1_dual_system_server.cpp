@@ -181,7 +181,7 @@ int main(int argc, char** argv)
     {
         std::fprintf(stderr,
             "usage: %s --llmEngineDir DIR --actionEngineDir DIR [--multimodalEngineDir DIR] "
-            "[--numTrajs 32] [--steps 10] [--guidance 1.0]\n",
+            "[--numTrajs 32] [--steps 10] [--guidance 1.0] [--enableContextReuse]\n",
             argv[0]);
         return 2;
     }
@@ -194,7 +194,12 @@ int main(int argc, char** argv)
     cudaStream_t const s1Stream = InternVLAN1System1Runner::makeControlStream();
 
     std::unordered_map<std::string, std::string> const noLora;
-    rt::LLMInferenceRuntime runtime(llmDir, visDir, noLora, s2Stream);
+    rt::ContextCacheConfig cacheConfig;
+    for (int i = 1; i < argc; ++i)
+    {
+        cacheConfig.enabled = cacheConfig.enabled || std::strcmp(argv[i], "--enableContextReuse") == 0;
+    }
+    rt::LLMInferenceRuntime runtime(llmDir, visDir, noLora, s2Stream, cacheConfig);
 
     InternVLAN1System1Runner::Config config;
     config.numSampleTrajs = std::stoi(argOf(argc, argv, "--numTrajs", "32"));
@@ -225,6 +230,8 @@ int main(int argc, char** argv)
         // The bridge needs the prefill, not generated text; one token is enough.
         request.maxGenerateLength = 1;
         request.acceptHiddenLayer = kBridgeLayer;
+        // Only the latent-query rows are read, so the context cache may restore the prompt before them.
+        request.hiddenCaptureTailTokens = kNumQuery;
 
         rt::LLMGenerationResponse response;
         if (!runtime.handleRequest(request, response, s2Stream, /*outputThinkerEmbeddings=*/true))

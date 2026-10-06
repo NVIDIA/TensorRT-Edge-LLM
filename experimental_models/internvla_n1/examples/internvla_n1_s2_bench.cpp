@@ -203,6 +203,8 @@ int main(int argc, char** argv)
         request.applyChatTemplate = false;
         request.maxGenerateLength = 1;
         request.acceptHiddenLayer = kBridgeLayer;
+        // Only the latent-query rows are read, so the context cache may restore the prompt before them.
+        request.hiddenCaptureTailTokens = kNumQuery;
         request.temperature = 1.0F;
         request.topP = 1.0F;
         request.topK = 1;

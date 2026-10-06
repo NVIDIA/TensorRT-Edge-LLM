@@ -64,6 +64,7 @@ namespace
 //! Any index but 0; the runtime parks the input embeddings at 0.
 constexpr int32_t kBridgeLayer = 1;
 constexpr int32_t kLatentDim = 768;
+constexpr int32_t kNumQuery = 4;
 
 std::string argOf(int argc, char** argv, char const* flag, std::string const& fallback = "")
 {
@@ -196,6 +197,8 @@ int main(int argc, char** argv)
             message.contents.push_back({"text", prompt});
             request.requests[0].messages.push_back(message);
             request.acceptHiddenLayer = kBridgeLayer;
+            // Only the latent-query rows are read, so the context cache may restore the prompt before them.
+            request.hiddenCaptureTailTokens = kNumQuery;
             request.applyChatTemplate = false;
             // temperature, topP and topK have no default initializers in the struct. Leaving
             // them uninitialized makes the sampler compute a workspace from garbage; the
@@ -222,7 +225,7 @@ int main(int argc, char** argv)
             // The graph already applied the norm and cond_projector, so the first
             // numQuery * latent_dim elements of the buffer are the z_latents. The buffer's
             // reported shape is the runtime's model-width convention; only the prefix is real.
-            int32_t const numQuery = 4;
+            int32_t const numQuery = kNumQuery;
             auto const all = toHostFloat(*hidden);
             std::vector<float> const z(all.begin(), all.begin() + static_cast<int64_t>(numQuery) * kLatentDim);
 
