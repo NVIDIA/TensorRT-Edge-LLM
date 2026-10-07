@@ -38,7 +38,7 @@ namespace
 
 bool isSupportedBlackwellFmha(int32_t smVersion)
 {
-    return smVersion == 100 || smVersion == 101 || smVersion == 110;
+    return smVersion == 100 || smVersion == 101 || smVersion == 103 || smVersion == 110;
 }
 
 template <auto moduleLoader, auto moduleUnloader, typename Module>

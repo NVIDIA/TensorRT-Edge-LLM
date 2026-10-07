@@ -266,7 +266,7 @@ bool canCompileXQAKernel(int32_t numQHeads, int32_t numKVHeads, int32_t headSize
     nvinfer1::DataType dataType, nvinfer1::DataType kvDataType) noexcept
 {
     // SM versions with an XQA decode kernel at all.
-    constexpr std::array<int32_t, 9> kALLOWED_SM_VERSIONS{80, 86, 87, 89, 90, 100, 101, 120, 121};
+    constexpr std::array<int32_t, 10> kALLOWED_SM_VERSIONS{80, 86, 87, 89, 90, 100, 101, 103, 120, 121};
     // Of those, the ones with native FP8 converts. Listed explicitly rather
     // than tested as `smVersion >= 89`: a numeric threshold silently admits
     // every future SM added to kALLOWED_SM_VERSIONS, and whether that SM has

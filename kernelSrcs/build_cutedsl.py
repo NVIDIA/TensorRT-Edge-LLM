@@ -292,14 +292,14 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_d64",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,14,64", "--k_shape", "1,1024,1,64"] + _LLM,
     ),
     KernelVariant(
         name="fmha_d128",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,14,128", "--k_shape", "1,1024,1,128"] + _LLM,
     ),
@@ -310,7 +310,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_d64_skipsoftmax",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,14,64", "--k_shape", "1,1024,1,64"]
                     + _LLM + ["--skip_softmax_threshold", "1e-6"],
@@ -318,7 +318,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_d128_skipsoftmax",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,14,128", "--k_shape", "1,1024,1,128"]
                     + _LLM + ["--skip_softmax_threshold", "1e-6"],
@@ -334,7 +334,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_d256",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,16,256", "--k_shape", "1,1024,2,256"] + _LLM,
     ),
@@ -343,14 +343,14 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_d512_paged",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,8,512", "--k_shape", "1,1024,1,512"] + _LLM_PAGED,
     ),
     KernelVariant(
         name="fmha_d512_paged_bidirectional",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,8,512", "--k_shape", "1,1024,1,512"]
                     + _LLM_PAGED + ["--window_size", "4096,-1", "--bidirectional"],
@@ -358,7 +358,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_d512_sw_paged",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,8,512", "--k_shape", "1,1024,1,512"]
                     + _LLM_PAGED + ["--window_size", "4096,-1"],
@@ -366,28 +366,28 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_d512_paged_fp8",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,8,512", "--k_shape", "1,1024,1,512"] + _LLM_FP8_PAGED,
     ),
     KernelVariant(
         name="fmha_d512_dense_paged",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,8,512", "--k_shape", "1,1024,1,512"] + _LLM_DENSE_PAGED,
     ),
     KernelVariant(
         name="fmha_d512_dense_paged_fp8",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,8,512", "--k_shape", "1,1024,1,512"] + _LLM_DENSE_FP8_PAGED,
     ),
     KernelVariant(
         name="fmha_d512_sw_paged_fp8",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,8,512", "--k_shape", "1,1024,1,512"]
                     + _LLM_FP8_PAGED + ["--window_size", "4096,-1"],
@@ -395,7 +395,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_d64_sw",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,14,64", "--k_shape", "1,1024,1,64"]
                     + _LLM + ["--window_size", "4096,-1"],
@@ -403,7 +403,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_d128_sw",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,14,128", "--k_shape", "1,1024,1,128"]
                     + _LLM + ["--window_size", "4096,-1"],
@@ -411,7 +411,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_d256_sw",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,16,256", "--k_shape", "1,1024,2,256"]
                     + _LLM + ["--window_size", "4096,-1"],
@@ -420,28 +420,28 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_d64_fp8",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,14,64", "--k_shape", "1,1024,1,64"] + _LLM_FP8,
     ),
     KernelVariant(
         name="fmha_d128_fp8",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,14,128", "--k_shape", "1,1024,1,128"] + _LLM_FP8,
     ),
     KernelVariant(
         name="fmha_d256_fp8",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,16,256", "--k_shape", "1,1024,2,256"] + _LLM_FP8,
     ),
     KernelVariant(
         name="fmha_d64_sw_fp8",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,14,64", "--k_shape", "1,1024,1,64"]
                     + _LLM_FP8 + ["--window_size", "4096,-1"],
@@ -449,7 +449,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_d128_sw_fp8",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,14,128", "--k_shape", "1,1024,1,128"]
                     + _LLM_FP8 + ["--window_size", "4096,-1"],
@@ -457,7 +457,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_d256_sw_fp8",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,16,256", "--k_shape", "1,1024,2,256"]
                     + _LLM_FP8 + ["--window_size", "4096,-1"],
@@ -466,14 +466,14 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_d64_paged",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,14,64", "--k_shape", "1,1024,1,64"] + _LLM_PAGED,
     ),
     KernelVariant(
         name="fmha_d128_paged",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,14,128", "--k_shape", "1,1024,1,128"] + _LLM_PAGED,
     ),
@@ -483,7 +483,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_d64_skipsoftmax_paged",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,14,64", "--k_shape", "1,1024,1,64"]
                     + _LLM_PAGED + ["--skip_softmax_threshold", "1e-6"],
@@ -491,7 +491,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_d128_skipsoftmax_paged",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,14,128", "--k_shape", "1,1024,1,128"]
                     + _LLM_PAGED + ["--skip_softmax_threshold", "1e-6"],
@@ -515,21 +515,21 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_d256_paged",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,16,256", "--k_shape", "1,1024,2,256"] + _LLM_PAGED,
     ),
     KernelVariant(
         name="fmha_d256_dense_paged",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,16,256", "--k_shape", "1,1024,2,256"] + _LLM_DENSE_PAGED,
     ),
     KernelVariant(
         name="fmha_d64_sw_paged",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,14,64", "--k_shape", "1,1024,1,64"]
                     + _LLM_PAGED + ["--window_size", "4096,-1"],
@@ -537,7 +537,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_d128_sw_paged",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,14,128", "--k_shape", "1,1024,1,128"]
                     + _LLM_PAGED + ["--window_size", "4096,-1"],
@@ -546,7 +546,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_d256_sw_paged",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,16,256", "--k_shape", "1,1024,2,256"]
                     + _LLM_PAGED + ["--window_size", "4096,-1"],
@@ -554,35 +554,35 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_d64_paged_fp8",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,14,64", "--k_shape", "1,1024,1,64"] + _LLM_FP8_PAGED,
     ),
     KernelVariant(
         name="fmha_d128_paged_fp8",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,14,128", "--k_shape", "1,1024,1,128"] + _LLM_FP8_PAGED,
     ),
     KernelVariant(
         name="fmha_d256_paged_fp8",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,16,256", "--k_shape", "1,1024,2,256"] + _LLM_FP8_PAGED,
     ),
     KernelVariant(
         name="fmha_d256_dense_paged_fp8",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,16,256", "--k_shape", "1,1024,2,256"] + _LLM_DENSE_FP8_PAGED,
     ),
     KernelVariant(
         name="fmha_d64_sw_paged_fp8",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,14,64", "--k_shape", "1,1024,1,64"]
                     + _LLM_FP8_PAGED + ["--window_size", "4096,-1"],
@@ -590,7 +590,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_d128_sw_paged_fp8",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,14,128", "--k_shape", "1,1024,1,128"]
                     + _LLM_FP8_PAGED + ["--window_size", "4096,-1"],
@@ -598,7 +598,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_d256_sw_paged_fp8",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,16,256", "--k_shape", "1,1024,2,256"]
                     + _LLM_FP8_PAGED + ["--window_size", "4096,-1"],
@@ -642,35 +642,35 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="vit_fmha_d64",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,14,64", "--k_shape", "1,1024,14,64"] + _VIT,
     ),
     KernelVariant(
         name="vit_fmha_d72",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,14,72", "--k_shape", "1,1024,14,72"] + _VIT,
     ),
     KernelVariant(
         name="vit_fmha_d80",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,14,80", "--k_shape", "1,1024,14,80"] + _VIT,
     ),
     KernelVariant(
         name="vit_fmha_d96",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,14,96", "--k_shape", "1,1024,14,96"] + _VIT,
     ),
     KernelVariant(
         name="vit_fmha_d128",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,14,128", "--k_shape", "1,1024,14,128"] + _VIT,
     ),
@@ -682,14 +682,14 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="vit_fmha_d64_fp8",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,14,64", "--k_shape", "1,1024,14,64"] + _VIT_FP8 + ["--kv_stage", "2"],
     ),
     KernelVariant(
         name="vit_fmha_d80_fp8",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         # Pinned to the measured optimum: the padded K=96 smem tiles need a
         # deeper KV pipeline than the narrower dims (shallow staging costs
@@ -699,14 +699,14 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="vit_fmha_d96_fp8",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,14,96", "--k_shape", "1,1024,14,96"] + _VIT_FP8,
     ),
     KernelVariant(
         name="vit_fmha_d128_fp8",
         group="fmha",
-        supported_sms=[100, 101, 110],
+        supported_sms=[100, 101, 103, 110],
         script="fmha_cutedsl_blackwell/fmha.py",
         script_args=["--q_shape", "1,1024,14,128", "--k_shape", "1,1024,14,128"] + _VIT_FP8 + ["--kv_stage", "3"],
     ),
@@ -719,7 +719,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_v2_d64",
         group="fmha",
-        supported_sms=[80, 86, 87, 89, 90, 100, 101, 110, 120, 121],
+        supported_sms=[80, 86, 87, 89, 90, 100, 101, 103, 110, 120, 121],
         script="fmha_v2_cutedsl/fmha.py",
         script_args=[
             "--head_dim", "64",
@@ -732,7 +732,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_v2_d64_small",
         group="fmha",
-        supported_sms=[80, 86, 87, 89, 90, 100, 101, 110, 120, 121],
+        supported_sms=[80, 86, 87, 89, 90, 100, 101, 103, 110, 120, 121],
         script="fmha_v2_cutedsl/fmha.py",
         script_args=[
             "--head_dim", "64",
@@ -743,7 +743,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_v2_d128",
         group="fmha",
-        supported_sms=[80, 86, 87, 89, 90, 100, 101, 110, 120, 121],
+        supported_sms=[80, 86, 87, 89, 90, 100, 101, 103, 110, 120, 121],
         script="fmha_v2_cutedsl/fmha.py",
         script_args=[
             "--head_dim", "128",
@@ -754,7 +754,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_v2_d256",
         group="fmha",
-        supported_sms=[80, 86, 87, 89, 90, 100, 101, 110, 120, 121],
+        supported_sms=[80, 86, 87, 89, 90, 100, 101, 103, 110, 120, 121],
         script="fmha_v2_cutedsl/fmha.py",
         script_args=[
             "--head_dim", "256",
@@ -765,7 +765,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_v2_d64_sw",
         group="fmha",
-        supported_sms=[80, 86, 87, 89, 90, 100, 101, 110, 120, 121],
+        supported_sms=[80, 86, 87, 89, 90, 100, 101, 103, 110, 120, 121],
         script="fmha_v2_cutedsl/fmha.py",
         script_args=[
             "--head_dim", "64",
@@ -777,7 +777,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_v2_d128_sw",
         group="fmha",
-        supported_sms=[80, 86, 87, 89, 90, 100, 101, 110, 120, 121],
+        supported_sms=[80, 86, 87, 89, 90, 100, 101, 103, 110, 120, 121],
         script="fmha_v2_cutedsl/fmha.py",
         script_args=[
             "--head_dim", "128",
@@ -789,7 +789,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_v2_d256_sw",
         group="fmha",
-        supported_sms=[80, 86, 87, 89, 90, 100, 101, 110, 120, 121],
+        supported_sms=[80, 86, 87, 89, 90, 100, 101, 103, 110, 120, 121],
         script="fmha_v2_cutedsl/fmha.py",
         script_args=[
             "--head_dim", "256",
@@ -801,7 +801,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_v2_d64_paged",
         group="fmha",
-        supported_sms=[80, 86, 87, 89, 90, 100, 101, 110, 120, 121],
+        supported_sms=[80, 86, 87, 89, 90, 100, 101, 103, 110, 120, 121],
         script="fmha_v2_cutedsl/fmha.py",
         script_args=[
             "--head_dim", "64",
@@ -812,7 +812,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_v2_d64_small_paged",
         group="fmha",
-        supported_sms=[80, 86, 87, 89, 90, 100, 101, 110, 120, 121],
+        supported_sms=[80, 86, 87, 89, 90, 100, 101, 103, 110, 120, 121],
         script="fmha_v2_cutedsl/fmha.py",
         script_args=[
             "--head_dim", "64",
@@ -823,7 +823,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_v2_d128_paged",
         group="fmha",
-        supported_sms=[80, 86, 87, 89, 90, 100, 101, 110, 120, 121],
+        supported_sms=[80, 86, 87, 89, 90, 100, 101, 103, 110, 120, 121],
         script="fmha_v2_cutedsl/fmha.py",
         script_args=[
             "--head_dim", "128",
@@ -834,7 +834,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_v2_d256_paged",
         group="fmha",
-        supported_sms=[80, 86, 87, 89, 90, 100, 101, 110, 120, 121],
+        supported_sms=[80, 86, 87, 89, 90, 100, 101, 103, 110, 120, 121],
         script="fmha_v2_cutedsl/fmha.py",
         script_args=[
             "--head_dim", "256",
@@ -845,7 +845,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_v2_d512_paged",
         group="fmha",
-        supported_sms=[80, 86, 87, 89, 90, 100, 101, 110, 120, 121],
+        supported_sms=[80, 86, 87, 89, 90, 100, 101, 103, 110, 120, 121],
         script="fmha_v2_cutedsl/fmha.py",
         script_args=[
             "--head_dim", "512",
@@ -948,7 +948,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_v2_d64_sw_paged",
         group="fmha",
-        supported_sms=[80, 86, 87, 89, 90, 100, 101, 110, 120, 121],
+        supported_sms=[80, 86, 87, 89, 90, 100, 101, 103, 110, 120, 121],
         script="fmha_v2_cutedsl/fmha.py",
         script_args=[
             "--head_dim", "64",
@@ -960,7 +960,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_v2_d128_sw_paged",
         group="fmha",
-        supported_sms=[80, 86, 87, 89, 90, 100, 101, 110, 120, 121],
+        supported_sms=[80, 86, 87, 89, 90, 100, 101, 103, 110, 120, 121],
         script="fmha_v2_cutedsl/fmha.py",
         script_args=[
             "--head_dim", "128",
@@ -972,7 +972,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_v2_d256_sw_paged",
         group="fmha",
-        supported_sms=[80, 86, 87, 89, 90, 100, 101, 110, 120, 121],
+        supported_sms=[80, 86, 87, 89, 90, 100, 101, 103, 110, 120, 121],
         script="fmha_v2_cutedsl/fmha.py",
         script_args=[
             "--head_dim", "256",
@@ -984,7 +984,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_v2_d512_sw_paged",
         group="fmha",
-        supported_sms=[80, 86, 87, 89, 90, 100, 101, 110, 120, 121],
+        supported_sms=[80, 86, 87, 89, 90, 100, 101, 103, 110, 120, 121],
         script="fmha_v2_cutedsl/fmha.py",
         script_args=[
             "--head_dim", "512",
@@ -996,7 +996,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_v2_d256_padding",
         group="fmha",
-        supported_sms=[80, 86, 87, 89, 90, 100, 101, 110, 120, 121],
+        supported_sms=[80, 86, 87, 89, 90, 100, 101, 103, 110, 120, 121],
         script="fmha_v2_cutedsl/fmha.py",
         script_args=[
             "--head_dim", "256",
@@ -1007,7 +1007,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_v2_vit_d64",
         group="fmha",
-        supported_sms=[80, 86, 87, 89, 90, 100, 101, 110, 120, 121],
+        supported_sms=[80, 86, 87, 89, 90, 100, 101, 103, 110, 120, 121],
         script="fmha_v2_cutedsl/fmha.py",
         script_args=[
             "--head_dim", "64",
@@ -1018,7 +1018,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_v2_vit_d72",
         group="fmha",
-        supported_sms=[80, 86, 87, 89, 90, 100, 101, 110, 120, 121],
+        supported_sms=[80, 86, 87, 89, 90, 100, 101, 103, 110, 120, 121],
         script="fmha_v2_cutedsl/fmha.py",
         script_args=[
             "--head_dim", "72",
@@ -1029,7 +1029,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_v2_vit_d80",
         group="fmha",
-        supported_sms=[80, 86, 87, 89, 90, 100, 101, 110, 120, 121],
+        supported_sms=[80, 86, 87, 89, 90, 100, 101, 103, 110, 120, 121],
         script="fmha_v2_cutedsl/fmha.py",
         script_args=[
             "--head_dim", "80",
@@ -1051,7 +1051,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_v2_vit_d128",
         group="fmha",
-        supported_sms=[80, 86, 87, 89, 90, 100, 101, 110, 120, 121],
+        supported_sms=[80, 86, 87, 89, 90, 100, 101, 103, 110, 120, 121],
         script="fmha_v2_cutedsl/fmha.py",
         script_args=[
             "--head_dim", "128",
@@ -1062,7 +1062,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_v2_d256_bidirectional",
         group="fmha",
-        supported_sms=[80, 86, 87, 89, 90, 100, 101, 110, 120, 121],
+        supported_sms=[80, 86, 87, 89, 90, 100, 101, 103, 110, 120, 121],
         script="fmha_v2_cutedsl/fmha.py",
         script_args=[
             "--head_dim", "256",
@@ -1080,7 +1080,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_v2_d512",
         group="fmha",
-        supported_sms=[80, 86, 87, 89, 90, 100, 101, 110, 120, 121],
+        supported_sms=[80, 86, 87, 89, 90, 100, 101, 103, 110, 120, 121],
         script="fmha_v2_cutedsl/fmha.py",
         script_args=[
             "--head_dim", "512",
@@ -1092,7 +1092,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_v2_d512_sw",
         group="fmha",
-        supported_sms=[80, 86, 87, 89, 90, 100, 101, 110, 120, 121],
+        supported_sms=[80, 86, 87, 89, 90, 100, 101, 103, 110, 120, 121],
         script="fmha_v2_cutedsl/fmha.py",
         script_args=[
             "--head_dim", "512",
@@ -1110,7 +1110,7 @@ KERNEL_VARIANTS = [
     KernelVariant(
         name="fmha_v2_d512_bidirectional",
         group="fmha",
-        supported_sms=[80, 86, 87, 89, 90, 100, 101, 110, 120, 121],
+        supported_sms=[80, 86, 87, 89, 90, 100, 101, 103, 110, 120, 121],
         script="fmha_v2_cutedsl/fmha.py",
         script_args=[
             "--head_dim", "512",
@@ -2075,7 +2075,7 @@ for _bm, _stages, _sk in _INT4_FP16_GEMM_CONFIGS:
         KernelVariant(
             name=f"int4_fp16_gemm_{_tile_tag}_s{_stages}_sk{_sk}",
             group="int4_fp16_gemm",
-            supported_sms=[80, 86, 87, 89, 100, 101, 110, 120, 121],
+            supported_sms=[80, 86, 87, 89, 100, 101, 103, 110, 120, 121],
             script="int4_fp16_gemm_cutedsl/int4_fp16_gemm_ampere.py",
             script_args=[
                 "--mnk", "256,512,1024",
@@ -2108,7 +2108,7 @@ for _m in range(1, _INT4_FP16_GEMV_MAX_M + 1):
         KernelVariant(
             name=f"int4_fp16_gemv_m{_m}",
             group="int4_fp16_gemm",
-            supported_sms=[80, 86, 87, 89, 100, 101, 110, 120, 121],
+            supported_sms=[80, 86, 87, 89, 100, 101, 103, 110, 120, 121],
             script="int4_fp16_gemm_cutedsl/int4_fp16_gemv_ampere.py",
             script_args=[
                 "--mnk", f"{_m},512,1024",
