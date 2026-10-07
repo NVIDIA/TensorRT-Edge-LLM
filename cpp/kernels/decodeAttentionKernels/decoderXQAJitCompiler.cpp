@@ -24,10 +24,17 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <vector>
+
+// Set by the build system to the CUDA toolkit this build was configured against. The
+// conventional install path is the fallback for builds that do not define it.
+#ifndef EDGELLM_CUDA_INCLUDE_DIR
+#define EDGELLM_CUDA_INCLUDE_DIR "/usr/local/cuda/include"
+#endif
 
 namespace trt_edgellm
 {
@@ -115,7 +122,18 @@ std::vector<std::string> buildNvrtcOptions(XQAJitKey const& key)
     options.emplace_back("--use_fast_math");
     options.emplace_back("--device-as-default-execution-space");
     options.emplace_back(getGpuArchitectureOption(key.sm));
-    // No -I flags needed: all headers are passed as virtual includes to nvrtcCreateProgram.
+    // The kernel's own headers are virtual includes on nvrtcCreateProgram, but cuda_fp16.h
+    // includes vector_types.h from the CUDA toolkit, which NVRTC does not carry as a builtin
+    // on CUDA 12.x for x86. Without this include path the compile fails with
+    //   cuda_fp16.h(129): catastrophic error: cannot open source file "vector_types.h"
+    // and it surfaces during ONNX parsing as a plugin creation failure, which points away
+    // from the cause. EDGELLM_NVRTC_INCLUDE overrides the configured path for installs that
+    // are relocated away from the toolkit they were built against.
+    {
+        char const* const cudaIncludeOverride = std::getenv("EDGELLM_NVRTC_INCLUDE");
+        options.emplace_back(
+            std::string("-I") + (cudaIncludeOverride != nullptr ? cudaIncludeOverride : EDGELLM_CUDA_INCLUDE_DIR));
+    }
     options.emplace_back("-DGENERATE_CUBIN=1");
     options.emplace_back("-DNDEBUG");
     options.emplace_back("-DINFINITY=__int_as_float(0x7f800000)");
