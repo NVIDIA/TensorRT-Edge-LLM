@@ -1,5 +1,8 @@
 # Release Notes
 
+## Unreleased
+- Added InternVLA-N1-DualVLN vision-language navigation support: direct export of the Qwen2.5-VL planner with the z_latents bridge folded into the graph, and an experimental System-1 runtime for the flow-matching trajectory head
+
 ## 0.11.0
 
 ### New features and models

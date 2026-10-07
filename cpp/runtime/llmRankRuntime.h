@@ -691,6 +691,14 @@ private:
     bool multiModalRuntimePreprocess(LLMGenerationRequest const& request, DecodingInferenceContext& context,
         cudaStream_t stream, OptionalOutputTensor mropeCosSinOverride = std::nullopt);
 
+    //! Encoder-cache partial hit: prepare text and MRoPE for the whole request, run the vision encoder on
+    //! the images in \p missingImages only, cache them, then assemble every image's embedding from the
+    //! cache. Returns false when the caller must fall back to encoding every image; text and MRoPE are
+    //! prepared either way.
+    bool encodeMissingImagesAndRestore(LLMGenerationRequest const& request,
+        std::vector<std::vector<int32_t>>& batchedInputIds, std::vector<Hash128> const& imageHashes,
+        std::vector<size_t> const& missingImages, OptionalOutputTensor mropeCosSinOut, cudaStream_t stream);
+
     // Consume system prompt, produce the hash table of system prompt KVCache if kv cache reuse is enabled.
     //! @throws std::runtime_error if a CUDA operation fails
     bool genAndSaveSystemPromptKVCache(DecodingInferenceContext& context, int32_t genAndSaveBatchIdx);

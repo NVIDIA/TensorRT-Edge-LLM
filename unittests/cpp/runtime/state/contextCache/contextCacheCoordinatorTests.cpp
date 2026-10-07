@@ -233,6 +233,37 @@ TEST_F(ContextCacheCoordinatorTests, ExactFullInputHitReportsMatchButRewindsExec
     finish(*replay.admission);
 }
 
+TEST_F(ContextCacheCoordinatorTests, PrivateTailLimitsReuseToPagesEndingBeforeIt)
+{
+    int32_t const promptLength = 2 * kTOKENS_PER_PAGE + 4;
+    auto producer = begin({makeTokens(promptLength)});
+    ASSERT_TRUE(producer.admission.has_value());
+    finalizePrefillWithLengths(*producer.admission, {promptLength});
+    finish(*producer.admission);
+
+    auto replayWithTail = [&](int32_t privateTailTokens) {
+        ContextCacheSequenceAdmission sequence{makeTokens(promptLength), {}, {}, ResidentRef{0, 1}};
+        sequence.privateTailTokens = privateTailTokens;
+        ContextCacheBatchAdmission batch;
+        batch.sequences.push_back(std::move(sequence));
+        auto replay = mCoordinator->beginRequest(batch, DecodingKvHeadroom{1, 0}, mStream);
+        EXPECT_EQ(replay.status, ContextCacheCoordinatorStatus::kOk);
+        if (!replay.admission.has_value())
+        {
+            return -1;
+        }
+        int32_t const prefillStart = replay.admission->prefillStarts[0];
+        finish(*replay.admission);
+        return prefillStart;
+    };
+
+    EXPECT_EQ(replayWithTail(0), 2 * kTOKENS_PER_PAGE);
+    // The last four tokens already sit after the second page, so both pages stay reusable.
+    EXPECT_EQ(replayWithTail(4), 2 * kTOKENS_PER_PAGE);
+    // An eight-token tail reaches into the second page, which must then be recomputed.
+    EXPECT_EQ(replayWithTail(8), kTOKENS_PER_PAGE);
+}
+
 TEST_F(ContextCacheCoordinatorTests, BypassUsesManagedPagesWithoutPublishing)
 {
     auto bypass = begin({makeTokens(129)}, ContextCacheLookupPolicy::kBypass);

@@ -225,7 +225,7 @@ def infer_checkpoint_export_model_type(param_str: str) -> ModelType:
     model_name = '-'.join(model_parts) if model_parts else param_str
     base = strip_model_quant_suffixes(model_name)
 
-    if base.startswith("Alpamayo"):
+    if base.startswith("Alpamayo") or base.startswith("InternVLA"):
         return ModelType.VLA
     if base.startswith("Qwen3-ASR"):
         return ModelType.ASR

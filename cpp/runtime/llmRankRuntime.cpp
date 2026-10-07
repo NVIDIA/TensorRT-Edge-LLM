@@ -2201,8 +2201,8 @@ std::unique_ptr<LLMRankRuntime::SteppedGeneration> LLMRankRuntime::beginGenerati
         int32_t const prefillSequenceLength
             = *std::max_element(context.effectivePrefillLengths.begin(), context.effectivePrefillLengths.end());
         mPipelineIO->streamingPrefill.populateFromPrefill(mPipelineIO->inputsEmbeds, mPipelineIO->outputHiddenStates,
-            activeBatchSize, prefillSequenceLength, mDeployment.base.hiddenSize, mMaxRuntimeBatchSize,
-            mDeployment.base.maxSupportedInputLength, stream);
+            activeBatchSize, prefillSequenceLength, mDeployment.base.hiddenSize, mDeployment.base.emittedHiddenSize(),
+            mMaxRuntimeBatchSize, mDeployment.base.maxSupportedInputLength, stream);
         mLastPrefillLength = prefillSequenceLength;
         mLastInputTokenIds = context.rawBatchedInputIds;
         mHiddenStatesRegistry[0] = &mPipelineIO->streamingPrefill.inputEmbeds;
@@ -2496,6 +2496,75 @@ bool LLMRankRuntime::validateRequestConfig(LLMGenerationRequest const& request)
     return true;
 }
 
+bool LLMRankRuntime::encodeMissingImagesAndRestore(LLMGenerationRequest const& request,
+    std::vector<std::vector<int32_t>>& batchedInputIds, std::vector<Hash128> const& imageHashes,
+    std::vector<size_t> const& missingImages, OptionalOutputTensor mropeCosSinOut, cudaStream_t stream)
+{
+    if (!mVisionRunner->preprocess(request, batchedInputIds, mTokenizer, mropeCosSinOut, stream, false, true))
+    {
+        LOG_ERROR("Vision text preprocessing failed on partial cache hit.");
+        return false;
+    }
+
+    // imageHashes is flattened in request order, which is also the order the runner lays out spans.
+    LLMGenerationRequest missingOnly = request;
+    size_t flatIndex = 0;
+    size_t nextMissing = 0;
+    for (auto& req : missingOnly.requests)
+    {
+        std::vector<imageUtils::ImageData> kept;
+        for (auto& img : req.imageBuffers)
+        {
+            if (nextMissing < missingImages.size() && missingImages[nextMissing] == flatIndex)
+            {
+                kept.push_back(std::move(img));
+                ++nextMissing;
+            }
+            ++flatIndex;
+        }
+        req.imageBuffers = std::move(kept);
+    }
+
+    std::vector<std::vector<int32_t>> unusedIds;
+    if (!mVisionRunner->preprocess(missingOnly, unusedIds, mTokenizer, std::nullopt, stream, true, false)
+        || !mVisionRunner->infer(stream))
+    {
+        return false;
+    }
+    rt::Tensor const& output = mVisionRunner->getOutputEmbedding();
+    auto const features = mVisionRunner->getDeepstackFeatures();
+    auto const& missingLengths = mVisionRunner->getLastMediaTokenLengths();
+    if (missingLengths.size() != missingImages.size())
+    {
+        return false;
+    }
+    int64_t const hiddenSize = output.getShape()[1];
+    size_t const typeSize = rt::utils::getTypeSize(output.getDataType());
+    int64_t tokenOffset = 0;
+    for (size_t i = 0; i < missingImages.size(); ++i)
+    {
+        mEncoderEmbeddingCache->storeSlice(imageHashes[missingImages[i]],
+            static_cast<char const*>(output.rawPointer()) + tokenOffset * hiddenSize * static_cast<int64_t>(typeSize),
+            missingLengths[i], hiddenSize, output.getDataType(), stream, features, tokenOffset);
+        tokenOffset += missingLengths[i];
+    }
+
+    // Spans-only pass over the full request: resets the per-image token lengths and sizes the output
+    // embedding for every image so tryRestore can assemble them in order.
+    if (!mVisionRunner->preprocess(request, unusedIds, mTokenizer, std::nullopt, stream, true, true))
+    {
+        return false;
+    }
+    bool const restored = mEncoderEmbeddingCache->tryRestore(imageHashes, mVisionRunner->getLastMediaTokenLengths(),
+        mVisionRunner->getOutputEmbedding(), mVisionRunner->getDeepstackFeatures(), stream);
+    if (restored)
+    {
+        LOG_INFO(
+            "Encoder embedding cache partial HIT: encoded %zu of %zu images", missingImages.size(), imageHashes.size());
+    }
+    return restored;
+}
+
 bool LLMRankRuntime::multiModalRuntimePreprocess(LLMGenerationRequest const& request, DecodingInferenceContext& context,
     cudaStream_t stream, OptionalOutputTensor mropeCosSinOverride)
 {
@@ -2688,19 +2757,20 @@ bool LLMRankRuntime::multiModalRuntimePreprocess(LLMGenerationRequest const& req
             }
         }
 
-        bool allHit = mEncoderEmbeddingCache && !imageHashes.empty();
-        if (allHit)
+        std::vector<size_t> missingImages;
+        if (mEncoderEmbeddingCache)
         {
-            for (auto const& h : imageHashes)
+            for (size_t i = 0; i < imageHashes.size(); ++i)
             {
-                auto r = mEncoderEmbeddingCache->lookupEntry(h);
-                if (!r)
+                if (!mEncoderEmbeddingCache->lookupEntry(imageHashes[i]))
                 {
-                    allHit = false;
-                    break;
+                    missingImages.push_back(i);
                 }
             }
         }
+        bool const allHit = mEncoderEmbeddingCache && !imageHashes.empty() && missingImages.empty();
+        bool const partialHit
+            = !imageHashes.empty() && !missingImages.empty() && missingImages.size() < imageHashes.size();
 
         if (allHit)
         {
@@ -2717,6 +2787,13 @@ bool LLMRankRuntime::multiModalRuntimePreprocess(LLMGenerationRequest const& req
                 LOG_INFO("Encoder embedding cache HIT for all %zu images — skipping ViT encoder execution",
                     imageHashes.size());
             }
+        }
+
+        if (partialHit)
+        {
+            visionCacheHit = encodeMissingImagesAndRestore(
+                request, batchedInputIds, imageHashes, missingImages, mropeCosSinOut, stream);
+            visionTextPreprocessed = true;
         }
 
         if (!visionCacheHit)
@@ -3334,7 +3411,8 @@ bool LLMRankRuntime::runBaseModelPrefill(
             "Ragged base hidden-state output reshape failed");
     }
     check::check(mPipelineIO->outputHiddenStates.isEmpty()
-            || mPipelineIO->outputHiddenStates.reshape({batch.shape.physicalTokens, mDeployment.base.hiddenSize}),
+            || mPipelineIO->outputHiddenStates.reshape(
+                {batch.shape.physicalTokens, mDeployment.base.emittedHiddenSize()}),
         "Ragged hidden-state output reshape failed");
     for (Tensor& deepstack : mPipelineIO->deepstackEmbeds)
     {

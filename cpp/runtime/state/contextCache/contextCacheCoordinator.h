@@ -63,6 +63,9 @@ struct ContextCacheSequenceAdmission
     ResidentRef resident;
     //! Optional sequence-level override of ContextCacheBatchAdmission::lookupPolicy.
     std::optional<ContextCacheLookupPolicy> lookupPolicy;
+    //! Trailing prompt tokens that must be computed rather than restored, because the caller reads their hidden
+    //! states. Only attention-only, non-speculative deployments support a non-zero value.
+    int32_t privateTailTokens{0};
 };
 
 //! One serialized runtime request. Bypass still uses managed private pages but neither looks up nor publishes state.

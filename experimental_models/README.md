@@ -15,6 +15,7 @@ It is built only when `-DBUILD_EXPERIMENTAL_MODELS=ON` is passed to CMake.
 | Cosmos3-Omni | `cosmos3/` | autoregressive text scaffolding + diffusion policy / action generation |
 | Nemotron-3.5-ASR | `nemotron3_5_asr/` | offline (batch 1) RNN-T speech transcription (FastConformer encoder + LSTM prediction network; no LLM backbone) |
 | pi0.5 | `pi05/` | FP16 flow-matching VLA policy; openpi's `pi05_libero`, `pi05_droid` and `pi05_aloha` contracts |
+| InternVLA-N1 | `internvla_n1/` | dual-system vision-language navigation (Qwen2.5-VL planner served by the core runtime + flow-matching trajectory expert; asynchronous in-process handoff) |
 
-See each model's `README.md` (e.g. `cosmos3/README.md`, `nemotron3_5_asr/README.md`, `pi05/README.md`)
-for details.
+See each model's `README.md` (e.g. `cosmos3/README.md`, `nemotron3_5_asr/README.md`, `pi05/README.md`,
+`internvla_n1/README.md`) for details.

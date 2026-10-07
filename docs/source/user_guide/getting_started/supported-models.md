@@ -296,6 +296,9 @@ are listed under [Speculative Draft Checkpoints](#speculative-draft-checkpoints)
   [lerobot/pi05_droid](https://huggingface.co/lerobot/pi05_droid),
   [lerobot/pi05_base](https://huggingface.co/lerobot/pi05_base) (served under the
   `pi05_aloha` contract)
+- **InternVLA-N1** (`internvla_n1`, experimental runtime): navigation frames and an
+  instruction to a future waypoint trajectory.
+  [InternRobotics/InternVLA-N1-DualVLN](https://huggingface.co/InternRobotics/InternVLA-N1-DualVLN)
 
 ## Speculative Draft Checkpoints
 

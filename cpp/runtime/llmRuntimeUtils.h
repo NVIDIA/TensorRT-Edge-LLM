@@ -289,6 +289,11 @@ struct LLMGenerationRequest
     //! Hybrid+MTP boundary-replay tail length. Set to -1 to derive it with the native provider-template renderer.
     int32_t contextCacheReplayTailLength{0};
 
+    //! With outputThinkerEmbeddings, the number of trailing prompt tokens whose hidden states the caller reads.
+    //! Non-zero lets the context cache restore the prompt before them (they are always recomputed); zero means
+    //! every position is read, so hidden-state capture bypasses the cache.
+    int32_t hiddenCaptureTailTokens{0};
+
     //! Periodic recurrent-state capture interval (0 disables). Hybrid+MTP endpoint reuse requires this to be 0 so the
     //! recurrent snapshot lands only at the stable predecessor boundary (mirrors reference request validation).
     int32_t recurrentCaptureInterval{0};
