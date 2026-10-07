@@ -585,3 +585,27 @@ def test_batch_invariance():
         assert_close(f"conv-batch-inv.y[{new_i}]", out0[orig, :L],
                      out1[new_i, :L])
     assert_close("conv-batch-inv.state", st0[pcpu], st1)
+
+
+@pytest.mark.parametrize("phase", [1, 2])
+def test_mtp_prefill_has_no_snapshots(phase):
+    cfg = ConvConfig(dim=16, width=4, max_batch=1, max_seq=32)
+    gen = torch.Generator().manual_seed(223)
+    runner = ConvRunner(cfg, use_mtp=True)
+    x, weight, bias = _rand(cfg, 1, 32, gen)
+    state = torch.zeros((1, cfg.dim, cfg.width),
+                        dtype=torch.float16,
+                        device=DEV)
+    lengths = torch.full((1, ), 32, dtype=torch.int32, device=DEV)
+    expected, expected_state = causal_conv1d_ref(x, weight[:, 0, :], bias,
+                                                 state.clone(), False, lengths)
+    output, final_state, _ = runner.run(x,
+                                        weight,
+                                        bias,
+                                        state,
+                                        lengths,
+                                        phase=phase)
+    assert_close("prefill output", expected, output, 2e-2, 2e-2)
+    assert_close("prefill state", expected_state, final_state, 2e-2, 2e-2)
+    assert runner.runner.context.get_tensor_shape(
+        "intermediate_states")[0] == 0

@@ -280,7 +280,11 @@ int32_t GatedDeltaNetPlugin::getOutputShapes(DimsExprs const* inputs, [[maybe_un
         if (mUseSpecVerifyState)
         {
             outputs[kOUT_INTERMEDIATE_STATES_IDX].nbDims = 4;
-            outputs[kOUT_INTERMEDIATE_STATES_IDX].d[0] = inputs[kIN_Q_IDX].d[0];
+            // Prefill does not write rollback snapshots.
+            auto const* generation = exprBuilder.operation(
+                DimensionOperation::kEQUAL, *inputs[kIN_CONTEXT_SEQUENCE_COUNT_IDX].d[0], *exprBuilder.constant(0));
+            outputs[kOUT_INTERMEDIATE_STATES_IDX].d[0]
+                = exprBuilder.operation(DimensionOperation::kPROD, *inputs[kIN_Q_IDX].d[0], *generation);
             outputs[kOUT_INTERMEDIATE_STATES_IDX].d[1] = inputs[kIN_V_IDX].d[1];
             outputs[kOUT_INTERMEDIATE_STATES_IDX].d[2] = inputs[kIN_Q_IDX].d[2];
             outputs[kOUT_INTERMEDIATE_STATES_IDX].d[3] = inputs[kIN_V_IDX].d[2];

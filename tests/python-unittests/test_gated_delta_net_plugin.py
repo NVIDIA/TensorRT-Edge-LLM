@@ -131,8 +131,10 @@ class GDNConfig:
 class GDNRunner:
     """Builds + runs gated_delta_net (one engine handles decode + prefill)."""
 
-    def __init__(self, cfg: GDNConfig):
+    def __init__(self, cfg: GDNConfig, *, use_mtp=False):
         self.cfg = cfg
+        self.use_mtp = use_mtp
+        self.intermediate = None
         self.runner = PluginRunner()
         self._build()
 
@@ -172,25 +174,26 @@ class GDNRunner:
         }
         self.runner.build(
             input_specs=input_specs,
-            output_names=["o", "h0_out"],
+            output_names=["o", "h0_out"] +
+            (["intermediate_states"] if self.use_mtp else []),
             plugin_name="gated_delta_net",
             plugin_version="1",
             plugin_fields=[
                 pf_int32("k_dim", kd),
                 pf_int32("v_dim", vd),
-                pf_int32("use_mtp", 0),
+                pf_int32("use_mtp", int(self.use_mtp)),
             ],
             profiles=profiles,
         )
 
-    def run(self, q, k, v, a, b, A_log, dt_bias, h0, ctx):
+    def run(self, q, k, v, a, b, A_log, dt_bias, h0, ctx, *, phase=None):
         batch, seq = q.shape[:2]
         tokens = batch * seq
         o = torch.empty((tokens, self.cfg.heads, self.cfg.v_dim),
                         dtype=v.dtype,
                         device=DEV)
-        phase = 3 if seq == 1 else 1
-        carrier_extent = batch if phase == 1 else 0
+        phase = phase or (3 if seq == 1 else 1)
+        carrier_extent = batch if phase in (1, 2) else 0
         bindings = {
             "q":
             q.reshape(tokens, self.cfg.heads, self.cfg.k_dim),
@@ -226,6 +229,12 @@ class GDNRunner:
         input_shapes = ({
             "context_sequence_count_carrier": (0, )
         } if carrier_extent == 0 else None)
+        if self.use_mtp:
+            self.intermediate = torch.empty(
+                (tokens, self.cfg.heads, self.cfg.k_dim, self.cfg.v_dim),
+                dtype=torch.float32,
+                device=DEV)
+            bindings["intermediate_states"] = self.intermediate
         self.runner.execute(bindings, input_shapes=input_shapes)
         return o.reshape(batch, seq, self.cfg.heads, self.cfg.v_dim), h0
 
@@ -418,3 +427,24 @@ def test_prefill_decode_handoff(seed):
                          b[:, st].contiguous(), A_log, dt_bias, state, ctx_dec)
         assert_close(f"gdn-handoff.o[t={t}]", ref_o[:, t], o[:, 0])
     assert_close("gdn-handoff.state", ref_state, state)
+
+
+@pytest.mark.parametrize("phase,seq", [(1, 32), (2, 32), (5, 4)])
+def test_mtp_snapshot_extent(phase, seq):
+    cfg = GDNConfig(heads=4, max_batch=1, max_seq=32)
+    runner = GDNRunner(cfg, use_mtp=True)
+    gen = torch.Generator().manual_seed(223)
+    values = _rand(cfg, 1, seq, gen)
+    q, k, v, a, b, A_log, dt_bias = values
+    h0 = torch.zeros((1, cfg.heads, cfg.k_dim, cfg.v_dim), device=DEV)
+    ctx = torch.full((1, ), seq, dtype=torch.int32, device=DEV)
+    expected, final_state = gdn_ref(q, k, v, a, b, A_log, dt_bias, h0.clone(),
+                                    ctx)
+    output, _ = runner.run(*values, h0, ctx, phase=phase)
+    assert_close("MTP output", expected, output, 2e-2, 2e-2)
+    extent = runner.runner.context.get_tensor_shape("intermediate_states")[0]
+    assert extent == (0 if phase in (1, 2) else seq)
+    if phase == 5:
+        assert_close("verify snapshot", final_state,
+                     runner.intermediate[-1:].reshape_as(final_state), 2e-2,
+                     2e-2)
