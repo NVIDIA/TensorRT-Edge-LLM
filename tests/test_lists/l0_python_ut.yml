@@ -25,6 +25,10 @@ tests:
   - tests/python-unittests/test_export_kv_page_table.py::test_tp_runtime_config_preserves_global_gdn_metadata
   - tests/python-unittests/test_export_kv_page_table.py::test_nvfp4_tp_gemm_allreduce_target_export
 
+  # Quantized runtime embedding sidecar contracts
+  - tests/python-unittests/test_embedding_quantization.py
+  - tests/python-unittests/test_export_embedding_flags.py
+
   # AttentionPlugin tests (custom plugin vs PyTorch reference)
   - tests/python-unittests/test_attention_plugin.py::test_cutedsl_lazy_module_failure_propagates_before_attention_mutation
   - tests/python-unittests/test_attention_plugin.py::test_prefill

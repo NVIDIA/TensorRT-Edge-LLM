@@ -284,6 +284,9 @@ def run_checkpoint_export(config: TestConfig,
         if config.fp8_embedding:
             extra_args.append("--fp8-embedding")
             label += " (FP8 embedding)"
+        if config.int8_embedding:
+            extra_args.append("--int8-embedding")
+            label += " (INT8 embedding)"
         if config.reduced_vocab_size:
             extra_args.append(
                 f"--reduced-vocab-dir={config.get_reduced_vocab_dir()}")

@@ -47,6 +47,27 @@ struct Fp16EmbeddingLoader
     }
 };
 
+//! \brief Signed INT8 embedding loader with one FP32 scale per vocabulary row
+struct Int8EmbeddingLoader
+{
+    static constexpr uint32_t vecSize = DVec<half>::vec_size;
+    int8_t const* table{nullptr};
+    float const* scales{nullptr};
+
+    __device__ __forceinline__ void load(int32_t tokenId, int64_t hiddenSize, uint32_t offset, DVec<half>& out) const
+    {
+        // One 8-byte load per 8 outputs; hiddenSize % vecSize == 0 keeps every row offset 8-byte aligned.
+        int2 const packed = *reinterpret_cast<int2 const*>(table + static_cast<int64_t>(tokenId) * hiddenSize + offset);
+        int8_t const* values = reinterpret_cast<int8_t const*>(&packed);
+        float const scale = scales[tokenId];
+#pragma unroll
+        for (uint32_t i = 0; i < vecSize; ++i)
+        {
+            out[i] = __float2half(static_cast<float>(values[i]) * scale);
+        }
+    }
+};
+
 #if SUPPORTS_FP8
 //! \brief FP8 embedding loader with per-group dequantization
 struct Fp8EmbeddingLoader
@@ -691,7 +712,23 @@ void embeddingLookup(rt::Tensor const& inputIds, rt::Tensor const& embeddingTabl
 
     // Dispatch based on embedding table datatype
     bool const isFP8Embedding = (embeddingTable.getDataType() == nvinfer1::DataType::kFP8);
-    if (isFP8Embedding)
+    bool const isInt8Embedding = (embeddingTable.getDataType() == nvinfer1::DataType::kINT8);
+    if (isInt8Embedding)
+    {
+        check::check(scales.has_value(), "scales must be provided for INT8 embedding table");
+        auto const& scalesTensor = scales.value().get();
+        auto const scaleShape = scalesTensor.getShape();
+
+        check::check(scaleShape.getNumDims() == 1, "INT8 scales must be 1D tensor [vocabSize]");
+        check::check(scaleShape[0] == vocabSize, "INT8 scale rows must match embeddingTable vocab size");
+        check::check(scalesTensor.getDataType() == nvinfer1::DataType::kFLOAT, "INT8 scales must be FP32");
+
+        Int8EmbeddingLoader loader{embeddingTable.dataPointer<int8_t>(), scalesTensor.dataPointer<float>()};
+        launchEmbeddingLookupKernel(inputIdsPtr, loader, multimodalIndicesPtr, imageTokenIdValue, imageEmbedsPtr,
+            imageTokenLen, audioTokenIdValue, audioEmbedsPtr, audioTokenLen, outputPtr, batchSize, seqLen, vocabSize,
+            hiddenSize, stream);
+    }
+    else if (isFP8Embedding)
     {
 #if SUPPORTS_FP8
         constexpr uint32_t vecSize = DVec<__nv_fp8_e4m3>::vec_size;
@@ -726,7 +763,9 @@ void embeddingLookup(rt::Tensor const& inputIds, rt::Tensor const& embeddingTabl
     }
     else
     {
-        check::check(embeddingTable.getDataType() == nvinfer1::DataType::kHALF, "embeddingTable must be FP16 or FP8");
+        check::check(
+            embeddingTable.getDataType() == nvinfer1::DataType::kHALF, "embeddingTable must be FP16, FP8, or INT8");
+        check::check(!scales.has_value(), "scales must not be provided for FP16 embedding table");
         half const* embeddingTablePtr = embeddingTable.dataPointer<half>();
 
         Fp16EmbeddingLoader loader{embeddingTablePtr};

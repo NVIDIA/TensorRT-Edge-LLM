@@ -82,6 +82,8 @@ def export_onnx(
     externalize_weights=None,
     config_filename: str = "config.json",
     write_shared_artifacts: bool = True,
+    *,
+    int8_embedding: bool = False,
 ) -> None:
     """Export *model* to ONNX using the dynamo exporter.
 
@@ -110,6 +112,8 @@ def export_onnx(
         write_shared_artifacts: Emit shared embedding/tokenizer files. Set to
                                 False on non-rank-0 per-rank exports to avoid
                                 redundant rewrites of identical sidecar files.
+        int8_embedding: Write embedding.safetensors as symmetric INT8 with one
+                        FP32 scale per row.
     """
     out_dir = os.path.dirname(os.path.abspath(output_path))
     os.makedirs(out_dir, exist_ok=True)
@@ -129,6 +133,7 @@ def export_onnx(
                             model_dir,
                             out_dir,
                             fp8_embedding=fp8_embedding,
+                            int8_embedding=int8_embedding,
                             reduced_vocab_dir=reduced_vocab_dir,
                             config_filename=config_filename,
                             write_shared_artifacts=write_shared_artifacts)
