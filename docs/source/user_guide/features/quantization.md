@@ -150,6 +150,10 @@ tensorrt-edgellm-export \
   --fp8-embedding
 ```
 
+`--int8-embedding` writes the runtime embedding sidecar as symmetric INT8 with
+FP32 row scales, as an alternative to `--fp8-embedding`. See
+[INT8 Embedding Sidecar](int8-embedding.md) for the file contract.
+
 ## Supported Methods
 
 | Component | Methods |
