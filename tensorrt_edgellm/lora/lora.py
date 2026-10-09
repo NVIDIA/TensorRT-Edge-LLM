@@ -232,6 +232,43 @@ def _match_nvfp4_gemm(graph: gs.Graph):
     return nvfp4_gemm_infos
 
 
+_PRE_QUANT_SCALE_SUFFIX = ".pre_quant_scale"
+
+
+def _unsmoothed_int4_activation(node: gs.Node) -> gs.Tensor:
+    """Return the activation the LoRA branch of an INT4 plugin must consume.
+
+    ModelOpt AWQ stores ``Q(W / s)`` per input channel and the exported graph
+    feeds the plugin ``Mul(x, s)``, so the base GEMM computes ``x * s * W / s
+    = x * W``. A PEFT adapter is trained as ``x * A * B`` on the unsmoothed
+    model, so its branch must read ``x``, the operand of that ``Mul`` that is
+    not the ``*.pre_quant_scale`` constant (either operand order). Legacy
+    ModelOpt-traced exports smooth through ``Cast <- Mul(*input_quantizer*)``.
+    Any other producer, including a ``Mul`` by a different constant such as a
+    norm weight, is part of the model and the plugin input is used directly,
+    as it is for GPTQ and for a plugin fed by a graph input.
+    """
+    activation = node.inputs[0]
+    if not activation.inputs:
+        return activation
+    producer = activation.inputs[0]
+    if producer.op == "Mul":
+        constants = [
+            operand for operand in producer.inputs
+            if isinstance(operand, gs.Constant)
+        ]
+        if len(producer.inputs) == 2 and len(constants) == 1 and (
+                constants[0].name or "").endswith(_PRE_QUANT_SCALE_SUFFIX):
+            scale = constants[0]
+            return next(operand for operand in producer.inputs
+                        if operand is not scale)
+    elif producer.op == "Cast":
+        cast_input = producer.inputs[0]
+        if "input_quantizer" in (cast_input.name or "") and cast_input.inputs:
+            return cast_input.inputs[0].inputs[0]
+    return activation
+
+
 def _match_int4_gemm(graph: gs.Graph):
     """
     Match INT4 GEMM nodes in the graph.
@@ -242,6 +279,8 @@ def _match_int4_gemm(graph: gs.Graph):
     ``gemm_k``/``gemm_n`` attributes, so the stem can be derived in one step
     for either. V2 must be matched too; otherwise the default INT4 backend's
     GEMMs get no LoRA inputs and adapters are silently dropped at runtime.
+    The LoRA input is the activation before any AWQ smoothing scale; see
+    :func:`_unsmoothed_int4_activation`.
     """
     int4_gemm_infos = []
     int4_gemm_nodes = [
@@ -249,16 +288,7 @@ def _match_int4_gemm(graph: gs.Graph):
         if node.op in ("Int4GroupwiseGemmPlugin", "Int4GroupwiseGemmPluginV2")
     ]
     for node in int4_gemm_nodes:
-        # For AWQ, the input is smoothed by a Mul and a Cast node.
-        if node.inputs[0].inputs[
-                0].op == "Cast" and "input_quantizer" in node.inputs[0].inputs[
-                    0].inputs[0].name:
-            cast_node = node.inputs[0].inputs[0]
-            mul_node = cast_node.inputs[0].inputs[0]
-            input_node = mul_node.inputs[0]
-        # For GPTQ, no smoothing is applied.
-        else:
-            input_node = node.inputs[0]
+        input_node = _unsmoothed_int4_activation(node)
         weight_shape = (node.attrs["gemm_k"], node.attrs["gemm_n"])
         weight_init_name = getattr(node.inputs[1], "name", "") or ""
         stem = _stem_from_init_name(weight_init_name)
