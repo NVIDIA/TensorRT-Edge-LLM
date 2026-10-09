@@ -379,8 +379,23 @@ class Net:
         return layer.get_output(0)
 
     def log_softmax(self, x: "trt.ITensor", axis: int) -> "trt.ITensor":
-        """Numerically stable softmax followed by logarithm."""
-        return self.unary(self.softmax(x, axis), trt.UnaryOperation.LOG)
+        """Compute log probabilities without materializing softmax probabilities."""
+        x = self._unwrap(x)
+        dtype = x.dtype
+        if dtype != trt.float32:
+            x = self.cast(x, trt.float32)
+        axes = 1 << axis
+        maximum = self.reduce(x, trt.ReduceOperation.MAX, axes, keep_dims=True)
+        shifted = self.elementwise(x, maximum, trt.ElementWiseOperation.SUB)
+        exponentials = self.unary(shifted, trt.UnaryOperation.EXP)
+        total = self.reduce(exponentials,
+                            trt.ReduceOperation.SUM,
+                            axes,
+                            keep_dims=True)
+        log_total = self.unary(total, trt.UnaryOperation.LOG)
+        result = self.elementwise(shifted, log_total,
+                                  trt.ElementWiseOperation.SUB)
+        return self.cast(result, dtype) if dtype != trt.float32 else result
 
     def concat(self, tensors: Sequence["trt.ITensor"],
                axis: int) -> "trt.ITensor":
