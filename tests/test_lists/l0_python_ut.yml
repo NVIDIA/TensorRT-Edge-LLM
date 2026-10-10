@@ -197,6 +197,9 @@ tests:
   - tests/python-unittests/test_nemotron_h_ragged_export.py::test_nemotron_h_mtp_draft_exports_token_major_attention
   - tests/python-unittests/test_qwen35_ragged_export.py::test_omni_next_moe_mtp_base_runs_token_major_wrapper
 
+  # Dynamic LoRA insertion contracts (CPU only)
+  - tests/python-unittests/test_lora_gemm_insertion.py
+
   # Token-major and legacy QKV concat plugin contracts
   - tests/python-unittests/test_qkv_concat_plugin.py
 
