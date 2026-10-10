@@ -141,6 +141,27 @@ std::string Coords::formatString() const
     return ss.str();
 }
 
+namespace
+{
+
+//! Message for a failed owning allocation: which tensor, how large, the CUDA error and the device memory left.
+std::string allocationFailureMessage(
+    char const* where, std::string const& name, Coords const& shape, int64_t bytes, cudaError_t status)
+{
+    size_t freeBytes{0};
+    size_t totalBytes{0};
+    cudaError_t const infoStatus = cudaMemGetInfo(&freeBytes, &totalBytes);
+    std::string const memoryInfo = infoStatus == cudaSuccess
+        ? format::fmtstr("CUDA memory free %zu bytes (%.2f MB), total %zu bytes (%.2f MB)", freeBytes,
+              utils::toMB(freeBytes), totalBytes, utils::toMB(totalBytes))
+        : format::fmtstr("CUDA memory query failed: %s", cudaGetErrorString(infoStatus));
+    return format::fmtstr("Failed to allocate %s tensor '%s' with shape %s and size %ld bytes (%.2f MB): %s; %s", where,
+        name.empty() ? "<unnamed>" : name.c_str(), shape.formatString().c_str(), bytes, utils::toMB(bytes),
+        cudaGetErrorString(status), memoryInfo.c_str());
+}
+
+} // namespace
+
 Tensor::Tensor(Coords const& shape, DeviceType deviceType, nvinfer1::DataType dataType, std::string const& name)
 {
     ELLM_CHECK(shape.volume() > 0, "Construction of Tensor object with zero volume is prohibited");
@@ -162,13 +183,21 @@ Tensor::Tensor(Coords const& shape, DeviceType deviceType, nvinfer1::DataType da
     memoryCapacity = shape.volume() * utils::getTypeSize(dataType);
     if (deviceType == DeviceType::kCPU)
     {
-        CUDA_CHECK(cudaMallocHost(&data, memoryCapacity));
+        cudaError_t const status = cudaMallocHost(&data, memoryCapacity);
+        if (status != cudaSuccess)
+        {
+            throw std::runtime_error(allocationFailureMessage("pinned host", name, shape, memoryCapacity, status));
+        }
         LOG_DEBUG("Tensor %s of shape %s with size %ld bytes (%.2f MB) allocated on CPU", name.c_str(),
             shape.formatString().c_str(), memoryCapacity, utils::toMB(memoryCapacity));
     }
     else
     {
-        CUDA_CHECK(cudaMalloc(&data, memoryCapacity));
+        cudaError_t const status = cudaMalloc(&data, memoryCapacity);
+        if (status != cudaSuccess)
+        {
+            throw std::runtime_error(allocationFailureMessage("GPU", name, shape, memoryCapacity, status));
+        }
         LOG_DEBUG("Tensor %s of shape %s with size %ld bytes (%.2f MB) allocated on GPU", name.c_str(),
             shape.formatString().c_str(), memoryCapacity, utils::toMB(memoryCapacity));
     }
