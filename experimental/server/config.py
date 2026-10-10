@@ -22,6 +22,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Union
 
 _INT32_MAX = 2**31 - 1
 _INT64_MAX = 2**63 - 1
+_DEFAULT_ENCODER_EMBEDDING_CACHE_BUDGET_BYTES = 256 * 1024 * 1024
 
 
 class ServerConfigError(ValueError):
@@ -110,6 +111,11 @@ class ContextCacheConfig:
     max_records: int = 1024
     recurrent_snapshot_pool_bytes: int = 0
     partial_kv_snapshot_pool_bytes: int = 0
+    # Device budget for the content-addressed ViT/audio encoder output cache.
+    # Independent of `enabled` (the runtime keys it only on media engines);
+    # zero disables the cache.
+    encoder_embedding_cache_budget_bytes: int = (
+        _DEFAULT_ENCODER_EMBEDDING_CACHE_BUDGET_BYTES)
 
     def __post_init__(self) -> None:
         if not isinstance(self.enabled, bool):
@@ -118,6 +124,7 @@ class ContextCacheConfig:
                 "max_records",
                 "recurrent_snapshot_pool_bytes",
                 "partial_kv_snapshot_pool_bytes",
+                "encoder_embedding_cache_budget_bytes",
         ):
             value = getattr(self, name)
             if isinstance(value,
@@ -128,7 +135,8 @@ class ContextCacheConfig:
             raise ServerConfigError(
                 "context_cache.max_records must fit a signed 32-bit integer")
         for name in ("recurrent_snapshot_pool_bytes",
-                     "partial_kv_snapshot_pool_bytes"):
+                     "partial_kv_snapshot_pool_bytes",
+                     "encoder_embedding_cache_budget_bytes"):
             if getattr(self, name) > _INT64_MAX:
                 raise ServerConfigError(
                     f"context_cache.{name} must fit a signed 64-bit integer")
@@ -157,6 +165,7 @@ class ContextCacheConfig:
             "max_records",
             "recurrent_snapshot_pool_bytes",
             "partial_kv_snapshot_pool_bytes",
+            "encoder_embedding_cache_budget_bytes",
         }
         unsupported = sorted(set(raw) - supported)
         if unsupported:
@@ -370,6 +379,14 @@ def create_argument_parser() -> argparse.ArgumentParser:
     model.add_argument("--context-cache-partial-kv-snapshot-pool-bytes",
                        type=_non_negative_int,
                        default=0)
+    model.add_argument(
+        "--context-cache-encoder-embedding-budget-bytes",
+        type=_non_negative_int,
+        default=_DEFAULT_ENCODER_EMBEDDING_CACHE_BUDGET_BYTES,
+        help="Device memory budget for the ViT/audio encoder output cache; "
+        "0 disables it. Applies to media engines regardless of "
+        "--enable-context-reuse.",
+    )
     return parser
 
 
@@ -394,6 +411,8 @@ def parse_server_config(argv: Optional[Sequence[str]] = None) -> ServerConfig:
             args.context_cache_recurrent_snapshot_pool_bytes),
         partial_kv_snapshot_pool_bytes=(
             args.context_cache_partial_kv_snapshot_pool_bytes),
+        encoder_embedding_cache_budget_bytes=(
+            args.context_cache_encoder_embedding_budget_bytes),
     )
     model = ModelConfig(
         model=args.model,

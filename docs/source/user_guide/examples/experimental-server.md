@@ -185,6 +185,12 @@ tensorrt-edgellm-serve Qwen/Qwen3.5-0.8B \
   --context-cache-max-records 1024
 ```
 
+Whenever a media engine (ViT/audio) is loaded, the runtime also keeps a
+content-addressed cache of encoder outputs so a repeated image or audio clip
+skips the encoder. Its device budget is
+`--context-cache-encoder-embedding-budget-bytes` (default 256 MiB, `0`
+disables it); it applies whether or not `--enable-context-reuse` is set.
+
 The Python API accepts the same deployment configuration and exposes native
 reuse metrics:
 
