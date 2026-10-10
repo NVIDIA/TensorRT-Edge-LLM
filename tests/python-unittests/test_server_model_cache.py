@@ -247,6 +247,9 @@ class _FakeRuntime:
         return len(self.args) == 10
 
 
+_256_MIB = 256 * 1024 * 1024
+
+
 class _FakeContextCacheConfig:
 
     def __init__(self):
@@ -254,6 +257,7 @@ class _FakeContextCacheConfig:
         self.max_records = 0
         self.recurrent_snapshot_pool_bytes = 0
         self.partial_kv_snapshot_pool_bytes = 0
+        self.encoder_embedding_cache_budget_bytes = -1
 
 
 class _FakeBindings:
@@ -302,6 +306,8 @@ def test_llm_pairs_cached_bundle_with_resolved_checkpoints(
     assert llm.bundle_dir == str(bundle)
     assert llm._runtime.args[-4:-2] == (str(base), str(draft))
     assert not llm._runtime.args[-2].enabled
+    assert llm._runtime.args[
+        -2].encoder_embedding_cache_budget_bytes == _256_MIB
     assert llm._runtime.args[-1] == 0
 
 

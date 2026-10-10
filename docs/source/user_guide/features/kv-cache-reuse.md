@@ -155,8 +155,10 @@ disables the cache:
   --encoderCacheBudgetBytes 134217728
 ```
 
-The experimental Python API and server use the same default but do not expose a
-separate encoder-cache budget in this release. An INFO log reports
+The experimental Python API exposes the same budget as
+`ContextCacheConfig.encoder_embedding_cache_budget_bytes`, and the server as
+`--context-cache-encoder-embedding-budget-bytes`; both default to 256 MiB and
+zero disables the cache. An INFO log reports
 when all media items hit and encoder execution is skipped. Encoder-cache
 hit/miss counters are not included in the profile JSON; the context-cache
 profile fields below describe KV/recurrent-state reuse only.

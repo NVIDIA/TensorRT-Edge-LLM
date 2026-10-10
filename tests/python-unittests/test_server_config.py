@@ -14,6 +14,7 @@
 # limitations under the License.
 """Server launch-contract and parser-registry coverage."""
 
+import logging
 import subprocess
 import sys
 from pathlib import Path
@@ -113,6 +114,8 @@ def test_maps_model_cache_and_build_profile(tmp_path):
         "1048576",
         "--context-cache-partial-kv-snapshot-pool-bytes",
         "2097152",
+        "--context-cache-encoder-embedding-budget-bytes",
+        "67108864",
         "--reasoning-parser",
         "qwen3",
         "--tool-call-parser",
@@ -131,8 +134,50 @@ def test_maps_model_cache_and_build_profile(tmp_path):
         max_records=64,
         recurrent_snapshot_pool_bytes=1048576,
         partial_kv_snapshot_pool_bytes=2097152,
+        encoder_embedding_cache_budget_bytes=67108864,
     )
     assert config.api.enable_auto_tool_choice
+
+
+_256_MIB = 256 * 1024 * 1024
+
+
+def test_encoder_embedding_budget_defaults_to_256_mib():
+    config = parse_server_config(["Qwen/Qwen3.5-0.8B"])
+    cache = config.model.context_cache_config
+    assert not cache.enabled
+    assert cache.encoder_embedding_cache_budget_bytes == _256_MIB
+    assert ContextCacheConfig(
+    ).encoder_embedding_cache_budget_bytes == _256_MIB
+
+
+def test_encoder_embedding_budget_zero_disables_without_context_reuse():
+    config = parse_server_config([
+        "Qwen/Qwen3.5-0.8B",
+        "--context-cache-encoder-embedding-budget-bytes",
+        "0",
+    ])
+    assert config.model.context_cache_config == ContextCacheConfig(
+        encoder_embedding_cache_budget_bytes=0)
+    assert ContextCacheConfig.parse({
+        "encoder_embedding_cache_budget_bytes": 0
+    }).encoder_embedding_cache_budget_bytes == 0
+
+
+def test_encoder_embedding_budget_rejects_negative_values(capsys):
+    with pytest.raises(SystemExit):
+        parse_server_config([
+            "Qwen/Qwen3.5-0.8B",
+            "--context-cache-encoder-embedding-budget-bytes",
+            "-1",
+        ])
+    assert "non-negative" in capsys.readouterr().err
+    with pytest.raises(ServerConfigError, match="non-negative"):
+        ContextCacheConfig(encoder_embedding_cache_budget_bytes=-1)
+    with pytest.raises(ServerConfigError, match="non-negative"):
+        ContextCacheConfig(encoder_embedding_cache_budget_bytes=True)
+    with pytest.raises(ServerConfigError, match="signed 64-bit"):
+        ContextCacheConfig(encoder_embedding_cache_budget_bytes=2**63)
 
 
 def test_context_cache_config_rejects_ignored_or_invalid_options():
@@ -174,7 +219,7 @@ def test_api_config_rejects_invalid_admission_values(kwargs, match):
         ApiConfig(**kwargs)
 
 
-def test_cli_forwards_http_configuration(monkeypatch, tmp_path):
+def test_cli_forwards_http_configuration(monkeypatch, tmp_path, caplog):
     from experimental.server import cli
 
     captured = {}
@@ -209,13 +254,19 @@ def test_cli_forwards_http_configuration(monkeypatch, tmp_path):
             "9000",
             "--allowed-local-media-path",
             str(tmp_path),
+            "--context-cache-encoder-embedding-budget-bytes",
+            "1048576",
         ],
     )
-    cli.main()
+    with caplog.at_level(logging.INFO, logger="edgellm.server"):
+        cli.main()
 
     api = captured["server"][1]
     assert api.port == 9000
     assert api.allowed_local_media_path == str(tmp_path)
+    assert (captured["llm"]["context_cache_config"].
+            encoder_embedding_cache_budget_bytes == 1048576)
+    assert "encoder_embedding_cache_budget_bytes=1048576" in caplog.text
 
 
 def test_llm_serve_forwards_allowed_local_media_path(monkeypatch, tmp_path):
