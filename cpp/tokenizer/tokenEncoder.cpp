@@ -18,10 +18,12 @@
 #include "tokenEncoder.h"
 #include "common/inputLimits.h"
 #include "tokenizerUtils.h"
+#include <algorithm>
 #include <cassert>
 #include <cstdio>
 #include <limits>
 #include <stdexcept>
+#include <string_view>
 
 namespace trt_edgellm
 {
@@ -176,50 +178,41 @@ std::string TokenEncoder::getRankToken(Rank rank) const
     return ""; // Rank not found
 }
 
-void TokenEncoder::bytePairEncode(std::string const& piece, std::vector<Rank>& output) const
+void TokenEncoder::bytePairEncode(std::string const& pieceStr, std::vector<Rank>& output) const
 {
+    std::string_view const piece(pieceStr);
     if (piece.empty())
     {
         return;
     }
 
     // Check if the piece is already in vocabulary
-    auto it = mEncoder.find(piece);
+    auto it = mEncoder.find(pieceStr);
     if (it != mEncoder.end())
     {
         output.emplace_back(it->second);
         return;
     }
 
-    // Initialize parts vector with (start_position, rank) pairs
-    // "rank" here is used as merge priority — either vocab rank (tiktoken-style)
-    // or explicit merge priority from the merges list (SentencePiece-style).
-    std::vector<std::pair<int, Rank>> parts;
-    parts.reserve(piece.size() + 1);
-
-    auto const MAX_INT = std::numeric_limits<int>::max();
     auto const MAX_RANK = std::numeric_limits<Rank>::max();
-    std::pair<int, Rank> minRank{MAX_INT, MAX_RANK};
 
     // Helper: get the merge priority for a pair of adjacent substrings.
     // When mUseMergePriorities is true, look up using null-byte separated key (left + '\0' + right)
     // to avoid ambiguity when different (left, right) splits produce the same concatenation.
     // Otherwise fall back to vocabulary rank lookup on the concatenated string (tiktoken-style).
-    auto getPairPriority = [&](std::string const& left, std::string const& right) -> Rank {
+    std::string key;
+    auto getPairPriority = [&](std::string_view left, std::string_view right) -> Rank {
+        key.assign(left);
         if (mUseMergePriorities)
         {
-            std::string key = left;
             key += '\0';
             key += right;
             auto mergeIt = mMergePriorities.find(key);
             return (mergeIt != mMergePriorities.end()) ? mergeIt->second : MAX_RANK;
         }
-        else
-        {
-            std::string merged = left + right;
-            auto vocabIt = mEncoder.find(merged);
-            return (vocabIt != mEncoder.end()) ? vocabIt->second : MAX_RANK;
-        }
+        key += right;
+        auto vocabIt = mEncoder.find(key);
+        return (vocabIt != mEncoder.end()) ? vocabIt->second : MAX_RANK;
     };
 
     // Build character boundary positions.
@@ -254,91 +247,93 @@ void TokenEncoder::bytePairEncode(std::string const& piece, std::vector<Rank>& o
     }
 
     // Initialize with bigram priorities (pairs of adjacent characters/bytes)
-    size_t numChars = charPositions.size() - 1; // number of initial units
+    int32_t const numChars = static_cast<int32_t>(charPositions.size()) - 1; // number of initial units
     if (numChars <= 1)
     {
         // Single character or empty piece: no merges possible, push raw token lookup.
-        auto it = mEncoder.find(piece);
+        auto it = mEncoder.find(pieceStr);
         if (it != mEncoder.end())
         {
             output.push_back(it->second);
         }
         return;
     }
-    for (size_t i = 0; i < numChars - 1; ++i)
+
+    // Merge with a min-heap of candidate pairs over a linked list of symbols: O(n log n) in the
+    // piece length. SentencePiece-style tokenizers (Gemma) normalize spaces away before the
+    // pre-tokenizer, so a piece can be a whole prompt segment of thousands of characters. Pairs are
+    // ordered by (priority, start offset): the lowest priority merges first and, among equal
+    // priorities, the leftmost, as in the reference algorithm.
+    struct Symbol
     {
-        std::string left(piece.begin() + charPositions[i], piece.begin() + charPositions[i + 1]);
-        std::string right(piece.begin() + charPositions[i + 1], piece.begin() + charPositions[i + 2]);
-        Rank rank = getPairPriority(left, right);
-
-        if (rank < minRank.second)
-        {
-            minRank = std::make_pair(static_cast<int>(i), rank);
-        }
-
-        parts.emplace_back(charPositions[i], rank);
+        int32_t start;
+        int32_t end;
+        int32_t prev;
+        int32_t next;
+    };
+    std::vector<Symbol> symbols(static_cast<size_t>(numChars));
+    for (int32_t i = 0; i < numChars; ++i)
+    {
+        symbols[i] = Symbol{charPositions[i], charPositions[i + 1], i - 1, i + 1 < numChars ? i + 1 : -1};
     }
-
-    // Add sentinel values
-    parts.emplace_back(charPositions[numChars - 1], MAX_RANK);
-    parts.emplace_back(charPositions[numChars], MAX_RANK);
-
-    // Helper function to get the rank of the pair formed by merging parts[i] and parts[i + 1]
-    // (spanning parts[i]..parts[i + 2]) with the following part parts[i + 2]..parts[i + 3].
-    auto getMergedRank = [&](size_t i) -> Rank {
-        if (i + 3 >= parts.size())
-        {
-            return MAX_RANK;
-        }
-
-        std::string left(piece.begin() + parts[i].first, piece.begin() + parts[i + 2].first);
-        std::string right(piece.begin() + parts[i + 2].first, piece.begin() + parts[i + 3].first);
-        return getPairPriority(left, right);
-    };
-
-    // Helper function to get the rank of the pair formed by the untouched part[i - 1] with the
-    // part about to be merged at position i (spanning parts[i]..parts[i + 2]).
-    auto getLeftNeighborRank = [&](size_t i) -> Rank {
-        if (i == 0 || i + 2 >= parts.size())
-        {
-            return MAX_RANK;
-        }
-
-        std::string left(piece.begin() + parts[i - 1].first, piece.begin() + parts[i].first);
-        std::string right(piece.begin() + parts[i].first, piece.begin() + parts[i + 2].first);
-        return getPairPriority(left, right);
-    };
-
-    // Main BPE loop
-    while (minRank.second != MAX_RANK)
+    struct Candidate
     {
-        size_t i = static_cast<size_t>(minRank.first);
-
-        // Update adjacent ranks
-        if (i > 0)
+        Rank rank;
+        int32_t start;
+        int32_t left;
+        int32_t leftEnd;
+        int32_t rightEnd;
+    };
+    auto const later
+        = [](Candidate const& a, Candidate const& b) { return a.rank != b.rank ? a.rank > b.rank : a.start > b.start; };
+    std::vector<Candidate> heap;
+    heap.reserve(static_cast<size_t>(numChars) * 2);
+    auto const pushPair = [&](int32_t left) {
+        if (left < 0 || symbols[left].next < 0)
         {
-            parts[i - 1].second = getLeftNeighborRank(i);
+            return;
         }
-        parts[i].second = getMergedRank(i);
-
-        // Remove the merged part
-        parts.erase(parts.begin() + i + 1);
-
-        // Find new minimum rank
-        minRank = std::make_pair(MAX_INT, MAX_RANK);
-        for (size_t j = 0; j < parts.size() - 1; ++j)
+        Symbol const& l = symbols[left];
+        Symbol const& r = symbols[l.next];
+        Rank const rank
+            = getPairPriority(piece.substr(l.start, l.end - l.start), piece.substr(r.start, r.end - r.start));
+        if (rank != MAX_RANK)
         {
-            if (parts[j].second < minRank.second)
-            {
-                minRank = std::make_pair(static_cast<int>(j), parts[j].second);
-            }
+            heap.push_back(Candidate{rank, l.start, left, l.end, r.end});
+            std::push_heap(heap.begin(), heap.end(), later);
         }
+    };
+    for (int32_t i = 0; i + 1 < numChars; ++i)
+    {
+        pushPair(i);
+    }
+    while (!heap.empty())
+    {
+        std::pop_heap(heap.begin(), heap.end(), later);
+        Candidate const c = heap.back();
+        heap.pop_back();
+        Symbol& left = symbols[c.left];
+        // Stale entry: the left symbol was merged away or either side changed since it was pushed.
+        if (left.start < 0 || left.next < 0 || left.end != c.leftEnd || symbols[left.next].end != c.rightEnd)
+        {
+            continue;
+        }
+        Symbol& right = symbols[left.next];
+        left.end = right.end;
+        left.next = right.next;
+        if (left.next >= 0)
+        {
+            symbols[left.next].prev = c.left;
+        }
+        right.start = -1;
+        pushPair(left.prev);
+        pushPair(c.left);
     }
 
     // Collect final tokens
-    for (size_t i = 0; i < parts.size() - 1; ++i)
+    for (int32_t i = 0; i >= 0; i = symbols[i].next)
     {
-        std::string token(piece.begin() + parts[i].first, piece.begin() + parts[i + 1].first);
+        std::string token(piece.begin() + symbols[i].start, piece.begin() + symbols[i].end);
         auto tokenIt = mEncoder.find(token);
         if (tokenIt != mEncoder.end())
         {
