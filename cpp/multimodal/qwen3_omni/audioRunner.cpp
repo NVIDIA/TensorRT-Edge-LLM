@@ -671,8 +671,8 @@ bool Qwen3OmniAudioRunner::gpuFbankViable(rt::audio::AudioPCM const& pcm, int32_
     // Clips too short for the GPU framing (the CPU MelExtractor clamps to >= 1
     // frame) and clips beyond the engine kMAX profile the fbank buffers were
     // pre-allocated for fall back to the CPU path without touching the GPU.
-    int32_t const numFrames = audioUtils::computeNumMelFrames(static_cast<int64_t>(pcm.samples.size()),
-        mFbankResources.nFft, mFbankResources.hopLength, mFbankResources.padLength);
+    int32_t const numFrames = audioUtils::computeNumMelFrames(
+        pcm.numSamples(), mFbankResources.nFft, mFbankResources.hopLength, mFbankResources.padLength);
     if (numFrames <= 0 || numFrames > mFbankResources.maxFrames)
     {
         return false;
@@ -707,10 +707,10 @@ bool Qwen3OmniAudioRunner::tryOnlineGpuFbank(rt::audio::AudioPCM const& pcm, rt:
     }
 
     // Upload host FP32 PCM [-1, 1] into the pre-allocated [N] GPU staging tensor
-    // (metadata-only reshape; the maxFrames gate above bounds N). pcm.samples is
-    // owned by the request and outlives encodeClip, covering the async
+    // (metadata-only reshape; the maxFrames gate above bounds N). pcm.samples stays
+    // valid for the whole request and so outlives encodeClip, covering the async
     // fbank launches and the cudaStreamSynchronize at the end of preprocess().
-    if (!audioUtils::uploadHostPcmF32ToGpu(pcm.samples, mPcmF32Device, stream))
+    if (!audioUtils::uploadHostPcmF32ToGpu(*pcm.samples, mPcmF32Device, stream))
     {
         return false;
     }

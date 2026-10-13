@@ -34,6 +34,7 @@ from .moe import (GatedExperts, GroupedSigmoidRouter, NonGatedNvfp4Experts,
                   TopKRouter, prepare_gated_int4_weights,
                   prepare_gated_nvfp4_weights)
 from .normalization import LayerNorm, RMSNorm
+from .ragged import RaggedDecoderInputs, add_ragged_decoder_inputs
 from .tensor import Tensor
 from .transformer import (DecoderAttention, DecoderLayer, DecoderModel,
                           GatedDecoderAttention, QKNormDecoderAttention,
@@ -89,7 +90,9 @@ __all__ = [
     "prepare_gated_int4_weights",
     "prepare_gated_nvfp4_weights",
     "RMSNorm",
+    "RaggedDecoderInputs",
     "VisionMLP",
     "VisionPatchMerger",
     "VisionTransformerBlock",
+    "add_ragged_decoder_inputs",
 ]

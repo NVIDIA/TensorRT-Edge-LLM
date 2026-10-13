@@ -20,17 +20,40 @@
 #include "common/tensor.h"
 #include "runtime/config/deploymentConfig.h"
 #include "runtime/config/llmEngineConfig.h"
+#include "runtime/exec/raggedBatchBuilder.h"
 #include "runtime/exec/tensorMap.h"
 #include "runtime/state/sharedResources.h"
 
 #include <NvInferRuntime.h>
 #include <cstdint>
+#include <cuda_runtime_api.h>
+#include <utility>
 #include <vector>
 
 namespace trt_edgellm
 {
 namespace rt
 {
+
+class AsyncHostStagingFence
+{
+public:
+    AsyncHostStagingFence() = default;
+    AsyncHostStagingFence(AsyncHostStagingFence const&) = delete;
+    AsyncHostStagingFence& operator=(AsyncHostStagingFence const&) = delete;
+    AsyncHostStagingFence(AsyncHostStagingFence&& other) noexcept;
+    AsyncHostStagingFence& operator=(AsyncHostStagingFence&& other) noexcept;
+    ~AsyncHostStagingFence();
+
+    void wait();
+    void record(cudaStream_t stream);
+
+private:
+    void release() noexcept;
+
+    cudaEvent_t mEvent{nullptr};
+    bool mPending{false};
+};
 
 //! Persistent copies of the prefill-time input embeddings and engine
 //! hidden_states output, used by streaming consumers that run concurrently
@@ -64,19 +87,43 @@ struct PipelineIO
     Tensor inputsEmbeds;
     Tensor outputLogits;
     Tensor selectTokenIndices;
-    Tensor phaseIsEncoder;      //!< DiffusionGemma phase selector, [batch] INT32
+    Tensor phaseIsEncoder;      //!< DiffusionGemma invocation phase selector, [1] INT32
     Tensor contextMaskSelector; //!< DiffusionGemma context-mask selector, [0] or [batch] INT32
     Tensor contextLengths;      //!< GPU
     Tensor hostContextLengths;  //!< CPU (pinned, [maxBatch] INT32)
     Tensor
         hostSelectTokenIndices; //!< CPU (pinned, [maxBatch, 1] INT64) — pairs with selectTokenIndices for H2D staging
-    Tensor hostPhaseIsEncoder;  //!< CPU (pinned, [maxBatch] INT32) — pairs with phaseIsEncoder for H2D staging
-    //! Gemma4 Unified block IDs, [batch, seq_len] INT32; empty for other models.
+    Tensor hostPhaseIsEncoder;  //!< CPU pinned scalar paired with phaseIsEncoder
+
+    // Ragged ABI metadata. Device and pinned-host tensors are allocated at
+    // maximum capacity before TensorMap construction and only reshaped while
+    // executing a step, preserving every bound address across CUDA Graphs.
+    Tensor positions;
+    Tensor queryStartOffsets;
+    Tensor queryLengths;
+    Tensor pastLengths;
+    Tensor attentionSequenceLengths;
+    Tensor stateIndices;
+    Tensor logitsIndices;
+    Tensor raggedKVPageTable;
+    Tensor raggedSwaKVPageTable;
+    Tensor hostPositions;
+    Tensor hostQueryStartOffsets;
+    Tensor hostQueryLengths;
+    Tensor hostPastLengths;
+    Tensor hostAttentionSequenceLengths;
+    Tensor hostStateIndices;
+    Tensor hostLogitsIndices;
+    //! Gemma4 Unified block IDs, [physical_tokens] INT32; empty for other models.
     Tensor visionBlockIds;
 
     // Multimodal (resize deepstackEmbeds BEFORE buildTensorMap, never after)
     std::vector<Tensor> deepstackEmbeds;
-    Tensor mropeCosSin;
+    Tensor mropeCosSin;       //!< Resident-slot MRoPE source cache.
+    Tensor mropeActiveCosSin; //!< Active-row MRoPE preprocessing scratch.
+    Tensor raggedRopeCosSin;
+    Tensor raggedRopeCosSinSliding;
+    Tensor raggedRopeCosSinFull;
 
     // Spec decode
     Tensor baseHiddenStates;
@@ -99,25 +146,25 @@ struct PipelineIO
     StreamingPrefillBuffers streamingPrefill;
 
     // SpecDecode engine-bound tensors (empty for vanilla LLM runtime).
-    //! Packed proposal attention mask, [batch, proposalSize, divUp(proposalSize, 32)] INT32.
+    //! Packed proposal attention mask, [physical_tokens, divUp(proposalSize, 32)] INT32.
     //! Written by proposal/verify input preparation kernels; consumed by the base and draft
     //! engines via the `kAttentionMask` binding.
     Tensor packedAttentionMask;
-    //! SpecDecode position IDs, [batch, proposalSize] INT32.
+    //! SpecDecode position IDs, [physical_tokens] INT32.
     //! Written by proposal/verify input preparation kernels; consumed by the base and draft
     //! engines via the `kAttentionPosId` binding.
     Tensor specDecodePositionIds;
-    //! Shape-only marker for hybrid MTP/DFlash/JetSpec base engines. The runtime binds
-    //! this tensor at shape [0] for normal prefill/decode and [1] for spec
-    //! verify; plugins branch on the shape, not the payload.
-    Tensor specVerifyPhaseMarker;
+    //! Shape-only execution-phase carrier. Plugins branch on its extent and never read its payload.
+    Tensor executionPhaseMarker;
+    //! Shape-only [N_context] INT32 carrier. Its payload is never initialized or read.
+    Tensor contextSequenceCountCarrier;
     //! Shape-only runtime skip-softmax override carrier (data never read); bound
     //! with shape [S] where S comes from LLMEngineConfig::skipSoftmaxScaleOverride.
     Tensor skipSoftmaxScale;
-    //! DDTree parent node ids, [batch, proposalSize] INT32. Runtime-owned
+    //! DDTree parent node ids, [physical_tokens] INT32. Runtime-owned
     //! metadata for tree attention and hybrid state plugin bindings.
     Tensor specTreeParentIds;
-    //! DDTree depth per node, [batch, proposalSize] INT32. Runtime-owned
+    //! DDTree depth per node, [physical_tokens] INT32. Runtime-owned
     //! metadata for tree attention and hybrid state plugin bindings.
     Tensor specTreeDepths;
 
@@ -132,12 +179,29 @@ struct PipelineIO
     //! the `accept_hidden_states` binding: allocating regardless would make
     //! `outputHiddenStates.isEmpty()` stop meaning "nothing will fill this", and
     //! the Talker would be handed uninitialised memory instead of failing.
-    static PipelineIO createForSpecDecode(
-        DeploymentConfig const& bundle, int32_t maxRuntimeBatchSize, cudaStream_t stream, bool hasAcceptHiddenOutput);
+    //! `hasTreeMetadataInputs` similarly reflects the base or draft engine ABI.
+    //! Some engines retain these optional bindings even when the selected
+    //! runtime policy uses a linear proposal.
+    static PipelineIO createForSpecDecode(DeploymentConfig const& bundle, int32_t maxRuntimeBatchSize,
+        cudaStream_t stream, bool hasAcceptHiddenOutput, bool hasTreeMetadataInputs);
+
+    //! Stage and asynchronously upload one already-validated ragged batch.
+    void uploadRaggedMetadata(RaggedExecutionBatch const& batch, cudaStream_t stream);
+
+    //! Stage and asynchronously upload active sequence-to-resident-slot indices.
+    //! A null residentRefs uses identity mapping for runtimes without resident-slot indirection.
+    void uploadStateIndices(std::vector<ResidentRef> const* residentRefs, int32_t numSequences, cudaStream_t stream);
+
+    //! Protect reusable pinned step metadata and ragged token snapshots before CPU reuse.
+    void waitForStepHostStaging();
+    void recordStepHostUploads(cudaStream_t stream);
+
+private:
+    AsyncHostStagingFence mRaggedMetadataUploadFence;
+    AsyncHostStagingFence mStepHostUploadFence;
 };
 
-void allocateBasicIO(
-    PipelineIO& io, int32_t maxBatch, int32_t maxSeq, int32_t hiddenSize, int32_t vocabSize, nvinfer1::DataType dtype);
+void allocateBasicIO(PipelineIO& io, int32_t maxBatch, int32_t vocabSize);
 
 void allocateDeepstackEmbeds(PipelineIO& io, int32_t numFeatures, int32_t maxBatch, int32_t maxSeq, int32_t hiddenSize,
     nvinfer1::DataType dtype);
@@ -145,7 +209,30 @@ void allocateDeepstackEmbeds(PipelineIO& io, int32_t numFeatures, int32_t maxBat
 void allocateSpecDecodeHiddenStates(PipelineIO& io, int32_t maxBatch, int32_t maxSeq, int32_t baseHiddenDim,
     int32_t draftHiddenDim, nvinfer1::DataType dtype, bool allocateDraftHiddenStates);
 
-void allocateMRope(PipelineIO& io, int32_t maxBatch, int32_t maxKVCacheCapacity, int32_t rotaryDim);
+void allocateMRope(
+    PipelineIO& io, int32_t residentRows, int32_t activeRows, int32_t maxKVCacheCapacity, int32_t rotaryDim);
+
+void prepareTextOnlyMRope(PipelineIO& io, LLMEngineConfig const& cfg, int32_t activeRows, cudaStream_t stream);
+
+//! Gather the current ragged step's token-aligned RoPE inputs after metadata upload.
+void prepareRaggedRope(PipelineIO& io, SharedResources& res, LLMEngineConfig const& cfg, int32_t physicalTokens,
+    int32_t numSequences, cudaStream_t stream);
+
+//! Publish active-row MRoPE preprocessing output into its resident-slot rows.
+void scatterActiveMRopeToResident(
+    PipelineIO& io, RaggedExecutionBatch const& batch, LLMEngineConfig const& cfg, cudaStream_t stream);
+
+//! Gather resident page-table rows into the stable active-step binding after state-index upload.
+void prepareRaggedKVPageTable(PipelineIO& io, KVPageTable const& pageTable, int32_t numSequences, cudaStream_t stream);
+
+//! Gather bounded-SWA resident rows into its stable active-step binding after state-index upload.
+void prepareRaggedSwaKVPageTable(
+    PipelineIO& io, KVPageTable const& pageTable, int32_t numSequences, cudaStream_t stream);
+
+//! Upload one validated execution batch and derive every token-major engine binding backed by persistent resources.
+//! MRoPE resident rows must already have been initialized or published by the caller.
+void prepareRaggedExecutionBindings(PipelineIO& io, SharedResources& resources, LLMEngineConfig const& cfg,
+    RaggedExecutionBatch const& batch, int32_t kvCacheIndex, cudaStream_t stream);
 
 //! Populate a TensorMap from PipelineIO + SharedResources for engine binding.
 //!

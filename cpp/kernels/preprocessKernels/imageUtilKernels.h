@@ -24,18 +24,6 @@ namespace trt_edgellm
 {
 namespace kernel
 {
-//! The kernel will normalize image data and convert to half
-//! Inputs:
-//!     originalImage [GPU, UInt8]: [batch, height, width, channels]
-//!     mean [GPU, Float]: [channels]
-//!     std [GPU, Float]: [channels]
-//!     stream: CUDA stream for execution
-//! Outputs:
-//!     normalizedImage [GPU, Half]: [batch, height, width, channels]
-//! \throws std::runtime_error if image has invalid shape, data type or location
-void normalizeImage(rt::Tensor const& originalImage, rt::Tensor const& mean, rt::Tensor const& std,
-    rt::Tensor& normalizedImage, cudaStream_t stream);
-
 //! The kernel will transpose image data to patch format for Gemma4 VIT (channel-last within patch)
 //! Gemma4's vision encoder expects patches with element order [patchH, patchW, C] matching
 //! HuggingFace convert_image_to_patches: reshape(C,pH,ps,pW,ps).permute(1,3,2,4,0).reshape(pH*pW,-1)
@@ -60,6 +48,8 @@ void transposeToPatchGemma4ViT(rt::Tensor const& originalImage, rt::Tensor& inpu
 //!     temporalPatchSize: Temporal patch size for the vision transformer
 //!     patchSize: Patch size for the vision transformer
 //!     mergeSize: Merge size for the vision transformer
+//!     temporalFirst: Flatten patches as [T,C,H,W] instead of [C,T,H,W]
+//!     channelLast: Flatten patches as [H,W,C,T]; mutually exclusive with temporalFirst
 //!     stream: CUDA stream for execution
 //! Outputs:
 //!     inputPatches [GPU, Half]: Total VIT input tensor of all images [totalSeqLength, inputDim]
@@ -68,45 +58,8 @@ void transposeToPatchGemma4ViT(rt::Tensor const& originalImage, rt::Tensor& inpu
 //!         inputDim = channels * temporalPatchSize * patchSize * patchSize
 //! \throws std::runtime_error if image has invalid shape, data type or location
 void transposeToPatchQwenViT(rt::Tensor const& originalImage, rt::Tensor& inputPatches, int64_t const inputOffset,
-    int64_t const temporalPatchSize, int64_t const patchSize, int64_t const mergeSize, cudaStream_t stream);
-
-//! Interpolation filter for kernel::resizeImage.
-enum class InterpolationMode
-{
-    kLINEAR,  //!< Bilinear
-    kBICUBIC, //!< Catmull-Rom cubic
-};
-
-//! GPU bicubic (Catmull-Rom) resize, anti-aliased on downscale and edge-clamped; only kBICUBIC is supported.
-//!     rawImage [GPU, UInt8] [Hin, Win, C]; tmp [GPU, Float] horizontal-pass scratch >= [Hin, outWidth, C];
-//!     resizedImage [GPU, UInt8] [outHeight, outWidth, C]; outHeight/outWidth are height-first.
-//! \throws std::runtime_error on invalid tensor shape, data type or location, or an unimplemented mode.
-void resizeImage(rt::Tensor const& rawImage, rt::Tensor& tmp, rt::Tensor& resizedImage, int64_t const outHeight,
-    int64_t const outWidth, InterpolationMode const mode, cudaStream_t stream);
-
-//! Upper bound on each raw-image side for the GPU resize path; larger inputs are rejected.
-constexpr int64_t kGpuResizeMaxRawDim = 4096;
-
-//! Safety margin on the resize-scratch element count; covers side-alignment rounding of the
-//! resized dimensions.
-constexpr double kGpuResizeScratchMargin = 1.25;
-
-//! Upload numFrames HWC frames to the device, resizing each into dstImage (bicubic; verbatim copy when
-//! the out dims equal the raw dims). rawScratch and tmp are reused per frame on stream.
-//!     rawHostImage [host, UInt8]: numFrames x [rawHeight, rawWidth, channels] (numFrames=1 for a still image);
-//!     rawScratch [GPU, UInt8]: holds one raw frame, each raw side <= kGpuResizeMaxRawDim;
-//!     tmp [GPU, Float]: horizontal-pass scratch >= [rawHeight, outWidth, channels];
-//!     dstImage [GPU, UInt8]: reshaped to [numFrames, outHeight, outWidth, channels]; outHeight/outWidth height-first.
-//! \throws std::runtime_error if a raw or output dimension is non-positive, a raw side exceeds
-//!     kGpuResizeMaxRawDim, a scratch or dstImage is undersized, or a tensor has an invalid data type or location.
-void copyImageToDeviceAndResize(unsigned char const* rawHostImage, int64_t const numFrames, int64_t const rawHeight,
-    int64_t const rawWidth, int64_t const channels, rt::Tensor& rawScratch, rt::Tensor& tmp, rt::Tensor& dstImage,
-    int64_t const outHeight, int64_t const outWidth, cudaStream_t stream);
-
-//! Allocate the scratch pair used by copyImageToDeviceAndResize.
-//!     rawScratch [GPU, UInt8]: raw-upload buffer, capacity kGpuResizeMaxRawDim * kGpuResizeMaxRawDim * channels;
-//!     tmp [GPU, Float]: horizontal-pass buffer, capacity tmpElems.
-void allocateResizeScratch(int64_t const channels, int64_t const tmpElems, rt::Tensor& rawScratch, rt::Tensor& tmp);
+    int64_t const temporalPatchSize, int64_t const patchSize, int64_t const mergeSize, bool temporalFirst,
+    bool channelLast, cudaStream_t stream);
 
 //! The kernel will initialize the rotary position embeddings for Qwen2.5-VL VIT
 //! Inputs:
@@ -121,6 +74,42 @@ void allocateResizeScratch(int64_t const channels, int64_t const tmpElems, rt::T
 //! \throws std::runtime_error if image has invalid shape, data type or location
 void initRotaryPosEmbQwenViT(rt::Tensor& rotaryPosEmb, std::vector<int64_t> const& gridTHW, int64_t const mergeSize,
     int64_t const startIdx, float const rotaryBaseFrequency, float const scale, cudaStream_t stream);
+
+//! The kernel will initialize the rotary position embeddings for Muse-Glimmer VIT.
+//! Unlike initRotaryPosEmbQwenViT (which lays out per-token frequencies as concat(freq_h, freq_w) in
+//! 2x2-merge-grouped token order with no position offset), Muse-Glimmer runs its encoder at
+//! spatial_merge_size == 1 (raster token order) and its reference RoPE lays each token's row out as
+//! concat(freq_w, freq_h) with a +1 position offset (mirrors position_ids.flip(-1) + 1). The rotary
+//! frequency itself (inv_freq = 1 / theta^(2*k / vitPosEmbDim)) is identical; only the layout differs.
+//! Inputs:
+//!     gridTHW: Image grid dimensions [T, H, W] in patch units (H, W are the full patch grid, not merged)
+//!     startIdx: Start patch index for the current image (raster token offset)
+//!     rotaryBaseFrequency: Rotary base frequency (theta)
+//!     stream: CUDA stream for execution
+//! Outputs:
+//!     rotaryPosEmb [GPU, Float]: Rotary position embeddings tensor [totalSeqLength, vitPosEmbDim];
+//!         each row = concat(freq_w[vitPosEmbDim/2], freq_h[vitPosEmbDim/2]).
+//! \throws std::runtime_error if the tensor has an invalid shape, data type or location
+void initRotaryPosEmbMuseGlimmerViT(rt::Tensor& rotaryPosEmb, std::vector<int64_t> const& gridTHW,
+    int64_t const startIdx, float const rotaryBaseFrequency, cudaStream_t stream);
+
+//! The kernel will initialize the fast (interpolated) position embeddings for Muse-Glimmer VIT.
+//! Unlike initFastPosEmbedQwenViT (align_corners == True mapping over 2x2-merge-grouped tokens), Muse-Glimmer
+//! interpolates its num_grid_per_side x num_grid_per_side learned position table with align_corners == False
+//! and "zeros" padding over raster (spatial_merge_size == 1) tokens, matching the reference
+//! get_vision_bilinear_indices_and_weights / F.grid_sample(align_corners=False, padding="zeros").
+//! Out-of-range floor/ceil taps are index-clamped but their weights are zeroed (the padding="zeros" behavior).
+//! Inputs:
+//!     gridTHW: Image grid dimensions [T, H, W] in patch units (only H and W drive the interpolation)
+//!     numGridPerSide: Side length of the square learned position table (pos_emb_height == pos_emb_width)
+//!     startIdx: Start patch index for the current image (raster token offset)
+//!     stream: CUDA stream for execution
+//! Outputs:
+//!     fastPosEmbedIdx [GPU, Int64]: Fast position embeddings index tensor [4, totalSeqLength]
+//!     fastPosEmbedWeight [GPU, Half]: Fast position embeddings weight tensor [4, totalSeqLength]
+//! \throws std::runtime_error if a tensor has an invalid shape, data type or location
+void initFastPosEmbedMuseGlimmerViT(rt::Tensor& fastPosEmbedIdx, rt::Tensor& fastPosEmbedWeight,
+    std::vector<int64_t> const& gridTHW, int64_t const numGridPerSide, int64_t const startIdx, cudaStream_t stream);
 
 //! The kernel will initialize Gemma4 vision 2-D rotary angle embeddings from pixel position ids
 //! Inputs:
@@ -173,6 +162,14 @@ void transposeToPatchInternVLPhi4MM(
 //!     fastPosEmbedWeight [GPU, Half]: Fast position embeddings weight tensor [4, totalSeqLength]
 //! \throws std::runtime_error if image has invalid shape, data type or location
 void initFastPosEmbedQwenViT(rt::Tensor& fastPosEmbedIdx, rt::Tensor& fastPosEmbedWeight,
+    std::vector<int64_t> const& gridTHW, int64_t const mergeSize, int64_t const numGridPerSide, int64_t const startIdx,
+    cudaStream_t stream);
+
+//! Initialize learned-position interpolation metadata for Cosmos3-Edge VIT.
+//! Cosmos3 uses PyTorch bilinear interpolation with align_corners=false, unlike Qwen3-VL's
+//! align_corners=true coordinate mapping. Tensor layout and merge-group ordering match
+//! initFastPosEmbedQwenViT.
+void initFastPosEmbedCosmos3ViT(rt::Tensor& fastPosEmbedIdx, rt::Tensor& fastPosEmbedWeight,
     std::vector<int64_t> const& gridTHW, int64_t const mergeSize, int64_t const numGridPerSide, int64_t const startIdx,
     cudaStream_t stream);
 
@@ -277,6 +274,67 @@ void evsScoresNemotronViT(
 //! \throws std::runtime_error invalid tensor shape, location or data type
 void phi4mmPostprocessVisionTokens(rt::Tensor const& srcEmbedding, rt::Tensor& dstEmbedding, Phi4MMIndex const& indices,
     Phi4MMGN const& gn, int64_t totalOutTokens, cudaStream_t stream);
+
+enum class PixelLayout : unsigned int
+{
+    kNONE = 0,
+    kNHWC_RGB = 1
+};
+
+enum class PixelDataType : unsigned int
+{
+    kNONE = 0,
+    kHALF = 1
+};
+
+enum class Interpolation : unsigned int
+{
+    kNONE = 0,
+    kBICUBIC = 1 //!< Catmull-Rom cubic, anti-aliased on downscale.
+};
+
+enum class SourceFormat : unsigned int
+{
+    kNONE = 0,
+    kNV12BL = 1,
+    kNV12PL = 2,
+    kRGB8 = 3
+};
+
+//! YCbCr to RGB coefficients in 8-bit code units, applied as given with the signs folded in:
+//!     R = yScale * (Y - yOffset) + crToR * (Cr - 128)
+//!     G = yScale * (Y - yOffset) + cbToG * (Cb - 128) + crToG * (Cr - 128)
+//!     B = yScale * (Y - yOffset) + cbToB * (Cb - 128)
+struct YuvToRgbCoeffs
+{
+    float yScale;
+    float yOffset;
+    float crToR;
+    float cbToG;
+    float crToG;
+    float cbToB;
+};
+
+//! Resize, convert and normalise `input_batch` frames in a single pass, writing `out_dtype` in
+//! `out_layout`. `plane0` is the luma plane for the NV12 formats and the packed RGB frame for kRGB8,
+//! `plane1` the chroma plane; both are cudaTextureObject_t for kNV12BL and plane pointers otherwise.
+//! `stride0` and `stride1` are row strides in bytes, `out_stride` in elements. `chroma_shift` is the
+//! horizontal chroma siting phase in chroma samples; `coeffs` is ignored for kRGB8.
+//!
+//! Frames stack vertically and the taps are clamped to the frame, so the caller guarantees, in bytes
+//! from each pointer (kNV12BL excepted, being sampled):
+//!     plane0  (input_batch * input_height - 1) * stride0 + input_width * (source_format == kRGB8 ? 3 : 1)
+//!     plane1  (input_batch * ((input_height + 1) / 2) - 1) * stride1 + 2 * ((input_width + 1) / 2)
+//!     out_ptr (input_batch * out_height - 1) * out_stride + out_width * 3 elements
+//!
+//! \throws std::runtime_error if that combination of format, dtype, layout and interpolation is not
+//!     instantiated.
+void batchedPreprocessImage(void const* const plane0, void const* const plane1, int const input_width,
+    int const stride0, int const input_height, int const input_batch, SourceFormat const source_format,
+    int const stride1, float const chroma_shift, YuvToRgbCoeffs const coeffs, void* const out_ptr, int const out_width,
+    int const out_stride, int const out_height, PixelDataType const out_dtype, PixelLayout const out_layout,
+    Interpolation const interp, float const mean0, float const mean1, float const mean2, float const scale0,
+    float const scale1, float const scale2, cudaStream_t stream);
 
 } // namespace kernel
 } // namespace trt_edgellm

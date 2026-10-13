@@ -48,6 +48,7 @@ class BuildOptions:
     dense_quant: str = "auto"  # auto | fp16 | nvfp4-qdq
     int4_gemm_plugin_version: int = 2
     sm12x: bool = False
+    sm110: bool = False
     max_lora_rank: int = 0
 
 

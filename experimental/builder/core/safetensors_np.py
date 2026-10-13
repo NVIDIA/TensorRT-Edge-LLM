@@ -426,6 +426,30 @@ class SafetensorsStore:
         """Return tensor as float16 (decoding BF16/F32/F16)."""
         return self.get_f32(name).astype(np.float16)
 
+    def get_f16_row(self, name: str, row: int) -> np.ndarray:
+        """Read one row of a dense rank-two tensor as float16."""
+        shape = self.shape(name)
+        if len(shape) != 2 or not 0 <= row < shape[0]:
+            raise ValueError(f"{name}: row {row} is outside shape {shape}")
+        dtype_str = self.dtype(name)
+        if dtype_str not in ("F16", "BF16", "F32"):
+            raise TypeError(
+                f"{name}: cannot decode dtype {dtype_str!r} to an f16 row")
+        if self._weight_map[name].endswith(".bin"):
+            return (self._torch_tensor(name)
+                    [row].detach().cpu().float().numpy().astype(np.float16))
+
+        item_sizes = {"F16": 2, "BF16": 2, "F32": 4}
+        columns = int(shape[1])
+        row_bytes = columns * item_sizes[dtype_str]
+        raw = self._shard(name).raw_slice(name, row * row_bytes, row_bytes)
+        buffer = np.frombuffer(raw, dtype=np.uint8).copy()
+        if dtype_str == "F16":
+            return buffer.view(np.float16)
+        if dtype_str == "F32":
+            return buffer.view(np.float32).astype(np.float16)
+        return bf16_bytes_to_f32(buffer.view(np.uint16)).astype(np.float16)
+
     def get_fp8_bytes(self, name: str) -> np.ndarray:
         """Return raw FP8 E4M3 bytes (uint8) with the stored shape."""
         buf, dtype_str, shape = self._raw_array(name)

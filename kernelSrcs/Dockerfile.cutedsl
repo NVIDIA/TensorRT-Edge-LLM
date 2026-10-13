@@ -14,20 +14,19 @@
 # limitations under the License.
 #
 # Build with kernelSrcs/ as the context (keeps the context small — the repo
-# root drags in build trees and artifacts), then run with a GPU and an output
-# mount. Kernel generation happens at `docker run` time, not image-build time,
-# because AOT export needs a visible GPU (device tensor allocation + local
-# helper compiles):
+# root drags in build trees and artifacts), then run with an output mount.
+# Kernel generation happens at `docker run` time, not image-build time. AOT
+# export compiles against explicit target architectures with storage-free
+# tensor descriptors, so no GPU has to be mounted into the container:
 #   docker build -f kernelSrcs/Dockerfile.cutedsl -t edgellm-cutedsl-builder kernelSrcs
-#   docker run --rm --gpus all --user "$(id -u):$(id -g)" \
+#   docker run --rm --user "$(id -u):$(id -g)" \
 #     -v "$PWD/cutedsl-out:/out" edgellm-cutedsl-builder
 #
-# List the configured tarballs without a GPU:
+# List the configured tarballs:
 #   docker run --rm edgellm-cutedsl-builder --list
 #
-# Any x86_64 GPU new enough for the pinned CuTe DSL works as the build GPU;
-# the artifact SM/arch matrix is driven by CUTE_DSL_MATRIX (arch:sm_NN:cuda),
-# not by the local device. The cu12/cu13 flavor of each artifact is selected
+# The artifact SM/arch matrix is driven by CUTE_DSL_MATRIX (arch:sm_NN:cuda),
+# never by a local device. The cu12/cu13 flavor of each artifact is selected
 # per matrix row via the two isolated venvs baked into this image.
 
 ARG BASE_IMAGE=nvidia/cuda:13.0.1-devel-ubuntu24.04
@@ -128,6 +127,6 @@ ENV HOME=/tmp/cutedsl-home \
     CUTE_DSL_KERNELS=ALL \
     CUTE_DSL_OUTPUT_DIR=/out/artifacts \
     CUTE_DSL_PREBUILT_DIR=/out \
-    CUTE_DSL_MATRIX=x86_64:sm_80:13,x86_64:sm_86:13,x86_64:sm_90:13,x86_64:sm_100:13,x86_64:sm_120:13,x86_64:sm_120:12,aarch64:sm_87:13,aarch64:sm_90:13,aarch64:sm_101:12,aarch64:sm_110:13,aarch64:sm_121:12,aarch64:sm_121:13
+    CUTE_DSL_MATRIX=x86_64:sm_80:13,x86_64:sm_86:13,x86_64:sm_90:13,x86_64:sm_100:13,x86_64:sm_120:13,x86_64:sm_120:12,aarch64:sm_87:13,aarch64:sm_90:13,aarch64:sm_101:12,aarch64:sm_110:13,aarch64:sm_110+sm_120:13,aarch64:sm_121:12,aarch64:sm_121:13
 
 ENTRYPOINT ["/workspace/kernelSrcs/build_cutedsl_tarballs.sh"]

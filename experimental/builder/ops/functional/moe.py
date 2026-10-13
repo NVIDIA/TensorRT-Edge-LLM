@@ -31,6 +31,7 @@ __all__ = [
     "MoeRouting",
     "fp16_moe",
     "int4_moe",
+    "nvfp4_a16_moe",
     "nvfp4_moe",
 ]
 
@@ -39,6 +40,7 @@ class MoeActivation(IntEnum):
     """Supported fused expert activations."""
 
     SWIGLU = 2
+    RELU2 = 4
     GEGLU = 5
 
 
@@ -46,6 +48,7 @@ class MoeRouting(IntEnum):
     """Supported fused expert routing modes."""
 
     SOFTMAX_TOPK = 0
+    SIGMOID_GROUP_TOPK = 1
     SOFTMAX_TOPK_POST_SCALE = 2
 
 
@@ -64,6 +67,14 @@ def _parameter_value(value, dtype):
     return np.ascontiguousarray(value, dtype=dtype)
 
 
+def _validate_token_layout(router_logits: Tensor,
+                           hidden_states: Tensor) -> None:
+    if router_logits.ndim != 2:
+        raise ValueError("router_logits must have shape [T, E]")
+    if hidden_states.ndim != 2:
+        raise ValueError("hidden_states must have shape [T, H]")
+
+
 def fp16_moe(router_logits: Tensor,
              hidden_states: Tensor,
              weights: dict,
@@ -74,8 +85,15 @@ def fp16_moe(router_logits: Tensor,
              *,
              weight_prefix: str,
              weight_bindings: dict,
-             norm_topk_prob: int = 1) -> Tensor:
+             norm_topk_prob: int = 1,
+             activation_type: MoeActivation = MoeActivation.SWIGLU,
+             routing_mode: MoeRouting = MoeRouting.SOFTMAX_TOPK,
+             n_group: int = 1,
+             topk_group: int = 1,
+             routed_scaling_factor: float = 1.0,
+             e_score_correction_bias: Tensor | None = None) -> Tensor:
     """Run the FP16 grouped-GEMM MoE implementation."""
+    _validate_token_layout(router_logits, hidden_states)
     inputs = [
         router_logits,
         hidden_states,
@@ -88,14 +106,20 @@ def fp16_moe(router_logits: Tensor,
                   "fp16",
                   recipe=weight_bindings["fc2_weights"]),
     ]
+    if e_score_correction_bias is not None:
+        inputs.append(e_score_correction_bias)
     return operation("fp16_moe",
                      inputs,
                      num_experts=num_experts,
                      top_k=top_k,
                      hidden_size=hidden_size,
                      moe_inter_size=moe_inter_size,
-                     activation_type=int(MoeActivation.SWIGLU),
+                     activation_type=int(activation_type),
+                     routing_mode=int(routing_mode),
+                     n_group=n_group,
+                     topk_group=topk_group,
                      norm_topk_prob=norm_topk_prob,
+                     routed_scaling_factor=routed_scaling_factor,
                      max_routed_rows=_MAX_ROUTED_ROWS_AUTO)
 
 
@@ -112,6 +136,7 @@ def int4_moe(router_logits: Tensor,
              weight_bindings: dict,
              zero_point_offset: int = 1) -> Tensor:
     """Run GPTQ-Marlin mixture-of-experts."""
+    _validate_token_layout(router_logits, hidden_states)
 
     inputs = [
         router_logits,
@@ -143,6 +168,44 @@ def int4_moe(router_logits: Tensor,
                      quantization_group_size=group_size)
 
 
+def nvfp4_a16_moe(router_logits: Tensor, hidden_states: Tensor,
+                  moe_weights: dict, num_experts: int, top_k: int,
+                  hidden_size: int, moe_inter_size: int,
+                  activation_type: MoeActivation, n_group: int,
+                  topk_group: int, norm_topk_prob: int,
+                  routed_scaling_factor: float, routing_mode: MoeRouting, *,
+                  weight_prefix: str) -> Tensor:
+    """Run weight-only NVFP4 MoE with FP16 activations."""
+    _validate_token_layout(router_logits, hidden_states)
+    order = [
+        ("fc1_qweights", np.int8),
+        ("fc1_block_scales", np.int8),
+        ("fc1_global_scales", np.float16),
+        ("fc2_qweights", np.int8),
+        ("fc2_block_scales", np.int8),
+        ("fc2_global_scales", np.float16),
+        ("e_score_correction_bias", np.float32),
+    ]
+    weight_inputs = [
+        parameter(weight_prefix + "." + name,
+                  _parameter_value(moe_weights[name], dtype), "nvfp4_a16_moe")
+        for name, dtype in order
+    ]
+    return operation("nvfp4_a16_moe",
+                     [router_logits, hidden_states] + weight_inputs,
+                     num_experts=num_experts,
+                     top_k=top_k,
+                     hidden_size=hidden_size,
+                     moe_inter_size=moe_inter_size,
+                     activation_type=int(activation_type),
+                     n_group=n_group,
+                     topk_group=topk_group,
+                     norm_topk_prob=norm_topk_prob,
+                     routed_scaling_factor=routed_scaling_factor,
+                     routing_mode=int(routing_mode),
+                     max_routed_rows=_MAX_ROUTED_ROWS_AUTO)
+
+
 def nvfp4_moe(router_logits: Tensor,
               hidden_states: Tensor,
               moe_weights: dict,
@@ -160,7 +223,7 @@ def nvfp4_moe(router_logits: Tensor,
               *,
               weight_prefix: str,
               weight_bindings: "dict[str, dict] | None" = None) -> Tensor:
-    """Run NVFP4 mixture-of-experts and return ``[B,S,H]`` FP16.
+    """Run NVFP4 mixture-of-experts and return token-major ``[T,H]`` FP16.
 
     ``moe_weights`` provides the 9 constant inputs as numpy arrays:
     ``fc1_qweights, fc1_blocks_scale, fc1_alpha, fc2_qweights,
@@ -171,6 +234,7 @@ def nvfp4_moe(router_logits: Tensor,
     be rebuilt at runtime. Padded or fused expert banks omit them and remain
     constants in checkpoint-direct builds.
     """
+    _validate_token_layout(router_logits, hidden_states)
 
     order = [
         ("fc1_qweights", np.int8),

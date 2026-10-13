@@ -97,6 +97,11 @@ class SpeculativeConfig:
                    draft_model=draft_model or "")
 
 
+#: Requests that may wait behind the running batch before the server refuses
+#: (HTTP 429) and the direct Python API blocks. One number for both entry points.
+DEFAULT_MAX_QUEUED_REQUESTS = 16
+
+
 @dataclass(frozen=True)
 class ContextCacheConfig:
     """Deployment-scoped KV-cache reuse configuration."""
@@ -171,12 +176,17 @@ class ModelConfig:
     max_input_len: int = 4096
     max_batch_size: int = 1
     max_kv_cache_capacity: int = 8192
+    max_image_tokens: Optional[int] = None
+    max_image_tokens_per_image: Optional[int] = None
     draft_top_k: Optional[int] = None
     draft_step: Optional[int] = None
     verify_tree_size: Optional[int] = None
+    max_verify_tree_size: Optional[int] = None
+    max_draft_tree_size: Optional[int] = None
     speculative_config: Optional[SpeculativeConfig] = None
     context_cache_config: ContextCacheConfig = field(
         default_factory=ContextCacheConfig)
+    enable_in_flight_batching: bool = False
 
     def __post_init__(self) -> None:
         if (isinstance(self.engine_cache_max_size_gb, bool)
@@ -194,11 +204,16 @@ class ModelConfig:
             "max_input_len": self.max_input_len,
             "max_batch_size": self.max_batch_size,
             "max_kv_cache_capacity": self.max_kv_cache_capacity,
+            "max_image_tokens": self.max_image_tokens,
+            "max_image_tokens_per_image": self.max_image_tokens_per_image,
             "draft_top_k": self.draft_top_k,
             "draft_step": self.draft_step,
             "verify_tree_size": self.verify_tree_size,
+            "max_verify_tree_size": self.max_verify_tree_size,
+            "max_draft_tree_size": self.max_draft_tree_size,
             "speculative_config": self.speculative_config,
             "context_cache_config": self.context_cache_config,
+            "enable_in_flight_batching": self.enable_in_flight_batching,
         }
 
 
@@ -213,7 +228,7 @@ class ApiConfig:
     reasoning_parser: str = "auto"
     tool_call_parser: str = "auto"
     enable_auto_tool_choice: bool = False
-    max_queued_requests: int = 16
+    max_queued_requests: int = DEFAULT_MAX_QUEUED_REQUESTS
     queue_timeout: float = 600.0
     allowed_local_media_path: str = ""
     log_level: str = "info"
@@ -278,7 +293,8 @@ def create_argument_parser() -> argparse.ArgumentParser:
     api.add_argument("--api-key", default="")
     api.add_argument(
         "--reasoning-parser",
-        choices=("auto", "none", "qwen3", "deepseek_r1", "nemotron"),
+        choices=("auto", "none", "qwen3", "deepseek_r1", "muse_glimmer",
+                 "nemotron"),
         default="auto",
     )
     api.add_argument(
@@ -322,15 +338,28 @@ def create_argument_parser() -> argparse.ArgumentParser:
     model.add_argument("--max-kv-cache-capacity",
                        type=_positive_int,
                        default=8192)
+    model.add_argument("--max-image-tokens", type=_positive_int)
+    model.add_argument("--max-image-tokens-per-image", type=_positive_int)
     model.add_argument("--draft-top-k", type=_positive_int)
     model.add_argument("--draft-step", type=_positive_int)
     model.add_argument("--verify-tree-size", type=_positive_int)
+    model.add_argument("--max-verify-tree-size", type=_positive_int)
+    model.add_argument("--max-draft-tree-size", type=_positive_int)
     model.add_argument("--speculative-config", default="")
     model.add_argument(
         "--enable-context-reuse",
         action="store_true",
         help="Reuse matching text prefixes across requests in this trusted "
         "server instance.",
+    )
+    model.add_argument(
+        "--enable-in-flight-batching",
+        action="store_true",
+        help="Admit queued requests into the running batch at generation "
+        "boundaries instead of serving one request at a time. Text and "
+        "multimodal-input deployments only: a speculative-decoding or "
+        "standalone TTS deployment refuses the flag at startup, and a "
+        "Qwen3-Omni bundle serves text only (its speech endpoints refuse).",
     )
     model.add_argument("--context-cache-max-records",
                        type=_non_negative_int,
@@ -374,11 +403,16 @@ def parse_server_config(argv: Optional[Sequence[str]] = None) -> ServerConfig:
         max_input_len=args.max_input_len,
         max_batch_size=args.max_batch_size,
         max_kv_cache_capacity=args.max_kv_cache_capacity,
+        max_image_tokens=args.max_image_tokens,
+        max_image_tokens_per_image=args.max_image_tokens_per_image,
         draft_top_k=args.draft_top_k,
         draft_step=draft_step,
         verify_tree_size=args.verify_tree_size,
+        max_verify_tree_size=args.max_verify_tree_size,
+        max_draft_tree_size=args.max_draft_tree_size,
         speculative_config=speculative,
         context_cache_config=context_cache,
+        enable_in_flight_batching=args.enable_in_flight_batching,
     )
     api = ApiConfig(
         host=args.host,

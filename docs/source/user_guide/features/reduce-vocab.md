@@ -127,6 +127,41 @@ The export writes `draft_vocab_map.safetensors` next to the draft engine. At run
 
 ---
 
+## MTP Speculative Decoding Support
+
+Chain-MTP can reduce only the draft LM head while preserving the base model's full vocabulary. Use this path with `--specDraftTopK 1`; reduced-vocabulary tree-MTP is not supported because its tree path would require a direct map while the MTP decoder stores an offset map. Unlike EAGLE, chain-MTP does not require a `d2t` constraint. Base reduction through `--reduced-vocab-dir` and draft reduction through `--draft-reduced-vocab-dir` are independent and may be used separately or together.
+
+```bash
+# Step 1: Generate a draft vocabulary map
+tensorrt-edgellm-reduce-vocab \
+  --model_dir Qwen/Qwen3.6-27B \
+  --output_dir draft_reduced_vocab \
+  --reduced_vocab_size 65536 \
+  --method input_aware \
+  --max_samples 50000
+
+# Step 2: Export the MTP draft with reduced logits
+tensorrt-edgellm-export \
+  Qwen/Qwen3.6-27B \
+  qwen3_6_27b/onnx \
+  --mtp \
+  --draft-reduced-vocab-dir draft_reduced_vocab/
+```
+
+The draft engine config declares the reduced vocabulary size. When that value is positive, `draft_vocab_map.safetensors` is required in the engine directory; when it is zero, a stray sidecar is ignored. The sidecar stores direct reduced-to-full token IDs, and the MTP runtime converts them once at load time to the offset representation used by the proposal kernels.
+
+The following validation snapshot used Qwen3.6-27B NVFP4 on Thor-X-L4T. The preserved map metadata records the input-aware map as an in-tree CLI run over 50,000 CNN/DailyMail samples, and describes the custom union map as CNN/DailyMail frequency over 12,000 samples plus 500 workload samples and special, EOS, and byte tokens.
+
+| Draft map | Draft engine (MiB) | Accept (ms) | Proposal (ms) | MTP generation GPU total (s) | Generation tok/s | Accepted/iter | Greedy output |
+|---|---:|---:|---:|---:|---:|---:|---|
+| Full 248,320 | 912.68 | 3.7753 | 3.7867 | 66.945 | 38.24 | 2.987 | Reference |
+| Input-aware 65,536 | 410.72 | 1.8121 | 1.7994 | 64.332 | 39.79 | 2.876 | Identical text |
+| Custom union 65,536 | 410.72 | 1.8103 | 1.8060 | 63.890 | 40.07 | 2.896 | Identical text |
+
+The measurement used source commit `71dd9e6a`, TensorRT `11.3.0.42-local.06efe02.696ae9d.release`, one common base engine, batch size 1, chain-MTP top-K 1, draft step 3, verify size 4, and 20 distinct greedy requests with 128 output tokens each. Accept and proposal are 10-iteration CUDA-graph `llm_bench` results after three warmups at past-KV length 2064 (`acceptLen=4` and `draftTreeSize=4`, respectively). The MTP generation total sums the four runtime generation-stage GPU timers over 2,560 output tokens. The compact JSON array of the 20 `output_text` strings had SHA-256 `43d8d061dae4d66bb6c84ee293cae1426ab2f675b84aa5e696283040819117ff` for all three arms; the raw result JSON files differ only in arm-specific acceptance telemetry (`spec_acceptance_length` and `spec_verify_count`). These workload-local results validate the mechanism; sweep vocabulary size and map composition for the target workload.
+
+---
+
 ## Script Reference
 
 | Argument | Required | Default | Description |

@@ -19,6 +19,7 @@
 #include <cuda_fp16.h>
 #include <gtest/gtest.h>
 #include <iostream>
+#include <tuple>
 #include <vector>
 
 #include "common/cudaUtils.h"
@@ -107,7 +108,7 @@ void runCausalConv1dTest(
         clOpt = std::optional(std::cref(clDevice));
     }
     mamba_ssm::invokeCausalConv1d(
-        xDevice, weightDevice, biasOpt, outputDevice, 1, width - 1, 1, std::nullopt, clOpt, nullptr);
+        xDevice, weightDevice, biasOpt, outputDevice, 1, width - 1, 1, std::nullopt, clOpt, std::nullopt, nullptr);
     CUDA_CHECK(cudaDeviceSynchronize());
 
     auto const outputHost = copyDeviceToHost<half>(outputDevice);
@@ -193,7 +194,7 @@ void runCaptureConvStateTest(
             clDevice.rawPointer(), contextLens->data(), contextLens->size() * sizeof(int32_t), cudaMemcpyHostToDevice));
         clOpt = std::optional(std::cref(clDevice));
     }
-    mamba_ssm::invokeCaptureConvState(xDevice, std::nullopt, convStateDevice, clOpt, nullptr);
+    mamba_ssm::invokeCaptureConvState(xDevice, std::nullopt, convStateDevice, clOpt, std::nullopt, nullptr);
     CUDA_CHECK(cudaDeviceSynchronize());
 
     auto const convStateHost = copyDeviceToHost<half>(convStateDevice);
@@ -291,10 +292,11 @@ TEST(MambaCausalConv1dContinuation, NonzeroState)
     rt::OptionalInputTensor const biasOpt = std::optional(std::cref(biasDevice));
     rt::OptionalInputTensor const initialStateOpt = std::optional(std::cref(stateDevice));
     rt::OptionalInputTensor const contextLengthsOpt = std::optional(std::cref(contextLengthsDevice));
-    mamba_ssm::invokeCausalConv1d(
-        xDevice, weightDevice, biasOpt, outputDevice, 1, width - 1, 1, initialStateOpt, contextLengthsOpt, nullptr);
-    mamba_ssm::invokeCaptureConvState(xDevice, initialStateOpt, capturedStateDevice, contextLengthsOpt, nullptr);
-    mamba_ssm::invokeCaptureConvState(xDevice, initialStateOpt, stateDevice, contextLengthsOpt, nullptr);
+    mamba_ssm::invokeCausalConv1d(xDevice, weightDevice, biasOpt, outputDevice, 1, width - 1, 1, initialStateOpt,
+        contextLengthsOpt, std::nullopt, nullptr);
+    mamba_ssm::invokeCaptureConvState(
+        xDevice, initialStateOpt, capturedStateDevice, contextLengthsOpt, std::nullopt, nullptr);
+    mamba_ssm::invokeCaptureConvState(xDevice, initialStateOpt, stateDevice, contextLengthsOpt, std::nullopt, nullptr);
     CUDA_CHECK(cudaDeviceSynchronize());
 
     auto const outputHost = copyDeviceToHost<half>(outputDevice);
@@ -376,7 +378,8 @@ void runCausalConv1dDecodeTest(int32_t batch, int32_t dim, int32_t width)
     copyHostToDevice(newColDevice, newColHost);
 
     trt_edgellm::rt::OptionalInputTensor biasOpt = std::optional(std::cref(biasDevice));
-    mamba_ssm::invokeCausalConv1dDecode(convStateDevice, newColDevice, weightDevice, biasOpt, outDevice, nullptr);
+    mamba_ssm::invokeCausalConv1dDecode(
+        convStateDevice, newColDevice, weightDevice, biasOpt, outDevice, std::nullopt, nullptr);
     CUDA_CHECK(cudaDeviceSynchronize());
 
     auto const outHost = copyDeviceToHost<half>(outDevice);
@@ -411,6 +414,152 @@ TEST(MambaCausalConv1dDecode, Width4)
 TEST(MambaCausalConv1dDecode, LargeDim)
 {
     runCausalConv1dDecodeTest(4, 512, 4);
+}
+
+TEST(MambaCausalConv1dResidentState, DecodeUsesNonContiguousSlots)
+{
+    int32_t constexpr batch = 2;
+    int32_t constexpr poolRows = 4;
+    int32_t constexpr dim = 8;
+    int32_t constexpr width = 4;
+    std::vector<int32_t> const stateIndices{2, 0};
+    std::vector<half> stateHost(static_cast<size_t>(poolRows) * dim * width);
+    std::vector<half> newColHost(static_cast<size_t>(batch) * dim);
+    std::vector<half> weightHost(static_cast<size_t>(dim) * width, __float2half(0.0F));
+    std::vector<half> biasHost(dim, __float2half(0.0F));
+    for (int32_t slot = 0; slot < poolRows; ++slot)
+    {
+        std::fill_n(
+            stateHost.begin() + static_cast<size_t>(slot) * dim * width, dim * width, __float2half(10.0F + slot));
+    }
+    for (int32_t row = 0; row < batch; ++row)
+    {
+        std::fill_n(newColHost.begin() + static_cast<size_t>(row) * dim, dim, __float2half(100.0F + row));
+    }
+
+    auto state = rt::Tensor({poolRows, dim, width}, rt::DeviceType::kGPU, DataType::kHALF);
+    auto newCol = rt::Tensor({batch, 1, dim}, rt::DeviceType::kGPU, DataType::kHALF);
+    auto weight = rt::Tensor({dim, 1, width}, rt::DeviceType::kGPU, DataType::kHALF);
+    auto bias = rt::Tensor({dim}, rt::DeviceType::kGPU, DataType::kHALF);
+    auto output = rt::Tensor({batch, 1, dim}, rt::DeviceType::kGPU, DataType::kHALF);
+    auto indices = rt::Tensor({batch}, rt::DeviceType::kGPU, DataType::kINT32);
+    copyHostToDevice(state, stateHost);
+    copyHostToDevice(newCol, newColHost);
+    copyHostToDevice(weight, weightHost);
+    copyHostToDevice(bias, biasHost);
+    copyHostToDevice(indices, stateIndices);
+
+    rt::OptionalInputTensor biasOpt = std::optional(std::cref(bias));
+    rt::OptionalInputTensor indicesOpt = std::optional(std::cref(indices));
+    mamba_ssm::invokeCausalConv1dDecode(state, newCol, weight, biasOpt, output, indicesOpt, nullptr);
+    CUDA_CHECK(cudaDeviceSynchronize());
+    auto const actual = copyDeviceToHost<half>(state);
+
+    for (int32_t slot = 0; slot < poolRows; ++slot)
+    {
+        for (int32_t d = 0; d < dim; ++d)
+        {
+            for (int32_t k = 0; k < width; ++k)
+            {
+                float expected = 10.0F + slot;
+                auto const found = std::find(stateIndices.begin(), stateIndices.end(), slot);
+                if (found != stateIndices.end() && k == width - 1)
+                {
+                    expected = 100.0F + std::distance(stateIndices.begin(), found);
+                }
+                size_t const offset = (static_cast<size_t>(slot) * dim + d) * width + k;
+                EXPECT_EQ(__half2float(actual[offset]), expected) << "slot=" << slot << ", d=" << d << ", k=" << k;
+            }
+        }
+    }
+}
+
+TEST(MambaCausalConv1dResidentState, PaddedPrefillCapturesFinalValidTokenBySlot)
+{
+    int32_t constexpr batch = 3;
+    int32_t constexpr poolRows = 5;
+    int32_t constexpr seqLen = 4;
+    int32_t constexpr dim = 8;
+    int32_t constexpr width = 4;
+    std::vector<int32_t> const stateIndices{3, 1, 4};
+    std::vector<int32_t> const queryLengths{4, 2, 3};
+    std::vector<half> stateHost(static_cast<size_t>(poolRows) * dim * width);
+    std::vector<half> xHost(static_cast<size_t>(batch) * seqLen * dim);
+    for (int32_t slot = 0; slot < poolRows; ++slot)
+    {
+        std::fill_n(
+            stateHost.begin() + static_cast<size_t>(slot) * dim * width, dim * width, __float2half(10.0F + slot));
+    }
+    for (int32_t row = 0; row < batch; ++row)
+    {
+        for (int32_t token = 0; token < seqLen; ++token)
+        {
+            std::fill_n(xHost.begin() + (static_cast<size_t>(row) * seqLen + token) * dim, dim,
+                __float2half(100.0F + row * 10.0F + token));
+        }
+    }
+
+    auto x = rt::Tensor({batch, seqLen, dim}, rt::DeviceType::kGPU, DataType::kHALF);
+    auto state = rt::Tensor({poolRows, dim, width}, rt::DeviceType::kGPU, DataType::kHALF);
+    auto lengths = rt::Tensor({batch}, rt::DeviceType::kGPU, DataType::kINT32);
+    auto indices = rt::Tensor({batch}, rt::DeviceType::kGPU, DataType::kINT32);
+    auto weight = rt::Tensor({dim, 1, width}, rt::DeviceType::kGPU, DataType::kHALF);
+    auto bias = rt::Tensor({dim}, rt::DeviceType::kGPU, DataType::kHALF);
+    auto output = rt::Tensor({batch, seqLen, dim}, rt::DeviceType::kGPU, DataType::kHALF);
+    std::vector<half> weightHost(static_cast<size_t>(dim) * width, __float2half(0.0F));
+    std::vector<half> biasHost(dim, __float2half(0.0F));
+    for (int32_t d = 0; d < dim; ++d)
+    {
+        weightHost[static_cast<size_t>(d) * width] = __float2half(1.0F);
+    }
+    copyHostToDevice(x, xHost);
+    copyHostToDevice(state, stateHost);
+    copyHostToDevice(lengths, queryLengths);
+    copyHostToDevice(indices, stateIndices);
+    copyHostToDevice(weight, weightHost);
+    copyHostToDevice(bias, biasHost);
+
+    rt::OptionalInputTensor stateOpt = std::optional(std::cref(state));
+    rt::OptionalInputTensor lengthsOpt = std::optional(std::cref(lengths));
+    rt::OptionalInputTensor indicesOpt = std::optional(std::cref(indices));
+    rt::OptionalInputTensor biasOpt = std::optional(std::cref(bias));
+    mamba_ssm::invokeCausalConv1d(
+        x, weight, biasOpt, output, 1, width - 1, 1, stateOpt, lengthsOpt, indicesOpt, nullptr);
+    CUDA_CHECK(cudaDeviceSynchronize());
+    auto const outputHost = copyDeviceToHost<half>(output);
+    for (int32_t row = 0; row < batch; ++row)
+    {
+        for (int32_t d = 0; d < dim; ++d)
+        {
+            EXPECT_EQ(
+                __half2float(outputHost[(static_cast<size_t>(row) * seqLen) * dim + d]), 10.0F + stateIndices[row]);
+        }
+    }
+
+    mamba_ssm::invokeCaptureConvState(x, stateOpt, state, lengthsOpt, indicesOpt, nullptr);
+    CUDA_CHECK(cudaDeviceSynchronize());
+    auto const actual = copyDeviceToHost<half>(state);
+
+    for (int32_t slot = 0; slot < poolRows; ++slot)
+    {
+        auto const found = std::find(stateIndices.begin(), stateIndices.end(), slot);
+        int32_t const row
+            = found == stateIndices.end() ? -1 : static_cast<int32_t>(std::distance(stateIndices.begin(), found));
+        for (int32_t d = 0; d < dim; ++d)
+        {
+            for (int32_t k = 0; k < width; ++k)
+            {
+                float expected = 10.0F + slot;
+                if (row >= 0)
+                {
+                    int32_t const valid = queryLengths[row];
+                    expected = k < width - valid ? 10.0F + slot : 100.0F + row * 10.0F + k - (width - valid);
+                }
+                size_t const offset = (static_cast<size_t>(slot) * dim + d) * width + k;
+                EXPECT_EQ(__half2float(actual[offset]), expected) << "slot=" << slot << ", d=" << d << ", k=" << k;
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -495,7 +644,7 @@ void runCausalConv1dDecodeMTPTest(int32_t batch, int32_t dim, int32_t width, int
 
     trt_edgellm::rt::OptionalInputTensor biasOpt = std::optional(std::cref(biasDevice));
     mamba_ssm::invokeCausalConv1dDecodeMTP(
-        convStateDevice, newColsDevice, weightDevice, biasOpt, outDevice, intermDevice, T, nullptr);
+        convStateDevice, newColsDevice, weightDevice, biasOpt, outDevice, intermDevice, T, std::nullopt, nullptr);
     CUDA_CHECK(cudaDeviceSynchronize());
 
     // Verify output
@@ -507,13 +656,12 @@ void runCausalConv1dDecodeMTPTest(int32_t batch, int32_t dim, int32_t width, int
             << __half2float(outRef[i]);
     }
 
-    // Verify final state
+    // Target verification must not commit speculative state.
     auto const stateHost = copyDeviceToHost<half>(convStateDevice);
-    for (size_t i = 0; i < convStateRef.size(); ++i)
+    for (size_t i = 0; i < convStateHost.size(); ++i)
     {
-        EXPECT_TRUE(isclose(stateHost[i], convStateRef[i], 1e-3F, 1e-3F))
-            << "MTP final state mismatch at index " << i << ": got " << __half2float(stateHost[i]) << ", expected "
-            << __half2float(convStateRef[i]);
+        EXPECT_TRUE(isclose(stateHost[i], convStateHost[i], 1e-3F, 1e-3F))
+            << "MTP committed state changed at index " << i;
     }
 
     // Verify intermediate states
@@ -547,8 +695,9 @@ TEST(MambaCausalConv1dDecodeMTP, LargeDim)
 
 void runCausalConv1dDecodeDDTreeReference(int32_t batch, int32_t dim, int32_t width, int32_t verifySeq,
     std::vector<half> const& convState, std::vector<half> const& newCols, std::vector<half> const& weight,
-    std::vector<half> const& bias, std::vector<int32_t> const& parentIds, std::vector<int32_t> const& depths,
-    std::vector<half>& convStateOut, std::vector<half>& outRef, std::vector<half>& intermRef)
+    std::vector<half> const& bias, bool hasBias, std::vector<int32_t> const& parentIds,
+    std::vector<int32_t> const& depths, std::vector<half>& convStateOut, std::vector<half>& outRef,
+    std::vector<half>& intermRef)
 {
     convStateOut = convState;
     for (int32_t b = 0; b < batch; ++b)
@@ -600,7 +749,7 @@ void runCausalConv1dDecodeDDTreeReference(int32_t batch, int32_t dim, int32_t wi
                         state[width - 1 - pathOffset] = __half2float(newCols[newColIdx]);
                     }
 
-                    float acc = __half2float(bias[d]);
+                    float acc = hasBias ? __half2float(bias[d]) : 0.0F;
                     for (int32_t k = 0; k < width; ++k)
                     {
                         acc += state[k] * __half2float(weight[static_cast<int64_t>(d) * width + k]);
@@ -618,12 +767,16 @@ void runCausalConv1dDecodeDDTreeReference(int32_t batch, int32_t dim, int32_t wi
     }
 }
 
-TEST(MambaCausalConv1dDecodeDDTree, RootToNodeState)
+using DDTreeTestParams = std::tuple<int32_t, int32_t, bool, int32_t>;
+
+class MambaCausalConv1dDecodeDDTreeTest : public ::testing::TestWithParam<DDTreeTestParams>
+{
+};
+
+TEST_P(MambaCausalConv1dDecodeDDTreeTest, RootToNodeState)
 {
     constexpr int32_t batch = 2;
-    constexpr int32_t dim = 64;
-    constexpr int32_t width = 4;
-    constexpr int32_t verifySeq = 6;
+    auto const [verifySeq, width, hasBias, dim] = GetParam();
 
     std::vector<half> convStateHost(batch * dim * width);
     std::vector<half> weightHost(dim * width);
@@ -634,30 +787,24 @@ TEST(MambaCausalConv1dDecodeDDTree, RootToNodeState)
     uniformFloatInitialization<half>(biasHost, -0.5F, 0.5F);
     uniformFloatInitialization<half>(newColsHost, -0.5F, 0.5F);
 
-    std::vector<int32_t> parentIds{
-        -1, 0, 1, 1, 3, -1, // batch 0: root, chain 0->1->2, branch 1->3->4, padding node 5
-        -1, 0, 0, 2, 3, -1  // batch 1: root, two depth-1 children, chain 2->3->4, padding node 5
-    };
-    std::vector<int32_t> depths{
-        0,
-        1,
-        2,
-        2,
-        3,
-        0,
-        0,
-        1,
-        1,
-        2,
-        3,
-        0,
-    };
+    std::vector<int32_t> parentIds(static_cast<size_t>(batch) * verifySeq, -1);
+    std::vector<int32_t> depths(static_cast<size_t>(batch) * verifySeq, 0);
+    for (int32_t b = 0; b < batch; ++b)
+    {
+        for (int32_t node = 1; node < verifySeq - 1; ++node)
+        {
+            int32_t const parent = (b == 0) ? ((node == 3) ? 1 : node - 1) : ((node % 2 == 0) ? 0 : node - 1);
+            size_t const idx = static_cast<size_t>(b) * verifySeq + node;
+            parentIds[idx] = parent;
+            depths[idx] = depths[static_cast<size_t>(b) * verifySeq + parent] + 1;
+        }
+    }
 
     std::vector<half> convStateRef(convStateHost.size());
     std::vector<half> outRef(batch * verifySeq * dim);
     std::vector<half> intermRef(batch * verifySeq * dim * width);
     runCausalConv1dDecodeDDTreeReference(batch, dim, width, verifySeq, convStateHost, newColsHost, weightHost, biasHost,
-        parentIds, depths, convStateRef, outRef, intermRef);
+        hasBias, parentIds, depths, convStateRef, outRef, intermRef);
 
     auto convStateDevice = rt::Tensor({batch, dim, width}, rt::DeviceType::kGPU, DataType::kHALF);
     auto convStateOutDevice = rt::Tensor({batch, dim, width}, rt::DeviceType::kGPU, DataType::kHALF);
@@ -678,9 +825,13 @@ TEST(MambaCausalConv1dDecodeDDTree, RootToNodeState)
     CUDA_CHECK(
         cudaMemcpy(depthDevice.rawPointer(), depths.data(), depths.size() * sizeof(int32_t), cudaMemcpyHostToDevice));
 
-    trt_edgellm::rt::OptionalInputTensor biasOpt = std::optional(std::cref(biasDevice));
+    trt_edgellm::rt::OptionalInputTensor biasOpt = std::nullopt;
+    if (hasBias)
+    {
+        biasOpt = std::optional(std::cref(biasDevice));
+    }
     mamba_ssm::invokeCausalConv1dDecodeDDTree(convStateDevice, newColsDevice, weightDevice, biasOpt, outDevice,
-        convStateOutDevice, intermDevice, parentDevice, depthDevice, nullptr);
+        convStateOutDevice, intermDevice, parentDevice, depthDevice, std::nullopt, nullptr);
     CUDA_CHECK(cudaDeviceSynchronize());
 
     auto const outHost = copyDeviceToHost<half>(outDevice);
@@ -691,12 +842,11 @@ TEST(MambaCausalConv1dDecodeDDTree, RootToNodeState)
             << __half2float(outRef[i]);
     }
 
-    auto const stateOutHost = copyDeviceToHost<half>(convStateOutDevice);
-    for (size_t i = 0; i < convStateRef.size(); ++i)
+    auto const stateHost = copyDeviceToHost<half>(convStateDevice);
+    for (size_t i = 0; i < convStateHost.size(); ++i)
     {
-        EXPECT_TRUE(isclose(stateOutHost[i], convStateRef[i], 1e-3F, 1e-3F))
-            << "DDTree convStateOut mismatch at index " << i << ": got " << __half2float(stateOutHost[i])
-            << ", expected " << __half2float(convStateRef[i]);
+        EXPECT_TRUE(isclose(stateHost[i], convStateHost[i], 1e-3F, 1e-3F))
+            << "DDTree committed state changed at index " << i;
     }
 
     auto const intermHost = copyDeviceToHost<half>(intermDevice);
@@ -707,3 +857,9 @@ TEST(MambaCausalConv1dDecodeDDTree, RootToNodeState)
             << ", expected " << __half2float(intermRef[i]);
     }
 }
+
+INSTANTIATE_TEST_SUITE_P(Configurations, MambaCausalConv1dDecodeDDTreeTest,
+    ::testing::Values(DDTreeTestParams{6, 4, true, 64}, DDTreeTestParams{7, 4, true, 64},
+        DDTreeTestParams{17, 4, true, 64}, DDTreeTestParams{7, 3, true, 64}, DDTreeTestParams{7, 4, false, 64},
+        DDTreeTestParams{7, 3, false, 64}, DDTreeTestParams{7, 8, true, 64}, DDTreeTestParams{7, 4, true, 257},
+        DDTreeTestParams{7, 3, true, 257}, DDTreeTestParams{1, 4, true, 64}));

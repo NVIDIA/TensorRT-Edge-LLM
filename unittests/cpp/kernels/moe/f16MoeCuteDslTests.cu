@@ -29,6 +29,7 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
+#include <iterator>
 #include <random>
 #include <string>
 #include <utility>
@@ -629,9 +630,51 @@ TEST(F16MoeCuteDslTest, accuracy)
     EXPECT_FALSE(CuteDslF16MoeRunner::canImplement(kHIDDEN_SIZE, kINTER_SIZE, 64, kTOP_K, smVersion, kACT_SWIGLU));
     EXPECT_FALSE(CuteDslF16MoeRunner::canImplement(kHIDDEN_SIZE, kINTER_SIZE, 192, kTOP_K, smVersion, kACT_SWIGLU));
     EXPECT_FALSE(CuteDslF16MoeRunner::canImplement(kHIDDEN_SIZE, kINTER_SIZE, kNUM_EXPERTS, kTOP_K, 90, kACT_SWIGLU));
-    int32_t const mismatchedArtifactSm = smVersion == 110 ? 100 : 110;
-    EXPECT_FALSE(CuteDslF16MoeRunner::canImplement(
-        kHIDDEN_SIZE, kINTER_SIZE, kNUM_EXPERTS, kTOP_K, mismatchedArtifactSm, kACT_SWIGLU));
+    constexpr int32_t kARTIFACT_SMS[]{
+#if defined(CUTE_DSL_F16_MOE_ARTIFACT_SM)
+        CUTE_DSL_F16_MOE_ARTIFACT_SM,
+#else
+#if defined(CUTE_DSL_F16_MOE_ARTIFACT_SM_80)
+        80,
+#endif
+#if defined(CUTE_DSL_F16_MOE_ARTIFACT_SM_86)
+        86,
+#endif
+#if defined(CUTE_DSL_F16_MOE_ARTIFACT_SM_87)
+        87,
+#endif
+#if defined(CUTE_DSL_F16_MOE_ARTIFACT_SM_89)
+        89,
+#endif
+#if defined(CUTE_DSL_F16_MOE_ARTIFACT_SM_100)
+        100,
+#endif
+#if defined(CUTE_DSL_F16_MOE_ARTIFACT_SM_101)
+        101,
+#endif
+#if defined(CUTE_DSL_F16_MOE_ARTIFACT_SM_103)
+        103,
+#endif
+#if defined(CUTE_DSL_F16_MOE_ARTIFACT_SM_110)
+        110,
+#endif
+#if defined(CUTE_DSL_F16_MOE_ARTIFACT_SM_120)
+        120,
+#endif
+#if defined(CUTE_DSL_F16_MOE_ARTIFACT_SM_121)
+        121,
+#endif
+#endif
+    };
+    for (int32_t const artifactSm : {80, 86, 87, 89, 100, 101, 103, 110, 120, 121})
+    {
+        bool const expected
+            = std::find(std::begin(kARTIFACT_SMS), std::end(kARTIFACT_SMS), artifactSm) != std::end(kARTIFACT_SMS);
+        EXPECT_EQ(
+            CuteDslF16MoeRunner::canImplement(kHIDDEN_SIZE, kINTER_SIZE, kNUM_EXPERTS, kTOP_K, artifactSm, kACT_SWIGLU),
+            expected)
+            << "SM" << artifactSm;
+    }
     EXPECT_FALSE(CuteDslF16MoeRunner::canImplement(kHIDDEN_SIZE, kINTER_SIZE, kNUM_EXPERTS, 0, smVersion, kACT_SWIGLU));
     EXPECT_FALSE(
         CuteDslF16MoeRunner::canImplement(kHIDDEN_SIZE, kINTER_SIZE, kNUM_EXPERTS, kTOP_K + 1, smVersion, kACT_SWIGLU));

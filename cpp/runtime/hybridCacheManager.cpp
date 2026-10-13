@@ -22,6 +22,8 @@
 #include "common/pagedKvTypes.h"
 #include "kernels/kvCacheUtilKernels/kvCacheUtilsKernels.h"
 #include "kernels/speculative/batchEvictKernels.h"
+
+#include <exception>
 #include <unordered_map>
 
 using namespace nvinfer1;
@@ -84,6 +86,11 @@ HybridCacheManager::HybridCacheManager(Config const& config, cudaStream_t stream
         for (int32_t i = 0; i < mKVCache.numLayers(); ++i)
         {
             auto const& lc = mKVCache.getLayerConfig(i);
+            if (mKVCache.hasReducedKVCache()
+                && isReducedKvCacheCapacity(lc.kvCacheCapacity, mConfig.kvConfig.maxSequenceLength))
+            {
+                continue;
+            }
             auto it = headDimToGroupIdx.find(lc.headDim);
             if (it == headDimToGroupIdx.end())
             {
@@ -98,11 +105,11 @@ HybridCacheManager::HybridCacheManager(Config const& config, cudaStream_t stream
             group.maxKVHeads = std::max(group.maxKVHeads, lc.numKVHeads);
             group.numLayers++;
 
-            // The active-slot K/V views use capPadded tokens per row.
+            // Dense batched-copy operations only include full-capacity layers.
             kernel::KVLayerInfo info{};
             info.data = mKVCache.kPoolPtr(i);
             info.numKVHeads = lc.numKVHeads;
-            info.maxSeqLen = mKVCache.maxCapPadded();
+            info.maxSeqLen = mKVCache.maxCapPadded(i);
             group.hostInfos.push_back(info);
         }
 
@@ -204,6 +211,15 @@ std::pair<rt::Tensor, rt::Tensor> HybridCacheManager::getSeparateKVCache(int32_t
     check::check(
         localIdx >= 0, "getSeparateKVCache: layer " + std::to_string(absLayerIdx) + " is not an attention layer.");
     return mKVCache.getSeparateKVCache(localIdx);
+}
+
+KVLayerStorageMetadata HybridCacheManager::getKVLayerStorageMetadata(int32_t absLayerIdx) const
+{
+    check::check(absLayerIdx >= 0 && absLayerIdx < static_cast<int32_t>(mAbsToKVIndex.size()),
+        "getKVLayerStorageMetadata: absolute layer index is out of range.");
+    int32_t const localIdx = mAbsToKVIndex[absLayerIdx];
+    check::check(localIdx >= 0, "getKVLayerStorageMetadata: layer is not an attention layer.");
+    return mKVCache.getLayerStorageMetadata(localIdx);
 }
 
 rt::Tensor& HybridCacheManager::getRecurrentState(int32_t absLayerIdx)
@@ -337,6 +353,32 @@ void HybridCacheManager::setActiveBatchSize(int32_t newActiveBatchSize)
     check::check(mDeviceKVCacheLengths.reshape({mActiveBatchSize}), "Tensor reshape failed");
 }
 
+void HybridCacheManager::restoreActiveBatchSize(int32_t activeBatchSize) noexcept
+{
+    mActiveBatchSize = activeBatchSize;
+    bool const reshaped = mDeviceKVCacheLengths.reshape({activeBatchSize});
+    if (!reshaped)
+    {
+        std::terminate();
+    }
+}
+
+void HybridCacheManager::materializeExecutionLengths(rt::Tensor const& executionLengths, cudaStream_t stream)
+{
+    check::check(executionLengths.getDeviceType() == DeviceType::kGPU, "Execution lengths tensor shall reside on GPU.");
+    check::check(
+        executionLengths.getDataType() == DataType::kINT32, "Execution lengths tensor shall have data type int32_t.");
+    check::check(executionLengths.getShape().getNumDims() == 1, "Execution lengths tensor shall be one-dimensional.");
+    int32_t const batchSize = static_cast<int32_t>(executionLengths.getShape()[0]);
+    check::check(batchSize > 0 && batchSize <= mConfig.maxBatchSize,
+        "Execution lengths batch size must be in range [1, maxBatchSize].");
+
+    mActiveBatchSize = batchSize;
+    check::check(mDeviceKVCacheLengths.reshape({batchSize}), "Tensor reshape failed");
+    CUDA_CHECK(cudaMemcpyAsync(mDeviceKVCacheLengths.rawPointer(), executionLengths.rawPointer(),
+        static_cast<size_t>(batchSize) * sizeof(int32_t), cudaMemcpyDeviceToDevice, stream));
+}
+
 bool HybridCacheManager::getKVCacheAllEmpty() const noexcept
 {
     return mKVCacheAllEmpty;
@@ -346,50 +388,20 @@ bool HybridCacheManager::getKVCacheAllEmpty() const noexcept
 // Compaction
 // ------------------------------------------------------------------
 
-void HybridCacheManager::compactBatch(
+void HybridCacheManager::compactKVCacheLengths(
     rt::Tensor const& batchMapping, int32_t oldBatch, int32_t newBatch, cudaStream_t stream)
 {
-    // Active-slot K/V views have [maxBatch, capPadded, H, D] shape. Compaction moves only each
-    // survivor's live prefix while the identity page table retains row == slot.
-    for (auto const& group : mHeadDimGroups)
-    {
-        auto const* layerInfos = static_cast<kernel::KVLayerInfo const*>(group.deviceLayerInfos.rawPointer());
-        kernel::compactKVCacheBatched(layerInfos, batchMapping, mDeviceKVCacheLengths, group.numLayers, group.headDim,
-            mKVCache.numPages(), mConfig.kvConfig.kvCacheType, oldBatch, newBatch, stream);
-    }
-
-    compactBatchSlotState(batchMapping, oldBatch, newBatch, stream);
+    check::check(mActiveBatchSize == oldBatch, "KV length compaction old batch does not match the active batch size");
+    check::check(mDeviceKVCacheLengths.reshape({oldBatch}), "Tensor reshape failed");
+    kernel::compactTensorBatch(mDeviceKVCacheLengths, batchMapping, mDeviceKVCacheLengths, oldBatch, newBatch, stream);
+    check::check(mDeviceKVCacheLengths.reshape({newBatch}), "Tensor reshape failed");
+    mActiveBatchSize = newBatch;
 }
 
-void HybridCacheManager::compactBatchSlotState(
-    rt::Tensor const& batchMapping, int32_t oldBatch, int32_t newBatch, cudaStream_t stream)
+void HybridCacheManager::clearResidentSlot(int32_t slot, cudaStream_t stream)
 {
-
-    // Compact the shared KV cache lengths tensor separately after all layers are done.
-    kernel::compactTensorBatch(mDeviceKVCacheLengths, batchMapping, mDeviceKVCacheLengths, oldBatch, newBatch, stream);
-
-    // Compact Mamba recurrent and conv states.
-    // compactTensorBatch asserts shape[0] == oldBatch, but Mamba tensors are allocated with
-    // shape[0] == maxBatchSize. Reshape to [oldBatch, ...] before compaction and [newBatch, ...] after.
-    auto const& mambaConfig = mMambaCache.getConfig();
-    for (int32_t i = 0; i < mMambaCache.numLayers(); ++i)
-    {
-        rt::Tensor& recState = mMambaCache.getRecurrentState(i);
-        check::check(recState.reshape({oldBatch, mambaConfig.recurrentStateNumHeads, mambaConfig.recurrentStateHeadDim,
-                         mambaConfig.recurrentStateSize}),
-            "Tensor reshape failed");
-        kernel::compactTensorBatch(recState, batchMapping, recState, oldBatch, newBatch, stream);
-        check::check(recState.reshape({mambaConfig.maxBatchSize, mambaConfig.recurrentStateNumHeads,
-                         mambaConfig.recurrentStateHeadDim, mambaConfig.recurrentStateSize}),
-            "Tensor reshape failed");
-
-        rt::Tensor& convState = mMambaCache.getConvState(i);
-        check::check(
-            convState.reshape({oldBatch, mambaConfig.convDim, mambaConfig.convKernel}), "Tensor reshape failed");
-        kernel::compactTensorBatch(convState, batchMapping, convState, oldBatch, newBatch, stream);
-        check::check(convState.reshape({mambaConfig.maxBatchSize, mambaConfig.convDim, mambaConfig.convKernel}),
-            "Tensor reshape failed");
-    }
+    check::check(slot >= 0 && slot < mConfig.maxBatchSize, "Resident cache slot is out of range.");
+    mMambaCache.clearSlot(slot, stream);
 }
 
 // ------------------------------------------------------------------
@@ -399,6 +411,8 @@ void HybridCacheManager::compactBatchSlotState(
 std::vector<rt::Tensor> HybridCacheManager::captureKVCache(
     int32_t batchIdx, int32_t sequenceLength, cudaStream_t stream)
 {
+    check::check(
+        !mKVCache.hasReducedKVCache(), "HybridCacheManager::captureKVCache does not support sparse SWA page mappings.");
     // The batched save/restore kernels only instantiate the `half` template today — match main's
     // contract of throwing loudly on unsupported dtypes instead of silently corrupting.
     check::check(mConfig.kvConfig.kvCacheType == nvinfer1::DataType::kHALF,
@@ -450,6 +464,8 @@ std::vector<rt::Tensor> HybridCacheManager::captureKVCache(
 
 void HybridCacheManager::restoreKVCache(std::vector<rt::Tensor> const& saved, int32_t batchIdx, cudaStream_t stream)
 {
+    check::check(
+        !mKVCache.hasReducedKVCache(), "HybridCacheManager::restoreKVCache does not support sparse SWA page mappings.");
     // See captureKVCache for the dtype contract.
     check::check(mConfig.kvConfig.kvCacheType == nvinfer1::DataType::kHALF,
         "HybridCacheManager::restoreKVCache currently only supports kHALF KV cache; "

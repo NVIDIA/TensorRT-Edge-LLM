@@ -228,16 +228,28 @@ float getSpecDecodeOverallTokensPerSecond(metrics::SpecDecodeGenerationMetrics c
     return 0.0f;
 }
 
-//! Utility function for calculating speculative decoding average acceptance rate
-float getSpecDecodeAverageAcceptanceRate(metrics::SpecDecodeGenerationMetrics const& specDecodeGenerationMetrics)
+//! Average accept length: generated tokens per drafting-verification iteration
+float getSpecDecodeAverageAcceptLength(metrics::SpecDecodeGenerationMetrics const& specDecodeGenerationMetrics)
 {
     if (specDecodeGenerationMetrics.totalIterations <= 0)
     {
         return 0.0f;
     }
-
     return static_cast<float>(specDecodeGenerationMetrics.totalGeneratedTokens)
         / static_cast<float>(specDecodeGenerationMetrics.totalIterations);
+}
+
+//! Acceptance rate in [0, 1]: draft tokens accepted by verification over draft tokens
+//! proposed, bonus token excluded on both sides.
+float getSpecDecodeAcceptanceRate(metrics::SpecDecodeGenerationMetrics const& specDecodeGenerationMetrics)
+{
+    if (specDecodeGenerationMetrics.totalProposedDraftTokens <= 0)
+    {
+        return 0.0f;
+    }
+
+    return static_cast<float>(specDecodeGenerationMetrics.totalAcceptedDraftTokens)
+        / static_cast<float>(specDecodeGenerationMetrics.totalProposedDraftTokens);
 }
 
 //! Helper function to append timing data for a stage to an ostream
@@ -375,8 +387,10 @@ void outputSpecDecodeGenerationProfile(std::ostream& output,
                << static_cast<float>(specDecodeGenerationMetrics.totalGeneratedTokens)
                 / specDecodeGenerationMetrics.getTotalRuns()
                << std::endl;
-        output << "Average Acceptance Rate: " << std::fixed << std::setprecision(2)
-               << getSpecDecodeAverageAcceptanceRate(specDecodeGenerationMetrics) << std::endl;
+        output << "Average Accept Length: " << std::fixed << std::setprecision(2)
+               << getSpecDecodeAverageAcceptLength(specDecodeGenerationMetrics) << std::endl;
+        output << "Acceptance Rate: " << std::fixed << std::setprecision(3)
+               << getSpecDecodeAcceptanceRate(specDecodeGenerationMetrics) << std::endl;
         output << "Overall Tokens/Second (excluding base prefill): " << std::fixed << std::setprecision(1)
                << getSpecDecodeOverallTokensPerSecond(specDecodeGenerationMetrics) << std::endl;
 
@@ -570,7 +584,8 @@ void addJsonSpecDecodeGenerationSummary(nlohmann::json& summary,
                 {"average_tokens_per_run",
                     static_cast<float>(specDecodeGenerationMetrics.totalGeneratedTokens)
                         / specDecodeGenerationMetrics.getTotalRuns()},
-                {"average_acceptance_rate", getSpecDecodeAverageAcceptanceRate(specDecodeGenerationMetrics)},
+                {"average_accept_length", getSpecDecodeAverageAcceptLength(specDecodeGenerationMetrics)},
+                {"acceptance_rate", getSpecDecodeAcceptanceRate(specDecodeGenerationMetrics)},
                 {"overall_tokens_per_second_excluding_base_prefill",
                     getSpecDecodeOverallTokensPerSecond(specDecodeGenerationMetrics)}};
     }

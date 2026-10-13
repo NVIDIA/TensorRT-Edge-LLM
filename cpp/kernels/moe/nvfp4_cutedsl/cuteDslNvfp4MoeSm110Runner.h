@@ -64,14 +64,19 @@ struct CuteDslNvfp4MoeSm110Params
 
     //! Nvfp4MoePlugin activation encoding: 2=swiglu, 4=relu2.
     int32_t activationType{};
+
+    //! Request programmatic dependent launch for FC1 and FC2. The runner also
+    //! applies the CUDA-toolchain and SM capability gates before forwarding
+    //! this value to the generated CuTe DSL wrappers.
+    bool enablePdl{true};
 };
 
 //! Runner for the SM100/SM101/SM110 decomposed NVFP4 MoE backend.
 //!
 //! Pipeline:
-//!   topK ids/weights provided by the plugin -> GPU layout build ->
+//!   topK ids/weights provided by the plugin -> GPU layout build -> FC1 output clear ->
 //!   routed-row linear-SF FP4 activation pack -> FC1 gather grouped GEMM + activation + FP4 requant ->
-//!   zero output -> FC2 finalize/scatter.
+//!   FC2 finalize/scatter.
 class CuteDslNvfp4MoeSm110Runner
 {
 public:
@@ -117,8 +122,6 @@ public:
     int32_t run(CuteDslNvfp4MoeSm110Params const& params, void* workspace, cudaStream_t stream);
 
 private:
-    static int32_t selectMmaTilerN(int32_t moeInterSize);
-
     static detail::LazyKernelModule<nvfp4_moe_sm110_fc1_relu2_n128_Kernel_Module_t> sFC1Relu2N128;
     static detail::LazyKernelModule<nvfp4_moe_sm110_fc1_swiglu_n128_Kernel_Module_t> sFC1SwiGLUN128;
     static detail::LazyKernelModule<nvfp4_moe_sm110_fc1_geglu_n128_Kernel_Module_t> sFC1GeGLUN128;

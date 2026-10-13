@@ -19,6 +19,7 @@ from typing import Callable, Dict, Tuple
 import numpy as np
 import tensorrt as trt
 
+from ..core import quantization
 from ..core.weights import ParameterSpec
 from ..weight_packing import int4 as int4_pack
 from ..weight_packing import nvfp4 as nvfp4_pack
@@ -170,6 +171,9 @@ class NonGatedNvfp4Experts(Module):
                  repack_experts: Callable) -> None:
         super().__init__(ctx, prefix)
         self.repack_experts = repack_experts
+        first_expert = self.key("0.up_proj")
+        self.a16 = (self.weights.module_quant_type(first_expert) ==
+                    quantization.QUANT_NVFP4_A16)
 
     def _has_stacked_experts(self) -> bool:
         return (self.weights.has(self.key("up_proj"))
@@ -342,6 +346,29 @@ class NonGatedNvfp4Experts(Module):
                 correction: np.ndarray, correction_key: str) -> Tensor:
         cfg = self.cfg
         hidden_size = cfg.moe_latent_size or cfg.hidden_size
+        if self.a16:
+            if self._has_stacked_experts():
+                raise NotImplementedError(
+                    "stacked dense A16 expert checkpoints are not supported")
+            weights = nvfp4_pack.pack_nvfp4_a16_nongated_experts(
+                self._load_expert, cfg.num_experts, hidden_size,
+                cfg.moe_intermediate_size)
+            weights["e_score_correction_bias"] = correction.astype(np.float32)
+            return F.nvfp4_a16_moe(router_logits,
+                                   hidden_states,
+                                   weights,
+                                   cfg.num_experts,
+                                   cfg.num_experts_per_tok,
+                                   hidden_size,
+                                   weights["padded_intermediate"],
+                                   F.MoeActivation.RELU2,
+                                   cfg.n_group,
+                                   cfg.topk_group,
+                                   int(cfg.norm_topk_prob),
+                                   cfg.routed_scaling_factor,
+                                   F.MoeRouting.SIGMOID_GROUP_TOPK,
+                                   weight_prefix=self.prefix)
+
         hidden_alignment = 256 if self.ctx.options.sm12x else 1
         padded_intermediate = ((cfg.moe_intermediate_size + 127) // 128) * 128
         padded_hidden = ((hidden_size + hidden_alignment - 1) //
@@ -382,7 +409,8 @@ class NonGatedNvfp4Experts(Module):
 
         if padded_hidden != hidden_size:
             hidden_states = F.pad_last_dim(hidden_states,
-                                           padded_hidden - hidden_size, 3)
+                                           padded_hidden - hidden_size,
+                                           hidden_states.ndim)
         output = F.nvfp4_moe(router_logits,
                              hidden_states,
                              weights,
@@ -400,5 +428,5 @@ class NonGatedNvfp4Experts(Module):
                              weight_prefix=self.prefix,
                              weight_bindings=bindings)
         if padded_hidden != hidden_size:
-            output = F.slice_last_dim(output, 0, hidden_size, 3)
+            output = F.slice_last_dim(output, 0, hidden_size, output.ndim)
         return output

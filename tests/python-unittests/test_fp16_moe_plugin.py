@@ -36,6 +36,7 @@ from test_plugin_base import (DEPENDENCIES_AVAILABLE, IMPORT_ERROR,
                               assert_close, pf_float32, pf_int32)
 
 if DEPENDENCIES_AVAILABLE:
+    import tensorrt as trt
     import torch
 
     from tensorrt_edgellm.checkpoint.repacking import repack_fp16_moe_experts
@@ -78,10 +79,6 @@ class MoeCase:
     def fc1_out_dim(self) -> int:
         return (2 * self.moe_inter_size if self.activation_type == _ACT_SWIGLU
                 else self.moe_inter_size)
-
-    @property
-    def routed_row_capacity(self) -> int:
-        return _MAX_SEQUENCE_LENGTH * self.top_k
 
 
 _QWEN_CASE = MoeCase(name="qwen_swiglu_softmax",
@@ -202,7 +199,7 @@ def _moe_reference(fixture: MoeFixture, hidden_states: "torch.Tensor",
     return out.to(torch.float16).reshape_as(hidden_states)
 
 
-def _plugin_fields(case: MoeCase):
+def _plugin_fields(case: MoeCase, max_tokens: int = _MAX_SEQUENCE_LENGTH):
     fields = [
         pf_int32("num_experts", case.num_experts),
         pf_int32("top_k", case.top_k),
@@ -210,7 +207,7 @@ def _plugin_fields(case: MoeCase):
         pf_int32("moe_inter_size", case.moe_inter_size),
         pf_int32("activation_type", case.activation_type),
         pf_int32("norm_topk_prob", case.norm_topk_prob),
-        pf_int32("max_routed_rows", case.routed_row_capacity),
+        pf_int32("max_routed_rows", max_tokens * case.top_k),
         pf_int32("routing_mode", case.routing_mode),
     ]
     if case.routing_mode == 1:
@@ -222,11 +219,13 @@ def _plugin_fields(case: MoeCase):
     return fields
 
 
-def _io_specs(case: MoeCase):
+def _io_specs(case: MoeCase, *, legacy_rank3: bool = False):
     import tensorrt as trt
     specs = [
         ("router_logits", trt.float32, (-1, case.num_experts)),
-        ("hidden_states", trt.float16, (-1, -1, case.hidden_size)),
+        ("hidden_states", trt.float16, (-1, -1,
+                                        case.hidden_size) if legacy_rank3 else
+         (-1, case.hidden_size)),
         ("fc1_weights", trt.float16, (case.num_experts, case.fc1_out_dim,
                                       case.hidden_size)),
         ("fc2_weights", trt.float16, (case.num_experts, case.hidden_size,
@@ -239,48 +238,79 @@ def _io_specs(case: MoeCase):
 
 def _profiles(case: MoeCase, input_specs):
     profiles = {}
+    legacy_rank3 = next(shape for name, _, shape in input_specs
+                        if name == "hidden_states")[0:2] == (-1, -1)
     for name, _, shape in input_specs:
         if name == "router_logits":
+            max_tokens = (2 * _MAX_SEQUENCE_LENGTH
+                          if legacy_rank3 else _MAX_SEQUENCE_LENGTH)
             profiles[name] = ((1, case.num_experts), (1, case.num_experts),
-                              (_MAX_SEQUENCE_LENGTH, case.num_experts))
+                              (max_tokens, case.num_experts))
         elif name == "hidden_states":
-            profiles[name] = ((1, 1, case.hidden_size), (1, 1,
-                                                         case.hidden_size),
-                              (1, _MAX_SEQUENCE_LENGTH, case.hidden_size))
+            profiles[name] = (((1, 1, case.hidden_size), (1, 1,
+                                                          case.hidden_size),
+                               (2, _MAX_SEQUENCE_LENGTH,
+                                case.hidden_size)) if len(shape) == 3 else
+                              ((1, case.hidden_size), (1, case.hidden_size),
+                               (_MAX_SEQUENCE_LENGTH, case.hidden_size)))
         else:
             profiles[name] = (shape, shape, shape)
     return profiles
 
 
-def _execute_decode_and_prefill(fixture: MoeFixture) -> None:
+def _execute_decode_and_prefill(fixture: MoeFixture,
+                                *,
+                                legacy_rank3: bool = False) -> None:
     case = fixture.case
     runner = PluginRunner()
-    input_specs = _io_specs(case)
+    input_specs = _io_specs(case, legacy_rank3=legacy_rank3)
+    capability = torch.cuda.get_device_capability()
+    require_supported = capability in ((10, 0), (10, 1), (11, 0))
+    max_tokens = (2 * _MAX_SEQUENCE_LENGTH
+                  if legacy_rank3 else _MAX_SEQUENCE_LENGTH)
     try:
         runner.build(input_specs=input_specs,
                      output_names=["output"],
                      plugin_name=_PLUGIN_NAME,
                      plugin_version=_PLUGIN_VERSION,
-                     plugin_fields=_plugin_fields(case),
+                     plugin_fields=_plugin_fields(case, max_tokens),
                      profiles=_profiles(case, input_specs),
-                     expect_unsupported=True)
+                     expect_unsupported=not require_supported)
     except PluginUnsupportedError:
+        if require_supported:
+            raise
         pytest.skip(
             "Fp16MoePlugin f16_moe CuTeDSL artifact not linked in this build")
+
+    serialized = runner.engine.serialize()
+    assert serialized is not None
+    runtime = trt.Runtime(runner.logger)
+    engine = runtime.deserialize_cuda_engine(serialized)
+    assert engine is not None
+    context = engine.create_execution_context()
+    assert context is not None
+    runner.engine = engine
+    runner.context = context
+    runner._fp16_moe_test_runtime = runtime
 
     static_inputs = {
         "fc1_weights": fixture.fc1_weights.to("cuda").contiguous(),
         "fc2_weights": fixture.fc2_weights.to("cuda").contiguous(),
     }
 
-    for sequence_length in (1, _MAX_SEQUENCE_LENGTH):
-        generator = torch.Generator().manual_seed(30000 + sequence_length +
+    shapes = ((1, 1), (2, 4), (1, _MAX_SEQUENCE_LENGTH)) if legacy_rank3 else (
+        (1, 1), (1, _MAX_SEQUENCE_LENGTH))
+    for batch_size, sequence_length in shapes:
+        num_tokens = batch_size * sequence_length
+        generator = torch.Generator().manual_seed(30000 + num_tokens +
                                                   case.routing_mode)
+        hidden_shape = ((batch_size, sequence_length,
+                         case.hidden_size) if legacy_rank3 else
+                        (num_tokens, case.hidden_size))
         hidden_states = (torch.randn(
-            (1, sequence_length, case.hidden_size),
-            generator=generator,
-            dtype=torch.float32) * 0.25).to(torch.float16).to("cuda")
-        router_logits = torch.randn((sequence_length, case.num_experts),
+            hidden_shape, generator=generator, dtype=torch.float32) * 0.25).to(
+                torch.float16).to("cuda")
+        router_logits = torch.randn((num_tokens, case.num_experts),
                                     generator=generator,
                                     dtype=torch.float32).to("cuda")
         expert_score_bias = (torch.randn(
@@ -301,7 +331,7 @@ def _execute_decode_and_prefill(fixture: MoeFixture) -> None:
         runner.execute(tensors)
 
         assert bool(torch.isfinite(actual.to(torch.float32)).all())
-        assert_close(f"{case.name}[S={sequence_length}]",
+        assert_close(f"{case.name}[B={batch_size},S={sequence_length}]",
                      expected,
                      actual,
                      atol=0.05,
@@ -313,3 +343,18 @@ def _execute_decode_and_prefill(fixture: MoeFixture) -> None:
                          ids=lambda c: c.name)
 def test_fp16_moe_decode_and_prefill_dynamic_engine(case):
     _execute_decode_and_prefill(_make_fixture(case))
+
+
+@pytest.mark.parametrize("case", [_QWEN_CASE, _NEMOTRON_CASE],
+                         ids=lambda c: c.name)
+def test_fp16_moe_rejects_rank3_hidden_states(case):
+    input_specs = _io_specs(case, legacy_rank3=True)
+    with pytest.raises(PluginUnsupportedError):
+        PluginRunner().build(input_specs=input_specs,
+                             output_names=["output"],
+                             plugin_name=_PLUGIN_NAME,
+                             plugin_version=_PLUGIN_VERSION,
+                             plugin_fields=_plugin_fields(
+                                 case, 2 * _MAX_SEQUENCE_LENGTH),
+                             profiles=_profiles(case, input_specs),
+                             expect_unsupported=True)

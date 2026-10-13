@@ -1,0 +1,4 @@
+tests:
+  - tests/defs/test_checkpoint_export.py::test_checkpoint_mtp_export[Qwen3.5-0.8B-FP8-fp8-mtp]
+  - tests/defs/test_checkpoint_export.py::test_checkpoint_dflash_export[Qwen3.5-4B-NVFP4-nvfp4-dflash-b16-nvfp4]
+  - tests/defs/test_checkpoint_export.py::test_checkpoint_dspark_export[Qwen3-4B-Instruct-2507-NVFP4-nvfp4-dspark-block7-fp16]

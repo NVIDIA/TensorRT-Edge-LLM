@@ -47,6 +47,8 @@ import torch.nn.functional as F
 
 from ...config import ModelConfig, _is_gemma4_model_type
 from ..default.modeling_default import OnnxSpec, RMSNorm
+from ..dflash.modeling_dflash_draft import (DFlashCachedAttention,
+                                            DFlashCachedDecoderLayer)
 # yapf: disable
 from ..gemma4.modeling_gemma4_text import (Gemma4MLP, Gemma4RMSNorm,
                                            Gemma4ValueRMSNorm,
@@ -56,8 +58,9 @@ from ..gemma4.modeling_gemma4_text import (Gemma4MLP, Gemma4RMSNorm,
                                            _rotary_dim_from_rope_config,
                                            _uses_attention_k_eq_v)
 # yapf: enable
-from ..linear import FP16Linear, make_linear
-from ..ops import KV_PAGE_SIZE, attention_plugin, dflash_target_kv_cache_update
+from ..linear import FP16Linear, is_int4_linear, make_linear
+from ..ops import (KV_PAGE_SIZE, attention_plugin,
+                   dflash_target_kv_cache_update, qkv_concat)
 
 __all__ = ["DSparkDraftModel"]
 
@@ -100,6 +103,22 @@ class MLP(nn.Module):
             self.up_proj(hidden_states))
 
 
+def _layer_uses_sliding_attention(config: ModelConfig, layer_idx: int) -> bool:
+    """Whether *layer_idx* runs sliding-window attention.
+
+    Falls back to the config-level window when the checkpoint ships no
+    per-layer labels, so drafts that only set ``sliding_window`` still apply it.
+    """
+    if config.sliding_window_size <= 0:
+        return False
+    labels = config.raw_layer_types or config.attention_layer_types
+    if not labels:
+        return True
+    if layer_idx >= len(labels):
+        return False
+    return labels[layer_idx] == "sliding_attention"
+
+
 # ---------------------------------------------------------------------------
 # DSpark Cached Attention Layer
 # ---------------------------------------------------------------------------
@@ -134,7 +153,11 @@ class DSparkCachedAttention(nn.Module):
             self.num_heads = config.num_attention_heads
             self.num_kv_heads = config.num_key_value_heads
             self.head_dim = config.head_dim
-            self.sliding_window_size = -1
+            # Non-Gemma4 drafts label every layer uniformly, so the config-level
+            # window applies to all of them when layer_types request sliding.
+            self.sliding_window_size = (config.sliding_window_size
+                                        if _layer_uses_sliding_attention(
+                                            config, layer_idx) else -1)
         self.attention_scale = config.attention_scaling
         self.hidden_size = config.hidden_size
 
@@ -159,12 +182,41 @@ class DSparkCachedAttention(nn.Module):
                                   self.num_heads * self.head_dim,
                                   config.hidden_size,
                                   module_name=f"{prefix}.o_proj")
+        qkv_projections = [self.q_proj, self.k_proj]
+        if not self.attention_k_eq_v:
+            qkv_projections.append(self.v_proj)
+        self._uses_int4_qkv = any(
+            is_int4_linear(proj) for proj in qkv_projections)
 
         norm_cls = Gemma4RMSNorm if self.is_gemma4 else RMSNorm
         self.q_norm = norm_cls(self.head_dim, eps=config.rms_norm_eps)
         self.k_norm = norm_cls(self.head_dim, eps=config.rms_norm_eps)
         self.v_norm = (Gemma4ValueRMSNorm(self.head_dim, config.rms_norm_eps)
                        if self.is_gemma4 and config.has_value_norm else None)
+        self._uses_int4_qkv = False
+
+        self._attention_sinks_list: list = []
+        if config.attention_sink_bias:
+            self.register_buffer("attention_sink_bias",
+                                 torch.zeros(self.num_heads,
+                                             dtype=torch.float32),
+                                 persistent=True)
+
+    def _capture_attention_sink_list(self) -> None:
+        """Mirror the loaded sink buffer into a plain Python list."""
+        sink = getattr(self, "attention_sink_bias", None)
+        if sink is not None:
+            self._attention_sinks_list = sink.detach().to(
+                torch.float32).cpu().flatten().tolist()
+
+    def _ragged_attention_kwargs(self) -> dict:
+        kwargs = {}
+        if self.sliding_window_size > 0:
+            kwargs["enable_contiguous_query_swa"] = 1
+        if self._attention_sinks_list:
+            kwargs["attention_sinks"] = self._attention_sinks_list
+            kwargs["enable_attention_sink"] = 1
+        return kwargs
 
     def forward(
             self,
@@ -230,8 +282,19 @@ class DSparkCachedAttention(nn.Module):
                                     self.num_kv_heads * self.head_dim)
 
         # --- AttentionPlugin: proposal attention over full context ---
+        sink_kwargs = {}
+        if self.sliding_window_size > 0:
+            # The DSpark proposal block is a linear chain at consecutive
+            # positions, which is what the contiguous-query SWA variant assumes.
+            sink_kwargs["enable_contiguous_query_swa"] = 1
+        if self._attention_sinks_list:
+            sink_kwargs["attention_sinks"] = self._attention_sinks_list
+            sink_kwargs["enable_attention_sink"] = 1
+        # INT4 GEMM plugin outputs must not feed an exposed ONNX Concat: the
+        # resulting Myelin fusion corrupts the packed QKV in the built engine.
         attn_4d, present_kv = attention_plugin(
-            torch.cat([q, k_self, v_self], dim=-1),
+            (qkv_concat(q, k_self, v_self) if self._uses_int4_qkv else
+             torch.cat([q, k_self, v_self], dim=-1)),
             updated_kv,
             context_lengths,
             rope_cos_sin,
@@ -249,7 +312,8 @@ class DSparkCachedAttention(nn.Module):
             skip_softmax_scale_factor=0.0,
             attention_mask=attention_mask,
             attention_pos_id=attention_pos_id,
-            qkv_scales=[1.0, 1.0, 1.0])
+            qkv_scales=[1.0, 1.0, 1.0],
+            **sink_kwargs)
 
         # attn_4d: [B, BS, Hq, D] -> [B, BS, Hq*D]
         attn_output = attn_4d.reshape(batch_size, proposal_seq_len,
@@ -257,6 +321,8 @@ class DSparkCachedAttention(nn.Module):
         attn_output = self.o_proj(attn_output)
 
         return attn_output, present_kv
+
+    forward_ragged = DFlashCachedAttention.forward_ragged
 
 
 # ---------------------------------------------------------------------------
@@ -327,48 +393,52 @@ class DSparkCachedDecoderLayer(nn.Module):
 
         return hidden_states, present_kv
 
+    forward_ragged = DFlashCachedDecoderLayer.forward_ragged
+
 
 # ---------------------------------------------------------------------------
 # Flat ONNX wrapper
 # ---------------------------------------------------------------------------
 
 
-def _make_flat_wrapper_dspark(model: nn.Module, num_layers: int) -> nn.Module:
-    """Build a flat-signature wrapper for cached DSpark draft ONNX export.
-
-    Uses exec() to generate a forward() with explicit named parameters for
-    each past_key_values_i, matching the pattern used by the default LLM
-    wrapper. This is required because torch.export treats *args as a single
-    tuple, causing dynamic_shapes mismatches.
-    """
-    # Build explicit parameter list
-    param_names = ([
-        "inputs_embeds", "dflash_target_hidden_concat", "rope_rotary_cos_sin",
-        "context_lengths", "kvcache_start_index", "kv_page_table",
-        "dflash_delta_lengths", "attention_mask", "attention_pos_id"
-    ] + [f"past_key_values_{i}" for i in range(num_layers)])
-
-    past_kv_tuple = "({},)".format(", ".join(f"past_key_values_{i}"
-                                             for i in range(num_layers)))
-
+def _make_flat_wrapper_dspark_ragged(model: nn.Module,
+                                     num_layers: int) -> nn.Module:
+    names = (["inputs_embeds", "dflash_target_hidden_concat"] +
+             [f"past_key_values_{i}" for i in range(num_layers)] + [
+                 "rope_rotary_cos_sin", "positions", "query_start_offsets",
+                 "query_lengths", "past_lengths", "attention_sequence_lengths",
+                 "state_indices", "execution_phase_marker",
+                 "context_sequence_count_carrier", "kv_page_table",
+                 "dflash_delta_rope_cos_sin", "dflash_delta_positions",
+                 "dflash_delta_token_to_sequence", "attention_position_ids",
+                 "packed_attention_mask"
+             ])
+    past_kv = "({},)".format(", ".join(f"past_key_values_{i}"
+                                       for i in range(num_layers)))
     body = (
-        f"    logits, draft_hidden_states, present_kv_list = self._model(\n"
-        f"        inputs_embeds, dflash_target_hidden_concat,\n"
-        f"        rope_rotary_cos_sin, context_lengths,\n"
-        f"        kvcache_start_index, kv_page_table, dflash_delta_lengths,\n"
-        f"        attention_mask, attention_pos_id,\n"
-        f"        list({past_kv_tuple}))\n"
-        f"    return (logits, draft_hidden_states) + tuple(present_kv_list)\n")
-
-    src = "def _forward(self, {}):\n{}".format(", ".join(param_names), body)
+        f"    logits, hidden_states, present = self._model.forward_ragged(\n"
+        f"        inputs_embeds, dflash_target_hidden_concat, {past_kv},\n"
+        f"        rope_rotary_cos_sin=rope_rotary_cos_sin, positions=positions,\n"
+        f"        query_start_offsets=query_start_offsets, query_lengths=query_lengths,\n"
+        f"        past_lengths=past_lengths,\n"
+        f"        attention_sequence_lengths=attention_sequence_lengths,\n"
+        f"        state_indices=state_indices, execution_phase_marker=execution_phase_marker,\n"
+        f"        context_sequence_count_carrier=context_sequence_count_carrier,\n"
+        f"        kv_page_table=kv_page_table, delta_rope_cos_sin=dflash_delta_rope_cos_sin,\n"
+        f"        delta_positions=dflash_delta_positions,\n"
+        f"        delta_token_to_sequence=dflash_delta_token_to_sequence,\n"
+        f"        attention_position_ids=attention_position_ids,\n"
+        f"        packed_attention_mask=packed_attention_mask)\n"
+        f"    return (logits, hidden_states) + tuple(present)\n")
     globs: dict = {}
-    exec(src, globs)  # noqa: S102
+    exec("def _forward(self, {}):\n{}".format(", ".join(names), body),
+         globs)  # noqa: S102
 
     class _Wrapper(nn.Module):
 
-        def __init__(self, m: nn.Module) -> None:
+        def __init__(self, wrapped_model: nn.Module) -> None:
             super().__init__()
-            self._model = m
+            self._model = wrapped_model
 
     _Wrapper.forward = globs["_forward"]
     return _Wrapper(model)
@@ -403,7 +473,10 @@ class DSparkDraftModel(nn.Module):
                               hidden_size,
                               bias=False,
                               module_name="fc")
-        if not isinstance(self.fc, FP16Linear):
+        self.fc_native_precision = getattr(config,
+                                           "dspark_fc_native_precision", False)
+        if not self.fc_native_precision and not isinstance(
+                self.fc, FP16Linear):
             raise ValueError(
                 "DSpark draft fc projector must remain dense FP16 for the "
                 "full-FP32 target-hidden projection. Exclude module 'fc' "
@@ -443,13 +516,16 @@ class DSparkDraftModel(nn.Module):
             (logits [B, BS, V], hidden_states [B, BS, H], present_key_values list)
         """
         # Project multi-layer hidden states: [B, L, Nl*H] -> [B, L, H]
-        # Qwen3-8B target_hidden can spike above abs=2e4 for some first-token
-        # channels. The visible pre-RMSNorm FC result must remain FP32; casting
-        # an already-overflowed FP16 FC output back to FP32 is too late.
-        bias = (self.fc.bias.to(torch.float32)
-                if self.fc.bias is not None else None)
-        h_delta_acc = F.linear(target_hidden_concat.to(torch.float32),
-                               self.fc.weight.to(torch.float32), bias)
+        if self.fc_native_precision:
+            h_delta_acc = self.fc(target_hidden_concat.to(torch.float16))
+        else:
+            # Qwen3-8B target_hidden can spike above abs=2e4 for some first-token
+            # channels. The visible pre-RMSNorm FC result must remain FP32; casting
+            # an already-overflowed FP16 FC output back to FP32 is too late.
+            bias = (self.fc.bias.to(torch.float32)
+                    if self.fc.bias is not None else None)
+            h_delta_acc = F.linear(target_hidden_concat.to(torch.float32),
+                                   self.fc.weight.to(torch.float32), bias)
         h_delta = self.hidden_norm(h_delta_acc).to(inputs_embeds.dtype)
 
         # Run through decoder layers
@@ -475,157 +551,165 @@ class DSparkDraftModel(nn.Module):
 
         return logits, hidden_states.to(torch.float16), present_key_values
 
+    def forward_ragged(self, inputs_embeds: torch.Tensor,
+                       target_hidden_concat: torch.Tensor,
+                       past_key_values: Tuple[torch.Tensor, ...], **metadata):
+        if self.fc_native_precision:
+            h_delta_acc = self.fc(target_hidden_concat.to(torch.float16))
+        else:
+            bias = (self.fc.bias.to(torch.float32)
+                    if self.fc.bias is not None else None)
+            h_delta_acc = F.linear(target_hidden_concat.to(torch.float32),
+                                   self.fc.weight.to(torch.float32), bias)
+        h_delta = self.hidden_norm(h_delta_acc).to(inputs_embeds.dtype)
+        hidden_states = inputs_embeds.to(h_delta.dtype)
+        present = []
+        for layer_idx, layer in enumerate(self.layers):
+            hidden_states, present_kv = layer.forward_ragged(
+                hidden_states, h_delta, past_key_values[layer_idx],
+                metadata["rope_rotary_cos_sin"], **metadata)
+            present.append(present_kv)
+        hidden_states = self.norm(hidden_states)
+        logits = self.lm_head(hidden_states).to(torch.float32)
+        cap = getattr(self.config, "final_logit_softcapping", None)
+        if cap is not None:
+            logits = torch.tanh(logits / cap) * cap
+        return logits, hidden_states.to(torch.float16), tuple(present)
+
     # ------------------------------------------------------------------
     # ONNX export
     # ------------------------------------------------------------------
 
     def onnx_export_spec(self) -> OnnxSpec:
         """Return all model-specific parameters needed for ONNX export."""
+        return self._ragged_onnx_export_spec()
+
+    def _ragged_onnx_export_spec(self) -> OnnxSpec:
         config = self.config
         device = next(itertools.chain(self.parameters(),
                                       self.buffers())).device
-        dtype16 = torch.float16
-        num_target_layers = len(config.dspark_target_layer_ids)
         batch_size = _BATCH_SIZE
-        block_size = config.dspark_block_size
-        delta_len = _CTX_LEN
-        kv_capacity = _KV_CAPACITY
-        num_kv_heads = config.num_key_value_heads
-        head_dim = config.head_dim
-        rotary_dim = int(config.head_dim * config.partial_rotary_factor)
-        if _is_gemma4_model_type(config.model_type):
-            rotary_dim = _rotary_dim_from_rope_config(config, None, head_dim)
+        query_width = config.dspark_block_size
+        delta_width = _CTX_LEN
+        physical_tokens = batch_size * query_width
+        delta_tokens = batch_size * delta_width
         num_layers = config.num_hidden_layers
-        packed_mask_len = (block_size + 31) // 32
-
-        inputs_embeds = torch.zeros(batch_size,
-                                    block_size,
+        num_target_layers = len(config.dspark_target_layer_ids)
+        inputs_embeds = torch.zeros(physical_tokens,
                                     config.hidden_size,
-                                    dtype=dtype16,
+                                    dtype=torch.float16,
                                     device=device)
-        target_hidden_concat = torch.zeros(batch_size,
-                                           delta_len,
-                                           num_target_layers *
-                                           config.hidden_size,
-                                           dtype=dtype16,
-                                           device=device)
-        rope_rotary_cos_sin = torch.zeros(1,
-                                          kv_capacity,
-                                          rotary_dim,
-                                          dtype=torch.float32,
-                                          device=device)
-        context_lengths = torch.zeros(batch_size,
-                                      dtype=torch.int32,
-                                      device=device)
-        kvcache_start_index = torch.zeros(batch_size,
-                                          dtype=torch.int32,
-                                          device=device)
-        kv_page_table = torch.zeros(batch_size,
-                                    2,
-                                    1,
-                                    dtype=torch.int32,
+        target_hidden = torch.zeros(delta_tokens,
+                                    num_target_layers * config.hidden_size,
+                                    dtype=torch.float16,
                                     device=device)
-        delta_lengths = torch.zeros(batch_size,
-                                    dtype=torch.int32,
-                                    device=device)
-        attention_mask = torch.zeros(batch_size,
-                                     block_size,
-                                     packed_mask_len,
-                                     dtype=torch.int32,
-                                     device=device)
-        attention_pos_id = torch.zeros(batch_size,
-                                       block_size,
-                                       dtype=torch.int32,
-                                       device=device)
-
-        # Paged KV pool binding - same contract as the AttentionPlugin's kv_cache input:
-        # [2, num_pages, KV_PAGE_SIZE, numKVHeads, headDim].
-        past_key_values = [
+        past_key_values = tuple(
             torch.zeros(2,
                         1,
                         KV_PAGE_SIZE,
-                        num_kv_heads,
-                        head_dim,
-                        dtype=dtype16,
-                        device=device) for _ in range(num_layers)
-        ]
-
-        args = (inputs_embeds, target_hidden_concat, rope_rotary_cos_sin,
-                context_lengths, kvcache_start_index, kv_page_table,
-                delta_lengths, attention_mask, attention_pos_id,
-                *past_key_values)
-
-        input_names = [
-            "inputs_embeds",
-            "dflash_target_hidden_concat",
-            "rope_rotary_cos_sin",
-            "context_lengths",
-            "kvcache_start_index",
-            "kv_page_table",
-            "dflash_delta_lengths",
-            "attention_mask",
-            "attention_pos_id",
-        ]
-        for i in range(num_layers):
-            input_names.append(f"past_key_values_{i}")
-
-        output_names = ["logits", "dspark_hidden_states"]
-        for i in range(num_layers):
-            output_names.append(f"present_key_values_{i}")
-
-        batch = torch.export.Dim("batch", min=1, max=256)
-        block_seq = torch.export.Dim("block_seq", min=1, max=64)
-        delta_seq = torch.export.Dim("delta_seq", min=1, max=32768)
-        kv_len = torch.export.Dim("kv_len", min=1, max=32768)
-        packed_mask = torch.export.Dim("packed_mask", min=1, max=64)
-        page_batch = torch.export.Dim("page_batch", min=1, max=256)
+                        config.num_key_value_heads,
+                        config.head_dim,
+                        dtype=torch.float16,
+                        device=device) for _ in range(num_layers))
+        rotary_dim = int(config.head_dim * config.partial_rotary_factor)
+        if _is_gemma4_model_type(config.model_type):
+            rotary_dim = _rotary_dim_from_rope_config(config, None,
+                                                      config.head_dim)
+        rope = torch.zeros(physical_tokens,
+                           rotary_dim,
+                           dtype=torch.float32,
+                           device=device)
+        positions = torch.arange(query_width, dtype=torch.int32,
+                                 device=device).repeat(batch_size)
+        offsets = torch.arange(0,
+                               physical_tokens + 1,
+                               query_width,
+                               dtype=torch.int32,
+                               device=device)
+        lengths = torch.full((batch_size, ),
+                             query_width,
+                             dtype=torch.int32,
+                             device=device)
+        past = torch.zeros(batch_size, dtype=torch.int32, device=device)
+        state = torch.arange(batch_size, dtype=torch.int32, device=device)
+        phase = torch.zeros(4, dtype=torch.int32, device=device)
+        context_count = torch.empty(0, dtype=torch.int32, device=device)
+        page_table = torch.zeros(batch_size,
+                                 2,
+                                 1,
+                                 dtype=torch.int32,
+                                 device=device)
+        delta_rope = torch.zeros(delta_tokens,
+                                 rotary_dim,
+                                 dtype=torch.float32,
+                                 device=device)
+        delta_positions = torch.arange(delta_width,
+                                       dtype=torch.int32,
+                                       device=device).repeat(batch_size)
+        delta_owners = torch.arange(
+            batch_size, dtype=torch.int32,
+            device=device).repeat_interleave(delta_width)
+        mask = torch.zeros(physical_tokens, (query_width + 31) // 32,
+                           dtype=torch.int32,
+                           device=device)
+        args = (inputs_embeds, target_hidden,
+                *past_key_values, rope, positions, offsets, lengths, past,
+                lengths.clone(), state, phase, context_count,
+                page_table, delta_rope, delta_positions, delta_owners,
+                positions.clone(), mask)
+        names = (
+            ["inputs_embeds", "dflash_target_hidden_concat"] +
+            [f"past_key_values_{i}" for i in range(num_layers)] + [
+                "rope_rotary_cos_sin", "positions", "query_start_offsets",
+                "query_lengths", "past_lengths", "attention_sequence_lengths",
+                "state_indices", "execution_phase_marker",
+                "context_sequence_count_carrier", "kv_page_table",
+                "dflash_delta_rope_cos_sin", "dflash_delta_positions",
+                "dflash_delta_token_to_sequence", "attention_position_ids",
+                "packed_attention_mask"
+            ])
+        outputs = ["logits", "dspark_hidden_states"
+                   ] + [f"present_key_values_{i}" for i in range(num_layers)]
+        token_dim = torch.export.Dim("physical_tokens", min=1, max=8_388_608)
+        delta_dim = torch.export.Dim("delta_tokens", min=1, max=8_388_608)
+        seq_dim = torch.export.Dim("num_sequences", min=1, max=256)
+        pages = torch.export.Dim("num_pages", min=1, max=1_048_576)
         max_pages = torch.export.Dim("max_pages_per_seq", min=1, max=32768)
-        num_pages = torch.export.Dim("num_pages", min=1, max=1048576)
-
-        dynamic_shapes = [
-            {
-                0: batch,
-                1: block_seq
-            },  # inputs_embeds
-            {
-                0: batch,
-                1: delta_seq
-            },  # dflash_target_hidden_concat
-            {
-                1: kv_len
-            },  # rope_rotary_cos_sin (ropeBatch=1 fixed)
-            {
-                0: batch
-            },  # context_lengths
-            {
-                0: batch
-            },  # kvcache_start_index
-            {
-                0: page_batch,
-                2: max_pages
-            },  # kv_page_table
-            {
-                0: batch
-            },  # dflash_delta_lengths
-            {
-                0: batch,
-                1: block_seq,
-                2: packed_mask
-            },  # attention_mask
-            {
-                0: batch,
-                1: block_seq
-            },  # attention_pos_id
-        ]
-        for _ in range(num_layers):
-            dynamic_shapes.append({1: num_pages
-                                   })  # past_key_values_i (pool-shaped)
-
-        wrapped = _make_flat_wrapper_dspark(self, num_layers)
+        phase_dim = torch.export.Dim("execution_phase_extent", min=1, max=8)
+        packed_width = torch.export.Dim("packed_mask_width", min=1, max=64)
+        shapes = [{0: token_dim}, {0: delta_dim}]
+        shapes += [{1: pages} for _ in range(num_layers)]
+        shapes += [{
+            0: token_dim
+        }, {
+            0: token_dim
+        }, {
+            0: seq_dim + 1
+        }, {
+            0: seq_dim
+        }, {
+            0: seq_dim
+        }, {
+            0: seq_dim
+        }, {
+            0: seq_dim
+        }, {
+            0: phase_dim
+        }, {}, {
+            0: seq_dim,
+            2: max_pages
+        }, {
+            0: delta_dim
+        }, {
+            0: delta_dim
+        }, {
+            0: delta_dim
+        }, {
+            0: token_dim
+        }, {
+            0: token_dim,
+            1: packed_width
+        }]
+        wrapped = _make_flat_wrapper_dspark_ragged(self, num_layers)
         wrapped.eval()
-
-        return OnnxSpec(wrapped=wrapped,
-                        args=args,
-                        input_names=input_names,
-                        output_names=output_names,
-                        dynamic_shapes=dynamic_shapes)
+        return OnnxSpec(wrapped, args, names, outputs, shapes)

@@ -26,6 +26,7 @@
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
 #include <curand_kernel.h>
+#include <limits>
 #include <stdexcept>
 
 namespace trt_edgellm
@@ -239,6 +240,25 @@ size_t getTopKtopPSamplingWorkspaceSize(int32_t batchSize, int32_t vocabSize, Sa
     }
 
     return workspaceSize;
+}
+
+size_t getTopPProbabilitiesWorkspaceSize(int32_t rows, int32_t vocabSize)
+{
+    check::check(
+        rows > 0 && vocabSize > 0 && static_cast<int64_t>(rows) * vocabSize <= std::numeric_limits<int32_t>::max(),
+        "Top-p probability dimensions exceed CUB launch limits");
+    auto const alignSize = [](size_t size) {
+        constexpr size_t kAlignment{256};
+        return (size + kAlignment - 1) & ~(kAlignment - 1);
+    };
+    size_t cubStorageSize{0};
+    cub::DeviceSegmentedRadixSort::SortPairsDescending(nullptr, cubStorageSize, static_cast<float*>(nullptr),
+        static_cast<float*>(nullptr), static_cast<int32_t*>(nullptr), static_cast<int32_t*>(nullptr), rows * vocabSize,
+        rows, static_cast<int32_t*>(nullptr), static_cast<int32_t*>(nullptr));
+    return alignSize(cubStorageSize) + alignSize(static_cast<size_t>(rows) * vocabSize * sizeof(float))
+        + alignSize(static_cast<size_t>(rows) * vocabSize * sizeof(int32_t))
+        + alignSize(static_cast<size_t>(rows) * vocabSize * sizeof(int32_t))
+        + alignSize(static_cast<size_t>(rows + 1) * sizeof(int32_t));
 }
 
 // Calculate workspace size for selectAllTopK (FP32 only)
@@ -558,7 +578,8 @@ __global__ void topKStage1(T const* __restrict__ logits, float* tmpLogits, int32
 // Stage 2: Sample from top-K elements using softmax (FP32 only)
 template <int BLOCK_SIZE_>
 __global__ void topKStage2Sampling(int32_t const* __restrict__ topKTmpIdBuf, float* topKTmpValBuf,
-    int32_t* __restrict__ selectedIndices, SamplingParams const params, uint64_t philoxSeed, uint64_t philoxOffset)
+    int32_t* __restrict__ selectedIndices, SamplingParams const params, uint64_t philoxSeed, uint64_t philoxOffset,
+    float const* __restrict__ rowUniforms)
 {
     float const MAX_T_VAL = FLT_MAX;
 
@@ -631,13 +652,32 @@ __global__ void topKStage2Sampling(int32_t const* __restrict__ topKTmpIdBuf, flo
     // Sample from the distribution
     if (tid == 0)
     {
-        // Initialize curand state for this batch
-        curandState_t localState;
-        curand_init(philoxSeed, batchIdx, philoxOffset, &localState);
-
-        // When generating random number, topP filtering is applied to ensure the sum of the probabilities is less than
-        // topP
-        auto randNum = static_cast<float>(curand_uniform(&localState) * topP * sSum);
+        float uniform;
+        if (rowUniforms != nullptr)
+        {
+            uniform = fminf(fmaxf(rowUniforms[batchIdx], 0.0F), 0.99999994F);
+        }
+        else
+        {
+            curandState_t localState;
+            curand_init(philoxSeed, batchIdx, philoxOffset, &localState);
+            uniform = curand_uniform(&localState);
+        }
+        float retainedSum{sSum};
+        if (topP < 1.0F)
+        {
+            retainedSum = 0.0F;
+            float const nucleusThreshold = topP * sSum;
+            for (int32_t ki = 0; ki < k; ++ki)
+            {
+                retainedSum += sVal2[ki];
+                if (retainedSum >= nucleusThreshold)
+                {
+                    break;
+                }
+            }
+        }
+        auto randNum = uniform * retainedSum;
 
         for (int32_t ki = 0; ki < k; ki++)
         {
@@ -839,6 +879,66 @@ void applyLogitBiasRepeatedRows(rt::Tensor& logits, rt::Tensor const& tokenIds, 
         rowsPerSlot);
 }
 
+//! One block per logits row. A set bit means the token is grammar-legal; every
+//! cleared bit is driven to kMaskedLogitValue so sampling can never pick it.
+__global__ void applyTokenBitmaskKernel(
+    float* logits, int32_t const* bitmask, int32_t const* rowNeedsMask, int32_t vocabSize, int32_t bitmaskStride)
+{
+    int32_t const rowId = static_cast<int32_t>(blockIdx.x);
+    // Unconstrained rows (no grammar, finished slot, or terminated matcher) cost
+    // one predictable branch and no memory traffic.
+    if (rowNeedsMask[rowId] == 0)
+    {
+        return;
+    }
+
+    float* rowLogits = logits + static_cast<int64_t>(rowId) * vocabSize;
+    int32_t const* rowMask = bitmask + static_cast<int64_t>(rowId) * bitmaskStride;
+
+    for (int32_t tokenId = static_cast<int32_t>(threadIdx.x); tokenId < vocabSize;
+        tokenId += static_cast<int32_t>(blockDim.x))
+    {
+        int32_t const word = rowMask[tokenId >> 5];
+        if (((word >> (tokenId & 31)) & 1) == 0)
+        {
+            rowLogits[tokenId] = kMaskedLogitValue;
+        }
+    }
+}
+
+void applyTokenBitmask(
+    rt::Tensor& logits, rt::Tensor const& bitmask, rt::Tensor const& rowNeedsMask, int32_t numRows, cudaStream_t stream)
+{
+    check::check(logits.getDeviceType() == rt::DeviceType::kGPU && bitmask.getDeviceType() == rt::DeviceType::kGPU
+            && rowNeedsMask.getDeviceType() == rt::DeviceType::kGPU,
+        "All token-bitmask tensors must be on GPU");
+    check::check(logits.getDataType() == nvinfer1::DataType::kFLOAT
+            && bitmask.getDataType() == nvinfer1::DataType::kINT32
+            && rowNeedsMask.getDataType() == nvinfer1::DataType::kINT32,
+        "Invalid token-bitmask tensor data types");
+
+    auto const logitsShape = logits.getShape();
+    auto const bitmaskShape = bitmask.getShape();
+    check::check(logitsShape.getNumDims() == 2 && bitmaskShape.getNumDims() == 2,
+        "Token bitmask requires 2D logits and 2D bitmask");
+    check::check(numRows >= 0 && numRows <= logitsShape[0], "Token bitmask row count exceeds logits rows");
+    check::check(numRows <= bitmaskShape[0], "Token bitmask row count exceeds bitmask rows");
+
+    int32_t const vocabSize = static_cast<int32_t>(logitsShape[1]);
+    int32_t const bitmaskStride = static_cast<int32_t>(bitmaskShape[1]);
+    check::check(bitmaskStride >= (vocabSize + 31) / 32, "Token bitmask is narrower than the logits vocabulary");
+    check::check(rowNeedsMask.getShape().volume() >= numRows, "Token bitmask row-flag tensor is too small");
+
+    if (numRows == 0 || vocabSize == 0)
+    {
+        return;
+    }
+
+    constexpr int32_t kBLOCK_SIZE = 256;
+    applyTokenBitmaskKernel<<<numRows, kBLOCK_SIZE, 0, stream>>>(logits.dataPointer<float>(),
+        bitmask.dataPointer<int32_t>(), rowNeedsMask.dataPointer<int32_t>(), vocabSize, bitmaskStride);
+}
+
 // Initialize ID values and offsets for top-p sampling
 __global__ void topPInitialize(
     int32_t* topPIdValBuf, int32_t* topPOffsetBuf, int32_t* beginTopPOffsetBuf, int32_t batchSize, int32_t vocabSize)
@@ -862,6 +962,78 @@ __global__ void topPInitialize(
     {
         topPIdValBuf[index] = index % vocabSize;
         index += static_cast<int32_t>(blockDim.x * gridDim.x);
+    }
+}
+
+__global__ void topPProbabilityInitialize(int32_t* ids, int32_t* offsets, int32_t rows, int32_t vocabSize)
+{
+    int32_t const index = static_cast<int32_t>(blockIdx.x * blockDim.x + threadIdx.x);
+    int32_t const stride = static_cast<int32_t>(blockDim.x * gridDim.x);
+    for (int32_t item = index; item < rows * vocabSize; item += stride)
+    {
+        ids[item] = item;
+    }
+    for (int32_t row = index; row <= rows; row += stride)
+    {
+        offsets[row] = row * vocabSize;
+    }
+}
+
+template <int32_t BLOCK_SIZE>
+__global__ void topPScatterProbabilities(float const* sortedProbabilities, int32_t const* sortedGlobalIds,
+    float* probabilities, int32_t vocabSize, float topP)
+{
+    int32_t const row = static_cast<int32_t>(blockIdx.x);
+    int32_t const lane = static_cast<int32_t>(threadIdx.x);
+    int64_t const offset = static_cast<int64_t>(row) * vocabSize;
+    using BlockScan = cub::BlockScan<float, BLOCK_SIZE>;
+    __shared__ typename BlockScan::TempStorage scanStorage;
+    __shared__ int32_t retainedCount;
+    __shared__ float retainedMass;
+    if (lane == 0)
+    {
+        retainedCount = vocabSize + 1;
+        retainedMass = 1.0F;
+    }
+    __syncthreads();
+
+    BlockPrefixCallbackOp prefix(0.0F);
+    for (int32_t begin = 0; begin < vocabSize; begin += BLOCK_SIZE)
+    {
+        int32_t const index = begin + lane;
+        float const value = index < vocabSize ? sortedProbabilities[offset + index] : 0.0F;
+        float cumulative{0.0F};
+        BlockScan(scanStorage).InclusiveSum(value, cumulative, prefix);
+        int32_t const validCount = min(BLOCK_SIZE, vocabSize - begin);
+        int32_t const crossingCount = __syncthreads_count(index < vocabSize && cumulative >= topP);
+        if (crossingCount > 0)
+        {
+            int32_t const crossingLane = validCount - crossingCount;
+            if (lane == crossingLane)
+            {
+                retainedCount = index + 1;
+                retainedMass = cumulative;
+            }
+            __syncthreads();
+            break;
+        }
+        if (index == vocabSize - 1)
+        {
+            retainedCount = vocabSize;
+            retainedMass = cumulative;
+        }
+        __syncthreads();
+        if (retainedCount <= vocabSize)
+        {
+            break;
+        }
+    }
+
+    float const normalization = 1.0F / fmaxf(retainedMass, 1.0e-20F);
+    for (int32_t index = lane; index < vocabSize; index += BLOCK_SIZE)
+    {
+        int32_t const globalId = sortedGlobalIds[offset + index];
+        probabilities[globalId] = index < retainedCount ? sortedProbabilities[offset + index] * normalization : 0.0F;
     }
 }
 
@@ -920,47 +1092,80 @@ __launch_bounds__(THREADBLOCK_SIZE) __global__ void topPBeamTopKKernel(float con
 template <int blockSize>
 __global__ void topPSampling(float const* sortedProbs, int32_t const* sortedIdVals, int32_t* selectedIndices,
     int32_t const* topKTmpIdBuf, int32_t const* earlyExitFlags, int32_t vocabSize, uint64_t philoxSeed,
-    uint64_t philoxOffset, float topP, int32_t batchSize)
+    uint64_t philoxOffset, float topP, int32_t batchSize, float const* rowUniforms)
 {
     __shared__ float randNumS;
+    __shared__ float retainedMassS;
 
     auto const tid = static_cast<int32_t>(threadIdx.x);
     auto const batchId = static_cast<int32_t>(blockIdx.x);
 
     if (batchId >= batchSize)
+    {
         return;
+    }
 
     auto const probThreshold = topP;
+    typedef cub::BlockScan<float, blockSize> BlockScan;
+    __shared__ typename BlockScan::TempStorage tempStorage;
+
+    auto const offset = batchId * vocabSize;
+    auto const end = ((vocabSize + blockSize - 1) / blockSize) * blockSize;
+    BlockPrefixCallbackOp nucleusPrefixOp(0);
+    for (int32_t vi = tid; vi < end; vi += blockSize)
+    {
+        auto const threadProb = (vi < vocabSize) ? sortedProbs[offset + vi] : 0.0F;
+        float cumulativeMass{0.0F};
+        BlockScan(tempStorage).InclusiveSum(threadProb, cumulativeMass, nucleusPrefixOp);
+        // Keep the complete mass scanned so far as a fallback. Floating-point
+        // accumulation may finish just below a near-one topP threshold, in which
+        // case there is no crossing token but the full distribution is retained.
+        if (tid == blockSize - 1)
+        {
+            retainedMassS = cumulativeMass;
+        }
+        __syncthreads();
+        int32_t const crossingCount = __syncthreads_count(probThreshold <= cumulativeMass);
+        if (crossingCount != 0)
+        {
+            int32_t const crossingThread = blockDim.x - crossingCount;
+            if (threadIdx.x == crossingThread)
+            {
+                retainedMassS = cumulativeMass;
+            }
+            __syncthreads();
+            break;
+        }
+    }
+    __syncthreads();
 
     if (threadIdx.x == 0)
     {
-        // Initialize curand state for this batch
-        curandState_t localState;
-        curand_init(philoxSeed, batchId, philoxOffset, &localState);
-
-        auto const randomNumber = curand_uniform(&localState);
-        randNumS = randomNumber * probThreshold;
+        float randomNumber;
+        if (rowUniforms != nullptr)
+        {
+            randomNumber = fminf(fmaxf(rowUniforms[batchId], 0.0F), 0.99999994F);
+        }
+        else
+        {
+            curandState_t localState;
+            curand_init(philoxSeed, batchId, philoxOffset, &localState);
+            randomNumber = curand_uniform(&localState);
+        }
+        randNumS = randomNumber * retainedMassS;
     }
-
-    typedef cub::BlockScan<float, blockSize> BlockScan;
-    __shared__ typename BlockScan::TempStorage tempStorage;
-    BlockPrefixCallbackOp prefixOp(0);
-
     __syncthreads();
 
-    auto offset = batchId * vocabSize;
-    auto end = ((vocabSize + blockSize - 1) / blockSize) * blockSize;
+    BlockPrefixCallbackOp samplingPrefixOp(0);
     int32_t selectedTokenId = 0;
-    float threadOffset = 0;
+    float threadOffset = 0.0F;
     int32_t count = 0;
-
-    for (int vi = tid; vi < end; vi += blockSize)
+    for (int32_t vi = tid; vi < end; vi += blockSize)
     {
-        auto threadProb = (vi < vocabSize) ? (sortedProbs[offset + vi]) : 0.f;
-        BlockScan(tempStorage).InclusiveSum(threadProb, threadOffset, prefixOp);
+        auto const threadProb = (vi < vocabSize) ? sortedProbs[offset + vi] : 0.0F;
+        BlockScan(tempStorage).InclusiveSum(threadProb, threadOffset, samplingPrefixOp);
         count = __syncthreads_count(randNumS <= threadOffset);
         selectedTokenId = vi;
-
         if (count != 0)
         {
             break;
@@ -968,17 +1173,17 @@ __global__ void topPSampling(float const* sortedProbs, int32_t const* sortedIdVa
     }
 
     selectedTokenId = min(selectedTokenId, vocabSize - 1);
-
     if (threadIdx.x == min(blockDim.x - count, blockDim.x - 1))
     {
-        int32_t finalToken = sortedIdVals[offset + selectedTokenId];
+        int32_t const finalToken = sortedIdVals[offset + selectedTokenId];
         selectedIndices[batchId] = finalToken;
     }
 }
 
 // Updated sampling function with tensor-based interface (FP32 only)
 void topKtopPSamplingFromLogits(rt::Tensor const& logits, rt::Tensor& selectedIndices, SamplingParams const& params,
-    rt::Tensor& workspace, cudaStream_t stream, uint64_t philoxSeed, uint64_t philoxOffset)
+    rt::Tensor& workspace, cudaStream_t stream, uint64_t philoxSeed, uint64_t philoxOffset,
+    rt::Tensor const* rowUniforms)
 {
     // Validate input tensors
     check::check(logits.getDeviceType() == rt::DeviceType::kGPU
@@ -997,6 +1202,14 @@ void topKtopPSamplingFromLogits(rt::Tensor const& logits, rt::Tensor& selectedIn
         "Logits tensor shape mismatch with parameters");
     check::check(selectedIndicesShape[0] == params.batchSize && selectedIndicesShape[1] == 1,
         "Selected indices tensor shape mismatch with parameters");
+    if (rowUniforms != nullptr)
+    {
+        check::check(rowUniforms->getDeviceType() == rt::DeviceType::kGPU
+                && rowUniforms->getDataType() == nvinfer1::DataType::kFLOAT && rowUniforms->getShape().getNumDims() == 1
+                && rowUniforms->getShape()[0] == params.batchSize,
+            "Per-row uniforms must be a GPU float tensor with shape [batch-size]");
+    }
+    float const* uniformData = rowUniforms == nullptr ? nullptr : rowUniforms->dataPointer<float>();
 
     int const BLOCK_SIZE = 256;
     int const BLOCKS_PER_BEAM = 8;
@@ -1026,8 +1239,8 @@ void topKtopPSamplingFromLogits(rt::Tensor const& logits, rt::Tensor& selectedIn
         dim3 block2(BLOCK_SIZE);
         size_t sharedMemSize = params.topK * sizeof(int32_t) + params.topK * sizeof(float);
 
-        topKStage2Sampling<BLOCK_SIZE><<<grid2, block2, sharedMemSize, stream>>>(
-            ws.topkIndices, ws.topkValues, selectedIndices.dataPointer<int32_t>(), params, philoxSeed, philoxOffset);
+        topKStage2Sampling<BLOCK_SIZE><<<grid2, block2, sharedMemSize, stream>>>(ws.topkIndices, ws.topkValues,
+            selectedIndices.dataPointer<int32_t>(), params, philoxSeed, philoxOffset, uniformData);
     }
     else if (params.useTopP)
     {
@@ -1066,8 +1279,55 @@ void topKtopPSamplingFromLogits(rt::Tensor const& logits, rt::Tensor& selectedIn
 
         topPSampling<SAMPLING_BLOCK_SIZE><<<params.batchSize, SAMPLING_BLOCK_SIZE, 0, stream>>>(ws.toppSortedProbs,
             ws.toppSortedIdVals, selectedIndices.dataPointer<int32_t>(), ws.toppTopKIndices, ws.toppEarlyExitFlags,
-            params.vocabSize, philoxSeed, philoxOffset, params.topP, params.batchSize);
+            params.vocabSize, philoxSeed, philoxOffset, params.topP, params.batchSize, uniformData);
     }
+}
+
+void topPProbabilitiesFromLogits(rt::Tensor const& logits, rt::Tensor& probabilities, float temperature, float topP,
+    rt::Tensor& workspace, cudaStream_t stream)
+{
+    auto const shape = logits.getShape();
+    check::check(shape.getNumDims() == 2 && shape[0] > 0 && shape[0] <= std::numeric_limits<int32_t>::max()
+            && shape[1] > 0 && shape[1] <= std::numeric_limits<int32_t>::max() && probabilities.getShape() == shape
+            && logits.getDeviceType() == rt::DeviceType::kGPU && probabilities.getDeviceType() == rt::DeviceType::kGPU
+            && workspace.getDeviceType() == rt::DeviceType::kGPU && logits.getDataType() == nvinfer1::DataType::kFLOAT
+            && probabilities.getDataType() == nvinfer1::DataType::kFLOAT
+            && workspace.getDataType() == nvinfer1::DataType::kINT8 && temperature > 0.0F && topP > 0.0F
+            && topP <= 1.0F,
+        "Top-p probability tensor contract does not match");
+    int32_t const rows = static_cast<int32_t>(shape[0]);
+    int32_t const vocabSize = static_cast<int32_t>(shape[1]);
+    size_t const requiredWorkspace = getTopPProbabilitiesWorkspaceSize(rows, vocabSize);
+    check::check(workspace.getMemoryCapacity() >= requiredWorkspace, "Top-p probability workspace is too small");
+    auto const alignSize = [](size_t size) {
+        constexpr size_t kAlignment{256};
+        return (size + kAlignment - 1) & ~(kAlignment - 1);
+    };
+    size_t cubStorageSize{0};
+    cub::DeviceSegmentedRadixSort::SortPairsDescending(nullptr, cubStorageSize, static_cast<float*>(nullptr),
+        static_cast<float*>(nullptr), static_cast<int32_t*>(nullptr), static_cast<int32_t*>(nullptr), rows * vocabSize,
+        rows, static_cast<int32_t*>(nullptr), static_cast<int32_t*>(nullptr));
+    char* const base = static_cast<char*>(workspace.rawPointer());
+    void* const cubStorage = base;
+    size_t offset = alignSize(cubStorageSize);
+    float* const sortedProbabilities = reinterpret_cast<float*>(base + offset);
+    offset += alignSize(static_cast<size_t>(rows) * vocabSize * sizeof(float));
+    int32_t* const ids = reinterpret_cast<int32_t*>(base + offset);
+    offset += alignSize(static_cast<size_t>(rows) * vocabSize * sizeof(int32_t));
+    int32_t* const sortedGlobalIds = reinterpret_cast<int32_t*>(base + offset);
+    offset += alignSize(static_cast<size_t>(rows) * vocabSize * sizeof(int32_t));
+    int32_t* const offsets = reinterpret_cast<int32_t*>(base + offset);
+
+    constexpr int32_t kBlockSize{256};
+    softmaxKernelImpl<kBlockSize, false><<<rows, kBlockSize, 0, stream>>>(
+        logits.dataPointer<float>(), probabilities.dataPointer<float>(), rows, vocabSize, temperature);
+    topPProbabilityInitialize<<<32, kBlockSize, 0, stream>>>(ids, offsets, rows, vocabSize);
+    cub::DeviceSegmentedRadixSort::SortPairsDescending(cubStorage, cubStorageSize, probabilities.dataPointer<float>(),
+        sortedProbabilities, ids, sortedGlobalIds, rows * vocabSize, rows, offsets, offsets + 1, 0, sizeof(float) * 8,
+        stream);
+    topPScatterProbabilities<kBlockSize><<<rows, kBlockSize, 0, stream>>>(
+        sortedProbabilities, sortedGlobalIds, probabilities.dataPointer<float>(), vocabSize, topP);
+    CUDA_CHECK(cudaGetLastError());
 }
 
 template <int BLOCK_SIZE>

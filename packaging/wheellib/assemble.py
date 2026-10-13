@@ -29,6 +29,7 @@ import zipfile
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Set, Tuple
 
+from . import oss, wheel_artifact
 from .config import (CONTRACT, REPO_ROOT, load_matrix, load_toml, run_checked,
                      sha256, write_json)
 from .verify import verify
@@ -86,6 +87,7 @@ def _read_json(path: Path) -> Dict[str, Any]:
 def _base_metadata(base_wheel: Path) -> Dict[str, Any]:
     metadata_path = base_wheel.parent / "base-wheel.json"
     metadata = _read_json(metadata_path)
+    oss.require_policy(metadata)
     required = {
         "schema_version", "package_version", "source_revision", "wheel",
         "wheel_sha256"
@@ -134,7 +136,7 @@ def _set_wheel_tags(unpacked_root: Path, python_abi: str,
     ]
     lines.extend([
         "Root-Is-Purelib: false",
-        f"Tag: {python_abi}-{python_abi}-linux_{cpu_arch}",
+        f"Tag: {wheel_artifact.binary_wheel_tag(python_abi, cpu_arch)}",
     ])
     wheel_metadata.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -164,7 +166,7 @@ def _wheel_members(archive: zipfile.ZipFile) -> Tuple[Set[str], str, str]:
 def _audit_wheel_metadata(archive: zipfile.ZipFile, wheel_file: str,
                           cpu_arch: str, python_abi: str) -> None:
     wheel_metadata = archive.read(wheel_file).decode()
-    tag = f"Tag: {python_abi}-{python_abi}-linux_{cpu_arch}"
+    tag = f"Tag: {wheel_artifact.binary_wheel_tag(python_abi, cpu_arch)}"
     if tag not in wheel_metadata or "Root-Is-Purelib: false" not in wheel_metadata:
         raise RuntimeError(
             f"Final WHEEL metadata is missing {tag!r} or native-root marker.")
@@ -285,11 +287,13 @@ def _audit_final_wheel(wheel: Path, cpu_arch: str, python_abi: str,
                        expected_ids: Iterable[str],
                        unpacked_budget: int) -> None:
     """Validate final tags, manifest, RECORD coverage, content, and size."""
-    expected_suffix = f"-{python_abi}-{python_abi}-linux_{cpu_arch}.whl"
-    if not wheel.name.endswith(expected_suffix):
+    identity = wheel_artifact.parse_final_wheel_filename(wheel.name,
+                                                         allow_build_tag=True)
+    if (identity.python_abi != python_abi or identity.cpu_arch != cpu_arch):
         raise RuntimeError(
-            f"Final wheel filename does not end with {expected_suffix}.")
+            f"Final wheel identity does not match {python_abi}/{cpu_arch}.")
     with zipfile.ZipFile(wheel) as archive:
+        oss.audit_archive(archive)
         names, wheel_file, record_file = _wheel_members(archive)
         _audit_wheel_metadata(archive, wheel_file, cpu_arch, python_abi)
         manifest = _load_runtime_manifest(archive, names)
@@ -334,6 +338,22 @@ def _tag_subset_wheel(wheel: Path, python_abi: str, selected: Set[str],
     tagged = wheel.with_name(tagged_name)
     wheel.rename(tagged)
     return tagged
+
+
+def _runtime_entries(payloads: Iterable[Dict[str, Any]],
+                     rows: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Expand a shared multi-SM payload into exact runtime identities."""
+    by_id = {str(row["variant_id"]): row for row in rows}
+    entries = []
+    for payload in payloads:
+        variant_id = str(payload["variant_id"])
+        row = by_id[variant_id]
+        for gpu_sm in CONTRACT.matrix_variant_gpu_sms(row):
+            entry = {key: payload.get(key) for key in sorted(_RUNTIME_FIELDS)}
+            entry["gpu_sm"] = gpu_sm
+            entries.append(entry)
+    return sorted(entries,
+                  key=lambda value: (value["variant_id"], value["gpu_sm"]))
 
 
 def main(argv=None) -> None:
@@ -410,11 +430,7 @@ def main(argv=None) -> None:
         for payload in sorted(payloads, key=lambda value: value["variant_id"]):
             _copy_payload(stages[payload["variant_id"]], root,
                           payload["variant_id"])
-        runtime_entries = [{
-            key: payload.get(key)
-            for key in sorted(_RUNTIME_FIELDS)
-        } for payload in sorted(payloads,
-                                key=lambda value: value["variant_id"])]
+        runtime_entries = _runtime_entries(payloads, rows)
         for entry in runtime_entries:
             prefix = f"_native/payloads/{entry['variant_id']}/"
             if entry["plugin"] != prefix + "lib/libNvInfer_edgellm_plugin.so":
@@ -424,6 +440,7 @@ def main(argv=None) -> None:
         write_json(
             root / "tensorrt_edgellm" / "_native" / "variants.json", {
                 "schema_version": 1,
+                "oss_policy_sha256": base["oss_policy_sha256"],
                 "package_version": base["package_version"],
                 "source_revision": base["source_revision"],
                 "source_provenance_sha256": base["source_provenance_sha256"],

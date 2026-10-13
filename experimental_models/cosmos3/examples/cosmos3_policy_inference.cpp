@@ -18,8 +18,8 @@
 // End-to-end Cosmos3 policy inference from a raw image + text instruction(s).
 //
 // The pipeline runs entirely in-process:
-//   (a) load + preprocess the image (core imageUtils decode + resize, normalize to
-//       [-1,1] pixel_values, broadcast the conditioning frame to the VAE clip [B,3,F,H,W]),
+//   (a) load + preprocess the image (aspect-preserve + reflection pad, normalize to
+//       [-1,1] pixel_values; only clip frame 0 is the observation, remaining frames -1),
 //   (b) tokenize the prompt(s) with the co-located tokenizer (text_tokenizer/tokenizer.json),
 //   (c) apply embed_tokens with the core embeddingLookup kernel -> inputs_embeds [B,S,hidden],
 //   (d) VAE encode -> UND prefill -> GEN diffusion loop -> action chunk,
@@ -46,6 +46,7 @@
 #include "common/logger.h"
 #include "runtime/cosmos3Runtime.h"
 
+#include "chatTemplate/chatTemplate.h"
 #include "common/checkMacros.h"
 #include "common/safetensorsUtils.h"
 #include "common/tensor.h"
@@ -67,8 +68,10 @@
 #include <fstream>
 #include <getopt.h>
 #include <iostream>
+#include <memory>
 #include <numeric>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace trt_edgellm;
@@ -97,7 +100,9 @@ enum OptionId : int
     VIDEO_SUBSAMPLE = 919,
     ALTERNATE_VSF = 920,
     ACTION_CHUNK = 921,
-    VIDEO = 922
+    VIDEO = 922,
+    STATE = 923,
+    REQUEST_STREAM = 924
 };
 
 struct Args
@@ -106,6 +111,7 @@ struct Args
     std::string imagePath;               //!< PNG/JPG conditioning observation (shared across the batch)
     std::string videoPath;               //!< comma-separated observation frames; i2v conditions on the most recent one
     std::vector<std::string> prompts;    //!< text instructions; batch = prompt count
+    std::vector<float> currentState;     //!< one clean current-state row for state-conditioned policy
     std::string domain{"droid_lerobot"}; //!< action domain
     std::string viewPoint{"ego_view"};   //!< camera viewpoint for the policy prompt framing
     bool rawPrompt{false};               //!< use --prompt / --promptFile verbatim (skip JSON build)
@@ -121,7 +127,15 @@ struct Args
     int32_t videoSubsampleFactor{1}; //!< 1 = regular path (default); 4 = optimized (fewer GEN video frames).
     int32_t actionChunk{0};          //!< 0 = engine canonical/max chunk (default); positive = clamped request.
     bool alternateVsf{false};        //!< test/benchmark only: alternate vsf 1<->videoSubsampleFactor per round.
+    bool requestStream{false};       //!< read newline-delimited requests from stdin while keeping engines resident.
     bool help{false};
+};
+
+struct PixelClipContract
+{
+    std::vector<int64_t> shape;
+    int64_t contentHeight{0};
+    int64_t contentWidth{0};
 };
 
 void printUsage(char const* programName)
@@ -156,6 +170,7 @@ void printUsage(char const* programName)
     std::cerr << "               third_person_view, wrist_view, or concat_view." << std::endl;
     std::cerr << "  --steps      Diffusion denoise steps. Default = 4" << std::endl;
     std::cerr << "  --seed       Initial-noise seed. Default = 0" << std::endl;
+    std::cerr << "  --state      Comma-separated current model-space state (Policy-DROID: 8 values)." << std::endl;
     std::cerr << "  --iters      Benchmark iterations. Default = 1" << std::endl;
     std::cerr << "  --warmup     Benchmark warmup rounds. Default = 2" << std::endl;
     std::cerr << "  --cudagraph  Capture/replay the per-step GEN forward as a CUDA graph." << std::endl;
@@ -181,22 +196,27 @@ void printUsage(char const* programName)
               << std::endl;
     std::cerr << "               value is clamped into the engine's built action range; the output chunk follows it."
               << std::endl;
+    std::cerr << "  --request-stream  Keep the TensorRT engines resident and read one JSON request per stdin line."
+              << std::endl;
+    std::cerr << "               Each request supplies image, prompt, state, output, and optional seed/steps."
+              << std::endl;
 }
 
 bool parseArgs(Args& args, int argc, char** argv)
 {
-    static struct option options[]
-        = {{"help", no_argument, nullptr, HELP}, {"engineDir", required_argument, nullptr, ENGINE_DIR},
-            {"image", required_argument, nullptr, IMAGE}, {"video", required_argument, nullptr, VIDEO},
-            {"prompt", required_argument, nullptr, PROMPT}, {"domain", required_argument, nullptr, DOMAIN},
-            {"viewPoint", required_argument, nullptr, VIEW_POINT}, {"rawPrompt", no_argument, nullptr, RAW_PROMPT},
-            {"promptFile", required_argument, nullptr, PROMPT_FILE}, {"output", required_argument, nullptr, OUTPUT},
-            {"steps", required_argument, nullptr, STEPS}, {"seed", required_argument, nullptr, SEED},
-            {"iters", required_argument, nullptr, ITERS}, {"warmup", required_argument, nullptr, WARMUP},
-            {"cudagraph", no_argument, nullptr, CUDAGRAPH}, {"guidance", required_argument, nullptr, GUIDANCE},
-            {"video-subsample-factor", required_argument, nullptr, VIDEO_SUBSAMPLE},
-            {"alternate-vsf", no_argument, nullptr, ALTERNATE_VSF},
-            {"action-chunk-size", required_argument, nullptr, ACTION_CHUNK}, {nullptr, 0, nullptr, 0}};
+    static struct option options[] = {{"help", no_argument, nullptr, HELP},
+        {"engineDir", required_argument, nullptr, ENGINE_DIR}, {"image", required_argument, nullptr, IMAGE},
+        {"video", required_argument, nullptr, VIDEO}, {"prompt", required_argument, nullptr, PROMPT},
+        {"domain", required_argument, nullptr, DOMAIN}, {"viewPoint", required_argument, nullptr, VIEW_POINT},
+        {"rawPrompt", no_argument, nullptr, RAW_PROMPT}, {"promptFile", required_argument, nullptr, PROMPT_FILE},
+        {"output", required_argument, nullptr, OUTPUT}, {"steps", required_argument, nullptr, STEPS},
+        {"seed", required_argument, nullptr, SEED}, {"iters", required_argument, nullptr, ITERS},
+        {"warmup", required_argument, nullptr, WARMUP}, {"cudagraph", no_argument, nullptr, CUDAGRAPH},
+        {"guidance", required_argument, nullptr, GUIDANCE},
+        {"video-subsample-factor", required_argument, nullptr, VIDEO_SUBSAMPLE},
+        {"alternate-vsf", no_argument, nullptr, ALTERNATE_VSF},
+        {"action-chunk-size", required_argument, nullptr, ACTION_CHUNK}, {"state", required_argument, nullptr, STATE},
+        {"request-stream", no_argument, nullptr, REQUEST_STREAM}, {nullptr, 0, nullptr, 0}};
     int opt;
     while ((opt = getopt_long(argc, argv, "", options, nullptr)) != -1)
     {
@@ -226,8 +246,31 @@ bool parseArgs(Args& args, int argc, char** argv)
         case VIDEO_SUBSAMPLE: args.videoSubsampleFactor = optarg ? std::stoi(optarg) : args.videoSubsampleFactor; break;
         case ALTERNATE_VSF: args.alternateVsf = true; break;
         case ACTION_CHUNK: args.actionChunk = optarg ? std::stoi(optarg) : args.actionChunk; break;
+        case REQUEST_STREAM: args.requestStream = true; break;
+        case STATE:
+            if (optarg != nullptr)
+            {
+                std::string values(optarg);
+                for (size_t start = 0; start <= values.size();)
+                {
+                    size_t const comma = values.find(',', start);
+                    size_t const end = comma == std::string::npos ? values.size() : comma;
+                    ELLM_CHECK(end > start, "--state contains an empty value");
+                    args.currentState.push_back(std::stof(values.substr(start, end - start)));
+                    if (comma == std::string::npos)
+                    {
+                        break;
+                    }
+                    start = comma + 1;
+                }
+            }
+            break;
         default: return false;
         }
+    }
+    if (args.requestStream)
+    {
+        return !args.engineDir.empty();
     }
     // Exactly one conditioning source: --image (single frame) xor --video (frame list).
     bool const oneSource = args.imagePath.empty() != args.videoPath.empty();
@@ -235,7 +278,7 @@ bool parseArgs(Args& args, int argc, char** argv)
 }
 
 //! Read the [B,3,F,H,W] pixel-clip shape from the vae_encoder component contract.
-std::vector<int64_t> readPixelClipShape(fs::path const& engineDir)
+PixelClipContract readPixelClipContract(fs::path const& engineDir)
 {
     std::ifstream f(engineDir / "vae_encoder" / "config.json");
     ELLM_CHECK(f.is_open(), "Failed to open vae_encoder config under " + engineDir.string());
@@ -244,7 +287,16 @@ std::vector<int64_t> readPixelClipShape(fs::path const& engineDir)
         "vae_encoder config missing optimization_profile.pixel_values");
     auto shape = j.at("optimization_profile").at("pixel_values").at("opt").get<std::vector<int64_t>>();
     ELLM_CHECK(shape.size() == 5, "vae_encoder pixel_values profile must be [B,3,F,H,W]");
-    return shape;
+    ELLM_CHECK(j.contains("builder_config"), "vae_encoder config missing builder_config");
+    auto const& builderConfig = j.at("builder_config");
+    ELLM_CHECK(builderConfig.contains("content_height") && builderConfig.contains("content_width"),
+        "vae_encoder builder_config missing baked content dimensions");
+    PixelClipContract contract{std::move(shape), builderConfig.at("content_height").get<int64_t>(),
+        builderConfig.at("content_width").get<int64_t>()};
+    ELLM_CHECK(contract.contentHeight > 0 && contract.contentWidth > 0 && contract.contentHeight <= contract.shape[3]
+            && contract.contentWidth <= contract.shape[4],
+        "vae_encoder baked content dimensions must fit its pixel canvas");
+    return contract;
 }
 
 //! Read the text hidden size from the und_prefill component contract.
@@ -275,7 +327,11 @@ std::string viewpointFraming(std::string const& viewPoint)
     }
     if (viewPoint == "concat_view")
     {
-        return "This video contains concatenated views from multiple camera perspectives.";
+        // The Policy-DROID RoboLab reference appends its _CONCAT_VIEW_DESCRIPTION to the canonical concat_view
+        // template in cosmos_framework/scripts/action_policy_server_robolab.py. Keep that combined wording verbatim.
+        return "This video contains concatenated views from multiple camera perspectives. The top row is from the "
+               "wrist-mounted camera. The bottom row contains two horizontally concatenated third-person perspective "
+               "views of the scene from opposite sides, with the robot visible.";
     }
     ELLM_CHECK(false,
         "Unsupported --viewPoint '" + viewPoint
@@ -351,6 +407,20 @@ std::string buildPolicyPrompt(std::string const& instruction, std::string const&
     prompt += ", \"resolution\": {\"H\": " + std::to_string(height) + ", \"W\": " + std::to_string(width) + "}";
     prompt += ", \"aspect_ratio\": " + Json(aspectRatioString(width, height)).dump() + "}";
     return prompt;
+}
+
+int64_t padCoordinate(int64_t coordinate, int64_t contentSize, int64_t targetSize)
+{
+    int64_t const padding = targetSize - contentSize;
+    if (coordinate < contentSize)
+    {
+        return coordinate;
+    }
+    if (padding >= contentSize)
+    {
+        return contentSize - 1;
+    }
+    return 2 * contentSize - coordinate - 2;
 }
 
 //! Read action_chunk_size and fps from the GEN component contract.
@@ -473,8 +543,8 @@ int main(int argc, char** argv)
         ss << pf.rdbuf();
         args.prompts.assign(1, ss.str());
     }
-    int32_t const batch = static_cast<int32_t>(args.prompts.size());
-    std::vector<int64_t> const clipShape = readPixelClipShape(args.engineDir); // [B,3,F,H,W]
+    PixelClipContract const clipContract = readPixelClipContract(args.engineDir);
+    std::vector<int64_t> const& clipShape = clipContract.shape; // [B,3,F,H,W]
     int32_t const pixelFrames = static_cast<int32_t>(clipShape[2]);
     int32_t const clipH = static_cast<int32_t>(clipShape[3]);
     int32_t const clipW = static_cast<int32_t>(clipShape[4]);
@@ -482,8 +552,61 @@ int main(int argc, char** argv)
     auto const [actionChunkSize, fps] = readActionChunkAndFps(args.engineDir);
     size_t const hw = static_cast<size_t>(clipH) * clipW;
 
+    // Engine deserialization dominates one-shot startup (tens of seconds on GB300).
+    // Keep one runtime alive in --request-stream mode so closed-loop policy serving
+    // pays this cost once instead of once per 32-action chunk.
+    std::unique_ptr<cosmos3::Cosmos3Runtime> runtime;
     try
     {
+        runtime = std::make_unique<cosmos3::Cosmos3Runtime>(args.engineDir, stream);
+    }
+    catch (std::exception const& e)
+    {
+        LOG_ERROR("Cosmos3 policy initialization failed: %s", e.what());
+        cudaStreamDestroy(stream);
+        return EXIT_FAILURE;
+    }
+
+    // These artifacts are immutable across closed-loop requests. Loading the
+    // tokenizer and embedding table inside runOnce makes every action chunk
+    // dependent on filesystem latency and can turn an otherwise sub-second
+    // request into a multi-second outlier under unrelated I/O pressure.
+    fs::path tokDir = fs::path(args.engineDir) / "text_tokenizer";
+    if (!fs::exists(tokDir / "tokenizer.json"))
+    {
+        tokDir = args.engineDir; // fall back to engine dir root
+    }
+    tokenizer::Tokenizer tok;
+    chat_template::ChatTemplate chatTemplate;
+    std::vector<rt::Tensor> embedTensors;
+    fs::path const embedPath = fs::path(args.engineDir) / "embed_tokens.safetensors";
+    try
+    {
+        ELLM_CHECK(tok.loadFromHF(tokDir), "Failed to load tokenizer from " + tokDir.string());
+        auto const specialToken = [&tok](tokenizer::Rank id) {
+            return id >= 0 ? tok.idToPiece(id, /*skipSpecialTokens=*/false) : std::string{};
+        };
+        ELLM_CHECK(chatTemplate.load(tokDir, specialToken(tok.getBosId()), specialToken(tok.getEosId())),
+            "Failed to load chat template from " + tokDir.string());
+        ELLM_CHECK(rt::safetensors::loadSafetensors(embedPath, embedTensors, stream),
+            "Failed to load embed_tokens: " + embedPath.string());
+        ELLM_CHECK(!embedTensors.empty(), "embed_tokens artifact has no tensors: " + embedPath.string());
+        ELLM_CHECK(
+            embedTensors.front().getShape().getNumDims() == 2 && embedTensors.front().getShape()[1] == hiddenSize,
+            "embed_tokens must be [vocab, hidden] matching the und_prefill contract");
+    }
+    catch (std::exception const& e)
+    {
+        LOG_ERROR("Cosmos3 policy static-artifact initialization failed: %s", e.what());
+        cudaStreamDestroy(stream);
+        return EXIT_FAILURE;
+    }
+    rt::Tensor const& table = embedTensors.front();
+
+    auto runOnce = [&](Args const& requestArgs) {
+        Args const& args = requestArgs;
+        int32_t const batch = static_cast<int32_t>(args.prompts.size());
+        ELLM_CHECK(batch > 0, "Policy request must contain at least one prompt");
         // ------------------------------------------------------------------ //
         // (a) Conditioning frame -> pixel clip [B,3,F,H,W] in [-1,1].         //
         // ------------------------------------------------------------------ //
@@ -514,29 +637,47 @@ int main(int argc, char** argv)
             LOG_INFO("Video input: %zu observation frame(s); conditioning i2v on the most-recent frame %s.",
                 frames.size(), condFramePath.c_str());
         }
-        rt::imageUtils::ImageData const img = rt::imageUtils::loadImageFromFile(condFramePath);
-        LOG_INFO("Loaded conditioning frame %s (%ldx%ld), resizing to %dx%d and normalizing to pixel_values.",
-            condFramePath.c_str(), img.width, img.height, clipW, clipH);
-        rt::imageUtils::ImageData resized(
-            rt::Tensor({1, clipH, clipW, 3}, rt::DeviceType::kCPU, nvinfer1::DataType::kUINT8, "cosmos3::resized"));
-        rt::imageUtils::ImageData const& frame
-            = rt::imageUtils::resizeImage(img, resized, clipW, clipH, rt::imageUtils::InterpolationMode::kLINEAR);
+        rt::imageUtils::ImageData const img = rt::imageUtils::loadRgbImageFromFile(condFramePath);
+        // GEN consumes the VAE latent after a build-time crop to content_height/content_width. Fit the
+        // input to those baked dimensions, and reject another aspect/size instead of silently pairing a
+        // runtime image crop with a differently shaped latent graph.
+        double const scale = std::min({static_cast<double>(clipContract.contentWidth) / static_cast<double>(img.width),
+            static_cast<double>(clipContract.contentHeight) / static_cast<double>(img.height), 1.0});
+        int64_t const contentW = static_cast<int64_t>(scale * static_cast<double>(img.width) + 0.5);
+        int64_t const contentH = static_cast<int64_t>(scale * static_cast<double>(img.height) + 0.5);
+        ELLM_CHECK(contentW == clipContract.contentWidth && contentH == clipContract.contentHeight,
+            "Conditioning image geometry maps to " + std::to_string(contentW) + "x" + std::to_string(contentH)
+                + ", but the engine was built for content " + std::to_string(clipContract.contentWidth) + "x"
+                + std::to_string(clipContract.contentHeight)
+                + "; use a matching input aspect/size or rebuild the engines");
+        LOG_INFO(
+            "Loaded conditioning frame %s (%ldx%ld), resizing aspect-preservingly to %ldx%ld, "
+            "reflection-padding to %dx%d, and normalizing to pixel_values.",
+            condFramePath.c_str(), img.width, img.height, contentW, contentH, clipW, clipH);
+        rt::imageUtils::ImageData resized(rt::Tensor(
+            {1, contentH, contentW, 3}, rt::DeviceType::kCPU, nvinfer1::DataType::kUINT8, "cosmos3::resized"));
+        rt::imageUtils::ImageData const& content = rt::imageUtils::resizeImage(
+            img, resized, contentW, contentH, rt::imageUtils::InterpolationMode::kBICUBIC);
 
-        // HWC uint8 -> planar CHW float in [-1,1] (preprocessor convention: x / 127.5 - 1), with the
-        // single conditioning frame broadcast across all F clip frames and all B batch elements.
+        // HWC uint8 -> planar CHW float in [-1,1]. Only frame 0 is the observation; the remaining
+        // frames stay at -1.0, matching the reference ActionTransformPipeline. Spatial padding is
+        // bottom/right-only reflection padding.
         size_t const clipElems = static_cast<size_t>(3) * pixelFrames * hw;
-        std::vector<float> clip(static_cast<size_t>(batch) * clipElems);
-        unsigned char const* srcPixels = frame.data();
+        std::vector<float> clip(static_cast<size_t>(batch) * clipElems, -1.0F);
+        unsigned char const* srcPixels = content.data();
         for (int32_t c = 0; c < 3; ++c)
         {
             float* frame0 = clip.data() + static_cast<size_t>(c) * pixelFrames * hw;
-            for (size_t i = 0; i < hw; ++i)
+            for (int32_t y = 0; y < clipH; ++y)
             {
-                frame0[i] = static_cast<float>(srcPixels[i * 3 + c]) / 127.5F - 1.0F;
-            }
-            for (int32_t t = 1; t < pixelFrames; ++t)
-            {
-                std::copy_n(frame0, hw, frame0 + static_cast<size_t>(t) * hw);
+                int64_t const srcY = padCoordinate(y, contentH, clipH);
+                for (int32_t x = 0; x < clipW; ++x)
+                {
+                    int64_t const srcX = padCoordinate(x, contentW, clipW);
+                    size_t const dstIdx = static_cast<size_t>(y) * clipW + x;
+                    size_t const srcIdx = (static_cast<size_t>(srcY) * contentW + srcX) * 3 + c;
+                    frame0[dstIdx] = static_cast<float>(srcPixels[srcIdx]) / 127.5F - 1.0F;
+                }
             }
         }
         for (int32_t b = 1; b < batch; ++b)
@@ -553,15 +694,6 @@ int main(int argc, char** argv)
         // ------------------------------------------------------------------ //
         // (b) Prompt(s) -> token ids (co-located tokenizer).                  //
         // ------------------------------------------------------------------ //
-        fs::path tokDir = fs::path(args.engineDir) / "text_tokenizer";
-        if (!fs::exists(tokDir / "tokenizer.json"))
-        {
-            tokDir = args.engineDir; // fall back to engine dir root
-        }
-        tokenizer::Tokenizer tok;
-        ELLM_CHECK(tok.loadFromHF(tokDir), "Failed to load tokenizer from " + tokDir.string());
-        ELLM_CHECK(tok.loadChatTemplate(tokDir / "processed_chat_template.json"),
-            "Failed to load chat template from " + tokDir.string());
         std::vector<std::vector<tokenizer::Rank>> ids;
         ids.reserve(args.prompts.size());
         for (std::string const& prompt : args.prompts)
@@ -578,8 +710,9 @@ int main(int argc, char** argv)
             message.contents.push_back({"text", instruction});
             request.messages.push_back(std::move(message));
             rt::LLMGenerationRequest::FormattedRequest formatted;
-            ELLM_CHECK(tok.applyChatTemplate(request, formatted, /*applyChatTemplate=*/true,
-                           /*addGenerationPrompt=*/true, /*enableThinking=*/true),
+            chat_template::ChatTemplate::Options options;
+            options.enableThinking = true;
+            ELLM_CHECK(chatTemplate.apply(request, formatted, options),
                 "Failed to apply the chat template to prompt: " + prompt);
             ids.push_back(tok.encode(formatted.formattedCompleteRequest, /*addBos=*/false, /*addEos=*/false));
             ELLM_CHECK(!ids.back().empty(), "Prompt tokenized to zero tokens: " + prompt);
@@ -601,15 +734,6 @@ int main(int argc, char** argv)
         // ------------------------------------------------------------------ //
         // (c) embed_tokens via the core embeddingLookup kernel (all Tensors). //
         // ------------------------------------------------------------------ //
-        std::vector<rt::Tensor> embedTensors;
-        fs::path const embedPath = fs::path(args.engineDir) / "embed_tokens.safetensors";
-        ELLM_CHECK(rt::safetensors::loadSafetensors(embedPath, embedTensors, stream),
-            "Failed to load embed_tokens: " + embedPath.string());
-        ELLM_CHECK(!embedTensors.empty(), "embed_tokens artifact has no tensors: " + embedPath.string());
-        rt::Tensor const& table = embedTensors.front();
-        ELLM_CHECK(table.getShape().getNumDims() == 2 && table.getShape()[1] == hiddenSize,
-            "embed_tokens must be [vocab, hidden] matching the und_prefill contract");
-
         std::vector<int32_t> idsHost;
         idsHost.reserve(static_cast<size_t>(batch) * seqLen);
         for (auto const& promptIds : ids)
@@ -640,8 +764,9 @@ int main(int argc, char** argv)
             umsg.contents.push_back({"text", std::string{}});
             ureq.messages.push_back(std::move(umsg));
             rt::LLMGenerationRequest::FormattedRequest uformatted;
-            ELLM_CHECK(tok.applyChatTemplate(ureq, uformatted, /*applyChatTemplate=*/true,
-                           /*addGenerationPrompt=*/true, /*enableThinking=*/true),
+            chat_template::ChatTemplate::Options options;
+            options.enableThinking = true;
+            ELLM_CHECK(chatTemplate.apply(ureq, uformatted, options),
                 "Failed to apply the chat template to the unconditional (empty) prompt");
             std::vector<tokenizer::Rank> uids
                 = tok.encode(uformatted.formattedCompleteRequest, /*addBos=*/false, /*addEos=*/false);
@@ -672,17 +797,23 @@ int main(int argc, char** argv)
         // ------------------------------------------------------------------ //
         // (d) VAE encode -> UND prefill -> GEN diffusion loop -> action chunk //
         // ------------------------------------------------------------------ //
-        cosmos3::Cosmos3Runtime runtime(args.engineDir, stream);
-        runtime.setNoiseSeed(args.seed);
-        runtime.setNumInferenceSteps(args.steps);
-        runtime.setUseCudaGraph(args.cudagraph);
-        runtime.setGuidance(args.guidance, /*intervalLo=*/960.0F, /*intervalHi=*/1001.0F);
+        auto const& policyConfig = runtime->policyConfig();
+        if (policyConfig.stateRows > 0)
+        {
+            ELLM_CHECK(batch == 1, "State-conditioned CLI currently supports batch size 1");
+            ELLM_CHECK(args.currentState.size() == static_cast<size_t>(policyConfig.rawActionDim),
+                "--state must contain exactly raw_action_dim values for this engine");
+        }
+        runtime->setNoiseSeed(args.seed);
+        runtime->setNumInferenceSteps(args.steps);
+        runtime->setUseCudaGraph(args.cudagraph);
+        runtime->setGuidance(args.guidance, /*intervalLo=*/960.0F, /*intervalHi=*/1001.0F);
         ELLM_CHECK(args.videoSubsampleFactor >= 1,
             "--video-subsample-factor must be >= 1 (1 = regular; higher = more subsample, clamped to the engine "
             "range)");
-        runtime.setVideoSubsampleFactor(args.videoSubsampleFactor);
+        runtime->setVideoSubsampleFactor(args.videoSubsampleFactor);
         ELLM_CHECK(args.actionChunk >= 0, "--action-chunk-size must be >= 0 (0 = engine canonical/max chunk)");
-        runtime.setActionChunkSize(args.actionChunk);
+        runtime->setActionChunkSize(args.actionChunk);
         if (args.videoSubsampleFactor != 1)
         {
             LOG_WARNING(
@@ -706,9 +837,9 @@ int main(int argc, char** argv)
         {
             if (args.alternateVsf)
             {
-                runtime.setVideoSubsampleFactor(vsfForRound(round++));
+                runtime->setVideoSubsampleFactor(vsfForRound(round++));
             }
-            action = runtime.generatePolicy(pixelTensor, inputsEmbeds, uncondPtr, stream);
+            action = runtime->generatePolicy(pixelTensor, inputsEmbeds, uncondPtr, args.currentState, stream);
         }
         std::vector<double> walls;
         std::vector<double> wallsVsfLow;  //!< --alternate-vsf rounds at vsf == 1.
@@ -719,10 +850,10 @@ int main(int argc, char** argv)
             int32_t const vsf = args.alternateVsf ? vsfForRound(round++) : args.videoSubsampleFactor;
             if (args.alternateVsf)
             {
-                runtime.setVideoSubsampleFactor(vsf);
+                runtime->setVideoSubsampleFactor(vsf);
             }
             auto const t0 = std::chrono::high_resolution_clock::now();
-            action = runtime.generatePolicy(pixelTensor, inputsEmbeds, uncondPtr, stream);
+            action = runtime->generatePolicy(pixelTensor, inputsEmbeds, uncondPtr, args.currentState, stream);
             cudaStreamSynchronize(stream);
             auto const t1 = std::chrono::high_resolution_clock::now();
             double const ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
@@ -758,7 +889,7 @@ int main(int argc, char** argv)
         // ------------------------------------------------------------------ //
         // (e) Emit the action chunk (B, chunk, dim).                          //
         // ------------------------------------------------------------------ //
-        int32_t const rawActionDim = runtime.policyConfig().rawActionDim;
+        int32_t const rawActionDim = runtime->policyConfig().rawActionDim;
         // The returned action chunk follows the (possibly clamped) per-request action length, so derive
         // it from the flattened action size rather than the engine's canonical chunk.
         int32_t const chunk = static_cast<int32_t>(action.size() / (static_cast<size_t>(batch) * rawActionDim));
@@ -800,12 +931,59 @@ int main(int argc, char** argv)
                     finite, seqLen, args.videoSubsampleFactor);
             }
         }
-    }
-    catch (std::exception const& e)
+    };
+
+    if (args.requestStream)
     {
-        LOG_ERROR("Cosmos3 policy inference failed: %s", e.what());
-        cudaStreamDestroy(stream);
-        return EXIT_FAILURE;
+        std::cout << "@@EDGELLM_READY {}" << std::endl;
+        std::string line;
+        while (std::getline(std::cin, line))
+        {
+            if (line.empty())
+            {
+                continue;
+            }
+            Json response;
+            try
+            {
+                Json const request = Json::parse(line);
+                Args requestArgs = args;
+                requestArgs.requestStream = false;
+                requestArgs.imagePath = request.at("image").get<std::string>();
+                requestArgs.videoPath.clear();
+                requestArgs.prompts = {request.at("prompt").get<std::string>()};
+                requestArgs.promptFile.clear();
+                requestArgs.currentState = request.at("state").get<std::vector<float>>();
+                requestArgs.output = request.at("output").get<std::string>();
+                requestArgs.seed = request.value("seed", args.seed);
+                requestArgs.steps = request.value("steps", args.steps);
+                requestArgs.domain = request.value("domain", args.domain);
+                requestArgs.viewPoint = request.value("viewpoint", args.viewPoint);
+                requestArgs.guidance = request.value("guidance", args.guidance);
+                requestArgs.warmup = 0;
+                requestArgs.iters = 1;
+                runOnce(requestArgs);
+                response = {{"ok", true}, {"output", requestArgs.output}};
+            }
+            catch (std::exception const& e)
+            {
+                response = {{"ok", false}, {"error", e.what()}};
+            }
+            std::cout << "@@EDGELLM_RESPONSE " << response.dump() << std::endl;
+        }
+    }
+    else
+    {
+        try
+        {
+            runOnce(args);
+        }
+        catch (std::exception const& e)
+        {
+            LOG_ERROR("Cosmos3 policy inference failed: %s", e.what());
+            cudaStreamDestroy(stream);
+            return EXIT_FAILURE;
+        }
     }
 
     cudaStreamDestroy(stream);

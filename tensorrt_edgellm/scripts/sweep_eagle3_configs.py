@@ -553,7 +553,7 @@ def main() -> int:
     _repo_root = Path(__file__).resolve().parent.parent.parent
     sys.path.insert(0, str(_repo_root / "experimental"))
 
-    from server.engine import _import_runtime  # noqa: E402
+    from server.runtime.engine import _import_runtime  # noqa: E402
     rt = _import_runtime()
     rt.set_profiling_enabled(True)
 

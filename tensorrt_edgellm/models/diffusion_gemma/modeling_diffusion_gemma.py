@@ -37,8 +37,10 @@ __all__ = [
     "make_diffusion_gemma_key_remap",
 ]
 
-_DUMMY_BATCH_SIZE = 1
+_DUMMY_BATCH_SIZE = 2
 _DUMMY_SEQ_LEN = 4
+_DUMMY_NUM_PAGES = 2
+_DUMMY_MAX_PAGES_PER_SEQ = 2
 _DUMMY_PAST_LEN = 2
 _DUMMY_ROPE_CACHE_LEN = 4096
 _DUMMY_CONTEXT_SELECTOR_LEN = 2
@@ -114,8 +116,12 @@ def make_diffusion_gemma_key_remap(
 
 
 def _make_diffusion_gemma_flat_wrapper(
-        model: nn.Module, Na: int, num_ple_inputs: int, use_dual_rope: bool,
-        unified_conditioning: bool) -> nn.Module:
+        model: nn.Module,
+        Na: int,
+        num_ple_inputs: int,
+        use_dual_rope: bool,
+        unified_conditioning: bool,
+        use_swa_kv_cache: bool = False) -> nn.Module:
     """Build a flat-signature wrapper for the phase-aware backbone export."""
     param_names: List[str] = ["inputs_embeds", "phase_is_encoder"]
     if unified_conditioning:
@@ -133,12 +139,19 @@ def _make_diffusion_gemma_flat_wrapper(
     else:
         param_names += ["rope_rotary_cos_sin"]
     param_names += [
-        "context_lengths",
-        "kvcache_start_index",
+        "positions",
+        "query_start_offsets",
+        "query_lengths",
+        "past_lengths",
+        "attention_sequence_lengths",
+        "state_indices",
+        "execution_phase_marker",
+        "context_sequence_count_carrier",
         "kv_page_table",
-        "select_token_indices",
-        "context_mask_selector",
     ]
+    if use_swa_kv_cache:
+        param_names += ["swa_kv_page_table", "swa_kv_cache_mode"]
+    param_names += ["select_token_indices", "context_mask_selector"]
 
     past_kv_tuple = "({},)".format(", ".join(
         f"past_key_values_{i}" for i in range(Na))) if Na else "()"
@@ -154,6 +167,9 @@ def _make_diffusion_gemma_flat_wrapper(
     else:
         rope_arg = "rope_rotary_cos_sin"
         rope_kwargs = ""
+    swa_kwargs = (", swa_kv_page_table=swa_kv_page_table"
+                  ", swa_kv_cache_mode=swa_kv_cache_mode"
+                  if use_swa_kv_cache else "")
 
     if unified_conditioning:
         conditioning_kwarg = (
@@ -163,18 +179,24 @@ def _make_diffusion_gemma_flat_wrapper(
         body = (
             f"    logits, next_self_conditioning_embeds, present_key_values = self._model(\n"
             f"        inputs_embeds, phase_is_encoder, {past_kv_tuple}, "
-            f"{rope_arg}, context_lengths, kvcache_start_index, kv_page_table, "
-            f"select_token_indices, context_mask_selector"
-            f"{ple_kwarg}{rope_kwargs}{conditioning_kwarg})\n"
+            f"{rope_arg}, positions, query_start_offsets, "
+            f"query_lengths, past_lengths, "
+            f"attention_sequence_lengths, state_indices, execution_phase_marker, "
+            f"context_sequence_count_carrier, "
+            f"kv_page_table, select_token_indices, context_mask_selector"
+            f"{ple_kwarg}{rope_kwargs}{swa_kwargs}{conditioning_kwarg})\n"
             f"    return (logits, next_self_conditioning_embeds) + tuple(present_key_values)\n"
         )
     else:
         body = (
             f"    logits, present_key_values = self._model(\n"
             f"        inputs_embeds, phase_is_encoder, {past_kv_tuple}, "
-            f"{rope_arg}, context_lengths, kvcache_start_index, kv_page_table, "
-            f"select_token_indices, context_mask_selector"
-            f"{ple_kwarg}{rope_kwargs})\n"
+            f"{rope_arg}, positions, query_start_offsets, "
+            f"query_lengths, past_lengths, "
+            f"attention_sequence_lengths, state_indices, execution_phase_marker, "
+            f"context_sequence_count_carrier, "
+            f"kv_page_table, select_token_indices, context_mask_selector"
+            f"{ple_kwarg}{rope_kwargs}{swa_kwargs})\n"
             f"    return (logits,) + tuple(present_key_values)\n")
 
     src = "def _forward(self, {}):\n{}".format(", ".join(param_names), body)
@@ -229,7 +251,7 @@ class DiffusionGemmaDecoderLayer(gemma4_text.Gemma4DecoderLayer):
             dtype=hidden_states.dtype, device=hidden_states.device)
         decoder_scalar = self.decoder_layer_scalar.to(
             dtype=hidden_states.dtype, device=hidden_states.device)
-        phase_mask = phase_is_encoder.reshape(-1, 1, 1).to(torch.bool)
+        phase_mask = phase_is_encoder.reshape(-1, 1).to(torch.bool)
         return torch.where(phase_mask, encoder_scalar, decoder_scalar)
 
 
@@ -312,32 +334,26 @@ class DiffusionGemmaBackbone(gemma4_text.Gemma4ForCausalLM):
         config = self.config
         Na = config.num_hidden_layers
         num_ple_inputs = Na if self.ple_enabled else 0
+        use_swa_kv_cache = gemma4_text._gemma4_uses_swa_kv_cache(config)
         device = next(itertools.chain(self.parameters(),
                                       self.buffers())).device
         dtype16 = torch.float16
-        batch_size, seq_len, past_len, max_pos = (_DUMMY_BATCH_SIZE,
-                                                  _DUMMY_SEQ_LEN,
-                                                  _DUMMY_PAST_LEN,
-                                                  _DUMMY_ROPE_CACHE_LEN)
+        batch_size, seq_len = _DUMMY_BATCH_SIZE, _DUMMY_SEQ_LEN
+        physical_tokens = batch_size * seq_len
 
-        inputs_embeds = torch.zeros(batch_size,
-                                    seq_len,
+        inputs_embeds = torch.zeros(physical_tokens,
                                     config.hidden_size,
                                     dtype=dtype16,
                                     device=device)
-        phase_is_encoder = torch.ones(batch_size,
-                                      dtype=torch.int32,
-                                      device=device)
+        phase_is_encoder = torch.ones(1, dtype=torch.int32, device=device)
         args = (inputs_embeds, phase_is_encoder)
         input_names = ["inputs_embeds", "phase_is_encoder"]
 
         if self.diffusion_unified_conditioning:
-            canvas_ids = torch.zeros(batch_size,
-                                     seq_len,
+            canvas_ids = torch.zeros(physical_tokens,
                                      dtype=torch.int32,
                                      device=device)
-            prev_self_conditioning_embeds = torch.zeros(batch_size,
-                                                        seq_len,
+            prev_self_conditioning_embeds = torch.zeros(physical_tokens,
                                                         config.hidden_size,
                                                         dtype=dtype16,
                                                         device=device)
@@ -353,8 +369,7 @@ class DiffusionGemmaBackbone(gemma4_text.Gemma4ForCausalLM):
             ]
 
         ple_token_embeds_list: List[torch.Tensor] = [
-            torch.zeros(batch_size,
-                        seq_len,
+            torch.zeros(physical_tokens,
                         config.hidden_size_per_layer_input,
                         dtype=dtype16,
                         device=device) for _ in range(num_ple_inputs)
@@ -365,7 +380,7 @@ class DiffusionGemmaBackbone(gemma4_text.Gemma4ForCausalLM):
         past_key_values_list: List[torch.Tensor] = [
             torch.zeros(
                 2,
-                1,
+                _DUMMY_NUM_PAGES,
                 gemma4_text.KV_PAGE_SIZE,
                 num_kv_heads,
                 layer_head_dim,
@@ -391,13 +406,11 @@ class DiffusionGemmaBackbone(gemma4_text.Gemma4ForCausalLM):
                 config, config.sliding_rope_config, sliding_head_dim)
             full_rotary_dim = gemma4_text._rotary_dim_from_rope_config(
                 config, config.full_rope_config, full_head_dim)
-            rope_rotary_cos_sin_sliding = torch.zeros(batch_size,
-                                                      max_pos,
+            rope_rotary_cos_sin_sliding = torch.zeros(physical_tokens,
                                                       sliding_rotary_dim,
                                                       dtype=torch.float32,
                                                       device=device)
-            rope_rotary_cos_sin_full = torch.zeros(batch_size,
-                                                   max_pos,
+            rope_rotary_cos_sin_full = torch.zeros(physical_tokens,
                                                    full_rotary_dim,
                                                    dtype=torch.float32,
                                                    device=device)
@@ -411,86 +424,154 @@ class DiffusionGemmaBackbone(gemma4_text.Gemma4ForCausalLM):
                 config, "full_attention")
             rotary_dim = gemma4_text._rotary_dim_from_rope_config(
                 config, None, rotary_head_dim)
-            rope_rotary_cos_sin = torch.zeros(batch_size,
-                                              max_pos,
+            rope_rotary_cos_sin = torch.zeros(physical_tokens,
                                               rotary_dim,
                                               dtype=torch.float32,
                                               device=device)
             args = args + (rope_rotary_cos_sin, )
             input_names = input_names + ["rope_rotary_cos_sin"]
 
-        context_lengths = torch.zeros(batch_size,
-                                      dtype=torch.int32,
-                                      device=device)
-        kvcache_start_index = torch.zeros(batch_size,
-                                          dtype=torch.int32,
-                                          device=device)
+        positions = torch.arange(seq_len, dtype=torch.int32,
+                                 device=device).repeat(batch_size)
+        query_start_offsets = torch.arange(0,
+                                           physical_tokens + 1,
+                                           seq_len,
+                                           dtype=torch.int32,
+                                           device=device)
+        query_lengths = torch.full((batch_size, ),
+                                   seq_len,
+                                   dtype=torch.int32,
+                                   device=device)
+        past_lengths = torch.zeros(batch_size,
+                                   dtype=torch.int32,
+                                   device=device)
+        attention_sequence_lengths = query_lengths.clone()
+        state_indices = torch.arange(batch_size,
+                                     dtype=torch.int32,
+                                     device=device)
+        execution_phase_marker = torch.zeros(6,
+                                             dtype=torch.int32,
+                                             device=device)
+        context_sequence_count_carrier = torch.empty(0,
+                                                     dtype=torch.int32,
+                                                     device=device)
         kv_page_table = torch.zeros(batch_size,
                                     2,
-                                    1,
+                                    _DUMMY_MAX_PAGES_PER_SEQ,
                                     dtype=torch.int32,
                                     device=device)
-        select_token_indices = torch.arange(seq_len,
+        select_token_indices = torch.arange(physical_tokens,
                                             dtype=torch.int64,
-                                            device=device).reshape(
-                                                batch_size, seq_len)
+                                            device=device)
         context_mask_selector = torch.zeros(_DUMMY_CONTEXT_SELECTOR_LEN,
                                             dtype=torch.int32,
                                             device=device)
 
-        args = args + (context_lengths, kvcache_start_index, kv_page_table,
-                       select_token_indices, context_mask_selector)
+        args = args + (positions, query_start_offsets, query_lengths,
+                       past_lengths, attention_sequence_lengths, state_indices,
+                       execution_phase_marker, context_sequence_count_carrier,
+                       kv_page_table)
         input_names = input_names + [
-            "context_lengths",
-            "kvcache_start_index",
+            "positions",
+            "query_start_offsets",
+            "query_lengths",
+            "past_lengths",
+            "attention_sequence_lengths",
+            "state_indices",
+            "execution_phase_marker",
+            "context_sequence_count_carrier",
             "kv_page_table",
-            "select_token_indices",
-            "context_mask_selector",
+        ]
+        if use_swa_kv_cache:
+            swa_kv_page_table = torch.zeros(
+                batch_size,
+                2,
+                _DUMMY_MAX_PAGES_PER_SEQ,
+                dtype=torch.int32,
+                device=device,
+            )
+            swa_kv_cache_mode = torch.zeros(1, dtype=torch.int8, device=device)
+            args = args + (swa_kv_page_table, swa_kv_cache_mode)
+            input_names = input_names + [
+                "swa_kv_page_table", "swa_kv_cache_mode"
+            ]
+        args = args + (select_token_indices, context_mask_selector)
+        input_names = input_names + [
+            "select_token_indices", "context_mask_selector"
         ]
         output_names = ["logits"]
         if self.diffusion_unified_conditioning:
             output_names.append("next_self_conditioning_embeds")
         output_names += [f"present_key_values_{i}" for i in range(Na)]
 
-        batch = torch.export.Dim("batch", min=1, max=256)
-        seq = torch.export.Dim("seq_len", min=1, max=32768)
+        tokens = torch.export.Dim("physical_tokens", min=1, max=8_388_608)
+        sequences = torch.export.Dim("num_sequences", min=1, max=256)
         max_selected = (int(config.diffusion.canvas_length) if
                         (self.diffusion_unified_conditioning
                          and config.diffusion is not None) else 32768)
         selected = torch.export.Dim("num_selected", min=1, max=max_selected)
-        pos = torch.export.Dim("max_pos", min=1, max=32768)
-        rope_batch = torch.export.Dim("rope_batch", min=1, max=256)
-        kv_batch = torch.export.Dim("kv_batch", min=1, max=256)
-        page_batch = torch.export.Dim("page_batch", min=1, max=256)
         max_pages = torch.export.Dim("max_pages_per_seq", min=1, max=32768)
         num_pages = torch.export.Dim("num_pages", min=1, max=1048576)
+        swa_page_batch = (torch.export.Dim("swa_page_batch", min=1, max=256)
+                          if use_swa_kv_cache else None)
+        swa_max_pages = (torch.export.Dim(
+            "swa_max_pages_per_seq", min=1, max=32768)
+                         if use_swa_kv_cache else None)
+        num_swa_pages = (torch.export.Dim("num_swa_pages", min=1, max=1048576)
+                         if use_swa_kv_cache else None)
+        phase_extent = torch.export.Dim("execution_phase_extent", min=1, max=8)
         selector_len = torch.export.Dim("context_selector_len", min=0, max=256)
 
-        all_shapes: list = [{0: batch, 1: seq}, {0: batch}]
+        all_shapes: list = [{0: tokens}, {}]
         if self.diffusion_unified_conditioning:
             # Runtime binds these tensors to the same denoise canvas sequence shape as inputs_embeds.
             all_shapes += [
                 {
-                    0: batch,
-                    1: seq
+                    0: tokens
                 },
                 {
-                    0: batch,
-                    1: seq
+                    0: tokens
                 },
                 {},
             ]
         for _ in range(num_ple_inputs):
-            all_shapes.append({0: batch, 1: seq})
-        for _ in range(Na):
-            all_shapes.append({1: num_pages})
-        all_shapes.append({0: rope_batch, 1: pos})
+            all_shapes.append({0: tokens})
+        for layer_idx in range(Na):
+            pool_pages = (num_swa_pages if use_swa_kv_cache
+                          and gemma4_text._gemma4_uses_swa_pool(
+                              config, layer_idx) else num_pages)
+            all_shapes.append({1: pool_pages})
+        all_shapes.append({0: tokens})
         if config.use_dual_rope:
-            all_shapes.append({0: rope_batch, 1: pos})
-        all_shapes.append({0: batch})
-        all_shapes.append({0: kv_batch})
-        all_shapes.append({0: page_batch, 2: max_pages})
-        all_shapes.append({0: batch, 1: selected})
+            all_shapes.append({0: tokens})
+        all_shapes.extend([
+            {
+                0: tokens
+            },
+            {
+                0: sequences + 1
+            },
+            {
+                0: sequences
+            },
+            {
+                0: sequences
+            },
+            {
+                0: sequences
+            },
+            {
+                0: sequences
+            },
+            {
+                0: phase_extent
+            },
+            {},
+        ])
+        all_shapes.append({0: sequences, 2: max_pages})
+        if use_swa_kv_cache:
+            all_shapes.extend([{0: swa_page_batch, 2: swa_max_pages}, {}])
+        all_shapes.append({0: selected})
         all_shapes.append({0: selector_len})
 
         wrapped = _make_diffusion_gemma_flat_wrapper(
@@ -498,7 +579,8 @@ class DiffusionGemmaBackbone(gemma4_text.Gemma4ForCausalLM):
             Na,
             num_ple_inputs=num_ple_inputs,
             use_dual_rope=config.use_dual_rope,
-            unified_conditioning=self.diffusion_unified_conditioning)
+            unified_conditioning=self.diffusion_unified_conditioning,
+            use_swa_kv_cache=use_swa_kv_cache)
         wrapped.eval()
 
         return OnnxSpec(wrapped=wrapped,
@@ -513,8 +595,14 @@ class DiffusionGemmaBackbone(gemma4_text.Gemma4ForCausalLM):
         phase_is_encoder: torch.Tensor,
         past_key_values: Tuple[torch.Tensor, ...],
         rope_rotary_cos_sin: torch.Tensor | None,
-        context_lengths: torch.Tensor,
-        kvcache_start_index: torch.Tensor,
+        positions: torch.Tensor,
+        query_start_offsets: torch.Tensor,
+        query_lengths: torch.Tensor,
+        past_lengths: torch.Tensor,
+        attention_sequence_lengths: torch.Tensor,
+        state_indices: torch.Tensor,
+        execution_phase_marker: torch.Tensor,
+        context_sequence_count_carrier: torch.Tensor,
         kv_page_table: torch.Tensor,
         select_token_indices: torch.Tensor,
         context_mask_selector: torch.Tensor,
@@ -524,6 +612,8 @@ class DiffusionGemmaBackbone(gemma4_text.Gemma4ForCausalLM):
         canvas_ids: torch.Tensor | None = None,
         prev_self_conditioning_embeds: torch.Tensor | None = None,
         self_conditioning_temperature: torch.Tensor | None = None,
+        swa_kv_page_table: torch.Tensor | None = None,
+        swa_kv_cache_mode: torch.Tensor | None = None,
     ) -> Tuple:
         if self.diffusion_unified_conditioning:
             if (canvas_ids is None or prev_self_conditioning_embeds is None
@@ -534,27 +624,34 @@ class DiffusionGemmaBackbone(gemma4_text.Gemma4ForCausalLM):
                     "self_conditioning_temperature inputs.")
             conditioned_inputs = self._unified_conditioned_inputs(
                 canvas_ids, prev_self_conditioning_embeds)
-            phase_is_encoder_mask = phase_is_encoder.reshape(-1, 1,
+            phase_is_encoder_mask = phase_is_encoder.reshape(1,
                                                              1).to(torch.bool)
             inputs_embeds = torch.where(phase_is_encoder_mask, inputs_embeds,
                                         conditioned_inputs)
 
-        hidden_states, present_key_values, _ = self.model(
+        hidden_states, present_key_values = self.model.forward_ragged(
             inputs_embeds,
             past_key_values,
             rope_rotary_cos_sin,
-            context_lengths,
-            kvcache_start_index,
+            positions,
+            query_start_offsets,
+            query_lengths,
+            past_lengths,
+            attention_sequence_lengths,
+            state_indices,
+            execution_phase_marker,
+            context_sequence_count_carrier,
             kv_page_table,
+            swa_kv_page_table=swa_kv_page_table,
+            swa_kv_cache_mode=swa_kv_cache_mode,
             phase_is_encoder=phase_is_encoder,
             context_mask_selector=context_mask_selector,
-            output_hidden_states=False,
             ple_token_embeds=ple_token_embeds,
             rope_rotary_cos_sin_sliding=rope_rotary_cos_sin_sliding,
             rope_rotary_cos_sin_full=rope_rotary_cos_sin_full,
         )
-        selected_hidden_states = torch.ops.trt.gather_nd(
-            hidden_states, select_token_indices)
+        selected_hidden_states = torch.index_select(hidden_states, 0,
+                                                    select_token_indices)
         logits = self.lm_head(selected_hidden_states).to(torch.float32)
         if (self.config.final_logit_softcapping is not None
                 and self.config.final_logit_softcapping > 0.0):

@@ -18,12 +18,39 @@ from cutlass._mlir.dialects import llvm, vector
 from cutlass.cute.typing import Boolean
 from cutlass.cutlass_dsl import (Float32, Int32, T, dsl_user_op, extract_mlir_values, min,
                                  new_from_mlir_values)
-from cutlass.utils import WorkTileInfo
 from cutlass.utils.hardware_info import HardwareInfo
 
 ##############################################################################
 # Fmha static tile scheduler
 ##############################################################################
+
+
+class FmhaWorkTileInfo:
+    """Work-tile state supporting FMHA's nested ``(m, 0, (b, h))`` coordinate."""
+
+    def __init__(self, tile_idx: cute.Coord, is_valid_tile: Boolean):
+        self._tile_idx = tile_idx
+        self._is_valid_tile = Boolean(is_valid_tile)
+
+    def __extract_mlir_values__(self):
+        tile_values = extract_mlir_values(self._tile_idx)
+        self._tile_value_count = len(tile_values)
+        return tile_values + extract_mlir_values(self._is_valid_tile)
+
+    def __new_from_mlir_values__(self, values):
+        tile_values = values[:self._tile_value_count]
+        valid_values = values[self._tile_value_count:]
+        tile_idx = new_from_mlir_values(self._tile_idx, tile_values)
+        is_valid_tile = new_from_mlir_values(self._is_valid_tile, valid_values)
+        return FmhaWorkTileInfo(tile_idx, is_valid_tile)
+
+    @property
+    def is_valid_tile(self):
+        return self._is_valid_tile
+
+    @property
+    def tile_idx(self):
+        return self._tile_idx
 
 
 class FmhaStaticTileSchedulerParams:
@@ -203,7 +230,7 @@ class FmhaStaticTileScheduler:
         """
         return current_idx * q_tiler < seqlen_q
 
-    def get_current_work(self, *, loc=None, ip=None) -> WorkTileInfo:
+    def get_current_work(self, *, loc=None, ip=None) -> FmhaWorkTileInfo:
         """
         Get information about the current work tile.
 
@@ -230,7 +257,7 @@ class FmhaStaticTileScheduler:
             (blk_coord[1], blk_coord[2]),
         )
 
-        return WorkTileInfo(cur_tile_coord, is_valid)
+        return FmhaWorkTileInfo(cur_tile_coord, is_valid)
 
     def initial_work_tile_info(self, *, loc=None, ip=None):
         """
@@ -256,19 +283,35 @@ class FmhaStaticTileScheduler:
         self._is_first_block = False
 
     def __extract_mlir_values__(self):
-        values = extract_mlir_values(self._params)
-        values.extend(extract_mlir_values(self._current_work_linear_idx))
-        values.extend(extract_mlir_values(self._blk_coord))
-        values.extend(extract_mlir_values(self._grid_shape))
+        values = []
+        self._value_counts = []
+        for obj in (
+            self._params,
+            self._current_work_linear_idx,
+            self._blk_coord,
+            self._grid_shape,
+        ):
+            obj_values = extract_mlir_values(obj)
+            values.extend(obj_values)
+            self._value_counts.append(len(obj_values))
         return values
 
     def __new_from_mlir_values__(self, values):
-        assert len(values) == 10
-        new_params = new_from_mlir_values(self._params, values[0:3])
-        new_current_work_linear_idx = new_from_mlir_values(
-            self._current_work_linear_idx, [values[3]])
-        new_blk_coord = new_from_mlir_values(self._blk_coord, values[4:7])
-        new_grid_shape = new_from_mlir_values(self._grid_shape, values[7:])
+        reconstructed = []
+        start = 0
+        for obj, value_count in zip(
+            (
+                self._params,
+                self._current_work_linear_idx,
+                self._blk_coord,
+                self._grid_shape,
+            ),
+            self._value_counts,
+        ):
+            reconstructed.append(
+                new_from_mlir_values(obj, values[start:start + value_count]))
+            start += value_count
+        new_params, new_current_work_linear_idx, new_blk_coord, new_grid_shape = reconstructed
         return FmhaStaticTileScheduler(new_params, new_current_work_linear_idx,
                                        new_blk_coord, new_grid_shape)
 
@@ -1197,3 +1240,168 @@ def cvt_f32x4_to_f8x4(fp32x4, fp8x4, *, loc=None, ip=None):
         asm_dialect=llvm.AsmDialect.AD_ATT,
     )
     cute.recast_tensor(fp8x4, cutlass.Int32)[0] = cutlass.Int32(packed)
+
+
+##############################################################################
+# Skip-softmax (BLASST)
+##############################################################################
+# Shared by the d64/d128 kernel (BlackwellFusedMultiHeadAttentionForward) and
+# the d256-per-CTA kernel (…HeadDimPerCta256). Both sides are pure functions of
+# their arguments — the per-kernel wiring (SMEM exchange buffer, pipeline
+# ordering, PV-skip branch) stays in each kernel class.
+
+
+@cute.jit
+def get_skip_softmax_flag(warp_wants_skip_softmax_exchange):
+    """MMA-warp side of skip-softmax: read the 4 per-warp vote bytes the softmax
+    warpgroup published to the SMEM exchange buffer as one Int32 (the
+    softmax->MMA pipeline release/acquire orders the stores) and skip this
+    tile's P*V only when all 4 warps agreed — P is then exactly zeros."""
+    votes_i32 = cute.make_tensor(
+        cute.recast_ptr(
+            warp_wants_skip_softmax_exchange.iterator, dtype=cutlass.Int32
+        ),
+        cute.make_layout((1,)),
+    )
+    votes = cute.arch.make_warp_uniform(votes_i32[0])
+    return cute.arch.popc(votes) == 4
+
+
+@cute.jit
+def calculate_skip_softmax_flag(
+    row_max,
+    tile_row_max,
+    scale_softmax_log2,
+    skip_softmax_threshold_log2,
+    thread_idx,
+    row_is_oob,
+    warp_wants_skip_softmax_exchange,
+    skip_softmax_count,
+    total_softmax_count,
+):
+    """Softmax-warpgroup side of skip-softmax (BLASST). Skip the current KV
+    block when its local row-max is below the running global row-max by more
+    than ln(lambda):  (tile_row_max - row_max) * scale_log2 < threshold_log2.
+    Per-thread predicate reduced to a PER-WARP vote (32 rows); each warp
+    publishes its vote byte to the SMEM exchange buffer. A skipped warp leaves
+    row_max unchanged so O/l need no rescale.
+    :return: (warp_wants_skip, row_max)
+    """
+    thread_wants_skip = (
+        (tile_row_max - row_max) * scale_softmax_log2
+    ) < skip_softmax_threshold_log2
+    # Rows past the end of the query sequence never contribute; treat them as
+    # wanting to skip so they don't veto a warp-level skip. row_is_oob is
+    # KV-tile-invariant (depends only on the query row + seqlen_q) so it is
+    # computed ONCE per work-tile in softmax() and threaded in, removing an
+    # add+compare+OR from every enabled KV tile on the bound softmax warp.
+    thread_wants_skip = thread_wants_skip or row_is_oob
+    warp_wants_skip = cute.arch.vote_all_sync(thread_wants_skip)
+
+    with cute.arch.elect_one():
+        warp_wants_skip_softmax_exchange[cute.arch.warp_idx() % 4] = warp_wants_skip
+
+    if not warp_wants_skip:
+        row_max = cute.arch.fmax(row_max, tile_row_max)
+
+    if cutlass.const_expr(skip_softmax_count is not None):
+        # Exclude fully-OOB row-blocks (phantom stage visits past seqlen_q):
+        # they always vote skip by construction and would inflate the ratio
+        # (e.g. S=128 reads 0.50 instead of the true 0.00).
+        warp_all_oob = cute.arch.vote_all_sync(row_is_oob)
+        if not warp_all_oob:
+            if thread_idx % 32 == 0:
+                if warp_wants_skip:
+                    cute.arch.atomic_add(skip_softmax_count.iterator.llvm_ptr, Int32(1))
+                cute.arch.atomic_add(total_softmax_count.iterator.llvm_ptr, Int32(1))
+    return warp_wants_skip, row_max
+
+
+@dsl_user_op
+def ex2_emulation_packed_f32x2(
+    x: Float32, y: Float32, *, loc=None, ip=None
+) -> Tuple[Float32, Float32]:
+    """Compute (2^x, 2^y) on the FMA pipe instead of the SFU (MUFU.EX2).
+
+    Split each input into integer and fractional parts, approximate 2^frac
+    with a cubic polynomial (FFMAs), then apply the 2^int scaling by adding
+    the integer directly onto the FP32 exponent field:
+
+        2^x ~= ((0.077·f + 0.228)·f + 0.695)·f + 1,  f = x - floor(x) ∈ [0, 1)
+
+    Inputs are clamped to >= -127 so the exponent add below cannot wrap; at
+    -127 the exponent field reaches 0, so an -inf masked score yields +0.0. The
+    upper side is already bounded because callers pass x = (s - row_max)·scale
+    (+ a small prescale/skip-correction headroom).
+    """
+    xy_clamped = (cute.arch.fmax(x, -127.0), cute.arch.fmax(y, -127.0))
+
+    # Adding 2^23 + 2^22 shifts the ones digit to the mantissa LSB, so the
+    # round-toward-minus-infinity add computes floor(x) in the low mantissa
+    # bits. Subtracting it back (round-to-nearest) recovers floor(x) as a
+    # float, and x - floor(x) gives the fractional part in [0, 1).
+    fp32_round_int = float(2**23 + 2**22)
+    xy_rounded = cute.arch.add_packed_f32x2(
+        xy_clamped, (fp32_round_int, fp32_round_int), rnd="rm"
+    )
+    xy_rounded_back = cute.arch.sub_packed_f32x2(
+        xy_rounded, (fp32_round_int, fp32_round_int)
+    )
+    xy_frac = cute.arch.sub_packed_f32x2(xy_clamped, xy_rounded_back)
+
+    @dsl_user_op
+    @cute.jit
+    def polynomial_deg3_packed_f32x2(
+        x: Float32, y: Float32, *, loc=None, ip=None
+    ) -> Tuple[Float32, Float32]:
+        # 2^x ~= ((0.077 * x + 0.228) * x + 0.695) * x + 1, for x in [0, 1)
+        coeff = (
+            1.0,  # coeff of deg0
+            0.695146143436431884765625,  # coeff of deg1
+            0.227564394474029541015625,  # coeff of deg2
+            0.077119089663028717041015625,  # coeff of deg3
+        )
+        deg = len(coeff) - 1  # started with highest degree
+        out = (coeff[deg], coeff[deg])
+        for i in cutlass.range_constexpr(deg - 1, -1, -1):
+            out = cute.arch.fma_packed_f32x2(
+                out, (x, y), (coeff[i], coeff[i]), loc=loc, ip=ip
+            )
+        return out
+
+    xy_frac_ex2 = polynomial_deg3_packed_f32x2(*xy_frac, loc=loc, ip=ip)
+
+    @dsl_user_op
+    def combine_int_frac_ex2(
+        x_rounded: Float32, frac_ex2: Float32, *, loc=None, ip=None
+    ) -> Float32:
+        # x_rounded still carries floor(x) in its low mantissa bits (from the
+        # 2^23 + 2^22 add). Shifting it left by 23 places that integer in the
+        # exponent field; integer-adding it to frac_ex2 (a normalized value in
+        # [1, 2), exponent bits 01111111) multiplies frac_ex2 by 2^floor(x).
+        return cutlass.Float32(
+            llvm.inline_asm(
+                T.f32(),
+                [
+                    Float32(x_rounded).ir_value(loc=loc, ip=ip),
+                    Float32(frac_ex2).ir_value(loc=loc, ip=ip),
+                ],
+                "{\n\t"
+                ".reg .s32 x_rounded_i, frac_ex_i, x_rounded_e, out_i;\n\t"
+                "mov.b32 x_rounded_i, $1;\n\t"
+                "mov.b32 frac_ex_i, $2;\n\t"
+                "shl.b32 x_rounded_e, x_rounded_i, 23;\n\t"
+                "add.s32 out_i, x_rounded_e, frac_ex_i;\n\t"
+                "mov.b32 $0, out_i;\n\t"
+                "}\n",
+                "=f,f,f",
+                has_side_effects=False,
+                is_align_stack=False,
+                asm_dialect=llvm.AsmDialect.AD_ATT,
+            )
+        )
+
+    x_out = combine_int_frac_ex2(xy_rounded[0], xy_frac_ex2[0], loc=loc, ip=ip)
+    y_out = combine_int_frac_ex2(xy_rounded[1], xy_frac_ex2[1], loc=loc, ip=ip)
+
+    return x_out, y_out

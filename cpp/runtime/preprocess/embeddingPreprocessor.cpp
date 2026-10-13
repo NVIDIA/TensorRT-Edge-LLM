@@ -32,6 +32,8 @@ namespace rt
 EmbeddingPreprocessor::EmbeddingPreprocessor(EmbeddingData const& embedding, LLMEngineConfig const& config)
     : mEmbedding(embedding)
     , mConfig(config)
+    , mOwnedIndices(Coords{config.maxPhysicalTokens}, DeviceType::kGPU, nvinfer1::DataType::kINT32,
+          "EmbeddingPreprocessor::ownedMultimodalIndices")
 {
 }
 
@@ -52,7 +54,7 @@ void EmbeddingPreprocessor::embed(Tensor const& tokenIds, OptionalInputTensor vi
         }
         else
         {
-            mOwnedIndices = Tensor(tokenIds.getShape(), DeviceType::kGPU, tokenIds.getDataType());
+            check::check(mOwnedIndices.reshape(tokenIds.getShape()), "Multimodal index reshape failed");
             kernel::generateMultimodalIndices(
                 tokenIds, mOwnedIndices, imageTokenOpt, audioTokenOpt, stream, imageBaseOffsets, audioBaseOffsets);
             mIndicesPtr = &mOwnedIndices;

@@ -21,7 +21,9 @@ from dataclasses import replace
 from typing import Iterable, Optional, Sequence, Tuple, Union
 
 from tensorrt_edgellm._native import NativeManifestNotFoundError
+from tensorrt_edgellm._native.dependencies import require_tensorrt
 from tensorrt_edgellm._native.load import resolve_payload
+from tensorrt_edgellm.dflash import DFlashVersion, resolve_dflash_contract
 
 LOGGER = logging.getLogger("experimental.builder")
 
@@ -39,10 +41,12 @@ def _build_args(args: argparse.Namespace, component: str):
         component=component,
         spec_role=args.spec_role,
         spec_type=args.spec_type,
+        dflash_version=getattr(args, "dflash_version", DFlashVersion.V1),
         max_input_len=args.max_input_len,
         max_kv_cache_capacity=args.max_kv_cache_capacity,
         max_batch_size=args.max_batch_size,
         max_lora_rank=args.max_lora_rank,
+        num_decoder_layers=args.num_decoder_layer,
         max_verify_tree_size=_value_or_default(args.max_verify_tree_size, 60),
         max_draft_tree_size=_value_or_default(args.max_draft_tree_size, 60),
         tree_base=args.tree_base,
@@ -130,14 +134,32 @@ def _speculative_build_plan(args: argparse.Namespace, bundle, components):
 
     draft_model_dir = args.draft_model_dir or args.model_dir
     draft_bundle = BundleConfig.from_pretrained(draft_model_dir)
-    if args.spec_type == "dspark":
+    dflash_version = DFlashVersion.V1
+    if args.spec_type == "dflash":
         draft = draft_bundle.component_dict(contracts.Component.LLM)
-        dspark = draft.get("dspark_config") or {}
-        block_size = int(dspark.get("block_size", draft.get("block_size", 7)))
-        draft_tree_size = _value_or_default(args.max_draft_tree_size,
+        contract = resolve_dflash_contract(draft_bundle.root, draft)
+        dflash_version = contract.version
+        if contract.version == DFlashVersion.V2:
+            block_size = contract.block_size
+            verify_size = _value_or_default(args.max_verify_tree_size,
                                             block_size)
-        verify_tree_size = _value_or_default(args.max_verify_tree_size,
-                                             draft_tree_size + 1)
+            draft_size = _value_or_default(args.max_draft_tree_size,
+                                           block_size)
+            if (verify_size != draft_size or draft_size < block_size
+                    or draft_size > 16):
+                raise ValueError(
+                    "DFlash V2 verify and draft profile sizes must match, include "
+                    f"checkpoint block_size={block_size}, and not exceed 16")
+            args = _copy_args(args,
+                              max_verify_tree_size=verify_size,
+                              max_draft_tree_size=draft_size)
+        args = _copy_args(args, dflash_version=dflash_version)
+    if args.spec_type == "dspark":
+        from .models.dspark.configuration import resolve_build_profile
+        draft = draft_bundle.component_dict(contracts.Component.LLM)
+        verify_tree_size, draft_tree_size = resolve_build_profile(
+            draft, args.max_draft_tree_size, args.max_verify_tree_size,
+            args.tree_base)
         args = _copy_args(args,
                           max_verify_tree_size=verify_tree_size,
                           max_draft_tree_size=draft_tree_size)
@@ -209,7 +231,7 @@ def _build_one(args: argparse.Namespace, bundle, component,
             replace(build_args, tp_size=1, tp_rank=0))
     artifact_writer = model_registry.artifact_writer_for(
         bundle.root_model_type, build_args.spec_type,
-        build_args.resolved_spec_role)
+        build_args.resolved_spec_role, build_args.dflash_version)
     artifact_writer.write_artifacts(bundle, artifact_cfg, build_args,
                                     args.engine_dir)
     if result.checkpoint_weight_bindings:
@@ -227,6 +249,7 @@ def _build_one(args: argparse.Namespace, bundle, component,
 
 
 def _build(args: argparse.Namespace) -> None:
+    require_tensorrt()
     from .core.builder import load_plugin_library
 
     plugin_path = args.plugin_path
@@ -278,7 +301,7 @@ def _add_build_args(parser: argparse.ArgumentParser) -> None:
                  "gemma4_mtp"),
         default="none",
         help=("Build both speculative engines in this single invocation. "
-              "EAGLE3, DFlash, JetSpec, dSpark, and Gemma4 MTP also require "
+              "EAGLE3, DFlash, JetSpec, dSpark, and Gemma4 MTP require "
               "--draft-model-dir."))
     parser.add_argument("--dense",
                         choices=("auto", "nvfp4-qdq", "fp16"),
@@ -294,13 +317,19 @@ def _add_build_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-kv-cache-capacity", type=int, default=96)
     parser.add_argument("--max-batch-size", type=int, default=1)
     parser.add_argument("--max-lora-rank", type=int, default=0)
+    parser.add_argument(
+        "--num-decoder-layer",
+        type=int,
+        default=0,
+        help=("Build only the first N decoder layers (few-layer numeric "
+              "validation). 0 keeps the checkpoint's own layer count."))
     parser.add_argument("--max-verify-tree-size", type=int)
     parser.add_argument("--max-draft-tree-size", type=int)
     parser.add_argument(
         "--tree-base",
         action="store_true",
-        help=("Build an MTP or DFlash base with DDTree parent/depth metadata "
-              "for hybrid recurrent-state verification."))
+        help=("Build an MTP, DFlash, JetSpec, or DSpark base with DDTree "
+              "parent/depth metadata for recurrent-state verification."))
     parser.add_argument("--min-image-tokens", type=int, default=4)
     parser.add_argument("--max-image-tokens", type=int, default=1024)
     parser.add_argument("--max-image-tokens-per-image", type=int, default=512)

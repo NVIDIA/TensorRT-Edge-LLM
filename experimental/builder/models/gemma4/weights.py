@@ -49,6 +49,14 @@ def resolve_candidates(name: str, *, component: str, spec_type: str,
     del spec_type, spec_role
     prefixes = _PREFIXES.get(component, ())
     candidates = [prefix + name for prefix in prefixes]
+    if component == "visual" and name.startswith("vision_embedder."):
+        suffix = name[len("vision_embedder."):]
+        candidates.extend(
+            (f"model.embed_vision.{suffix}", f"embed_vision.{suffix}"))
+    if component == "visual" and name.startswith("embed_vision."):
+        suffix = name[len("embed_vision."):]
+        candidates.extend((f"model.embed_vision.multimodal_embedder.{suffix}",
+                           f"embed_vision.multimodal_embedder.{suffix}"))
     if component == "llm" and name.startswith("model."):
         nested_name = name[len("model."):]
         candidates.extend(prefix + nested_name for prefix in prefixes)

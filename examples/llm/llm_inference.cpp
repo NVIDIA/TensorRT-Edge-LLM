@@ -104,7 +104,8 @@ enum LLMInferenceOptionId : int
     DART_PIVOT_IMAGE_TOKENS = 937,
     DART_PIVOT_TEXT_TOKENS = 938,
     VISUAL_PRUNE_ALGO = 939,
-    ENCODER_CACHE_BUDGET_BYTES = 940
+    ENCODER_CACHE_BUDGET_BYTES = 940,
+    CP_SPEC_VERIFY_SIZE = 941
 };
 
 // Struct to hold speculative decoding arguments (used by both EAGLE and MTP)
@@ -156,6 +157,7 @@ struct LLMInferenceArgs
     int64_t maxGenerateLength{-1}; // -1 means use value from input file
     int32_t numLogprobs{-1};       // -1 means use value from input file
     SpecDecodeArgs specDecodeArgs;
+    int32_t cpSpecVerifySize{0};
     rt::ContextCacheConfig contextCacheConfig;
 
     // Qwen3-Omni audio output options
@@ -209,16 +211,31 @@ int32_t maxVerifySizeOrDefault(rt::LLMEngineConfig const& config, int32_t fallba
     return config.maxVerifyTreeSize > 0 ? config.maxVerifyTreeSize : fallback;
 }
 
-int32_t dsparkVerifySizeOrDefault(std::string const& engineDir)
+int32_t dsparkVerifySizeOrDefault(
+    std::string const& engineDir, rt::LLMEngineConfig const& baseConfig, int32_t draftTopK)
 {
+    if (draftTopK > 1 && baseConfig.maxVerifyTreeSize > 0)
+    {
+        return baseConfig.maxVerifyTreeSize;
+    }
+
     std::filesystem::path const draftConfigPath = getDraftConfigPath(engineDir);
     if (!std::filesystem::is_regular_file(draftConfigPath))
     {
-        return 8;
+        return baseConfig.maxVerifyTreeSize > 0 ? baseConfig.maxVerifyTreeSize : 8;
     }
 
     rt::LLMEngineConfig const draftConfig = rt::parseDraftEngineConfig(draftConfigPath);
-    return draftConfig.specDraftBlockSize > 0 ? draftConfig.specDraftBlockSize + 1 : 8;
+    if (draftConfig.specDraftBlockSize <= 0)
+    {
+        return baseConfig.maxVerifyTreeSize > 0 ? baseConfig.maxVerifyTreeSize : 8;
+    }
+    int32_t const slotOffset = draftConfig.dsparkSampleFromAnchor ? 0 : 1;
+    int32_t const profileCapacity = draftConfig.maxDraftTreeSize > 0
+        ? std::max(0, draftConfig.maxDraftTreeSize - slotOffset)
+        : draftConfig.specDraftBlockSize;
+    int32_t const verifySize = std::min(draftConfig.specDraftBlockSize, profileCapacity) + 1;
+    return baseConfig.maxVerifyTreeSize > 0 ? std::min(verifySize, baseConfig.maxVerifyTreeSize) : verifySize;
 }
 
 int32_t cachedBlockDraftBlockSizeOrThrow(
@@ -235,7 +252,9 @@ int32_t cachedBlockDraftBlockSizeOrThrow(
         rt::LLMEngineConfig const draftConfig = rt::parseDraftEngineConfig(draftConfigPath);
         if (draftConfig.specDraftBlockSize > 0)
         {
-            return draftConfig.specDraftBlockSize;
+            return draftConfig.maxDraftTreeSize > 0
+                ? std::min(draftConfig.specDraftBlockSize, draftConfig.maxDraftTreeSize)
+                : draftConfig.specDraftBlockSize;
         }
     }
     if (baseConfig.specDraftBlockSize > 0)
@@ -279,7 +298,9 @@ bool applyEngineSpecDecodeDefaults(LLMInferenceArgs& args)
             }
             if (!specArgs.verifySizeSet)
             {
-                specArgs.verifySize = specArgs.draftTopK > 1 ? maxVerifySizeOrDefault(baseConfig, 128) : blockSize;
+                specArgs.verifySize = baseConfig.dflashVersion == rt::DFlashVersion::kV2
+                    ? blockSize
+                    : (specArgs.draftTopK > 1 ? maxVerifySizeOrDefault(baseConfig, 128) : blockSize);
             }
             break;
         }
@@ -294,7 +315,7 @@ bool applyEngineSpecDecodeDefaults(LLMInferenceArgs& args)
             }
             if (!specArgs.verifySizeSet)
             {
-                specArgs.verifySize = dsparkVerifySizeOrDefault(args.engineDir);
+                specArgs.verifySize = dsparkVerifySizeOrDefault(args.engineDir, baseConfig, specArgs.draftTopK);
             }
             break;
         default: break;
@@ -359,8 +380,9 @@ void printUsage(char const* programName)
     std::cerr
         << "  --numLogprobs             Number of top log-probabilities to return per token (0 = disabled, max 50)"
         << std::endl;
-    std::cerr << "  --specDecode              Enable speculative decoding (EAGLE, MTP, DFlash, JetSpec, or DSpark)"
-              << std::endl;
+    std::cerr
+        << "  --specDecode              Enable speculative decoding (EAGLE, MTP, DFlash, DFlash2, JetSpec, or DSpark)"
+        << std::endl;
     std::cerr << "  --specDraftTopK           Number of tokens selected per drafting step (default: 10)" << std::endl;
     std::cerr << "                            DFlash/JetSpec/DSpark default to 1 when omitted" << std::endl;
     std::cerr
@@ -397,7 +419,7 @@ void printUsage(char const* programName)
     std::cerr << "  --encoderCacheBudgetBytes  Device byte budget for encoder embedding cache (default: 256 MiB;"
               << " 0 disables)" << std::endl;
     std::cerr << "\nVisual-Token Pruning Options:" << std::endl;
-    std::cerr << "  --visualPrune             Enable visual-token pruning (mRoPE VLM prefill, batch 1)" << std::endl;
+    std::cerr << "  --visualPrune             Enable visual-token pruning (mRoPE VLM prefill)" << std::endl;
     std::cerr << "  --visualPruneAlgo         Prune selection algorithm (default: dart)" << std::endl;
     std::cerr << "  --dartReductionRatio      Fraction of visual tokens to remove, in (0, 1) (default: 0.25)"
               << std::endl;
@@ -409,6 +431,9 @@ void printUsage(char const* programName)
     std::cerr << "  --talkerEngineDir         Path to Talker engine directory" << std::endl;
     std::cerr << "  --code2wavEngineDir       Path to Code2Wav engine directory (optional)" << std::endl;
     std::cerr << "  --outputAudioDir          Directory to save generated audio (.wav) files" << std::endl;
+    std::cerr << "  --cpSpecVerifySize        CodePredictor speculative decoding verify window: 1 committed"
+              << std::endl;
+    std::cerr << "                            position plus N-1 drafted RVQ depths. 0 disables (default)." << std::endl;
 }
 
 namespace
@@ -446,6 +471,7 @@ bool parseLLMInferenceArgs(LLMInferenceArgs& args, int argc, char* argv[])
         {"profileOutputFile", required_argument, 0, LLMInferenceOptionId::PROFILE_OUTPUT_FILE},
         {"warmup", required_argument, 0, LLMInferenceOptionId::WARMUP},
         {"dumpOutput", no_argument, 0, LLMInferenceOptionId::DUMP_OUTPUT},
+        {"cpSpecVerifySize", required_argument, 0, LLMInferenceOptionId::CP_SPEC_VERIFY_SIZE},
         {"specDecode", no_argument, 0, LLMInferenceOptionId::SPEC_DECODE},
         {"eagle", no_argument, 0, LLMInferenceOptionId::SPEC_DECODE}, // deprecated alias
         {"specDraftTopK", required_argument, 0, LLMInferenceOptionId::SPEC_DRAFT_TOP_K},
@@ -740,6 +766,7 @@ bool parseLLMInferenceArgs(LLMInferenceArgs& args, int argc, char* argv[])
             break;
         case LLMInferenceOptionId::TALKER_ENGINE_DIR: args.talkerEngineDir = optarg; break;
         case LLMInferenceOptionId::CODE2WAV_ENGINE_DIR: args.code2wavEngineDir = optarg; break;
+        case LLMInferenceOptionId::CP_SPEC_VERIFY_SIZE: args.cpSpecVerifySize = std::stoi(optarg); break;
         case LLMInferenceOptionId::OUTPUT_AUDIO_DIR: args.outputAudioDir = optarg; break;
         case LLMInferenceOptionId::ENABLE_THINKER_TALKER_STREAMING: args.enableThinkerTalkerStreaming = true; break;
         case LLMInferenceOptionId::NUM_LOGPROBS:
@@ -1242,6 +1269,18 @@ int runParallelInference(LLMInferenceArgs const& args,
             responseJson["formatted_system_prompt"] = formattedRequest ? formattedRequest->formattedSystemPrompt : "";
             responseJson["formatted_complete_request"]
                 = formattedRequest ? formattedRequest->formattedCompleteRequest : "";
+            if (batchIdx < response.outputIds.size())
+            {
+                responseJson["generated_token_count"] = response.outputIds[batchIdx].size();
+            }
+            if (batchIdx < response.specVerifyCounts.size())
+            {
+                responseJson["spec_verify_count"] = response.specVerifyCounts[batchIdx];
+            }
+            if (batchIdx < response.specAcceptanceLengths.size())
+            {
+                responseJson["spec_acceptance_length"] = response.specAcceptanceLengths[batchIdx];
+            }
             outputData["responses"].push_back(responseJson);
 
             if (requestOk && batchIdx < response.outputIds.size())
@@ -1624,7 +1663,7 @@ int main(int argc, char* argv[])
             std::filesystem::path const codePredictorDir
                 = std::filesystem::path(args.talkerEngineDir).parent_path() / "code_predictor";
             ttsRuntime = std::make_unique<rt::Qwen3OmniTTSRuntime>(args.talkerEngineDir, codePredictorDir.string(),
-                args.engineDir, /*cloneEncoderDir=*/"", stream, args.checkpointDir);
+                args.engineDir, /*cloneEncoderDir=*/"", stream, args.checkpointDir, args.cpSpecVerifySize);
             LOG_INFO("TTS runtime initialized for audio output");
         }
         catch (std::exception const& e)
@@ -2057,6 +2096,18 @@ int main(int argc, char* argv[])
             responseJson["formatted_system_prompt"] = formattedRequest ? formattedRequest->formattedSystemPrompt : "";
             responseJson["formatted_complete_request"]
                 = formattedRequest ? formattedRequest->formattedCompleteRequest : "";
+            if (batchIdx < response.outputIds.size())
+            {
+                responseJson["generated_token_count"] = response.outputIds[batchIdx].size();
+            }
+            if (batchIdx < response.specVerifyCounts.size())
+            {
+                responseJson["spec_verify_count"] = response.specVerifyCounts[batchIdx];
+            }
+            if (batchIdx < response.specAcceptanceLengths.size())
+            {
+                responseJson["spec_acceptance_length"] = response.specAcceptanceLengths[batchIdx];
+            }
             // Serialize logprobs if present: logprobs[step] = [{token_id, token, bytes, logprob}, ...]
             // `token` is the UTF-8-sanitized piece string (invalid bytes -> U+FFFD, required so
             // nlohmann::json::dump does not throw); `bytes` carries the raw token bytes losslessly.

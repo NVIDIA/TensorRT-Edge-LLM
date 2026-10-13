@@ -46,27 +46,6 @@ static int hexCharToInt(char c)
     return -1;
 }
 
-static std::string trimAsciiWhitespace(std::string const& text)
-{
-    // Common chat-template helper for Jinja-style `|trim` behavior.
-    auto const isWs = [](unsigned char ch) { return std::isspace(ch) != 0; };
-    size_t begin = 0;
-    while (begin < text.size() && isWs(static_cast<unsigned char>(text[begin])))
-    {
-        ++begin;
-    }
-
-    size_t end = text.size();
-    while (end > begin && isWs(static_cast<unsigned char>(text[end - 1])))
-    {
-        --end;
-    }
-    return text.substr(begin, end - begin);
-}
-
-// Chat template role names
-constexpr char kRoleSystem[] = "system";
-
 Tokenizer::Tokenizer() noexcept
     : mNumVocab(0)
     , mBosId(-1)
@@ -77,7 +56,7 @@ Tokenizer::Tokenizer() noexcept
 {
 }
 
-bool Tokenizer::loadFromHF(std::filesystem::path const& modelDir, bool requireChatTemplate)
+bool Tokenizer::loadFromHF(std::filesystem::path const& modelDir)
 {
     if (!std::filesystem::exists(modelDir) || !std::filesystem::is_directory(modelDir))
     {
@@ -91,6 +70,7 @@ bool Tokenizer::loadFromHF(std::filesystem::path const& modelDir, bool requireCh
     mTokenEncoder.reset();
     mSpecialTokensEncoder.clear();
     mSpecialTokensDecoder.clear();
+    mSkippableSpecialTokenIds.clear();
     mBosId = -1;
     mEosId = -1;
     mAdditionalEosIds.clear();
@@ -134,9 +114,20 @@ bool Tokenizer::loadFromHF(std::filesystem::path const& modelDir, bool requireCh
 
     LOG_INFO("Loaded %zu special tokens", specialTokens.size());
 
+    // Older tokenizers omit the `special` flag; the configured sentinels are
+    // skippable regardless.
+    for (Rank id : {mBosId, mEosId, mPadId, mUnkId})
+    {
+        if (id >= 0)
+        {
+            mSkippableSpecialTokenIds.insert(id);
+        }
+    }
+
     if (mTokenEncoder)
     {
         mTokenEncoder->initialize(vocab, specialTokens);
+        mTokenEncoder->setSkippableSpecialTokenIds(mSkippableSpecialTokenIds);
     }
 
     // Store special tokens for fast lookup
@@ -147,21 +138,6 @@ bool Tokenizer::loadFromHF(std::filesystem::path const& modelDir, bool requireCh
 
     // Pre-initialize Unicode lookup tables to avoid first-call latency during encode
     unicodeCptFlags(0);
-
-    // Load chat template (required unless the caller opts out, e.g. for
-    // decode-only ASR pipelines with no chat structure).
-    std::filesystem::path const chatTemplatePath = modelDir / "processed_chat_template.json";
-    if (!requireChatTemplate && !std::filesystem::exists(chatTemplatePath))
-    {
-        LOG_INFO("No processed_chat_template.json (optional for this pipeline); chat template disabled.");
-    }
-    else if (!loadChatTemplate(chatTemplatePath))
-    {
-        LOG_ERROR(
-            "Please ensure processed_chat_template.json exists in the model/engine directory, and it follows the "
-            "format specified in the documentation.");
-        return false;
-    }
 
     mInitialized = true;
     LOG_INFO("Successfully loaded tokenizer from %s (vocab_size=%d)", modelDir.c_str(), mNumVocab);
@@ -622,6 +598,10 @@ bool Tokenizer::loadSpecialTokens(Json const& tokenizerConfig, TokenToRanks& spe
                     if (!content.empty())
                     {
                         specialTokens[content] = specialId;
+                        if (token.value("special", false))
+                        {
+                            mSkippableSpecialTokenIds.insert(specialId);
+                        }
                     }
                 }
                 catch (std::exception const& e)
@@ -646,6 +626,10 @@ bool Tokenizer::loadSpecialTokens(Json const& tokenizerConfig, TokenToRanks& spe
                     if (!content.empty())
                     {
                         specialTokens[content] = specialId;
+                        if (tokenData.value("special", false))
+                        {
+                            mSkippableSpecialTokenIds.insert(specialId);
+                        }
                     }
                 }
                 catch (std::exception const& e)
@@ -910,14 +894,16 @@ std::string Tokenizer::idToPiece(Rank token, bool skipSpecialTokens) const
     {
         return "";
     }
-    // Special tokens: return empty when skipping, the textual content otherwise.
-    if (mSpecialTokensDecoder.find(token) != mSpecialTokensDecoder.end())
+    // Mirrors TokenEncoder::decode: only ids flagged `special` are dropped, and an
+    // added token's definition wins over the base vocab.
+    if (skipSpecialTokens && mTokenEncoder->isSkippableSpecial(token))
     {
-        if (skipSpecialTokens)
-        {
-            return "";
-        }
-        return mSpecialTokensDecoder.at(token);
+        return "";
+    }
+    auto addedIt = mSpecialTokensDecoder.find(token);
+    if (addedIt != mSpecialTokensDecoder.end())
+    {
+        return addedIt->second;
     }
     std::string piece = mTokenEncoder->getRankToken(token);
 
@@ -1001,271 +987,6 @@ void Tokenizer::appendEos(std::vector<Rank>& tokens) const
     {
         LOG_DEBUG("EOS ID is not set. Not appending EOS token.");
     }
-}
-
-bool Tokenizer::loadChatTemplate(std::filesystem::path const& chatTemplateFile)
-{
-    if (!std::filesystem::exists(chatTemplateFile))
-    {
-        LOG_ERROR("Chat template file not found: %s", chatTemplateFile.c_str());
-        return false;
-    }
-
-    // Validate file size before reading
-    if (!validateFileSize(chatTemplateFile, limits::tokenizer::kChatTemplateFileSizeBytes))
-    {
-        return false;
-    }
-
-    std::ifstream file(chatTemplateFile);
-    if (!file.is_open())
-    {
-        LOG_ERROR("Failed to open chat template file: %s", chatTemplateFile.c_str());
-        return false;
-    }
-
-    std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    file.close();
-
-    Json jsonData;
-    try
-    {
-        jsonData = Json::parse(content);
-    }
-    catch (Json::parse_error const& e)
-    {
-        LOG_ERROR("Failed to parse chat template JSON: %s", e.what());
-        return false;
-    }
-
-    try
-    {
-        // Parse model path
-        mChatTemplate.modelPath = jsonData.value("model_path", mChatTemplate.modelPath);
-
-        // Parse roles,  which should contains [system, user, assistant]
-        check::check(jsonData.contains("roles") && jsonData["roles"].is_object(),
-            "Roles-field is required in chat template. And Shall be a JSON object.");
-        for (auto const& [role, roleConfig] : jsonData["roles"].items())
-        {
-            ChatTemplateRole templateRole;
-            templateRole.prefix = roleConfig.value("prefix", "");
-            templateRole.suffix = roleConfig.value("suffix", "");
-            templateRole.prefixThinking = roleConfig.value("prefix_thinking", "");
-            templateRole.suffixThinking = roleConfig.value("suffix_thinking", "");
-            templateRole.trimContent = roleConfig.value("trim_content", false);
-            mChatTemplate.roles[role] = templateRole;
-        }
-
-        // Parse non-text content types place holder format string.
-        if (jsonData.contains("content_types") && jsonData["content_types"].is_object())
-        {
-            for (auto const& [contentType, contentConfig] : jsonData["content_types"].items())
-            {
-                ChatTemplateContentType templateContentType;
-                templateContentType.format = contentConfig.value("format", "");
-                if (templateContentType.format.empty())
-                {
-                    LOG_WARNING("Content type format is empty. Skip this content type: %s.", contentType.c_str());
-                    continue;
-                }
-                mChatTemplate.contentTypes[contentType] = templateContentType;
-            }
-        }
-
-        // Collect other fields from the chat template if exists.
-        mChatTemplate.generationPrompt = jsonData.value("generation_prompt", mChatTemplate.generationPrompt);
-        mChatTemplate.generationPromptThinking = jsonData.value("generation_prompt_thinking", "");
-        mChatTemplate.defaultSystemPrompt = jsonData.value("default_system_prompt", mChatTemplate.defaultSystemPrompt);
-        mChatTemplate.trimContent = jsonData.value("trim_content", false);
-        mChatTemplate.promptPrefix
-            = jsonData.value("prompt_prefix", jsonData.value("global_prefix", mChatTemplate.promptPrefix));
-    }
-    catch (std::exception const& e)
-    {
-        LOG_ERROR("Failed to parse chat template: %s", e.what());
-        return false;
-    }
-
-    LOG_INFO("Successfully loaded chat template from %s (for model: %s)", chatTemplateFile.c_str(),
-        mChatTemplate.modelPath.c_str());
-    return true;
-}
-
-bool Tokenizer::applyChatTemplate(rt::LLMGenerationRequest::Request const& request,
-    rt::LLMGenerationRequest::FormattedRequest& formattedRequest, bool applyChatTemplate, bool addGenerationPrompt,
-    bool enableThinking) const
-{
-    if (request.messages.empty())
-    {
-        LOG_ERROR("Request shall contain at least one message to proceed with execution.");
-        return false;
-    }
-
-    std::string formattedPrefixSystemPrompt{};
-    std::string formattedCompleteRequest{};
-
-    // Extract system prompt from first message or use default
-    auto const& leadMessage = request.messages.front();
-    std::string systemPrompt{};
-    bool hasExplicitSystemMessage = false;
-
-    if (leadMessage.role == kRoleSystem)
-    {
-        hasExplicitSystemMessage = true;
-        for (auto const& content : leadMessage.contents)
-        {
-            if (content.type == "text")
-            {
-                systemPrompt += content.content;
-            }
-            else
-            {
-                LOG_WARNING("System message contents shall be all text. Find %s content type. Skip this content.",
-                    content.type.c_str());
-            }
-        }
-    }
-    else if (applyChatTemplate && !mChatTemplate.defaultSystemPrompt.empty())
-    {
-        hasExplicitSystemMessage = true;
-        systemPrompt = mChatTemplate.defaultSystemPrompt;
-    }
-
-    // Format system prompt (also format when there's an explicit system message with empty content,
-    // since some models like Qwen3-ASR expect the system role block even when empty)
-    if (!systemPrompt.empty() || (hasExplicitSystemMessage && applyChatTemplate))
-    {
-        if (applyChatTemplate)
-        {
-            auto roleIt = mChatTemplate.roles.find(kRoleSystem);
-            if (roleIt != mChatTemplate.roles.end())
-            {
-                std::string const& prefix = (enableThinking && !roleIt->second.prefixThinking.empty())
-                    ? roleIt->second.prefixThinking
-                    : roleIt->second.prefix;
-                std::string const& suffix = (enableThinking && !roleIt->second.suffixThinking.empty())
-                    ? roleIt->second.suffixThinking
-                    : roleIt->second.suffix;
-                bool const shouldTrimSystemContent = roleIt->second.trimContent || mChatTemplate.trimContent;
-                std::string const formattedSystemContent
-                    = shouldTrimSystemContent ? trimAsciiWhitespace(systemPrompt) : systemPrompt;
-                formattedPrefixSystemPrompt = mChatTemplate.promptPrefix + prefix + formattedSystemContent + suffix;
-            }
-            else
-            {
-                LOG_WARNING("System role not found in chat template. Using raw content.");
-                formattedPrefixSystemPrompt = mChatTemplate.promptPrefix + systemPrompt;
-            }
-        }
-        else
-        {
-            formattedPrefixSystemPrompt = systemPrompt;
-        }
-        formattedCompleteRequest = formattedPrefixSystemPrompt;
-    }
-    else if (applyChatTemplate && !mChatTemplate.promptPrefix.empty())
-    {
-        formattedCompleteRequest = mChatTemplate.promptPrefix;
-    }
-
-    // Process messages
-    for (size_t i = 0; i < request.messages.size(); ++i)
-    {
-        auto const& message = request.messages[i];
-
-        if (message.role == kRoleSystem && i == 0)
-        {
-            continue;
-        }
-
-        auto roleIt = mChatTemplate.roles.find(message.role);
-        if (roleIt == mChatTemplate.roles.end())
-        {
-            LOG_WARNING("Unknown role: %s", message.role.c_str());
-            continue;
-        }
-
-        std::string formattedMessage;
-
-        // Add role prefix only in chat template mode
-        if (applyChatTemplate)
-        {
-            formattedMessage = (enableThinking && !roleIt->second.prefixThinking.empty())
-                ? roleIt->second.prefixThinking
-                : roleIt->second.prefix;
-        }
-
-        // Process content items
-        for (auto const& contentItem : message.contents)
-        {
-            if (contentItem.type == "text")
-            {
-                bool const shouldTrimContent
-                    = applyChatTemplate && (roleIt->second.trimContent || mChatTemplate.trimContent);
-                formattedMessage += shouldTrimContent ? trimAsciiWhitespace(contentItem.content) : contentItem.content;
-            }
-            else if (contentItem.type == "trajectory")
-            {
-                if (request.pastTrajectory)
-                {
-                    formattedMessage += rt::kTrajHistoryStartStr;
-                    // One <|traj_history|> pad per binned axis value; Alpamayo1ActionRunner::preprocess replaces these
-                    // with discrete trajectory tokens after encode().
-                    size_t const numPadTokens = 3 * request.pastTrajectory->size();
-                    for (size_t k = 0; k < numPadTokens; ++k)
-                    {
-                        formattedMessage += rt::kTrajHistoryPadStr;
-                    }
-                    formattedMessage += rt::kTrajHistoryEndStr;
-                }
-                else
-                {
-                    LOG_WARNING("Content type 'trajectory' has no request.pastTrajectory; skipping.");
-                }
-            }
-            else
-            {
-                // Get content type format
-                auto contentTypeIt = mChatTemplate.contentTypes.find(contentItem.type);
-                if (contentTypeIt != mChatTemplate.contentTypes.end())
-                {
-                    formattedMessage += contentTypeIt->second.format;
-                }
-                else
-                {
-                    LOG_WARNING("Unknown content type: %s", contentItem.type.c_str());
-                }
-            }
-        }
-
-        // Add role suffix only in chat template mode
-        if (applyChatTemplate)
-        {
-            formattedMessage += (enableThinking && !roleIt->second.suffixThinking.empty())
-                ? roleIt->second.suffixThinking
-                : roleIt->second.suffix;
-        }
-
-        formattedCompleteRequest += formattedMessage;
-    }
-
-    // Add generation prompt (only in chat template mode)
-    if (applyChatTemplate && addGenerationPrompt)
-    {
-        if (enableThinking && !mChatTemplate.generationPromptThinking.empty())
-        {
-            formattedCompleteRequest += mChatTemplate.generationPromptThinking;
-        }
-        else if (!mChatTemplate.generationPrompt.empty())
-        {
-            formattedCompleteRequest += mChatTemplate.generationPrompt;
-        }
-    }
-
-    formattedRequest.formattedSystemPrompt = formattedPrefixSystemPrompt;
-    formattedRequest.formattedCompleteRequest = formattedCompleteRequest;
-    return true;
 }
 
 } // namespace tokenizer

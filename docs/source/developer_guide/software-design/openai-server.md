@@ -23,7 +23,7 @@ CLI/config -> model cache/build -> LLM load -> EngineClient -> serving -> routes
 |---|---|---|
 | Model preparation | `runtime/engine_build.py`, `runtime/engine_layout.py` | Resolve checkpoints, select a profile-specific cache entry, build every model-owned component on a miss, and validate the complete bundle. |
 | Configuration | `config.py`, `cli.py` | Parse and validate model, cache, profile, and HTTP options before loading. |
-| Runtime adapter | `runtime/engine.py`, `runtime/engine_client.py` | Isolate native execution, expose capabilities, provide admission control, and own cancellation cleanup. |
+| Runtime adapter | `runtime/engine.py`, `runtime/engine_client.py` | Isolate native execution, expose capabilities, provide admission control, and own cancellation cleanup. Owns the choice between the one-at-a-time runtime and the in-flight-batching request engine. |
 | Protocol and HTTP | `api/` | Define typed OpenAI-compatible data, adapt Anthropic Messages requests, validate model/request compatibility, and own routes and application assembly. |
 | Media | `media/` | Resolve and preprocess audio, image, and video inputs independently of protocol routing. |
 | Parsing | `parsing/` | Register reasoning and tool-output parsers and apply tool-aware chat templates. |
@@ -52,8 +52,8 @@ weights.
 
 ## Request Lifecycle
 
-The current runtime supports one in-flight generation. `EngineClient` provides
-a bounded async queue around that slot:
+On the default path the runtime supports one in-flight generation. `EngineClient`
+provides a bounded async queue around that slot:
 
 1. Validate the request and loaded-model capability.
 2. Reserve the runtime slot or return 429 when the queue is full or times out.
@@ -81,6 +81,34 @@ its own single admission gate. A disconnected stream retains its admission
 lease until its native worker has returned, so no later request can overlap
 teardown. HTTP connections do not own the model: engines remain resident
 between requests and are released by the FastAPI lifespan on server shutdown.
+
+### In-flight batching path
+
+With `--enable-in-flight-batching`, `LLM._load_runtime` decides once, at load
+time, whether the deployment can honour the flag (`ifb_unsupported_reason`) and
+then builds a `RequestEngine` instead of an `LLMRuntime`. The engine owns the
+runtime and the one thread that drives it, so the lifecycle above changes in
+four places:
+
+1. Admission is `_IFBAdmissionGate`, sized to `max_batch_size` plus
+   `max_queued_requests`. It never parks a caller: a full gate is an immediate
+   429, mirroring the engine's own `SubmitError` back-pressure.
+2. Generation is `RequestEngine.submit()` plus `RequestHandle.get()`; there is
+   no `_infer_lock` and no per-stream worker thread. Streams read their
+   `StreamChannel` on a pool sized for the gate, and every stream the client did
+   not cancel collects its outcome through `get()`, so an execution error behind
+   a terminal chunk still reaches the client.
+3. A disconnect cancels the request in the engine through `RequestHandle.cancel()`
+   (and, for streams, the channel's cancel flag, which the actor checks before
+   every admission), so the request leaves its batch seat instead of decoding to
+   `max_tokens`.
+4. Direct Python API callers take the per-`LLM` semaphore, which under the
+   engine is widened to the same batch-plus-queue bound; the HTTP layer bypasses
+   it with prebuilt requests as before.
+
+Which deployments refuse the flag at startup, which requests the engine rejects
+or makes wait, and the follow-up work are recorded in
+[In-Flight Batching (V0)](in-flight-batching.md).
 
 ## Extension Rules
 

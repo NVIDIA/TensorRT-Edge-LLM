@@ -33,8 +33,8 @@ namespace rt
 
 struct DecoderRegistryInit
 {
-    //! Still needed by the decoders that read their own strategy-specific sidecars (EAGLE's d2t table, DSpark's
-    //! head weights, DFlash's draft vocab map). Draft engine weights arrive via `draftWeights` instead.
+    //! Still needed by decoders that read strategy-specific sidecars (EAGLE's d2t table, MTP/DFlash draft vocab
+    //! maps, and DSpark head weights). Draft engine weights arrive via `draftWeights` instead.
     std::filesystem::path engineDir;
     std::optional<SpecDecodeDraftingConfig> draftingConfig;
     //! Validated draft executor whose ownership is consumed by the selected speculative decoder.
@@ -45,8 +45,8 @@ struct DecoderRegistryInit
 };
 
 //! Return whether an available speculative decoder should yield to the default decoder for this request.
-bool shouldSelectDefaultDecoder(
-    DecodingStrategyKind speculativeDecoderKind, LLMGenerationRequest const& request) noexcept;
+bool shouldSelectDefaultDecoder(DecodingStrategyKind speculativeDecoderKind,
+    DecodingStrategyCapabilities const& speculativeCapabilities, LLMGenerationRequest const& request) noexcept;
 
 class DecoderRegistry final
 {

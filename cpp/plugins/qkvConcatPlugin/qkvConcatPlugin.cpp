@@ -36,24 +36,36 @@ constexpr char const* kPLUGIN_VERSION{"1"};
 constexpr int32_t kNUM_INPUTS{3};
 constexpr int32_t kNUM_OUTPUTS{1};
 
+bool isSupportedRank(int32_t const rank)
+{
+    return rank == 2 || rank == 3;
+}
+
 bool hasPackedShape(Dims const& q, Dims const& k, Dims const& v, Dims const& output)
 {
-    if (q.nbDims != 3 || k.nbDims != 3 || v.nbDims != 3 || output.nbDims != 3)
+    if (!isSupportedRank(q.nbDims) || k.nbDims != q.nbDims || v.nbDims != q.nbDims || output.nbDims != q.nbDims)
     {
         return false;
     }
-    if (q.d[0] <= 0 || q.d[1] <= 0 || q.d[2] <= 0 || k.d[2] <= 0 || v.d[2] <= 0)
+    int32_t const widthDim = q.nbDims - 1;
+    for (int32_t dim = 0; dim < widthDim; ++dim)
+    {
+        if (q.d[dim] <= 0 || q.d[dim] != k.d[dim] || q.d[dim] != v.d[dim] || q.d[dim] != output.d[dim])
+        {
+            return false;
+        }
+    }
+    if (q.d[widthDim] <= 0 || k.d[widthDim] <= 0 || v.d[widthDim] <= 0)
     {
         return false;
     }
-    int64_t const outputWidth = static_cast<int64_t>(q.d[2]) + k.d[2] + v.d[2];
-    return q.d[0] == k.d[0] && q.d[0] == v.d[0] && q.d[0] == output.d[0] && q.d[1] == k.d[1] && q.d[1] == v.d[1]
-        && q.d[1] == output.d[1] && outputWidth <= std::numeric_limits<int32_t>::max() && output.d[2] == outputWidth;
+    int64_t const outputWidth = static_cast<int64_t>(q.d[widthDim]) + k.d[widthDim] + v.d[widthDim];
+    return outputWidth <= std::numeric_limits<int32_t>::max() && output.d[widthDim] == outputWidth;
 }
 
 bool isFp16Linear(PluginTensorDesc const& desc)
 {
-    return desc.type == DataType::kHALF && desc.format == PluginFormat::kLINEAR && desc.dims.nbDims == 3;
+    return desc.type == DataType::kHALF && desc.format == PluginFormat::kLINEAR && isSupportedRank(desc.dims.nbDims);
 }
 
 bool hasConcreteContract(PluginTensorDesc const* inputs, PluginTensorDesc const* output)
@@ -148,18 +160,31 @@ int32_t QkvConcatPlugin::getOutputShapes(DimsExprs const* inputs, int32_t nbInpu
     int32_t /* nbShapeInputs */, DimsExprs* outputs, int32_t nbOutputs, IExprBuilder& exprBuilder) noexcept
 {
     if (inputs == nullptr || outputs == nullptr || nbInputs != kNUM_INPUTS || nbOutputs != kNUM_OUTPUTS
-        || inputs[0].nbDims != 3 || inputs[1].nbDims != 3 || inputs[2].nbDims != 3 || inputs[0].d[0] == nullptr
-        || inputs[0].d[1] == nullptr || inputs[0].d[2] == nullptr || inputs[1].d[2] == nullptr
-        || inputs[2].d[2] == nullptr)
+        || !isSupportedRank(inputs[0].nbDims) || inputs[1].nbDims != inputs[0].nbDims
+        || inputs[2].nbDims != inputs[0].nbDims)
     {
         return -1;
     }
 
-    outputs[0].nbDims = 3;
-    outputs[0].d[0] = inputs[0].d[0];
-    outputs[0].d[1] = inputs[0].d[1];
-    auto const* qk = exprBuilder.operation(DimensionOperation::kSUM, *inputs[0].d[2], *inputs[1].d[2]);
-    outputs[0].d[2] = exprBuilder.operation(DimensionOperation::kSUM, *qk, *inputs[2].d[2]);
+    int32_t const rank = inputs[0].nbDims;
+    int32_t const widthDim = rank - 1;
+    for (int32_t inputIdx = 0; inputIdx < kNUM_INPUTS; ++inputIdx)
+    {
+        for (int32_t dim = 0; dim < rank; ++dim)
+        {
+            if (inputs[inputIdx].d[dim] == nullptr)
+            {
+                return -1;
+            }
+        }
+    }
+    outputs[0].nbDims = rank;
+    for (int32_t dim = 0; dim < widthDim; ++dim)
+    {
+        outputs[0].d[dim] = inputs[0].d[dim];
+    }
+    auto const* qk = exprBuilder.operation(DimensionOperation::kSUM, *inputs[0].d[widthDim], *inputs[1].d[widthDim]);
+    outputs[0].d[widthDim] = exprBuilder.operation(DimensionOperation::kSUM, *qk, *inputs[2].d[widthDim]);
     return 0;
 }
 
@@ -172,7 +197,7 @@ bool QkvConcatPlugin::supportsFormatCombination(
         return false;
     }
     auto const& desc = inOut[pos].desc;
-    return desc.type == DataType::kHALF && desc.format == PluginFormat::kLINEAR && desc.dims.nbDims == 3;
+    return desc.type == DataType::kHALF && desc.format == PluginFormat::kLINEAR && isSupportedRank(desc.dims.nbDims);
 }
 
 int32_t QkvConcatPlugin::configurePlugin(
@@ -187,7 +212,7 @@ int32_t QkvConcatPlugin::configurePlugin(
     {
         if (!isFp16Linear(in[inputIdx].desc))
         {
-            LOG_ERROR("QkvConcatPlugin: all inputs must be rank-3 FP16 linear tensors");
+            LOG_ERROR("QkvConcatPlugin: all inputs must be rank-2 or rank-3 FP16 linear tensors");
             return -1;
         }
     }
@@ -216,17 +241,23 @@ int32_t QkvConcatPlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTensor
         LOG_ERROR("QkvConcatPlugin: invalid runtime descriptors or null buffers");
         return -1;
     }
-    int64_t const rows = static_cast<int64_t>(inputDesc[0].dims.d[0]) * inputDesc[0].dims.d[1];
-    int64_t const qWidth = inputDesc[0].dims.d[2];
-    int64_t const kWidth = inputDesc[1].dims.d[2];
-    int64_t const vWidth = inputDesc[2].dims.d[2];
+    int32_t const rank = inputDesc[0].dims.nbDims;
+    int32_t const widthDim = rank - 1;
+    int64_t rows = 1;
+    for (int32_t dim = 0; dim < widthDim; ++dim)
+    {
+        rows *= inputDesc[0].dims.d[dim];
+    }
+    int64_t const qWidth = inputDesc[0].dims.d[widthDim];
+    int64_t const kWidth = inputDesc[1].dims.d[widthDim];
+    int64_t const vWidth = inputDesc[2].dims.d[widthDim];
     int64_t const outputWidth = qWidth + kWidth + vWidth;
 
     auto* output = static_cast<std::byte*>(outputs[0]);
     int64_t offset = 0;
     for (int32_t i = 0; i < kNUM_INPUTS; ++i)
     {
-        int64_t const width = inputDesc[i].dims.d[2];
+        int64_t const width = inputDesc[i].dims.d[widthDim];
         cudaError_t const status = cudaMemcpy2DAsync(output + offset * sizeof(__half), outputWidth * sizeof(__half),
             inputs[i], width * sizeof(__half), width * sizeof(__half), rows, cudaMemcpyDeviceToDevice, stream);
         if (status != cudaSuccess)

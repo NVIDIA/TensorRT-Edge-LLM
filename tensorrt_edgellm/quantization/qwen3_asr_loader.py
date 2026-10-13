@@ -152,7 +152,7 @@ def asr_calibration_dataloader(
         return mel, valid_len
 
     def _build_prompt(transcript: str) -> str:
-        # Match the runtime chat_template.json. The single ``<|audio_pad|>``
+        # Match the model-owned runtime contract. The single ``<|audio_pad|>``
         # is what the joint forward splices the audio embeddings into.
         return ("<|im_start|>system\n<|im_end|>\n"
                 "<|im_start|>user\n"
@@ -240,9 +240,10 @@ def postprocess_qwen3_asr_checkpoint(model_dir: str, output_dir: str) -> None:
         (preserves ``thinker_config.audio_config`` /
         ``thinker_config.text_config`` and ``model_type="qwen3_asr"``
         which eo2 routes on).
-      * ``chat_template.json`` / ``preprocessor_config.json`` -- copied
-        from *model_dir* if present (Qwen3 tokenizer save does not
-        produce these).
+      * Optional ``chat_template.jinja`` and ``preprocessor_config.json`` --
+        copied from *model_dir* if present (Qwen3 tokenizer save does not
+        produce these). Standard Qwen3-ASR checkpoints use the native runtime
+        renderer selected later during engine artifact generation.
 
     ``hf_quant_config.json`` is untouched: ModelOpt writes short module
     names (``model.layers.0.self_attn.q_proj`` /
@@ -284,7 +285,7 @@ def postprocess_qwen3_asr_checkpoint(model_dir: str, output_dir: str) -> None:
                  os.path.join(output_dir, "config.json"))
     logger.info("Replaced config.json with original qwen3_asr config")
 
-    for name in ("chat_template.json", "preprocessor_config.json"):
+    for name in ("chat_template.jinja", "preprocessor_config.json"):
         src = os.path.join(model_dir, name)
         dst = os.path.join(output_dir, name)
         if os.path.exists(src) and not os.path.exists(dst):

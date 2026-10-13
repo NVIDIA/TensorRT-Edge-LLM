@@ -39,7 +39,7 @@ from dataclasses import dataclass
 import pytest
 from test_plugin_base import (DEPENDENCIES_AVAILABLE, IMPORT_ERROR,
                               RAGGED_CASES, PluginRunner, assert_close,
-                              pf_int32, poison_padding)
+                              load_edgellm_plugins, pf_int32, poison_padding)
 
 if DEPENDENCIES_AVAILABLE:
     import tensorrt as trt
@@ -52,6 +52,26 @@ pytestmark = pytest.mark.skipif(
 DEV = "cuda"
 PLUGIN_NAME = "update_ssm_state"
 PLUGIN_VERSION = "1"
+
+
+def test_creator_accepts_official_sequential_chunk_marker():
+    logger = trt.Logger(trt.Logger.ERROR)
+    load_edgellm_plugins(logger)
+    creator = trt.get_plugin_registry().get_creator(PLUGIN_NAME,
+                                                    PLUGIN_VERSION, "")
+    assert creator is not None
+
+    plugin = creator.create_plugin(
+        PLUGIN_NAME,
+        trt.PluginFieldCollection([
+            pf_int32("dim", 64),
+            pf_int32("dstate", 128),
+            pf_int32("nheads", 8),
+            pf_int32("ngroups", 2),
+            pf_int32("chunk_size", 0),
+        ]), trt.TensorRTPhase.BUILD)
+
+    assert plugin is not None
 
 
 def selective_scan_ref(
@@ -164,28 +184,18 @@ class MambaRunner:
         h, dim, n, g = c.nheads, c.head_dim, c.dstate, c.ngroups
         mb, ms = c.max_batch, c.max_seq
         F16, F32, I32 = trt.float16, trt.float32, trt.int32
-        if self.prefill:
-            x = ("x", F16, (-1, -1, h, dim))
-            B = ("B", F16, (-1, -1, g, n))
-            C = ("C", F16, (-1, -1, g, n))
-            dt = ("dt", F16, (-1, -1, h))
-            prof = {
-                "x": ((1, 1, h, dim), (1, 16, h, dim), (mb, ms, h, dim)),
-                "B": ((1, 1, g, n), (1, 16, g, n), (mb, ms, g, n)),
-                "C": ((1, 1, g, n), (1, 16, g, n), (mb, ms, g, n)),
-                "dt": ((1, 1, h), (1, 16, h), (mb, ms, h)),
-            }
-        else:
-            x = ("x", F16, (-1, h, dim))
-            B = ("B", F16, (-1, g, n))
-            C = ("C", F16, (-1, g, n))
-            dt = ("dt", F16, (-1, h))
-            prof = {
-                "x": ((1, h, dim), (1, h, dim), (mb, h, dim)),
-                "B": ((1, g, n), (1, g, n), (mb, g, n)),
-                "C": ((1, g, n), (1, g, n), (mb, g, n)),
-                "dt": ((1, h), (1, h), (mb, h)),
-            }
+        max_tokens = mb * ms if self.prefill else mb
+        opt_tokens = min(16, max_tokens) if self.prefill else mb
+        x = ("x", F16, (-1, h, dim))
+        B = ("B", F16, (-1, g, n))
+        C = ("C", F16, (-1, g, n))
+        dt = ("dt", F16, (-1, h))
+        prof = {
+            "x": ((1, h, dim), (opt_tokens, h, dim), (max_tokens, h, dim)),
+            "B": ((1, g, n), (opt_tokens, g, n), (max_tokens, g, n)),
+            "C": ((1, g, n), (opt_tokens, g, n), (max_tokens, g, n)),
+            "dt": ((1, h), (opt_tokens, h), (max_tokens, h)),
+        }
         input_specs = [
             x,
             ("A", F32, (h, )),
@@ -195,16 +205,24 @@ class MambaRunner:
             dt,
             ("dt_bias", F16, (h, )),
             ("state", F16, (-1, h, dim, n)),
-            ("context_lengths", I32, (-1, )),
-            ("state_start_index", I32, (-1, )),
+            ("query_lengths", I32, (-1, )),
+            ("query_start_offsets", I32, (-1, )),
+            ("state_indices", I32, (-1, )),
+            ("execution_phase_marker", I32, (-1, )),
+            ("context_sequence_count_carrier", I32, (-1, )),
         ]
         prof.update({
             "A": ((h, ), (h, ), (h, )),
             "D": ((h, ), (h, ), (h, )),
             "dt_bias": ((h, ), (h, ), (h, )),
             "state": ((1, h, dim, n), (1, h, dim, n), (mb, h, dim, n)),
-            "context_lengths": ((1, ), (1, ), (mb, )),
-            "state_start_index": ((0, ), (1, ), (mb, )),
+            "query_lengths": ((1, ), (mb, ), (mb, )),
+            "query_start_offsets": ((2, ), (mb + 1, ), (mb + 1, )),
+            "state_indices": ((1, ), (mb, ), (mb, )),
+            "execution_phase_marker":
+            ((1, ), (1 if self.prefill else 3, ), (8, )),
+            "context_sequence_count_carrier":
+            ((0, ), (mb if self.prefill else 0, ), (mb, )),
         })
         self.runner.build(
             input_specs=input_specs,
@@ -231,33 +249,58 @@ class MambaRunner:
             dt_bias,
             state,
             context_lengths,
-            state_start_index=None,
+            state_indices=None,
             synchronize=True):
-        out = torch.empty_like(x)
-        state_out = torch.empty_like(state)
-        input_shapes = None
-        if state_start_index is None or state_start_index.numel() == 0:
-            # TensorRT requires a non-null address even when the runtime input shape is the cold-prefill [0] sentinel.
-            state_start_index = torch.empty(1, dtype=torch.int32, device=DEV)
-            input_shapes = {"state_start_index": (0, )}
+        batch = x.shape[0]
+        seq = x.shape[1] if x.dim() == 4 else 1
+        tokens = batch * seq
+        original_shape = x.shape
+        out = torch.empty((tokens, self.cfg.nheads, self.cfg.head_dim),
+                          dtype=x.dtype,
+                          device=DEV)
+        if state_indices is None or state_indices.numel() == 0:
+            state_indices = torch.arange(batch, dtype=torch.int32, device=DEV)
+        phase = 1 if self.prefill else 3
+        carrier_extent = batch if self.prefill else 0
+        input_shapes = ({
+            "context_sequence_count_carrier": (0, )
+        } if carrier_extent == 0 else None)
         bindings = {
-            "x": x,
-            "A": A,
-            "B": B,
-            "C": C,
-            "D": D,
-            "dt": dt,
-            "dt_bias": dt_bias,
-            "state": state,
-            "context_lengths": context_lengths,
-            "state_start_index": state_start_index,
-            "output": out,
-            "state_out": state_out,
+            "x":
+            x.reshape(tokens, self.cfg.nheads, self.cfg.head_dim),
+            "A":
+            A,
+            "B":
+            B.reshape(tokens, self.cfg.ngroups, self.cfg.dstate),
+            "C":
+            C.reshape(tokens, self.cfg.ngroups, self.cfg.dstate),
+            "D":
+            D,
+            "dt":
+            dt.reshape(tokens, self.cfg.nheads),
+            "dt_bias":
+            dt_bias,
+            "state":
+            state,
+            "query_lengths":
+            context_lengths,
+            "query_start_offsets":
+            torch.arange(0, tokens + 1, seq, dtype=torch.int32, device=DEV),
+            "state_indices":
+            state_indices,
+            "execution_phase_marker":
+            torch.empty(phase, dtype=torch.int32, device=DEV),
+            "context_sequence_count_carrier":
+            torch.empty(max(1, carrier_extent), dtype=torch.int32, device=DEV),
+            "output":
+            out,
+            "state_out":
+            state,
         }
         self.runner.execute(bindings,
                             input_shapes=input_shapes,
                             synchronize=synchronize)
-        return out, state_out
+        return out.reshape(original_shape), state
 
 
 def _rand_inputs(cfg: MambaConfig, b, s, gen, seq_dim=True):
@@ -394,7 +437,7 @@ def test_prefill_ssd(seq, batch):
 
 
 @pytest.mark.parametrize("restored", [False, True], ids=["cold", "restored"])
-def test_prefill_ssd_state_start_index_contract(restored):
+def test_prefill_ssd_resident_state_contract(restored):
     cfg = MambaConfig(max_batch=1, max_seq=128)
     seq = 128
     batch = 1
@@ -402,13 +445,10 @@ def test_prefill_ssd_state_start_index_contract(restored):
     r = MambaRunner(cfg, prefill=True)
     x, A, B, C, D, dt, dt_bias = _rand_inputs(cfg, batch, seq, gen)
     if restored:
-        state0 = (torch.randn(batch,
-                              cfg.nheads,
-                              cfg.head_dim,
-                              cfg.dstate,
-                              generator=gen,
-                              device=DEV) * 0.1).to(torch.float16)
-        state_start_index = torch.zeros(batch, dtype=torch.int32, device=DEV)
+        state0 = (torch.randn(
+            batch, cfg.nheads, cfg.head_dim, cfg.dstate, generator=gen) *
+                  0.1).to(device=DEV, dtype=torch.float16)
+        state_indices = torch.zeros(batch, dtype=torch.int32, device=DEV)
     else:
         state0 = torch.zeros(batch,
                              cfg.nheads,
@@ -416,10 +456,10 @@ def test_prefill_ssd_state_start_index_contract(restored):
                              cfg.dstate,
                              dtype=torch.float16,
                              device=DEV)
-        state_start_index = torch.empty(0, dtype=torch.int32, device=DEV)
+        state_indices = torch.empty(0, dtype=torch.int32, device=DEV)
     ctx = torch.full((batch, ), seq, dtype=torch.int32, device=DEV)
     out, state_out = r.run(x, A, B, C, D, dt, dt_bias, state0.clone(), ctx,
-                           state_start_index)
+                           state_indices)
     ref_y, ref_state = selective_scan_ref(x, A, B, C, dt, dt_bias, D, state0,
                                           cfg.ngroups, True, ctx)
     _check(cfg, out, state_out, ref_y, ref_state, ctx, 5e-2, 5e-2)

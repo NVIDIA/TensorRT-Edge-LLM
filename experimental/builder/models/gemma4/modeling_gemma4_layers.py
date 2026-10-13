@@ -32,7 +32,7 @@ class Gemma4RMSNormBase(Module):
         super().__init__(ctx, prefix)
         self.eps = eps
 
-    def forward(self, x: Tensor, rank: int = 3) -> Tensor:
+    def forward(self, x: Tensor, rank: int = 2) -> Tensor:
         weight = self.weights.f32(self.key("weight"))
         return F.rms_norm(x,
                           weight,

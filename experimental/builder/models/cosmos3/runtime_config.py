@@ -91,7 +91,7 @@ def _und_prefill_config(bundle, args) -> dict:
                 "opt": [max_batch, max(1, max_und // 2), head_dim],
                 "max": [max_batch, max_und, head_dim],
             },
-            "attention_pos_id": {
+            "attention_position_ids": {
                 "min": [1, 1],
                 "opt": [max_batch, max(1, max_und // 2)],
                 "max": [max_batch, max_und],
@@ -101,7 +101,7 @@ def _und_prefill_config(bundle, args) -> dict:
             "inputs": {
                 "inputs_embeds": ["batch", "und_len", "hidden_size"],
                 "rope_rotary_cos_sin": ["batch", "und_len", "head_dim"],
-                "attention_pos_id": ["batch", "und_len"],
+                "attention_position_ids": ["batch", "und_len"],
             },
             "outputs": {
                 "und_k_layerNN":
@@ -122,13 +122,15 @@ def _gen_config(bundle, args) -> dict:
     config, geometry = _transformer_contract(bundle, args)
     patch = int(config.get("latent_patch_size", 2))
     latent_channel = int(config.get("latent_channel", 48))
-    video_tokens = (geometry.latent_t * geometry.latent_h // patch *
-                    geometry.latent_w // patch)
+    latent_patch_h = (geometry.latent_h + patch - 1) // patch
+    latent_patch_w = (geometry.latent_w + patch - 1) // patch
+    video_tokens = geometry.latent_t * latent_patch_h * latent_patch_w
     max_batch = int(args.max_batch_size)
     head_dim = int(config["head_dim"])
     kv_heads = int(config["num_key_value_heads"])
     action_dim = int(config.get("max_action_dim", 64))
-    gen_tokens = video_tokens + geometry.action_chunk_size
+    action_tokens = geometry.action_token_count
+    gen_tokens = video_tokens + action_tokens
 
     def fixed(shape):
         return {
@@ -144,16 +146,16 @@ def _gen_config(bundle, args) -> dict:
             geometry.latent_w
         ]),
         "action_latent":
-        fixed([geometry.action_chunk_size, action_dim]),
+        fixed([action_tokens, action_dim]),
         "timestep":
         fixed([]),
         "token_noisy_mask":
         fixed([video_tokens, 1]),
         "action_noisy_mask":
-        fixed([geometry.action_chunk_size, 1]),
+        fixed([action_tokens, 1]),
         "rope_rotary_cos_sin":
         fixed([gen_tokens, head_dim]),
-        "attention_pos_id":
+        "attention_position_ids":
         fixed([gen_tokens]),
     }
     for index in range(int(config["num_hidden_layers"])):
@@ -199,8 +201,16 @@ def _gen_config(bundle, args) -> dict:
         video_tokens,
         "action_chunk_size":
         geometry.action_chunk_size,
+        "action_token_count":
+        action_tokens,
+        "state_rows":
+        geometry.state_rows,
+        "history_length":
+        geometry.state_rows,
+        "use_state":
+        geometry.use_state,
         "raw_action_dim":
-        10,
+        geometry.raw_action_dim,
         "max_action_dim":
         action_dim,
         "num_embodiment_domains":
@@ -226,14 +236,13 @@ def _gen_config(bundle, args) -> dict:
         "temporal_modality_margin":
         int(config.get("unified_3d_mrope_temporal_modality_margin", 15000)),
         "action_start_frame_offset":
-        1,
+        0 if geometry.use_state else 1,
         "optimization_profile":
         profile,
         "tensor_contract": {
             "inputs": {
                 "video_latent": ["batch", latent_channel, "t", "h", "w"],
-                "action_latent":
-                ["batch", geometry.action_chunk_size, "max_action_dim"],
+                "action_latent": ["batch", action_tokens, "max_action_dim"],
                 "und_k_layerNN":
                 ["batch", "und_len", "num_key_value_heads", "head_dim"],
                 "und_v_layerNN":
@@ -241,8 +250,7 @@ def _gen_config(bundle, args) -> dict:
             },
             "outputs": {
                 "video_pred": ["batch", latent_channel, "t", "h", "w"],
-                "action_pred":
-                ["batch", geometry.action_chunk_size, "max_action_dim"],
+                "action_pred": ["batch", action_tokens, "max_action_dim"],
             },
         },
         "builder_config": {
@@ -250,6 +258,8 @@ def _gen_config(bundle, args) -> dict:
             "max_und_len": geometry.max_und_len,
             "height": geometry.height,
             "width": geometry.width,
+            "content_height": geometry.content_height,
+            "content_width": geometry.content_width,
             "num_frames": geometry.num_frames,
         },
     }
@@ -259,7 +269,9 @@ def _vae_encoder_config(bundle, args) -> dict:
     geometry = Cosmos3PolicyGeometry.from_bundle(bundle, args)
     config = bundle.root["_direct_vae_config"]
     max_batch = int(args.max_batch_size)
-    pixel_shape = [3, geometry.num_frames, geometry.height, geometry.width]
+    pixel_shape = [
+        3, geometry.conditioning_frames, geometry.height, geometry.width
+    ]
     return {
         "component": "vae_encoder",
         "engine_filename": "vae_encoder.engine",
@@ -277,7 +289,7 @@ def _vae_encoder_config(bundle, args) -> dict:
         "tensor_contract": {
             "inputs": {
                 "pixel_values": [
-                    "batch", 3, geometry.num_frames, geometry.height,
+                    "batch", 3, geometry.conditioning_frames, geometry.height,
                     geometry.width
                 ],
             },
@@ -289,7 +301,9 @@ def _vae_encoder_config(bundle, args) -> dict:
             "max_batch_size": int(args.max_batch_size),
             "height": geometry.height,
             "width": geometry.width,
-            "num_frames": geometry.num_frames,
+            "content_height": geometry.content_height,
+            "content_width": geometry.content_width,
+            "num_frames": geometry.conditioning_frames,
         },
     }
 

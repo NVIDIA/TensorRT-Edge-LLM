@@ -17,10 +17,12 @@
 
 #pragma once
 
+#include "common/tensor.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
-#include <vector>
+#include <memory>
 
 namespace trt_edgellm
 {
@@ -29,16 +31,22 @@ namespace rt
 namespace audio
 {
 
-//! Decoded PCM container.
+//! PCM container.
 //!
-//! Always mono (multi-channel input is mixdown-averaged), float32 in
-//! the range [-1, 1]. Sample rate is the value passed to the decoder
-//! (miniaudio resamples to this rate on read).
+//! Always mono, float32 in [-1, 1]; the decoder mixes multi-channel input
+//! down. ``sampleRate`` is the rate the samples are at: the decoder resamples
+//! to the rate it was asked for, ``audioUtils::wrapPcm`` records the rate the
+//! caller states. ``samples`` stays readable for as long as this container
+//! holds it: a decoder attaches storage it allocated, ``wrapPcm`` attaches
+//! memory the caller keeps valid for the request.
 struct AudioPCM
 {
-    std::vector<float> samples;
+    std::shared_ptr<Tensor> samples; //!< ``[N]`` Float, host.
     int32_t sampleRate{16000};
     int32_t numChannels{1};
+
+    //! Sample count in the single channel; zero when no samples are attached.
+    int64_t numSamples() const noexcept;
 };
 
 //! Load raw audio bytes (wav / mp3 / flac) into mono float32 PCM

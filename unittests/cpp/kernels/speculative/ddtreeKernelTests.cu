@@ -268,10 +268,12 @@ struct DDTreeBuildOutputs
 DDTreeBuildOutputs runDDTreeBuild(std::vector<float> const& logits, std::vector<int32_t> const& rootTokenIds,
     std::vector<int32_t> const& baseLengths, int32_t batchSize, int32_t dflashBlockSize, int32_t vocabSize,
     int32_t verifySize, int32_t candidateTopK, int32_t firstCandidateLogitsRow = 1,
-    std::vector<float> const& depthConfidence = {}, float survivalThreshold = 0.0F)
+    std::vector<float> const& depthConfidence = {}, float survivalThreshold = 0.0F, bool tokenMajorLogits = false)
 {
     int32_t const packedMaskLen = (verifySize + kMaskBitsPerWord - 1) / kMaskBitsPerWord;
-    rt::Tensor logitsTensor({batchSize, dflashBlockSize, vocabSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor logitsTensor = tokenMajorLogits
+        ? rt::Tensor({batchSize * dflashBlockSize, vocabSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT)
+        : rt::Tensor({batchSize, dflashBlockSize, vocabSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
     rt::Tensor rootTokenTensor({batchSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
     rt::Tensor baseLengthsTensor({batchSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
     rt::Tensor nodeTokenIdsTensor({batchSize, verifySize}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
@@ -363,7 +365,7 @@ void validateBuildAgainstReference(
         EXPECT_EQ(actual.contextLengths[batchIdx], expected.verifyPositionIds[batchIdx * verifySize] + verifySize);
         for (int32_t nodeIdx = 0; nodeIdx < verifySize; ++nodeIdx)
         {
-            EXPECT_EQ(actual.selectTokenIndices[batchIdx * verifySize + nodeIdx], nodeIdx);
+            EXPECT_EQ(actual.selectTokenIndices[batchIdx * verifySize + nodeIdx], batchIdx * verifySize + nodeIdx);
         }
     }
 }
@@ -412,6 +414,34 @@ TEST(DDTreeKernels, BuildPrefixClosedTreeAndPackedMask)
     EXPECT_EQ(actual.nodeDepths[0], 0);
     EXPECT_EQ(actual.parentIds[0], -1);
     EXPECT_EQ(actual.packedAncestorMask[0], 1);
+}
+
+TEST(DDTreeKernels, BuildsFromTokenMajorDraftLogits)
+{
+    constexpr int32_t kBatchSize{2};
+    constexpr int32_t kDFlashBlockSize{4};
+    constexpr int32_t kVocabSize{12};
+    constexpr int32_t kVerifySize{7};
+    constexpr int32_t kCandidateTopK{2};
+    std::vector<float> logits(static_cast<size_t>(kBatchSize) * kDFlashBlockSize * kVocabSize, -12.0F);
+    for (int32_t batchIdx = 0; batchIdx < kBatchSize; ++batchIdx)
+    {
+        for (int32_t depthIdx = 1; depthIdx < kDFlashBlockSize; ++depthIdx)
+        {
+            setLogit(logits, batchIdx, depthIdx, batchIdx * 4 + depthIdx, kDFlashBlockSize, kVocabSize, 6.0F);
+            setLogit(logits, batchIdx, depthIdx, batchIdx * 4 + depthIdx + 1, kDFlashBlockSize, kVocabSize, 5.0F);
+        }
+    }
+
+    std::vector<int32_t> const rootTokenIds{90, 91};
+    std::vector<int32_t> const baseLengths{20, 24};
+    DDTreeBuildOutputs actual = runDDTreeBuild(logits, rootTokenIds, baseLengths, kBatchSize, kDFlashBlockSize,
+        kVocabSize, kVerifySize, kCandidateTopK, /*firstCandidateLogitsRow=*/1, /*depthConfidence=*/{},
+        /*survivalThreshold=*/0.0F, /*tokenMajorLogits=*/true);
+    DDTreeReference expected = buildReference(
+        logits, rootTokenIds, baseLengths, kBatchSize, kDFlashBlockSize, kVocabSize, kVerifySize, kCandidateTopK);
+
+    validateBuildAgainstReference(actual, expected, kBatchSize, kVerifySize);
 }
 
 TEST(DDTreeKernels, CanUseRowZeroForDepthOne)

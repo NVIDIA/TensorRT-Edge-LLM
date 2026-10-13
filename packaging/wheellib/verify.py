@@ -28,6 +28,7 @@ import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Iterable, Mapping, Sequence, Set, Tuple
 
+from . import oss
 from .config import (CONTRACT, REPO_ROOT, cuda_driver_stub, load_matrix,
                      load_toml, require_variant, sha256)
 
@@ -37,7 +38,18 @@ _REQUIRED = set(CONTRACT.RUNTIME_VARIANT_FIELDS) | {
     "cutedsl_groups",
     "evidence_sha256",
     "source_provenance_sha256",
+    "oss_policy_sha256",
     "submodule_revisions",
+}
+_GLIBC_BASELINES = {
+    ("ubuntu", "22.04"): (2, 35),
+    ("ubuntu", "24.04"): (2, 39),
+    ("jetson", "jp70"): (2, 39),
+    ("jetson", "jp71"): (2, 39),
+    ("jetson", "jp72"): (2, 39),
+    ("drive", "7.2"): (2, 39),
+    ("igx-thor", "current"): (2, 39),
+    ("dgx-spark", "current"): (2, 39),
 }
 
 
@@ -95,6 +107,17 @@ def _stage_path(stage: Path, relative: str) -> Path:
 
 
 def _audit_tool(name: str) -> str:
+    if name == "cuobjdump":
+        toolkit_roots = [
+            Path(value)
+            for variable in ("CUDAToolkit_ROOT", "CUDA_HOME", "CUDA_PATH")
+            if (value := os.environ.get(variable))
+        ]
+        toolkit_roots.append(Path("/usr/local/cuda"))
+        for root in toolkit_roots:
+            toolkit_tool = root / "bin" / name
+            if (toolkit_tool.is_file() and os.access(toolkit_tool, os.X_OK)):
+                return os.fspath(toolkit_tool)
     executable = shutil.which(name)
     if executable is not None:
         return executable
@@ -142,21 +165,50 @@ def _audit_elf(path: Path, cpu_arch: str, allowed: Set[str]) -> Set[str]:
     return needed
 
 
+def _audit_glibc_symbols(path: Path, row: Mapping[str, Any]) -> None:
+    """Reject ELF symbols newer than the payload target platform."""
+    platform = (str(row["platform_family"]), str(row["platform_release"]))
+    try:
+        baseline = _GLIBC_BASELINES[platform]
+    except KeyError as error:
+        raise RuntimeError(
+            f"No reviewed GLIBC baseline for platform {platform}.") from error
+    versions = {
+        (int(major), int(minor))
+        for major, minor in re.findall(
+            r"\bGLIBC_(\d+)\.(\d+)\b",
+            _tool_output(["readelf", "--version-info",
+                          os.fspath(path)]),
+        )
+    }
+    required = max(versions, default=(0, 0))
+    if required > baseline:
+        raise RuntimeError(
+            f"{path} requires GLIBC {required[0]}.{required[1]}, newer than "
+            f"{platform[0]} {platform[1]} baseline "
+            f"{baseline[0]}.{baseline[1]}.")
+
+
 def _audit_device_images(path: Path, gpu_sm: int) -> None:
     executable = _audit_tool("cuobjdump")
-    result = subprocess.run(
-        [executable, "--dump-elf", os.fspath(path)],
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT)
+    # Inspect one architecture at a time so a later malformed entry cannot
+    # prevent cuobjdump from reaching SM120 in a mixed SM110/SM120 fatbin.
+    # The base filter (for example sm_120) also selects an a-qualified cubin.
+    result = subprocess.run([
+        executable, "--dump-elf", "--gpu-architecture", f"sm_{gpu_sm}",
+        os.fspath(path)
+    ],
+                            check=False,
+                            text=True,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT)
     pattern = rf"arch\s*=\s*sm[_-]?{gpu_sm}(?:a)?(?:\D|$)"
     if re.search(pattern, result.stdout, re.IGNORECASE):
         return
     if result.returncode != 0:
         raise RuntimeError(
-            f"Audit command failed (cuobjdump --dump-elf {path}):\n"
-            f"{result.stdout}")
+            f"Audit command failed (cuobjdump --dump-elf --gpu-architecture "
+            f"sm_{gpu_sm} {path}):\n{result.stdout}")
     raise RuntimeError(f"{path} contains no listed SM{gpu_sm} device image.")
 
 
@@ -388,8 +440,14 @@ def _audit_cutedsl_evidence(metadata: Mapping[str, Any],
             or not isinstance(symbols, list) or not symbols):
         raise RuntimeError("CuTe evidence has an incomplete inventory.")
     member_text = "\n".join(str(value) for value in members)
+    # Multi-SM artifacts qualify every generated object with its target SM to
+    # keep archive members and exported symbols unique.  Compare metadata's
+    # canonical variant names against a canonicalized inventory as well.  The
+    # marker can precede a generated suffix, for example
+    # gdn_decode_mtp__arch110_cache.o -> gdn_decode_mtp_cache.o.
+    canonical_member_text = re.sub(r"__arch\d+(?=[_.]|$)", "", member_text)
     missing_variants = sorted(variant for variant in variants
-                              if variant not in member_text)
+                              if variant not in canonical_member_text)
     missing_symbols = sorted(set(symbols) - linked - defined)
     unresolved_generated = sorted(set(symbols) & unresolved)
     if missing_variants or missing_symbols or unresolved_generated:
@@ -457,6 +515,8 @@ def _audit_binary_dependencies(payload: Mapping[str, Any], extension: Path,
             f"{sorted(platform_provided - allowed)}.")
     needed = _audit_elf(extension, str(payload["cpu_arch"]), allowed)
     needed.update(_audit_elf(plugin, str(payload["cpu_arch"]), allowed))
+    _audit_glibc_symbols(extension, row)
+    _audit_glibc_symbols(plugin, row)
     required_dsos = {
         payload["cuda_runtime_soname"], payload["tensorrt_runtime_soname"]
     }
@@ -514,7 +574,10 @@ def verify(stage: Path,
     """Validate metadata, content, dependencies, architecture, and size."""
     stage = stage.resolve(strict=True)
     payload, row = _validate_payload_metadata(stage, matrix_path)
+    oss.require_policy(payload)
     package_stage, extension, plugin = _payload_binaries(stage, payload)
+    oss.audit_file(extension)
+    oss.audit_file(plugin)
     cutedsl_metadata = _validate_cutedsl_metadata(stage, payload, row)
     evidence_dir, evidence = _load_evidence(stage, payload)
     license_file = _audit_stage_inventory(stage, extension, plugin,
@@ -527,8 +590,9 @@ def verify(stage: Path,
     _audit_binary_dependencies(payload, extension, plugin, row, allowlist_path,
                                dependency_roots, require_dependency_resolution)
     if require_device_images:
-        _audit_device_images(extension, int(payload["gpu_sm"]))
-        _audit_device_images(plugin, int(payload["gpu_sm"]))
+        for gpu_sm in CONTRACT.matrix_variant_gpu_sms(row):
+            _audit_device_images(extension, gpu_sm)
+            _audit_device_images(plugin, gpu_sm)
     _audit_payload_size(package_stage, size_budget_path,
                         str(payload["cpu_arch"]))
     return payload

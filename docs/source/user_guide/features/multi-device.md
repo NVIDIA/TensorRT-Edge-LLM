@@ -17,6 +17,17 @@ GB10 GPU per system. Connect the systems through their high-speed ConnectX-7
 QSFP/RoCE interfaces. The Dual DGX Spark path runs one MPI process per system
 and uses NCCL for cross-system communication.
 
+## Supported Models
+
+| Model |
+|---|
+| Qwen3-4B |
+| Qwen3-8B |
+| Qwen3-14B |
+| Qwen3-32B |
+| Qwen3.5-27B |
+| Qwen3-VL-8B |
+
 ## Tensor Parallel Inference
 
 Tensor parallelism (TP) splits supported model projections across multiple GPUs

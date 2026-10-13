@@ -26,7 +26,11 @@ import os
 from typing import Tuple
 
 import cupy as cp
+import cutlass
+import cutlass.cute as cute
 from cutlass.cute.runtime import from_dlpack
+
+from cutedsl_utils import aot_placeholders
 
 
 def create_row_major_2d_tensors(
@@ -61,6 +65,23 @@ def mark_2d_row_major_dynamic(tensor, *, divisibility: int = 8):
         .mark_compact_shape_dynamic(mode=0, stride_order=stride_order)
         .mark_compact_shape_dynamic(mode=1, stride_order=stride_order, divisibility=divisibility)
     )
+
+
+def create_fake_row_major_2d_tensor(
+    *,
+    dtype=cutlass.Float16,
+    mode1_divisibility: int = 8,
+):
+    """Create a storage-free dynamic row-major tensor for AOT compilation.
+
+    Goes through the same marker chain as the real from_dlpack path so the
+    exported descriptor (dynamic shapes/strides and divisibility contracts)
+    is identical to a device-tensor export.
+    """
+    tensor = aot_placeholders.make_compact_tensor(
+        dtype, (2, 2), stride_order=(1, 0), assumed_align=16
+    )
+    return mark_2d_row_major_dynamic(tensor, divisibility=mode1_divisibility)
 
 
 def create_row_major_3d_tensor(mode0: int, mode1: int, batch: int, *, fill_random: bool, dtype=cp.float16):
@@ -108,6 +129,19 @@ def mark_3d_row_major_dynamic(tensor):
     )
 
 
+def create_fake_row_major_3d_tensor(*, batch: int = 1, dtype=cutlass.Float16):
+    """Create a storage-free logical (mode0, mode1, L) row-major tensor.
+
+    Goes through the same marker chain as the real from_dlpack path, so like
+    that path every mode (including L) becomes a runtime-dynamic shape and
+    only the mode1 stride stays statically 1.
+    """
+    tensor = aot_placeholders.make_compact_tensor(
+        dtype, (2, 2, batch), stride_order=(1, 0, 2), assumed_align=16
+    )
+    return mark_3d_row_major_dynamic(tensor)
+
+
 def to_cute_tensor(cp_arr, *, assumed_align: int = 16):
     return from_dlpack(cp_arr, assumed_align=assumed_align)
 
@@ -125,11 +159,17 @@ def export_compiled_kernel(compiled_kernel, *, output_dir: str, file_name: str, 
 
 def create_bias_tensor(N, *, export_only: bool):
     """Create a 1D bias tensor [N] for epilogue fusion, marked dynamic."""
-    dt = cp.float16
     if export_only:
-        bias_cp = cp.zeros((N,), dtype=dt)
-    else:
-        bias_cp = cp.random.uniform(-0.1, 0.1, (N,)).astype(dt)
+        # Same marker chain as the real path below, for descriptor parity.
+        mBias = aot_placeholders.make_compact_tensor(
+            cutlass.Float16, (8,), stride_order=(0,), assumed_align=16
+        )
+        mBias = mBias.mark_layout_dynamic(leading_dim=0).mark_compact_shape_dynamic(
+            mode=0, stride_order=(0,), divisibility=8
+        )
+        return mBias, None
+
+    bias_cp = cp.random.uniform(-0.1, 0.1, (N,)).astype(cp.float16)
     mBias = from_dlpack(bias_cp, assumed_align=16)
     mBias = mBias.mark_layout_dynamic(leading_dim=0).mark_compact_shape_dynamic(
         mode=0, stride_order=(0,), divisibility=8

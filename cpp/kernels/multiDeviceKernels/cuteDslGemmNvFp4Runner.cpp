@@ -181,11 +181,17 @@ bool CuteDslGemmNvFp4Runner::canImplement(int32_t smVersion, int32_t mmaTilerN)
 namespace
 {
 
-cudaError_t prepareLaunch(char const* pathLabel, int32_t M, int32_t N, int32_t K, void* dCaller, void*& dPtr)
+cudaError_t prepareLaunch(
+    char const* pathLabel, int32_t M, int32_t N, int32_t K, void const* alpha, void* dCaller, void*& dPtr)
 {
     if (M <= 0 || N <= 0 || K <= 0 || (N % 128) != 0 || (K % 64) != 0)
     {
         NVFP4_LOG("%s: invalid shape M=%d N=%d K=%d (N%%128=%d K%%64=%d)", pathLabel, M, N, K, (N % 128), (K % 64));
+        return cudaErrorInvalidValue;
+    }
+    if (alpha == nullptr)
+    {
+        NVFP4_LOG("%s: alpha must point at one device-resident FP32 scalar", pathLabel);
         return cudaErrorInvalidValue;
     }
     dPtr = dCaller;
@@ -197,7 +203,7 @@ cudaError_t prepareLaunch(char const* pathLabel, int32_t M, int32_t N, int32_t K
 #endif
 
 cudaError_t CuteDslGemmNvFp4Runner::run(void const* a, void const* b, void const* aSF, void const* bSF, void* d,
-    int32_t M, int32_t N, int32_t K, cudaStream_t stream)
+    void const* alpha, int32_t M, int32_t N, int32_t K, cudaStream_t stream)
 {
 #ifdef CUTE_DSL_GEMM_NVFP4_ENABLED
     if (!sLoaded)
@@ -207,7 +213,7 @@ cudaError_t CuteDslGemmNvFp4Runner::run(void const* a, void const* b, void const
     }
 
     void* dPtr = nullptr;
-    cudaError_t prepErr = prepareLaunch("run", M, N, K, d, dPtr);
+    cudaError_t prepErr = prepareLaunch("run", M, N, K, alpha, d, dPtr);
     if (prepErr != cudaSuccess)
     {
         return prepErr;
@@ -217,6 +223,7 @@ cudaError_t CuteDslGemmNvFp4Runner::run(void const* a, void const* b, void const
     void* bMut = const_cast<void*>(b);
     void* sfaMut = const_cast<void*>(aSF);
     void* sfbMut = const_cast<void*>(bSF);
+    void* alphaMut = const_cast<void*>(alpha);
 
     int64_t const m64 = static_cast<int64_t>(M);
     int64_t const n64 = static_cast<int64_t>(N);
@@ -232,12 +239,7 @@ cudaError_t CuteDslGemmNvFp4Runner::run(void const* a, void const* b, void const
     case 64:
 #ifdef CUTE_DSL_GEMM_BLACKWELL_NVFP4_WS_FP16_TN64_ENABLED
         launchRet = cute_dsl_gemm_blackwell_nvfp4_ws_fp16_tn64_wrapper(
-            &sModWsFp16Tn64, aMut, bMut, sfaMut, sfbMut, dPtr, m64, n64, k64, maxActiveClusters, stream);
-        break;
-#endif
-#ifdef CUTE_DSL_GEMM_BLACKWELL_NVFP4_FP16_TN64_ENABLED
-        launchRet = cute_dsl_gemm_blackwell_nvfp4_fp16_tn64_wrapper(
-            &sModFp16Tn64, aMut, bMut, sfaMut, sfbMut, dPtr, m64, n64, k64, stream);
+            &sModWsFp16Tn64, aMut, bMut, sfaMut, sfbMut, dPtr, alphaMut, m64, n64, k64, maxActiveClusters, stream);
         break;
 #else
         return cudaErrorNotSupported;
@@ -245,12 +247,7 @@ cudaError_t CuteDslGemmNvFp4Runner::run(void const* a, void const* b, void const
     case 128:
 #ifdef CUTE_DSL_GEMM_BLACKWELL_NVFP4_WS_FP16_TN128_ENABLED
         launchRet = cute_dsl_gemm_blackwell_nvfp4_ws_fp16_tn128_wrapper(
-            &sModWsFp16Tn128, aMut, bMut, sfaMut, sfbMut, dPtr, m64, n64, k64, maxActiveClusters, stream);
-        break;
-#endif
-#ifdef CUTE_DSL_GEMM_BLACKWELL_NVFP4_FP16_TN128_ENABLED
-        launchRet = cute_dsl_gemm_blackwell_nvfp4_fp16_tn128_wrapper(
-            &sModFp16Tn128, aMut, bMut, sfaMut, sfbMut, dPtr, m64, n64, k64, stream);
+            &sModWsFp16Tn128, aMut, bMut, sfaMut, sfbMut, dPtr, alphaMut, m64, n64, k64, maxActiveClusters, stream);
         break;
 #else
         return cudaErrorNotSupported;
@@ -269,6 +266,7 @@ cudaError_t CuteDslGemmNvFp4Runner::run(void const* a, void const* b, void const
     (void) aSF;
     (void) bSF;
     (void) d;
+    (void) alpha;
     (void) M;
     (void) N;
     (void) K;
@@ -278,7 +276,7 @@ cudaError_t CuteDslGemmNvFp4Runner::run(void const* a, void const* b, void const
 }
 
 cudaError_t CuteDslGemmNvFp4Runner::runFp8(void const* a, void const* b, void const* aSF, void const* bSF, void* d,
-    int32_t M, int32_t N, int32_t K, cudaStream_t stream)
+    void const* alpha, int32_t M, int32_t N, int32_t K, cudaStream_t stream)
 {
 #ifdef CUTE_DSL_GEMM_NVFP4_ENABLED
     if (!sLoaded)
@@ -288,7 +286,7 @@ cudaError_t CuteDslGemmNvFp4Runner::runFp8(void const* a, void const* b, void co
     }
 
     void* dPtr = nullptr;
-    cudaError_t prepErr = prepareLaunch("runFp8", M, N, K, d, dPtr);
+    cudaError_t prepErr = prepareLaunch("runFp8", M, N, K, alpha, d, dPtr);
     if (prepErr != cudaSuccess)
     {
         return prepErr;
@@ -298,6 +296,7 @@ cudaError_t CuteDslGemmNvFp4Runner::runFp8(void const* a, void const* b, void co
     void* bMut = const_cast<void*>(b);
     void* sfaMut = const_cast<void*>(aSF);
     void* sfbMut = const_cast<void*>(bSF);
+    void* alphaMut = const_cast<void*>(alpha);
 
     int64_t const m64 = static_cast<int64_t>(M);
     int64_t const n64 = static_cast<int64_t>(N);
@@ -313,12 +312,7 @@ cudaError_t CuteDslGemmNvFp4Runner::runFp8(void const* a, void const* b, void co
     case 64:
 #ifdef CUTE_DSL_GEMM_BLACKWELL_NVFP4_WS_FP8_TN64_ENABLED
         launchRet = cute_dsl_gemm_blackwell_nvfp4_ws_fp8_tn64_wrapper(
-            &sModWsFp8Tn64, aMut, bMut, sfaMut, sfbMut, dPtr, m64, n64, k64, maxActiveClusters, stream);
-        break;
-#endif
-#ifdef CUTE_DSL_GEMM_BLACKWELL_NVFP4_FP8_TN64_ENABLED
-        launchRet = cute_dsl_gemm_blackwell_nvfp4_fp8_tn64_wrapper(
-            &sModFp8Tn64, aMut, bMut, sfaMut, sfbMut, dPtr, m64, n64, k64, stream);
+            &sModWsFp8Tn64, aMut, bMut, sfaMut, sfbMut, dPtr, alphaMut, m64, n64, k64, maxActiveClusters, stream);
         break;
 #else
         return cudaErrorNotSupported;
@@ -326,12 +320,7 @@ cudaError_t CuteDslGemmNvFp4Runner::runFp8(void const* a, void const* b, void co
     case 128:
 #ifdef CUTE_DSL_GEMM_BLACKWELL_NVFP4_WS_FP8_TN128_ENABLED
         launchRet = cute_dsl_gemm_blackwell_nvfp4_ws_fp8_tn128_wrapper(
-            &sModWsFp8Tn128, aMut, bMut, sfaMut, sfbMut, dPtr, m64, n64, k64, maxActiveClusters, stream);
-        break;
-#endif
-#ifdef CUTE_DSL_GEMM_BLACKWELL_NVFP4_FP8_TN128_ENABLED
-        launchRet = cute_dsl_gemm_blackwell_nvfp4_fp8_tn128_wrapper(
-            &sModFp8Tn128, aMut, bMut, sfaMut, sfbMut, dPtr, m64, n64, k64, stream);
+            &sModWsFp8Tn128, aMut, bMut, sfaMut, sfbMut, dPtr, alphaMut, m64, n64, k64, maxActiveClusters, stream);
         break;
 #else
         return cudaErrorNotSupported;
@@ -350,6 +339,7 @@ cudaError_t CuteDslGemmNvFp4Runner::runFp8(void const* a, void const* b, void co
     (void) aSF;
     (void) bSF;
     (void) d;
+    (void) alpha;
     (void) M;
     (void) N;
     (void) K;

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -42,6 +42,9 @@ from cutlass.cute.nvgpu import cpasync
 from cutlass.cute.runtime import from_dlpack
 from cutlass.cute.typing import Int32
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from cutedsl_utils import aot_placeholders  # isort: skip
+
 TILE_K = 128        # state head dim K
 TILE_V = 32         # V columns per smem tile
 TILE_V_PADDED = 36  # padded stride to avoid smem bank conflicts
@@ -65,6 +68,8 @@ def _define_prefill_kernel():
     def gdn_kernel_prefill(
         tiled_copy_load: cute.TiledCopy,
         h0_source: cute.Tensor,
+        state_indices: cute.Tensor,
+        use_state_indices: Int32,
         smem_layout: cute.Layout,
         num_v_tiles: Int32,
         seq_len: Int32,
@@ -92,6 +97,9 @@ def _define_prefill_kernel():
         i_n = batch_idx // HV
         i_hv = batch_idx % HV
         i_h = i_hv // (HV // H)
+        state_slot = cutlass.Int32(i_n)
+        if use_state_indices != 0:
+            state_slot = cutlass.Int32(state_indices[i_n])
 
         k_local = in_warp_tid // V_PER_WARP
         v_local = in_warp_tid % V_PER_WARP
@@ -104,7 +112,7 @@ def _define_prefill_kernel():
         sQ = smem.allocate_tensor(cutlass.Float32, smem_qk_layout, 128)
         smem_norm_layout = cute.make_layout((TILE_V,), stride=(1,))
         sNorm = smem.allocate_tensor(cutlass.Float32, smem_norm_layout, 128)
-        gSrc_batch = h0_source[(i_n, i_hv, None, None)]
+        gSrc_batch = h0_source[(state_slot, i_hv, None, None)]
         gSrc = cute.local_tile(gSrc_batch, (TILE_K, TILE_V), (0, None))
         thr_copy_load = tiled_copy_load.get_slice(tidx)
 
@@ -252,7 +260,7 @@ def _define_prefill_kernel():
             for k_iter in range(NUM_K_ITERS):
                 k_write = k_iter * ROWS_PER_ITER + k_local
                 h_val = sH[(k_write, v_idx)]
-                h0_source[(i_n, i_hv, k_write, v_global_base + v_idx)] = h_val
+                h0_source[(state_slot, i_hv, k_write, v_global_base + v_idx)] = h_val
             cute.arch.barrier()
         # ---- end v_tile loop ---------------------------------------------------
 
@@ -275,6 +283,8 @@ def _create_jit_function_prefill():
         A_log: cute.Tensor,
         dt_bias: cute.Tensor,
         h0_source: cute.Tensor,
+        state_indices: cute.Tensor,
+        use_state_indices: Int32,
         context_lengths: cute.Tensor,
         o: cute.Tensor,
         seq_len: Int32,
@@ -310,6 +320,8 @@ def _create_jit_function_prefill():
         gdn_prefill_kernel(
             tiled_copy_load,
             h0_source,
+            state_indices,
+            use_state_indices,
             smem_layout,
             num_v_tiles,
             seq_len,
@@ -359,6 +371,7 @@ def _make_placeholder_tensors(n, h, hv, k, v, seq_len):
         "A_log":      cp.zeros(hv, dtype=cp.float32),
         "dt_bias":    cp.zeros(hv, dtype=dt),
         "h0_source":  cp.zeros((n, hv, k, v), dtype=cp.float32),
+        "state_indices": cp.arange(n, dtype=cp.int32),
         "context_lengths": cp.full((n,), seq_len, dtype=cp.int32),
         "o":          cp.zeros((n, seq_len, hv, v), dtype=dt),
     }
@@ -393,6 +406,8 @@ def _to_cute_tensors(ph):
     q = wrap(ph["q"])
     v = wrap(ph["v"])
     h0_src = _mark_h0_source_dynamic(from_dlpack(ph["h0_source"], assumed_align=32))
+    state_indices = from_dlpack(ph["state_indices"], assumed_align=16)
+    state_indices = _mark_gdn_1d_dynamic(state_indices)
     ctx = from_dlpack(ph["context_lengths"], assumed_align=16)
     ctx = ctx.mark_layout_dynamic(leading_dim=0).mark_compact_shape_dynamic(mode=0, stride_order=(0,))
     return {
@@ -404,23 +419,61 @@ def _to_cute_tensors(ph):
         "A_log":      wrap(ph["A_log"], leading_dim=0),
         "dt_bias":    wrap(ph["dt_bias"], leading_dim=0),
         "h0_source":  h0_src,
+        "state_indices": state_indices,
         "context_lengths": ctx,
         "o":          wrap(ph["o"]),
     }
 
 
-def _compile_prefill(n, h, hv, k, v, seq_len, stream, gpu_arch=""):
+def _make_aot_cute_tensors(n, h, hv, k, v, seq_len):
+    def compact(dtype, shape, assumed_align=16):
+        return aot_placeholders.make_compact_tensor(
+            dtype,
+            shape,
+            stride_order=tuple(reversed(range(len(shape)))),
+            assumed_align=assumed_align,
+        )
+
+    q = compact(cutlass.Float16, (n, seq_len, h, k))
+    v_tensor = compact(cutlass.Float16, (n, seq_len, hv, v))
+    h0_source = compact(cutlass.Float32, (n, hv, k, v), assumed_align=32)
+    state_indices = compact(cutlass.Int32, (n,))
+    context_lengths = compact(cutlass.Int32, (n,))
+    return {
+        "q": _mark_gdn_prefill_qv_dynamic(q.mark_layout_dynamic(leading_dim=3)),
+        "k": compact(cutlass.Float16, (n, seq_len, h, k)).mark_layout_dynamic(leading_dim=3),
+        "v": _mark_gdn_prefill_qv_dynamic(v_tensor.mark_layout_dynamic(leading_dim=3)),
+        "a": compact(cutlass.Float16, (n, seq_len, hv)).mark_layout_dynamic(leading_dim=2),
+        "b": compact(cutlass.Float16, (n, seq_len, hv)).mark_layout_dynamic(leading_dim=2),
+        "A_log": compact(cutlass.Float32, (hv,)).mark_layout_dynamic(leading_dim=0),
+        "dt_bias": compact(cutlass.Float16, (hv,)).mark_layout_dynamic(leading_dim=0),
+        "h0_source": _mark_h0_source_dynamic(h0_source),
+        "state_indices": _mark_gdn_1d_dynamic(state_indices),
+        "context_lengths": _mark_gdn_1d_dynamic(context_lengths),
+        "o": compact(cutlass.Float16, (n, seq_len, hv, v)).mark_layout_dynamic(leading_dim=3),
+    }
+
+
+def _compile_prefill(n, h, hv, k, v, seq_len, stream, gpu_arch="", export_only=False):
     if "_" in _compiled_kernels_prefill:
         return _compiled_kernels_prefill["_"]
 
-    ph = _make_placeholder_tensors(n, h, hv, k, v, seq_len)
-    t = _to_cute_tensors(ph)
+    if export_only:
+        t = _make_aot_cute_tensors(n, h, hv, k, v, seq_len)
+    else:
+        ph = _make_placeholder_tensors(n, h, hv, k, v, seq_len)
+        t = _to_cute_tensors(ph)
     run_prefill = _get_jit_function_prefill()
-    compile_opts = ("--gpu-arch " + gpu_arch) if gpu_arch else None
+    # Only the export path may pin a foreign target arch in the compile
+    # options; a native JIT run must compile for the local GPU (see the
+    # native-vs-cross note in cutedsl_utils/cutedsl_compile_wrapper.py).
+    compile_opts = aot_placeholders.compile_options(
+        f"--gpu-arch={gpu_arch}" if gpu_arch else ""
+    ) if export_only else None
     compiled = cute.compile(
         run_prefill,
         t["q"], t["k"], t["v"], t["a"], t["b"],
-        t["A_log"], t["dt_bias"], t["h0_source"], t["context_lengths"], t["o"],
+        t["A_log"], t["dt_bias"], t["h0_source"], t["state_indices"], 1, t["context_lengths"], t["o"],
         seq_len,
         softplus_beta=1.0,
         softplus_threshold=20.0,
@@ -438,10 +491,12 @@ def export_gdn_prefill(n, h, hv, k, v, seq_len,
                        output_dir, file_name, function_prefix, gpu_arch=""):
     if seq_len < 2:
         raise ValueError("Prefill requires seq_len >= 2.")
-    stream = cuda.CUstream(cp.cuda.get_current_stream().ptr)
+    stream = aot_placeholders.make_stream()
     print("[gdn_prefill] AOT compile gpu_arch=%r" % (gpu_arch or "default"))
     t0 = time.time()
-    compiled = _compile_prefill(n, h, hv, k, v, seq_len, stream, gpu_arch=gpu_arch)
+    compiled = _compile_prefill(
+        n, h, hv, k, v, seq_len, stream, gpu_arch=gpu_arch, export_only=True
+    )
     print("[gdn_prefill] Compilation time: %.4fs" % (time.time() - t0))
 
     os.makedirs(output_dir, exist_ok=True)
@@ -568,7 +623,7 @@ def run_test_prefill(n, h, hv, k, v, seq_len,
     t = _to_cute_tensors(ph)
     args = (
         t["q"], t["k"], t["v"], t["a"], t["b"],
-        t["A_log"], t["dt_bias"], t["h0_source"], t["context_lengths"], t["o"],
+        t["A_log"], t["dt_bias"], t["h0_source"], t["state_indices"], 1, t["context_lengths"], t["o"],
         seq_len,
         stream,
     )
@@ -583,7 +638,7 @@ def run_test_prefill(n, h, hv, k, v, seq_len,
         t = _to_cute_tensors(ph)
         args = (
             t["q"], t["k"], t["v"], t["a"], t["b"],
-            t["A_log"], t["dt_bias"], t["h0_source"], t["context_lengths"], t["o"],
+            t["A_log"], t["dt_bias"], t["h0_source"], t["state_indices"], 1, t["context_lengths"], t["o"],
             seq_len,
             stream,
         )
@@ -612,7 +667,7 @@ def run_test_prefill(n, h, hv, k, v, seq_len,
     t = _to_cute_tensors(ph)
     args = (
         t["q"], t["k"], t["v"], t["a"], t["b"],
-        t["A_log"], t["dt_bias"], t["h0_source"], t["context_lengths"], t["o"],
+        t["A_log"], t["dt_bias"], t["h0_source"], t["state_indices"], 1, t["context_lengths"], t["o"],
         seq_len,
         stream,
     )
@@ -634,9 +689,6 @@ def run_test_prefill(n, h, hv, k, v, seq_len,
 
 def main():
     args = _parsed_args
-    if cp.cuda.runtime.getDeviceCount() == 0:
-        raise RuntimeError("GPU required.")
-    cp.random.seed(42)
     np.random.seed(42)
 
     if args.export_only:
@@ -653,6 +705,10 @@ def main():
             gpu_arch=args.gpu_arch,
         )
         return
+
+    if cp.cuda.runtime.getDeviceCount() == 0:
+        raise RuntimeError("GPU required.")
+    cp.random.seed(42)
 
     run_test_prefill(
         n=args.n, h=args.h, hv=args.hv, k=args.k, v=args.v,

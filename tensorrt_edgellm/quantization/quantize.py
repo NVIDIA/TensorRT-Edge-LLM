@@ -43,15 +43,16 @@ from transformers import (AutoModel, AutoModelForCausalLM,
 
 from .datasets import (AudioDataset, ImageDataset, TextDataset, dataset_name,
                        resolve_dataset)
-from .quantization_configs import _VISUAL_PREFIXES, build_quant_config
+from .quantization_configs import (_VISUAL_PREFIXES, append_quant_cfg_entries,
+                                   build_quant_config)
 from .qwen3_asr_loader import (asr_calibration_dataloader, is_qwen3_asr_model,
                                load_qwen3_asr_joint_for_calibration,
                                postprocess_qwen3_asr_checkpoint)
 from .qwen3_cp_loader import (has_code_predictor, is_qwen3_next_omni,
                               qwen3_cp_calibration_loop,
                               qwen3_next_cp_calibration_loop)
-from .qwen3_omni import (_load_omni_model, is_omni_model_dir,
-                         quantize_and_export_omni)
+from .qwen3_omni import (_copy_vocoder_dir, _load_omni_model,
+                         is_omni_model_dir, quantize_and_export_omni)
 
 
 def _text_calib_dataloader(tokenizer,
@@ -99,6 +100,18 @@ def _is_phi4mm_model(model_dir: str) -> bool:
         with open(config_path) as f:
             model_type = json.load(f).get("model_type")
         return model_type in ("phi4mm", "phi4_multimodal")
+    except (OSError, ValueError):
+        return False
+
+
+def _is_qwen3_tts_model(model_dir: str) -> bool:
+    """True if ``<model_dir>/config.json`` declares a Qwen3-TTS checkpoint."""
+    config_path = os.path.join(model_dir, "config.json")
+    if not os.path.exists(config_path):
+        return False
+    try:
+        with open(config_path) as f:
+            return json.load(f).get("model_type") == "qwen3_tts"
     except (OSError, ValueError):
         return False
 
@@ -248,6 +261,13 @@ def _load_model(model_dir, dtype="fp16", device="cuda"):
         from tensorrt_edgellm.lora import load_phi4mm_model
         model = load_phi4mm_model(model_dir, torch_dtype)
         model.to(device)
+    elif _is_qwen3_tts_model(model_dir):
+        # No released transformers registers model_type="qwen3_tts" and the
+        # checkpoint ships no modeling code, so the AutoModel factories below
+        # cannot build it.
+        from .models.qwen3_tts import Qwen3TTSForCalibration
+        model = Qwen3TTSForCalibration.from_pretrained(model_dir, torch_dtype,
+                                                       device)
     elif is_qwen3_asr_model(model_dir):
         # Qwen3-ASR HF ckpt declares model_type="qwen3_asr" but ships no
         # modeling code, so the AutoModel factories below would fail. We
@@ -714,9 +734,9 @@ def _skip_resmooth_for_hybrid(model, quantization: str = ""):
     # Multimodal wrappers have no top-level ``forward``; resmooth's dummy
     # ``model(fake_input)`` crashes on them. Resmooth is a no-op without
     # AWQ pre_quant_scales, so skipping is safe here.
-    should_skip = ((_is_hybrid_model(model) and not is_nvfp4)
-                   or model_type in ("phi4mm", "phi4_multimodal", "qwen3_omni",
-                                     "qwen3_omni_moe", "qwen3_omni_next")
+    should_skip = ((_is_hybrid_model(model) and not is_nvfp4) or model_type
+                   in ("phi4mm", "phi4_multimodal", "qwen3_omni",
+                       "qwen3_omni_moe", "qwen3_omni_next", "qwen3_tts")
                    or (is_int4_awq and not _is_moe_model(model)))
     if not should_skip:
         yield
@@ -750,6 +770,62 @@ def _is_image_blind_calibration(model, quant_cfg: dict) -> bool:
             for name, _ in model.named_modules()):
         return False
     return quant_cfg.get("algorithm") not in (None, "max")
+
+
+def _is_gemma4_unified_model(model_dir: str) -> bool:
+    from ..chat_template import _get_model_type
+    return _get_model_type(model_dir) in ("gemma4_unified", )
+
+
+def _gemma4_audio_calib_batches(
+        processor,
+        audio_dataset,
+        num_samples: int,
+        prompt: str = "Please transcribe the following audio."):
+    """``BatchFeature`` dicts with raw-PCM ``input_features`` for Gemma4 Unified.
+
+    Streams (audio bytes, transcript) pairs through the model's own processor
+    with the ASR instruction so the language-model quantizers see the audio
+    token activations they will meet at runtime (text-only calibration leaves
+    the first layers' audio ranges 4-7x under-estimated).
+    """
+    import io
+
+    import soundfile as sf
+    batches: list[dict[str, Any]] = []
+    for audio_bytes, _transcript in audio_dataset():
+        wav, sr = sf.read(io.BytesIO(audio_bytes), dtype="float32")
+        if wav.ndim > 1:
+            wav = wav.mean(axis=1)
+        if sr != 16000:
+            import librosa
+            wav = librosa.resample(wav, orig_sr=sr, target_sr=16000)
+        messages = [{
+            "role":
+            "user",
+            "content": [{
+                "type": "audio",
+                "audio": wav
+            }, {
+                "type": "text",
+                "text": prompt
+            }],
+        }]
+        inputs = processor.apply_chat_template(messages,
+                                               add_generation_prompt=True,
+                                               tokenize=True,
+                                               return_dict=True,
+                                               return_tensors="pt")
+        batches.append({
+            k: v
+            for k, v in inputs.items() if isinstance(v, torch.Tensor)
+        })
+        if len(batches) >= num_samples:
+            break
+    if not batches:
+        raise ValueError(
+            "No usable audio samples for Gemma4 Unified calibration.")
+    return batches
 
 
 def _calibrate_multimodal(model, batches):
@@ -833,6 +909,7 @@ def quantize_and_export(
     audio_dataset: Union[str, AudioDataset, None] = None,
     num_samples: int = 512,
     fuse_gdn_qkvzba_scales: bool = False,
+    quantize_gemma4_down_proj: bool = False,
 ) -> str:
     """Load a HuggingFace model, quantize it, and export a unified checkpoint.
 
@@ -994,6 +1071,15 @@ def quantize_and_export(
             raise ValueError(
                 "Joint --quantization + --cp_quantization is not supported "
                 "on this MoE thinker wrapper via the generic path.")
+        # The joint loop prepends a backbone pass that calls ``model(...)``,
+        # which the calibration model does not implement -- it is driven
+        # through ``model.talker`` instead.
+        if (cp_quantization is not None and quantization is not None
+                and _is_qwen3_tts_model(model_dir)):
+            raise ValueError(
+                "Joint --quantization + --cp_quantization is not supported "
+                "for Qwen3-TTS; the Talker stays FP16, so pass "
+                "--cp_quantization fp8 on its own.")
         quant_cfg = build_quant_config(
             quantization,
             lm_head_quantization,
@@ -1010,18 +1096,41 @@ def quantize_and_export(
         # exclude any 64-misaligned Linear from int4 -- it stays fp16 and exports
         # as a plain GEMM.
         if quantization == "int4_awq":
+            int4_excludes = []
             for name, module in model.named_modules():
                 if isinstance(
                         module,
                         torch.nn.Linear) and (module.out_features % 64 != 0
                                               or module.in_features % 64 != 0):
-                    quant_cfg["quant_cfg"].append({
+                    int4_excludes.append({
                         "quantizer_name": f"*{name}.weight_quantizer",
                         "enable": False,
                     })
                     print(
                         f"[int4] skipping {name}: weight [{module.out_features}, "
                         f"{module.in_features}] not 64-aligned (kept fp16)")
+            append_quant_cfg_entries(quant_cfg, int4_excludes)
+        # Gemma4 text backbone: 4-bit down_proj cannot represent the clamped
+        # +/-2048 GeGLU intermediate and drops mmlu/mmmu below threshold; keep
+        # it fp16. Scoped by module name so the vision/audio towers keep their
+        # requested precision.
+        if (not quantize_gemma4_down_proj
+                and quantization in ("int4_awq", "nvfp4")
+                and _get_model_type(model_dir).startswith("gemma4")):
+            gemma4_excludes = []
+            for name, module in model.named_modules():
+                if (isinstance(module, torch.nn.Linear)
+                        and name.endswith("down_proj") and "vision" not in name
+                        and "audio" not in name):
+                    gemma4_excludes.append({
+                        "quantizer_name": f"*{name}.weight_quantizer",
+                        "enable": False,
+                    })
+                    gemma4_excludes.append({
+                        "quantizer_name": f"*{name}.input_quantizer",
+                        "enable": False,
+                    })
+            append_quant_cfg_entries(quant_cfg, gemma4_excludes)
         if kv_cache_quantization is not None and _is_phi4mm_model(model_dir):
             _pre_register_phi4mm_attention_for_kv_quant(model)
         if cp_quantization is not None and is_qwen3_next_omni(model):
@@ -1104,6 +1213,27 @@ def quantize_and_export(
                 quant_cfg,
                 forward_loop=lambda m: _calibrate_asr_multimodal(m, batches),
             )
+        elif (visual_quantization is None and audio_dataset is not None
+              and audio_quantization is None
+              and quantization in ("fp8", "nvfp4")
+              and _is_gemma4_unified_model(model_dir)):
+            # Gemma4 Unified feeds raw PCM into the language model, so the
+            # backbone quantizers see audio-token activations that text-only
+            # calibration under-estimates and clips. Calibrate on (audio, ASR
+            # instruction) prompts instead; with --visual_quantization the
+            # visual path below adds these batches to its image batches.
+            audio_ds = resolve_dataset(audio_dataset, "audio")
+            print(f"Audio calibration dataset (Gemma4 Unified): "
+                  f"{dataset_name(audio_ds)}")
+            processor = AutoProcessor.from_pretrained(model_dir,
+                                                      trust_remote_code=True)
+            audio_samples = min(num_samples, 128)
+            batches = _gemma4_audio_calib_batches(processor, audio_ds,
+                                                  audio_samples)
+            mtq.quantize(
+                model,
+                quant_cfg,
+                forward_loop=lambda m: _calibrate_multimodal(m, batches))
         elif (visual_quantization is not None
               or _is_image_blind_calibration(model, quant_cfg)):
             image_ds = resolve_dataset(image_dataset, "image")
@@ -1123,6 +1253,14 @@ def quantize_and_export(
                 is_phi4mm=_is_phi4mm_model(model_dir))
             # Mixing text batches in was tried and reverted: it wins back
             # some text accuracy but costs more on image benchmarks.
+            if (audio_dataset is not None and audio_quantization is None
+                    and quantization in ("fp8", "nvfp4")
+                    and _is_gemma4_unified_model(model_dir)):
+                audio_ds = resolve_dataset(audio_dataset, "audio")
+                print(f"Audio calibration dataset (Gemma4 Unified): "
+                      f"{dataset_name(audio_ds)}")
+                batches = batches + _gemma4_audio_calib_batches(
+                    processor, audio_ds, mm_samples)
             mtq.quantize(
                 model,
                 quant_cfg,
@@ -1214,6 +1352,7 @@ def quantize_and_export(
         src = os.path.join(model_dir, fname)
         if os.path.isfile(src):
             shutil.copy2(src, os.path.join(output_dir, fname))
+    _copy_vocoder_dir(model_dir, output_dir)
 
     # Qwen3-ASR: convert the vanilla-Qwen3-shaped output back into the
     # qwen3_asr layout the runtime expects (re-prefix safetensors keys with

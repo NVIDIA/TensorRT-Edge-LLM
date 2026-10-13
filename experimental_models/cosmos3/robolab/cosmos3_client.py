@@ -152,11 +152,16 @@ class Cosmos3JointposClient:
     def _pack_request(self, curr_obs: dict[str, Any],
                       instruction: str) -> dict[str, Any]:
         """Build the JSON request payload for the Cosmos3 policy server."""
+        joint = np.asarray(curr_obs["joint_position"],
+                           dtype=np.float32).reshape(-1)
+        gripper = np.asarray(curr_obs["gripper_position"],
+                             dtype=np.float32).reshape(-1)
         return {
             "image": _encode_image_b64(curr_obs["image"]),
             "instruction": instruction,
             "domain": "droid_lerobot",
             "session_id": self.session_id,
+            "state": np.concatenate((joint, 1.0 - gripper)).tolist(),
         }
 
     def _query_server(self, request_data: dict[str, Any]) -> dict[str, Any]:

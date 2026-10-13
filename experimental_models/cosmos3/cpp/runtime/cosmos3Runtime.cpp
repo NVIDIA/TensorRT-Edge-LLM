@@ -245,8 +245,8 @@ void Cosmos3Runtime::prefillUnd(
     // UND K/V writes before generatePolicy's GEN pass consumes mUndK/mUndV.
 }
 
-std::vector<float> Cosmos3Runtime::generatePolicy(
-    rt::Tensor const& pixelValues, rt::Tensor const& inputsEmbeds, rt::Tensor const* uncondEmbeds, cudaStream_t stream)
+std::vector<float> Cosmos3Runtime::generatePolicy(rt::Tensor const& pixelValues, rt::Tensor const& inputsEmbeds,
+    rt::Tensor const* uncondEmbeds, std::vector<float> const& currentState, cudaStream_t stream)
 {
     rt::Tensor const& condLatent = mVaeRunner->encode(pixelValues, stream);
     prefillUnd(inputsEmbeds, mUndK, mUndV, stream);
@@ -257,7 +257,7 @@ std::vector<float> Cosmos3Runtime::generatePolicy(
     if (mGuidance != 1.0F && uncondEmbeds != nullptr)
     {
         prefillUnd(*uncondEmbeds, mUndKUncond, mUndVUncond, stream);
-        return mPolicyRunner->generate(condLatent, mUndK, mUndV, mUndKUncond, mUndVUncond, stream);
+        return mPolicyRunner->generate(condLatent, mUndK, mUndV, mUndKUncond, mUndVUncond, currentState, stream);
     }
     if (mGuidance != 1.0F)
     {
@@ -275,7 +275,7 @@ std::vector<float> Cosmos3Runtime::generatePolicy(
         }
     }
     // Non-CFG path: bind empty uncond K/V sets to the const& parameters (no persistent buffer needed).
-    return mPolicyRunner->generate(condLatent, mUndK, mUndV, {}, {}, stream);
+    return mPolicyRunner->generate(condLatent, mUndK, mUndV, {}, {}, currentState, stream);
 }
 
 } // namespace cosmos3

@@ -117,9 +117,17 @@ void validateSpecDeploymentTuple(DeploymentConfig const& deployment)
 
 ContextCacheDeploymentProfile validateContextCacheDeployment(DeploymentConfig const& deployment)
 {
-    ELLM_CHECK(!deployment.base.isDiffusionBackbone,
-        "Block Diffusion context reuse is outside the current context-reuse support boundary.");
     validateStateContract(deployment.base, "base engine");
+
+    if (deployment.base.isDiffusionBackbone)
+    {
+        ELLM_CHECK(deployment.base.specDecodeType == SpecDecodeMode::kNONE && !deployment.base.isSpecDecodeBase
+                && !deployment.draft.has_value() && !deployment.specConfig.has_value(),
+            "DiffusionGemma context reuse supports only a non-speculative prompt prefill deployment.");
+        ELLM_CHECK(deployment.base.numAttentionLayers > 0 && deployment.base.numLinearAttnLayers == 0,
+            "DiffusionGemma context reuse supports only page-backed attention KV state.");
+        return ContextCacheDeploymentProfile{ContextCacheModelStateKind::kAttentionOnly, std::nullopt};
+    }
 
     if (deployment.base.specDecodeType == SpecDecodeMode::kNONE)
     {

@@ -19,6 +19,7 @@
 
 #include "cuteDslGDNRunner.h"
 #include "gdnKernelUtils.cuh"
+#include "gdnPdlConfig.h"
 
 #include "common/cudaUtils.h"
 #include "common/logger.h"
@@ -104,35 +105,61 @@ bool CuteDslGDNRunner::canImplement(int32_t kDim, int32_t vDim, int32_t smVersio
     return (smVersion >= 80) && (kDim == 128) && (vDim == 128);
 }
 
-bool CuteDslGDNRunner::ensureKernelModules(GDNParams const& params, cudaStream_t stream)
+GDNBackend CuteDslGDNRunner::selectBackend(GDNParams const& params)
 {
     if (params.use_mtp)
     {
-        return detail::ensureModuleLoaded<gdn_decode_mtp_cache_Kernel_Module_Load,
-            gdn_decode_mtp_cache_Kernel_Module_Unload>(sMTPDecodeCacheModule, "gdn_decode_mtp_cache", stream);
+        return GDNBackend::kDecodeMTP;
     }
-    if (params.seq_len == 1)
+    if (!params.use_prefill)
     {
-        return detail::ensureModuleLoaded<gdn_decode_Kernel_Module_Load, gdn_decode_Kernel_Module_Unload>(
-            sDecodeModule, "gdn_decode", stream);
+        return GDNBackend::kDecode;
     }
 #ifdef CUTE_DSL_GDN_BLACKWELL_GEFORCE_ENABLED
     if (isBlackwellGeforceSm(params.smVersion) && params.h > 0 && params.hv % params.h == 0)
     {
-        return detail::ensureModuleLoaded<gdn_prefill_blackwell_geforce_Kernel_Module_Load,
-            gdn_prefill_blackwell_geforce_Kernel_Module_Unload>(
-            sBlackwellGeforcePrefillModule, "gdn_prefill_blackwell_geforce", stream);
+        return GDNBackend::kPrefillBlackwellGeforce;
     }
 #endif
 #ifdef CUTE_DSL_GDN_BLACKWELL_ENABLED
     if (isBlackwellSm(params.smVersion))
     {
-        return detail::ensureModuleLoaded<gdn_prefill_blackwell_Kernel_Module_Load,
-            gdn_prefill_blackwell_Kernel_Module_Unload>(sBlackwellPrefillModule, "gdn_prefill_blackwell", stream);
+        return GDNBackend::kPrefillBlackwell;
     }
 #endif
-    return detail::ensureModuleLoaded<gdn_prefill_Kernel_Module_Load, gdn_prefill_Kernel_Module_Unload>(
-        sPrefillModule, "gdn_prefill", stream);
+    return GDNBackend::kPrefill;
+}
+
+bool CuteDslGDNRunner::ensureKernelModules(GDNParams const& params, cudaStream_t stream)
+{
+    switch (selectBackend(params))
+    {
+    case GDNBackend::kDecodeMTP:
+        return detail::ensureModuleLoaded<gdn_decode_mtp_cache_Kernel_Module_Load,
+            gdn_decode_mtp_cache_Kernel_Module_Unload>(sMTPDecodeCacheModule, "gdn_decode_mtp_cache", stream);
+    case GDNBackend::kDecode:
+        return detail::ensureModuleLoaded<gdn_decode_Kernel_Module_Load, gdn_decode_Kernel_Module_Unload>(
+            sDecodeModule, "gdn_decode", stream);
+    case GDNBackend::kPrefillBlackwellGeforce:
+#ifdef CUTE_DSL_GDN_BLACKWELL_GEFORCE_ENABLED
+        return detail::ensureModuleLoaded<gdn_prefill_blackwell_geforce_Kernel_Module_Load,
+            gdn_prefill_blackwell_geforce_Kernel_Module_Unload>(
+            sBlackwellGeforcePrefillModule, "gdn_prefill_blackwell_geforce", stream);
+#else
+        return false;
+#endif
+    case GDNBackend::kPrefillBlackwell:
+#ifdef CUTE_DSL_GDN_BLACKWELL_ENABLED
+        return detail::ensureModuleLoaded<gdn_prefill_blackwell_Kernel_Module_Load,
+            gdn_prefill_blackwell_Kernel_Module_Unload>(sBlackwellPrefillModule, "gdn_prefill_blackwell", stream);
+#else
+        return false;
+#endif
+    case GDNBackend::kPrefill:
+        return detail::ensureModuleLoaded<gdn_prefill_Kernel_Module_Load, gdn_prefill_Kernel_Module_Unload>(
+            sPrefillModule, "gdn_prefill", stream);
+    }
+    return false;
 }
 
 int CuteDslGDNRunner::run(GDNParams const& params, cudaStream_t stream)
@@ -142,28 +169,25 @@ int CuteDslGDNRunner::run(GDNParams const& params, cudaStream_t stream)
         return -1;
     }
 
-    // MTP decode takes priority: handles any seq_len for speculative-decoding verification.
-    if (params.use_mtp)
+    switch (selectBackend(params))
     {
-        return runDecodeMTP(params, stream);
-    }
-    if (params.seq_len == 1)
-    {
-        return runDecode(params, stream);
-    }
+    case GDNBackend::kDecodeMTP: return runDecodeMTP(params, stream);
+    case GDNBackend::kDecode: return runDecode(params, stream);
+    case GDNBackend::kPrefillBlackwellGeforce:
 #ifdef CUTE_DSL_GDN_BLACKWELL_GEFORCE_ENABLED
-    if (isBlackwellGeforceSm(params.smVersion) && params.h > 0 && params.hv % params.h == 0)
-    {
         return runPrefillBlackwellGeforce(params, stream);
-    }
+#else
+        return -1;
 #endif
+    case GDNBackend::kPrefillBlackwell:
 #ifdef CUTE_DSL_GDN_BLACKWELL_ENABLED
-    if (isBlackwellSm(params.smVersion))
-    {
         return runPrefillBlackwell(params, stream);
-    }
+#else
+        return -1;
 #endif
-    return runPrefill(params, stream);
+    case GDNBackend::kPrefill: return runPrefill(params, stream);
+    }
+    return -1;
 }
 
 int CuteDslGDNRunner::runDecode(GDNParams const& params, cudaStream_t stream)
@@ -203,18 +227,23 @@ int CuteDslGDNRunner::runDecode(GDNParams const& params, cudaStream_t stream)
 
     gdn_decode_Tensor_h0_source_t h0_sourceTensor{};
     h0_sourceTensor.data = params.h0_source;
-    h0_sourceTensor.dynamic_shapes[0] = n;
+    h0_sourceTensor.dynamic_shapes[0] = params.state_pool_rows > 0 ? params.state_pool_rows : n;
     h0_sourceTensor.dynamic_shapes[1] = params.hv;
     h0_sourceTensor.dynamic_strides[0] = static_cast<int64_t>(params.hv) * params.k_dim * params.v_dim;
 
     gdn_decode_Tensor_context_lengths_t contextLengthsTensor{};
     SET_1D_TENSOR(contextLengthsTensor, params.context_lengths, n);
 
+    gdn_decode_Tensor_state_indices_t stateIndicesTensor{};
+    SET_1D_TENSOR(
+        stateIndicesTensor, params.state_indices != nullptr ? params.state_indices : params.context_lengths, n);
+
     gdn_decode_Tensor_o_t oTensor{};
     SET_4D_TENSOR(oTensor, params.o, n, 1, hv, v);
 
     return cute_dsl_gdn_decode_wrapper(&sDecodeModule.module, &qTensor, &kTensor, &vTensor, &aTensor, &bTensor,
-        &A_logTensor, &dt_biasTensor, &h0_sourceTensor, &contextLengthsTensor, &oTensor, stream);
+        &A_logTensor, &dt_biasTensor, &h0_sourceTensor, &stateIndicesTensor, params.state_indices != nullptr,
+        &contextLengthsTensor, &oTensor, stream);
 }
 
 int CuteDslGDNRunner::runPrefill(GDNParams const& params, cudaStream_t stream)
@@ -249,18 +278,23 @@ int CuteDslGDNRunner::runPrefill(GDNParams const& params, cudaStream_t stream)
 
     gdn_prefill_Tensor_h0_source_t h0_sourceTensor{};
     h0_sourceTensor.data = params.h0_source;
-    h0_sourceTensor.dynamic_shapes[0] = n;
+    h0_sourceTensor.dynamic_shapes[0] = params.state_pool_rows > 0 ? params.state_pool_rows : n;
     h0_sourceTensor.dynamic_shapes[1] = params.hv;
     h0_sourceTensor.dynamic_strides[0] = static_cast<int64_t>(params.hv) * params.k_dim * params.v_dim;
 
     gdn_prefill_Tensor_context_lengths_t contextLengthsTensor{};
     SET_1D_TENSOR(contextLengthsTensor, params.context_lengths, n);
 
+    gdn_prefill_Tensor_state_indices_t stateIndicesTensor{};
+    SET_1D_TENSOR(
+        stateIndicesTensor, params.state_indices != nullptr ? params.state_indices : params.context_lengths, n);
+
     gdn_prefill_Tensor_o_t oTensor{};
     SET_4D_TENSOR(oTensor, params.o, n, seq_len, hv, v);
 
     return cute_dsl_gdn_prefill_wrapper(&sPrefillModule.module, &qTensor, &kTensor, &vTensor, &aTensor, &bTensor,
-        &A_logTensor, &dt_biasTensor, &h0_sourceTensor, &contextLengthsTensor, &oTensor, seq_len, stream);
+        &A_logTensor, &dt_biasTensor, &h0_sourceTensor, &stateIndicesTensor, params.state_indices != nullptr,
+        &contextLengthsTensor, &oTensor, seq_len, stream);
 }
 
 int CuteDslGDNRunner::runPrefillBlackwell(GDNParams const& params, cudaStream_t stream)
@@ -316,8 +350,16 @@ int CuteDslGDNRunner::runPrefillBlackwell(GDNParams const& params, cudaStream_t 
 
     int32_t const numStateBlocks = n * hv;
 
-    // Step 1: Transpose initial state from K-major to V-major into scratch buffer.
-    launchGdnStateTranspose(params.h0_source, params.h0_scratch, numStateBlocks, k, stream);
+    // Step 1: Gather selected resident rows, if needed, and transpose K-major state into dense V-major scratch.
+    if (params.state_indices != nullptr)
+    {
+        launchGdnStateGatherTranspose(
+            params.h0_source, params.h0_scratch, params.state_indices, n, params.state_pool_rows, hv, k, stream);
+    }
+    else
+    {
+        launchGdnStateTranspose(params.h0_source, params.h0_scratch, numStateBlocks, k, stream);
+    }
 
     gdn_prefill_blackwell_Tensor_h0_in_t h0InTensor{};
     h0InTensor.data = params.h0_scratch; // V-major initial state
@@ -327,9 +369,13 @@ int CuteDslGDNRunner::runPrefillBlackwell(GDNParams const& params, cudaStream_t 
 
     gdn_prefill_blackwell_Tensor_h0_out_t h0OutTensor{};
     h0OutTensor.data = params.h0_source; // V-major output written here
-    h0OutTensor.dynamic_shapes[0] = n;
+    h0OutTensor.dynamic_shapes[0] = params.state_pool_rows > 0 ? params.state_pool_rows : n;
     h0OutTensor.dynamic_shapes[1] = hv;
     h0OutTensor.dynamic_strides[0] = static_cast<int64_t>(hv) * k * v;
+
+    gdn_prefill_blackwell_Tensor_state_indices_t stateIndicesTensor{};
+    SET_1D_TENSOR(
+        stateIndicesTensor, params.state_indices != nullptr ? params.state_indices : params.context_lengths, n);
 
     // cu_seqlens [N+1]: prefix-sum of context_lengths, computed by the plugin before launch.
     gdn_prefill_blackwell_Tensor_cu_seqlens_t cuSeqLensTensor{};
@@ -340,20 +386,28 @@ int CuteDslGDNRunner::runPrefillBlackwell(GDNParams const& params, cudaStream_t 
 
     // Step 2: Run the Blackwell prefill kernel.
     int32_t const result = cute_dsl_gdn_prefill_blackwell_wrapper(&sBlackwellPrefillModule.module, &qTensor, &kTensor,
-        &vTensor, &aTensor, &bTensor, &A_logTensor, &dt_biasTensor, &h0InTensor, &h0OutTensor, &oTensor,
-        &cuSeqLensTensor, getDeviceMultiProcessorCount(), stream);
+        &vTensor, &aTensor, &bTensor, &A_logTensor, &dt_biasTensor, &h0InTensor, &h0OutTensor, &stateIndicesTensor,
+        params.state_indices != nullptr, &oTensor, &cuSeqLensTensor, getDeviceMultiProcessorCount(), stream);
     if (result != 0)
     {
         return result;
     }
 
-    // Step 3: Transpose V-major output state back to K-major into scratch.
-    launchGdnStateTranspose(params.h0_source, params.h0_scratch, numStateBlocks, k, stream);
-
-    // Step 4: Copy K-major state from scratch back to h0_source (stream-ordered).
-    cudaMemcpyAsync(params.h0_source, params.h0_scratch, h0ScratchBytes, cudaMemcpyDeviceToDevice, stream);
+    if (params.state_indices != nullptr)
+    {
+        launchGdnStateIndexedTransposeInPlace(
+            params.h0_source, params.state_indices, n, params.state_pool_rows, hv, k, stream);
+    }
+    else
+    {
+        launchGdnStateTranspose(params.h0_source, params.h0_scratch, numStateBlocks, k, stream);
+        CUDA_CHECK(
+            cudaMemcpyAsync(params.h0_source, params.h0_scratch, h0ScratchBytes, cudaMemcpyDeviceToDevice, stream));
+    }
     return 0;
 #else
+    static_cast<void>(params);
+    static_cast<void>(stream);
     LOG_ERROR("Blackwell GDN prefill not compiled in this build.");
     return -1;
 #endif
@@ -382,9 +436,23 @@ int CuteDslGDNRunner::runPrefillBlackwellGeforce(GDNParams const& params, cudaSt
         return -1;
     }
 
+    if (params.state_indices != nullptr && params.state_pool_rows <= 0)
+    {
+        LOG_ERROR("GDN Blackwell GeForce indexed prefill requires a non-empty resident state pool.");
+        return -1;
+    }
+
     // Match the existing optimized Blackwell path: all consumers must observe
-    // the same normalized Q/K values.
-    launchGdnL2NormQK(params.q, params.k, n, seqLen, h, k, stream);
+    // the same normalized Q/K values. The effective PDL value is shared by the
+    // dual-role combined Q/K and generated fused GDN launches.
+    int32_t const enablePdl = useGdnPdl(params.enablePdl, seqLen, params.smVersion) ? 1 : 0;
+    cudaError_t const qkNormResult
+        = launchGdnL2NormQKFusedSm12x(params.q, params.k, n, seqLen, h, k, enablePdl != 0, stream);
+    if (qkNormResult != cudaSuccess)
+    {
+        LOG_ERROR("GDN Blackwell GeForce Q/K normalization launch failed: %s", cudaGetErrorString(qkNormResult));
+        return -1;
+    }
 
     gdn_prefill_blackwell_geforce_Tensor_q_t qTensor{};
     SET_4D_TENSOR(qTensor, params.q, n, seqLen, h, k);
@@ -402,20 +470,23 @@ int CuteDslGDNRunner::runPrefillBlackwellGeforce(GDNParams const& params, cudaSt
     gdn_prefill_blackwell_geforce_Tensor_dt_bias_t dtBiasTensor{};
     SET_1D_TENSOR(dtBiasTensor, params.dt_bias, hv);
 
-    // This kernel is in-place safe: each CTA exclusively owns one [n, hv]
-    // state slice, loads it into registers, and writes it back only after
-    // processing all sequence blocks.
+    // Active resident rows are unique, so each CTA exclusively owns one
+    // state slice until its register-resident update is written back.
     gdn_prefill_blackwell_geforce_Tensor_h0_in_t h0InTensor{};
     h0InTensor.data = params.h0_source;
-    h0InTensor.dynamic_shapes[0] = n;
+    h0InTensor.dynamic_shapes[0] = params.state_pool_rows > 0 ? params.state_pool_rows : n;
     h0InTensor.dynamic_shapes[1] = hv;
     h0InTensor.dynamic_strides[0] = static_cast<int64_t>(hv) * k * v;
 
     gdn_prefill_blackwell_geforce_Tensor_h0_out_t h0OutTensor{};
     h0OutTensor.data = params.h0_source;
-    h0OutTensor.dynamic_shapes[0] = n;
+    h0OutTensor.dynamic_shapes[0] = params.state_pool_rows > 0 ? params.state_pool_rows : n;
     h0OutTensor.dynamic_shapes[1] = hv;
     h0OutTensor.dynamic_strides[0] = static_cast<int64_t>(hv) * k * v;
+
+    gdn_prefill_blackwell_geforce_Tensor_state_indices_t stateIndicesTensor{};
+    SET_1D_TENSOR(
+        stateIndicesTensor, params.state_indices != nullptr ? params.state_indices : params.context_lengths, n);
 
     gdn_prefill_blackwell_geforce_Tensor_context_lengths_t contextLengthsTensor{};
     SET_1D_TENSOR(contextLengthsTensor, params.context_lengths, n);
@@ -427,9 +498,11 @@ int CuteDslGDNRunner::runPrefillBlackwellGeforce(GDNParams const& params, cudaSt
         kBlackwellGeforceMaxSMCount * kBlackwellGeforceTensorMapDescriptorBytes);
 
     return cute_dsl_gdn_prefill_blackwell_geforce_wrapper(&sBlackwellGeforcePrefillModule.module, &qTensor, &kTensor,
-        &vTensor, &aTensor, &bTensor, &ALogTensor, &dtBiasTensor, &h0InTensor, &h0OutTensor, &contextLengthsTensor,
-        &oTensor, &tensormapScratchTensor, stream);
+        &vTensor, &aTensor, &bTensor, &ALogTensor, &dtBiasTensor, &h0InTensor, &h0OutTensor, &stateIndicesTensor,
+        params.state_indices != nullptr, &contextLengthsTensor, &oTensor, &tensormapScratchTensor, enablePdl, stream);
 #else
+    static_cast<void>(params);
+    static_cast<void>(stream);
     LOG_ERROR("Blackwell GeForce GDN prefill not compiled in this build.");
     return -1;
 #endif

@@ -21,6 +21,7 @@ from ...core import contracts
 from ...core.artifacts.runtime_artifacts import write_runtime_artifacts
 from ...core.artifacts.tensors import save_safetensors
 from ...core.safetensors_np import SafetensorsStore
+from ...weight_packing.nvfp4 import decode_modelopt_nvfp4
 from . import weights
 
 _HEAD_KEYS = {
@@ -29,6 +30,39 @@ _HEAD_KEYS = {
     "confidence_weight": "confidence_head.proj.weight",
     "confidence_bias": "confidence_head.proj.bias",
 }
+
+_NVFP4_HEAD_SCALES = {
+    "markov_w2": ("markov_head.markov_w2.weight_scale",
+                  "markov_head.markov_w2.weight_scale_2"),
+}
+
+
+def _load_head_tensor(store: SafetensorsStore, output_name: str,
+                      checkpoint_name: str, group_size: int):
+    scale_keys = _NVFP4_HEAD_SCALES.get(output_name)
+    has_scales = scale_keys is not None and all(
+        store.has(key) for key in scale_keys)
+    checkpoint_dtype = store.dtype(checkpoint_name)
+    if has_scales:
+        scale_key, scale_2_key = scale_keys
+        packed = store.get_packed_fp4(checkpoint_name)
+        dense = decode_modelopt_nvfp4(packed, store.get_fp8_bytes(scale_key),
+                                      store.get_scalar_f32(scale_2_key),
+                                      group_size)
+        return dense.astype("float16"), {
+            "nvfp4_dequantized": True,
+            "group_size": group_size,
+            "packed_shape": [int(dimension) for dimension in packed.shape],
+            "checkpoint_dtype": checkpoint_dtype,
+        }
+    if checkpoint_dtype in ("F4", "F4_E2M1", "I8", "U8"):
+        expected = " / ".join(scale_keys or ())
+        raise KeyError(
+            f"DSpark head tensor {checkpoint_name!r} is packed but its "
+            f"NVFP4 scale tensors are missing: {expected}")
+    return store.get_f16(checkpoint_name), {
+        "checkpoint_dtype": checkpoint_dtype,
+    }
 
 
 def _write_head_sidecars(config, args, engine_dir: str) -> None:
@@ -48,7 +82,9 @@ def _write_head_sidecars(config, args, engine_dir: str) -> None:
                         "DSpark draft checkpoint is missing required tensor "
                         f"{checkpoint_name!r}")
                 continue
-            tensor = store.get_f16(checkpoint_name)
+            group_size = config.quant.module_group_size(checkpoint_name)
+            tensor, tensor_metadata = _load_head_tensor(
+                store, output_name, checkpoint_name, group_size)
             if output_name == "confidence_weight" and tensor.ndim == 2:
                 if tensor.shape[0] != 1:
                     raise ValueError(
@@ -59,6 +95,7 @@ def _write_head_sidecars(config, args, engine_dir: str) -> None:
                 "checkpoint_key": checkpoint_name,
                 "shape": [int(dimension) for dimension in tensor.shape],
                 "dtype": "float16",
+                **tensor_metadata,
             }
 
     save_safetensors(os.path.join(output_dir, "dspark_heads.safetensors"),

@@ -21,6 +21,7 @@
 #include "common/logger.h"
 #include "runtime/llmRankRuntime.h"
 #include "runtime/multiDevice/runtimeCoordinator.h"
+#include "runtime/runtimeStepper.h"
 
 #include <exception>
 #include <utility>
@@ -43,8 +44,8 @@ LLMInferenceRuntime::LLMInferenceRuntime(std::string const& engineDir, std::stri
     config.contextCacheConfig = contextCacheConfig;
     config.checkpointDir = checkpointDir;
     config.draftCheckpointDir = draftCheckpointDir;
-    auto artifacts = std::make_unique<ModelArtifacts>(
-        ModelArtifacts::loadFromEngineDir(engineDir, draftingConfig, checkpointDir, draftCheckpointDir, stream));
+    auto artifacts = std::make_unique<ModelArtifacts>(ModelArtifacts::loadFromEngineDir(
+        engineDir, draftingConfig, checkpointDir, draftCheckpointDir, contextCacheConfig.enabled, stream));
     initializeCoordinator(engineDir, multimodalEngineDir, loraWeightsMap, std::move(config), std::move(artifacts));
 }
 
@@ -58,8 +59,8 @@ LLMInferenceRuntime::LLMInferenceRuntime(std::string const& engineDir, std::stri
     config.ownsLocalStreams = false;
     config.contextCacheConfig = contextCacheConfig;
     config.checkpointDir = checkpointDir;
-    auto artifacts = std::make_unique<ModelArtifacts>(
-        ModelArtifacts::loadFromEngineDir(engineDir, std::nullopt, checkpointDir, "", stream));
+    auto artifacts = std::make_unique<ModelArtifacts>(ModelArtifacts::loadFromEngineDir(
+        engineDir, std::nullopt, checkpointDir, "", contextCacheConfig.enabled, stream));
     initializeCoordinator(engineDir, multimodalEngineDir, loraWeightsMap, std::move(config), std::move(artifacts));
 }
 
@@ -141,12 +142,22 @@ bool LLMInferenceRuntime::captureDecodingCUDAGraph(cudaStream_t stream)
     }
 }
 
+bool LLMInferenceRuntime::supportsBoundaryScheduling() const noexcept
+{
+    return mCoordinator != nullptr && mCoordinator->supportsBoundaryScheduling();
+}
+
+int32_t LLMInferenceRuntime::worldSize() const noexcept
+{
+    return mCoordinator != nullptr ? mCoordinator->worldSize() : 1;
+}
+
 bool LLMInferenceRuntime::handleRequest(LLMGenerationRequest const& request, LLMGenerationResponse& response,
-    cudaStream_t stream, bool outputThinkerEmbeddings)
+    cudaStream_t stream, bool outputThinkerEmbeddings, GenerationBoundaryHook const& boundaryHook)
 {
     ELLM_CHECK(mCoordinator != nullptr, "Runtime coordinator is not initialized.");
     bool const dispatched
-        = mCoordinator->dispatchRequest(request, getProfilingEnabled(), outputThinkerEmbeddings, stream);
+        = mCoordinator->dispatchRequest(request, getProfilingEnabled(), outputThinkerEmbeddings, stream, boundaryHook);
     bool const succeeded = dispatched && mCoordinator->localRanksSucceeded();
     response = LLMGenerationResponse{};
     if (mCoordinator->ownsGlobalRank(0))
@@ -156,9 +167,23 @@ bool LLMInferenceRuntime::handleRequest(LLMGenerationRequest const& request, LLM
     return succeeded;
 }
 
+bool LLMInferenceRuntime::supportsSteppedExecution() const noexcept
+{
+    return mCoordinator != nullptr && mCoordinator->supportsSteppedExecution();
+}
+
+std::unique_ptr<SteppedExecution> LLMInferenceRuntime::beginStepped(
+    LLMGenerationRequest const& request, RequestId requestId, cudaStream_t stream)
+{
+    ELLM_CHECK(mCoordinator != nullptr, "Runtime coordinator is not initialized.");
+    ELLM_CHECK(requestId != 0, "Stepped execution requires a nonzero request ID.");
+    return mCoordinator->beginStepped(request, requestId, getProfilingEnabled(), stream);
+}
+
 std::vector<int32_t> LLMInferenceRuntime::countPromptTokens(LLMGenerationRequest const& request) const
 {
-    return rootRuntime().countPromptTokens(request);
+    ELLM_CHECK(mCoordinator != nullptr, "Runtime coordinator is not initialized.");
+    return mCoordinator->countPromptTokens(request);
 }
 
 bool LLMInferenceRuntime::genAndSaveSystemPromptKVCache(
@@ -235,6 +260,16 @@ std::vector<std::vector<int32_t>> const& LLMInferenceRuntime::getBaseModelInputT
 bool LLMInferenceRuntime::hasDraftModel() const
 {
     return rootRuntime().hasDraftModel();
+}
+
+bool LLMInferenceRuntime::supportsSeatedAdmission() const
+{
+    return rootRuntime().supportsSeatedAdmission();
+}
+
+int32_t LLMInferenceRuntime::maxBatchSize() const
+{
+    return rootRuntime().maxBatchSize();
 }
 
 bool LLMInferenceRuntime::ownsGlobalRank(int32_t globalRank) const noexcept

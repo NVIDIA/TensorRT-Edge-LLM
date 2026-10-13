@@ -21,7 +21,8 @@ import subprocess
 import sys
 from typing import Callable, Dict, Optional, Sequence
 
-from wheellib import assemble, base, build, cutedsl, payload, source, verify
+from wheellib import (assemble, base, build, cutedsl, oss_cutedsl, payload,
+                      source, verify)
 from wheellib.config import REPO_ROOT, load_matrix
 
 
@@ -38,6 +39,7 @@ def main(values: Optional[Sequence[str]] = None) -> int:
         "build-wheel": build.main,
         "build-base": base.main,
         "prepare-cutedsl": cutedsl.main,
+        "build-oss-cutedsl": oss_cutedsl.main,
         "build-payload": payload.main,
         "verify-payload": verify.main,
         "assemble": assemble.main,

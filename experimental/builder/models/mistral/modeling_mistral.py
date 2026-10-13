@@ -21,6 +21,7 @@ import tensorrt as trt
 from ...ops import (BuildContext, DecoderAttention, DecoderLayer, DecoderModel,
                     Linear, NetworkModule)
 from ...ops import functional as F
+from ...ops.ragged import RaggedDecoderInputs, add_ragged_decoder_inputs
 
 
 class MistralAttention(DecoderAttention):
@@ -67,7 +68,7 @@ class MistralForCausalLM(NetworkModule):
         io = {
             "inputs_embeds":
             self.add_input("inputs_embeds", trt.float16,
-                           (-1, -1, cfg.hidden_size)),
+                           (-1, cfg.hidden_size)),
             "past_key_values": [
                 self.add_input(f"past_key_values_{index}", kv_dtype,
                                (2, -1, F.KV_PAGE_SIZE, cfg.num_key_value_heads,
@@ -76,39 +77,30 @@ class MistralForCausalLM(NetworkModule):
             ],
             "rope_rotary_cos_sin":
             self.add_input("rope_rotary_cos_sin", trt.float32,
-                           (-1, -1, cfg.rotary_dim)),
-            "context_lengths":
-            self.add_input("context_lengths", trt.int32, (-1, )),
-            "kvcache_start_index":
-            self.add_input("kvcache_start_index", trt.int32, (-1, )),
-            "kv_page_table":
-            self.add_input("kv_page_table", trt.int32, (-1, 2, -1)),
-            "last_token_ids":
-            self.add_input("last_token_ids", trt.int64,
-                           (-1, -1) if cfg.engine_role == "base" else (-1, 1)),
+                           (-1, cfg.rotary_dim)),
         }
+        io.update(add_ragged_decoder_inputs(self.add_input).as_dict())
         if cfg.engine_role == "base":
-            io["attention_pos_id"] = self.add_input("attention_pos_id",
-                                                    trt.int32, (-1, -1))
-            io["attention_mask"] = self.add_input("attention_mask", trt.int32,
-                                                  (-1, -1, -1))
+            io["attention_pos_id"] = self.add_input("attention_position_ids",
+                                                    trt.int32, (-1, ))
+            io["attention_mask"] = self.add_input("packed_attention_mask",
+                                                  trt.int32, (-1, -1))
         else:
             io["attention_pos_id"] = None
             io["attention_mask"] = None
         return io
 
     def forward(self, **io):
+        ragged = RaggedDecoderInputs.from_dict(io)
         outputs = {}
         hidden_states, present_key_values, all_hidden_states = self.model(
             io["inputs_embeds"],
             io["past_key_values"],
             io["rope_rotary_cos_sin"],
-            io["context_lengths"],
-            io["kvcache_start_index"],
-            io["kv_page_table"],
+            ragged,
             attention_mask=io["attention_mask"],
             attention_pos_id=io["attention_pos_id"])
-        selected = F.gather_last_tokens(hidden_states, io["last_token_ids"])
+        selected = F.gather_token_rows(hidden_states, ragged.logits_indices)
         outputs["logits"] = F.cast(self.lm_head(selected), trt.float32)
         if self.cfg.engine_role == "base":
             outputs["hidden_states"] = F.hidden_state_feedback(

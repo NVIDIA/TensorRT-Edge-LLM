@@ -70,7 +70,8 @@ quantized checkpoint.
 - EAGLE3, MTP, DFlash, and DSpark speculative decoding on supported models
 - Image and audio encoders, speech generation, ASR, and action generation
 - Model-specific runtimes for pipelines whose I/O contract is not LLM-shaped
-- Experimental Python API and OpenAI-compatible server over the C++ runtime
+- Experimental Python API and OpenAI-compatible server over the C++ runtime,
+  with opt-in [In-Flight Batching](user_guide/features/in-flight-batching.md)
 
 Feature availability depends on the model and deployment.
 

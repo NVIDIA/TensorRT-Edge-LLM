@@ -22,6 +22,7 @@ from ...core import config as core_config
 from ...ops import (GatedMLP, Linear, Module, NetworkModule, RMSNorm,
                     TreeAttention)
 from ...ops import functional as F
+from ...ops.ragged import RaggedDecoderInputs, add_ragged_decoder_inputs
 from .. import registry as model_registry
 
 
@@ -38,13 +39,12 @@ class Eagle3DecoderLayer(Module):
         self.attention = TreeAttention(ctx, self.key("self_attn"))
         self.mlp = GatedMLP(ctx, self.key("mlp"))
 
-    def forward(self, hidden, embeds, past, rope, context_lengths, cache_start,
-                kv_page_table, attention_mask, attention_pos_id):
+    def forward(self, hidden, embeds, past, rope, ragged, attention_mask,
+                attention_pos_id):
         attention_input = F.concatenate(
-            (self.input_norm(embeds), self.hidden_norm(hidden)), 2)
+            (self.input_norm(embeds), self.hidden_norm(hidden)), 1)
         attention, present = self.attention(attention_input, past, rope,
-                                            context_lengths, cache_start,
-                                            kv_page_table, attention_mask,
+                                            ragged, attention_mask,
                                             attention_pos_id)
         hidden = hidden + attention
         feed_forward = self.mlp(self.post_norm(hidden))
@@ -102,45 +102,42 @@ class Eagle3DraftModel(NetworkModule):
 
     def input_tensors(self) -> Dict[str, object]:
         cfg = self.cfg
+        kv_dtype = (trt.DataType.FP8
+                    if cfg.kv_cache_quant == "fp8" else trt.float16)
         target_hidden = int(cfg.target_hidden_size or cfg.raw_component.get(
             "eagle3_target_hidden_size", cfg.hidden_size))
         target_layers = len(cfg.eagle3_target_layer_ids)
         if target_layers <= 0:
             raise ValueError("EAGLE3 draft requires target-layer metadata")
-        return {
+        io = {
             "inputs_embeds":
             self.add_input("inputs_embeds", trt.float16,
-                           (-1, -1, cfg.hidden_size)),
+                           (-1, cfg.hidden_size)),
             "past_key_values": [
-                self.add_input(f"past_key_values_{index}", trt.float16,
+                self.add_input(f"past_key_values_{index}", kv_dtype,
                                (2, -1, F.KV_PAGE_SIZE, cfg.num_key_value_heads,
                                 cfg.head_dim))
                 for index in range(cfg.num_hidden_layers)
             ],
             "rope":
             self.add_input("rope_rotary_cos_sin", trt.float32,
-                           (-1, -1, cfg.rotary_dim)),
-            "context_lengths":
-            self.add_input("context_lengths", trt.int32, (-1, )),
-            "cache_start":
-            self.add_input("kvcache_start_index", trt.int32, (-1, )),
-            "kv_page_table":
-            self.add_input("kv_page_table", trt.int32, (-1, 2, -1)),
+                           (-1, cfg.rotary_dim)),
             "base_hidden":
             self.add_input("hidden_states_input", trt.float16,
-                           (-1, -1, target_hidden * target_layers)),
+                           (-1, target_hidden * target_layers)),
             "draft_hidden":
             self.add_input("hidden_states_from_draft", trt.float16,
-                           (-1, -1, cfg.hidden_size)),
+                           (-1, cfg.hidden_size)),
             "attention_pos_id":
-            self.add_input("attention_pos_id", trt.int32, (-1, -1)),
+            self.add_input("attention_position_ids", trt.int32, (-1, )),
             "attention_mask":
-            self.add_input("attention_mask", trt.int32, (-1, -1, -1)),
-            "last_token_ids":
-            self.add_input("last_token_ids", trt.int64, (-1, -1)),
+            self.add_input("packed_attention_mask", trt.int32, (-1, -1)),
         }
+        io.update(add_ragged_decoder_inputs(self.add_input).as_dict())
+        return io
 
     def forward(self, **io):
+        ragged = RaggedDecoderInputs.from_dict(io)
         outputs = {}
         hidden = self.fc(io["base_hidden"])
         hidden = hidden + io["draft_hidden"]
@@ -148,13 +145,12 @@ class Eagle3DraftModel(NetworkModule):
         for index, layer in enumerate(self.layers):
             hidden, cache = layer(hidden, io["inputs_embeds"],
                                   io["past_key_values"][index], io["rope"],
-                                  io["context_lengths"], io["cache_start"],
-                                  io["kv_page_table"], io["attention_mask"],
+                                  ragged, io["attention_mask"],
                                   io["attention_pos_id"])
             present.append(cache)
-        selected = F.gather_last_tokens(hidden, io["last_token_ids"])
+        selected = F.gather_token_rows(hidden, ragged.logits_indices)
         logits = self.lm_head(self.norm(selected)).cast(trt.float32)
-        outputs["logits"] = logits.log_softmax(2)
+        outputs["logits"] = logits.log_softmax(1)
         outputs["hidden_states"] = selected
         for index, tensor in enumerate(present):
             outputs[f"present_key_values_{index}"] = tensor

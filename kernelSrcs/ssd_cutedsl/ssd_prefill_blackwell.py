@@ -40,6 +40,7 @@ import cutlass.cute as cute
 import cutlass.pipeline as pipeline
 import cutlass.utils as utils
 import cutlass.utils.blackwell_helpers as sm100_utils
+from cutedsl_utils import aot_placeholders
 from cutlass.base_dsl.typing import Uint128
 from cutlass.cute.nvgpu import cpasync, tcgen05
 
@@ -4699,58 +4700,54 @@ def _compile_ssd_blackwell_aot(L, D, N, nheads, ngroups, batch, nchunks,
             grid=(n_c, n_eh, n_batch), block=[TRANSPOSE_THREADS, 1, 1],
             smem=smem_bytes, stream=stream)
 
-    # Create row-major CuPy placeholders (GDN pattern)
-    from cutlass.cute.runtime import from_dlpack as _fdl
-
-    def _mark_nd(arr, n_dynamic):
-        ct = _fdl(arr, assumed_align=16)
-        ndim = len(arr.shape)
+    # Create row-major storage-free placeholders (GDN pattern).
+    def _mark_nd(dtype, shape, n_dynamic):
+        ct = aot_placeholders.make_compact_tensor(dtype, shape, assumed_align=16)
+        ndim = len(shape)
         ct = ct.mark_layout_dynamic(leading_dim=ndim - 1)
         so = tuple(range(ndim))
         for m in range(n_dynamic):
             ct = ct.mark_compact_shape_dynamic(mode=m, stride_order=so)
         return ct
 
+    def _mark_1d(dtype, shape):
+        return aot_placeholders.make_compact_tensor(
+            dtype, shape, assumed_align=16).mark_compact_shape_dynamic(
+                mode=0, stride_order=(0,))
+
     seq_len_ph = nchunks * L
     # Primary inputs (plugin contract: fp16 x/B/C/D/state, fp32 A/dt_bias)
-    ph_x = _mark_nd(cp.zeros((batch, seq_len_ph, nheads, logical_D), dtype=cp.float16), 3)
-    ph_dt = _mark_nd(cp.zeros((batch, seq_len_ph, nheads), dtype=cp.float16), 2)
-    ph_A = _fdl(cp.zeros((nheads,), dtype=cp.float32), assumed_align=16)
-    ph_A = ph_A.mark_compact_shape_dynamic(mode=0, stride_order=(0,))
-    ph_B = _mark_nd(cp.zeros((batch, seq_len_ph, ngroups, N), dtype=cp.float16), 3)
-    ph_C = _mark_nd(cp.zeros((batch, seq_len_ph, ngroups, N), dtype=cp.float16), 3)
-    ph_Dvec = _fdl(cp.zeros((nheads,), dtype=cp.float16), assumed_align=16)
-    ph_Dvec = ph_Dvec.mark_compact_shape_dynamic(mode=0, stride_order=(0,))
-    ph_dtb = _fdl(cp.zeros((nheads,), dtype=cp.float16), assumed_align=16)
-    ph_dtb = ph_dtb.mark_compact_shape_dynamic(mode=0, stride_order=(0,))
-    ph_out = _mark_nd(cp.zeros((batch, seq_len_ph, nheads, logical_D), dtype=cp.float16), 3)
-    ph_state = _mark_nd(cp.zeros((batch, nheads, logical_D, N), dtype=cp.float16), 2)
+    ph_x = _mark_nd(cutlass.Float16, (batch, seq_len_ph, nheads, logical_D), 3)
+    ph_dt = _mark_nd(cutlass.Float16, (batch, seq_len_ph, nheads), 2)
+    ph_A = _mark_1d(cutlass.Float32, (nheads,))
+    ph_B = _mark_nd(cutlass.Float16, (batch, seq_len_ph, ngroups, N), 3)
+    ph_C = _mark_nd(cutlass.Float16, (batch, seq_len_ph, ngroups, N), 3)
+    ph_Dvec = _mark_1d(cutlass.Float16, (nheads,))
+    ph_dtb = _mark_1d(cutlass.Float16, (nheads,))
+    ph_out = _mark_nd(cutlass.Float16, (batch, seq_len_ph, nheads, logical_D), 3)
+    ph_state = _mark_nd(cutlass.Float16, (batch, nheads, logical_D, N), 2)
     # Workspace buffers: cumsum + dt_proc + y_ws ([B, C, EH, ...] row-major).
-    ph_cumsum = _mark_nd(cp.zeros((batch, nchunks, nheads, L), dtype=cp.float32), 3)
-    ph_dtproc = _mark_nd(cp.zeros((batch, nchunks, nheads, L), dtype=cp.float16), 3)
-    ph_y = _mark_nd(cp.zeros((batch, nchunks, nheads, logical_D, L), dtype=cp.float16), 4)
+    ph_cumsum = _mark_nd(cutlass.Float32, (batch, nchunks, nheads, L), 3)
+    ph_dtproc = _mark_nd(cutlass.Float16, (batch, nchunks, nheads, L), 3)
+    ph_y = _mark_nd(cutlass.Float16, (batch, nchunks, nheads, logical_D, L), 4)
 
     # Varlen metadata placeholders (always-varlen AOT mode)
     # Upper-bound logical chunks at batch * nchunks (one chunk per (batch, c) cell).
     n_logical_chunks_max = batch * nchunks
-    ph_seq_idx = _mark_nd(cp.zeros((batch, seq_len_ph), dtype=cp.int32), 1)
-    ph_chunk_indices = _fdl(cp.zeros((n_logical_chunks_max,), dtype=cp.int32), assumed_align=16)
-    ph_chunk_indices = ph_chunk_indices.mark_compact_shape_dynamic(mode=0, stride_order=(0,))
-    ph_chunk_offsets = _fdl(cp.zeros((n_logical_chunks_max,), dtype=cp.int32), assumed_align=16)
-    ph_chunk_offsets = ph_chunk_offsets.mark_compact_shape_dynamic(mode=0, stride_order=(0,))
-    ph_seq_chunk_cumsum = _fdl(cp.zeros((batch + 1,), dtype=cp.int32), assumed_align=16)
-    ph_seq_chunk_cumsum = ph_seq_chunk_cumsum.mark_compact_shape_dynamic(mode=0, stride_order=(0,))
-    ph_valid_lens = _fdl(cp.zeros((batch,), dtype=cp.int32), assumed_align=16)
-    ph_valid_lens = ph_valid_lens.mark_compact_shape_dynamic(mode=0, stride_order=(0,))
+    ph_seq_idx = _mark_nd(cutlass.Int32, (batch, seq_len_ph), 1)
+    ph_chunk_indices = _mark_1d(cutlass.Int32, (n_logical_chunks_max,))
+    ph_chunk_offsets = _mark_1d(cutlass.Int32, (n_logical_chunks_max,))
+    ph_seq_chunk_cumsum = _mark_1d(cutlass.Int32, (batch + 1,))
+    ph_valid_lens = _mark_1d(cutlass.Int32, (batch,))
 
-    sm_count = cp.cuda.runtime.getDeviceProperties(cp.cuda.runtime.getDevice())["multiProcessorCount"]
     # max_active_clusters is a RUNTIME wrapper argument (cluster_size=1, so it
     # equals the SM count of the GPU the kernel launches on). The deployed
     # caller passes cudaDevAttrMultiProcessorCount at launch time; the trace
-    # value below is a placeholder seeded from the local device.
-    max_active_clusters = cutlass.Int32(sm_count)
+    # value below only supplies the runtime scalar type during tracing.
+    max_active_clusters = aot_placeholders.runtime_int32()
 
-    compile_opts = ("--gpu-arch " + gpu_arch) if gpu_arch else None
+    compile_opts = aot_placeholders.compile_options(
+        ("--gpu-arch " + gpu_arch) if gpu_arch else "")
     compiled = cute.compile(ssd_blackwell_aot,
         ph_x, ph_dt, ph_A, ph_B, ph_C, ph_Dvec, ph_dtb,
         ph_out, ph_state,
@@ -4759,8 +4756,7 @@ def _compile_ssd_blackwell_aot(L, D, N, nheads, ngroups, batch, nchunks,
         ph_valid_lens,
         cutlass.Int32(0), cutlass.Int32(0),
         cutlass.Int32(0), cutlass.Int32(0),
-        True, max_active_clusters, stream,
-        **(dict(options=compile_opts) if compile_opts else {}))
+        True, max_active_clusters, stream, options=compile_opts)
     _compiled_cache[key] = compiled
     return compiled
 
@@ -5115,9 +5111,7 @@ def export_ssd_prefill_blackwell(output_dir, file_name, function_prefix, gpu_arc
     """AOT compile and export the Blackwell SSD prefill kernel."""
     aot_dim = dim if dim is not None else AOT_DIM
     aot_dstate = dstate if dstate is not None else AOT_DSTATE
-    cp.cuda.Device(0).use()
-    _ = cp.zeros(1)
-    stream = cuda.CUstream(cp.cuda.get_current_stream().ptr)
+    stream = aot_placeholders.make_stream()
     print(f"[ssd_prefill_blackwell] AOT compile D={aot_dim} N={aot_dstate} "
           f"has_init_states={has_init_states} gpu_arch={gpu_arch or 'auto'}")
     t0 = time.time()

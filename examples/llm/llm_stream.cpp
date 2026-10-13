@@ -112,16 +112,31 @@ int32_t maxVerifySizeOrDefault(rt::LLMEngineConfig const& config, int32_t fallba
     return config.maxVerifyTreeSize > 0 ? config.maxVerifyTreeSize : fallback;
 }
 
-int32_t dsparkVerifySizeOrDefault(std::string const& engineDir)
+int32_t dsparkVerifySizeOrDefault(
+    std::string const& engineDir, rt::LLMEngineConfig const& baseConfig, int32_t draftTopK)
 {
+    if (draftTopK > 1 && baseConfig.maxVerifyTreeSize > 0)
+    {
+        return baseConfig.maxVerifyTreeSize;
+    }
+
     std::filesystem::path const draftConfigPath = getDraftConfigPath(engineDir);
     if (!std::filesystem::is_regular_file(draftConfigPath))
     {
-        return 8;
+        return baseConfig.maxVerifyTreeSize > 0 ? baseConfig.maxVerifyTreeSize : 8;
     }
 
     rt::LLMEngineConfig const draftConfig = rt::parseDraftEngineConfig(draftConfigPath);
-    return draftConfig.specDraftBlockSize > 0 ? draftConfig.specDraftBlockSize + 1 : 8;
+    if (draftConfig.specDraftBlockSize <= 0)
+    {
+        return baseConfig.maxVerifyTreeSize > 0 ? baseConfig.maxVerifyTreeSize : 8;
+    }
+    int32_t const slotOffset = draftConfig.dsparkSampleFromAnchor ? 0 : 1;
+    int32_t const profileCapacity = draftConfig.maxDraftTreeSize > 0
+        ? std::max(0, draftConfig.maxDraftTreeSize - slotOffset)
+        : draftConfig.specDraftBlockSize;
+    int32_t const verifySize = std::min(draftConfig.specDraftBlockSize, profileCapacity) + 1;
+    return baseConfig.maxVerifyTreeSize > 0 ? std::min(verifySize, baseConfig.maxVerifyTreeSize) : verifySize;
 }
 
 int32_t cachedBlockDraftBlockSizeOrThrow(
@@ -138,7 +153,9 @@ int32_t cachedBlockDraftBlockSizeOrThrow(
         rt::LLMEngineConfig const draftConfig = rt::parseDraftEngineConfig(draftConfigPath);
         if (draftConfig.specDraftBlockSize > 0)
         {
-            return draftConfig.specDraftBlockSize;
+            return draftConfig.maxDraftTreeSize > 0
+                ? std::min(draftConfig.specDraftBlockSize, draftConfig.maxDraftTreeSize)
+                : draftConfig.specDraftBlockSize;
         }
     }
     if (baseConfig.specDraftBlockSize > 0)
@@ -181,7 +198,9 @@ bool applyEngineSpecDecodeDefaults(Args& args)
             }
             if (!args.specVerifySizeSet)
             {
-                args.specVerifySize = args.specDraftTopK > 1 ? maxVerifySizeOrDefault(baseConfig, 128) : blockSize;
+                args.specVerifySize = baseConfig.dflashVersion == rt::DFlashVersion::kV2
+                    ? blockSize
+                    : (args.specDraftTopK > 1 ? maxVerifySizeOrDefault(baseConfig, 128) : blockSize);
             }
             break;
         }
@@ -196,7 +215,7 @@ bool applyEngineSpecDecodeDefaults(Args& args)
             }
             if (!args.specVerifySizeSet)
             {
-                args.specVerifySize = dsparkVerifySizeOrDefault(args.engineDir);
+                args.specVerifySize = dsparkVerifySizeOrDefault(args.engineDir, baseConfig, args.specDraftTopK);
             }
             break;
         default: break;

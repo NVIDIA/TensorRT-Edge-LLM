@@ -1,0 +1,7 @@
+tests:
+  - tests/defs/test_checkpoint_export.py::test_llm_loader_tp_export[Qwen3-0.6B-NVFP4-nvfp4-tp2]
+  - tests/defs/test_checkpoint_export.py::test_checkpoint_export[InternVL3-1B-INT4-AWQ-int4_awq]
+  - tests/defs/test_checkpoint_export.py::test_checkpoint_mtp_export[gemma-4-E2B-it-NVFP4-nvfp4-mtp]
+  - tests/defs/test_checkpoint_export.py::test_checkpoint_export[Qwen3.5-0.8B-FP8-FP8-KV-fp8-fp8kv]
+  - tests/defs/test_checkpoint_export.py::test_checkpoint_export[Qwen3.5-0.8B-int4_awq-gemmv1]
+  - tests/defs/test_checkpoint_export.py::test_checkpoint_eagle_export[Qwen3-1.7B-NVFP4-nvfp4-eagle-eagle3-nvfp4]

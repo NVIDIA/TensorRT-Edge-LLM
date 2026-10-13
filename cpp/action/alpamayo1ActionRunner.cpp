@@ -216,7 +216,7 @@ void Alpamayo1ActionRunner::setDynamicInputShapes(int32_t activeBatchSize)
     status &= mContext->setInputShape(binding_names::kKVCacheStartIndex, kvCacheStartIndexShape);
     status &= mContext->setInputShape(binding_names::kNoiseTrajectory, noiseShape);
     status &= mContext->setInputShape(binding_names::kRopeCosSin, ropeCosShape);
-    status &= mContext->setInputShape(binding_names::kAttentionPosId, ropeIdxShape);
+    status &= mContext->setInputShape(binding_names::kActionAttentionPosId, ropeIdxShape);
     for (int32_t i = 0; i < mConfig.numDecoderLayers; ++i)
     {
         status &= mContext->setInputShape(binding_names::formatKCacheName(i, true).c_str(), kvShape);
@@ -283,7 +283,8 @@ std::vector<std::vector<FutureTrajectoryPoint>> Alpamayo1ActionRunner::sampleTra
     setEngineIOStatus
         &= mContext->setTensorAddress(binding_names::kDenoisedTrajectory, mDenoisedTrajectoryDevice.rawPointer());
     setEngineIOStatus &= mContext->setTensorAddress(binding_names::kRopeCosSin, mRopeCosSinDevice.rawPointer());
-    setEngineIOStatus &= mContext->setTensorAddress(binding_names::kAttentionPosId, mPositionIdsDevice.rawPointer());
+    setEngineIOStatus
+        &= mContext->setTensorAddress(binding_names::kActionAttentionPosId, mPositionIdsDevice.rawPointer());
 
     KVCacheManager::Config const& kvConfig = kvcache.getKVCacheManager().getConfig();
     size_t const elemSize = rt::utils::getTypeSize(kvConfig.kvCacheType);

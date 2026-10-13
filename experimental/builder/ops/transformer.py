@@ -23,6 +23,7 @@ from .linear import Linear
 from .mlp import GatedMLP
 from .module import BuildContext, Module
 from .normalization import RMSNorm
+from .ragged import RaggedDecoderInputs
 from .tensor import Tensor
 
 LOGGER = logging.getLogger("builder.ops.transformer")
@@ -46,8 +47,8 @@ def pack_qkv(query: Tensor, key: Tensor, value: Tensor,
         # plugin's transient storage before AttentionPlugin consumes every
         # prefill row. Materializing K/V first preserves the dependency without
         # changing the engine I/O contract.
-        return F.concatenate((query, F.concatenate((key, value), 2)), 2)
-    return F.concatenate((query, key, value), 2)
+        return F.concatenate((query, F.concatenate((key, value), 1)), 1)
+    return F.concatenate((query, key, value), 1)
 
 
 class DecoderAttention(Module):
@@ -91,31 +92,32 @@ class DecoderAttention(Module):
         hidden_states: Tensor,
         past_key_value: Tensor,
         rope_rotary_cos_sin: Tensor,
-        context_lengths: Tensor,
-        kvcache_start_index: Tensor,
-        kv_page_table: Tensor,
+        ragged: RaggedDecoderInputs,
         attention_mask: Tensor = None,
         attention_pos_id: Tensor = None,
+        tree_parent_ids: Tensor = None,
+        tree_depths: Tensor = None,
+        valid_tree_counts: Tensor = None,
     ) -> Tuple[Tensor, Tensor]:
         cfg = self.cfg
         qkv = self.packed_qkv(hidden_states)
         output, present_key_value = F.attention(
             qkv,
             past_key_value,
-            context_lengths,
             rope_rotary_cos_sin,
-            kvcache_start_index,
-            kv_page_table,
+            ragged,
             num_q_heads=cfg.num_attention_heads,
             num_kv_heads=cfg.num_key_value_heads,
             head_size=cfg.head_dim,
             sliding_window_size=self.sliding_window_size,
             enable_fp8_kv_cache=cfg.kv_cache_quant == "fp8",
             qkv_scales=self.weights.qkv_scales(self.prefix),
+            skip_softmax_scale_factor=cfg.skip_softmax_scale_factor,
             attention_mask=attention_mask,
             attention_pos_id=attention_pos_id,
             **self.attention_kwargs(),
         )
+        output = output.reshape((0, cfg.num_attention_heads * cfg.head_dim))
         return self.o_proj(output), present_key_value
 
 
@@ -173,42 +175,41 @@ class GatedDecoderAttention(Module):
                 hidden_states,
                 past_key_value,
                 rope_rotary_cos_sin,
-                context_lengths,
-                kvcache_start_index,
-                kv_page_table,
+                ragged,
                 attention_mask=None,
-                attention_pos_id=None):
+                attention_pos_id=None,
+                tree_parent_ids=None,
+                tree_depths=None,
+                valid_tree_counts=None):
         cfg = self.cfg
         projected = self.q_proj(hidden_states).reshape(
-            (0, 0, cfg.num_attention_heads, cfg.head_dim * 2))
-        query = projected.slice_last_dim(0, cfg.head_dim, 4)
-        gate = projected.slice_last_dim(cfg.head_dim, cfg.head_dim, 4)
+            (0, cfg.num_attention_heads, cfg.head_dim * 2))
+        query = projected.slice_last_dim(0, cfg.head_dim, 3)
+        gate = projected.slice_last_dim(cfg.head_dim, cfg.head_dim, 3)
         key = self.k_proj(hidden_states).reshape(
-            (0, 0, cfg.num_key_value_heads, cfg.head_dim))
+            (0, cfg.num_key_value_heads, cfg.head_dim))
         value = self.v_proj(hidden_states)
-        query = self.q_norm(query, 4).reshape(
-            (0, 0, cfg.num_attention_heads * cfg.head_dim))
-        key = self.k_norm(key, 4).reshape(
-            (0, 0, cfg.num_key_value_heads * cfg.head_dim))
+        query = self.q_norm(query, 3).reshape(
+            (0, cfg.num_attention_heads * cfg.head_dim))
+        key = self.k_norm(key, 3).reshape(
+            (0, cfg.num_key_value_heads * cfg.head_dim))
         qkv = pack_qkv(query, key, value, self.v_proj)
         output, present = F.attention(
             qkv,
             past_key_value,
-            context_lengths,
             rope_rotary_cos_sin,
-            kvcache_start_index,
-            kv_page_table,
+            ragged,
             num_q_heads=cfg.num_attention_heads,
             num_kv_heads=cfg.num_key_value_heads,
             head_size=cfg.head_dim,
             enable_fp8_kv_cache=cfg.kv_cache_quant == "fp8",
             qkv_scales=self.weights.qkv_scales(self.prefix),
+            skip_softmax_scale_factor=cfg.skip_softmax_scale_factor,
             attention_mask=attention_mask,
             attention_pos_id=attention_pos_id,
         )
-        output = output.reshape((0, 0, cfg.num_attention_heads, cfg.head_dim))
         output = (output * gate.sigmoid()).reshape(
-            (0, 0, cfg.num_attention_heads * cfg.head_dim))
+            (0, cfg.num_attention_heads * cfg.head_dim))
         return self.o_proj(output), present
 
 
@@ -224,8 +225,16 @@ class TreeAttention(Module):
         self.q_norm = RMSNorm(ctx, self.key("q_norm"), ctx.cfg.rms_norm_eps)
         self.k_norm = RMSNorm(ctx, self.key("k_norm"), ctx.cfg.rms_norm_eps)
 
-    def forward(self, hidden, past, rope, context_lengths, cache_start,
-                kv_page_table, attention_mask, attention_pos_id):
+    def forward(self,
+                hidden,
+                past,
+                rope,
+                ragged,
+                attention_mask,
+                attention_pos_id,
+                tree_parent_ids=None,
+                tree_depths=None,
+                valid_tree_counts=None):
         cfg = self.cfg
         query = self.q_proj(hidden)
         gate = None
@@ -237,20 +246,18 @@ class TreeAttention(Module):
         value = self.v_proj(hidden)
         if self.weights.has(self.key("q_norm.weight")):
             query = self.q_norm(
-                query.reshape((0, 0, cfg.num_attention_heads, cfg.head_dim)),
-                4).reshape((0, 0, cfg.num_attention_heads * cfg.head_dim))
+                query.reshape((0, cfg.num_attention_heads, cfg.head_dim)),
+                3).reshape((0, cfg.num_attention_heads * cfg.head_dim))
         if self.weights.has(self.key("k_norm.weight")):
             key = self.k_norm(
-                key.reshape((0, 0, cfg.num_key_value_heads, cfg.head_dim)),
-                4).reshape((0, 0, cfg.num_key_value_heads * cfg.head_dim))
+                key.reshape((0, cfg.num_key_value_heads, cfg.head_dim)),
+                3).reshape((0, cfg.num_key_value_heads * cfg.head_dim))
         qkv = pack_qkv(query, key, value, self.v_proj)
         output, present = F.attention(
             qkv,
             past,
-            context_lengths,
             rope,
-            cache_start,
-            kv_page_table,
+            ragged,
             num_q_heads=cfg.num_attention_heads,
             num_kv_heads=cfg.num_key_value_heads,
             head_size=cfg.head_dim,
@@ -259,6 +266,7 @@ class TreeAttention(Module):
             attention_mask=attention_mask,
             attention_pos_id=attention_pos_id,
         )
+        output = output.reshape((0, cfg.num_attention_heads * cfg.head_dim))
         if gate is not None:
             output = output * gate.sigmoid()
         return self.o_proj(output), present
@@ -291,16 +299,17 @@ class DecoderLayer(Module):
         hidden_states: Tensor,
         past_key_value: Tensor,
         rope_rotary_cos_sin: Tensor,
-        context_lengths: Tensor,
-        kvcache_start_index: Tensor,
-        kv_page_table: Tensor,
+        ragged: RaggedDecoderInputs,
         attention_mask: Tensor = None,
         attention_pos_id: Tensor = None,
+        tree_parent_ids: Tensor = None,
+        tree_depths: Tensor = None,
+        valid_tree_counts: Tensor = None,
     ) -> Tuple[Tensor, Tensor]:
         attention_output, present = self.self_attn(
             self.input_layernorm(hidden_states), past_key_value,
-            rope_rotary_cos_sin, context_lengths, kvcache_start_index,
-            kv_page_table, attention_mask, attention_pos_id)
+            rope_rotary_cos_sin, ragged, attention_mask, attention_pos_id,
+            tree_parent_ids, tree_depths, valid_tree_counts)
         hidden_states = hidden_states + attention_output
         return (hidden_states +
                 self.mlp(self.post_attention_layernorm(hidden_states)),
@@ -336,12 +345,13 @@ class DecoderModel(Module):
         inputs_embeds: Tensor,
         past_key_values: List[Tensor],
         rope_rotary_cos_sin: Tensor,
-        context_lengths: Tensor,
-        kvcache_start_index: Tensor,
-        kv_page_table: Tensor,
+        ragged: RaggedDecoderInputs,
         deepstack_embeds: Sequence[Tensor] = (),
         attention_mask: Tensor = None,
         attention_pos_id: Tensor = None,
+        tree_parent_ids: Tensor = None,
+        tree_depths: Tensor = None,
+        valid_tree_counts: Tensor = None,
     ) -> Tuple[Tensor, List[Tensor], List[Tensor]]:
         hidden_states = inputs_embeds
         present_key_values = []
@@ -351,10 +361,10 @@ class DecoderModel(Module):
                          len(self.layers))
             hidden_states, present = layer(hidden_states,
                                            past_key_values[layer_index],
-                                           rope_rotary_cos_sin,
-                                           context_lengths,
-                                           kvcache_start_index, kv_page_table,
-                                           attention_mask, attention_pos_id)
+                                           rope_rotary_cos_sin, ragged,
+                                           attention_mask, attention_pos_id,
+                                           tree_parent_ids, tree_depths,
+                                           valid_tree_counts)
             if layer_index < len(deepstack_embeds):
                 hidden_states = hidden_states + deepstack_embeds[layer_index]
             all_hidden_states.append(hidden_states)

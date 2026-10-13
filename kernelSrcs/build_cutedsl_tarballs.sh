@@ -36,7 +36,7 @@ cache_dir="${HOME:-/tmp}/.cache/tensorrt-edge-llm"
 case "${host_cuda_major}" in
     13)
         : "${CUTE_DSL_CUPY_PACKAGE:=cupy-cuda13x==13.6.0}"
-        : "${CUTE_DSL_TARGETS:=x86_64:sm_80,x86_64:sm_90,x86_64:sm_100,x86_64:sm_120,aarch64:sm_87,aarch64:sm_90,aarch64:sm_110,aarch64:sm_121}"
+        : "${CUTE_DSL_TARGETS:=x86_64:sm_80,x86_64:sm_90,x86_64:sm_100,x86_64:sm_120,aarch64:sm_87,aarch64:sm_90,aarch64:sm_110,aarch64:sm_110+sm_120,aarch64:sm_121}"
         ;;
     12)
         : "${CUTE_DSL_CUPY_PACKAGE:=cupy-cuda12x==12.3.0}"
@@ -61,19 +61,27 @@ require_tool() {
     fi
 }
 
-normalize_sm_tag() {
-    local tag="${1,,}"
-    tag="${tag//-/_}"
-    if [[ "${tag}" =~ ^[0-9]+$ ]]; then
-        tag="sm_${tag}"
-    elif [[ "${tag}" =~ ^sm([0-9]+)$ ]]; then
-        tag="sm_${BASH_REMATCH[1]}"
-    fi
-    if [[ ! "${tag}" =~ ^sm_[0-9]+$ ]]; then
-        echo "Invalid GPU arch '${1}'. Expected sm_87, sm_110, sm_121, etc." >&2
-        exit 1
-    fi
-    printf '%s\n' "${tag}"
+normalize_gpu_archs() {
+    local value="${1,,}"
+    local tag
+    local -a tags
+    local -a normalized=()
+    value="${value//-/_}"
+    IFS=+ read -ra tags <<< "${value}"
+    for tag in "${tags[@]}"; do
+        if [[ "${tag}" =~ ^[0-9]+$ ]]; then
+            tag="sm_${tag}"
+        elif [[ "${tag}" =~ ^sm([0-9]+)$ ]]; then
+            tag="sm_${BASH_REMATCH[1]}"
+        fi
+        if [[ ! "${tag}" =~ ^sm_[0-9]+$ ]]; then
+            echo "Invalid GPU arch '${1}'. Use sm_110 or sm_110+sm_120." >&2
+            exit 1
+        fi
+        normalized+=("${tag}")
+    done
+    local IFS=,
+    printf '%s\n' "${normalized[*]}"
 }
 
 normalize_arch() {
@@ -175,29 +183,6 @@ PY
     ensured_venv_dir="${venv_dir}"
 }
 
-gpu_checked=0
-
-ensure_gpu_visible() {
-    local python="$1"
-
-    if [[ "${gpu_checked}" == "1" ]]; then
-        return
-    fi
-    if ! "${python}" - <<'PY'
-import cupy
-
-if cupy.cuda.runtime.getDeviceCount() == 0:
-    raise SystemExit("no CUDA device visible")
-PY
-    then
-        echo "No CUDA GPU is visible to this process. Kernel AOT export requires" \
-            "a GPU (device tensor allocation + local helper compiles)." >&2
-        echo "In Docker, run with: docker run --gpus all ..." >&2
-        exit 1
-    fi
-    gpu_checked=1
-}
-
 validate_artifact() {
     local python="$1"
     local artifact_dir="$2"
@@ -215,6 +200,7 @@ validate_artifact() {
         "${host_cuda_major}" \
         "${CUTE_DSL_RUNTIME_LIBS_VERSION}" <<'PY'
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -261,14 +247,30 @@ if str(metadata.get("host_cuda_version", "")).split(".", 1)[0] != host_cuda_majo
 if not metadata.get("groups") or not metadata.get("variants"):
     raise SystemExit(f"{metadata_path}: groups and variants must both be non-empty")
 
-sm = int(artifact_tag.removeprefix("sm_"))
+sms = [int(sm) for sm in re.findall(r"sm_(\d+)", artifact_tag)]
 suffix_sms = {100, 101, 103, 107, 109, 110, 120, 121}
-expected_compile_arch = f"{artifact_tag}{'a' if sm in suffix_sms else ''}"
+expected_compile_archs = [
+    f"sm_{sm}{'a' if sm in suffix_sms else ''}" for sm in sms
+]
+expected_compile_arch = ",".join(expected_compile_archs)
 if metadata.get("compile_gpu_arch") != expected_compile_arch:
     raise SystemExit(
         f"{metadata_path}: compile_gpu_arch={metadata.get('compile_gpu_arch')!r}, "
         f"expected {expected_compile_arch!r}"
     )
+if len(sms) > 1:
+    expected_gpu_archs = [f"sm_{sm}" for sm in sms]
+    if metadata.get("gpu_archs") != expected_gpu_archs:
+        raise SystemExit(
+            f"{metadata_path}: gpu_archs={metadata.get('gpu_archs')!r}, "
+            f"expected {expected_gpu_archs!r}"
+        )
+    if metadata.get("compile_gpu_archs") != expected_compile_archs:
+        raise SystemExit(
+            f"{metadata_path}: "
+            f"compile_gpu_archs={metadata.get('compile_gpu_archs')!r}, "
+            f"expected {expected_compile_archs!r}"
+        )
 
 machine_by_arch = {"x86_64": 0x3E, "aarch64": 0xB7}
 members = subprocess.check_output(["ar", "t", archive_path], text=True).splitlines()
@@ -352,7 +354,8 @@ build_target() {
     cutedsl_package_for_cuda "${artifact_cuda_major}" >/dev/null
 
     arch="$(normalize_arch "${arch}")"
-    artifact_tag="$(normalize_sm_tag "${gpu_arch}")"
+    gpu_arch="$(normalize_gpu_archs "${gpu_arch}")"
+    artifact_tag="${gpu_arch//,/_}"
     target_output_dir="${output_dir}/cuda${artifact_cuda_major}"
     artifact_dir="${target_output_dir}/${arch}/${artifact_tag}"
     tarball_name="cutedsl_${arch}_${artifact_tag}_cuda${artifact_cuda_major}.tar.gz"
@@ -376,12 +379,11 @@ build_target() {
     ensure_venv "${artifact_cuda_major}"
     venv_dir="${ensured_venv_dir}"
     python="${venv_dir}/bin/python"
-    ensure_gpu_visible "${python}"
     build_command=(
         "${python}"
         kernelSrcs/build_cutedsl.py
         --kernels "${CUTE_DSL_KERNELS}" \
-        --gpu_arch "${artifact_tag}" \
+        --gpu_arch "${gpu_arch}" \
         --arch "${arch}" \
         --cuda-version "${artifact_cuda_version}" \
         --runtime-libs-version "${CUTE_DSL_RUNTIME_LIBS_VERSION}" \

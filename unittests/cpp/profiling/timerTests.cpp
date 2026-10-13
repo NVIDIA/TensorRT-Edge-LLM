@@ -16,6 +16,7 @@
  */
 
 #include "common/checkMacros.h"
+#include "profiling/metrics.h"
 #include "profiling/timer.h"
 #include <chrono>
 #include <cuda_runtime.h>
@@ -93,6 +94,19 @@ TEST_F(TimerTest, MultipleStageTiming)
     EXPECT_EQ(stage2Data->getTotalRuns(), 1);
     EXPECT_GT(stage2Data->getTotalGpuTimeMs(), 0.0f);
     EXPECT_GT(stage2Data->getAverageTimeMs(), 0.0f);
+}
+
+TEST_F(TimerTest, SpecDecodeGenerationMetricsAccumulateAcceptanceCounters)
+{
+    metrics::SpecDecodeGenerationMetrics metrics;
+    metrics.recordRun(30, 120, 8, 10);
+    metrics.recordRun(10, 30, 3, 5);
+
+    EXPECT_EQ(metrics.getTotalRuns(), 2);
+    EXPECT_EQ(metrics.totalIterations, 40);
+    EXPECT_EQ(metrics.totalGeneratedTokens, 150);
+    EXPECT_EQ(metrics.totalAcceptedDraftTokens, 11);
+    EXPECT_EQ(metrics.totalProposedDraftTokens, 15);
 }
 
 TEST_F(TimerTest, TimerReset)

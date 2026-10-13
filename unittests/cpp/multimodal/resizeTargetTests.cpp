@@ -359,3 +359,10 @@ TEST(QwenSmartResize, CuSeqlenBoundCoversTemporalGroups)
     EXPECT_LE(groups, iu::maxCuSeqlenGroups(512));
     EXPECT_GE(iu::maxCuSeqlenGroups(1), 1);
 }
+
+TEST(InternVLTokensPerBlockTest, ResizeGridScalesWithTokenDensity)
+{
+    // The same tile budget expressed at either token density must pick the same grid.
+    EXPECT_EQ(iu::computeBestBlockGridForResize(896, 1344, 256, 1792, 448, 448, 256),
+        iu::computeBestBlockGridForResize(896, 1344, 64, 448, 448, 448, 64));
+}

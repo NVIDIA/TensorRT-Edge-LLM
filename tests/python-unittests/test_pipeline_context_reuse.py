@@ -155,5 +155,28 @@ def test_spec_prefill_evict_fixture_and_survivor_equivalence(tmp_path):
     }
     with open(config.get_output_json_file(), "w", encoding="utf-8") as f:
         json.dump({"responses": [stopped, survivor, survivor, {}]}, f)
+    profile = {
+        "prefill": {
+            "reused_tokens": 0
+        },
+        "context_cache": {
+            "lookup_bypass_sequences": 1,
+            "publications": {
+                "attempts": 1,
+                "committed": 1,
+                "existing": 0,
+            },
+        },
+    }
+    with open(config.get_profile_json_file(), "w", encoding="utf-8") as f:
+        json.dump(profile, f)
 
     _check_spec_prefill_evict_equivalence(config)
+    assert _read_context_reuse_profile(config, logger=None) == 0
+
+    profile["context_cache"]["publications"]["committed"] = 0
+    with open(config.get_profile_json_file(), "w", encoding="utf-8") as f:
+        json.dump(profile, f)
+    with pytest.raises(RuntimeError,
+                       match="at least one committed publication"):
+        _read_context_reuse_profile(config, logger=None)

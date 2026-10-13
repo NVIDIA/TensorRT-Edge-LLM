@@ -281,6 +281,29 @@ TEST_F(EmbeddingLookupTest, StandardEmbeddingLookupAccuracy)
     }
 }
 
+TEST_F(EmbeddingLookupTest, TokenMajorOutputAccuracy)
+{
+    constexpr int64_t batchSize = 2;
+    constexpr int64_t seqLen = 3;
+    constexpr int32_t vocabSize = 8;
+    constexpr int64_t hiddenSize = 16;
+    std::vector<int32_t> inputIds{0, 1, 2, 3, 4, 5};
+    std::vector<half> embeddingTable(vocabSize * hiddenSize);
+    uniformFloatInitialization<half>(embeddingTable, -1.0F, 1.0F);
+
+    rt::Tensor inputIdsTensor({batchSize, seqLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    rt::Tensor embeddingTableTensor({vocabSize, hiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor outputTensor({batchSize * seqLen, hiddenSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    copyHostToDevice(inputIdsTensor, inputIds);
+    copyHostToDevice(embeddingTableTensor, embeddingTable);
+
+    kernel::embeddingLookup(inputIdsTensor, embeddingTableTensor, std::nullopt, outputTensor, stream);
+
+    auto const gpuResult = copyDeviceToHost<half>(outputTensor);
+    auto const cpuResult = embeddingLookupRef(inputIds, embeddingTable, batchSize, seqLen, vocabSize, hiddenSize);
+    EXPECT_TRUE(compareResults(cpuResult, gpuResult, "Token-major Embedding Lookup Accuracy Test"));
+}
+
 #if SUPPORTS_FP8
 // Test FP8 embedding lookup accuracy with various configurations
 TEST_F(EmbeddingLookupTest, FP8EmbeddingLookupAccuracy)
@@ -1344,7 +1367,7 @@ TEST_F(EmbeddingLookupTest, GenerateMultimodalIndicesGlobalAccumulation)
 
     auto result = copyDeviceToHost<int32_t>(indicesTensor);
     // Without per-row offsets, image counter accumulates globally: 0, 1, 2
-    std::vector<int32_t> expected = {0, 0, 1, 0, 0, 2, 0, 0};
+    std::vector<int32_t> expected = {-1, 0, 1, -1, -1, 2, -1, 0};
     EXPECT_EQ(result, expected);
 }
 
@@ -1376,9 +1399,9 @@ TEST_F(EmbeddingLookupTest, GenerateMultimodalIndicesPerRowOffsets)
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
     auto result = copyDeviceToHost<int32_t>(indicesTensor);
-    // batch 0: text=0, image=3, image=4, text=0
-    // batch 1: text=0, image=7, text=0, audio=2
-    std::vector<int32_t> expected = {0, 3, 4, 0, 0, 7, 0, 2};
+    // batch 0: text=-1, image=3, image=4, text=-1
+    // batch 1: text=-1, image=7, text=-1, audio=2
+    std::vector<int32_t> expected = {-1, 3, 4, -1, -1, 7, -1, 2};
     EXPECT_EQ(result, expected);
 }
 
@@ -1410,8 +1433,8 @@ TEST_F(EmbeddingLookupTest, GenerateMultimodalIndicesContextReuseScenario)
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
     auto result = copyDeviceToHost<int32_t>(indicesTensor);
-    // Row 0: image=10, image=11, text=0
-    // Row 1: image=5, text=0, text=0
-    std::vector<int32_t> expected = {10, 11, 0, 5, 0, 0};
+    // Row 0: image=10, image=11, text=-1
+    // Row 1: image=5, text=-1, text=-1
+    std::vector<int32_t> expected = {10, 11, -1, 5, -1, -1};
     EXPECT_EQ(result, expected);
 }

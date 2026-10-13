@@ -82,7 +82,7 @@ def _save_embedding_artifacts(out_dir: str, und_weights: dict,
 
 
 def _write_tokenizer_artifacts(checkpoint: str, output_dir: str) -> None:
-    """Copy tokenizer files and write the C++ runtime chat-template JSON."""
+    """Copy tokenizer files and materialize the provider Jinja template."""
     tokenizer_src = os.path.join(checkpoint, "text_tokenizer")
     if not os.path.isdir(tokenizer_src):
         raise FileNotFoundError(
@@ -91,15 +91,8 @@ def _write_tokenizer_artifacts(checkpoint: str, output_dir: str) -> None:
     tokenizer_dst = os.path.join(output_dir, "text_tokenizer")
     shutil.copytree(tokenizer_src, tokenizer_dst, dirs_exist_ok=True)
 
-    template_dst = os.path.join(tokenizer_dst, "processed_chat_template.json")
-    if not os.path.exists(template_dst):
-        from ...chat_template import (process_chat_template,
-                                      write_fallback_processed_chat_template)
-
-        process_chat_template(tokenizer_src, tokenizer_dst)
-        if not os.path.exists(template_dst):
-            write_fallback_processed_chat_template(tokenizer_src,
-                                                   tokenizer_dst)
+    from ...chat_template import write_chat_template
+    write_chat_template(checkpoint, tokenizer_dst)
     logger.info("Tokenizer artifacts complete: %s", tokenizer_dst)
 
 

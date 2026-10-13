@@ -51,7 +51,7 @@ constexpr int32_t kOUT_TENSOR_IDX{0};
 // NCCL data type and op constants
 constexpr int32_t kNcclFloat16 = 6;
 constexpr int32_t kNcclFloat32 = 7;
-constexpr int32_t kNcclBfloat16 = 10;
+constexpr int32_t kNcclBfloat16 = 9;
 constexpr int32_t kNcclSum = 0;
 constexpr int32_t kNcclSuccess = 0;
 

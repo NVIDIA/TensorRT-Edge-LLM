@@ -59,11 +59,15 @@ _OPERATION_CREATORS = {
     "fused_nvfp4_gemm_all_reduce": "FusedNvfp4GemmAllReducePlugin",
     "attention": "AttentionPlugin",
     "dflash_target_cache_update": "DFlashTargetKVCacheUpdate",
+    "dflash2_grouped_dynamic_conv": "DFlash2GroupedDynamicConvPlugin",
     "gemma4_attention": "Gemma4AudioAttentionPlugin",
     "fp16_moe": "Fp16MoePlugin",
     "int4_groupwise_gemm": "Int4GroupwiseGemmPlugin",
     "int4_groupwise_gemm_v2": "Int4GroupwiseGemmPluginV2",
     "int4_moe": "Int4MoePlugin",
+    "nvfp4_a16_gemm": "Nvfp4A16GemmPlugin",
+    "nvfp4_a16_blackwell_gemm": "Nvfp4A16BlackwellGemmPlugin",
+    "nvfp4_a16_moe": "Nvfp4A16MoePlugin",
     "nvfp4_moe": "Nvfp4MoePlugin",
     "nvfp4_moe_sm12x": "NvFP4MoEPluginGeforce",
     "vit_attention": "ViTAttentionPlugin",
@@ -1481,6 +1485,46 @@ class Net:
             b = self.const(bias.astype(np.float16).reshape(bshape), "b")
             out = self.elementwise(out, b, trt.ElementWiseOperation.SUM)
         return out
+
+    def nvfp4_a16_linear(self,
+                         x: "trt.ITensor",
+                         linear_weights,
+                         rank: int = 3,
+                         sm110: bool = False) -> "trt.ITensor":
+        """Run a weight-only NVFP4 linear with FP16 activations."""
+        if rank not in (2, 3):
+            raise NotImplementedError(
+                "NVFP4-A16 direct linear requires rank-2 or rank-3 input")
+        from ..weight_packing import nvfp4 as nvfp4_pack
+
+        raw = linear_weights
+        if sm110:
+            packed = nvfp4_pack.pack_nvfp4_a16_blackwell_linear(
+                raw.weight, raw.weight_scale, raw.weight_scale_2)
+            operation_name = "nvfp4_a16_blackwell_gemm"
+        else:
+            packed = nvfp4_pack.pack_nvfp4_a16_linear(raw.weight,
+                                                      raw.weight_scale,
+                                                      raw.weight_scale_2)
+            operation_name = "nvfp4_a16_gemm"
+        qweights, block_scales, global_scale, logical_n, padded_n = packed
+        qweight_tensor = self.const(qweights, "a16_qweight")
+        scale_tensor = self.const(block_scales, "a16_block_scales")
+        global_tensor = self.const(global_scale, "a16_global_scale")
+        attributes = {
+            "gemm_n": padded_n,
+            "gemm_k": raw.in_features,
+            "max_m": 0,
+        }
+        if sm110:
+            attributes.update(layout=1, backend=0)
+        layer = self.operation(
+            operation_name, attributes,
+            (self._unwrap(x), qweight_tensor, scale_tensor, global_tensor))
+        output = layer.get_output(0)
+        if logical_n != padded_n:
+            output = self.slice_last_dim(output, 0, logical_n, rank)
+        return self._add_bias(output, raw.bias, rank)
 
     def fused_nvfp4_gemm_all_reduce(self,
                                     x: "trt.ITensor",

@@ -28,8 +28,8 @@ from tensorrt_edgellm.config import (ModelConfig, _is_diffusion_gemma_config,
                                      module_quant_type)
 from tensorrt_edgellm.models.diffusion_gemma import (
     DiffusionGemmaBackbone, make_diffusion_gemma_key_remap)
-from tensorrt_edgellm.models.gemma4.modeling_gemma4_text import \
-    _gemma4_dense_moe_routing
+from tensorrt_edgellm.models.gemma4.modeling_gemma4_text import (
+    _gemma4_dense_moe_routing, _gemma4_uses_swa_kv_cache)
 from tensorrt_edgellm.scripts import export as export_script
 
 
@@ -88,7 +88,10 @@ def _load_model_config(tmp_path):
         str(tmp_path), lambda head_dim: 1.0 / math.sqrt(float(head_dim)))
 
 
-def _write_minimal_diffusion_gemma_config(tmp_path):
+def _write_minimal_diffusion_gemma_config(tmp_path,
+                                          *,
+                                          ple=False,
+                                          heterogeneous_attention=False):
     config = {
         "model_type": "diffusion_gemma",
         "architectures": ["DiffusionGemmaForCausalLM"],
@@ -112,6 +115,27 @@ def _write_minimal_diffusion_gemma_config(tmp_path):
         "decoder_layer_scalars": [3.0, 4.0],
         "torch_dtype": "float16",
     }
+    if ple:
+        config["hidden_size_per_layer_input"] = 4
+        config["vocab_size_per_layer_input"] = 32
+    if heterogeneous_attention:
+        config.update({
+            "global_head_dim": 8,
+            "num_global_key_value_heads": 1,
+            "layer_types": ["sliding_attention", "full_attention"],
+            "sliding_window": 32,
+            "rope_parameters": {
+                "sliding_attention": {
+                    "rope_type": "default",
+                    "rope_theta": 10000.0,
+                },
+                "full_attention": {
+                    "rope_type": "proportional",
+                    "rope_theta": 1000000.0,
+                    "partial_rotary_factor": 0.5,
+                },
+            },
+        })
     generation_config = {
         "max_denoising_steps": 8,
         "max_new_tokens": 8,
@@ -264,16 +288,20 @@ def test_backbone_export_spec_has_dynamic_batch_dims(tmp_path):
         "self_conditioning_temperature",
     ]
     assert 0 in shapes_by_name["inputs_embeds"]
-    assert 0 in shapes_by_name["phase_is_encoder"]
-    assert list(shapes_by_name["canvas_ids"].keys()) == [0, 1]
-    assert list(
-        shapes_by_name["prev_self_conditioning_embeds"].keys()) == [0, 1]
+    assert shapes_by_name["phase_is_encoder"] == {}
+    assert list(shapes_by_name["canvas_ids"].keys()) == [0]
+    assert list(shapes_by_name["prev_self_conditioning_embeds"].keys()) == [0]
     assert shapes_by_name["self_conditioning_temperature"] == {}
     assert list(shapes_by_name["past_key_values_0"].keys()) == [1]
     assert 0 in shapes_by_name["rope_rotary_cos_sin"]
-    assert 0 in shapes_by_name["context_lengths"]
-    assert 0 in shapes_by_name["kvcache_start_index"]
+    assert "context_lengths" not in shapes_by_name
+    assert "kvcache_start_index" not in shapes_by_name
+    for name in ("positions", "query_start_offsets", "query_lengths",
+                 "past_lengths", "attention_sequence_lengths", "state_indices",
+                 "execution_phase_marker"):
+        assert name in shapes_by_name
     assert list(shapes_by_name["kv_page_table"].keys()) == [0, 2]
+    assert list(shapes_by_name["execution_phase_marker"].keys()) == [0]
     assert 0 in shapes_by_name["select_token_indices"]
     assert list(shapes_by_name["context_mask_selector"].keys()) == [0]
     assert "prev_logits" not in shapes_by_name
@@ -282,6 +310,32 @@ def test_backbone_export_spec_has_dynamic_batch_dims(tmp_path):
         "next_self_conditioning_embeds",
         "present_key_values_0",
     ]
+
+
+def test_diffusion_sliding_attention_keeps_full_kv_pool(tmp_path):
+    _write_minimal_diffusion_gemma_config(tmp_path,
+                                          heterogeneous_attention=True)
+    cfg = _load_model_config(tmp_path)
+
+    assert not _gemma4_uses_swa_kv_cache(cfg)
+    model = DiffusionGemmaBackbone(cfg)
+    spec = model.onnx_export_spec()
+    assert "swa_kv_page_table" not in spec.input_names
+    assert "swa_kv_cache_mode" not in spec.input_names
+    runtime_cfg = build_runtime_llm_config_dict(model)
+    assert runtime_cfg["layer_types"] == ["attention", "attention"]
+    assert runtime_cfg["kv_layer_configs"] == [
+        {
+            "num_kv_heads": 2,
+            "head_dim": 4,
+        },
+        {
+            "num_kv_heads": 1,
+            "head_dim": 8,
+        },
+    ]
+    assert all("kv_cache_capacity" not in layer
+               for layer in runtime_cfg["kv_layer_configs"])
 
 
 def test_unified_backbone_export_spec_has_conditioning_bindings(tmp_path):
@@ -300,9 +354,8 @@ def test_unified_backbone_export_spec_has_conditioning_bindings(tmp_path):
         "prev_self_conditioning_embeds",
         "self_conditioning_temperature",
     ]
-    assert list(shapes_by_name["canvas_ids"].keys()) == [0, 1]
-    assert list(
-        shapes_by_name["prev_self_conditioning_embeds"].keys()) == [0, 1]
+    assert list(shapes_by_name["canvas_ids"].keys()) == [0]
+    assert list(shapes_by_name["prev_self_conditioning_embeds"].keys()) == [0]
     assert shapes_by_name["self_conditioning_temperature"] == {}
     assert "kv_page_table" in shapes_by_name
     assert spec.input_names.index("kv_page_table") < spec.input_names.index(
@@ -314,6 +367,103 @@ def test_unified_backbone_export_spec_has_conditioning_bindings(tmp_path):
         "next_self_conditioning_embeds",
         "present_key_values_0",
     ]
+
+
+def test_unified_backbone_token_major_wrapper_executes(tmp_path):
+    _write_minimal_diffusion_gemma_config(tmp_path)
+    model = DiffusionGemmaBackbone(_load_model_config(tmp_path)).eval()
+    spec = model.onnx_export_spec()
+
+    outputs = spec.wrapped(*spec.args)
+    args = dict(zip(spec.input_names, spec.args))
+
+    assert outputs[0].ndim == 2
+    assert outputs[1].ndim == 2
+    assert outputs[2].shape == spec.args[spec.input_names.index(
+        "past_key_values_0")].shape
+    assert args["positions"].shape[0] == args["inputs_embeds"].shape[0]
+    assert "token_to_sequence" not in args
+    assert args["query_start_offsets"].shape[
+        0] == args["query_lengths"].shape[0] + 1
+
+
+def test_unified_backbone_dynamic_export_succeeds(tmp_path):
+    _write_minimal_diffusion_gemma_config(tmp_path)
+    model = DiffusionGemmaBackbone(_load_model_config(tmp_path)).eval()
+    spec = model.onnx_export_spec()
+
+    exported = torch.export.export(spec.wrapped,
+                                   spec.args,
+                                   dynamic_shapes=spec.dynamic_shapes,
+                                   strict=False)
+
+    assert exported is not None
+
+
+def test_unified_backbone_with_ple_dynamic_export_succeeds(tmp_path):
+    _write_minimal_diffusion_gemma_config(tmp_path, ple=True)
+    model = DiffusionGemmaBackbone(_load_model_config(tmp_path)).eval()
+    spec = model.onnx_export_spec()
+
+    exported = torch.export.export(spec.wrapped,
+                                   spec.args,
+                                   dynamic_shapes=spec.dynamic_shapes,
+                                   strict=False)
+
+    assert exported is not None
+
+
+def test_unified_backbone_with_heterogeneous_attention_exports(tmp_path):
+    _write_minimal_diffusion_gemma_config(tmp_path,
+                                          heterogeneous_attention=True)
+    model = DiffusionGemmaBackbone(_load_model_config(tmp_path)).eval()
+    spec = model.onnx_export_spec()
+
+    exported = torch.export.export(spec.wrapped,
+                                   spec.args,
+                                   dynamic_shapes=spec.dynamic_shapes,
+                                   strict=False)
+
+    assert exported is not None
+
+
+def test_unified_backbone_with_ple_and_heterogeneous_attention_exports(
+        tmp_path):
+    _write_minimal_diffusion_gemma_config(tmp_path,
+                                          ple=True,
+                                          heterogeneous_attention=True)
+    model = DiffusionGemmaBackbone(_load_model_config(tmp_path)).eval()
+    spec = model.onnx_export_spec()
+
+    exported = torch.export.export(spec.wrapped,
+                                   spec.args,
+                                   dynamic_shapes=spec.dynamic_shapes,
+                                   strict=False)
+
+    assert exported is not None
+
+
+def test_unified_backbone_dynamic_export_flattens_moe_plugin_output(tmp_path):
+    _write_minimal_diffusion_gemma_config(tmp_path,
+                                          heterogeneous_attention=True)
+    model = DiffusionGemmaBackbone(_load_model_config(tmp_path)).eval()
+
+    class RankThreeMoeOutput(torch.nn.Module):
+
+        def forward(self, expert_input, residual):
+            del residual
+            return expert_input.unsqueeze(0)
+
+    for layer in model.model.layers:
+        layer.moe_block = RankThreeMoeOutput()
+    spec = model.onnx_export_spec()
+
+    exported = torch.export.export(spec.wrapped,
+                                   spec.args,
+                                   dynamic_shapes=spec.dynamic_shapes,
+                                   strict=False)
+
+    assert exported is not None
 
 
 def test_unified_backbone_rejects_reduced_vocab(tmp_path):
@@ -435,7 +585,9 @@ def test_diffusion_gemma_nvfp4_excludes_decoder_attention_from_quant(tmp_path):
     cfg = _load_model_config(tmp_path)
 
     assert cfg.quant.quant_type == "nvfp4"
-    assert cfg.quant.kv_cache_quant == "fp8"
+    # KV-cache precision is inferred from checkpoint scale tensors, not the
+    # sidecar field alone; this synthetic fixture has no safetensors.
+    assert cfg.quant.kv_cache_quant is None
     assert module_quant_type("layers.0.self_attn.q_proj", cfg) == "fp16"
     assert module_quant_type("layers.0.mlp.gate_proj", cfg) == "fp16"
     assert module_quant_type("self_conditioning.gate_proj", cfg) == "fp16"

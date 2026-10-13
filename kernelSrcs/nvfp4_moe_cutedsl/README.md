@@ -55,10 +55,8 @@ pairs):
 | `nvfp4_moe_sm110_fc2_n128_fp16` | 128 |
 | `nvfp4_moe_sm110_fc2_n256_fp16` | 256 |
 
-FC2 outputs FP16 directly back into the token layout. The runner currently
-picks `n128` unconditionally (see `selectMmaTilerN` in
-[`cuteDslNvfp4MoeSm110Runner.cpp`](../../cpp/kernels/moe/nvfp4_cutedsl/cuteDslNvfp4MoeSm110Runner.cpp));
-`n256` is exported for follow-up benchmarking.
+FC2 outputs FP16 directly back into the token layout. The production runner
+launches `n128` unconditionally; `n256` is exported for follow-up benchmarking.
 
 ## Tensor Contract
 
@@ -169,6 +167,7 @@ gemm(
     num_non_exiting_tiles=num_non_exiting_tiles,
     alpha=alpha,
     max_active_clusters=max_active_clusters,
+    enable_pdl=1,
     stream=stream,
 )
 ```
@@ -188,7 +187,7 @@ gemm = Sm100BlockScaledContiguousGroupedGemmFinalizeFusionKernel(
 )
 gemm(
     a_tensor, b_tensor, sfa_tensor, sfb_tensor, out_tensor,
-    max_active_clusters, stream,
+    max_active_clusters, 1, stream,
 )
 ```
 
@@ -213,8 +212,11 @@ for SM110.
   Plain `[up..., gate...]` concatenation produces wrong results silently.
   See `repack_nvfp4_gated_moe_experts` in
   [`tensorrt_edgellm/checkpoint/repacking.py`](../../tensorrt_edgellm/checkpoint/repacking.py).
-- **PDL.** Programmatic Dependent Launch is currently disabled
-  (`EDGELLM_ENABLE_PDL = False` in [`cute_utils.py`](cute_utils.py)).
+- **PDL.** FC1 and FC2 carry matching device wait/trigger instructions and a
+  runtime launch-policy argument. PDL is enabled by default on supported SM90+
+  toolchains; set `EDGELLM_ENABLE_PDL=0` before starting the runtime for an
+  explicit legacy-launch A/B path. The output memset runs before setup so it
+  does not interrupt the direct FC1-to-FC2 dependency.
 - **Tile size.** Only `m_tile_size = 128` (1-CTA) is supported.
 
 ## Validation
@@ -233,5 +235,5 @@ smoke and accuracy tests.
 | `export_fc2_kernel.py` | FC2 AOT export script (invoked by `build_cutedsl.py`) |
 | `export_common.py`     | Shared AOT export helpers (dummy pointers, SF buffer sizing) |
 | `custom_pipeline.py`   | SM110 CuTe DSL pipeline helper |
-| `cute_utils.py`        | CuTe DSL utility helpers (PTX helpers, PDL gate, etc.) |
+| `cute_utils.py`        | CuTe DSL utility helpers (PTX helpers, grid dependency control, etc.) |
 | `moe_compat.py`        | Compatibility helpers for the split SM110 path |

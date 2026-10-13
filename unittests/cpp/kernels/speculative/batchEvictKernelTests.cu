@@ -224,6 +224,70 @@ TEST(BatchEvictKernels, CompactTensorBatchSupportsInt8TreeMask)
     CUDA_CHECK(cudaStreamDestroy(stream));
 }
 
+TEST(BatchEvictKernels, CompactExecutionTensorBatchPreservesTokenMajorSequenceBlocks)
+{
+    cudaStream_t stream{};
+    CUDA_CHECK(cudaStreamCreate(&stream));
+
+    constexpr int32_t kOldBatch = 3;
+    constexpr int32_t kNewBatch = 2;
+    constexpr int32_t kRowsPerSequence = 2;
+    constexpr int32_t kHiddenSize = 2;
+    rt::Tensor mapping({kOldBatch}, rt::DeviceType::kGPU, DataType::kINT32);
+    copyHostToDevice(mapping, std::vector<int32_t>{-1, 0, 1});
+
+    rt::Tensor hiddenStates({kOldBatch * kRowsPerSequence, kHiddenSize}, rt::DeviceType::kGPU, DataType::kFLOAT);
+    copyHostToDevice(hiddenStates, std::vector<float>{10, 11, 12, 13, 20, 21, 22, 23, 30, 31, 32, 33});
+
+    compactExecutionTensorBatch(hiddenStates, mapping, kOldBatch, kNewBatch, stream);
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+
+    EXPECT_EQ(hiddenStates.getShape(), (rt::Coords{kNewBatch * kRowsPerSequence, kHiddenSize}));
+    std::vector<float> const compacted = copyDeviceToHost<float>(hiddenStates);
+    EXPECT_EQ(compacted, (std::vector<float>{20, 21, 22, 23, 30, 31, 32, 33}));
+    CUDA_CHECK(cudaStreamDestroy(stream));
+}
+
+TEST(BatchEvictKernels, CompactExecutionRowIndicesRebasesAbsoluteRows)
+{
+    cudaStream_t stream{};
+    CUDA_CHECK(cudaStreamCreate(&stream));
+
+    constexpr int32_t kOldBatch = 3;
+    constexpr int32_t kNewBatch = 2;
+    constexpr int32_t kExecutionRowsPerSequence = 4;
+    rt::Tensor mapping({kOldBatch}, rt::DeviceType::kGPU, DataType::kINT32);
+    copyHostToDevice(mapping, std::vector<int32_t>{-1, 0, 1});
+    rt::Tensor indices({kOldBatch, 3}, rt::DeviceType::kGPU, DataType::kINT64);
+    copyHostToDevice(indices, std::vector<int64_t>{0, 2, 3, 4, 6, 7, 8, 11, 9});
+
+    compactExecutionRowIndices(indices, mapping, kOldBatch, kNewBatch, kExecutionRowsPerSequence, stream);
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+
+    EXPECT_EQ(indices.getShape(), (rt::Coords{kNewBatch, 3}));
+    EXPECT_EQ(copyDeviceToHost<int64_t>(indices), (std::vector<int64_t>{0, 2, 3, 4, 7, 5}));
+    CUDA_CHECK(cudaStreamDestroy(stream));
+}
+
+TEST(BatchEvictKernels, CompactTensorBatchIgnoresDestinationOutsideNewBatch)
+{
+    cudaStream_t stream{};
+    CUDA_CHECK(cudaStreamCreate(&stream));
+
+    constexpr int32_t kOldBatch = 3;
+    constexpr int32_t kNewBatch = 2;
+    rt::Tensor mapping({kOldBatch}, rt::DeviceType::kGPU, DataType::kINT32);
+    copyHostToDevice(mapping, std::vector<int32_t>{0, kNewBatch, -1});
+    rt::Tensor values({kOldBatch}, rt::DeviceType::kGPU, DataType::kINT32);
+    copyHostToDevice(values, std::vector<int32_t>{10, 20, 30});
+
+    compactTensorBatch(values, mapping, values, kOldBatch, kNewBatch, stream);
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+
+    EXPECT_EQ(copyDeviceToHost<int32_t>(values), (std::vector<int32_t>{10, 20, 30}));
+    CUDA_CHECK(cudaStreamDestroy(stream));
+}
+
 // Performance Test: compactTensorBatch (In-place)
 // ============================================================================
 TEST(BatchEvictKernels, DISABLED_CompactTensorBatchPerformance)

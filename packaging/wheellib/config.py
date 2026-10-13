@@ -269,11 +269,13 @@ def _validate_submodules(repo_root: Path) -> Dict[str, str]:
     declared = _declared_submodule_revisions(repo_root)
     gitlinks = _gitlink_revisions(repo_root, declared)
     checked_out = _submodule_revisions(repo_root)
-    if set(declared) != set(checked_out):
+    # A recursive status also lists submodules of our submodules. Those are pinned by
+    # their own parent's gitlink, not by this .gitmodules, so only the paths declared
+    # here are ours to validate.
+    missing = sorted(set(declared) - set(checked_out))
+    if missing:
         raise RuntimeError(
-            "Submodule declaration/status drift: "
-            f"missing={sorted(set(declared) - set(checked_out))}, "
-            f"undeclared={sorted(set(checked_out) - set(declared))}.")
+            f"Submodule declaration/status drift: missing={missing}.")
     mismatches = {
         path: {
             "declared": declared[path],
@@ -332,8 +334,11 @@ def _cutedsl_inventory_from_readme(
     readme = (repo_root / "kernelSrcs" /
               "README.md").read_text(encoding="utf-8")
     matches = re.findall(
-        r"cutedsl_(x86_64|aarch64)_sm_(\d+)_cuda(\d+)\.tar\.gz", readme)
-    return {(arch, int(sm), int(cuda)) for arch, sm, cuda in matches}
+        r"cutedsl_(x86_64|aarch64)_(sm_\d+(?:_sm_\d+)*)_cuda(\d+)\.tar\.gz",
+        readme)
+    return {(arch, int(sm), int(cuda))
+            for arch, tag, cuda in matches
+            for sm in re.findall(r"sm_(\d+)", tag)}
 
 
 def _validate_matrix_header(
@@ -378,7 +383,9 @@ def _validate_cutedsl_artifacts(matrix: Mapping[str, Any],
     return declared
 
 
-_EMBEDDED_TARGETS = {"", "auto-thor", "gb10", "jetson-orin", "jetson-thor"}
+_EMBEDDED_TARGETS = {
+    "", "auto-thor", "gb10", "igx-thor", "jetson-orin", "jetson-thor"
+}
 
 
 def _normalize_variant(value: Any, index: int) -> Dict[str, Any]:
@@ -410,19 +417,18 @@ def _validate_variant_dependencies(row: Mapping[str, Any],
     variant_id = str(row["variant_id"])
     try:
         cuda_major = int(str(row["cuda_ctk_version"]).split(".", 1)[0])
-        gpu_sm = int(row["gpu_sm"])
+        int(row["gpu_sm"])
     except (TypeError, ValueError) as error:
         raise RuntimeError(
             f"Variant {variant_id} has invalid CUDA or SM metadata."
         ) from error
-    artifact = (str(row["cpu_arch"]), gpu_sm, cuda_major)
-    if artifact not in declared_artifacts:
+    artifact_sms = CONTRACT.matrix_variant_gpu_sms(row)
+    artifacts = {(str(row["cpu_arch"]), sm, cuda_major) for sm in artifact_sms}
+    missing_artifacts = sorted(artifacts - declared_artifacts)
+    if missing_artifacts:
         raise RuntimeError(
-            f"Variant {variant_id} references undeclared CuTe artifact {artifact}."
-        )
-    if row["cute_dsl_artifact_tag"] != f"sm_{gpu_sm}":
-        raise RuntimeError(
-            f"Variant {variant_id} artifact tag does not match gpu_sm.")
+            f"Variant {variant_id} references undeclared CuTe artifacts "
+            f"{missing_artifacts}.")
     cudart_match = re.fullmatch(r"libcudart\.so\.(\d+)",
                                 str(row["cuda_runtime_soname"]))
     if cudart_match is None or int(cudart_match.group(1)) != cuda_major:
@@ -437,15 +443,15 @@ def _validate_variant_dependencies(row: Mapping[str, Any],
         )
 
 
-def _runtime_identity(row: Mapping[str, Any]) -> Tuple[object, ...]:
-    return (
+def _runtime_identities(row: Mapping[str, Any]) -> List[Tuple[object, ...]]:
+    return [(
         row["platform_family"],
         row["platform_release"],
         row["cpu_arch"],
         row["cuda_runtime_soname"],
         row["tensorrt_runtime_soname"],
-        int(row["gpu_sm"]),
-    )
+        sm,
+    ) for sm in CONTRACT.matrix_variant_gpu_sms(row)]
 
 
 def _validate_required_releases(matrix: Mapping[str, Any],
@@ -475,11 +481,11 @@ def _validate_variant_rows(
         ids.add(variant_id)
         _validate_variant_platform(row)
         _validate_variant_dependencies(row, declared_artifacts, trt_majors)
-        identity = _runtime_identity(row)
-        if identity in identities:
-            raise RuntimeError(
-                f"Duplicate runtime identity in variant {variant_id}.")
-        identities.add(identity)
+        for identity in _runtime_identities(row):
+            if identity in identities:
+                raise RuntimeError(
+                    f"Duplicate runtime identity in variant {variant_id}.")
+            identities.add(identity)
         releases.add(f"{row['platform_family']}:{row['platform_release']}")
         normalized.append(row)
     return normalized, releases

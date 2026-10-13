@@ -185,11 +185,18 @@ class SpecDecodeGenerationMetrics : public BaseMetrics
 public:
     int64_t totalIterations{0};      //!< Total number of speculative decoding iterations
     int64_t totalGeneratedTokens{0}; //!< Total number of generated tokens
+    //! Draft tokens accepted by verification (bonus token excluded)
+    int64_t totalAcceptedDraftTokens{0};
+    //! Draft tokens proposed for verification (bonus token excluded)
+    int64_t totalProposedDraftTokens{0};
 
     //! @brief Record a speculative decoding generation run
     //! @param iterations Number of iterations
     //! @param generatedTokens Number of generated tokens
-    void recordRun(int64_t iterations, int64_t generatedTokens) noexcept
+    //! @param acceptedDraftTokens Draft tokens accepted by verification
+    //! @param proposedDraftTokens Draft tokens proposed for verification
+    void recordRun(int64_t iterations, int64_t generatedTokens, int64_t acceptedDraftTokens = 0,
+        int64_t proposedDraftTokens = 0) noexcept
     {
         if (!getProfilingEnabled())
         {
@@ -198,6 +205,8 @@ public:
         totalRuns++;
         totalIterations += iterations;
         totalGeneratedTokens += generatedTokens;
+        totalAcceptedDraftTokens += acceptedDraftTokens;
+        totalProposedDraftTokens += proposedDraftTokens;
     }
 };
 

@@ -45,6 +45,8 @@ namespace trt_edgellm
 namespace rt
 {
 
+class GuidedDecoder;
+
 struct LogitBias;
 
 enum class DecodingStrategyKind : int32_t
@@ -71,6 +73,12 @@ constexpr bool shouldUseHybridMtpEndpointReuse(DecodingStrategyKind selectedStra
 struct DecodingStrategyCapabilities
 {
     bool ownsBaseVerificationCudaGraphs{false};
+    bool supportsLosslessSampling{false};
+    int32_t maxSamplingSupport{0}; //!< 0 when the decoder does not require a bounded sampling support.
+    //! Preserve request sampling semantics instead of coercing a greedy-only strategy.
+    bool fallbackToVanillaForNonGreedySampling{false};
+    //! Capture vanilla graphs when request routing may select the default decoder.
+    bool requiresDefaultDecoderCudaGraphs{false};
 };
 
 struct SamplingBuffers
@@ -81,6 +89,12 @@ struct SamplingBuffers
     Tensor& baseVocabMappingTable;
     Tensor& hostPackedTokenIds;
     Tensor& hostSelectedTokenIds;
+    //! Sampled indices captured *before* mapReducedVocabToFullVocab, i.e. still in the
+    //! engine's output vocabulary. Grammar matchers live in that space (see GuidedDecoder),
+    //! so they must be advanced with these rather than the remapped full IDs.
+    Tensor& hostOutputSpaceIds;
+    Tensor& uniforms;
+    Tensor& hostUniforms;
 };
 
 /*!
@@ -133,6 +147,7 @@ struct DecodingRuntimeContext
     PreprocessResources preprocess;
     tokenizer::Tokenizer& tokenizer;
     LogitBias& logitBias;
+    GuidedDecoder& guidedDecoder;
     SamplingBuffers sampling;
     LogprobsBuffers logprobs;
 
@@ -157,6 +172,11 @@ public:
     virtual DecodingKvHeadroom requiredKvHeadroom() const
     {
         return {/*.baseExtraTokens=*/1, /*.draftExtraTokens=*/0};
+    }
+
+    virtual DecodingTokenStateContract tokenStateContract() const noexcept
+    {
+        return DecodingTokenStateContract::kCommittedPlusLookahead;
     }
 
     virtual bool decodeStep(DecodingInferenceContext& context) = 0;
@@ -184,7 +204,7 @@ public:
     // these system-prompt-specific interfaces. The runtime should call a generic
     // prefill method; system prompt caching becomes an internal optimisation.
     virtual bool hasSystemPromptKVCache(SystemPromptCacheKey const&) const = 0;
-    virtual void restoreSystemPromptKVCache(SystemPromptCacheKey const&, int32_t, cudaStream_t) = 0;
+    virtual void restoreSystemPromptKVCache(SystemPromptCacheKey const&, int32_t residentSlot, cudaStream_t) = 0;
     virtual bool runSystemPromptPrefill(DecodingInferenceContext&) = 0;
     virtual void saveSystemPromptKVCache(SystemPromptCacheKey const&, std::string const&,
         std::vector<tokenizer::Rank> const&, int32_t, cudaStream_t) = 0;

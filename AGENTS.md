@@ -12,7 +12,7 @@ TensorRT Edge-LLM: NVIDIA C++/CUDA/Python inference runtime for deploying LLMs a
 - `git commit -s` (DCO sign-off required). Never attribute AI tools in sign-off line. Always rely on `git` to do the sign off instead of directly adding sign off in commit message.
 - Do not add co-authors to the git commit message unless explicitly instructed to do so by the user.
 - `pre-commit` hooks run on commit — if files are modified by hooks, re-stage and commit again
-- PR title format: Conventional Commits style (e.g., `feat: Add Qwen3 support`, `fix #700: Memory leak in runtime`)
+- PR title format: Conventional Commits style (e.g., `feat: Add Qwen3 support`, `fix: Prevent a runtime memory leak`)
 - Set `TRT_PACKAGE_DIR` for all C++ builds; set `LLM_SDK_DIR` for all Python tests
 - Set `LD_LIBRARY_PATH` before running any built binary: `export LD_LIBRARY_PATH=$TRT_PACKAGE_DIR/lib:$LD_LIBRARY_PATH`
 - Git submodules must be initialized: `git submodule update --init` (googletest, nlohmann/json, NVTX)
@@ -39,7 +39,7 @@ TensorRT Edge-LLM: NVIDIA C++/CUDA/Python inference runtime for deploying LLMs a
 | C++ unit tests (build all) | `cmake --build build --target unitTests -j$(nproc)` |
 | Python package (install) | `pip install -r requirements.txt && python -m build --wheel --outdir dist . && pip install dist/*.whl` |
 | Python tool extras | `pip install ".[tools]"` |
-| Python test suite | `pytest --priority=l0_pipeline_a30 -v` |
+| Python test suite | `pytest --priority=l0_e2e_a30 -v` |
 | Single Python test | `pytest tests/defs/test_model_export.py -v` |
 | Python unit tests | `pytest tests/python-unittests/ -v` |
 | Pre-commit (all files) | `pre-commit run --all-files` |
@@ -180,17 +180,6 @@ as producer/smoke coverage for downstream pipeline jobs.
 
 ### Test Priorities
 
-| Priority | GPU/Device | Type |
-|----------|-----------|------|
-| `l0_checkpoint_export_ampere` | A30 (x86) | `tensorrt_edgellm` Ampere export |
-| `l0_checkpoint_export` | B100/Thor (x86) | `tensorrt_edgellm` FP8/NVFP4 export |
-| `l0_pipeline_a30` | A30 | Full pipeline |
-| `l0_pipeline_orin` | Jetson Orin (remote) | On-device pipeline |
-| `l0_pipeline_rtx5080` | RTX 5080 | FP8 small model pipeline |
-| `l0_pipeline_jedha` | Jedha (SM110) | Long accuracy + EAGLE + larger models |
-| `l0_pipeline_thor_1` | Drive Thor 1 (remote) | On-device FP8/NVFP4 pipeline |
-| `l0_pipeline_thor_2` | Drive Thor 2 (remote) | On-device FP8+KV pipeline |
-| `l0_python_ut` | Any | Python unit tests |
 
 Runtime test parameter format: `ModelName-Precision-[LmHeadPrecision-]MaxSeqLen-MaxBatchSize-MaxInputLen-[Additional-Params]`.
 Export tests omit sequence length, batch, and input length parameters. See `tests/README.md`.

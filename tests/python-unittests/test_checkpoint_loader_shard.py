@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Unit tests for ``_resolve_shard`` path-traversal guard in checkpoint/loader.py."""
+"""Unit tests for checkpoint path and tensor sharding helpers."""
 
 import os
 import sys
@@ -25,7 +25,11 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 try:
-    from tensorrt_edgellm.checkpoint.loader import _resolve_shard
+    import torch
+
+    from tensorrt_edgellm.checkpoint.loader import (
+        _load_segmented_weight_shard, _resolve_shard)
+    from tensorrt_edgellm.config import Mapping
 except ImportError as exc:  # pragma: no cover
     pytest.skip(f"tensorrt_edgellm not importable: {exc}",
                 allow_module_level=True)
@@ -59,3 +63,25 @@ def test_resolve_shard_absolute_path_rejected(tmp_path):
 def test_resolve_shard_returns_str(tmp_path):
     result = _resolve_shard(str(tmp_path), "weights.bin")
     assert isinstance(result, str)
+
+
+@pytest.mark.parametrize(
+    "rank,expected",
+    [
+        (0, [0, 1, 4, 5, 8]),
+        (1, [2, 3, 6, 7, 9]),
+    ],
+)
+def test_segmented_weight_shard_preserves_each_logical_segment(rank, expected):
+    tensor = torch.arange(10)
+    mapping = Mapping(world_size=2, rank=rank, tp_size=2, tp_rank=rank)
+
+    shard = _load_segmented_weight_shard(tensor, 0, (2, 2, 1), mapping)
+
+    assert shard.tolist() == expected
+
+
+def test_segmented_weight_shard_rejects_incompatible_shape():
+    mapping = Mapping(world_size=2, rank=0, tp_size=2, tp_rank=0)
+    with pytest.raises(ValueError, match="does not match"):
+        _load_segmented_weight_shard(torch.arange(9), 0, (2, 2, 1), mapping)

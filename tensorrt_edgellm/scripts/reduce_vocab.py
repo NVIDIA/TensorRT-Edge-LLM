@@ -99,13 +99,28 @@ def main() -> None:
         print(f"Reducing vocabulary with {args.method!r} method...")
         print(f"{'=' * 70}\n")
 
+        # The runtime unions the config.json and generation_config.json EOS
+        # sets; every stop token must survive vocabulary reduction so guided
+        # decoding can stop on it.
+        generation_eos_ids = set()
+        generation_config_path = os.path.join(args.model_dir,
+                                              "generation_config.json")
+        if os.path.isfile(generation_config_path):
+            with open(generation_config_path) as generation_file:
+                eos_value = json.load(generation_file).get("eos_token_id")
+            if isinstance(eos_value, int):
+                generation_eos_ids = {eos_value}
+            elif isinstance(eos_value, list):
+                generation_eos_ids = {int(item) for item in eos_value}
+
         vocab_map = reduce_vocab_size(
             tokenizer=tokenizer,
             config=config,
             dataset=dataset,
             reduced_vocab_size=args.reduced_vocab_size,
             d2t_tensor=d2t_tensor,
-            method=args.method)
+            method=args.method,
+            extra_required_tokens=generation_eos_ids)
 
         vocab_map_path = os.path.join(args.output_dir, VOCAB_MAP_NAME)
         print(f"Saving vocabulary map to {vocab_map_path}...")

@@ -105,7 +105,8 @@ class LinearWeights:
         """Infer the input dimension for supported checkpoint layouts."""
         if self.logical_in_features is not None:
             return self.logical_in_features
-        if self.quant_type == quantization.QUANT_NVFP4:
+        if self.quant_type in (quantization.QUANT_NVFP4,
+                               quantization.QUANT_NVFP4_A16):
             return int(self.weight.shape[1]) * 2
         return int(self.weight.shape[1])
 
@@ -155,7 +156,10 @@ class Weights:
     def has(self, name: str) -> bool:
         return self._resolve(name, required=False) is not None
 
-    def _resolve(self, name: str, required: bool = True) -> Optional[str]:
+    def _resolve(self,
+                 name: str,
+                 required: bool = True,
+                 pin: bool = True) -> Optional[str]:
         candidates = [name]
         resolve_candidates = getattr(self.conversion, "resolve_candidates",
                                      None)
@@ -188,11 +192,56 @@ class Weights:
                     if not candidate.endswith("embed_tokens.weight")
                 ]
         candidates = list(dict.fromkeys(candidates))
+        if pin:
+            owned = self._module_tensor_key(name)
+            if owned is not None:
+                candidates = [owned]
         for candidate in candidates:
             if self.store.has(candidate):
                 return candidate
         if required:
             raise KeyError(f"checkpoint tensor not found: {name!r}")
+        return None
+
+    # Every tensor one module can own, and the subset that can be its primary
+    # weight. A draft resolves its modules in its own namespace (Qwen3.5 MTP
+    # stores them under ``mtp.``) and then falls back to the base model's
+    # names, so resolving a module's tensors one name at a time lets the base
+    # model's identically named module answer for whatever the draft lacks.
+    _MODULE_TENSORS = (".weight", ".qweight", ".weight_packed", ".bias",
+                       ".weight_scale", ".weight_scale_2",
+                       ".weight_global_scale", ".input_scale",
+                       ".input_global_scale", ".pre_quant_scale", ".scales",
+                       ".qzeros", ".g_idx")
+    _PRIMARY_WEIGHTS = (".weight", ".qweight", ".weight_packed")
+    # Carrying anything besides a plain weight and a bias means a module's
+    # weights are stored quantized.
+    _QUANT_MARKERS = tuple(suffix for suffix in _MODULE_TENSORS
+                           if suffix not in (".weight", ".bias"))
+
+    def _module_namespace(self, prefix: str) -> Optional[str]:
+        """Concrete checkpoint prefix owning one module's tensors.
+
+        The first primary weight that resolves decides the namespace, so a
+        module is read as a whole rather than one tensor name at a time.
+        Returns None when no primary weight resolves.
+        """
+        for suffix in self._PRIMARY_WEIGHTS:
+            key = self._resolve(prefix + suffix, required=False, pin=False)
+            if key is not None:
+                return key[:-len(suffix)]
+        return None
+
+    def _module_tensor_key(self, name: str) -> Optional[str]:
+        """Key for a module tensor, pinned to the namespace owning its module.
+
+        Returns None when *name* is not a module tensor or its module has no
+        primary weight, leaving ordinary candidate resolution to run.
+        """
+        for suffix in self._MODULE_TENSORS:
+            if name.endswith(suffix) and len(name) > len(suffix):
+                namespace = self._module_namespace(name[:-len(suffix)])
+                return None if namespace is None else namespace + suffix
         return None
 
     def checkpoint_key(self, name: str) -> str:
@@ -246,10 +295,31 @@ class Weights:
                           *,
                           tie_word_embeddings: bool = False) -> str:
         """Return the checkpoint precision owned by one model projection."""
+        lookup = name
+        normalize = getattr(self.conversion, "normalize_checkpoint_name", None)
+        if normalize is not None:
+            lookup = normalize(lookup)
+        quant_type = self.quant.module_type(lookup, tie_word_embeddings)
+        # Overrides are keyed by module name, which a draft shares with the
+        # base layer it falls back to, so a quantized base layer would claim
+        # an unquantized draft layer. The weights stored for this module
+        # decide. ``lm_head`` is exempt because resolving it consults this
+        # method for embedding tying.
+        if quant_type == quantization.QUANT_FP16 or name == "lm_head":
+            return quant_type
+        namespace = self._module_namespace(name)
+        if namespace is None or any(
+                self.store.has(namespace + marker)
+                for marker in self._QUANT_MARKERS):
+            return quant_type
+        return quantization.QUANT_FP16
+
+    def module_quant_group_size(self, name: str) -> int:
+        """Return the checkpoint group size owned by one model projection."""
         normalize = getattr(self.conversion, "normalize_checkpoint_name", None)
         if normalize is not None:
             name = normalize(name)
-        return self.quant.module_type(name, tie_word_embeddings)
+        return self.quant.module_group_size(name)
 
     def parameter_spec(self,
                        name: str,
@@ -336,6 +406,23 @@ class Weights:
         """Return one tensor while retaining its stored integer/float dtype."""
         return np.ascontiguousarray(self.store.get_numpy(self._resolve(name)))
 
+    def gptq_expert_projection(self, experts_prefix: str, expert_index: int,
+                               projection: str):
+        """Load one GPTQ expert projection in its provider layout."""
+        prefix = f"{experts_prefix}.{expert_index}.{projection}"
+        if self.has(prefix + ".g_idx"):
+            group_index = self.array(prefix + ".g_idx").reshape(-1)
+            group_size = self.module_quant_group_size(prefix)
+            expected = np.arange(group_index.size) // group_size
+            if not np.array_equal(group_index, expected):
+                raise ValueError(
+                    f"act-order GPTQ experts are not supported: {prefix}")
+        qzeros = (self.array(prefix + ".qzeros")
+                  if self.has(prefix + ".qzeros") else np.empty(
+                      (1, 0), dtype=np.int32))
+        return (self.array(prefix + ".qweight"), qzeros,
+                self.f16(prefix + ".scales"))
+
     def opt_f16(self, name: str) -> Optional[np.ndarray]:
         return self.f16(name) if self.has(name) else None
 
@@ -394,7 +481,8 @@ class Weights:
                 bias,
                 weight_recipe=(self.checkpoint_binding(
                     [prefix + ".weight"], "fp16") if verbatim else None))
-        if quant_type == quantization.QUANT_NVFP4:
+        if quant_type in (quantization.QUANT_NVFP4,
+                          quantization.QUANT_NVFP4_A16):
             raw = self.linear_nvfp4_raw(prefix)
             return LinearWeights(
                 quant_type,
@@ -403,7 +491,7 @@ class Weights:
                 weight_scale=raw["weight_scale"],
                 weight_scale_2=raw["weight_scale_2"],
                 input_scale=raw["input_scale"],
-                group_size=self.group_size,
+                group_size=self.module_quant_group_size(prefix),
             )
         if quant_type == quantization.QUANT_FP8:
             return LinearWeights(
@@ -428,7 +516,7 @@ class Weights:
                 bias,
                 weight_scale=self.array(prefix + ".weight_scale").astype(
                     np.uint8, copy=False),
-                group_size=self.group_size,
+                group_size=self.module_quant_group_size(prefix),
             )
         if quant_type == quantization.QUANT_INT4_AWQ:
             qweight = self.array(prefix + ".qweight")
@@ -453,7 +541,7 @@ class Weights:
                 packed,
                 bias,
                 weight_scale=scales,
-                group_size=self.group_size,
+                group_size=self.module_quant_group_size(prefix),
                 weight_recipe=None if reduced else self.checkpoint_binding(
                     [prefix + ".qweight", prefix + ".qzeros"],
                     assemble="awq_ffn_qweight",
@@ -487,7 +575,7 @@ class Weights:
                 bias,
                 weight_scale=np.ascontiguousarray(scales),
                 pre_quant_scale=np.ascontiguousarray(pre_quant_scale),
-                group_size=self.group_size,
+                group_size=self.module_quant_group_size(prefix),
                 weight_recipe=None if reduced else self.checkpoint_binding(
                     [prefix + ".weight"],
                     "int4_modelopt_uint8",
@@ -535,7 +623,7 @@ class Weights:
                 bias,
                 weight_scale=scales,
                 activation_permutation=permutation,
-                group_size=self.group_size,
+                group_size=self.module_quant_group_size(prefix),
                 weight_recipe=None if reduced else self.checkpoint_binding(
                     [
                         prefix + ".qweight", prefix + ".qzeros", prefix +
@@ -568,7 +656,8 @@ class Weights:
 
     def linear(self, prefix: str, quant_type: str) -> LinearWeights:
         """Load a linear and apply an optional output-vocabulary map."""
-        if (quant_type == quantization.QUANT_NVFP4
+        if (quant_type
+                in (quantization.QUANT_NVFP4, quantization.QUANT_NVFP4_A16)
                 and not self.is_nvfp4(prefix)):
             raise ValueError(
                 f"{prefix}: quantization config selects NVFP4, but the "
@@ -698,7 +787,7 @@ class Weights:
                 activation_permutation_recipe = self.checkpoint_binding(
                     [prefix + ".g_idx"],
                     assemble="gptq_activation_permutation",
-                    group_size=self.group_size)
+                    group_size=self.module_quant_group_size(prefix))
             else:
                 activation_permutation = np.arange(in_features, dtype=np.int64)
                 activation_permutation_recipe = None
@@ -717,7 +806,7 @@ class Weights:
             weight_scale=scale,
             pre_quant_scale=pre_quant_scale,
             activation_permutation=activation_permutation,
-            group_size=self.group_size,
+            group_size=self.module_quant_group_size(prefix),
             weight_recipe=weight_recipe,
             scale_recipe=scale_recipe,
             pre_quant_recipe=pre_quant_recipe,
@@ -755,7 +844,8 @@ class Weights:
                 f"{prefix}: NVFP4 weight and scale must be rank-2")
         out_features = int(weight_shape[0])
         in_features = int(weight_shape[1]) * 2
-        expected_scale_shape = (out_features, in_features // self.group_size)
+        expected_scale_shape = (out_features, in_features //
+                                self.module_quant_group_size(prefix))
         if tuple(scale_shape) != expected_scale_shape:
             raise ValueError(
                 f"{prefix}: NVFP4 scale shape {scale_shape} does not match "
@@ -777,7 +867,7 @@ class Weights:
             weight_scale=ParameterSpec(scale_shape, np.uint8),
             weight_scale_2=weight_scale_2,
             input_scale=input_scale,
-            group_size=self.group_size,
+            group_size=self.module_quant_group_size(prefix),
             weight_recipe=self.checkpoint_binding([weight_name],
                                                   "nvfp4_packed"),
             scale_recipe=self.checkpoint_binding([scale_name], "nvfp4_scale"),
@@ -791,7 +881,8 @@ class Weights:
                           *,
                           external_kind: str = "") -> LinearWeights:
         """Return a dense projection payload or metadata, as required."""
-        if (quant_type == quantization.QUANT_NVFP4
+        if (quant_type
+                in (quantization.QUANT_NVFP4, quantization.QUANT_NVFP4_A16)
                 and not self.is_nvfp4(prefix)):
             raise ValueError(
                 f"{prefix}: quantization config selects NVFP4, but the "
@@ -841,11 +932,57 @@ class Weights:
         return np.ascontiguousarray(np.take(array, indices, axis=axes[-1]))
 
     @staticmethod
-    def shard_linear(linear: LinearWeights, mode: str, tp_size: int,
-                     tp_rank: int) -> LinearWeights:
-        """Return one contiguous tensor-parallel shard of a linear."""
+    def shard_segments(value: np.ndarray,
+                       segments: Sequence[int],
+                       tp_size: int,
+                       tp_rank: int,
+                       axis: int = 0) -> np.ndarray:
+        """Shard each concatenated segment independently along one axis."""
+        if tp_size < 1:
+            raise ValueError("tp_size must be positive")
+        if tp_rank < 0 or tp_rank >= tp_size:
+            raise ValueError("tp_rank must be in [0, tp_size)")
+        if axis < 0 or axis >= value.ndim:
+            raise ValueError(f"invalid shard axis {axis} for {value.shape}")
+        segment_sizes = tuple(int(size) for size in segments)
+        if not segment_sizes or any(size <= 0 for size in segment_sizes):
+            raise ValueError("shard segments must be positive")
+        if sum(segment_sizes) != value.shape[axis]:
+            raise ValueError(
+                f"shard segments {segment_sizes} do not cover axis {axis} "
+                f"of shape {value.shape}")
+        if any(size % tp_size for size in segment_sizes):
+            raise ValueError(
+                f"shard segments {segment_sizes} are not divisible by "
+                f"tp_size {tp_size}")
+        if tp_size == 1:
+            return np.ascontiguousarray(value)
+
+        pieces = []
+        offset = 0
+        for size in segment_sizes:
+            local_size = size // tp_size
+            selected = [slice(None)] * value.ndim
+            start = offset + tp_rank * local_size
+            selected[axis] = slice(start, start + local_size)
+            pieces.append(value[tuple(selected)])
+            offset += size
+        return np.ascontiguousarray(np.concatenate(pieces, axis=axis))
+
+    @staticmethod
+    def shard_linear(
+        linear: LinearWeights,
+        mode: str,
+        tp_size: int,
+        tp_rank: int,
+        output_segments: Sequence[int] = ()) -> LinearWeights:
+        """Return one tensor-parallel shard of a linear."""
         if tp_size == 1 or mode == "replicated":
             return linear
+        if linear.quant_type == quantization.QUANT_NVFP4_A16:
+            raise NotImplementedError(
+                "NVFP4-A16 tensor parallelism requires repacking each raw shard"
+            )
         full_out = linear.out_features
         full_in = linear.in_features
         split_size = full_out if mode == "column" else full_in
@@ -853,6 +990,15 @@ class Weights:
             raise ValueError(
                 f"cannot {mode}-shard linear dimension {split_size} over {tp_size} ranks"
             )
+        output_segments = tuple(int(size) for size in output_segments)
+        if output_segments:
+            if mode != "column":
+                raise ValueError(
+                    "output segments require column-parallel sharding")
+            if sum(output_segments) != full_out:
+                raise ValueError(
+                    f"output segments {output_segments} do not match "
+                    f"linear output size {full_out}")
 
         def rank_neutral_recipe(recipe, **fields):
             if recipe is None:
@@ -866,6 +1012,13 @@ class Weights:
         def split(value, recipe, axis):
             if value is None:
                 return value, recipe
+            if output_segments and axis == 0:
+                if isinstance(value, ParameterSpec):
+                    raise ValueError(
+                        "segmented TP projections must remain engine "
+                        "constants")
+                return (Weights.shard_segments(value, output_segments, tp_size,
+                                               tp_rank, axis), None)
             if isinstance(value, ParameterSpec):
                 shape = list(value.shape)
                 if shape[axis] % tp_size:
@@ -979,8 +1132,8 @@ class Weights:
             ws2 = self._nvfp4_global_scale(
                 self.store.get_scalar_f32(self._resolve(global_scale_name)),
                 reciprocal)
-            dense = nvfp4_pack.decode_modelopt_nvfp4(packed, sf, ws2,
-                                                     self.group_size)
+            dense = nvfp4_pack.decode_modelopt_nvfp4(
+                packed, sf, ws2, self.module_quant_group_size(prefix))
             w = dense.astype(np.float16)
         elif self.has(prefix + ".weight"):
             w = self.f16(prefix + ".weight")
@@ -1041,8 +1194,8 @@ class Weights:
         ws2 = self._nvfp4_global_scale(
             self.store.get_scalar_f32(self._resolve(global_scale_name)),
             reciprocal)
-        return nvfp4_pack.decode_modelopt_nvfp4(packed, sf, ws2,
-                                                self.group_size)
+        return nvfp4_pack.decode_modelopt_nvfp4(
+            packed, sf, ws2, self.module_quant_group_size(prefix))
 
     def expert_raw_nvfp4(self, prefix: str) -> dict:
         """Return raw NVFP4 bytes for one expert projection (byte-reuse path)."""

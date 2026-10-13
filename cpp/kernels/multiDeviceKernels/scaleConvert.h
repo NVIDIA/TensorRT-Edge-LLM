@@ -53,22 +53,18 @@ inline int64_t getSfAtomTiledBufferSize(int32_t numRows, int32_t numKBlocks)
 void fusedFp32ToSfAtom(
     float const* fp32Scales, uint8_t* tiledOut, int32_t numRows, int32_t numKBlocks, cudaStream_t stream);
 
-/// Fused FP8E4M3 x FP32_scalar -> UE4M3 conversion + SfAtom tiled repack in a single kernel.
-///
-/// Reads FP8 scales, multiplies by the FP32 global scalar, converts to UE4M3, and
-/// writes directly to the SfAtom tiled offset.
+/// Repack checkpoint block scales into the SfAtom tiled layout.
 ///
 /// Output buffer does not need to be pre-zeroed; padding bytes are written by the kernel.
 ///
 /// @param fp8Scales    Input FP8E4M3FN scales [numRows, numKBlocks] row-major
-/// @param fp32Global   FP32 global scale scalar (device pointer, may be nullptr)
 /// @param tiledOut     Output SfAtom tiled UE4M3 buffer
 /// @param numRows      Number of rows
 /// @param numKBlocks   Number of K-dimension scale blocks
 /// @param stream       CUDA stream
 #if SUPPORTS_FP8
-void fusedFp8ToSfAtom(__nv_fp8_e4m3 const* fp8Scales, float const* fp32Global, uint8_t* tiledOut, int32_t numRows,
-    int32_t numKBlocks, cudaStream_t stream);
+void repackE4m3ScalesToSfAtom(
+    __nv_fp8_e4m3 const* fp8Scales, uint8_t* tiledOut, int32_t numRows, int32_t numKBlocks, cudaStream_t stream);
 #endif // SUPPORTS_FP8
 
 } // namespace kernels

@@ -21,6 +21,7 @@ import tensorrt as trt
 from ...ops import (GatedDecoderAttention, GatedExperts, GatedMLP, Linear,
                     Module, NetworkModule, RMSNorm, TopKRouter)
 from ...ops import functional as F
+from ...ops.ragged import RaggedDecoderInputs, add_ragged_decoder_inputs
 from . import weights as weight_conversion
 
 
@@ -89,11 +90,10 @@ class Qwen3OmniMtpDecoderLayer(Module):
         self.attention = Qwen3OmniMtpAttention(ctx, self.key("self_attn"))
         self.mlp = Qwen3OmniMtpSparseMoeBlock(ctx, self.key("mlp"))
 
-    def forward(self, hidden, past, rope, context_lengths, cache_start,
-                kv_page_table, attention_mask, attention_pos_id):
+    def forward(self, hidden, past, rope, ragged, attention_mask,
+                attention_pos_id):
         attention, present = self.attention(self.input_norm(hidden), past,
-                                            rope, context_lengths, cache_start,
-                                            kv_page_table, attention_mask,
+                                            rope, ragged, attention_mask,
                                             attention_pos_id)
         hidden = hidden + attention
         hidden = hidden + self.mlp(self.post_norm(hidden))
@@ -127,55 +127,51 @@ class Qwen3OmniMtpDraftModel(NetworkModule):
 
     def input_tensors(self) -> Dict[str, object]:
         cfg = self.cfg
-        return {
+        kv_dtype = (trt.DataType.FP8
+                    if cfg.kv_cache_quant == "fp8" else trt.float16)
+        io = {
             "inputs_embeds":
             self.add_input("inputs_embeds", trt.float16,
-                           (-1, -1, cfg.hidden_size)),
+                           (-1, cfg.hidden_size)),
             "past_key_values": [
-                self.add_input(f"past_key_values_{index}", trt.float16,
+                self.add_input(f"past_key_values_{index}", kv_dtype,
                                (2, -1, F.KV_PAGE_SIZE, cfg.num_key_value_heads,
                                 cfg.head_dim))
                 for index in range(cfg.num_hidden_layers)
             ],
             "rope":
             self.add_input("rope_rotary_cos_sin", trt.float32,
-                           (-1, -1, cfg.rotary_dim)),
-            "context_lengths":
-            self.add_input("context_lengths", trt.int32, (-1, )),
-            "cache_start":
-            self.add_input("kvcache_start_index", trt.int32, (-1, )),
-            "kv_page_table":
-            self.add_input("kv_page_table", trt.int32, (-1, 2, -1)),
+                           (-1, cfg.rotary_dim)),
             "base_hidden":
             self.add_input("hidden_states_input", trt.float16,
-                           (-1, -1, cfg.hidden_size)),
+                           (-1, cfg.hidden_size)),
             "draft_hidden":
             self.add_input("hidden_states_from_draft", trt.float16,
-                           (-1, -1, cfg.hidden_size)),
+                           (-1, cfg.hidden_size)),
             "attention_pos_id":
-            self.add_input("attention_pos_id", trt.int32, (-1, -1)),
+            self.add_input("attention_position_ids", trt.int32, (-1, )),
             "attention_mask":
-            self.add_input("attention_mask", trt.int32, (-1, -1, -1)),
-            "last_token_ids":
-            self.add_input("last_token_ids", trt.int64, (-1, 1)),
+            self.add_input("packed_attention_mask", trt.int32, (-1, -1)),
         }
+        io.update(add_ragged_decoder_inputs(self.add_input).as_dict())
+        return io
 
     def forward(self, **io):
+        ragged = RaggedDecoderInputs.from_dict(io)
         outputs = {}
         merged = F.concatenate(
             (self.pre_embed_norm(io["inputs_embeds"]),
-             self.pre_hidden_norm(io["base_hidden"] + io["draft_hidden"])), 2)
+             self.pre_hidden_norm(io["base_hidden"] + io["draft_hidden"])), 1)
         hidden = self.fc(merged)
         present = []
         for index, layer in enumerate(self.layers):
             hidden, cache = layer(hidden, io["past_key_values"][index],
-                                  io["rope"], io["context_lengths"],
-                                  io["cache_start"], io["kv_page_table"],
-                                  io["attention_mask"], io["attention_pos_id"])
+                                  io["rope"], ragged, io["attention_mask"],
+                                  io["attention_pos_id"])
             present.append(cache)
-        selected = F.gather_last_tokens(hidden, io["last_token_ids"])
+        selected = F.gather_token_rows(hidden, ragged.logits_indices)
         outputs["logits"] = self.lm_head(self.norm(selected)).cast(
-            trt.float32).log_softmax(2)
+            trt.float32).log_softmax(1)
         outputs["hidden_states"] = selected
         for index, tensor in enumerate(present):
             outputs[f"present_key_values_{index}"] = tensor

@@ -35,7 +35,8 @@ std::vector<std::pair<int64_t, int64_t>> getAllSupportedAspectRatios(int64_t min
 
 //! Compute resized image size (height, width) based on token/tile constraints
 std::tuple<int64_t, int64_t> computeBestBlockGridForResize(int64_t height, int64_t width,
-    int64_t minImageTokensPerImage, int64_t maxImageTokensPerImage, int64_t blockImageSizeH, int64_t blockImageSizeW);
+    int64_t minImageTokensPerImage, int64_t maxImageTokensPerImage, int64_t blockImageSizeH, int64_t blockImageSizeW,
+    int64_t tokensPerBlock);
 
 /*!
  * @brief Compute the Qwen-family resize target with the 2D per-frame pixel budget (HF `smart_resize` parity,

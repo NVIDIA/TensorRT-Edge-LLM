@@ -14,12 +14,20 @@
 # limitations under the License.
 """Typed OpenAI protocol models supported by the Edge-LLM server."""
 
+import logging
 import time
 import uuid
 from typing import Any, Dict, List, Literal, Optional, Union
 
-from pydantic import (BaseModel, ConfigDict, Field, StrictBool,
+from pydantic import (BaseModel, ConfigDict, Field, StrictBool, ValidationInfo,
                       field_validator, model_validator)
+
+logger = logging.getLogger("edgellm.server.protocol")
+
+_UNSUPPORTED_SAMPLING_DEFAULTS = {
+    "min_p": 0.0,
+    "repetition_penalty": 1.0,
+}
 
 
 class OpenAIBaseModel(BaseModel):
@@ -59,20 +67,26 @@ class ChatCompletionRequest(OpenAIBaseModel):
     max_tokens: Optional[int] = Field(default=None, ge=1)
     max_completion_tokens: Optional[int] = Field(default=None, ge=1)
     n: int = Field(default=1, ge=1, le=1)
-    seed: Optional[int] = None
+    seed: Optional[int] = Field(default=None, ge=0, le=(1 << 64) - 1)
     stop: Optional[Union[str, List[str]]] = None
     stream: bool = False
     stream_options: Optional[StreamOptions] = None
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     top_p: float = Field(default=0.9, gt=0.0, le=1.0)
-    top_k: int = Field(default=50, ge=1)
+    top_k: int = Field(default=50, ge=-1)
+    min_p: float = Field(default=0.0, ge=0.0, le=1.0)
+    repetition_penalty: float = Field(default=1.0, gt=0.0)
     tools: Optional[List[Dict[str, Any]]] = None
     tool_choice: Optional[Union[str, Dict[str, Any]]] = None
     parallel_tool_calls: bool = True
     response_format: Optional[Dict[str, Any]] = None
+    guided_decoding: Optional[Dict[str, Any]] = None
     modalities: Optional[List[Literal["text", "audio"]]] = None
     audio: Optional[ChatAudioConfig] = None
+    apply_chat_template: StrictBool = True
+    add_generation_prompt: StrictBool = True
     enable_thinking: bool = False
+    reasoning_effort: Optional[str] = None
     chat_template_kwargs: Optional[Dict[str, Any]] = None
     disable_spec_decode: bool = False
     reuse_context: StrictBool = True
@@ -88,6 +102,18 @@ class ChatCompletionRequest(OpenAIBaseModel):
             return value
         raise ValueError("stop must be a string or an array of strings")
 
+    @field_validator("min_p", "repetition_penalty")
+    @classmethod
+    def _normalize_unsupported_sampling_fields(
+            cls, value: Union[int, float],
+            info: ValidationInfo) -> Union[int, float]:
+        default = _UNSUPPORTED_SAMPLING_DEFAULTS[info.field_name]
+        if value == default:
+            return value
+        logger.warning("%s=%s is unsupported; using default %s",
+                       info.field_name, value, default)
+        return default
+
     @model_validator(mode="after")
     def _validate_request(self):
         if not self.messages:
@@ -101,7 +127,9 @@ class ChatCompletionRequest(OpenAIBaseModel):
         if self.top_logprobs is not None and not self.logprobs:
             raise ValueError("top_logprobs requires logprobs=true")
         if self.chat_template_kwargs is not None:
-            extra = set(self.chat_template_kwargs) - {"enable_thinking"}
+            extra = set(self.chat_template_kwargs) - {
+                "enable_thinking", "reasoning_effort"
+            }
             if extra:
                 raise ValueError("unsupported chat_template_kwargs: " +
                                  ", ".join(sorted(extra)))
@@ -111,6 +139,12 @@ class ChatCompletionRequest(OpenAIBaseModel):
                     "chat_template_kwargs.enable_thinking must be a bool")
             if value is not None:
                 self.enable_thinking = value
+            effort = self.chat_template_kwargs.get("reasoning_effort")
+            if effort is not None and not isinstance(effort, str):
+                raise ValueError(
+                    "chat_template_kwargs.reasoning_effort must be a string")
+            if effort is not None:
+                self.reasoning_effort = effort
         wants_audio = bool(self.modalities and "audio" in self.modalities)
         if wants_audio != (self.audio is not None):
             raise ValueError(

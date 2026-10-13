@@ -218,11 +218,11 @@ void TestRopeWriteKvPrefill(int32_t const batchSize, AttnParams const& attnParam
         }
     }
 
-    std::cout << "TestRopeWriteKvPrefill [FP16 KV cache] "
-              << "BatchSize: " << batchSize << " QHeadNum: " << numQHeads << " KVHeadNum: " << numKVHeads
-              << " HeadSize: " << headDim << " RotaryDim: " << rotaryDim << " KVCacheCapacity: " << kvCacheCapacity
-              << " qSeqLen: " << qSeqLen << " cosSinCacheBatchSize: " << cosSinCacheBatchSize
-              << " cosSinCacheSeqLen: " << cosSinCacheSeqLen << std::endl;
+    std::cout << "TestRopeWriteKvPrefill [FP16 KV cache] " << "BatchSize: " << batchSize << " QHeadNum: " << numQHeads
+              << " KVHeadNum: " << numKVHeads << " HeadSize: " << headDim << " RotaryDim: " << rotaryDim
+              << " KVCacheCapacity: " << kvCacheCapacity << " qSeqLen: " << qSeqLen
+              << " cosSinCacheBatchSize: " << cosSinCacheBatchSize << " cosSinCacheSeqLen: " << cosSinCacheSeqLen
+              << std::endl;
 
 #if SUPPORTS_FP8
     if (enableFp8Check)
@@ -312,11 +312,11 @@ void TestRopeWriteKvPrefill(int32_t const batchSize, AttnParams const& attnParam
             }
         }
 
-        std::cout << "TestRopeWriteKvPrefill [FP8 KV cache] "
-                  << "BatchSize: " << batchSize << " QHeadNum: " << numQHeads << " KVHeadNum: " << numKVHeads
-                  << " HeadSize: " << headDim << " RotaryDim: " << rotaryDim << " KVCacheCapacity: " << kvCacheCapacity
-                  << " qSeqLen: " << qSeqLen << " cosSinCacheBatchSize: " << cosSinCacheBatchSize
-                  << " cosSinCacheSeqLen: " << cosSinCacheSeqLen << std::endl;
+        std::cout << "TestRopeWriteKvPrefill [FP8 KV cache] " << "BatchSize: " << batchSize
+                  << " QHeadNum: " << numQHeads << " KVHeadNum: " << numKVHeads << " HeadSize: " << headDim
+                  << " RotaryDim: " << rotaryDim << " KVCacheCapacity: " << kvCacheCapacity << " qSeqLen: " << qSeqLen
+                  << " cosSinCacheBatchSize: " << cosSinCacheBatchSize << " cosSinCacheSeqLen: " << cosSinCacheSeqLen
+                  << std::endl;
     }
 #else
     (void) enableFp8Check;
@@ -477,7 +477,9 @@ void TestRopeWriteKvDecode(int32_t const batchSize, AttnParams const& attnParams
     EXPECT_EQ(qOut.size(), qReference.size());
     for (size_t i = 0; i < qOut.size(); ++i)
     {
-        ASSERT_TRUE(isclose(qOut[i], qReference[i], 1e-3, 4e-3));
+        ASSERT_TRUE(isclose(qOut[i], qReference[i], 1e-3, 4e-3))
+            << "Q mismatch at index " << i << ": got " << __half2float(qOut[i]) << ", expected "
+            << __half2float(qReference[i]);
     }
 
     for (int32_t b = 0; b < batchSize; ++b)
@@ -505,13 +507,12 @@ void TestRopeWriteKvDecode(int32_t const batchSize, AttnParams const& attnParams
         }
     }
 
-    std::cout << "TestRopeWriteKvDecode [FP16 KV cache] "
-              << "BatchSize: " << batchSize << " QHeadNum: " << numQHeads << " KVHeadNum: " << numKVHeads
-              << " HeadSize: " << headDim << " RotaryDim: " << rotaryDim << " KVCacheCapacity: " << kvCacheCapacity
-              << " QLength: " << qLen << " Total Sequence Lengths (including past KVcache): " << fullSeqLens
-              << " RopeScale: " << ropeScale << " RopeTheta: " << ropeTheta
-              << " cosSinCacheBatchSize: " << cosSinCacheBatchSize << " cosSinCacheSeqLen: " << cosSinCacheSeqLen
-              << std::endl;
+    std::cout << "TestRopeWriteKvDecode [FP16 KV cache] " << "BatchSize: " << batchSize << " QHeadNum: " << numQHeads
+              << " KVHeadNum: " << numKVHeads << " HeadSize: " << headDim << " RotaryDim: " << rotaryDim
+              << " KVCacheCapacity: " << kvCacheCapacity << " QLength: " << qLen
+              << " Total Sequence Lengths (including past KVcache): " << fullSeqLens << " RopeScale: " << ropeScale
+              << " RopeTheta: " << ropeTheta << " cosSinCacheBatchSize: " << cosSinCacheBatchSize
+              << " cosSinCacheSeqLen: " << cosSinCacheSeqLen << std::endl;
 
 #if SUPPORTS_FP8
     if (enableFp8Check)
@@ -608,13 +609,12 @@ void TestRopeWriteKvDecode(int32_t const batchSize, AttnParams const& attnParams
             }
         }
 
-        std::cout << "TestRopeWriteKvDecode [FP8 KV cache] "
-                  << "BatchSize: " << batchSize << " QHeadNum: " << numQHeads << " KVHeadNum: " << numKVHeads
-                  << " HeadSize: " << headDim << " RotaryDim: " << rotaryDim << " KVCacheCapacity: " << kvCacheCapacity
-                  << " QLength: " << qLen << " Total Sequence Lengths (including past KVcache): " << fullSeqLens
-                  << " RopeScale: " << ropeScale << " RopeTheta: " << ropeTheta
-                  << " cosSinCacheBatchSize: " << cosSinCacheBatchSize << " cosSinCacheSeqLen: " << cosSinCacheSeqLen
-                  << std::endl;
+        std::cout << "TestRopeWriteKvDecode [FP8 KV cache] " << "BatchSize: " << batchSize << " QHeadNum: " << numQHeads
+                  << " KVHeadNum: " << numKVHeads << " HeadSize: " << headDim << " RotaryDim: " << rotaryDim
+                  << " KVCacheCapacity: " << kvCacheCapacity << " QLength: " << qLen
+                  << " Total Sequence Lengths (including past KVcache): " << fullSeqLens << " RopeScale: " << ropeScale
+                  << " RopeTheta: " << ropeTheta << " cosSinCacheBatchSize: " << cosSinCacheBatchSize
+                  << " cosSinCacheSeqLen: " << cosSinCacheSeqLen << std::endl;
     }
 #else
     (void) enableFp8Check;
@@ -732,8 +732,10 @@ void BenchmarkRopeWriteKv(
 //! Covers non-power-of-2 lane counts (headDim=96/80 -> ghost-lane padding) and tail tokens
 //! (totalNumTokens not a multiple of tokens-per-CTA), which must join the warp collectives
 //! without storing anything. Reference: per-head RMSNorm + this file's RoPE reference.
+//! With postRopeNorm (HunYuan V1 order), the reference rotates first and normalizes the
+//! rotated head.
 void TestRopePackedFusedNorm(int32_t const batchSize, AttnParams const& attnParams, int32_t const kvCacheCapacity,
-    int32_t const qSeqLen, bool const scramblePages = false)
+    int32_t const qSeqLen, bool const scramblePages = false, bool const postRopeNorm = false)
 {
     cudaStream_t stream{nullptr};
 
@@ -796,7 +798,7 @@ void TestRopePackedFusedNorm(int32_t const batchSize, AttnParams const& attnPara
 
     launchApplyRopeFromPackedToSplit(cosSinCacheTensor, std::nullopt, std::nullopt, packedTensor, qScratchTensor,
         kvCacheTensor, 1.0f, 1.0f, stream, pageTableTensor.dataPointer<int32_t>(), maxPagesPerSeq, nullptr, nullptr,
-        nullptr, 1.0f, qGammaTensor.dataPointer<half>(), kGammaTensor.dataPointer<half>(), rmsEps);
+        nullptr, 1.0f, qGammaTensor.dataPointer<half>(), kGammaTensor.dataPointer<half>(), rmsEps, postRopeNorm);
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
     auto const qOut = copyDeviceToHost<half>(qScratchTensor);
@@ -858,8 +860,13 @@ void TestRopePackedFusedNorm(int32_t const batchSize, AttnParams const& attnPara
 
             for (int32_t hq = 0; hq < numQHeads; ++hq)
             {
-                auto const normed = rmsNormHead(packedInput.data() + tokenBase + hq * headDim, qGamma);
-                auto const qRef = ropeRefCosSin(normed, 1, headDim, rotaryDim, cosVec, sinVec, permuteRope);
+                half const* const qSrc = packedInput.data() + tokenBase + hq * headDim;
+                auto const qRef = postRopeNorm
+                    ? rmsNormHead(ropeRefCosSin(std::vector<half>(qSrc, qSrc + headDim), 1, headDim, rotaryDim, cosVec,
+                                      sinVec, permuteRope)
+                                      .data(),
+                          qGamma)
+                    : ropeRefCosSin(rmsNormHead(qSrc, qGamma), 1, headDim, rotaryDim, cosVec, sinVec, permuteRope);
                 int64_t const qOffset = (static_cast<int64_t>(i) * qSeqLen + j) * numQHeads * headDim + hq * headDim;
                 for (int32_t d = 0; d < headDim; ++d)
                 {
@@ -869,8 +876,13 @@ void TestRopePackedFusedNorm(int32_t const batchSize, AttnParams const& attnPara
             }
             for (int32_t hkv = 0; hkv < numKVHeads; ++hkv)
             {
-                auto const normed = rmsNormHead(packedInput.data() + tokenBase + (numQHeads + hkv) * headDim, kGamma);
-                auto const kRef = ropeRefCosSin(normed, 1, headDim, rotaryDim, cosVec, sinVec, permuteRope);
+                half const* const kSrc = packedInput.data() + tokenBase + (numQHeads + hkv) * headDim;
+                auto const kRef = postRopeNorm
+                    ? rmsNormHead(ropeRefCosSin(std::vector<half>(kSrc, kSrc + headDim), 1, headDim, rotaryDim, cosVec,
+                                      sinVec, permuteRope)
+                                      .data(),
+                          kGamma)
+                    : ropeRefCosSin(rmsNormHead(kSrc, kGamma), 1, headDim, rotaryDim, cosVec, sinVec, permuteRope);
                 int64_t const vSrcBase = tokenBase + (numQHeads + numKVHeads + hkv) * headDim;
                 for (int32_t d = 0; d < headDim; ++d)
                 {
@@ -921,6 +933,7 @@ void TestRopePackedFusedNorm(int32_t const batchSize, AttnParams const& attnPara
 TEST(RopePackedRaggedPrefill, SkipsPaddingBeforePagedWrite)
 {
     cudaStream_t stream{nullptr};
+    CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
     int32_t constexpr batchSize = 2;
     int32_t constexpr qSeqLen = 128;
     int32_t constexpr numQHeads = 4;
@@ -944,6 +957,13 @@ TEST(RopePackedRaggedPrefill, SkipsPaddingBeforePagedWrite)
 
     rt::Tensor qScratchTensor(
         rt::Coords{batchSize, qSeqLen, numQHeads, headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor kScratchTensor(
+        rt::Coords{batchSize, qSeqLen, numKVHeads, headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor vScratchTensor(
+        rt::Coords{batchSize, qSeqLen, numKVHeads, headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    size_t constexpr scratchBytes = static_cast<size_t>(batchSize) * qSeqLen * numKVHeads * headDim * sizeof(half);
+    CUDA_CHECK(cudaMemsetAsync(kScratchTensor.rawPointer(), 0xFF, scratchBytes, stream));
+    CUDA_CHECK(cudaMemsetAsync(vScratchTensor.rawPointer(), 0xFF, scratchBytes, stream));
     half const sentinel = __float2half(777.0F);
     std::vector<half> kvCacheInit(
         static_cast<size_t>(2 * numPages) * rt::kTOKENS_PER_PAGE * numKVHeads * headDim, sentinel);
@@ -967,10 +987,12 @@ TEST(RopePackedRaggedPrefill, SkipsPaddingBeforePagedWrite)
 
     launchApplyRopeFromPackedToSplit(cosSinCacheTensor, rt::OptionalInputTensor{kvCacheEndLensTensor},
         rt::OptionalInputTensor{}, packedTensor, qScratchTensor, kvCacheTensor, 1.0F, 1.0F, stream,
-        pageTableTensor.dataPointer<int32_t>(), maxPagesPerSeq, nullptr, nullptr, nullptr, 1.0F, nullptr, nullptr,
-        1e-6F, rt::OptionalInputTensor{cuQSeqLensTensor});
+        pageTableTensor.dataPointer<int32_t>(), maxPagesPerSeq, kScratchTensor.rawPointer(),
+        vScratchTensor.rawPointer(), nullptr, 1.0F, nullptr, nullptr, 1e-6F, false,
+        rt::OptionalInputTensor{cuQSeqLensTensor});
     CUDA_CHECK(cudaStreamSynchronize(stream));
     CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaStreamDestroy(stream));
 
     auto const qOut = copyDeviceToHost<half>(qScratchTensor);
     for (int32_t row = 1; row < qSeqLen; ++row)
@@ -985,7 +1007,40 @@ TEST(RopePackedRaggedPrefill, SkipsPaddingBeforePagedWrite)
         }
     }
 
+    for (auto const* scratch : {&kScratchTensor, &vScratchTensor})
+    {
+        auto const values = copyDeviceToHost<half>(*scratch);
+        for (int32_t row = 1; row < qSeqLen; ++row)
+        {
+            for (int32_t column = 0; column < numKVHeads * headDim; ++column)
+            {
+                ASSERT_EQ(__half2float(values[static_cast<size_t>(row) * numKVHeads * headDim + column]), 0.0F)
+                    << "Dense attention scratch padding must not retain NaN";
+            }
+        }
+    }
+
     auto const kvOut = copyDeviceToHost<half>(kvCacheTensor);
+    auto const kOut = copyDeviceToHost<half>(kScratchTensor);
+    auto const vOut = copyDeviceToHost<half>(vScratchTensor);
+    for (int32_t batch = 0; batch < batchSize; ++batch)
+    {
+        int32_t const length = batch == 0 ? 1 : qSeqLen;
+        for (int32_t row = 0; row < length; ++row)
+        {
+            int32_t const page = batch == 0 ? 1 : 2;
+            int32_t const token = batch == 0 ? rt::kTOKENS_PER_PAGE - 1 : row;
+            for (int32_t dim = 0; dim < headDim; ++dim)
+            {
+                size_t const scratchIndex = (static_cast<size_t>(batch) * qSeqLen + row) * headDim + dim;
+                EXPECT_EQ(__half2float(kOut[scratchIndex]),
+                    __half2float(kvOut[pagedKvIndex(0, page, token, 0, dim, numPages, numKVHeads, headDim)]));
+                EXPECT_EQ(__half2float(vOut[scratchIndex]),
+                    __half2float(kvOut[pagedKvIndex(1, page, token, 0, dim, numPages, numKVHeads, headDim)]));
+            }
+        }
+    }
+
     for (int32_t page : {0, 3, 4, 7})
     {
         size_t const begin = static_cast<size_t>(page) * rt::kTOKENS_PER_PAGE * numKVHeads * headDim;
@@ -994,6 +1049,178 @@ TEST(RopePackedRaggedPrefill, SkipsPaddingBeforePagedWrite)
         {
             EXPECT_EQ(__half2float(kvOut[idx]), 777.0F) << "Unexpected write to unleased physical page " << page;
         }
+    }
+}
+
+TEST(RopePackedSharedKV, ProducesScratchWithoutWritingCache)
+{
+    cudaStream_t stream{nullptr};
+    int32_t constexpr kMIN_PDL_SM_VERSION{90};
+    int32_t constexpr batchSize = 1;
+    int32_t constexpr qSeqLen = 17;
+    int32_t constexpr numQHeads = 4;
+    int32_t constexpr numKVHeads = 2;
+    int32_t constexpr headDim = 64;
+    int32_t constexpr combinedHeads = numQHeads + 2 * numKVHeads;
+    int32_t constexpr maxPagesPerSeq = 1;
+    int32_t constexpr numPages = 1;
+
+    rt::Tensor cosSinCacheTensor(
+        rt::Coords{1, rt::kTOKENS_PER_PAGE, headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    initializeNormalRopeCosSin(
+        cosSinCacheTensor.dataPointer<float>(), 10000.0F, 1.0F, 1.0F, headDim, rt::kTOKENS_PER_PAGE, stream);
+
+    std::vector<half> packedInput(static_cast<size_t>(batchSize) * qSeqLen * combinedHeads * headDim);
+    uniformFloatInitialization(packedInput);
+    rt::Tensor packedTensor(
+        rt::Coords{batchSize, qSeqLen, combinedHeads, headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    copyHostToDevice(packedTensor, packedInput);
+
+    rt::Tensor qWritingTensor(
+        rt::Coords{batchSize, qSeqLen, numQHeads, headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor qReadOnlyTensor(
+        rt::Coords{batchSize, qSeqLen, numQHeads, headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor qOnlyTensor(
+        rt::Coords{batchSize, qSeqLen, numQHeads, headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor kWritingTensor(
+        rt::Coords{batchSize, qSeqLen, numKVHeads, headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor kReadOnlyTensor(
+        rt::Coords{batchSize, qSeqLen, numKVHeads, headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor vWritingTensor(
+        rt::Coords{batchSize, qSeqLen, numKVHeads, headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor vReadOnlyTensor(
+        rt::Coords{batchSize, qSeqLen, numKVHeads, headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+
+    half const sentinel = __float2half(777.0F);
+    std::vector<half> kvCacheInit(
+        static_cast<size_t>(2 * numPages) * rt::kTOKENS_PER_PAGE * numKVHeads * headDim, sentinel);
+    rt::Tensor writingCacheTensor(rt::Coords{2, numPages, rt::kTOKENS_PER_PAGE, numKVHeads, headDim},
+        rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor readOnlyCacheTensor(rt::Coords{2, numPages, rt::kTOKENS_PER_PAGE, numKVHeads, headDim},
+        rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor qOnlyCacheTensor(rt::Coords{2, numPages, rt::kTOKENS_PER_PAGE, numKVHeads, headDim},
+        rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    copyHostToDevice(writingCacheTensor, kvCacheInit);
+    copyHostToDevice(readOnlyCacheTensor, kvCacheInit);
+    copyHostToDevice(qOnlyCacheTensor, kvCacheInit);
+
+    rt::Tensor pageTableTensor(
+        rt::Coords{batchSize, 2, maxPagesPerSeq}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    copyHostToDevice(pageTableTensor, std::vector<int32_t>{0, 1});
+
+    launchApplyRopeFromPackedToSplit(cosSinCacheTensor, std::nullopt, std::nullopt, packedTensor, qWritingTensor,
+        writingCacheTensor, 1.0F, 1.0F, stream, pageTableTensor.dataPointer<int32_t>(), maxPagesPerSeq,
+        kWritingTensor.rawPointer(), vWritingTensor.rawPointer());
+    launchApplyRopeFromPackedToSplit(cosSinCacheTensor, std::nullopt, std::nullopt, packedTensor, qReadOnlyTensor,
+        readOnlyCacheTensor, 1.0F, 1.0F, stream, pageTableTensor.dataPointer<int32_t>(), maxPagesPerSeq,
+        kReadOnlyTensor.rawPointer(), vReadOnlyTensor.rawPointer(), nullptr, 1.0F, nullptr, nullptr, 1e-6F, false,
+        std::nullopt, false);
+    bool const enablePdl = getSMVersion() >= kMIN_PDL_SM_VERSION;
+    launchApplyRopeFromPackedToSplit(cosSinCacheTensor, std::nullopt, std::nullopt, packedTensor, qOnlyTensor,
+        qOnlyCacheTensor, 1.0F, 1.0F, stream, pageTableTensor.dataPointer<int32_t>(), maxPagesPerSeq, nullptr, nullptr,
+        nullptr, 1.0F, nullptr, nullptr, 1e-6F, false, std::nullopt, false /* writeKVCache */, enablePdl);
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    CUDA_CHECK(cudaGetLastError());
+
+    auto const qWriting = copyDeviceToHost<half>(qWritingTensor);
+    auto const qReadOnly = copyDeviceToHost<half>(qReadOnlyTensor);
+    auto const qOnly = copyDeviceToHost<half>(qOnlyTensor);
+    auto const kWriting = copyDeviceToHost<half>(kWritingTensor);
+    auto const kReadOnly = copyDeviceToHost<half>(kReadOnlyTensor);
+    auto const vWriting = copyDeviceToHost<half>(vWritingTensor);
+    auto const vReadOnly = copyDeviceToHost<half>(vReadOnlyTensor);
+    ASSERT_EQ(qReadOnly.size(), qWriting.size());
+    ASSERT_EQ(qOnly.size(), qWriting.size());
+    ASSERT_EQ(kReadOnly.size(), kWriting.size());
+    ASSERT_EQ(vReadOnly.size(), vWriting.size());
+    for (size_t index = 0; index < qReadOnly.size(); ++index)
+    {
+        EXPECT_EQ(__half2float(qReadOnly[index]), __half2float(qWriting[index]));
+        EXPECT_EQ(__half2float(qOnly[index]), __half2float(qWriting[index]));
+    }
+    for (size_t index = 0; index < kReadOnly.size(); ++index)
+    {
+        EXPECT_EQ(__half2float(kReadOnly[index]), __half2float(kWriting[index]));
+    }
+    for (size_t index = 0; index < vReadOnly.size(); ++index)
+    {
+        EXPECT_EQ(__half2float(vReadOnly[index]), __half2float(vWriting[index]));
+    }
+
+    auto const cacheReadOnly = copyDeviceToHost<half>(readOnlyCacheTensor);
+    for (half const value : cacheReadOnly)
+    {
+        EXPECT_EQ(__half2float(value), 777.0F);
+    }
+    auto const cacheQOnly = copyDeviceToHost<half>(qOnlyCacheTensor);
+    for (half const value : cacheQOnly)
+    {
+        EXPECT_EQ(__half2float(value), 777.0F);
+    }
+}
+
+TEST(RopePackedRaggedDecode, UsesTokenAlignedRopeAndAbsoluteKvPosition)
+{
+    cudaStream_t stream{nullptr};
+    int32_t constexpr headDim = 64;
+    int32_t constexpr numQHeads = 1;
+    int32_t constexpr numKVHeads = 1;
+    int32_t constexpr combinedHeads = numQHeads + 2 * numKVHeads;
+    int32_t constexpr maxPagesPerSeq = 2;
+
+    std::vector<float> cosSin(headDim);
+    std::fill_n(cosSin.begin(), headDim / 2, 0.25F);
+    std::fill_n(cosSin.begin() + headDim / 2, headDim / 2, 0.75F);
+    rt::Tensor cosSinTensor({1, 1, headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    copyHostToDevice(cosSinTensor, cosSin);
+
+    std::vector<half> packed(combinedHeads * headDim);
+    uniformFloatInitialization(packed);
+    rt::Tensor packedTensor({1, 1, combinedHeads, headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    copyHostToDevice(packedTensor, packed);
+    rt::Tensor qScratchTensor({1, 1, numQHeads, headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+
+    half const sentinel = __float2half(777.0F);
+    std::vector<half> kvInit(static_cast<size_t>(2 * maxPagesPerSeq) * kPageSize * numKVHeads * headDim, sentinel);
+    rt::Tensor kvCacheTensor(
+        {2, maxPagesPerSeq, kPageSize, numKVHeads, headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    copyHostToDevice(kvCacheTensor, kvInit);
+
+    rt::Tensor contextLengthTensor({1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    copyHostToDevice(contextLengthTensor, std::vector<int32_t>{201});
+    auto const pageTable = makeIdentityPageTable(1, maxPagesPerSeq);
+    rt::Tensor pageTableTensor({1, 2, maxPagesPerSeq}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    copyHostToDevice(pageTableTensor, pageTable);
+
+    launchApplyRopeFromPackedToSplit(cosSinTensor, rt::OptionalInputTensor{contextLengthTensor}, std::nullopt,
+        packedTensor, qScratchTensor, kvCacheTensor, 1.0F, 1.0F, stream, pageTableTensor.dataPointer<int32_t>(),
+        maxPagesPerSeq, nullptr, nullptr, nullptr, 1.0F, nullptr, nullptr, 1e-6F, false, std::nullopt,
+        /*writeKVCache=*/true, /*enablePdl=*/false, /*tokenAlignedRope=*/true);
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    CUDA_CHECK(cudaGetLastError());
+
+    std::vector<float> const cos(cosSin.begin(), cosSin.begin() + headDim / 2);
+    std::vector<float> const sin(cosSin.begin() + headDim / 2, cosSin.end());
+    std::vector<half> const qInput(packed.begin(), packed.begin() + headDim);
+    auto const qRef = ropeRefCosSin(qInput, 1, headDim, headDim, cos, sin, /*permuteRope=*/true);
+    auto const qOut = copyDeviceToHost<half>(qScratchTensor);
+    for (int32_t dim = 0; dim < headDim; ++dim)
+    {
+        EXPECT_TRUE(isclose(qOut[dim], qRef[dim], 1e-3, 1e-3)) << "Q mismatch at dim=" << dim;
+    }
+
+    auto const kvOut = copyDeviceToHost<half>(kvCacheTensor);
+    int32_t constexpr tokenPosition = 200;
+    int32_t constexpr page = tokenPosition / kPageSize;
+    int32_t constexpr inPage = tokenPosition % kPageSize;
+    for (int32_t dim = 0; dim < headDim; ++dim)
+    {
+        EXPECT_NE(
+            __half2float(kvOut[pagedKvIndex(0, page, inPage, 0, dim, maxPagesPerSeq, numKVHeads, headDim)]), 777.0F);
+        EXPECT_NE(
+            __half2float(kvOut[pagedKvIndex(1, page, inPage, 0, dim, maxPagesPerSeq, numKVHeads, headDim)]), 777.0F);
+        EXPECT_EQ(__half2float(kvOut[pagedKvIndex(0, 0, 0, 0, dim, maxPagesPerSeq, numKVHeads, headDim)]), 777.0F);
+        EXPECT_EQ(__half2float(kvOut[pagedKvIndex(1, 0, 0, 0, dim, maxPagesPerSeq, numKVHeads, headDim)]), 777.0F);
     }
 }
 
@@ -1012,6 +1239,122 @@ TEST(RopePackedFusedNorm, Accuracy)
 TEST(RopePackedFusedNorm, ScrambledPageTableSpansPageBoundary)
 {
     TestRopePackedFusedNorm(2, {4, 2, 64, 64}, 256, 130, /*scramblePages=*/true);
+}
+
+TEST(RopePackedFusedNorm, PostRopeAccuracy)
+{
+    // HunYuan V1 order (rotate then normalize); same lane/tail coverage as Accuracy.
+    TestRopePackedFusedNorm(2, {8, 2, 128, 128}, 16, 7, /*scramblePages=*/false, /*postRopeNorm=*/true);
+    TestRopePackedFusedNorm(2, {4, 2, 96, 96}, 16, 5, /*scramblePages=*/false, /*postRopeNorm=*/true);
+    TestRopePackedFusedNorm(1, {4, 2, 80, 80}, 16, 3, /*scramblePages=*/false, /*postRopeNorm=*/true);
+}
+
+//! Widened-pool contract of launchApplyRopeFromPackedToSplit: the pool head dimension may
+//! exceed the packed-QKV head dimension. Verifies (a) K/V land at the widened row strides
+//! (against the token-major K/V scratch mirrors of the same launch) and (b) the row tails
+//! [headDim, poolHeadDim) keep a pre-poisoned sentinel.
+TEST(RopePackedWidenedPool, WritesHeadDimPrefixAndPreservesTails)
+{
+    cudaStream_t stream{nullptr};
+    int32_t constexpr batchSize = 2;
+    int32_t constexpr qSeqLen = 130; // spans a page boundary
+    int32_t constexpr numQHeads = 4;
+    int32_t constexpr numKVHeads = 2;
+    int32_t constexpr headDim = 64;
+    int32_t constexpr rotaryDim = 64;
+    int32_t constexpr poolHeadDim = headDim + 128;
+    int32_t constexpr combinedHeads = numQHeads + 2 * numKVHeads;
+    int32_t constexpr kvCacheCapacity = 256;
+    int32_t const maxPagesPerSeq = getMaxPagesPerSeq(kvCacheCapacity);
+    int32_t const numPages = batchSize * maxPagesPerSeq;
+
+    rt::Tensor cosSinCacheTensor(
+        rt::Coords{1, kvCacheCapacity, rotaryDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    initializeNormalRopeCosSin(
+        cosSinCacheTensor.dataPointer<float>(), 10000.0F, 1.0F, 1.0F, rotaryDim, kvCacheCapacity, stream);
+
+    std::vector<half> packedInput(static_cast<size_t>(batchSize) * qSeqLen * combinedHeads * headDim);
+    uniformFloatInitialization(packedInput);
+    rt::Tensor packedTensor(
+        rt::Coords{batchSize, qSeqLen, combinedHeads, headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    copyHostToDevice(packedTensor, packedInput);
+
+    rt::Tensor qScratchTensor(
+        rt::Coords{batchSize, qSeqLen, numQHeads, headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor kMirrorTensor(
+        rt::Coords{batchSize, qSeqLen, numKVHeads, headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor vMirrorTensor(
+        rt::Coords{batchSize, qSeqLen, numKVHeads, headDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+
+    half const sentinel = __float2half(777.0F);
+    std::vector<half> const widenedPoolInit(
+        static_cast<size_t>(2) * numPages * kPageSize * numKVHeads * poolHeadDim, sentinel);
+    rt::Tensor widenedPoolTensor(
+        rt::Coords{2, numPages, kPageSize, numKVHeads, poolHeadDim}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    copyHostToDevice(widenedPoolTensor, widenedPoolInit);
+
+    std::vector<int32_t> const pageTableHost = makeIdentityPageTable(batchSize, maxPagesPerSeq);
+    rt::Tensor pageTableTensor(
+        rt::Coords{batchSize, 2, maxPagesPerSeq}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    copyHostToDevice(pageTableTensor, pageTableHost);
+
+    launchApplyRopeFromPackedToSplit(cosSinCacheTensor, std::nullopt, std::nullopt, packedTensor, qScratchTensor,
+        widenedPoolTensor, 1.0F, 1.0F, stream, pageTableTensor.dataPointer<int32_t>(), maxPagesPerSeq,
+        kMirrorTensor.rawPointer(), vMirrorTensor.rawPointer());
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    CUDA_CHECK(cudaGetLastError());
+
+    auto const kMirror = copyDeviceToHost<half>(kMirrorTensor);
+    auto const vMirror = copyDeviceToHost<half>(vMirrorTensor);
+    auto const widenedPool = copyDeviceToHost<half>(widenedPoolTensor);
+
+    for (int32_t b = 0; b < batchSize; ++b)
+    {
+        for (int32_t s = 0; s < qSeqLen; ++s)
+        {
+            int32_t const page = b * maxPagesPerSeq + s / kPageSize;
+            for (int32_t hkv = 0; hkv < numKVHeads; ++hkv)
+            {
+                int64_t const mirrorBase
+                    = (static_cast<int64_t>(b) * qSeqLen + s) * numKVHeads * headDim + hkv * headDim;
+                for (int32_t d = 0; d < headDim; ++d)
+                {
+                    float const kRef = __half2float(kMirror[mirrorBase + d]);
+                    float const vRef = __half2float(vMirror[mirrorBase + d]);
+                    // (a) Widened pool holds the mirrors' K/V at poolHeadDim row strides.
+                    ASSERT_EQ(__half2float(widenedPool[pagedKvIndex(
+                                  /*cachePlane=*/0, page, s % kPageSize, hkv, d, numPages, numKVHeads, poolHeadDim)]),
+                        kRef)
+                        << "widened K mismatch b=" << b << " s=" << s << " h=" << hkv << " d=" << d;
+                    ASSERT_EQ(__half2float(widenedPool[pagedKvIndex(
+                                  /*cachePlane=*/1, page, s % kPageSize, hkv, d, numPages, numKVHeads, poolHeadDim)]),
+                        vRef)
+                        << "widened V mismatch b=" << b << " s=" << s << " h=" << hkv << " d=" << d;
+                }
+            }
+        }
+        // (b) Row tails keep the sentinel on every slot — written or not — in both planes;
+        // rows past the written sequence additionally keep their K/V prefix untouched.
+        for (int32_t slot = 0; slot < kvCacheCapacity; ++slot)
+        {
+            int32_t const page = b * maxPagesPerSeq + slot / kPageSize;
+            for (int32_t plane = 0; plane < 2; ++plane)
+            {
+                for (int32_t hkv = 0; hkv < numKVHeads; ++hkv)
+                {
+                    int32_t const dBegin = slot < qSeqLen ? headDim : 0;
+                    for (int32_t d = dBegin; d < poolHeadDim; ++d)
+                    {
+                        ASSERT_EQ(__half2float(widenedPool[pagedKvIndex(
+                                      plane, page, slot % kPageSize, hkv, d, numPages, numKVHeads, poolHeadDim)]),
+                            777.0F)
+                            << "clobbered tail b=" << b << " plane=" << plane << " slot=" << slot << " h=" << hkv
+                            << " d=" << d;
+                    }
+                }
+            }
+        }
+    }
 }
 
 TEST(RopeWriteKvPrefill, Accuracy)
@@ -1038,6 +1381,51 @@ TEST(RopeWriteKvPrefill, AccuracyFp8)
     // QheadNum = 24, kvHeadNum = 3, headSize = 128, rotaryDim = 128, kvCacheCapacity = 4096, qLen = 512
     TestRopeWriteKvPrefill(2, {24, 3, 128, 128}, 4096, 512, 10000.0f, 1, 0, true);
 }
+
+#if SUPPORTS_FP8
+TEST(RopeWriteKvPrefill, Fp8HalfwayRoundingAcrossAllFiniteHalfValues)
+{
+    // Given all finite half values and a KV scale of 64/448, when writing the FP8 value cache,
+    // then quantization agrees with the host reference, including round-to-nearest-even halfway cases.
+    constexpr int32_t kLENGTH = 1024;
+    constexpr int32_t kDIM = 64;
+    constexpr int32_t kCOUNT = kLENGTH * kDIM;
+    int32_t const pages = getMaxPagesPerSeq(kLENGTH);
+    std::vector<half> values(kCOUNT), zero(kCOUNT, __float2half(0.0F));
+    std::vector<float> cosSin(kCOUNT, 0.0F);
+    for (int32_t i = 0; i < kCOUNT; ++i)
+    {
+        __half_raw raw;
+        raw.x = static_cast<unsigned short>(i);
+        half const value(raw);
+        values[i] = std::isfinite(__half2float(value)) ? value : __float2half(0.0F);
+        cosSin[i] = i % kDIM < kDIM / 2 ? 1.0F : 0.0F;
+    }
+    rt::Tensor q({1, kLENGTH, 1, kDIM}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor k({1, kLENGTH, 1, kDIM}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor v({1, kLENGTH, 1, kDIM}, rt::DeviceType::kGPU, nvinfer1::DataType::kHALF);
+    rt::Tensor rope({1, kLENGTH, kDIM}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor cache({2, pages, kPageSize, 1, kDIM}, rt::DeviceType::kGPU, nvinfer1::DataType::kFP8);
+    rt::Tensor pageTable({1, 2, pages}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    copyHostToDevice(q, zero);
+    copyHostToDevice(k, zero);
+    copyHostToDevice(v, values);
+    copyHostToDevice(rope, cosSin);
+    copyHostToDevice(pageTable, makeIdentityPageTable(1, pages));
+    float const scale = 64.0F / 448.0F;
+    float const inverse = 1.0F / scale;
+    launchApplyRopeWriteKV(
+        rope, std::nullopt, q, k, v, cache, scale, scale, nullptr, false, pageTable.dataPointer<int32_t>(), pages);
+    CUDA_CHECK(cudaStreamSynchronize(nullptr));
+    auto const result = copyDeviceToHost<__nv_fp8_e4m3>(cache);
+    for (int32_t i = 0; i < kCOUNT; ++i)
+    {
+        auto const offset = pagedKvIndex(1, i / kDIM / kPageSize, i / kDIM % kPageSize, 0, i % kDIM, pages, 1, kDIM);
+        float const expected = static_cast<float>(__nv_fp8_e4m3(__half2float(values[i]) * inverse));
+        ASSERT_EQ(static_cast<float>(result[offset]), expected) << "half bits=" << i;
+    }
+}
+#endif
 
 TEST(RopeWriteKvDecodeVanilla, Accuracy)
 {

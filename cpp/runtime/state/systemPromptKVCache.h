@@ -22,6 +22,7 @@
 #include "common/tensor.h"
 #include "tokenizer/tokenizer.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <tuple>
@@ -58,6 +59,12 @@ struct SystemPromptReuseResult
     std::vector<int32_t> tokenIds;  //!< Remaining input tokens still to be prefilled
     int32_t effectivePrefillLength; //!< Number of tokens left to prefill (== tokenIds.size())
 };
+
+inline bool hasReusableSystemPromptPrefix(SystemPromptKVCache const& cache, std::vector<int32_t> const& inputIds)
+{
+    return !cache.tokenizedPrompt.empty() && cache.tokenizedPrompt.size() < inputIds.size()
+        && std::equal(cache.tokenizedPrompt.begin(), cache.tokenizedPrompt.end(), inputIds.begin());
+}
 
 /*! \brief Compute how many tokens of `cache` can be reused for a request with input tokens `inputIds`.
  *

@@ -67,13 +67,12 @@ public:
     void restorePartialKv(int32_t snapshotSlot, PageId destinationBasePage, PageId destinationDraftPage,
         int32_t validTokenCount, cudaStream_t stream);
 
-    //! Save one base-hidden row (the checkpoint's successor-dependent boundary hidden state) from a live [batch, seq,
-    //! hidden] tensor into the boundary-hidden slab at snapshotSlot. Requires boundaryHiddenDim > 0.
-    void captureBoundaryHidden(int32_t snapshotSlot, Tensor const& sourceHiddenStates, int32_t batchSlot,
-        int32_t position, cudaStream_t stream);
-    //! Restore the saved boundary hidden row into destinationHiddenStates[batchSlot, position, :].
-    void restoreBoundaryHidden(int32_t snapshotSlot, Tensor& destinationHiddenStates, int32_t batchSlot,
-        int32_t position, cudaStream_t stream);
+    //! Save one successor-dependent boundary row from a live token-major [physicalTokens, hidden] tensor.
+    void captureBoundaryHidden(
+        int32_t snapshotSlot, Tensor const& sourceHiddenStates, int32_t physicalRow, cudaStream_t stream);
+    //! Restore the saved boundary hidden row into destinationHiddenStates[physicalRow, :].
+    void restoreBoundaryHidden(
+        int32_t snapshotSlot, Tensor& destinationHiddenStates, int32_t physicalRow, cudaStream_t stream);
 
     int32_t recurrentSlotCount() const noexcept;
     int32_t partialKvSlotCount() const noexcept;

@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Checkpoint-provided NVFP4 W4A16 lm_head (issue 703 / Qwen3.6-style)."""
+"""Checkpoint-provided NVFP4 W4A16 lm_head for Qwen3.6-style models."""
 
 import os
 import sys
@@ -34,7 +34,7 @@ from tensorrt_edgellm import config
 def test_mixed_precision_w4a16_dispatch_is_model_specific(
         model_type, expected_quant_type):
     """Qwen uses its established repacker; Nemotron-H uses Marlin A16."""
-    dominant, group_size, overrides = config._parse_mixed_precision(
+    dominant, group_size, overrides, group_sizes = config._parse_mixed_precision(
         {
             "layers.0.mlp.experts": {
                 "quant_algo": "W4A16_NVFP4",
@@ -49,6 +49,38 @@ def test_mixed_precision_w4a16_dispatch_is_model_specific(
     assert group_size == 16
     assert overrides["lm_head"] == expected_quant_type
     assert overrides["layers.0.mlp.experts"] == expected_quant_type
+    assert group_sizes["lm_head"] == 16
+    assert group_sizes["layers.0.mlp.experts"] == 16
+
+
+def test_mixed_precision_preserves_group_sizes_for_fused_overrides():
+    dominant, group_size, overrides, group_sizes = config._parse_mixed_precision(
+        {
+            "layers.0.self_attn.o_proj": {
+                "quant_algo": "FP8",
+                "group_size": 1
+            },
+            "layers.1.self_attn.o_proj": {
+                "quant_algo": "FP8",
+                "group_size": 1
+            },
+            "layers.0.mlp.gate_up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "lm_head": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+        })
+
+    assert dominant == config.QUANT_FP8
+    assert group_size == 1
+    assert overrides["layers.0.mlp.gate_proj"] == config.QUANT_NVFP4
+    assert overrides["layers.0.mlp.up_proj"] == config.QUANT_NVFP4
+    assert group_sizes["layers.0.mlp.gate_proj"] == 16
+    assert group_sizes["layers.0.mlp.up_proj"] == 16
+    assert group_sizes["lm_head"] == 16
 
 
 def test_parse_quant_keeps_excluded_fp16_lm_head():

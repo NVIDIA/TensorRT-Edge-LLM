@@ -416,50 +416,45 @@ int32_t HybridSnapshotStorage::boundaryHiddenDim() const noexcept
 }
 
 void HybridSnapshotStorage::captureBoundaryHidden(
-    int32_t snapshotSlot, Tensor const& sourceHiddenStates, int32_t batchSlot, int32_t position, cudaStream_t stream)
+    int32_t snapshotSlot, Tensor const& sourceHiddenStates, int32_t physicalRow, cudaStream_t stream)
 {
     ELLM_CHECK(mBoundaryHiddenDim > 0 && !mBoundaryHiddenSnapshot.isEmpty(),
         "Boundary hidden storage is not configured for this deployment");
     ELLM_CHECK(
         snapshotSlot >= 0 && snapshotSlot < mRecurrentSlotCount, "Boundary hidden snapshot slot is out of range");
     Coords const& shape = sourceHiddenStates.getShape();
-    ELLM_CHECK(shape.getNumDims() == 3 && shape[2] == mBoundaryHiddenDim,
-        "Boundary hidden source must be a [batch, seq, boundaryHiddenDim] tensor");
-    ELLM_CHECK(batchSlot >= 0 && batchSlot < shape[0] && position >= 0 && position < shape[1],
-        "Boundary hidden capture indices are out of range");
+    ELLM_CHECK(shape.getNumDims() == 2 && shape[1] == mBoundaryHiddenDim,
+        "Boundary hidden source must be a [physicalTokens, boundaryHiddenDim] tensor");
+    ELLM_CHECK(physicalRow >= 0 && physicalRow < shape[0], "Boundary hidden capture row is out of range");
     ELLM_CHECK(sourceHiddenStates.getDataType() == mBoundaryHiddenSnapshot.getDataType(),
         "Boundary hidden source dtype does not match the snapshot slab");
     size_t const rowBytes = checkedMultiply(static_cast<size_t>(mBoundaryHiddenDim),
         utils::getTypeSize(mBoundaryHiddenSnapshot.getDataType()), "boundary hidden row");
-    size_t const sourceRow
-        = static_cast<size_t>(batchSlot) * static_cast<size_t>(shape[1]) + static_cast<size_t>(position);
-    CUDA_CHECK(
-        cudaMemcpyAsync(byteOffset(mBoundaryHiddenSnapshot.rawPointer(), static_cast<size_t>(snapshotSlot) * rowBytes),
-            static_cast<std::byte const*>(sourceHiddenStates.rawPointer()) + sourceRow * rowBytes, rowBytes,
-            cudaMemcpyDeviceToDevice, stream));
+    CUDA_CHECK(cudaMemcpyAsync(
+        byteOffset(mBoundaryHiddenSnapshot.rawPointer(), static_cast<size_t>(snapshotSlot) * rowBytes),
+        static_cast<std::byte const*>(sourceHiddenStates.rawPointer()) + static_cast<size_t>(physicalRow) * rowBytes,
+        rowBytes, cudaMemcpyDeviceToDevice, stream));
 }
 
 void HybridSnapshotStorage::restoreBoundaryHidden(
-    int32_t snapshotSlot, Tensor& destinationHiddenStates, int32_t batchSlot, int32_t position, cudaStream_t stream)
+    int32_t snapshotSlot, Tensor& destinationHiddenStates, int32_t physicalRow, cudaStream_t stream)
 {
     ELLM_CHECK(mBoundaryHiddenDim > 0 && !mBoundaryHiddenSnapshot.isEmpty(),
         "Boundary hidden storage is not configured for this deployment");
     ELLM_CHECK(
         snapshotSlot >= 0 && snapshotSlot < mRecurrentSlotCount, "Boundary hidden snapshot slot is out of range");
     Coords const& shape = destinationHiddenStates.getShape();
-    ELLM_CHECK(shape.getNumDims() == 3 && shape[2] == mBoundaryHiddenDim,
-        "Boundary hidden destination must be a [batch, seq, boundaryHiddenDim] tensor");
-    ELLM_CHECK(batchSlot >= 0 && batchSlot < shape[0] && position >= 0 && position < shape[1],
-        "Boundary hidden restore indices are out of range");
+    ELLM_CHECK(shape.getNumDims() == 2 && shape[1] == mBoundaryHiddenDim,
+        "Boundary hidden destination must be a [physicalTokens, boundaryHiddenDim] tensor");
+    ELLM_CHECK(physicalRow >= 0 && physicalRow < shape[0], "Boundary hidden restore row is out of range");
     ELLM_CHECK(destinationHiddenStates.getDataType() == mBoundaryHiddenSnapshot.getDataType(),
         "Boundary hidden destination dtype does not match the snapshot slab");
     size_t const rowBytes = checkedMultiply(static_cast<size_t>(mBoundaryHiddenDim),
         utils::getTypeSize(mBoundaryHiddenSnapshot.getDataType()), "boundary hidden row");
-    size_t const destRow
-        = (static_cast<size_t>(batchSlot) * static_cast<size_t>(shape[1]) + static_cast<size_t>(position));
-    CUDA_CHECK(cudaMemcpyAsync(byteOffset(destinationHiddenStates.rawPointer(), destRow * rowBytes),
-        byteOffset(mBoundaryHiddenSnapshot.rawPointer(), static_cast<size_t>(snapshotSlot) * rowBytes), rowBytes,
-        cudaMemcpyDeviceToDevice, stream));
+    CUDA_CHECK(
+        cudaMemcpyAsync(byteOffset(destinationHiddenStates.rawPointer(), static_cast<size_t>(physicalRow) * rowBytes),
+            byteOffset(mBoundaryHiddenSnapshot.rawPointer(), static_cast<size_t>(snapshotSlot) * rowBytes), rowBytes,
+            cudaMemcpyDeviceToDevice, stream));
 }
 
 void HybridSnapshotStorage::validateRecurrentSlots(int32_t snapshotSlot, int32_t batchSlot) const

@@ -60,6 +60,7 @@ LLM-only:
 import argparse
 import json
 import logging
+import math
 import os
 import sys
 from typing import TYPE_CHECKING, Optional
@@ -73,11 +74,13 @@ if TYPE_CHECKING:
 # Register model-family implementations before AutoModel dispatch below.
 from .. import _export_api as _registered_export_api  # noqa: F401
 from ..checkpoint.checkpoint_utils import normalize_rope_scaling_for_runtime
-from ..config import _is_diffusion_gemma_model_type
+from ..config import (_is_diffusion_gemma_model_type,
+                      set_default_quantize_activations)
 from ..external_weights import (EXTERNAL_WEIGHT_CHOICES,
                                 EXTERNAL_WEIGHT_NVFP4_MOE,
                                 resolve_externalize_weights)
-from ..models.ops import set_int4_gemm_plugin_version
+from ..models.ops import (set_int4_gemm_plugin_version,
+                          set_nvfp4_a16_export_target_sm)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -122,6 +125,7 @@ _VLM_MODEL_TYPES = frozenset([
     "gemma4",
     "gemma4_unified",
     "alpamayo_r1",
+    "muse_glimmer",
     *_NEMOTRON_OMNI_MODEL_TYPES,
 ])
 
@@ -345,6 +349,12 @@ def _is_cosmos3_checkpoint(model_dir: str) -> bool:
     except (OSError, json.JSONDecodeError):
         return False
     return isinstance(class_name, str) and class_name.startswith("Cosmos3")
+
+
+def _is_pi05_checkpoint(model_dir: str) -> bool:
+    """Detect a converted openpi pi0.5 checkpoint."""
+    from ..models.pi05.weights import is_pi05_checkpoint
+    return is_pi05_checkpoint(model_dir)
 
 
 def _get_llm_text_config(config: dict) -> dict:
@@ -994,12 +1004,15 @@ def _export_llm(model_dir: str,
                 jetspec_tree_base: bool = False,
                 jetspec_draft_dir: str = "",
                 dspark_base: bool = False,
+                dspark_tree_base: bool = False,
                 dspark_draft_dir: str = "",
                 gemma4_mtp_base: bool = False,
                 externalize_weights: "list[str] | None" = None,
                 tp_size: int = 1,
                 num_decoder_layers: "int | None" = None,
                 skip_softmax_scale_factor: "float | None" = None,
+                skip_softmax_calibration: "dict | None" = None,
+                skip_softmax_target_sparsity: "float | None" = None,
                 quantization_override: "str | None" = None) -> None:
     """Export LLM backbone via the standard tensorrt_edgellm pipeline.
 
@@ -1093,12 +1106,14 @@ def _export_llm(model_dir: str,
                 jetspec_tree_base=jetspec_tree_base,
                 jetspec_draft_dir=jetspec_draft_dir or None,
                 dspark_base=dspark_base,
+                dspark_tree_base=dspark_tree_base,
                 dspark_draft_dir=dspark_draft_dir or None,
                 gemma4_mtp_base=gemma4_mtp_base,
                 tp_size=world,
                 tp_rank=rank,
                 num_decoder_layers=num_decoder_layers,
                 extra_configs=_extra_configs,
+                low_cpu_mem_usage=dflash_base,
             )
             if world > 1 and _is_speculative_model_config(model.config):
                 raise ValueError(
@@ -1108,8 +1123,8 @@ def _export_llm(model_dir: str,
             logger.exception("[LLM] Failed to load checkpoint")
             raise SystemExit(1) from exc
 
-        # CLI override of the skip-softmax (BLASST) scale factor: None = flag not given (keep the config value); an explicit 0.0
-        # disables skip-softmax even when config.json carries a positive S.
+        # None keeps the config value; an explicit 0.0 disables skip-softmax
+        # even when config.json carries a positive scale.
         if skip_softmax_scale_factor is not None:
             n_patched = 0
             for module in model.modules():
@@ -1149,15 +1164,17 @@ def _export_llm(model_dir: str,
             logger.exception("[LLM] ONNX export failed")
             raise SystemExit(1) from exc
 
-        # DFlash: the draft's proposal query embeds the mask token via this base
-        # engine's shared embedding table, so fold the draft's trained mask row
-        # into it (no-op when the row is shared with the base).
-        if dflash_draft_dir and world == 1:
+        # DFlash / DSpark: the draft's proposal query embeds the mask token via
+        # this base engine's shared embedding table, so fold the draft's trained
+        # mask row into it (no-op when the row is shared with the base).
+        cached_draft_dir = dflash_draft_dir or dspark_draft_dir
+        if cached_draft_dir and world == 1:
             from ..checkpoint.checkpoint_utils import _runtime_embedding_scale
             _patch_dflash_mask_embedding(
                 llm_out_dir,
-                dflash_draft_dir,
-                embedding_scale=_runtime_embedding_scale(model))
+                cached_draft_dir,
+                embedding_scale=_runtime_embedding_scale(model),
+                label="DFlash" if dflash_draft_dir else "DSpark")
 
         # Free this rank's model before building the next one
         del model
@@ -1174,6 +1191,30 @@ def _export_llm(model_dir: str,
                                 llm_out_dir,
                                 model_type,
                                 config_filename=config_filename)
+
+    # Record the skip-softmax calibration formula in the exported config so
+    # deployments can convert target_sparsity -> S without recalibrating.
+    if skip_softmax_calibration or skip_softmax_target_sparsity is not None:
+        for cfg_name in os.listdir(llm_out_dir):
+            if not (cfg_name == "config.json" or
+                    (cfg_name.startswith("config_tp")
+                     and cfg_name.endswith(".json"))):
+                continue
+            cfg_path = os.path.join(llm_out_dir, cfg_name)
+            with open(cfg_path) as fh:
+                cfg = json.load(fh)
+            if skip_softmax_calibration:
+                cfg["skip_softmax_calibration"] = {
+                    "a": skip_softmax_calibration["a"],
+                    "b": skip_softmax_calibration["b"],
+                    "formula": "a * exp(b * target_sparsity)",
+                }
+            if skip_softmax_target_sparsity is not None:
+                cfg["skip_softmax_target_sparsity"] = skip_softmax_target_sparsity
+            with open(cfg_path, "w") as fh:
+                json.dump(cfg, fh, indent=2)
+            logger.info("[LLM] skip-softmax calibration metadata -> %s",
+                        cfg_path)
 
     # Standalone Talker checkpoints route through ``_export_llm`` (not the
     # qwen3_tts ``_export_talker``) because their model_type isn't in the
@@ -1328,22 +1369,74 @@ def _export_diffusion_gemma(model_dir: str,
     logger.info("[DiffusionGemma] Done: %s", output_dir)
 
 
+def _write_draft_vocab_sidecar(model, draft_out_dir: str, full_size: int,
+                               reduced_size: "int | None",
+                               draft_reduced_vocab_dir: str,
+                               log_tag: str) -> None:
+    """Write the draft vocab map sidecar the C++ runtime consumes, plus a provenance JSON.
+
+    Single writer for every draft export path (MTP, DFlash, JetSpec): the
+    sidecar is a runtime contract — kDraftVocabMapFileName; see its @note in
+    cpp/common/bindingNames.h for the consumers and their semantics — so the
+    writer must not fork per draft family.
+    """
+    from tensorrt_edgellm._safetensors_io import save_file as _save_safetensors
+
+    from ..vocab_reduction.constants import (DRAFT_VOCAB_INFO_NAME,
+                                             DRAFT_VOCAB_MAP_NAME)
+    vocab_map = model._reduced_vocab_map_for_runtime
+
+    map_path = os.path.join(draft_out_dir, DRAFT_VOCAB_MAP_NAME)
+    _save_safetensors({"vocab_map": vocab_map.cpu().to(torch.int32)}, map_path)
+    logger.info("%s Wrote draft vocab map: %s (%d tokens)", log_tag, map_path,
+                vocab_map.numel())
+
+    with open(os.path.join(draft_out_dir, DRAFT_VOCAB_INFO_NAME), "w") as fh:
+        json.dump(
+            {
+                "vocab_size": full_size,
+                "reduced_vocab_size": reduced_size,
+                "source": draft_reduced_vocab_dir
+            },
+            fh,
+            indent=2)
+
+
 def _export_mtp_draft(model_dir: str,
                       draft_out_dir: str,
-                      externalize_weights: "list[str] | None" = None) -> None:
-    """Export the MTP draft model."""
+                      externalize_weights: "list[str] | None" = None,
+                      draft_reduced_vocab_dir: str = "") -> None:
+    """Export the MTP draft model, optionally with a reduced lm_head vocabulary.
+
+    Chain mode only — the runtime rejects tree drafting with a reduced draft
+    vocabulary. The slice applies to this export's own model instance, so a
+    checkpoint that borrows the base lm_head is safe too.
+    """
     os.makedirs(draft_out_dir, exist_ok=True)
     output_path = os.path.join(draft_out_dir, "model.onnx")
 
     logger.info("[MTP Draft] Loading checkpoint from %s", model_dir)
+    if draft_reduced_vocab_dir:
+        logger.info("[MTP Draft] Applying vocab reduction from %s",
+                    draft_reduced_vocab_dir)
     try:
         from ..model import AutoModel
-        model = AutoModel.from_pretrained(model_dir,
-                                          device="cpu",
-                                          mtp_draft=True)
-    except (OSError, ValueError, RuntimeError, ImportError) as exc:
+        model = AutoModel.from_pretrained(
+            model_dir,
+            device="cpu",
+            mtp_draft=True,
+            reduced_vocab_dir=draft_reduced_vocab_dir or None)
+    except (OSError, ValueError, RuntimeError, ImportError, KeyError,
+            TypeError) as exc:
         logger.exception("[MTP Draft] Failed to load checkpoint")
         raise SystemExit(1) from exc
+
+    full_size = model.config.vocab_size
+    reduced_size = None
+    if draft_reduced_vocab_dir:
+        reduced_size = model.config.reduced_vocab_size
+        logger.info("[MTP Draft] lm_head reduced: %d → %d", full_size,
+                    reduced_size)
 
     logger.info("[MTP Draft] Exporting to %s", output_path)
     try:
@@ -1355,6 +1448,12 @@ def _export_mtp_draft(model_dir: str,
     except (OSError, ValueError, RuntimeError) as exc:
         logger.exception("[MTP Draft] ONNX export failed")
         raise SystemExit(1) from exc
+
+    # --- Save draft vocab map sidecar for the C++ runtime ---
+    if draft_reduced_vocab_dir:
+        _write_draft_vocab_sidecar(model, draft_out_dir, full_size,
+                                   reduced_size, draft_reduced_vocab_dir,
+                                   "[MTP Draft]")
 
     logger.info("[MTP Draft] Done: %s", output_path)
 
@@ -1397,11 +1496,43 @@ def _export_gemma4_mtp_draft(target_dir: str, draft_out_dir: str,
     logger.info("[Gemma4 MTP Draft] Done: %s", output_path)
 
 
+def _export_dflash2_selector_sidecar(model, draft_out_dir: str) -> None:
+    from tensorrt_edgellm._safetensors_io import save_file
+
+    selector = model.candidate_selector
+    expected_shape = (model.config.vocab_size,
+                      model.config.dflash2_selector_rank)
+    tensors = {
+        "predecessor_codebook":
+        selector.predecessor_codebook.detach().cpu().to(
+            torch.float16).contiguous(),
+        "successor_codebook":
+        selector.successor_codebook.detach().cpu().to(
+            torch.float16).contiguous(),
+    }
+    for name, tensor in tensors.items():
+        if tuple(tensor.shape) != expected_shape:
+            raise ValueError(
+                f"DFlash2 selector tensor {name!r} must have shape "
+                f"{expected_shape}, got {tuple(tensor.shape)}")
+
+    selector_path = os.path.join(draft_out_dir, "dflash2_selector.safetensors")
+    save_file(tensors, selector_path)
+    logger.info("[DFlash Draft] Wrote selector sidecar: %s", selector_path)
+
+
 def _export_dflash_draft(model_dir: str,
                          draft_out_dir: str,
                          dflash_draft_dir: str,
                          draft_reduced_vocab_dir: str = "") -> None:
     """Export the DFlash draft model, optionally with reduced vocabulary."""
+    from ..checkpoint.checkpoint_utils import load_checkpoint_config_dicts
+    from ..dflash import DFlashVersion, resolve_dflash_contract
+
+    draft_root, draft_llm = load_checkpoint_config_dicts(dflash_draft_dir)
+    contract = resolve_dflash_contract(draft_root, draft_llm)
+    if (contract.version == DFlashVersion.V2 and draft_reduced_vocab_dir):
+        raise ValueError("DFlash V2 does not support reduced draft vocabulary")
     os.makedirs(draft_out_dir, exist_ok=True)
     output_path = os.path.join(draft_out_dir, "model.onnx")
 
@@ -1441,35 +1572,18 @@ def _export_dflash_draft(model_dir: str,
         logger.exception("[DFlash Draft] ONNX export failed")
         raise SystemExit(1) from exc
 
+    if contract.version == DFlashVersion.V2:
+        _export_dflash2_selector_sidecar(model, draft_out_dir)
+
     # FP16/FP32 RoPE fix is handled automatically by export_onnx() which
     # reads DFlashDraftModel.match_fp32_elementwise_initializers = True
     # and passes it to _fix_initializer_dtypes().
 
     # --- Save draft vocab map sidecar for C++ runtime ---
     if draft_reduced_vocab_dir:
-        from tensorrt_edgellm._safetensors_io import \
-            save_file as _save_safetensors
-
-        from ..vocab_reduction.constants import (DRAFT_VOCAB_INFO_NAME,
-                                                 DRAFT_VOCAB_MAP_NAME)
-        vocab_map = model._reduced_vocab_map_for_runtime
-
-        map_path = os.path.join(draft_out_dir, DRAFT_VOCAB_MAP_NAME)
-        _save_safetensors({"vocab_map": vocab_map.cpu().to(torch.int32)},
-                          map_path)
-        logger.info("[DFlash Draft] Wrote draft vocab map: %s (%d tokens)",
-                    map_path, vocab_map.numel())
-
-        with open(os.path.join(draft_out_dir, DRAFT_VOCAB_INFO_NAME),
-                  "w") as fh:
-            json.dump(
-                {
-                    "vocab_size": full_size,
-                    "reduced_vocab_size": reduced_size,
-                    "source": draft_reduced_vocab_dir
-                },
-                fh,
-                indent=2)
+        _write_draft_vocab_sidecar(model, draft_out_dir, full_size,
+                                   reduced_size, draft_reduced_vocab_dir,
+                                   "[DFlash Draft]")
 
     logger.info("[DFlash Draft] Done: %s", output_path)
 
@@ -1519,35 +1633,20 @@ def _export_jetspec_draft(model_dir: str,
         raise SystemExit(1) from exc
 
     if draft_reduced_vocab_dir:
-        from tensorrt_edgellm._safetensors_io import \
-            save_file as _save_safetensors
-
-        from ..vocab_reduction.constants import (DRAFT_VOCAB_INFO_NAME,
-                                                 DRAFT_VOCAB_MAP_NAME)
-        vocab_map = model._reduced_vocab_map_for_runtime
-        map_path = os.path.join(draft_out_dir, DRAFT_VOCAB_MAP_NAME)
-        _save_safetensors({"vocab_map": vocab_map.cpu().to(torch.int32)},
-                          map_path)
-        logger.info("[JetSpec Draft] Wrote draft vocab map: %s (%d tokens)",
-                    map_path, vocab_map.numel())
-        with open(os.path.join(draft_out_dir, DRAFT_VOCAB_INFO_NAME),
-                  "w") as fh:
-            json.dump(
-                {
-                    "vocab_size": full_size,
-                    "reduced_vocab_size": reduced_size,
-                    "source": draft_reduced_vocab_dir
-                },
-                fh,
-                indent=2)
+        _write_draft_vocab_sidecar(model, draft_out_dir, full_size,
+                                   reduced_size, draft_reduced_vocab_dir,
+                                   "[JetSpec Draft]")
 
     logger.info("[JetSpec Draft] Done: %s", output_path)
 
 
 def _patch_dflash_mask_embedding(llm_out_dir: str,
                                  dflash_draft_dir: str,
-                                 embedding_scale: float = 1.0) -> None:
-    """Fold the DFlash draft's trained mask-token embedding into the base sidecar.
+                                 embedding_scale: float = 1.0,
+                                 label: str = "DFlash") -> None:
+    """Fold a cached draft's trained mask-token embedding into the base sidecar.
+
+    Shared by DFlash and DSpark, which use the same cached-draft contract.
 
     The runtime embeds the draft proposal query ``[anchor, mask, ...]`` by
     looking ``mask_token_id`` up in the base engine's shared
@@ -1566,16 +1665,18 @@ def _patch_dflash_mask_embedding(llm_out_dir: str,
 
     emb_path = os.path.join(llm_out_dir, "embedding.safetensors")
     if not os.path.exists(emb_path):
-        logger.warning("[DFlash] %s missing; cannot fold draft mask embedding",
-                       emb_path)
+        logger.warning("[%s] %s missing; cannot fold draft mask embedding",
+                       label, emb_path)
         return
 
     draft_cfg = _load_config(dflash_draft_dir)
-    dcfg = draft_cfg.get("dflash_config", {}) or {}
+    dcfg = (draft_cfg.get("dspark_config") or draft_cfg.get("dflash_config")
+            or {})
     mask_id = dcfg.get("mask_token_id", draft_cfg.get("mask_token_id"))
     if mask_id is None:
-        logger.warning("[DFlash] draft config has no mask_token_id; skipping "
-                       "mask embedding fold")
+        logger.warning(
+            "[%s] draft config has no mask_token_id; skipping "
+            "mask embedding fold", label)
         return
     mask_id = int(mask_id)
 
@@ -1594,14 +1695,15 @@ def _patch_dflash_mask_embedding(llm_out_dir: str,
         if draft_vec is not None:
             break
     if draft_vec is None:
-        logger.info("[DFlash] draft checkpoint has no embed_tokens; mask "
-                    "embedding is shared with the base (no fold needed)")
+        logger.info(
+            "[%s] draft checkpoint has no embed_tokens; mask "
+            "embedding is shared with the base (no fold needed)", label)
         return
 
     with safe_open(emb_path, framework="pt", device="cpu") as f:
         if "embedding_scale" in set(f.keys()):
             raise ValueError(
-                "DFlash mask-embedding fold does not support FP8 "
+                label + " mask-embedding fold does not support FP8 "
                 "embedding.safetensors; re-export the base without "
                 "--fp8-embedding.")
         weight = f.get_tensor("embedding")
@@ -1612,8 +1714,8 @@ def _patch_dflash_mask_embedding(llm_out_dir: str,
                       atol=1e-3,
                       rtol=0.0):
         logger.info(
-            "[DFlash] draft mask embedding (id=%d) matches base; no fold needed",
-            mask_id)
+            "[%s] draft mask embedding (id=%d) matches base; no fold needed",
+            label, mask_id)
         return
 
     weight[mask_id] = patched_row
@@ -1624,8 +1726,8 @@ def _patch_dflash_mask_embedding(llm_out_dir: str,
     save_file({"embedding": weight.contiguous()}, tmp_path)
     os.replace(tmp_path, emb_path)
     logger.info(
-        "[DFlash] Folded draft mask embedding (id=%d) into base "
-        "embedding.safetensors", mask_id)
+        "[%s] Folded draft mask embedding (id=%d) into base "
+        "embedding.safetensors", label, mask_id)
 
 
 _DSPARK_HEAD_TENSOR_KEYS = {
@@ -1635,18 +1737,36 @@ _DSPARK_HEAD_TENSOR_KEYS = {
     "confidence_bias": "confidence_head.proj.bias",
 }
 
+# Per-tensor NVFP4 scale companions. A quantized head weight ships as packed
+# uint8 [out, in//2] plus these; the runtime sidecar contract is dense FP16, so
+# the packed form is decoded here rather than at load time.
+_DSPARK_HEAD_SCALE_KEYS = {
+    "markov_w2": ("markov_head.markov_w2.weight_scale",
+                  "markov_head.markov_w2.weight_scale_2"),
+}
 
-def _load_dspark_head_tensors(draft_dir: str, required_keys: set[str]) -> dict:
+
+def _load_dspark_head_tensors(draft_dir: str,
+                              required_keys: set[str],
+                              group_size: int = 16) -> dict:
     """Load DSpark Markov/confidence sidecar tensors from safetensors shards."""
     import glob
 
+    import torch
     from safetensors import safe_open
+
+    from ..models.ops import nvfp4_dequantize
 
     shards = sorted(glob.glob(os.path.join(draft_dir, "*.safetensors")))
     if not shards:
         raise FileNotFoundError(f"No safetensors files found in {draft_dir}")
 
-    remaining = dict(_DSPARK_HEAD_TENSOR_KEYS)
+    wanted = dict(_DSPARK_HEAD_TENSOR_KEYS)
+    for scale_keys in _DSPARK_HEAD_SCALE_KEYS.values():
+        for idx, ckpt_key in enumerate(scale_keys):
+            wanted[f"__scale{idx}__{ckpt_key}"] = ckpt_key
+
+    remaining = dict(wanted)
     loaded: dict = {}
     source: dict = {}
     for shard in shards:
@@ -1666,6 +1786,46 @@ def _load_dspark_head_tensors(draft_dir: str, required_keys: set[str]) -> dict:
                         "dtype": str(tensor.dtype).replace("torch.", ""),
                     }
                     del remaining[save_name]
+
+    for save_name, (scale_key, scale2_key) in _DSPARK_HEAD_SCALE_KEYS.items():
+        weight = loaded.get(save_name)
+        if weight is None or weight.dtype not in (torch.uint8, torch.int8):
+            continue
+        scale = loaded.pop(f"__scale0__{scale_key}", None)
+        scale2 = loaded.pop(f"__scale1__{scale2_key}", None)
+        if scale is None or scale2 is None:
+            raise KeyError(
+                f"DSpark head tensor '{save_name}' is NVFP4-packed but "
+                f"'{scale_key}' / '{scale2_key}' are missing from the checkpoint."
+            )
+        loaded[save_name] = nvfp4_dequantize(weight, scale, scale2, group_size)
+        source[save_name].update({
+            "nvfp4_dequantized":
+            True,
+            "group_size":
+            group_size,
+            "packed_shape":
+            source[save_name]["shape"],
+            "shape":
+            list(loaded[save_name].shape),
+            "dtype":
+            str(loaded[save_name].dtype).replace("torch.", ""),
+        })
+
+    for key in [k for k in loaded if k.startswith("__scale")]:
+        del loaded[key]
+        source.pop(key, None)
+
+    # Any head tensor still byte-packed has no dequantization rule in
+    # _DSPARK_HEAD_SCALE_KEYS. Writing it to the sidecar would reinterpret packed
+    # nibbles as FP16, so fail loudly instead.
+    still_packed = sorted(name for name, tensor in loaded.items()
+                          if tensor.dtype in (torch.uint8, torch.int8))
+    if still_packed:
+        raise ValueError(
+            f"DSpark head tensor(s) {still_packed} are byte-packed but have no "
+            "entry in _DSPARK_HEAD_SCALE_KEYS; add the weight_scale / "
+            "weight_scale_2 keys for them before exporting this checkpoint.")
 
     missing_required = sorted(required_keys - loaded.keys())
     if missing_required:
@@ -1701,7 +1861,18 @@ def _export_dspark_sidecars(dspark_draft_dir: str, draft_out_dir: str) -> None:
     if enable_confidence:
         required.update({"confidence_weight", "confidence_bias"})
 
-    tensors, source = _load_dspark_head_tensors(dspark_draft_dir, required)
+    quant_cfg = cfg.get("quantization_config", {}) or {}
+    group_size = int(quant_cfg.get("group_size") or 16)
+    # _load_dspark_head_tensors only implements the NVFP4 block-scale layout.
+    # Another algorithm would still present as uint8/int8 and be silently
+    # misinterpreted, so reject it here.
+    quant_algo = str(quant_cfg.get("quant_algo") or "")
+    if quant_algo and "NVFP4" not in quant_algo.upper():
+        raise ValueError(
+            f"DSpark head export supports NVFP4-quantized Markov weights; "
+            f"draft checkpoint declares quant_algo={quant_algo!r}.")
+    tensors, source = _load_dspark_head_tensors(dspark_draft_dir, required,
+                                                group_size)
     out_tensors = _to_fp16(tensors)
     heads_path = os.path.join(draft_out_dir, "dspark_heads.safetensors")
     save_file(out_tensors, heads_path)
@@ -1879,7 +2050,7 @@ def _export_visual(model_dir: str, visual_out_dir: str, weights: dict,
             "model_type"] = "qwen3_omni_vision_encoder"
     if model_type in ("qwen2_5_vl", "qwen3_vl", "qwen3_omni", "qwen3_omni_moe",
                       "qwen3_omni_next", "qwen3_5", "qwen3_5_moe",
-                      "cosmos3_edge"):
+                      "cosmos3_edge", "muse_glimmer"):
         # C++ QwenViTRunner reads these token IDs and rope_theta from config.json.
         # For Qwen3-VL the token IDs are at the root level, but vocab_size and
         # rope_theta live inside text_config.  Fall back to text_config for any
@@ -2041,6 +2212,8 @@ def _export_visual(model_dir: str, visual_out_dir: str, weights: dict,
         text_cfg = config.get("text_config") or config.get("llm_config")
         if text_cfg:
             vis_cfg_out["text_config"] = text_cfg
+        # The builder and the runtime derive tokens per tile from this.
+        vis_cfg_out["downsample_ratio"] = config.get("downsample_ratio", 0.5)
         # The C++ visual builder reads vision_config.model_type first.
         # intern_vit_6b (old arch) is not registered; override to "internvl".
         if "vision_config" in vis_cfg_out and "model_type" in vis_cfg_out[
@@ -2363,6 +2536,31 @@ def _export_rnnt_decoder(model_dir: str, out_dir: str, weights: dict,
 # Code2Wav export
 # ---------------------------------------------------------------------------
 
+# Release name first; some checkpoints ship the same payload as ``code2wav/``.
+# Duplicated in ``quantization/qwen3_omni.py`` and the builder's
+# ``models/qwen3_omni_next/weights.py`` -- the quantizer runs in its own venv
+# and does not import the exporter.
+_VOCODER_DIR_ALIASES = ("codec_decode_online", "code2wav")
+_VOCODER_FILES = ("config.yaml", "model_weights.pt")
+
+
+def _has_vocoder_payload(path: str) -> bool:
+    """True when *path* holds both Code2Wav files."""
+    return all(os.path.isfile(os.path.join(path, f)) for f in _VOCODER_FILES)
+
+
+def _resolve_next_vocoder_dir(model_dir: str) -> str:
+    """Return the first vocoder directory under *model_dir* with a payload.
+
+    Falls back to the release name so the caller's error message names the
+    expected location.
+    """
+    for name in _VOCODER_DIR_ALIASES:
+        cand = os.path.join(model_dir, name)
+        if _has_vocoder_payload(cand):
+            return cand
+    return os.path.join(model_dir, _VOCODER_DIR_ALIASES[0])
+
 
 def _export_code2wav(model_dir: str, c2w_out_dir: str, weights: dict,
                      config: dict, model_type: str,
@@ -2410,11 +2608,9 @@ def _export_code2wav(model_dir: str, c2w_out_dir: str, weights: dict,
         # checkpoint), containing ``config.yaml`` + ``model_weights.pt``.
         # Its architecture (SplitResidualVectorQuantizer + Llama-style
         # WindowLimitedTransformer) is incompatible with Qwen3-Omni's vocoder.
-        c2w_dir = os.environ.get(
-            "QWEN3_OMNI_NEXT_CODE2WAV_DIR") or os.path.join(
-                model_dir, "codec_decode_online")
-        if not (os.path.isfile(os.path.join(c2w_dir, "config.yaml"))
-                and os.path.isfile(os.path.join(c2w_dir, "model_weights.pt"))):
+        c2w_dir = (os.environ.get("QWEN3_OMNI_NEXT_CODE2WAV_DIR")
+                   or _resolve_next_vocoder_dir(model_dir))
+        if not _has_vocoder_payload(c2w_dir):
             logger.error(
                 "[Code2Wav] Qwen3-Next Omni vocoder expected config.yaml + "
                 "model_weights.pt under %r (override with the "
@@ -2709,12 +2905,13 @@ def _sub_llm_has_quantized_weights(model_dir: str, key_prefix: str) -> bool:
 
 def _maybe_stage_hf_quant_config(model_dir: str, tmp_dir: str, key_prefix: str,
                                  key_remap) -> bool:
-    """Rewrite ``hf_quant_config.json``'s ``exclude_modules`` for a sub-LLM.
+    """Rewrite ``hf_quant_config.json`` for a sub-LLM.
 
-    Drops patterns that belong to other sub-LLMs (don't start with
-    *key_prefix*), strips the prefix from surviving patterns, applies
-    *key_remap*, and skips the file entirely when the whole sub-LLM is
-    excluded (glob becomes ``*``).
+    Drops ``exclude_modules`` patterns that belong to other sub-LLMs (don't
+    start with *key_prefix*), strips the prefix from surviving patterns,
+    applies *key_remap*, and skips the file entirely when the whole sub-LLM is
+    excluded (glob becomes ``*``). ``quantized_layers`` (MIXED_PRECISION
+    checkpoints) gets the same treatment.
     """
     hf_qc_src = os.path.join(model_dir, "hf_quant_config.json")
     if not os.path.isfile(hf_qc_src):
@@ -2760,6 +2957,35 @@ def _maybe_stage_hf_quant_config(model_dir: str, tmp_dir: str, key_prefix: str,
     if "*" in new_excl:
         return True  # entire sub-LLM unquantized → skip sidecar entirely
     hf_qc.setdefault("quantization", {})["exclude_modules"] = new_excl
+
+    # MIXED_PRECISION checkpoints (``--cp_quantization nvfp4`` produces one)
+    # carry per-layer entries instead of a global algo, and need the same
+    # prefix strip: an unstripped key misses in ``layer_overrides``, so the
+    # Linear falls back to FP16 and is then handed a packed FP4 weight.
+    layers = hf_qc["quantization"].get("quantized_layers")
+    if layers is not None:
+        new_layers = {}
+        for name, entry in layers.items():
+            if name.startswith(key_prefix):
+                short = name[len(key_prefix):]
+            elif name.startswith(stripped_prefix):
+                short = name[len(stripped_prefix):].lstrip(".")
+            else:
+                continue  # belongs to a different sub-LLM
+            # ModelOpt labels a *disabled* quantizer by its configured
+            # num_bits, so excluded submodules still appear here (the CP's 15
+            # lm_heads come out W4A16_NVFP4 with plain FP16 weights).
+            if not _sub_llm_has_quantized_weights(model_dir, f"{name}."):
+                continue
+            if key_remap is not None and short:
+                short = key_remap(short)
+                if short is None:
+                    continue
+            new_layers[short] = entry
+        if not new_layers:
+            return True  # nothing in this sub-LLM is actually quantized
+        hf_qc["quantization"]["quantized_layers"] = new_layers
+
     with open(os.path.join(tmp_dir, "hf_quant_config.json"), "w") as f:
         json.dump(hf_qc, f)
     return False
@@ -3768,8 +3994,51 @@ def main() -> None:
          "exports every component the checkpoint supports. Recognized values: "
          "thinker, mtp_draft, talker, code_predictor, visual, audio, "
          "code2wav, action; for Cosmos3 checkpoints: und_prefill, gen, "
-         "vae_encoder. Useful for re-running a single stage, e.g. "
-         "``--components code_predictor`` to refresh only the CodePredictor."),
+         "vae_encoder; for pi0.5 checkpoints: visual, prefix, action. Useful "
+         "for re-running a single stage, e.g. ``--components code_predictor`` "
+         "to refresh only the CodePredictor."),
+    )
+    p.add_argument(
+        "--pi05-hoist-adarms-cond",
+        dest="pi05_hoist_adarms_cond",
+        action="store_true",
+        default=True,
+        help=("pi0.5 only: hoist the AdaRMS modulation out of the per-step "
+              "action graph into a one-shot ``cond`` component, so the 37 "
+              "modulation Dense weights are read once per schedule "
+              "configuration instead of once per denoise step. On by default; "
+              "kept for existing scripts."),
+    )
+    p.add_argument(
+        "--no-pi05-hoist-adarms-cond",
+        dest="pi05_hoist_adarms_cond",
+        action="store_false",
+        help=("pi0.5 only: keep the modulation inside the per-step action "
+              "graph and export no ``cond`` component."),
+    )
+    # Deferred like every other pi0.5 import here, so the module does not pull the
+    # model package in at load time; the names come from the contract table so the
+    # accepted set and the error text cannot drift apart.
+    from ..models.pi05.policy_assets import OPENPI_POLICY_CONTRACTS
+    p.add_argument(
+        "--pi05-policy-config",
+        default=None,
+        choices=sorted(OPENPI_POLICY_CONTRACTS),
+        help=
+        ("pi0.5 only: the openpi configuration this bundle serves. It fixes "
+         "the action horizon, the camera slots and the prompt, which the "
+         "converted checkpoints do not name. pi05_aloha is an inference "
+         "contract over the generalist pi05_base weights, not a checkpoint "
+         "of its own. The checkpoint's own horizon is cross-checked. Required "
+         "unless the feature contract names one on its own."),
+    )
+    p.add_argument(
+        "--pi05-denoise-steps",
+        type=int,
+        default=None,
+        help=("pi0.5 only: number of flow-matching denoise steps to export "
+              "for. Overrides the checkpoint's num_inference_steps; when "
+              "omitted the checkpoint value is used."),
     )
     p.add_argument(
         "--task",
@@ -3887,12 +4156,43 @@ def main() -> None:
         metavar="S",
         help=(
             "Skip-softmax (BLASST) calibrated scale factor S (0 = disabled). "
-            "Baked into the AttentionPlugin nodes; at inference the runtime "
-            "derives lambda = S / context_length per request for the prefill "
-            "FMHA. Obtain S from calibrate_skip_softmax.py. Overrides the "
-            "checkpoint config.json key \"skip_softmax_scale_factor\" — an "
-            "explicit 0 disables skip-softmax even if the config enables it; "
-            "omit the flag to keep the config value."),
+            "Baked into the AttentionPlugin nodes; at inference the kernel "
+            "derives lambda = S / seqlen_kv per sequence for the prefill "
+            "FMHA. LONG-CONTEXT ONLY: requests shorter than S run at "
+            "lambda > 1 and degrade sharply (short-prompt tasks such as MMLU "
+            "drop by double digits) — if the deployment traffic contains "
+            "requests with L < S, serve them with a dense engine or pick a "
+            "smaller S. Obtain S from calibrate_skip_softmax.py. Overrides "
+            "the checkpoint config.json key \"skip_softmax_scale_factor\" — "
+            "an explicit 0 disables skip-softmax even if the config enables "
+            "it; omit the flag to keep the config value."),
+    )
+    p.add_argument(
+        "--target-sparsity",
+        "--target_sparsity",
+        dest="target_sparsity",
+        type=float,
+        default=None,
+        metavar="R",
+        help=(
+            "Skip-softmax target sparsity in (0,1). Converted to the scale "
+            "factor via the calibration formula S = a * exp(b * R) taken from "
+            "--skip-softmax-calibration or the checkpoint config.json key "
+            "\"skip_softmax_calibration\". An explicit "
+            "--skip-softmax-scale-factor takes precedence."),
+    )
+    p.add_argument(
+        "--skip-softmax-calibration",
+        "--skip_softmax_calibration",
+        dest="skip_softmax_calibration",
+        type=str,
+        default=None,
+        metavar="JSON",
+        help=(
+            "Path to the calibration json emitted by calibrate_skip_softmax.py "
+            "(keys: a, b). Recorded into the exported config.json as "
+            "\"skip_softmax_calibration\" so deployments can convert "
+            "target_sparsity to S without recalibrating."),
     )
     p.add_argument(
         "--draft-reduced-vocab-dir",
@@ -3900,9 +4200,10 @@ def main() -> None:
         default="",
         metavar="DIR",
         help=
-        ("Directory containing vocab_map.safetensors for the DFlash draft model "
-         "(from tensorrt_edgellm/scripts/reduce_vocab.py). "
-         "Reduces the DFlash draft lm_head output dimension."),
+        ("Directory containing vocab_map.safetensors for a spec-decode draft "
+         "model (from tensorrt_edgellm/scripts/reduce_vocab.py). Reduces the "
+         "draft lm_head output dimension. Supported for DFlash V1, JetSpec, "
+         "and chain-MTP drafts (tree-MTP is rejected)."),
     )
     p.add_argument(
         "--mtp",
@@ -3982,6 +4283,12 @@ def main() -> None:
         "--dspark-base",
         action="store_true",
         help="Export as DSpark base model (adds target hidden-state output).",
+    )
+    p.add_argument(
+        "--dspark-tree-base",
+        action="store_true",
+        help="Export DSpark base with DDTree parent/depth metadata inputs "
+        "(implies --dspark-base).",
     )
     p.add_argument(
         "--dspark-draft",
@@ -4065,6 +4372,22 @@ def main() -> None:
               "Int4GroupwiseGemmPlugin with AWQ-swizzled weights."),
     )
     p.add_argument(
+        "--target-sm",
+        "--target_sm",
+        dest="target_sm",
+        type=int,
+        default=None,
+        metavar="SM",
+        help=("Explicit GPU compute capability for target-specific ONNX ABI "
+              "selection (for example 110 for Thor). Only for SM110, dense "
+              "NVFP4-A16 selects Nvfp4A16BlackwellGemmPlugin / "
+              "BLACKWELL_N128_K64_V1 and Nemotron-H routed NVFP4-A16 experts "
+              "select Nvfp4A16BlackwellMoePlugin / BLACKWELL_MOE_N128_K64_V1; "
+              "an omitted or non-SM110 target preserves the Marlin "
+              "Nvfp4A16GemmPlugin and Nvfp4A16MoePlugin. Selection never "
+              "depends on the GPU installed on the export host."),
+    )
+    p.add_argument(
         "--quantization",
         default=None,
         choices=["int4_awq", "nvfp4"],
@@ -4072,15 +4395,61 @@ def main() -> None:
               "Applies on-the-fly quantization during export (e.g. INT4 RTN "
               "for QAT models stored in BF16)."),
     )
+    p.add_argument(
+        "--no-quantize-activations",
+        dest="quantize_activations",
+        action="store_false",
+        help=(
+            "Export quantized dense Linears without the activation Q-DQ pair, "
+            "leaving MatMul(fp16 activation, DQ(quantized weight)) -- W4A16 / "
+            "W8A16 instead of the checkpoint's W4A4 / W8A8. This does not "
+            "select a weight-only GEMM: TensorRT dequantizes the weights on "
+            "every step, so the engine is substantially slower. Intended for "
+            "isolating activation quantization as an accuracy error source. "
+            "Rejected by FusedNvfp4GemmAllReduce (row-parallel TP), which "
+            "quantizes activations inside the plugin."),
+    )
     args = p.parse_args()
 
     # Select the INT4 GEMM plugin backend before any weight repack / op emission.
     set_int4_gemm_plugin_version(args.int4_gemm_plugin_version)
+    # Dense and routed-MoE NVFP4-A16 repacking and ONNX emission read the same
+    # explicit target.
+    set_nvfp4_a16_export_target_sm(args.target_sm)
+    # Applies to every QuantConfig parsed from here on (backbone and drafts).
+    set_default_quantize_activations(args.quantize_activations)
 
     model_dir = _resolve_model_dir(args.model)
     config = _load_config(model_dir)
     model_type: str = config.get("model_type", "unknown")
     dtype = _dtype_from_str(args.dtype)
+    is_gemma4_target = model_type in _GEMMA4_MODEL_TYPES
+    requested_components = {
+        c.strip()
+        for c in args.components.split(",") if c.strip()
+    }
+    is_cosmos3_target = (model_type in ("cosmos3_edge", "cosmos3_omni")
+                         or _is_cosmos3_checkpoint(model_dir))
+
+    if args.mtp_tree_base:
+        args.mtp = True
+        if args.draft_reduced_vocab_dir:
+            p.error("--draft-reduced-vocab-dir is not supported with "
+                    "--mtp-tree-base (chain-MTP only, --specDraftTopK 1)")
+
+    gemma4_mtp_requested = args.mtp and is_gemma4_target
+    consumes_chain_mtp_draft = (args.mtp and not gemma4_mtp_requested
+                                and not is_cosmos3_target
+                                and (not requested_components
+                                     or "mtp_draft" in requested_components))
+    consumes_standalone_draft = (not is_cosmos3_target
+                                 and (args.dflash_draft or args.jetspec_draft))
+    consumes_draft_reduced_vocab = (consumes_chain_mtp_draft
+                                    or consumes_standalone_draft)
+    if args.draft_reduced_vocab_dir and not consumes_draft_reduced_vocab:
+        p.error("--draft-reduced-vocab-dir requires a consuming draft stage: "
+                "chain-MTP (--mtp), DFlash V1 (--dflash-draft), or JetSpec "
+                "(--jetspec-draft)")
 
     # Cosmos3-Edge checkpoints carry two model families that run on DIFFERENT
     # runtime paths; ``--task`` selects which artifact set this invocation
@@ -4091,8 +4460,7 @@ def main() -> None:
     #     the standard llm_build + visual_build + llm_inference VLM flow.
     # Both the root ``model_type`` and the diffusers ``model_index.json``
     # identify them.
-    if model_type in ("cosmos3_edge",
-                      "cosmos3_omni") or _is_cosmos3_checkpoint(model_dir):
+    if is_cosmos3_target:
         has_reasoner = model_type == "cosmos3_edge"
         if args.task == "reasoning" and not has_reasoner:
             p.error("--task reasoning requires a cosmos3_edge checkpoint "
@@ -4147,10 +4515,23 @@ def main() -> None:
                     model_config=load_model_config(model_dir))
         return
 
+    # pi0.5 lacks the standard LLM config fields and shares its variant fields with pi0, so
+    # it is dispatched here rather than through ModelConfig; a converted checkpoint that
+    # names nothing in ``type`` falls back to the weight signature.
+    if _is_pi05_checkpoint(model_dir):
+        from ..models.pi05.export import export_pi05_components
+        requested = [c for c in args.components.split(",") if c] or None
+        export_pi05_components(model_dir,
+                               args.output_dir,
+                               components=requested,
+                               dtype=dtype,
+                               policy_config=args.pi05_policy_config,
+                               num_denoise_steps=args.pi05_denoise_steps,
+                               hoist_adarms_cond=args.pi05_hoist_adarms_cond)
+        return
+
     has_mtp_draft = _has_mtp(config)
-    is_gemma4_target = model_type in _GEMMA4_MODEL_TYPES
     mtp_draft_dir_arg = args.mtp_draft_dir or args.gemma4_mtp_assistant_dir
-    gemma4_mtp_requested = args.mtp and is_gemma4_target
     gemma4_mtp_assistant_dir = ""
     gemma4_kv_sharing_map: list[dict] = []
     externalize_weights = resolve_externalize_weights(args.externalize_weights)
@@ -4161,12 +4542,10 @@ def main() -> None:
             "Only Qwen3-TTS CustomVoice / VoiceDesign / Base checkpoints are "
             f"supported. Got tts_model_type={config.get('tts_model_type')!r}.")
 
-    if args.mtp_tree_base:
-        args.mtp = True
     if args.tp_size > 1 and (args.eagle_base or args.mtp or args.dflash_base
                              or args.dflash_tree_base or args.dflash_draft
-                             or args.dspark_base or args.dspark_draft
-                             or gemma4_mtp_requested):
+                             or args.dspark_base or args.dspark_tree_base
+                             or args.dspark_draft or gemma4_mtp_requested):
         p.error(
             "Tensor-parallel speculative decoding export is not supported.")
     if args.tp_size > 1 and externalize_weights:
@@ -4188,6 +4567,8 @@ def main() -> None:
         args.dflash_base = True
     if args.jetspec_tree_base:
         args.jetspec_base = True
+    if args.dspark_tree_base:
+        args.dspark_base = True
     if mtp_draft_dir_arg and (args.dflash_base or args.dflash_draft
                               or args.jetspec_base or args.jetspec_draft
                               or args.dspark_base or args.dspark_draft):
@@ -4277,11 +4658,13 @@ def main() -> None:
     if args.num_decoder_layer is not None:
         if args.num_decoder_layer < 1:
             p.error("--num-decoder-layer must be >= 1")
-        if (args.eagle_base or args.mtp or args.dflash_base
-                or args.dflash_draft or args.jetspec_base or args.jetspec_draft
-                or args.dspark_base or args.dspark_draft):
+        if (args.eagle_base or args.dflash_base or args.dflash_draft
+                or args.jetspec_base or args.jetspec_draft or args.dspark_base
+                or args.dspark_draft):
+            # --mtp is allowed: its draft head reads only the base's last hidden
+            # state. The rest name specific target layers that truncation removes.
             p.error("--num-decoder-layer cannot be combined with "
-                    "--eagle-base / --mtp / --dflash-base / --dflash-draft / "
+                    "--eagle-base / --dflash-base / --dflash-draft / "
                     "--jetspec-base / --jetspec-draft / "
                     "--dspark-base / --dspark-draft")
 
@@ -4289,10 +4672,6 @@ def main() -> None:
         "thinker", "mtp_draft", "dflash_draft", "jetspec_draft",
         "dspark_draft", "talker", "code_predictor", "visual", "audio",
         "code2wav", "action", "dllm"
-    }
-    requested_components = {
-        c.strip()
-        for c in args.components.split(",") if c.strip()
     }
     unknown = requested_components - _VALID_COMPONENTS
     if unknown:
@@ -4446,6 +4825,31 @@ def main() -> None:
     # Each stage is (enabled, component_name, exporter_callable). Exporter
     # receives the computed output dir; the (enabled, component) columns also
     # drive both the pre-run log and the post-run summary below.
+    # Resolve skip-softmax S: an explicit scale factor wins;
+    # otherwise target_sparsity converts via the calibration formula from
+    # --skip-softmax-calibration or the source checkpoint config.json.
+    _skip_calib = None
+    if getattr(args, "skip_softmax_calibration", None):
+        with open(args.skip_softmax_calibration) as _fh:
+            _skip_calib = json.load(_fh)
+    else:
+        _src_cfg_sk = _load_config(model_dir)
+        if isinstance(_src_cfg_sk.get("skip_softmax_calibration"), dict):
+            _skip_calib = _src_cfg_sk["skip_softmax_calibration"]
+    _resolved_skip_s = args.skip_softmax_scale_factor
+    if _resolved_skip_s is None and getattr(args, "target_sparsity",
+                                            None) is not None:
+        if not _skip_calib:
+            raise SystemExit("--target-sparsity requires calibration metadata "
+                             "(--skip-softmax-calibration or checkpoint "
+                             "config.json skip_softmax_calibration)")
+        _resolved_skip_s = float(_skip_calib["a"]) * math.exp(
+            float(_skip_calib["b"]) * args.target_sparsity)
+        logger.info(
+            "skip-softmax: target_sparsity=%.2f -> S=%.4f (a=%.6g b=%.6g)",
+            args.target_sparsity, _resolved_skip_s, float(_skip_calib["a"]),
+            float(_skip_calib["b"]))
+
     stages = [
         (_has_llm_component(model_type, "thinker") and not args.skip_llm
          and not _draft_only
@@ -4464,6 +4868,7 @@ def main() -> None:
              jetspec_tree_base=args.jetspec_tree_base,
              jetspec_draft_dir=args.jetspec_draft_dir,
              dspark_base=args.dspark_base,
+             dspark_tree_base=args.dspark_tree_base,
              dspark_draft_dir=args.dspark_draft_dir,
              gemma4_mtp_base=gemma4_mtp_requested,
              fp8_embedding=args.fp8_embedding,
@@ -4471,11 +4876,16 @@ def main() -> None:
              externalize_weights=externalize_weights,
              tp_size=args.tp_size,
              num_decoder_layers=args.num_decoder_layer,
-             skip_softmax_scale_factor=args.skip_softmax_scale_factor,
+             skip_softmax_scale_factor=_resolved_skip_s,
+             skip_softmax_calibration=_skip_calib,
+             skip_softmax_target_sparsity=args.target_sparsity,
              quantization_override=getattr(args, 'quantization', None))),
         (args.mtp and not gemma4_mtp_requested
          and _allow("mtp_draft"), "mtp_draft", lambda out: _export_mtp_draft(
-             model_dir, out, externalize_weights=externalize_weights)),
+             model_dir,
+             out,
+             externalize_weights=externalize_weights,
+             draft_reduced_vocab_dir=args.draft_reduced_vocab_dir)),
         (gemma4_mtp_requested and _allow("mtp_draft"),
          "mtp_draft", lambda out: _export_gemma4_mtp_draft(
              model_dir, out, gemma4_mtp_assistant_dir, gemma4_kv_sharing_map)),
@@ -4555,6 +4965,9 @@ def main() -> None:
     logger.info("DSpark draft  : %s", "yes" if args.dspark_draft else "no")
     logger.info("Reduced vocab : %s",
                 args.reduced_vocab_dir if args.reduced_vocab_dir else "no")
+    logger.info(
+        "Draft reduced vocab: %s",
+        args.draft_reduced_vocab_dir if args.draft_reduced_vocab_dir else "no")
     logger.info(
         "External weights: %s",
         ", ".join(externalize_weights) if externalize_weights else "no")

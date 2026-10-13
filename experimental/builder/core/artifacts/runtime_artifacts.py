@@ -20,10 +20,11 @@ import os
 import shutil
 from typing import Any, Dict
 
+from tensorrt_edgellm.chat_template import write_chat_template
+
 from .. import contracts
 from ..config import DeviceConfig
 from ..weights import Weights
-from .chat_template import write_processed_chat_template
 from .embeddings import (copy_vocab_artifacts, externalizes_embedding,
                          externalizes_ple, write_embedding,
                          write_ple_embedding)
@@ -80,21 +81,29 @@ def _apply_generic_token_ids(config: Dict[str, Any], root: Dict[str, Any],
             if isinstance(value, int):
                 config[runtime_key] = value
 
-    eos = root.get("eos_token_id")
-    if eos is None:
+    # Union the EOS sets from config.json and generation_config.json: HF
+    # generate stops on the generation_config set, which may extend the model
+    # config's single EOS (e.g. HunYuan adds <|extra_5|> alongside <|eos|>).
+    def _eos_ids(value) -> "list[int]":
+        if isinstance(value, list):
+            return [int(item) for item in value]
+        if isinstance(value, int):
+            return [value]
+        return []
+
+    eos_ids = _eos_ids(root.get("eos_token_id"))
+    if not eos_ids:
         runtime_config_path = os.path.join(runtime_model_dir, "config.json")
         if os.path.isfile(runtime_config_path):
             with open(runtime_config_path) as runtime_config_file:
-                eos = json.load(runtime_config_file).get("eos_token_id")
-    if eos is None:
-        generation_path = os.path.join(runtime_model_dir,
-                                       "generation_config.json")
-        if os.path.isfile(generation_path):
-            with open(generation_path) as generation_file:
-                eos = json.load(generation_file).get("eos_token_id")
-    if eos is not None:
-        config["eos_token_id"] = ([int(value) for value in eos] if isinstance(
-            eos, list) else [int(eos)])
+                eos_ids = _eos_ids(
+                    json.load(runtime_config_file).get("eos_token_id"))
+    generation_path = os.path.join(runtime_model_dir, "generation_config.json")
+    if os.path.isfile(generation_path):
+        with open(generation_path) as generation_file:
+            eos_ids += _eos_ids(json.load(generation_file).get("eos_token_id"))
+    if eos_ids:
+        config["eos_token_id"] = list(dict.fromkeys(eos_ids))
 
 
 def write_runtime_artifacts(cfg: DeviceConfig,
@@ -189,7 +198,9 @@ def write_runtime_artifacts(cfg: DeviceConfig,
         else:
             writes_embedding = getattr(weight_conversion,
                                        "writes_runtime_embedding", None)
-            if externalizes_embedding(args, weight_conversion):
+            # NVFP4 embeddings are materialized as FP16 runtime artifacts.
+            if (externalizes_embedding(args, weight_conversion)
+                    and not weights.is_nvfp4("model.embed_tokens")):
                 logger.info("Embedding stays in the checkpoint; the runtime "
                             "loads it through its checkpoint binding")
             elif writes_embedding is None or writes_embedding(args):
@@ -223,8 +234,7 @@ def write_runtime_artifacts(cfg: DeviceConfig,
     try:
         copy_tokenizer_artifacts(runtime_model_dir, output_dir)
         write_tokenizer_json_if_missing(runtime_model_dir, output_dir)
-        write_processed_chat_template(runtime_model_dir, output_dir,
-                                      tokenizer_module)
+        write_chat_template(runtime_model_dir, output_dir)
         if tokenizer_module is not None and hasattr(tokenizer_module,
                                                     "patch_runtime_artifacts"):
             tokenizer_module.patch_runtime_artifacts(output_dir, args)

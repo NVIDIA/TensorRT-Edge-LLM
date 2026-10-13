@@ -423,7 +423,7 @@ class Cosmos3VaeEncoder(NetworkModule):
         return {
             "pixel_values":
             self.add_input("pixel_values", trt.float32,
-                           (-1, 3, self.geometry.num_frames,
+                           (-1, 3, self.geometry.conditioning_frames,
                             self.geometry.height, self.geometry.width))
         }
 
@@ -434,16 +434,18 @@ class Cosmos3VaeEncoder(NetworkModule):
         height = self.geometry.height // patch
         width = self.geometry.width // patch
         pixel_values = pixel_values.reshape(
-            (0, 3, self.geometry.num_frames, height, patch, width, patch))
+            (0, 3, self.geometry.conditioning_frames, height, patch, width,
+             patch))
         pixel_values = pixel_values.transpose((0, 1, 6, 4, 2, 3, 5))
         return pixel_values.reshape(
-            (0, 3 * patch * patch, self.geometry.num_frames, height, width))
+            (0, 3 * patch * patch, self.geometry.conditioning_frames, height,
+             width))
 
     def forward(self, pixel_values):
         hidden_states = self._patchify(pixel_values.cast(trt.float16))
         cache = _FeatureCache()
         chunks = []
-        chunk_count = 1 + (self.geometry.num_frames - 1) // 4
+        chunk_count = 1 + (self.geometry.conditioning_frames - 1) // 4
         for index in range(chunk_count):
             start = 0 if index == 0 else 1 + 4 * (index - 1)
             end = 1 if index == 0 else 1 + 4 * index
@@ -454,4 +456,11 @@ class Cosmos3VaeEncoder(NetworkModule):
         posterior = self.quant_conv(encoded).slice_axis(1, 0, self.z_dim, 5)
         mean = F.constant(self.latents_mean, "vae_latents_mean")
         std = F.constant(self.latents_std, "vae_latents_std")
-        return {"cond_latent": ((posterior - mean) / std).cast(trt.float32)}
+        latent = ((posterior - mean) / std).cast(trt.float32)
+        # The reference policy encodes the complete reflection-padded canvas,
+        # then removes the padding in latent space using the original image size.
+        if self.geometry.content_height != self.geometry.height:
+            latent = latent.slice_axis(3, 0, self.geometry.latent_h, 5)
+        if self.geometry.content_width != self.geometry.width:
+            latent = latent.slice_axis(4, 0, self.geometry.latent_w, 5)
+        return {"cond_latent": latent}

@@ -20,7 +20,8 @@ from typing import Dict, Type
 import tensorrt as trt
 
 from ...core import config
-from ...ops import Linear, Module, NetworkModule, RMSNorm
+from ...ops import (Linear, Module, NetworkModule, RaggedDecoderInputs,
+                    RMSNorm, add_ragged_decoder_inputs)
 from ...ops import functional as F
 from .modeling_qwen3_omni_next_text import Qwen3OmniNextDecoderLayer
 
@@ -82,10 +83,10 @@ class Qwen3OmniNextTalker(NetworkModule):
         gdn = cfg.gdn_cfg
         kv_dtype = (trt.DataType.FP8
                     if cfg.kv_cache_quant == "fp8" else trt.float16)
-        return {
+        io = {
             "inputs_embeds":
             self.add_input("inputs_embeds", trt.float16,
-                           (-1, -1, cfg.hidden_size)),
+                           (-1, cfg.hidden_size)),
             "past_key_values": [
                 self.add_input(f"past_key_values_{index}", kv_dtype,
                                (2, -1, F.KV_PAGE_SIZE, cfg.num_key_value_heads,
@@ -94,15 +95,7 @@ class Qwen3OmniNextTalker(NetworkModule):
             ],
             "rope":
             self.add_input("rope_rotary_cos_sin", trt.float32,
-                           (-1, -1, cfg.rotary_dim)),
-            "context_lengths":
-            self.add_input("context_lengths", trt.int32, (-1, )),
-            "cache_start":
-            self.add_input("kvcache_start_index", trt.int32, (-1, )),
-            "kv_page_table":
-            self.add_input("kv_page_table", trt.int32, (-1, 2, -1)),
-            "last_token_ids":
-            self.add_input("last_token_ids", trt.int64, (-1, 1)),
+                           (-1, cfg.rotary_dim)),
             "conv_states": [
                 self.add_input(f"conv_state_{index}", trt.float16,
                                (-1, gdn.conv_dim, gdn.conv_kernel))
@@ -115,9 +108,12 @@ class Qwen3OmniNextTalker(NetworkModule):
                 for index in range(cfg.num_gdn_layers)
             ],
         }
+        io.update(add_ragged_decoder_inputs(self.add_input).as_dict())
+        return io
 
     def forward(self, **io):
         hidden_states = io["inputs_embeds"]
+        ragged = RaggedDecoderInputs.from_dict(io)
         present_kv = []
         present_conv = []
         present_recurrent = []
@@ -130,7 +126,7 @@ class Qwen3OmniNextTalker(NetworkModule):
             if layer_type == config.LAYER_GDN:
                 hidden_states, states = layer(
                     hidden_states,
-                    io["context_lengths"],
+                    ragged,
                     conv_state=io["conv_states"][state_index],
                     recurrent_state=io["recurrent_states"][state_index])
                 present_conv.append(states[0])
@@ -139,16 +135,14 @@ class Qwen3OmniNextTalker(NetworkModule):
             else:
                 hidden_states, present = layer(
                     hidden_states,
-                    io["context_lengths"],
+                    ragged,
                     past_key_value=io["past_key_values"][attention_index],
-                    rope=io["rope"],
-                    cache_start=io["cache_start"],
-                    kv_page_table=io["kv_page_table"])
+                    rope=io["rope"])
                 present_kv.append(present)
                 attention_index += 1
 
         hidden_states = self.model.norm(hidden_states)
-        selected = F.gather_last_tokens(hidden_states, io["last_token_ids"])
+        selected = F.gather_token_rows(hidden_states, ragged.logits_indices)
         outputs = {
             "logits": self.codec_head(selected).cast(trt.float32),
             "hidden_states": selected,

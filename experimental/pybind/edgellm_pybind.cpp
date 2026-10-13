@@ -33,6 +33,7 @@
 #include "profiling/metrics.h"
 #include "runtime/audioLoader.h"
 #include "runtime/audioUtils.h"
+#include "runtime/decoding/guidedDecoder.h"
 #include "runtime/imageUtils.h"
 #include "runtime/llmInferenceRuntime.h"
 #include "runtime/llmRuntimeUtils.h"
@@ -42,6 +43,7 @@
 #endif
 #include "runtime/qwen3OmniTTSRuntime.h"
 #include "runtime/streaming.h"
+#include "scheduler/requestEngine.h"
 
 #include <algorithm>
 #include <chrono>
@@ -493,15 +495,111 @@ private:
 };
 #endif
 
+//! Python-facing owner of the IFB request engine.
+//!
+//! Builds the runtime the same way PyLLMRuntime's vanilla constructor does, then hands it to a
+//! RequestEngine together with the CUDA stream; the engine owns the runtime, this class owns the
+//! engine and the stream. Speculative deployments stay on PyLLMRuntime: the engine cannot admit
+//! into them, so nothing is gained by carrying that constructor here.
+class PyRequestEngine
+{
+public:
+    PyRequestEngine(std::string const& engineDir, std::string const& multimodalEngineDir,
+        std::unordered_map<std::string, std::string> const& loraWeightsMap, std::string const& checkpointDir,
+        ContextCacheConfig const& contextCacheConfig, int32_t maxBatchSize, int32_t maxPendingRequests,
+        int32_t commandQueueCapacity, bool captureCudaGraph)
+    {
+        mPluginHandle = loadEdgellmPluginLib();
+        // Single rank only in this release: tensor-parallel deployments stay on the blocking path
+        // until the stepped command stream reaches the other ranks (see the IFB support matrix).
+        auto runtime = std::make_unique<LLMInferenceRuntime>(
+            engineDir, multimodalEngineDir, loraWeightsMap, mStream.get(), contextCacheConfig, checkpointDir);
+        // Capture happens here because after the constructor hands the runtime over, nothing but
+        // the actor may touch it, and the actor has no pre-first-request hook to capture from.
+        if (captureCudaGraph && !runtime->captureDecodingCUDAGraph(mStream.get()))
+        {
+            LOG_WARNING("CUDA graph capture failed for decoding, proceeding without.");
+        }
+        mTokenizerView = runtime.get();
+        scheduler::EngineConfig config;
+        config.maxBatchSize = maxBatchSize;
+        config.maxPendingRequests = maxPendingRequests;
+        config.commandQueueCapacity = commandQueueCapacity;
+        mEngine = std::make_unique<scheduler::RequestEngine>(std::move(runtime), mStream.get(), config);
+    }
+
+    scheduler::RequestHandle submit(LLMGenerationRequest request)
+    {
+        return mEngine->submit(std::move(request));
+    }
+
+    void cancel(scheduler::RequestId id)
+    {
+        mEngine->cancel(id);
+    }
+
+    void shutdown(scheduler::ShutdownMode mode)
+    {
+        mEngine->shutdown(mode);
+    }
+
+    int32_t queued() const noexcept
+    {
+        return mEngine->queued();
+    }
+
+    int32_t resident() const noexcept
+    {
+        return mEngine->resident();
+    }
+
+    bool running() const noexcept
+    {
+        return mEngine->running();
+    }
+
+    std::vector<int32_t> countPromptTokens(LLMGenerationRequest const& request) const
+    {
+        return mTokenizerView->countPromptTokens(request);
+    }
+
+    scheduler::EngineMetrics metrics() const noexcept
+    {
+        return mEngine->metrics();
+    }
+
+    ~PyRequestEngine()
+    {
+        // pybind runs this with the GIL held, and the engine's destructor joins the actor, which
+        // may be inside a generation for a while. Release the GIL for that wait so the other Python
+        // threads (and the asyncio loop) keep running; the actor itself never takes the GIL.
+        py::gil_scoped_release release;
+        mEngine.reset();
+    }
+
+private:
+    CudaStreamWrapper mStream;
+    std::unique_ptr<void, DlDeleter> mPluginHandle;
+    //! The engine owns the runtime and only the actor may drive it; this view exists for exactly
+    //! one call, countPromptTokens, which is const all the way down (template + encode on a
+    //! tokenizer with no mutable state), so it can run concurrently with the actor's own
+    //! tokenization. Valid as long as mEngine is, which owns the pointee.
+    LLMInferenceRuntime const* mTokenizerView{nullptr};
+    //! Last member on purpose: its destructor joins the actor, which is still driving mStream,
+    //! so it has to run before the stream (and the plugin library) are torn down.
+    std::unique_ptr<scheduler::RequestEngine> mEngine;
+};
+
 imageUtils::ImageData loadImageFromPath(std::string const& path)
 {
-    return imageUtils::loadImageFromFile(path);
+    return imageUtils::loadRgbImageFromFile(path);
 }
 
 imageUtils::ImageData loadImageFromBytes(py::bytes const& data)
 {
     std::string dataStr = data;
-    return imageUtils::loadImageFromMemory(reinterpret_cast<unsigned char const*>(dataStr.data()), dataStr.size());
+    return imageUtils::loadRgbImageFromEncodedBytes(
+        reinterpret_cast<unsigned char const*>(dataStr.data()), dataStr.size());
 }
 
 //! \brief Build an AudioData from raw encoded audio bytes (wav / mp3 / flac).
@@ -624,6 +722,8 @@ PYBIND11_MODULE(_edgellm_runtime, m)
     py::class_<metrics::SpecDecodeGenerationMetrics>(m, "SpecDecodeGenerationMetrics")
         .def_readonly("total_iterations", &metrics::SpecDecodeGenerationMetrics::totalIterations)
         .def_readonly("total_generated_tokens", &metrics::SpecDecodeGenerationMetrics::totalGeneratedTokens)
+        .def_readonly("total_accepted_draft_tokens", &metrics::SpecDecodeGenerationMetrics::totalAcceptedDraftTokens)
+        .def_readonly("total_proposed_draft_tokens", &metrics::SpecDecodeGenerationMetrics::totalProposedDraftTokens)
         .def("get_total_runs", &metrics::SpecDecodeGenerationMetrics::getTotalRuns);
 
     py::class_<metrics::MultimodalMetrics>(m, "MultimodalMetrics")
@@ -699,7 +799,7 @@ PYBIND11_MODULE(_edgellm_runtime, m)
             {
                 check::check(std::isfinite(ts), "timestamps must be finite");
             }
-            imageUtils::ImageData video = imageUtils::loadVideoFromFrames(framePaths, fps);
+            imageUtils::ImageData video = imageUtils::loadRgbVideoFromFrames(framePaths, fps);
             video.timestamps = timestamps;
             return video;
         },
@@ -719,9 +819,7 @@ PYBIND11_MODULE(_edgellm_runtime, m)
         .def_readwrite("sample_rate", &audioUtils::AudioData::sampleRate)
         .def_property_readonly(
             "num_samples",
-            [](audioUtils::AudioData const& audio) {
-                return audio.pcm ? static_cast<int64_t>(audio.pcm->samples.size()) : int64_t{0};
-            },
+            [](audioUtils::AudioData const& audio) { return audio.pcm ? audio.pcm->numSamples() : int64_t{0}; },
             "Number of decoded PCM samples (0 when no PCM is attached)");
 
     m.def("load_audio_buffer_from_bytes", &loadAudioBufferFromBytes, py::arg("data"),
@@ -751,6 +849,14 @@ PYBIND11_MODULE(_edgellm_runtime, m)
         .def_readwrite("type", &Message::MessageContent::type)
         .def_readwrite("content", &Message::MessageContent::content);
 
+    py::class_<Message::ToolCall>(m, "MessageToolCall")
+        .def(py::init<>())
+        .def_readwrite("id", &Message::ToolCall::id)
+        .def_readwrite("type", &Message::ToolCall::type)
+        .def_readwrite("name", &Message::ToolCall::name)
+        .def_readwrite("arguments", &Message::ToolCall::arguments)
+        .def_readwrite("arguments_is_string", &Message::ToolCall::argumentsIsString);
+
     py::class_<Message>(m, "Message")
         .def(py::init<>())
         .def(py::init([](std::string const& role, std::vector<Message::MessageContent> const& contents) {
@@ -761,7 +867,37 @@ PYBIND11_MODULE(_edgellm_runtime, m)
         }),
             py::arg("role"), py::arg("contents"))
         .def_readwrite("role", &Message::role)
-        .def_readwrite("contents", &Message::contents);
+        .def_readwrite("contents", &Message::contents)
+        .def_readwrite("reasoning_content", &Message::reasoningContent)
+        .def_readwrite("has_reasoning_content", &Message::hasReasoningContent)
+        .def_readwrite("tool_calls", &Message::toolCalls)
+        .def_readwrite("has_tool_calls", &Message::hasToolCalls)
+        .def_readwrite("tool_call_id", &Message::toolCallId)
+        .def_readwrite("name", &Message::name)
+        .def_readwrite("has_content", &Message::hasContent)
+        .def_readwrite("content_is_array", &Message::contentIsArray)
+        .def_readwrite("content_is_null", &Message::contentIsNull);
+
+    py::class_<ToolDefinition>(m, "ToolDefinition")
+        .def(py::init<>())
+        .def_readwrite("name", &ToolDefinition::name)
+        .def_readwrite("description", &ToolDefinition::description)
+        .def_readwrite("parameters", &ToolDefinition::parameters)
+        .def_readwrite("strict", &ToolDefinition::strict)
+        .def_readwrite("has_description", &ToolDefinition::hasDescription)
+        .def_readwrite("has_parameters", &ToolDefinition::hasParameters)
+        .def_readwrite("has_strict", &ToolDefinition::hasStrict);
+
+    py::enum_<ToolChoice::Mode>(m, "ToolChoiceMode")
+        .value("NONE", ToolChoice::Mode::kNone)
+        .value("AUTO", ToolChoice::Mode::kAuto)
+        .value("REQUIRED", ToolChoice::Mode::kRequired)
+        .value("FUNCTION", ToolChoice::Mode::kFunction);
+
+    py::class_<ToolChoice>(m, "ToolChoice")
+        .def(py::init<>())
+        .def_readwrite("mode", &ToolChoice::mode)
+        .def_readwrite("function_name", &ToolChoice::functionName);
 
     m.def(
         "create_text_message",
@@ -792,6 +928,39 @@ PYBIND11_MODULE(_edgellm_runtime, m)
         .def_readwrite("formatted_system_prompt", &LLMGenerationRequest::FormattedRequest::formattedSystemPrompt)
         .def_readwrite("formatted_complete_request", &LLMGenerationRequest::FormattedRequest::formattedCompleteRequest);
 
+    py::enum_<GuideType>(m, "GuideType", "Grammar dialect carried by GuidedDecodingParams.")
+        .value("JSON_OBJECT", GuideType::kJsonObject)
+        .value("JSON_SCHEMA", GuideType::kJsonSchema)
+        .value("REGEX", GuideType::kRegex)
+        .value("EBNF", GuideType::kEbnf)
+        .value("STRUCTURAL_TAG", GuideType::kStructuralTag)
+        .value("CHOICE", GuideType::kChoice);
+
+    py::class_<GuidedDecodingParams>(m, "GuidedDecodingParams",
+        "Grammar constraint for one request. `guide` holds the schema / pattern / grammar / choice "
+        "list and is empty only for JSON_OBJECT.")
+        .def(py::init<>())
+        .def(py::init([](GuideType type, std::string guide) {
+            GuidedDecodingParams params;
+            params.type = type;
+            params.guide = std::move(guide);
+            return params;
+        }),
+            py::arg("type"), py::arg("guide") = std::string{})
+        .def_readwrite("type", &GuidedDecodingParams::type)
+        .def_readwrite("guide", &GuidedDecodingParams::guide);
+
+    m.def(
+        "validate_guided_decoding_params",
+        [](GuidedDecodingParams const& params) {
+            std::string failReason;
+            bool const valid = rt::validateGuidedDecodingParams(params, failReason);
+            return std::make_pair(valid, failReason);
+        },
+        py::arg("params"),
+        "Reject guides XGrammar accepts but does not enforce, and oversized ones. Returns "
+        "(is_valid, reason) so a server can answer 400 instead of failing the request later.");
+
     py::class_<LLMGenerationRequest::Request>(m, "Request")
         .def(py::init<>())
         .def(py::init([](std::vector<Message> const& messages) {
@@ -804,7 +973,9 @@ PYBIND11_MODULE(_edgellm_runtime, m)
         .def_readwrite("image_buffers", &LLMGenerationRequest::Request::imageBuffers)
         .def_readwrite("audio_buffers", &LLMGenerationRequest::Request::audioBuffers)
         .def_readwrite("stop_strings", &LLMGenerationRequest::Request::stopStrings)
-        .def_readwrite("logit_bias", &LLMGenerationRequest::Request::logitBias);
+        .def_readwrite("logit_bias", &LLMGenerationRequest::Request::logitBias)
+        .def_readwrite("guided_decoding", &LLMGenerationRequest::Request::guidedDecoding)
+        .def_readwrite("sampling_seed", &LLMGenerationRequest::Request::samplingSeed);
 
     // ========================================================================
     // Streaming
@@ -886,6 +1057,11 @@ PYBIND11_MODULE(_edgellm_runtime, m)
         .value("INCLUDING_GENERATED_TOKENS", ContextCacheCommitPolicy::kIncludingGeneratedTokens)
         .value("PREFILL_STATE_ONLY", ContextCacheCommitPolicy::kPrefillStateOnly);
 
+    py::enum_<SpecProposalSampling>(m, "SpecProposalSampling")
+        .value("AUTO", SpecProposalSampling::kAuto)
+        .value("GREEDY", SpecProposalSampling::kGreedy)
+        .value("PROBABILISTIC", SpecProposalSampling::kProbabilistic);
+
     py::class_<LLMGenerationRequest>(m, "LLMGenerationRequest")
         .def(py::init<>())
         .def_readwrite("requests", &LLMGenerationRequest::requests)
@@ -893,13 +1069,20 @@ PYBIND11_MODULE(_edgellm_runtime, m)
         .def_readwrite("temperature", &LLMGenerationRequest::temperature)
         .def_readwrite("top_p", &LLMGenerationRequest::topP)
         .def_readwrite("top_k", &LLMGenerationRequest::topK)
+        .def_readwrite("sampling_seed", &LLMGenerationRequest::samplingSeed)
+        .def_readwrite("spec_proposal_sampling", &LLMGenerationRequest::proposalSampling)
         .def_readwrite("max_generate_length", &LLMGenerationRequest::maxGenerateLength)
         .def_readwrite("lora_weights_name", &LLMGenerationRequest::loraWeightsName)
         .def_readwrite("save_system_prompt_kv_cache", &LLMGenerationRequest::saveSystemPromptKVCache)
         .def_readwrite("apply_chat_template", &LLMGenerationRequest::applyChatTemplate)
         .def_readwrite("add_generation_prompt", &LLMGenerationRequest::addGenerationPrompt)
         .def_readwrite("enable_thinking", &LLMGenerationRequest::enableThinking)
+        .def_readwrite("reasoning_effort", &LLMGenerationRequest::reasoningEffort)
+        .def_readwrite("tools", &LLMGenerationRequest::tools)
+        .def_readwrite("tool_choice", &LLMGenerationRequest::toolChoice)
+        .def_readwrite("parallel_tool_calls", &LLMGenerationRequest::parallelToolCalls)
         .def_readwrite("disable_spec_decode", &LLMGenerationRequest::disableSpecDecode)
+        .def_readwrite("skip_special_tokens", &LLMGenerationRequest::skipSpecialTokens)
         .def_readwrite("recurrent_capture_interval", &LLMGenerationRequest::recurrentCaptureInterval)
         .def_readwrite("stream_channels", &LLMGenerationRequest::streamChannels)
         .def_readwrite("num_logprobs", &LLMGenerationRequest::numLogprobs)
@@ -959,6 +1142,76 @@ PYBIND11_MODULE(_edgellm_runtime, m)
             py::return_value_policy::reference_internal) // deprecated alias
         .def("get_multimodal_metrics", &PyLLMRuntime::getMultimodalMetrics)
         .def("get_context_cache_metrics", &PyLLMRuntime::getContextCacheMetrics);
+
+    // ========================================================================
+    // Request engine: in-flight batching over the same runtime
+    // ========================================================================
+
+    // submit() refusing is backpressure, not failure; give it its own exception type so the
+    // server can translate it into "busy" without pattern-matching RuntimeError strings.
+    py::register_exception<scheduler::SubmitError>(m, "SubmitError");
+
+    py::class_<scheduler::EngineMetrics>(m, "EngineMetrics",
+        "A point-in-time copy of the engine's counters; per-field accurate, not a single atomic cut.")
+        .def_readonly("submitted", &scheduler::EngineMetrics::submitted)
+        .def_readonly("refused", &scheduler::EngineMetrics::refused)
+        .def_readonly("stalls_incompatible", &scheduler::EngineMetrics::stallsIncompatible)
+        .def_readonly("stalls_guided", &scheduler::EngineMetrics::stallsGuided)
+        .def_readonly("stalls_founder_only", &scheduler::EngineMetrics::stallsFounderOnly)
+        .def_readonly("stalls_no_capacity", &scheduler::EngineMetrics::stallsNoCapacity)
+        .def_readonly("admitted_mid_flight", &scheduler::EngineMetrics::admittedMidFlight)
+        .def_readonly("completed", &scheduler::EngineMetrics::completed)
+        .def_readonly("cancelled", &scheduler::EngineMetrics::cancelled)
+        .def_readonly("failed", &scheduler::EngineMetrics::failed)
+        .def_readonly("queue_latency_total_us", &scheduler::EngineMetrics::queueLatencyTotalUs)
+        .def_readonly("queue_latency_max_us", &scheduler::EngineMetrics::queueLatencyMaxUs)
+        .def_readonly("queue_latency_count", &scheduler::EngineMetrics::queueLatencyCount);
+
+    py::enum_<scheduler::ShutdownMode>(m, "ShutdownMode")
+        .value("DRAIN", scheduler::ShutdownMode::kDrain)
+        .value("CANCEL", scheduler::ShutdownMode::kCancel);
+
+    // GIL rules: every blocking call (get(), shutdown(), and StreamChannel.wait_pop() above)
+    // releases the GIL, and the actor thread never takes it (no Python callbacks cross this
+    // boundary). submit() and cancel() only post to the command queue, but they still release:
+    // they can contend on the admission gate, and nothing they touch is Python state.
+    py::class_<scheduler::RequestHandle>(
+        m, "RequestHandle", "A claim on one in-flight request. Move-only in C++; treat it as the single consumer.")
+        .def_property_readonly("id", &scheduler::RequestHandle::id)
+        .def("stream", &scheduler::RequestHandle::streamShared,
+            "The token channel for this request; tokens appear as they are produced.")
+        .def("get", &scheduler::RequestHandle::get, py::call_guard<py::gil_scoped_release>(),
+            "Block until the request is terminal, then return its response. Raises on error or cancellation.")
+        .def("ready", &scheduler::RequestHandle::ready, "True once get() would return without blocking.")
+        .def("cancel", &scheduler::RequestHandle::cancel, py::call_guard<py::gil_scoped_release>(),
+            "Ask the engine to stop this request. Non-blocking and idempotent.")
+        .def("valid", &scheduler::RequestHandle::valid);
+
+    py::class_<PyRequestEngine>(m, "RequestEngine",
+        "Owns a runtime and the actor thread that drives it; submissions from any thread, "
+        "responses through RequestHandle.")
+        .def(py::init<std::string const&, std::string const&, std::unordered_map<std::string, std::string> const&,
+                 std::string const&, ContextCacheConfig const&, int32_t, int32_t, int32_t, bool>(),
+            py::arg("engine_dir"), py::arg("multimodal_engine_dir") = "",
+            py::arg("lora_weights_map") = std::unordered_map<std::string, std::string>{},
+            py::arg("checkpoint_dir") = "", py::arg("context_cache_config") = ContextCacheConfig{},
+            py::arg("max_batch_size") = 1, py::arg("max_pending_requests") = 256,
+            py::arg("command_queue_capacity") = 64, py::arg("capture_cuda_graph") = true)
+        .def("submit", &PyRequestEngine::submit, py::arg("request"), py::call_guard<py::gil_scoped_release>(),
+            "Queue a request. Returns immediately with a RequestHandle; raises SubmitError when refused.")
+        .def("cancel", &PyRequestEngine::cancel, py::arg("request_id"), py::call_guard<py::gil_scoped_release>(),
+            "Ask the actor to terminate a request by id.")
+        .def("shutdown", &PyRequestEngine::shutdown, py::arg("mode") = scheduler::ShutdownMode::kDrain,
+            py::call_guard<py::gil_scoped_release>(),
+            "Stop the actor and join it. DRAIN lets queued requests finish; CANCEL abandons them.")
+        .def("count_prompt_tokens", &PyRequestEngine::countPromptTokens, py::arg("request"),
+            py::call_guard<py::gil_scoped_release>(),
+            "Tokenize and count without generating; safe alongside in-flight requests.")
+        .def("metrics", &PyRequestEngine::metrics,
+            "Scheduling counters: queue latency, admission stalls by reason, and outcome distribution.")
+        .def_property_readonly("queued", &PyRequestEngine::queued)
+        .def_property_readonly("resident", &PyRequestEngine::resident)
+        .def_property_readonly("running", &PyRequestEngine::running);
 
     py::class_<PyTTSRuntime>(
         m, "TTSRuntime", "TTS-only runtime (Qwen3-TTS-style): Talker + CodePredictor + Code2Wav, no Thinker engine")
@@ -1054,7 +1307,8 @@ PYBIND11_MODULE(_edgellm_runtime, m)
         [](std::vector<std::vector<Message>> const& batchMessages, float temperature, float topP, int64_t topK,
             int64_t maxGenerateLength, bool applyChatTemplate, bool addGenerationPrompt, bool enableThinking,
             std::string const& loraWeightsName, bool saveSystemPromptKvCache, bool disableSpecDecode,
-            std::unordered_map<int32_t, float> const& logitBias, int32_t numLogprobs) {
+            std::unordered_map<int32_t, float> const& logitBias, int32_t numLogprobs,
+            std::optional<GuidedDecodingParams> const& guidedDecoding) {
             LLMGenerationRequest request;
             request.temperature = temperature;
             request.topP = topP;
@@ -1073,6 +1327,7 @@ PYBIND11_MODULE(_edgellm_runtime, m)
                 LLMGenerationRequest::Request req;
                 req.messages = messages;
                 req.logitBias = logitBias;
+                req.guidedDecoding = guidedDecoding;
                 request.requests.push_back(std::move(req));
             }
             return request;
@@ -1082,5 +1337,6 @@ PYBIND11_MODULE(_edgellm_runtime, m)
         py::arg("add_generation_prompt") = true, py::arg("enable_thinking") = false, py::arg("lora_weights_name") = "",
         py::arg("save_system_prompt_kv_cache") = false, py::arg("disable_spec_decode") = false,
         py::arg("logit_bias") = std::unordered_map<int32_t, float>{}, py::arg("num_logprobs") = 0,
+        py::arg("guided_decoding") = std::optional<GuidedDecodingParams>{},
         "Create a generation request from a batch of message lists.");
 }

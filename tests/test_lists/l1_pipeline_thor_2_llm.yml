@@ -7,6 +7,10 @@ tests:
   - tests/defs/test_common.py::test_build_project
   - tests/defs/test_common.py::test_unit_tests
 
+  # Gemma4 FP16 bounded SWA: 19 retained pages versus 32 full pages, with input longer than W=1024.
+  - tests/defs/test_llm_pipeline.py::TestLLMPipeline::test_engine_build[gemma-4-E2B-it-fp16-mxsl4096-mxbs1-mxil1536]
+  - tests/defs/test_llm_pipeline.py::TestLLMPipeline::test_inference[gemma-4-E2B-it-fp16-mxsl4096-mxbs1-mxil1536-llm_sliding_window]
+
   # Qwen3-1.7B - nvfp4
   - tests/defs/test_llm_pipeline.py::TestLLMPipeline::test_engine_build[Qwen3-1.7B-nvfp4-mxsl4096-mxbs8-mxil4096]
   - tests/defs/test_llm_pipeline.py::TestLLMPipeline::test_e2e_bench[Qwen3-1.7B-nvfp4-mxsl4096-mxbs8-mxil4096-mmlu_5-bs8]

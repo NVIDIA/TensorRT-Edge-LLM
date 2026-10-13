@@ -10,9 +10,12 @@ Phi-4-Multimodal requires merging its vision LoRA adapter into the base model be
 
 ## Step 1: Merge, Quantize, and Export (x86 Host)
 
+Install the `tools` extra from a [published wheel](../getting_started/installation.md#optional-python-dependencies)
+or the source checkout. The later C++ engine-build and inference steps require
+the source workflow.
+
 ```bash
 cd /path/to/TensorRT-Edge-LLM
-pip3 install ".[tools]"
 
 export WORKSPACE_DIR=$HOME/tensorrt-edgellm-workspace
 export MODEL_NAME=Phi-4-multimodal-instruct

@@ -15,7 +15,7 @@
 """TensorRT lifecycle and accuracy tests for Marlin MoE plugins.
 
 Each positive test builds one dynamic-profile engine, round-trips its
-serialization, and executes both decode (B=1, S=1) and prefill (B=1, S=128).
+serialization, and executes token-major inputs across the Marlin tile-size boundary.
 The reference dequantizes the original E2M1 codes with their original E4M3
 block scales and per-expert global scales; it never decodes packed Marlin data.
 
@@ -30,7 +30,8 @@ from typing import Dict, Optional
 
 import pytest
 from test_plugin_base import (DEPENDENCIES_AVAILABLE, IMPORT_ERROR,
-                              PluginRunner, assert_close, pf_float32, pf_int32)
+                              PluginRunner, PluginUnsupportedError,
+                              assert_close, pf_float32, pf_int32)
 
 if DEPENDENCIES_AVAILABLE:
     import tensorrt as trt
@@ -82,7 +83,7 @@ class MoeCase:
     def routed_row_capacity(self) -> int:
         if self.max_routed_rows is not None:
             return self.max_routed_rows
-        # The dynamic profile max is prefill, which uses a 32-row Marlin tile.
+        # The dynamic profile maximum uses the 32-row large-token Marlin tile.
         return (_MAX_SEQUENCE_LENGTH * self.top_k + self.num_experts *
                 (32 - 1))
 
@@ -368,7 +369,8 @@ def _io_specs(case: MoeCase,
               *,
               hidden_dtype=None,
               fc1_global_dtype=None,
-              fc2_global_dtype=None):
+              fc2_global_dtype=None,
+              legacy_rank3=False):
     activation_dtype = (trt.bfloat16
                         if activation_dtype is None else activation_dtype)
     hidden_dtype = (activation_dtype if hidden_dtype is None else hidden_dtype)
@@ -378,7 +380,9 @@ def _io_specs(case: MoeCase,
                         if fc2_global_dtype is None else fc2_global_dtype)
     return [
         ("router_logits", trt.float32, (-1, case.num_experts)),
-        ("hidden_states", hidden_dtype, (-1, -1, case.hidden_size)),
+        ("hidden_states", hidden_dtype, (-1, -1,
+                                         case.hidden_size) if legacy_rank3 else
+         (-1, case.hidden_size)),
         ("fc1_qweights", trt.int8, (case.num_experts, case.hidden_size // 16,
                                     8 * case.fc1_out_dim)),
         ("fc1_block_scales", trt.int8,
@@ -395,28 +399,48 @@ def _io_specs(case: MoeCase,
 
 def _profiles(case: MoeCase, input_specs):
     profiles = {}
+    legacy_rank3 = next(shape for name, _, shape in input_specs
+                        if name == "hidden_states")[0:2] == (-1, -1)
     for name, _, shape in input_specs:
         if name == "router_logits":
-            profiles[name] = ((1, case.num_experts), (1, case.num_experts),
-                              (_MAX_SEQUENCE_LENGTH, case.num_experts))
+            max_tokens = 16 * 9 if legacy_rank3 else _MAX_SEQUENCE_LENGTH
+            opt_tokens = 9 if legacy_rank3 else 1
+            profiles[name] = ((1, case.num_experts), (opt_tokens,
+                                                      case.num_experts),
+                              (max_tokens, case.num_experts))
         elif name == "hidden_states":
-            profiles[name] = ((1, 1, case.hidden_size), (1, 1,
-                                                         case.hidden_size),
-                              (1, _MAX_SEQUENCE_LENGTH, case.hidden_size))
+            if legacy_rank3:
+                profiles[name] = ((1, 1, case.hidden_size),
+                                  (1, 9, case.hidden_size), (16, 9,
+                                                             case.hidden_size))
+            else:
+                profiles[name] = ((1, case.hidden_size), (1, case.hidden_size),
+                                  (_MAX_SEQUENCE_LENGTH, case.hidden_size))
         else:
             profiles[name] = (shape, shape, shape)
     return profiles
 
 
-def _build_runner(case: MoeCase, activation_dtype) -> PluginRunner:
+def _build_runner(case: MoeCase,
+                  activation_dtype,
+                  *,
+                  legacy_rank3=False,
+                  expect_unsupported=False) -> PluginRunner:
     runner = PluginRunner()
-    input_specs = _io_specs(case, activation_dtype)
+    input_specs = _io_specs(case, activation_dtype, legacy_rank3=legacy_rank3)
+    plugin_case = case
+    if legacy_rank3 and case.max_routed_rows is None:
+        max_tokens = 16 * 9
+        plugin_case = replace(case,
+                              max_routed_rows=max_tokens * case.top_k +
+                              case.num_experts * (32 - 1))
     runner.build(input_specs=input_specs,
                  output_names=["output"],
                  plugin_name=_PLUGIN_NAME,
                  plugin_version=_PLUGIN_VERSION,
-                 plugin_fields=_plugin_fields(case),
-                 profiles=_profiles(case, input_specs))
+                 plugin_fields=_plugin_fields(plugin_case),
+                 profiles=_profiles(case, input_specs),
+                 expect_unsupported=expect_unsupported)
     return runner
 
 
@@ -436,7 +460,7 @@ def _round_trip_engine(runner: PluginRunner) -> None:
     runner._nvfp4_test_runtime = runtime
 
 
-def _execute_decode_and_prefill(fixture: MoeFixture) -> None:
+def _execute_token_count_boundaries(fixture: MoeFixture) -> None:
     case = fixture.case
     trt_dtype = (trt.bfloat16 if fixture.activation_dtype == torch.bfloat16
                  else trt.float16)
@@ -448,14 +472,14 @@ def _execute_decode_and_prefill(fixture: MoeFixture) -> None:
     }
     dense_weights = _reference_dense_weights(fixture)
 
-    for sequence_length in (1, _MAX_SEQUENCE_LENGTH):
-        generator = torch.Generator().manual_seed(30000 + sequence_length +
+    for num_tokens in (1, 8, 9, _MAX_SEQUENCE_LENGTH):
+        generator = torch.Generator().manual_seed(30000 + num_tokens +
                                                   case.routing_mode)
-        hidden_states = (torch.randn((1, sequence_length, case.hidden_size),
+        hidden_states = (torch.randn((num_tokens, case.hidden_size),
                                      generator=generator,
                                      dtype=torch.float32) * 0.25).to(
                                          fixture.activation_dtype).to("cuda")
-        router_logits = torch.randn((sequence_length, case.num_experts),
+        router_logits = torch.randn((num_tokens, case.num_experts),
                                     generator=generator,
                                     dtype=torch.float32).to("cuda")
         expert_score_bias = (torch.randn(
@@ -476,7 +500,7 @@ def _execute_decode_and_prefill(fixture: MoeFixture) -> None:
 
         assert bool(torch.isfinite(actual.to(torch.float32)).all())
         assert_close(
-            f"{case.name}[{fixture.activation_dtype}][S={sequence_length}]",
+            f"{case.name}[{fixture.activation_dtype}][T={num_tokens}]",
             expected,
             actual,
             atol=0.05,
@@ -486,33 +510,55 @@ def _execute_decode_and_prefill(fixture: MoeFixture) -> None:
 
 @pytest.mark.parametrize("activation_dtype_name", ["bfloat16", "float16"],
                          ids=["bf16", "fp16"])
-def test_qwen_softmax_swiglu_decode_and_prefill_dynamic_engine(
+def test_qwen_softmax_swiglu_token_count_boundary_dynamic_engine(
         activation_dtype_name):
-    _execute_decode_and_prefill(
+    _execute_token_count_boundaries(
         _make_qwen_fixture(getattr(torch, activation_dtype_name)))
 
 
 @pytest.mark.parametrize("activation_dtype_name", ["bfloat16", "float16"],
                          ids=["bf16", "fp16"])
-def test_nemotron_sigmoid_group_relu2_decode_and_prefill_dynamic_engine(
+def test_nemotron_sigmoid_group_relu2_token_count_boundary_dynamic_engine(
         activation_dtype_name):
-    _execute_decode_and_prefill(
+    _execute_token_count_boundaries(
         _make_nemotron_fixture(getattr(torch, activation_dtype_name)))
 
 
-def test_int4_fp16_swiglu_preserves_legacy_rounding():
+@pytest.mark.parametrize("activation_dtype_name", ["bfloat16", "float16"],
+                         ids=["bf16", "fp16"])
+def test_w4a16_rejects_rank3_hidden_states(activation_dtype_name):
+    with pytest.raises(PluginUnsupportedError):
+        _build_runner(_QWEN_CASE,
+                      getattr(trt, activation_dtype_name),
+                      legacy_rank3=True,
+                      expect_unsupported=True)
+
+
+@pytest.mark.parametrize(
+    "hidden_shape",
+    [
+        (1, _HIDDEN_SIZE),
+        (8, _HIDDEN_SIZE),
+        (9, _HIDDEN_SIZE),
+        (16, _HIDDEN_SIZE),
+    ],
+    ids=["token_t1", "token_t8", "token_t9", "token_t16"],
+)
+def test_int4_fp16_swiglu_preserves_legacy_rounding(hidden_shape):
     """Exercise the shared FP16 activation through the complete INT4 plugin."""
     if torch.cuda.get_device_capability()[0] < 8:
         pytest.skip("The four-stage Marlin kernel requires SM80 or newer")
 
-    num_experts = 1
+    num_experts = 2
     top_k = 1
     hidden_size = 128
     moe_inter_size = 64
     quantization_group_size = 64
+    num_tokens = hidden_shape[0] if len(
+        hidden_shape) == 2 else hidden_shape[0] * hidden_shape[1]
     input_specs = [
-        ("router_logits", trt.float32, (1, num_experts)),
-        ("hidden_states", trt.float16, (1, 1, hidden_size)),
+        ("router_logits", trt.float32, (num_tokens, num_experts)),
+        ("hidden_states", trt.float16, hidden_shape),
         ("fc_gate_up_qweights", trt.int8, (num_experts, hidden_size // 16,
                                            16 * moe_inter_size)),
         ("fc_gate_up_scales", trt.float16,
@@ -540,8 +586,9 @@ def test_int4_fp16_swiglu_preserves_legacy_rounding():
                               quantization_group_size),
                  ],
                  profiles=profiles)
+    _round_trip_engine(runner)
 
-    hidden_states = torch.zeros((1, 1, hidden_size),
+    hidden_states = torch.zeros(hidden_shape,
                                 dtype=torch.float16,
                                 device="cuda")
     hidden_states[..., 0] = 1.0
@@ -564,27 +611,29 @@ def test_int4_fp16_swiglu_preserves_legacy_rounding():
                               dtype=torch.int16).view(torch.float16).item()
     up_value = torch.tensor([0x5F66],
                             dtype=torch.int16).view(torch.float16).item()
-    fc_gate_up_scales[0, 0, 0] = gate_value
-    fc_gate_up_scales[0, 0, moe_inter_size] = up_value
+    fc_gate_up_scales[:, 0, 0] = gate_value
+    fc_gate_up_scales[:, 0, moe_inter_size] = up_value
     fc_down_scales = torch.ones(input_specs[5][2],
                                 dtype=torch.float16,
                                 device="cuda")
     actual = torch.empty_like(hidden_states)
+    router_logits = torch.full((num_tokens, num_experts),
+                               -10.0,
+                               dtype=torch.float32,
+                               device="cuda")
+    selected_experts = torch.zeros(num_tokens,
+                                   dtype=torch.int64,
+                                   device="cuda")
+    selected_experts[::7] = 1
+    router_logits.scatter_(1, selected_experts[:, None], 10.0)
     runner.execute({
-        "router_logits":
-        torch.zeros((1, num_experts), dtype=torch.float32, device="cuda"),
-        "hidden_states":
-        hidden_states,
-        "fc_gate_up_qweights":
-        fc_gate_up_qweights,
-        "fc_gate_up_scales":
-        fc_gate_up_scales,
-        "fc_down_qweights":
-        fc_down_qweights,
-        "fc_down_scales":
-        fc_down_scales,
-        "output":
-        actual,
+        "router_logits": router_logits,
+        "hidden_states": hidden_states,
+        "fc_gate_up_qweights": fc_gate_up_qweights,
+        "fc_gate_up_scales": fc_gate_up_scales,
+        "fc_down_qweights": fc_down_qweights,
+        "fc_down_scales": fc_down_scales,
+        "output": actual,
     })
 
     # Legacy behavior rounds SiLU(gate) to FP16 before multiplying by up.
@@ -594,6 +643,91 @@ def test_int4_fp16_swiglu_preserves_legacy_rounding():
     actual_bits = actual.cpu().view(torch.int16)
     assert actual_bits.unique().tolist() == [legacy_result_bits]
     assert not bool(torch.any(actual_bits == final_round_only_bits))
+
+
+def test_int4_rejects_rank3_hidden_states():
+    num_experts = 1
+    hidden_size = 128
+    moe_inter_size = 64
+    quantization_group_size = 64
+    input_specs = [
+        ("router_logits", trt.float32, (8, num_experts)),
+        ("hidden_states", trt.float16, (2, 4, hidden_size)),
+        ("fc_gate_up_qweights", trt.int8, (num_experts, hidden_size // 16,
+                                           16 * moe_inter_size)),
+        ("fc_gate_up_scales", trt.float16,
+         (num_experts, hidden_size // quantization_group_size,
+          2 * moe_inter_size)),
+        ("fc_down_qweights", trt.int8, (num_experts, moe_inter_size // 16,
+                                        8 * hidden_size)),
+        ("fc_down_scales", trt.float16,
+         (num_experts, moe_inter_size // quantization_group_size,
+          hidden_size)),
+    ]
+    profiles = {name: (shape, shape, shape) for name, _, shape in input_specs}
+    with pytest.raises(PluginUnsupportedError):
+        PluginRunner().build(input_specs=input_specs,
+                             output_names=["output"],
+                             plugin_name=_INT4_PLUGIN_NAME,
+                             plugin_version=_PLUGIN_VERSION,
+                             plugin_fields=[
+                                 pf_int32("num_experts", num_experts),
+                                 pf_int32("top_k", 1),
+                                 pf_int32("hidden_size", hidden_size),
+                                 pf_int32("moe_inter_size", moe_inter_size),
+                                 pf_int32("activation_type", 0),
+                                 pf_int32("quantization_group_size",
+                                          quantization_group_size),
+                             ],
+                             profiles=profiles,
+                             expect_unsupported=True)
+
+
+def test_int4_build_rejects_profile_exceeding_routed_row_capacity():
+    num_experts = 128
+    top_k = 8
+    hidden_size = 128
+    moe_inter_size = 64
+    quantization_group_size = 64
+    max_tokens = ((2**31 - 1 - num_experts * 32) // top_k) + 1
+    input_specs = [
+        ("router_logits", trt.float32, (-1, num_experts)),
+        ("hidden_states", trt.float16, (-1, hidden_size)),
+        ("fc_gate_up_qweights", trt.int8, (num_experts, hidden_size // 16,
+                                           16 * moe_inter_size)),
+        ("fc_gate_up_scales", trt.float16,
+         (num_experts, hidden_size // quantization_group_size,
+          2 * moe_inter_size)),
+        ("fc_down_qweights", trt.int8, (num_experts, moe_inter_size // 16,
+                                        8 * hidden_size)),
+        ("fc_down_scales", trt.float16,
+         (num_experts, moe_inter_size // quantization_group_size,
+          hidden_size)),
+    ]
+    profiles = {
+        name: ((1, shape[1]), (8, shape[1]),
+               (max_tokens, shape[1])) if name in ("router_logits",
+                                                   "hidden_states") else
+        (shape, shape, shape)
+        for name, _, shape in input_specs
+    }
+    with pytest.raises(PluginUnsupportedError):
+        PluginRunner().build(
+            input_specs=input_specs,
+            output_names=["output"],
+            plugin_name=_INT4_PLUGIN_NAME,
+            plugin_version=_PLUGIN_VERSION,
+            plugin_fields=[
+                pf_int32("num_experts", num_experts),
+                pf_int32("top_k", top_k),
+                pf_int32("hidden_size", hidden_size),
+                pf_int32("moe_inter_size", moe_inter_size),
+                pf_int32("activation_type", 0),
+                pf_int32("quantization_group_size", quantization_group_size),
+            ],
+            profiles=profiles,
+            expect_unsupported=True,
+        )
 
 
 def _build_serialized_network_without_skip(case: MoeCase,

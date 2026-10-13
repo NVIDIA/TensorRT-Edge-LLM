@@ -54,10 +54,12 @@ import cutlass.pipeline as pipeline
 import cutlass.utils as utils
 import cutlass.utils.blackwell_helpers as sm100_utils
 import numpy as np
+from cutedsl_utils import aot_placeholders
 from cutlass.cute.nvgpu import cpasync, tcgen05
 from cutlass.pipeline import pipeline_init_arrive, pipeline_init_wait
 from common import (
     create_bias_tensor,
+    create_fake_row_major_3d_tensor,
     create_row_major_3d_gemm_tensors,
     create_row_major_3d_tensor,
     export_compiled_kernel,
@@ -923,7 +925,7 @@ def run(
         print(f"{_tag}   FP16 in, {c_dtype} out, FP32 accumulation")
         print(f"{_tag}   mma_tiler={mma_tiler_mn}, cluster={cluster_shape_mn}, TMA store")
 
-    if cp.cuda.runtime.getDeviceCount() == 0:
+    if not export_only and cp.cuda.runtime.getDeviceCount() == 0:
         raise RuntimeError("GPU is required!")
 
     if not export_only:
@@ -939,14 +941,22 @@ def run(
     # its dtype is configurable (float16 or float32). C's row-major
     # (L, mode0, mode1) layout is the same for either dtype, so the dynamic
     # layout markup below applies unchanged.
-    a_cp, b_cp, _ = create_row_major_3d_gemm_tensors(
-        m, n, k, batch=l, fill_random=not export_only, dtype=cp.float16
-    )
-    c_cp = create_row_major_3d_tensor(m, n, l, fill_random=False, dtype=c_cp_dtype)
-
-    a_dyn = mark_3d_row_major_dynamic(to_cute_tensor(a_cp))
-    b_dyn = mark_3d_row_major_dynamic(to_cute_tensor(b_cp))
-    c_dyn = mark_3d_row_major_dynamic(to_cute_tensor(c_cp))
+    if export_only:
+        c_type = cutlass.Float16 if c_dtype == "float16" else cutlass.Float32
+        a_dyn = create_fake_row_major_3d_tensor(batch=l)
+        b_dyn = create_fake_row_major_3d_tensor(batch=l)
+        c_dyn = create_fake_row_major_3d_tensor(batch=l, dtype=c_type)
+        a_cp = b_cp = c_cp = None
+    else:
+        a_cp, b_cp, _ = create_row_major_3d_gemm_tensors(
+            m, n, k, batch=l, fill_random=True, dtype=cp.float16
+        )
+        c_cp = create_row_major_3d_tensor(
+            m, n, l, fill_random=False, dtype=c_cp_dtype
+        )
+        a_dyn = mark_3d_row_major_dynamic(to_cute_tensor(a_cp))
+        b_dyn = mark_3d_row_major_dynamic(to_cute_tensor(b_cp))
+        c_dyn = mark_3d_row_major_dynamic(to_cute_tensor(c_cp))
 
     # Bias tensor for fused epilogues.
     mBias = None
@@ -956,7 +966,11 @@ def run(
 
     use_silu = (fused_epilogue == "bias_silu")
 
-    current_stream = cuda.CUstream(cp.cuda.get_current_stream().ptr)
+    current_stream = (
+        aot_placeholders.make_stream()
+        if export_only
+        else cuda.CUstream(cp.cuda.get_current_stream().ptr)
+    )
 
     gemm = GemmBlackwellFP16(
         acc_dtype=cutlass.Float32,
@@ -970,6 +984,11 @@ def run(
         gemm, a_dyn, b_dyn, c_dyn, current_stream,
         use_silu=use_silu,
         mBias=mBias,
+        **(
+            dict(options=aot_placeholders.compile_options())
+            if export_only
+            else {}
+        ),
     )
     compilation_time = time.time() - start_time
     print(f"{_tag} Compilation time: {compilation_time:.4f}s")

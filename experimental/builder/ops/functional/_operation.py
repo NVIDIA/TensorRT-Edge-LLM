@@ -30,11 +30,6 @@ def operation_attributes(name: str) -> frozenset[str]:
     return current_net().operation_attributes(name)
 
 
-def supports_operation_attribute(name: str, attribute: str) -> bool:
-    """Whether the active operation implementation accepts ``attribute``."""
-    return attribute in operation_attributes(name)
-
-
 def parameter(name: str, value, consumer: str, *, recipe=None) -> Tensor:
     """Create an externalized parameter input for one operation.
 
@@ -43,6 +38,11 @@ def parameter(name: str, value, consumer: str, *, recipe=None) -> Tensor:
     of declaring an input nothing can fill.
     """
     return Tensor(current_net().parameter(name, value, consumer, recipe))
+
+
+def network_input(name: str, dtype, shape: Sequence[int]) -> Tensor:
+    """Return the network input ``name``, declaring it on first use."""
+    return Tensor(current_net().add_input(name, dtype, shape))
 
 
 def operation(name: str,

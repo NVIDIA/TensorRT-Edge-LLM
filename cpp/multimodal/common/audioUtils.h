@@ -50,11 +50,13 @@ bool uploadHostMelFp32ToFp16Gpu(
 //! the clip length within its pre-allocated capacity; initFbankResources sizes
 //! it for the longest PCM the engine kMAX profile can consume, and
 //! tryOnlineGpuFbank gates clip length against that bound before calling.
-//! @param hostPcm Mono FP32 PCM in [-1, 1] (typically ``AudioPCM::samples``).
+//! @param hostPcm ``[N]`` Float host tensor of mono PCM in [-1, 1] (typically
+//!                ``*AudioPCM::samples``). Page-locked memory transfers
+//!                asynchronously; pageable memory is staged by the driver.
 //! @param devOut  Pre-allocated GPU tensor, Float; reshaped to ``[N]``.
 //! @param stream  CUDA stream for the async H2D copy.
-//! @return true on success, false on empty input or insufficient capacity.
-bool uploadHostPcmF32ToGpu(std::vector<float> const& hostPcm, rt::Tensor& devOut, cudaStream_t stream);
+//! @return true on success, false on empty or non-host-Float input, or insufficient capacity.
+bool uploadHostPcmF32ToGpu(rt::Tensor const& hostPcm, rt::Tensor& devOut, cudaStream_t stream);
 
 //! Cast a host FP32 mel filter ``[nMel, nFreq]`` (row-major) into the
 //! ``[nMel, kPad]`` Half K-major layout the CuTe DSL mel GEMM A-matrix
@@ -280,10 +282,8 @@ struct FbankResourcesParakeet
 //!
 //! Output shape/dtype matches the CPU MelExtractor → uploadHostMelFp32ToFp16Gpu
 //! parakeet contract ([1, T_out, nMel] Half, time-first), so the GPU fbank and the
-//! CPU fallback are shape/dtype-compatible. (Numerically the GPU per-feature std
-//! uses an unbiased N-1 divisor, matching HF ParakeetFeatureExtractor, while the CPU
-//! MelExtractor uses a biased N divisor — a sub-threshold sqrt(N/(N-1)) scale that
-//! differs only on very short clips; see melSpectrogram.cpp.)
+//! CPU fallback are shape/dtype-compatible. Both per-feature stds use the unbiased
+//! N-1 divisor of HF ParakeetFeatureExtractor, so the two paths agree numerically.
 //!
 //! Caller must have already loaded the CuTe DSL gemm module (idempotent +
 //! thread-safe; initFbankResources does this).

@@ -35,7 +35,18 @@ import torch
 # ---------------------------------------------------------------------------
 
 
-class _GoldenNVFP4Linear(torch.nn.Module):
+class _GoldenLinearBase(torch.nn.Module):
+    """Base for the fake-quant goldens, mirroring ``models.linear.LinearBase``.
+
+    ``_load_quantized_state`` overwrites :attr:`quantize_activations` per
+    instance the same way ``make_linear`` does on the export side, so the two
+    graphs stay in the same regime.
+    """
+
+    quantize_activations: bool = True
+
+
+class _GoldenNVFP4Linear(_GoldenLinearBase):
     """Standalone NVFP4 fake-quant linear (mirrors NVFP4LinearMethod.apply).
 
     Holds the compressed buffers (packed fp4 weight + fp8 per-group scale +
@@ -71,13 +82,15 @@ class _GoldenNVFP4Linear(torch.nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         from tensorrt_edgellm.models.ops import nvfp4_act_qdq, nvfp4_dequantize
-        x_dq = nvfp4_act_qdq(x.to(torch.float16), self.input_scale)
+        x = x.to(torch.float16)
+        x_dq = nvfp4_act_qdq(
+            x, self.input_scale) if self.quantize_activations else x
         w_dq = nvfp4_dequantize(self.weight, self.weight_scale,
                                 self.weight_scale_2, self.group_size)
         return torch.nn.functional.linear(x_dq, w_dq, self.bias)
 
 
-class _GoldenFP8Linear(torch.nn.Module):
+class _GoldenFP8Linear(_GoldenLinearBase):
     """Standalone FP8 (E4M3) fake-quant linear (mirrors FP8Linear.forward).
 
     Activation: fp8_quantize -> fp8_dequantize (per-tensor); weight: fp8_dequantize.
@@ -103,13 +116,15 @@ class _GoldenFP8Linear(torch.nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         from tensorrt_edgellm.models.ops import fp8_dequantize, fp8_quantize
-        x_q = fp8_quantize(x.to(torch.float16), self.input_scale)
-        x_dq = fp8_dequantize(x_q, self.input_scale)
+        x_dq = x.to(torch.float16)
+        if self.quantize_activations:
+            x_dq = fp8_dequantize(fp8_quantize(x_dq, self.input_scale),
+                                  self.input_scale)
         w_dq = fp8_dequantize(self.weight, self.weight_scale)
         return torch.nn.functional.linear(x_dq, w_dq, self.bias)
 
 
-class _GoldenMXFP8Linear(torch.nn.Module):
+class _GoldenMXFP8Linear(_GoldenLinearBase):
     """Standalone MXFP8 fake-quant linear (mirrors MXFP8Linear.forward).
 
     Weight is FP8 E4M3 with a per-block (block_size=32) E8M0 scale; the activation
@@ -140,12 +155,14 @@ class _GoldenMXFP8Linear(torch.nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         from tensorrt_edgellm.models.ops import mxfp8_act_qdq, mxfp8_weight_dq
-        x_dq = mxfp8_act_qdq(x.to(torch.float16))
+        x_dq = x.to(torch.float16)
+        if self.quantize_activations:
+            x_dq = mxfp8_act_qdq(x_dq)
         w_dq = mxfp8_weight_dq(self.weight, self.weight_scale, self.block_size)
         return torch.nn.functional.linear(x_dq, w_dq, self.bias)
 
 
-class _GoldenINT8SQLinear(torch.nn.Module):
+class _GoldenINT8SQLinear(_GoldenLinearBase):
     """INT8 SmoothQuant W8A8 fake-quant linear (mirrors INT8SQLinear.forward).
 
     Per-channel symmetric INT8 weight, per-tensor symmetric INT8 activation, with a
@@ -173,8 +190,11 @@ class _GoldenINT8SQLinear(torch.nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         from tensorrt_edgellm.models.ops import (int8_sq_act_qdq,
                                                  int8_sq_weight_dq)
-        x = x.to(torch.float16) * self.pre_quant_scale
-        x_dq = int8_sq_act_qdq(x, self.input_scale)
+
+        # The smoother stays in both regimes: the weight carries its inverse.
+        x_dq = x.to(torch.float16) * self.pre_quant_scale
+        if self.quantize_activations:
+            x_dq = int8_sq_act_qdq(x_dq, self.input_scale)
         w_dq = int8_sq_weight_dq(self.weight, self.weight_scale)
         return torch.nn.functional.linear(x_dq, w_dq, self.bias)
 
@@ -241,7 +261,7 @@ def _gptq_dequantize(qweight: torch.Tensor,
     return w.t().contiguous().to(torch.float16)  # [out, in]
 
 
-class _GoldenAWQLinear(torch.nn.Module):
+class _GoldenAWQLinear(_GoldenLinearBase):
     """AutoAWQ INT4 W4A16 fake-quant linear. Dequantizes the weight to fp16 and does
     a plain fp16 matmul (AWQ does not quantize activations)."""
 
@@ -285,7 +305,7 @@ def _detect_gptq_zero_point_offset(qzeros: torch.Tensor) -> int:
     return 0 if bool((nibs == 8).all()) else 1
 
 
-class _GoldenGPTQLinear(torch.nn.Module):
+class _GoldenGPTQLinear(_GoldenLinearBase):
     """GPTQ INT4 W4A16 fake-quant linear (weight-only, no activation quant)."""
 
     def __init__(self,

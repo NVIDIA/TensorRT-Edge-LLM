@@ -402,6 +402,21 @@ def test_omni_mixed_all_modalities():
     assert not _wq(model.talker.code2wav.fc1)[0], "Code2Wav always off"
 
 
+def test_code_predictor_nvfp4():
+    """``cp_quantization=nvfp4``: block-quantized CP body, with down_proj and
+    the codec embedding tables left alone."""
+    model = _MultiModalModel(with_talker=True)
+    mtq.quantize(model,
+                 build_quant_config("fp8", cp_quantization="nvfp4"),
+                 forward_loop=_calib_hidden)
+    cp = model.talker.code_predictor
+    assert _wq(cp.q_proj)[0], "CodePredictor body quantized"
+    assert cp.q_proj.weight_quantizer.block_sizes[-1] == 16, \
+        "CodePredictor weight is block-quantized (block size 16)"
+    assert not _wq(cp.down_proj)[0], "CodePredictor down_proj excluded"
+    assert not _wq(model.talker.code2wav.fc1)[0], "Code2Wav always off"
+
+
 def test_code_predictor_quantization():
     """cp_quantization on its own: the CodePredictor is quantized per-channel
     (down_proj excluded, Code2Wav off), and stays untouched when not requested."""
@@ -417,6 +432,141 @@ def test_code_predictor_quantization():
     off = _MultiModalModel(with_talker=True)
     mtq.quantize(off, build_quant_config("fp8"), forward_loop=_calib_hidden)
     assert not _wq(off.talker.code_predictor.q_proj)[0], "cp off by default"
+
+
+# --------------------------------------------------------------------------- #
+# CP calibration loop: text and codec token domains must stay separate
+# --------------------------------------------------------------------------- #
+_TTS_TEXT_VOCAB = 64
+_TTS_CODEC_VOCAB = 32
+_TTS_CP_VOCAB = 8
+_TTS_CODE_GROUPS = 4
+_TTS_TEXT_HIDDEN = 32
+
+
+class _TTSCodePredictorStub(nn.Module):
+    """Records the ids handed to the per-codebook embeddings."""
+
+    def __init__(self):
+        super().__init__()
+        self.codec_embedding = nn.ModuleList([
+            nn.Embedding(_TTS_CP_VOCAB, _DIM)
+            for _ in range(_TTS_CODE_GROUPS - 1)
+        ])
+        self.generate_calls = 0
+
+    def get_input_embeddings(self):
+        return self.codec_embedding
+
+    def generate(self, **kwargs):
+        self.generate_calls += 1
+
+
+class _TTSTalkerStub(nn.Module):
+    """Qwen3-TTS Talker shape: codec and text tokens live in different tables
+    of different sizes, and text must be resized by ``text_projection``."""
+
+    def __init__(self):
+        super().__init__()
+        self.codec_embedding = nn.Embedding(_TTS_CODEC_VOCAB, _DIM)
+        self.text_embedding = nn.Embedding(_TTS_TEXT_VOCAB, _TTS_TEXT_HIDDEN)
+        self.text_projection = nn.Linear(_TTS_TEXT_HIDDEN, _DIM)
+        self.code_predictor = _TTSCodePredictorStub()
+        self.codec_ids_seen = []
+        self.codec_embedding.register_forward_pre_hook(
+            lambda _m, args: self.codec_ids_seen.append(args[0]))
+
+    @property
+    def dtype(self):
+        return self.codec_embedding.weight.dtype
+
+    def get_input_embeddings(self):
+        return self.codec_embedding
+
+    def get_text_embeddings(self):
+        return self.text_embedding
+
+    def forward(self, inputs_embeds=None, **kwargs):
+        return SimpleNamespace(hidden_states=((inputs_embeds, ), None))
+
+
+class _TTSModelStub(nn.Module):
+    """Qwen3-TTS has no Thinker, and its talker config has no ``text_config``
+    sub-config -- only a flat codec ``vocab_size``."""
+
+    def __init__(self):
+        super().__init__()
+        self.talker = _TTSTalkerStub()
+        self.config = SimpleNamespace(talker_config=SimpleNamespace(
+            vocab_size=_TTS_CODEC_VOCAB,
+            text_vocab_size=_TTS_TEXT_VOCAB,
+            text_hidden_size=_TTS_TEXT_HIDDEN,
+            num_code_groups=_TTS_CODE_GROUPS,
+            code_predictor_config=SimpleNamespace(
+                vocab_size=_TTS_CP_VOCAB, num_code_groups=_TTS_CODE_GROUPS)))
+
+
+def test_cp_embeddings_stay_unquantized():
+    """The per-codebook lookup tables must never get a weight quantizer.
+
+    ModelOpt >= 0.45 attaches one to ``nn.Embedding`` too, and the exporter
+    copies those rows into ``codec_embeddings.safetensors`` verbatim, so an FP8
+    table ships at half size and the runtime reads it as fp16 garbage.
+    """
+
+    class _CPWithEmbeddings(nn.Module):
+
+        def __init__(self):
+            super().__init__()
+            self.q_proj = nn.Linear(_DIM, _DIM, bias=False)
+            self.codec_embedding = nn.ModuleList([nn.Embedding(32, _DIM)])
+
+        def forward(self, x):
+            index = torch.zeros(1, dtype=torch.long)
+            return self.q_proj(x) + self.codec_embedding[0](index)
+
+    model = nn.Module()
+    model.talker = nn.Module()
+    model.talker.add_module("code_predictor", _CPWithEmbeddings())
+    model.forward = model.talker.code_predictor.forward
+
+    mtq.quantize(model,
+                 build_quant_config("fp8", cp_quantization="fp8"),
+                 forward_loop=lambda m: m(torch.randn(2, _DIM)))
+
+    cp = model.talker.code_predictor
+    assert _wq(cp.q_proj)[0], "CP Linear should still be quantized"
+    quantizer = getattr(cp.codec_embedding[0], "weight_quantizer", None)
+    assert quantizer is None or not quantizer.is_enabled, (
+        "CP codec embeddings must stay unquantized -- the exporter copies "
+        "them out verbatim")
+
+
+def test_cp_calibration_keeps_text_and_codec_domains_separate():
+    """Qwen3-TTS text ids must go through the text table + ``text_projection``,
+    never the codec table, and the CP seed token must stay inside codebook 0.
+
+    Text ids above the codec vocab would index out of bounds if the loop
+    reused ``get_input_embeddings()`` (the codec table) for text.
+    """
+    module_path = os.path.normpath(
+        os.path.join(_THIS_DIR, "..", "..", "tensorrt_edgellm", "quantization",
+                     "qwen3_cp_loader.py"))
+    spec = importlib.util.spec_from_file_location("_cp_loader_under_test",
+                                                  module_path)
+    cp_loader = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cp_loader)
+
+    model = _TTSModelStub().eval()
+    text_ids = torch.tensor([[_TTS_CODEC_VOCAB + 1, _TTS_TEXT_VOCAB - 1]])
+    cp_loader.qwen3_cp_calibration_loop(model, [text_ids], num_cp_samples=1)
+
+    assert model.talker.code_predictor.generate_calls == 1
+    seen = torch.cat([ids.flatten() for ids in model.talker.codec_ids_seen])
+    assert seen.numel() > 0, "codec table never used for the CP seed token"
+    assert int(seen.max()) < _TTS_CODEC_VOCAB, (
+        "CP seed token must be bounded by the Talker codec table it indexes, "
+        "not by a text vocabulary")
 
 
 # --------------------------------------------------------------------------- #
@@ -643,7 +793,7 @@ def test_quantize_and_export_hf_checkpoint():
     },
     {
         "quantization": "fp8",
-        "cp_quantization": "nvfp4"
+        "cp_quantization": "bogus"
     },
 ])
 def test_unsupported_methods_raise(kwargs):
@@ -701,3 +851,71 @@ def test_fuse_gdn_qkvzba_scales_unifies_group_amax():
 def test_fuse_gdn_qkvzba_scales_requires_nvfp4():
     with pytest.raises(ValueError, match="requires --quantization nvfp4"):
         build_quant_config("fp8", fuse_gdn_qkvzba_scales=True)
+
+
+def _write_vocoder(parent, name, payload="w", config=True):
+    """Create ``<parent>/<name>/`` with a Code2Wav payload."""
+    path = os.path.join(parent, name)
+    os.makedirs(path, exist_ok=True)
+    if config:
+        with open(os.path.join(path, "config.yaml"), "w") as f:
+            f.write("sample_rate: 24000\n")
+    with open(os.path.join(path, "model_weights.pt"), "w") as f:
+        f.write(payload)
+    return path
+
+
+def test_vocoder_dir_copied_into_quantized_root():
+    """``export_hf_checkpoint`` writes no sidecar directories.
+
+    Without this copy the exporter's Code2Wav stage aborts on a quantized root
+    that is otherwise complete, and a ``code2wav/`` source has to land under
+    the release name because that is where the exporter looks.
+    """
+    omni_mod = importlib.import_module(
+        "tensorrt_edgellm.quantization.qwen3_omni")
+    export_mod = importlib.import_module("tensorrt_edgellm.scripts.export")
+
+    # An aliased source is normalized to the release name.
+    with tempfile.TemporaryDirectory() as src, \
+            tempfile.TemporaryDirectory() as out:
+        _write_vocoder(src, "code2wav")
+        omni_mod._copy_vocoder_dir(src, out)
+        copied = os.path.join(out, "codec_decode_online")
+        assert sorted(
+            os.listdir(copied)) == ["config.yaml", "model_weights.pt"]
+        # The exporter finds either spelling.
+        assert export_mod._resolve_next_vocoder_dir(src) == os.path.join(
+            src, "code2wav")
+
+    # A truncated source is skipped here rather than failing at export.
+    with tempfile.TemporaryDirectory() as src, \
+            tempfile.TemporaryDirectory() as out:
+        _write_vocoder(src, "code2wav", config=False)
+        omni_mod._copy_vocoder_dir(src, out)
+        assert os.listdir(out) == []
+
+    # No vocoder at all: a no-op, so the unconditional call is safe for every
+    # non-Omni model that goes through quantize_and_export.
+    with tempfile.TemporaryDirectory() as src, \
+            tempfile.TemporaryDirectory() as out:
+        omni_mod._copy_vocoder_dir(src, out)
+        assert os.listdir(out) == []
+
+    # A leftover destination is replaced, not kept: it is either partial or
+    # stale from a run against a different model_dir.
+    with tempfile.TemporaryDirectory() as src, \
+            tempfile.TemporaryDirectory() as out:
+        _write_vocoder(src, "codec_decode_online", payload="new")
+        _write_vocoder(out, "codec_decode_online", payload="old")
+        omni_mod._copy_vocoder_dir(src, out)
+        with open(os.path.join(out, "codec_decode_online",
+                               "model_weights.pt")) as f:
+            assert f.read() == "new"
+
+    # Quantizing in place must not delete the source.
+    with tempfile.TemporaryDirectory() as same:
+        _write_vocoder(same, "codec_decode_online")
+        omni_mod._copy_vocoder_dir(same, same)
+        assert os.path.isfile(
+            os.path.join(same, "codec_decode_online", "model_weights.pt"))

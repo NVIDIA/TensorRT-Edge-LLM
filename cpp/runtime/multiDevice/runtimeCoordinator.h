@@ -18,9 +18,11 @@
 #pragma once
 
 #include "runtime/config/deploymentConfig.h"
+#include "runtime/generationBoundary.h"
 #include "runtime/llmRuntimeUtils.h"
 #include "runtime/modelArtifacts.h"
 #include "runtime/multiDevice/parallelConfig.h"
+#include "runtime/runtimeStepper.h"
 #include "runtime/state/contextCache/contextCacheConfig.h"
 
 #include <atomic>
@@ -38,6 +40,11 @@
 
 namespace trt_edgellm
 {
+namespace chat_template
+{
+class ChatTemplate;
+}
+
 namespace tokenizer
 {
 class Tokenizer;
@@ -45,6 +52,9 @@ class Tokenizer;
 
 namespace rt
 {
+
+class SteppedExecution;
+class SteppedRequest;
 
 class CollectiveGroup;
 class MultiDevicePluginResources;
@@ -82,10 +92,29 @@ public:
     RuntimeCoordinator& operator=(RuntimeCoordinator&&) = delete;
 
     bool captureDecodingCUDAGraph(cudaStream_t stream = nullptr);
+    //! True when this coordinator can host in-flight admission: the single-rank inline path, or
+    //! thread-launched tensor parallelism where the boundary-decision relay can cross ranks by
+    //! shared memory. MPI-launched ranks live in other processes and are not covered.
+    bool supportsBoundaryScheduling() const noexcept;
+
+    //! True when this coordinator can hand out stepped requests: inline single-rank execution
+    //! only in this release; a tensor-parallel deployment answers false.
+    bool supportsSteppedExecution() const noexcept;
+
+    //! Open one request under the stepped control plane. Prepares request state, runs the
+    //! founding prefill, and returns the handle the scheduler drives tick by tick; null on the
+    //! refusals dispatchRequest would have reported as failure.
+    std::unique_ptr<SteppedExecution> beginStepped(
+        LLMGenerationRequest const& request, RequestId requestId, bool enableProfiling, cudaStream_t stream);
+
     bool dispatchRequest(LLMGenerationRequest const& request, bool enableProfiling,
-        bool outputThinkerEmbeddings = false, cudaStream_t stream = nullptr);
+        bool outputThinkerEmbeddings = false, cudaStream_t stream = nullptr,
+        GenerationBoundaryHook const& boundaryHook = {});
     bool genAndSaveSystemPromptKVCache(
         std::string const& prompt, std::string const& loraWeightsName, cudaStream_t stream = nullptr);
+    //! Return the token count produced by the same preparation path used for inference.
+    //! Only text requests are supported.
+    std::vector<int32_t> countPromptTokens(LLMGenerationRequest const& request) const;
     void setVisualPrunerConfig(VisualPrunerConfig const& config);
 
     LLMGenerationResponse takeRankResponse(int32_t globalRank);
@@ -95,6 +124,12 @@ public:
 
     bool ownsGlobalRank(int32_t globalRank) const noexcept;
     bool localRanksSucceeded() const noexcept;
+
+    //! @brief Ranks this plan spans. 1 for a single-device plan.
+    int32_t worldSize() const noexcept
+    {
+        return mWorldSize;
+    }
 
 private:
     using TokenBroadcastFn = std::function<bool(void* buffer, int32_t count, cudaStream_t stream)>;
@@ -114,6 +149,7 @@ private:
         std::vector<int32_t> statuses;
         std::vector<std::string> errors;
         std::vector<cudaStream_t> requestStreams;
+
         bool enableProfiling{false};
         bool outputThinkerEmbeddings{false};
     };
@@ -123,6 +159,7 @@ private:
     void initializeCollectiveResources();
     void initializeRankStreams();
     void initializeTokenizer();
+    void initializeChatTemplate();
     void initializeRankRuntimes();
     void initializeRequestSynchronization();
     void registerCollectiveGroup(MultiDevicePluginResources const& resources);
@@ -133,11 +170,20 @@ private:
     void recordWorkerFailure(int32_t rank, std::string message) noexcept;
     void publishWorkerCompletion() noexcept;
     void initializeWorkerTaskBuffers();
-    bool runInline(
-        LLMGenerationRequest const& request, bool enableProfiling, bool outputThinkerEmbeddings, cudaStream_t stream);
+    bool runInline(LLMGenerationRequest const& request, bool enableProfiling, bool outputThinkerEmbeddings,
+        cudaStream_t stream, GenerationBoundaryHook const& boundaryHook);
 
     std::unique_ptr<LLMRankRuntime> createRankRuntime(int32_t globalRank);
+    //! Apply the model chat contract and tokenize each request exactly once.
     LLMGenerationRequest prepareRequestState(LLMGenerationRequest const& request) const;
+    //! Derive the unstable generation-prompt suffix for Hybrid+MTP context reuse.
+    //!
+    //! This deliberately renders a committed assistant probe in addition to
+    //! the already prepared generation prompt. Comparing those token streams
+    //! identifies the stable prefix that can remain cached. The method is used
+    //! only when the caller requests the -1 automatic-derivation sentinel.
+    int32_t deriveContextCacheReplayTailLength(
+        LLMGenerationRequest const& request, std::vector<int32_t> const& promptTokenIds) const;
     void prepareRankRequests(LLMGenerationRequest const& request);
     CollectiveGroup const* collectiveGroup(ParallelType type) const noexcept;
     CollectiveGroup* collectiveGroup(ParallelType type) noexcept;
@@ -158,6 +204,7 @@ private:
     bool mOwnsStreams{true};
     bool mInlineSingleRank{false};
     std::unique_ptr<tokenizer::Tokenizer> mTokenizer;
+    std::unique_ptr<chat_template::ChatTemplate> mChatTemplate;
     std::vector<std::unique_ptr<LLMRankRuntime>> mRuntimes;
     std::vector<TokenBroadcastFn> mTokenSyncFns;
 

@@ -83,7 +83,8 @@ from golden_quant_linears import (_detect_gptq_zero_point_offset,
                                   _GoldenAWQLinear, _GoldenFP8Linear,
                                   _GoldenGPTQLinear, _GoldenINT8SQLinear,
                                   _GoldenMXFP8Linear, _GoldenNVFP4Linear)
-from safetensors.torch import load_file, save_file
+from safetensors import safe_open
+from safetensors.torch import save_file
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 # Prefer the local Qwen3-0.6B checkpoint; fall back to the HF repo id if it isn't present.
@@ -178,6 +179,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--out",
                    default="/tmp/qwen3_0.6b_golden_4layer.safetensors",
                    help="output safetensors path")
+    p.add_argument(
+        "--no-quantize-activations",
+        dest="quantize_activations",
+        action="store_false",
+        help=("Mirror the export's --no-quantize-activations: leave the "
+              "activation in fp16 and dequantize only the weight."))
     return p.parse_args()
 
 
@@ -188,24 +195,40 @@ _DTYPE_MAP = {
 }
 
 
-def _apply_chat_template(tokenizer, messages: list) -> list[int]:
-    """Apply the chat template to one request's messages and return a token-id list.
+def _tokenize_request(tokenizer, messages: list, opts: dict) -> list[int]:
+    """Tokenize one request's messages the way EdgeLLM's applyChatTemplate would.
 
-    Matches EdgeLLM: add_generation_prompt=True, enable_thinking=False. Some tokenizers' templates
-    don't accept the enable_thinking kwarg, in which case we fall back to omitting it. With
-    transformers 5.x, ``tokenize=True`` returns a BatchEncoding (dict), so we uniformly extract
+    ``opts`` carries the input JSON's ``apply_chat_template`` / ``add_generation_prompt`` /
+    ``enable_thinking``; the defaults are EdgeLLM's. With ``apply_chat_template`` off the runtime
+    drops the role wrappers and the generation prompt and just concatenates each message's text,
+    so the golden has to do the same or the two sides tokenize different sequences (the alignment
+    check in the comparison catches that, but only after a full run).
+
+    Some tokenizers' templates don't accept the enable_thinking kwarg; fall back to omitting it.
+    With transformers 5.x ``tokenize=True`` returns a BatchEncoding, so uniformly extract
     input_ids into a list[int].
     """
+    if not opts["apply_chat_template"]:
+        parts = []
+        for message in messages:
+            content = message["content"]
+            if isinstance(content, str):
+                parts.append(content)
+                continue
+            parts.extend(c["text"] for c in content
+                         if isinstance(c, dict) and c.get("type") == "text")
+        return list(
+            tokenizer("".join(parts), add_special_tokens=False)["input_ids"])
     try:
         res = tokenizer.apply_chat_template(
             messages,
-            add_generation_prompt=_ADD_GENERATION_PROMPT,
-            enable_thinking=_ENABLE_THINKING,
+            add_generation_prompt=opts["add_generation_prompt"],
+            enable_thinking=opts["enable_thinking"],
             tokenize=True)
     except TypeError:
         res = tokenizer.apply_chat_template(
             messages,
-            add_generation_prompt=_ADD_GENERATION_PROMPT,
+            add_generation_prompt=opts["add_generation_prompt"],
             tokenize=True)
     if hasattr(res, "keys"):  # BatchEncoding / dict -> take input_ids
         res = res["input_ids"]
@@ -242,8 +265,17 @@ def main() -> None:
         tokenizer.pad_token = tokenizer.eos_token
 
     # ---- 2. Apply the chat template, then left-pad into a batch ----
+    template_opts = {
+        "apply_chat_template":
+        bool(req_cfg.get("apply_chat_template", True)),
+        "add_generation_prompt":
+        bool(req_cfg.get("add_generation_prompt", _ADD_GENERATION_PROMPT)),
+        "enable_thinking":
+        bool(req_cfg.get("enable_thinking", _ENABLE_THINKING)),
+    }
     id_lists = [
-        _apply_chat_template(tokenizer, r["messages"]) for r in requests
+        _tokenize_request(tokenizer, r["messages"], template_opts)
+        for r in requests
     ]
     enc = tokenizer.pad({"input_ids": id_lists},
                         padding=True,
@@ -306,9 +338,7 @@ def main() -> None:
             # then load the packed weights + scales. Attention stays HF fp16.
             m = AutoModelForCausalLM.from_config(config,
                                                  attn_implementation=attn_impl)
-            m = m.to(torch_dtype)
-            _load_quantized_state(m, ckpt)
-            return m
+            return m.to(torch_dtype)
         return AutoModelForCausalLM.from_pretrained(
             ckpt,
             config=config,
@@ -328,6 +358,8 @@ def main() -> None:
             f"[golden] SDPA unavailable ({type(exc).__name__}); using eager attention"
         )
         model = _build(attn_impl)
+    if quantized:
+        _load_quantized_state(model, ckpt, args.quantize_activations)
     model.to(args.device)
     model.eval()
     _normalize_cache_layer_types(model)
@@ -400,7 +432,7 @@ def main() -> None:
         "batch_size": str(bs),
         "input_file": args.input_file,
         "chat_template":
-        f"add_generation_prompt={_ADD_GENERATION_PROMPT},enable_thinking={_ENABLE_THINKING}",
+        ",".join(f"{k}={v}" for k, v in template_opts.items()),
         "padding_side": "left",
         "kv_layout": "[batch, num_kv_heads, seq, head_dim]",
         "seq_len_prefill": str(seq_len_prefill),
@@ -539,8 +571,86 @@ def _set_submodule(root: torch.nn.Module, dotted: str,
         setattr(parent, last, new)
 
 
-def _load_quantized_state(model: torch.nn.Module, ckpt: str) -> None:
-    """Patch the recipe-quantized Linears to fake-quant and load all weights.
+class _GoldenPerExpertMoE(torch.nn.ModuleList):
+    """Per-expert placeholder for Hugging Face stacked-parameter MoE modules.
+
+    HF's native module holds ``gate_up_proj`` / ``down_proj`` as single 3D
+    ``[num_experts, ...]`` parameters, batched over experts in ``forward``.
+    Quantized Gemma4 and Qwen3.5 MoE checkpoints instead store each expert's
+    gate/up/down projection separately. This exposes those checkpoint paths as
+    Linear modules so the generic quantized-prefix loader can install the
+    matching fake-quant implementation without materializing placeholder
+    weights.
+    """
+
+    def __init__(self, num_experts: int, hidden_dim: int,
+                 intermediate_dim: int, act_fn) -> None:
+        experts = []
+        for _ in range(num_experts):
+            expert = torch.nn.Module()
+            expert.gate_proj = torch.nn.Linear(hidden_dim,
+                                               intermediate_dim,
+                                               bias=False,
+                                               device="meta")
+            expert.up_proj = torch.nn.Linear(hidden_dim,
+                                             intermediate_dim,
+                                             bias=False,
+                                             device="meta")
+            expert.down_proj = torch.nn.Linear(intermediate_dim,
+                                               hidden_dim,
+                                               bias=False,
+                                               device="meta")
+            experts.append(expert)
+        super().__init__(experts)
+        self.act_fn = act_fn
+
+    def forward(self, hidden_states: torch.Tensor, top_k_index: torch.Tensor,
+                top_k_weights: torch.Tensor) -> torch.Tensor:
+        """Run the provider's top-k experts using per-expert projections."""
+        final_hidden_states = torch.zeros_like(hidden_states)
+        with torch.no_grad():
+            expert_mask = torch.nn.functional.one_hot(top_k_index,
+                                                      num_classes=len(self))
+            expert_mask = expert_mask.permute(2, 1, 0)
+            expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)),
+                                       0).nonzero()
+        for expert_idx in expert_hit:
+            expert_idx = int(expert_idx[0])
+            expert = self[expert_idx]
+            top_k_pos, token_idx = torch.where(expert_mask[expert_idx])
+            current_state = hidden_states[token_idx]
+            gate = expert.gate_proj(current_state)
+            up = expert.up_proj(current_state)
+            current_hidden_states = self.act_fn(gate) * up
+            current_hidden_states = expert.down_proj(current_hidden_states)
+            current_hidden_states = current_hidden_states * top_k_weights[
+                token_idx, top_k_pos, None]
+            final_hidden_states.index_add_(
+                0, token_idx,
+                current_hidden_states.to(final_hidden_states.dtype))
+        return final_hidden_states
+
+
+def _swap_stacked_moe_experts(model: torch.nn.Module) -> list[str]:
+    """Replace supported stacked expert modules with per-expert projections."""
+    supported_types = {"Gemma4TextExperts", "Qwen3_5MoeExperts"}
+    swapped = []
+    for name, module in list(model.named_modules()):
+        if type(module).__name__ not in supported_types:
+            continue
+        replacement = _GoldenPerExpertMoE(module.num_experts,
+                                          module.hidden_dim,
+                                          module.intermediate_dim,
+                                          module.act_fn)
+        _set_submodule(model, name, replacement)
+        swapped.append(type(module).__name__)
+    return swapped
+
+
+def _load_quantized_state(model: torch.nn.Module,
+                          ckpt: str,
+                          quantize_activations: bool = True) -> None:
+    """Patch recipe-quantized Linears and load only the truncated model state.
 
     A projection ``P`` is quantized iff the checkpoint has ``P.weight_scale``
     (NVFP4/FP8/MXFP8/INT8-SQ) or ``P.qweight`` (INT4 AWQ/GPTQ); the recipe is read
@@ -548,31 +658,65 @@ def _load_quantized_state(model: torch.nn.Module, ckpt: str) -> None:
     -> GPTQ; ``qweight`` -> AWQ; ``weight_scale_2`` -> NVFP4; uint8 ``weight_scale``
     -> MXFP8; int8 ``weight`` -> INT8 SmoothQuant; else FP8. Supports
     mixed-precision checkpoints. Non-quantized tensors (embed / norm / lm_head /
-    bias) load normally; keys for the dropped (truncated) layers are ignored.
+    bias) load normally; dropped layers and non-language components stay unloaded.
     """
-    # Gather all checkpoint tensors (single- or multi-file).
-    state: dict[str, torch.Tensor] = {}
-    shards = [
-        f for f in os.listdir(ckpt)
-        if f.endswith(".safetensors") and "index" not in f
-    ]
+    shards = sorted(
+        os.path.join(ckpt, filename) for filename in os.listdir(ckpt)
+        if filename.endswith(".safetensors") and "index" not in filename)
+    shard_keys = []
     for shard in shards:
-        state.update(load_file(os.path.join(ckpt, shard)))
+        with safe_open(shard, framework="pt", device="cpu") as handle:
+            shard_keys.append((shard, tuple(handle.keys())))
+    checkpoint_keys = tuple(key for _, keys in shard_keys for key in keys)
 
-    # ModelOpt / upstream Mamba-family checkpoints (e.g. NVFP4 Nemotron-H exported
-    # via the bundled remote modeling) store the body under ``backbone.`` while
-    # transformers' native modeling uses ``base_model_prefix`` (``model.``).
-    # ``from_pretrained`` reconciles this; we build via ``from_config`` +
-    # ``load_state_dict`` (no remap), so realign the prefix here -- otherwise every
-    # non-quantized Mamba param (embeddings / norm / dt_bias / A_log / conv1d ...)
-    # shows up as a missing key.
-    prefix = model.base_model_prefix
-    if prefix != "backbone" and any(k.startswith("backbone.") for k in state):
-        state = {
-            (f"{prefix}.{k[len('backbone.'):]}" if k.startswith("backbone.") else k):
-            v
-            for k, v in state.items()
-        }
+    # These providers quantize each expert projection separately while their
+    # native Hugging Face modules hold stacked 3D parameters.
+    swapped_experts = _swap_stacked_moe_experts(model)
+    if swapped_experts:
+        summary = ", ".join(f"{name}={swapped_experts.count(name)}"
+                            for name in sorted(set(swapped_experts)))
+        print(f"[golden] replaced stacked expert modules ({summary})")
+
+    # Match provider checkpoint namespaces to the language component extracted
+    # from a multimodal or hybrid checkpoint. This pass reads metadata only.
+    model_keys = set(model.state_dict())
+    base_prefix = model.base_model_prefix
+    remap_backbone = (base_prefix != "backbone" and any(
+        key.startswith("backbone.") for key in checkpoint_keys))
+    remap_language_model = (any(
+        key.startswith("model.language_model.")
+        for key in checkpoint_keys) and not any(
+            key.startswith("model.language_model.") for key in model_keys))
+
+    def normalize_key(key: str) -> str:
+        if remap_backbone and key.startswith("backbone."):
+            return f"{base_prefix}.{key[len('backbone.'):]}"
+        if remap_language_model and key.startswith("model.language_model."):
+            return f"model.{key[len('model.language_model.'):]}"
+        return key
+
+    # Materialize exact model state plus quantization metadata owned by active
+    # Linears. Dropped decoder layers and vision tensors are never read.
+    linear_names = {
+        name
+        for name, module in model.named_modules()
+        if isinstance(module, torch.nn.Linear)
+    }
+    state: dict[str, torch.Tensor] = {}
+    for shard, keys in shard_keys:
+        selected = []
+        for checkpoint_key in keys:
+            model_key = normalize_key(checkpoint_key)
+            owner = model_key.rpartition(".")[0]
+            if model_key in model_keys or owner in linear_names:
+                selected.append((checkpoint_key, model_key))
+        if not selected:
+            continue
+        with safe_open(shard, framework="pt", device="cpu") as handle:
+            for checkpoint_key, model_key in selected:
+                state[model_key] = handle.get_tensor(checkpoint_key)
+    print(f"[golden] loaded {len(state)}/{len(checkpoint_keys)} checkpoint "
+          "tensors for the truncated language model")
 
     # Find quantized projection prefixes (relative to the CausalLM module).
     # FP family carries ``.weight_scale``; INT4 AWQ/GPTQ carry ``.qweight``.
@@ -589,10 +733,7 @@ def _load_quantized_state(model: torch.nn.Module, ckpt: str) -> None:
         "GPTQ": 0
     }
     for prefix in prefixes:
-        try:
-            orig = model.get_submodule(prefix)
-        except AttributeError:
-            continue  # belongs to a dropped (truncated) layer
+        orig = model.get_submodule(prefix)
         has_bias = f"{prefix}.bias" in state
         in_f, out_f = orig.in_features, orig.out_features
         if f"{prefix}.qweight" in state:
@@ -621,10 +762,23 @@ def _load_quantized_state(model: torch.nn.Module, ckpt: str) -> None:
         else:
             new = _GoldenFP8Linear(in_f, out_f, has_bias)
             counts["FP8"] += 1
+        new.quantize_activations = quantize_activations
         _set_submodule(model, prefix, new)
     n_built = sum(counts.values())
 
-    missing, unexpected = model.load_state_dict(state, strict=False)
+    # ``assign=True`` avoids copying into the full model skeleton, but unlike the
+    # default loader it preserves each checkpoint tensor's dtype.  Normalize the
+    # selected tensors to their destination parameters/buffers so an FP16 golden
+    # cannot retain BF16 biases or norms from an NVFP4 checkpoint.
+    destination_state = model.state_dict()
+    for key, tensor in state.items():
+        destination = destination_state.get(key)
+        if destination is not None and tensor.dtype != destination.dtype:
+            state[key] = tensor.to(dtype=destination.dtype)
+
+    missing, unexpected = model.load_state_dict(state,
+                                                strict=False,
+                                                assign=True)
     # Re-tie lm_head <-> embed_tokens if the config says so (the ckpt stores only the
     # shared embedding, so lm_head.weight legitimately shows up as "missing").
     if getattr(model.config, "tie_word_embeddings", False):
@@ -640,7 +794,7 @@ def _load_quantized_state(model: torch.nn.Module, ckpt: str) -> None:
         )
     active = ", ".join(f"{k}={v}" for k, v in counts.items() if v)
     print(f"[golden] quantized: patched {n_built} linears ({active}); "
-          f"ignored {len(unexpected)} keys from dropped layers")
+          f"unexpected selected keys={len(unexpected)}")
 
 
 if __name__ == "__main__":

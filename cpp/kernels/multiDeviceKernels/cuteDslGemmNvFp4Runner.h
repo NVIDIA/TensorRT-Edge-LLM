@@ -94,12 +94,13 @@ public:
     /// @param aSF    UE4M3 atom-layout SF buffer for A, device ptr
     /// @param bSF    UE4M3 atom-layout SF buffer for B, device ptr
     /// @param d      FP16 output buffer, device ptr to [M, N] half
+    /// @param alpha  device ptr to the per tensor FP32 dequant scale
     /// @param M, N, K dynamic shapes. N must be multiple of 128 and K a
     ///               multiple of 64 (satisfied by TP layouts). M may be any
     ///               positive integer.
     /// @param stream CUDA stream
-    cudaError_t run(void const* a, void const* b, void const* aSF, void const* bSF, void* d, int32_t M, int32_t N,
-        int32_t K, cudaStream_t stream);
+    cudaError_t run(void const* a, void const* b, void const* aSF, void const* bSF, void* d, void const* alpha,
+        int32_t M, int32_t N, int32_t K, cudaStream_t stream);
 
     /// Launch the blockscaled NVFP4 GEMM with FP8 E4M3 output.
     ///
@@ -108,8 +109,8 @@ public:
     ///
     /// @param d      FP8 E4M3 output, device ptr to [M, N] uint8 (1 byte/elem)
     /// @param other params same as run()
-    cudaError_t runFp8(void const* a, void const* b, void const* aSF, void const* bSF, void* d, int32_t M, int32_t N,
-        int32_t K, cudaStream_t stream);
+    cudaError_t runFp8(void const* a, void const* b, void const* aSF, void const* bSF, void* d, void const* alpha,
+        int32_t M, int32_t N, int32_t K, cudaStream_t stream);
 
 private:
     int32_t mMmaTilerN;

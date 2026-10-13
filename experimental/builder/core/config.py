@@ -24,8 +24,11 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from tensorrt_edgellm.dflash import DFlashVersion, resolve_dflash_contract
+
 from . import contracts, quantization
 from .bundle import LLM_COMPONENTS, BundleConfig
+from .dspark_config import resolve_dspark_config
 
 # Per-layer block type labels.
 LAYER_ATTN = "attention"
@@ -101,9 +104,11 @@ class DeviceConfig:
     attention_layer_types: List[str] = field(default_factory=list)
     attention_bias: bool = False
     attention_k_eq_v: bool = False
+    attention_sink_bias: bool = False
     tie_word_embeddings: bool = False
     sliding_window_size: int = -1
     final_logit_softcapping: Optional[float] = None
+    skip_softmax_scale_factor: float = 0.0
 
     # quantization
     quant: quantization.QuantConfig = field(
@@ -157,7 +162,17 @@ class DeviceConfig:
     dflash_target_layer_ids: List[int] = field(default_factory=list)
     dflash_block_size: int = 16
     dflash_mask_token_id: int = 248070
+    dflash_version: DFlashVersion = DFlashVersion.V1
+    dflash2_target_layer_ids: List[int] = field(default_factory=list)
+    dflash2_block_size: int = 0
+    dflash2_mask_token_id: int = -1
+    dflash2_is_causal: bool = True
+    dflash2_conv_kernel_size: int = 0
+    dflash2_conv_group_size: int = 0
+    dflash2_selector_rank: int = 0
+    dflash2_selector_top_k: int = 0
     dspark_base: bool = False
+    dspark_tree_base: bool = False
     dspark_target_layer_ids: List[int] = field(default_factory=list)
     dspark_block_size: int = 7
     dspark_mask_token_id: int = 151669
@@ -165,6 +180,9 @@ class DeviceConfig:
     dspark_confidence_head_with_markov: bool = False
     dspark_markov_head_type: str = ""
     dspark_markov_rank: int = 0
+    dspark_causal_proposal: bool = False
+    dspark_contiguous_query_swa: bool = False
+    dspark_sample_from_anchor: bool = True
     draft_vocab_size: Optional[int] = None
     target_hidden_size: Optional[int] = None
 
@@ -308,7 +326,8 @@ class DeviceConfig:
             model_dir: str,
             component: "contracts.Component | str" = contracts.Component.LLM,
             tp_size: int = 1,
-            tp_rank: int = 0) -> "DeviceConfig":
+            tp_rank: int = 0,
+            num_decoder_layers: Optional[int] = None) -> "DeviceConfig":
         bundle = BundleConfig.from_pretrained(model_dir)
         resolved_component = (component
                               if isinstance(component, contracts.Component)
@@ -330,6 +349,8 @@ class DeviceConfig:
         model_type = _component_model_type(llm, selected, root,
                                            resolved_component)
         llm = _normalize_layer_count(llm)
+        if num_decoder_layers is not None and resolved_component in LLM_COMPONENTS:
+            llm = _truncate_layers(llm, num_decoder_layers)
         hidden_size = int(llm["hidden_size"])
         num_attn_heads = int(llm["num_attention_heads"])
         head_dim = int(llm.get("head_dim", hidden_size // num_attn_heads))
@@ -360,6 +381,10 @@ class DeviceConfig:
         mtp_num_hidden_layers = llm.get("mtp_num_hidden_layers",
                                         llm.get("num_nextn_predict_layers"))
 
+        dflash_contract = resolve_dflash_contract(root, llm)
+        dspark_sliding_window = _get_sliding_window(llm)
+        dspark = resolve_dspark_config(llm, dspark_sliding_window)
+        dspark_sliding_window = int(dspark["sliding_window_size"])
         result = cls(
             model_type=model_type,
             model_dir=model_dir,
@@ -390,8 +415,11 @@ class DeviceConfig:
             attention_layer_types=attention_layer_types,
             attention_bias=bool(llm.get("attention_bias", False)),
             attention_k_eq_v=bool(llm.get("attention_k_eq_v", False)),
+            attention_sink_bias=bool(dspark["attention_sink_bias"]),
             tie_word_embeddings=bool(llm.get("tie_word_embeddings", False)),
-            sliding_window_size=_get_sliding_window(llm),
+            sliding_window_size=dspark_sliding_window,
+            skip_softmax_scale_factor=_get_skip_softmax_scale_factor(
+                llm, root),
             final_logit_softcapping=(float(llm["final_logit_softcapping"])
                                      if llm.get("final_logit_softcapping")
                                      is not None else None),
@@ -447,44 +475,71 @@ class DeviceConfig:
             mtp_tree_base=bool(llm.get("mtp_tree_base", False)),
             dflash_base=bool(llm.get("dflash_base", False)),
             dflash_tree_base=bool(llm.get("dflash_tree_base", False)),
-            dflash_target_layer_ids=list(
-                (llm.get("dflash_config")
-                 or {}).get("target_layer_ids",
-                            llm.get("dflash_target_layer_ids", []))),
-            dflash_block_size=int((llm.get("dflash_config")
-                                   or {}).get("block_size",
-                                              llm.get("dflash_block_size",
-                                                      16))),
-            dflash_mask_token_id=int(
-                (llm.get("dflash_config")
-                 or {}).get("mask_token_id",
-                            llm.get("dflash_mask_token_id", 248070))),
-            dspark_base=bool(llm.get("dspark_base", False)),
-            dspark_target_layer_ids=list((llm.get("dspark_config") or {}).get(
+            dflash_target_layer_ids=list((llm.get("dflash_config") or {}).get(
                 "target_layer_ids",
-                llm.get("dspark_target_layer_ids",
+                llm.get("dflash_target_layer_ids",
                         llm.get("target_layer_ids", [])))),
-            dspark_block_size=int((llm.get("dspark_config") or {}).get(
+            dflash_block_size=int((llm.get("dflash_config") or {}).get(
                 "block_size",
-                llm.get("dspark_block_size", llm.get("block_size", 7)))),
-            dspark_mask_token_id=int((llm.get("dspark_config") or {}).get(
+                llm.get("dflash_block_size", llm.get("block_size", 16)))),
+            dflash_mask_token_id=int((llm.get("dflash_config") or {}).get(
                 "mask_token_id",
-                llm.get("dspark_mask_token_id",
-                        llm.get("mask_token_id", 151669)))),
+                llm.get("dflash_mask_token_id",
+                        llm.get("mask_token_id", 248070)))),
+            dflash_version=dflash_contract.version,
+            dflash2_target_layer_ids=list((llm.get("dflash_config")
+                                           or {}).get("target_layer_ids", [])),
+            dflash2_block_size=int((llm.get("dflash_config")
+                                    or {}).get("block_size", 0)),
+            dflash2_mask_token_id=int((llm.get("dflash_config")
+                                       or {}).get("mask_token_id", -1)),
+            dflash2_is_causal=bool(llm.get("is_causal", True)),
+            dflash2_conv_kernel_size=int((llm.get("dflash_config")
+                                          or {}).get("conv_kernel_size", 0)),
+            dflash2_conv_group_size=int((llm.get("dflash_config")
+                                         or {}).get("conv_group_size", 0)),
+            dflash2_selector_rank=int((llm.get("dflash_config")
+                                       or {}).get("selector_rank", 0)),
+            dflash2_selector_top_k=int((llm.get("dflash_config")
+                                        or {}).get("selector_top_k", 0)),
+            dspark_base=bool(llm.get("dspark_base", False)),
+            dspark_tree_base=bool(llm.get("dspark_tree_base", False)),
+            dspark_target_layer_ids=list(
+                dspark.get(
+                    "target_layer_ids",
+                    llm.get("dspark_target_layer_ids",
+                            llm.get("target_layer_ids", [])))),
+            dspark_block_size=int(
+                dspark.get(
+                    "block_size",
+                    llm.get("dspark_block_size", llm.get("block_size", 7)))),
+            dspark_mask_token_id=int(
+                dspark.get(
+                    "mask_token_id",
+                    llm.get("dspark_mask_token_id",
+                            llm.get("mask_token_id", 151669)))),
             dspark_enable_confidence_head=bool(
-                (llm.get("dspark_config")
-                 or {}).get("enable_confidence_head",
-                            llm.get("enable_confidence_head", False))),
+                dspark.get("enable_confidence_head",
+                           llm.get("enable_confidence_head", False))),
             dspark_confidence_head_with_markov=bool(
-                (llm.get("dspark_config")
-                 or {}).get("confidence_head_with_markov",
-                            llm.get("confidence_head_with_markov", False))),
+                dspark.get("confidence_head_with_markov",
+                           llm.get("confidence_head_with_markov", False))),
             dspark_markov_head_type=str(
-                (llm.get("dspark_config")
-                 or {}).get("markov_head_type",
-                            llm.get("markov_head_type", ""))),
-            dspark_markov_rank=int((llm.get("dspark_config") or {}).get(
-                "markov_rank", llm.get("markov_rank", 0)) or 0),
+                dspark.get("markov_head_type", llm.get("markov_head_type",
+                                                       ""))),
+            dspark_markov_rank=int(
+                dspark.get("markov_rank", llm.get("markov_rank", 0)) or 0),
+            dspark_causal_proposal=bool(
+                dspark.get(
+                    "causal_head",
+                    dspark.get(
+                        "causal",
+                        llm.get("causal_head",
+                                llm.get("dflash_query_causal", False))))),
+            dspark_contiguous_query_swa=bool(dspark["contiguous_query_swa"]),
+            dspark_sample_from_anchor=bool(
+                dspark.get("sample_from_anchor",
+                           llm.get("sample_from_anchor", True))),
             draft_vocab_size=(int(llm["draft_vocab_size"])
                               if llm.get("draft_vocab_size") is not None else
                               None),
@@ -711,6 +766,31 @@ def _get_sliding_window(llm: Dict[str, Any]) -> int:
     return int(sw) if sw is not None else -1
 
 
+def _get_skip_softmax_scale_factor(llm: Dict[str, Any],
+                                   root: Dict[str, Any]) -> float:
+    """Return the calibrated skip-softmax S (0 = disabled).
+
+    An explicit ``skip_softmax_scale_factor`` wins; otherwise
+    ``skip_softmax_target_sparsity`` converts through the recorded
+    ``skip_softmax_calibration`` formula ``S = a * exp(b * target_sparsity)``.
+    """
+    for cfg in (llm, root):
+        value = cfg.get("skip_softmax_scale_factor")
+        if value is not None:
+            return float(value)
+    for cfg in (llm, root):
+        sparsity = cfg.get("skip_softmax_target_sparsity")
+        calibration = cfg.get("skip_softmax_calibration")
+        if sparsity is None:
+            continue
+        if not isinstance(calibration, dict):
+            raise ValueError("skip_softmax_target_sparsity requires "
+                             "skip_softmax_calibration {a, b} in config.json")
+        return float(calibration["a"]) * math.exp(
+            float(calibration["b"]) * float(sparsity))
+    return 0.0
+
+
 def _parse_raw_layer_types(llm: Dict[str, Any]) -> List[str]:
     raw = llm.get("layers_block_type") or llm.get("layer_types") or []
     return [str(layer_type) for layer_type in raw]
@@ -726,6 +806,26 @@ def _normalize_layer_count(llm: Dict[str, Any]) -> Dict[str, Any]:
     normalized = dict(llm)
     normalized["num_hidden_layers"] = len(raw)
     return normalized
+
+
+def _truncate_layers(llm: Dict[str, Any], num_layers: int) -> Dict[str, Any]:
+    """Keep only the first ``num_layers`` decoder layers (few-layer validation).
+
+    Everything downstream is derived from ``num_hidden_layers`` and the per-layer
+    type list, and the weight loader pulls tensors by name, so the dropped layers
+    are simply never asked for.
+    """
+    total = int(llm["num_hidden_layers"])
+    if not 1 <= num_layers <= total:
+        raise ValueError(
+            f"num_decoder_layers={num_layers} out of range [1, {total}]")
+    truncated = dict(llm)
+    truncated["num_hidden_layers"] = num_layers
+    for key in ("layers_block_type", "layer_types"):
+        raw = truncated.get(key)
+        if isinstance(raw, (list, tuple)) and raw:
+            truncated[key] = list(raw)[:num_layers]
+    return truncated
 
 
 def _parse_num_deepstack_features(llm: Dict[str, Any], root: Dict[str,

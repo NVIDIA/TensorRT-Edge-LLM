@@ -29,12 +29,12 @@ namespace plugins
 /// TensorRT plugin for DFlash target KV cache update (V3 — IPluginV3).
 ///
 /// Inputs:
-///   0: k_delta              [B, L, numKVHeads, headDim] FP16
-///   1: v_delta              [B, L, numKVHeads, headDim] FP16
+///   0: k_delta              [T_delta, numKVHeads, headDim] FP16
+///   1: v_delta              [T_delta, numKVHeads, headDim] FP16
 ///   2: past_key_value       Paged KV pool [2, numPages, kTOKENS_PER_PAGE, numKVHeads, headDim] FP16.
-///   3: rope_cos_sin         [ropeBatch, cosSinSeqLen, rotaryDim] FP32 — cosSinSeqLen <= cap
-///   4: delta_start_positions [B] INT32
-///   5: delta_lengths         [B] INT32
+///   3: rope_cos_sin         [T_delta, rotaryDim] FP32
+///   4: delta_positions      [T_delta] INT32; padding is -1
+///   5: token_to_sequence    [T_delta] INT32; padding is -1
 ///   6: kv_page_table        [B, 2, maxPagesPerSeq] INT32 with canonical K page ids in [0, numPages)
 ///                           and V page ids in [numPages, 2 * numPages).
 ///
@@ -93,8 +93,8 @@ private:
     static constexpr int32_t kIN_V_DELTA = 1;
     static constexpr int32_t kIN_PAST_KV = 2;
     static constexpr int32_t kIN_ROPE_COS_SIN = 3;
-    static constexpr int32_t kIN_DELTA_START = 4;
-    static constexpr int32_t kIN_DELTA_LENGTHS = 5;
+    static constexpr int32_t kIN_DELTA_POSITIONS = 4;
+    static constexpr int32_t kIN_TOKEN_TO_SEQUENCE = 5;
     static constexpr int32_t kIN_KV_PAGE_TABLE = 6;
 
     // Output indices

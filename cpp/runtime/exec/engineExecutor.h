@@ -39,6 +39,10 @@ namespace trt_edgellm
 namespace rt
 {
 
+//! Validate cross-binding relations that TensorRT optimization profiles cannot express.
+bool validateRaggedInferenceDims(
+    InferenceDims const& dims, int32_t profileIndex, bool allowSelectBeyondPhysicalTokens = false) noexcept;
+
 /*!
  * @brief Engine execution interface with a prepare/execute split.
  *
@@ -162,6 +166,9 @@ public:
 protected:
     EngineExecutor() = default;
 };
+
+size_t computeExecutionGraphKey(
+    uintptr_t engineIdentity, int32_t profileIndex, EngineExecutor::BindingSnapshot const& snapshot);
 
 } // namespace rt
 } // namespace trt_edgellm

@@ -1,0 +1,8 @@
+tests:
+  - tests/defs/test_common.py::test_build_project
+  - tests/defs/test_few_layer_validation.py::test_few_layer_validation[gemma-4-26B-A4B-NVFP4]
+  - tests/defs/test_llm_pipeline.py::test_engine_build[Qwen3.5-0.8B-FP8-fp8-mxsl2048-mtp-mxbs1-mxil1024]
+  - tests/defs/test_llm_pipeline.py::test_inference[Qwen3.5-0.8B-FP8-fp8-mxsl2048-mtp-mxbs1-mxil1024-llm_basic]
+  - tests/defs/test_llm_pipeline.py::test_inference[Qwen3.5-0.8B-FP8-fp8-mxsl2048-mtp-mxbs1-mxil1024-llm_logit_bias]
+  - tests/defs/test_llm_pipeline.py::test_engine_build[Qwen3-4B-Instruct-2507-nvfp4-mxsl2048-dspark-block7-fp16-mxbs1-mxil1024-mvts8-mdts7]
+  - tests/defs/test_llm_pipeline.py::test_inference[Qwen3-4B-Instruct-2507-nvfp4-mxsl2048-dspark-block7-fp16-mxbs1-mxil1024-mvts8-mdts7-llm_basic]

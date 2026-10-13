@@ -59,11 +59,14 @@ void ActionKvBatchCollector::beginRequest(std::vector<bool> const& actionSlots, 
 }
 
 void ActionKvBatchCollector::captureFinished(KVPageTable const& pageTable, Tensor const& deviceKvLengths,
-    std::vector<int8_t> const& finished, std::vector<int32_t> const& originalIndices, cudaStream_t stream)
+    std::vector<int8_t> const& finished, std::vector<int32_t> const& originalIndices,
+    std::vector<ResidentRef> const& residentRefs, cudaStream_t stream)
 {
     ELLM_CHECK(!mMaterialized, "Action KV collector cannot change after materialization");
     ELLM_CHECK(finished.size() == originalIndices.size(),
         "Action KV snapshot finish state and original-index mapping must have the same size");
+    ELLM_CHECK(finished.size() == residentRefs.size(),
+        "Action KV snapshot finish state and resident mapping must have the same size");
     ELLM_CHECK(
         pageTable.maxPagesPerSeq() == mPageTable.maxPagesPerSeq() && pageTable.numPages() == mPageTable.numPages(),
         "Action KV snapshot page table is incompatible with the action-local table");
@@ -90,7 +93,10 @@ void ActionKvBatchCollector::captureFinished(KVPageTable const& pageTable, Tenso
             continue;
         }
 
-        int32_t const* const row = pageTable.hostRow(static_cast<int32_t>(slot));
+        int32_t const residentSlot = residentRefs[slot].slot;
+        ELLM_CHECK(residentSlot >= 0 && residentSlot < pageTable.kernelView().getShape()[0],
+            "Action KV snapshot resident slot is outside the page table");
+        int32_t const* const row = pageTable.hostRow(residentSlot);
         SequenceSnapshot snapshot;
         snapshot.pageIds.assign(row, row + pageTable.maxPagesPerSeq());
         mByOriginalIndex[original] = std::move(snapshot);

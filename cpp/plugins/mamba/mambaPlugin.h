@@ -37,38 +37,30 @@ namespace plugins
 //!
 //! SiLU gating (z) is handled externally by the ONNX graph (gated_rms_norm).
 //!
-//! Inputs may include an optional seq_len dimension (e.g. x as [batch, seq_len, nheads, dim]
-//! instead of [batch, nheads, dim]). When seq_len > 1, the plugin loops over the single-step
-//! kernel internally, updating the SSM state in-place after each step.
-//!
-//! Performance note: the loop launches one kernel per time step. For decode (seq_len=1) this
-//! is optimal. For prefill (seq_len >> 1) this is O(seq_len) serial launches, which is correct
-//! but slower than a parallel chunked scan. A future optimization would dispatch to a
-//! mamba_chunk_scan_combined kernel when seq_len exceeds a threshold.
-//!
 //! Input ordering (see constants defined in mambaPlugin.cpp):
-//!   [0] x          [batch, (seq_len,) nheads, dim]       FP16 or FP32
-//!   [1] A          [nheads]                              FP32 (always)
-//!   [2] B          [batch, (seq_len,) ngroups, dstate]   FP16 or FP32
-//!   [3] C          [batch, (seq_len,) ngroups, dstate]   FP16 or FP32
-//!   [4] D          [nheads]                              FP16 or FP32
-//!   [5] dt         [batch, (seq_len,) nheads]            FP16 or FP32
-//!   [6] dt_bias    [nheads]                              FP16 or FP32
-//!   [7] state      [batch, nheads, dim, dstate]          FP16 or FP32
-//!   [8] context_lengths [batch]                          INT32
-//!   [9] state_start_index [0] or [batch]                 INT32
-//!
-//! `state_start_index` shares the runtime's `kvcache_start_index` sentinel
-//! contract: shape [0] selects the faster zero-state prefill kernel, while
-//! shape [batch] means restored recurrent state must seed prefill.
-//!
-//! All data tensors (everything except A) must use the same type.
-//! TRT selects FP32 when the ONNX graph declares FP32, and may optimize to
-//! FP16 during the builder phase when the FP16 flag is set.
+//!   [0] x          [tokens, nheads, dim]                  FP16
+//!   [1] A          [nheads]                              FP32
+//!   [2] B          [tokens, ngroups, dstate]             FP16
+//!   [3] C          [tokens, ngroups, dstate]             FP16
+//!   [4] D          [nheads]                              FP16
+//!   [5] dt         [tokens, nheads]                      FP16
+//!   [6] dt_bias    [nheads]                              FP16
+//!   [7] state      [resident_rows, nheads, dim, dstate]  FP16
+//!   [8] query_lengths [batch]                            INT32
+//!   [9] query_start_offsets [batch + 1]                  INT32
+//!   [10] state_indices [batch]                           INT32
+//!   [11] execution_phase_marker [1..8]                   INT32
+//!   [12] context_sequence_count_carrier [0..batch]       INT32 shape-only context count
+//!   [13] tree_parent_ids [tokens]                         INT32 (DDTree engines only)
+//!   [14] tree_depths [tokens]                            INT32 (DDTree engines only)
 //!
 //! Outputs:
-//!   [0] output     [batch, (seq_len,) nheads, dim]       same as input type
-//!   [1] state_out  [batch, nheads, dim, dstate]          same as input type
+//!   [0] output     [tokens, nheads, dim]                  FP16
+//!   [1] state_out  [resident_rows, nheads, dim, dstate]  aliased state pool
+//!   [2] replay_da  [tokens, nheads]                       FP32 (spec-verify engines only)
+//!   [3] replay_u   [tokens, nheads, dim]                  FP32 (spec-verify engines only)
+//!   [4] replay_b   [tokens, ngroups, dstate]              FP32 (spec-verify engines only)
+//!   [5] replay_dt  [tokens, nheads]                       FP32 (spec-verify engines only)
 class MambaPlugin : public nvinfer1::IPluginV3,
                     public nvinfer1::IPluginV3OneCore,
                     public nvinfer1::IPluginV3OneBuild,
@@ -76,7 +68,7 @@ class MambaPlugin : public nvinfer1::IPluginV3,
 {
 public:
     MambaPlugin(std::string const& name, int32_t dim, int32_t dstate, int32_t nheads, int32_t ngroups,
-        int32_t dtSoftplus, int32_t useSpecVerifyState = 0);
+        int32_t dtSoftplus, int32_t useSpecVerifyState = 0, int32_t useDDTree = 0, int32_t replayFormatVersion = 0);
 
     MambaPlugin() = delete;
     MambaPlugin(MambaPlugin const&) = delete;
@@ -114,8 +106,8 @@ public:
     void setPluginNamespace(char const* pluginNamespace) noexcept;
 
 protected:
-    //! Plugin input/output counts depend on the spec-verify mode: it adds a trailing
-    //! ``spec_verify_phase_marker`` input and an ``intermediate_recurrent_states`` output.
+    //! The common ragged input contract is unconditional. DDTree engines append parent/depth inputs;
+    //! spec-verify engines append replay outputs.
     int32_t numInputs() const noexcept;
     int32_t numOutputs() const noexcept;
 
@@ -127,8 +119,12 @@ protected:
     int32_t mNheads{};
     int32_t mNgroups{};
     int32_t mDtSoftplus{};
-    //! MTP spec-verify: emit per-token intermediate recurrent states for accepted-token rollback.
+    //! Emit per-token replay factors for accepted-path state reconstruction.
     int32_t mUseSpecVerifyState{};
+    //! DDTree verify consumes parent/depth inputs and evaluates each node from its ancestor state.
+    int32_t mUseDDTree{};
+    //! Serialized replay format guard; non-spec engines do not consume replay outputs.
+    int32_t mReplayFormatVersion{};
 
     std::vector<nvinfer1::PluginField> mDataToSerialize;
     nvinfer1::PluginFieldCollection mFCToSerialize;

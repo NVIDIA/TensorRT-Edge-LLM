@@ -113,19 +113,21 @@ CloneEncoderRunner::CloneEncoderRunner(std::string const& engineDir, cudaStream_
         mXvecDim, mBucketSamples, mBucketFrames, mNumQuantizers, static_cast<double>(contextMemBytes) / (1 << 20));
 }
 
-bool CloneEncoderRunner::extractSpeakerEmbedding(
-    std::vector<float> const& wav24k, rt::Tensor& xvecOut, cudaStream_t stream)
+bool CloneEncoderRunner::extractSpeakerEmbedding(rt::Tensor const& wav24k, rt::Tensor& xvecOut, cudaStream_t stream)
 {
-    check::check(!wav24k.empty(), "extractSpeakerEmbedding: empty waveform");
+    int64_t const wavSamples = wav24k.getShape().volume();
+    check::check(wavSamples > 0, "extractSpeakerEmbedding: empty waveform");
+    check::check(wav24k.getDeviceType() == rt::DeviceType::kCPU && wav24k.getDataType() == nvinfer1::DataType::kFLOAT,
+        "extractSpeakerEmbedding: wav24k shall be a host Float tensor");
     check::check(xvecOut.getShape().volume() == mXvecDim, "x-vector output dim mismatch");
-    int64_t const numSamples = std::min<int64_t>(static_cast<int64_t>(wav24k.size()), mSpeakerMaxSamples);
-    if (numSamples < static_cast<int64_t>(wav24k.size()))
+    int64_t const numSamples = std::min<int64_t>(wavSamples, mSpeakerMaxSamples);
+    if (numSamples < wavSamples)
     {
         LOG_WARNING("Reference audio truncated to %ld samples for speaker encoder", numSamples);
     }
 
     CUDA_CHECK(cudaMemcpyAsync(
-        mWavBuffer.rawPointer(), wav24k.data(), numSamples * sizeof(float), cudaMemcpyHostToDevice, stream));
+        mWavBuffer.rawPointer(), wav24k.rawPointer(), numSamples * sizeof(float), cudaMemcpyHostToDevice, stream));
 
     ELLM_CHECK(mSpeakerContext->setInputShape("wav", nvinfer1::Dims2{1, numSamples}), "setInputShape failed");
     ELLM_CHECK(mSpeakerContext->setTensorAddress("wav", mWavBuffer.rawPointer()), "bind wav failed");
@@ -138,11 +140,15 @@ bool CloneEncoderRunner::extractSpeakerEmbedding(
     return true;
 }
 
-bool CloneEncoderRunner::encodeReferenceCodes(std::vector<float> const& wav24k, int32_t& numFrames, cudaStream_t stream)
+bool CloneEncoderRunner::encodeReferenceCodes(rt::Tensor const& wav24k, int32_t& numFrames, cudaStream_t stream)
 {
     check::check(hasTokenizerEncoder(), "speech_tokenizer_encoder.engine not loaded");
-    int64_t const numSamples = std::min<int64_t>(static_cast<int64_t>(wav24k.size()), mBucketSamples);
-    if (numSamples < static_cast<int64_t>(wav24k.size()))
+    int64_t const wavSamples = wav24k.getShape().volume();
+    check::check(wavSamples > 0, "encodeReferenceCodes: empty waveform");
+    check::check(wav24k.getDeviceType() == rt::DeviceType::kCPU && wav24k.getDataType() == nvinfer1::DataType::kFLOAT,
+        "encodeReferenceCodes: wav24k shall be a host Float tensor");
+    int64_t const numSamples = std::min<int64_t>(wavSamples, mBucketSamples);
+    if (numSamples < wavSamples)
     {
         LOG_WARNING("Reference audio truncated to %.1fs for the codec encoder bucket",
             static_cast<double>(mBucketSamples) / 24000.0);
@@ -154,7 +160,7 @@ bool CloneEncoderRunner::encodeReferenceCodes(std::vector<float> const& wav24k, 
     // zero tail cannot affect the first numFrames rows.
     CUDA_CHECK(cudaMemsetAsync(mWavBuffer.rawPointer(), 0, mBucketSamples * sizeof(float), stream));
     CUDA_CHECK(cudaMemcpyAsync(
-        mWavBuffer.rawPointer(), wav24k.data(), numSamples * sizeof(float), cudaMemcpyHostToDevice, stream));
+        mWavBuffer.rawPointer(), wav24k.rawPointer(), numSamples * sizeof(float), cudaMemcpyHostToDevice, stream));
 
     ELLM_CHECK(mTokenizerContext->setTensorAddress("wav", mWavBuffer.rawPointer()), "bind wav failed");
     ELLM_CHECK(mTokenizerContext->setTensorAddress("codes", mCodesBuffer.rawPointer()), "bind codes failed");

@@ -99,6 +99,14 @@ BlockDiffusionDecoder::BlockDiffusionDecoder(
     mRemainingLengthsScratch.resize(maxBatch);
     mValidCanvasLengthsScratch.resize(maxBatch);
     mCommitLengthsScratch.resize(maxBatch);
+    int32_t const maxPhysicalTokens = maxBatch * mMaxConditioningSeqLen;
+    mCanvasMetadataScratch.positions.reserve(maxPhysicalTokens);
+    mCanvasMetadataScratch.queryStartOffsets.reserve(maxBatch + 1);
+    mCanvasMetadataScratch.queryLengths.reserve(maxBatch);
+    mCanvasMetadataScratch.pastLengths.reserve(maxBatch);
+    mCanvasMetadataScratch.attentionSequenceLengths.reserve(maxBatch);
+    mCanvasMetadataScratch.stateIndices.reserve(maxBatch);
+    mCanvasMetadataScratch.logitsIndices.reserve(maxPhysicalTokens);
     CUDA_CHECK(cudaMemcpyAsync(mSelfConditioningTemperature.rawPointer(), mHostSelfConditioningTemperature.rawPointer(),
         sizeof(float), cudaMemcpyHostToDevice, stream));
     CUDA_CHECK(cudaMemsetAsync(mCanvasIds.rawPointer(), 0, mCanvasIds.getMemoryCapacity(), stream));
@@ -128,44 +136,75 @@ bool BlockDiffusionDecoder::initializeCanvas(int32_t batchSize, int32_t canvasLe
     return true;
 }
 
-bool BlockDiffusionDecoder::prepareCanvasMetadata(int32_t batchSize, int32_t canvasLen, bool denoisePhase,
-    cudaStream_t stream, std::vector<int32_t> const* contextLengths)
+bool BlockDiffusionDecoder::prepareCanvasMetadata(int32_t batchSize, int32_t canvasLen, InferenceDims const& dims,
+    cudaStream_t stream, std::vector<int32_t> const* queryLengths, std::vector<int32_t> const* pastLengths,
+    std::vector<ResidentRef> const* residentRefs)
 {
+    ExecutionPhase const phase = executionPhase(dims);
+    check::check(phase == ExecutionPhase::kDiffusionDenoise || phase == ExecutionPhase::kDiffusionCommit,
+        "Diffusion metadata requires a diffusion execution phase");
+    bool const denoisePhase = phase == ExecutionPhase::kDiffusionDenoise;
     PipelineIO& io = mRuntime.base.pipelineIO;
+    RaggedExecutionBatch& batch = mCanvasMetadataScratch;
+    int32_t const physicalTokens = batchSize * canvasLen;
+    batch.shape = {batchSize, physicalTokens, physicalTokens, canvasLen, 0, 0, physicalTokens};
+    batch.positions.resize(physicalTokens);
+    batch.queryStartOffsets.resize(batchSize + 1);
+    batch.queryLengths.resize(batchSize);
+    batch.pastLengths.resize(batchSize);
+    batch.attentionSequenceLengths.resize(batchSize);
+    batch.stateIndices.resize(batchSize);
+    batch.logitsIndices.resize(physicalTokens);
     check::check(io.hostContextLengths.reshape({batchSize}), "Tensor reshape failed");
     int32_t* hostCtx = io.hostContextLengths.dataPointer<int32_t>();
     for (int32_t b = 0; b < batchSize; ++b)
     {
-        int32_t const contextLen = contextLengths != nullptr ? (*contextLengths)[b] : canvasLen;
-        check::check(
-            contextLen > 0 && contextLen <= canvasLen, "DiffusionGemma context length must be in (0, canvasLen].");
-        hostCtx[b] = contextLen;
+        int32_t const queryLen = queryLengths != nullptr ? (*queryLengths)[b] : canvasLen;
+        int32_t const pastLen = pastLengths != nullptr ? (*pastLengths)[b] : 0;
+        check::check(queryLen > 0 && queryLen <= canvasLen, "DiffusionGemma query length must be in (0, canvasLen].");
+        hostCtx[b] = queryLen;
+        batch.queryStartOffsets[b] = b * canvasLen;
+        batch.queryLengths[b] = queryLen;
+        batch.pastLengths[b] = pastLen;
+        batch.attentionSequenceLengths[b] = pastLen + queryLen;
+        batch.stateIndices[b] = residentRefs == nullptr ? b : residentRefs->at(static_cast<size_t>(b)).slot;
+        for (int32_t i = 0; i < canvasLen; ++i)
+        {
+            int32_t const row = b * canvasLen + i;
+            bool const valid = i < queryLen;
+            batch.positions[row] = valid ? pastLen + i : -1;
+            batch.logitsIndices[row] = row;
+        }
     }
+    batch.queryStartOffsets[batchSize] = physicalTokens;
+    io.uploadRaggedMetadata(batch, stream);
+    prepareRaggedKVPageTable(io, *mRuntime.base.sharedResources.kvPageTables[0], batchSize, stream);
+    prepareRaggedRope(io, mRuntime.base.sharedResources, mRuntime.deployment.base, physicalTokens, batchSize, stream);
     check::check(io.contextLengths.reshape({batchSize}), "Tensor reshape failed");
     CUDA_CHECK(cudaMemcpyAsync(
         io.contextLengths.rawPointer(), hostCtx, batchSize * sizeof(int32_t), cudaMemcpyHostToDevice, stream));
 
     int32_t const selectLen = canvasLen;
-    check::check(io.selectTokenIndices.reshape({batchSize, selectLen}), "Tensor reshape failed");
-    check::check(io.hostSelectTokenIndices.reshape({batchSize, selectLen}), "Tensor reshape failed");
+    check::check(io.selectTokenIndices.reshape({batchSize * selectLen}), "Tensor reshape failed");
+    check::check(io.hostSelectTokenIndices.reshape({batchSize * selectLen}), "Tensor reshape failed");
     int64_t* hostSelect = io.hostSelectTokenIndices.dataPointer<int64_t>();
     for (int32_t b = 0; b < batchSize; ++b)
     {
         for (int32_t i = 0; i < selectLen; ++i)
         {
-            hostSelect[b * selectLen + i] = i;
+            hostSelect[b * selectLen + i] = static_cast<int64_t>(b) * selectLen + i;
         }
     }
     CUDA_CHECK(cudaMemcpyAsync(io.selectTokenIndices.rawPointer(), hostSelect, batchSize * selectLen * sizeof(int64_t),
         cudaMemcpyHostToDevice, stream));
 
-    check::check(io.phaseIsEncoder.reshape({batchSize}), "Tensor reshape failed");
-    check::check(io.hostPhaseIsEncoder.reshape({batchSize}), "Tensor reshape failed");
+    check::check(io.phaseIsEncoder.reshape({1}), "Tensor reshape failed");
+    check::check(io.hostPhaseIsEncoder.reshape({1}), "Tensor reshape failed");
     int32_t* hostPhase = io.hostPhaseIsEncoder.dataPointer<int32_t>();
     int32_t const phaseValue = denoisePhase ? 0 : 1;
-    std::fill(hostPhase, hostPhase + batchSize, phaseValue);
-    CUDA_CHECK(cudaMemcpyAsync(
-        io.phaseIsEncoder.rawPointer(), hostPhase, batchSize * sizeof(int32_t), cudaMemcpyHostToDevice, stream));
+    hostPhase[0] = phaseValue;
+    CUDA_CHECK(
+        cudaMemcpyAsync(io.phaseIsEncoder.rawPointer(), hostPhase, sizeof(int32_t), cudaMemcpyHostToDevice, stream));
 
     int32_t const contextMaskSelectorLen = denoisePhase ? batchSize : 0;
     check::check(io.contextMaskSelector.reshape({contextMaskSelectorLen}), "Tensor reshape failed");
@@ -174,16 +213,19 @@ bool BlockDiffusionDecoder::prepareCanvasMetadata(int32_t batchSize, int32_t can
         CUDA_CHECK(cudaMemsetAsync(io.contextMaskSelector.rawPointer(), 0,
             static_cast<size_t>(contextMaskSelectorLen) * sizeof(int32_t), stream));
     }
+    io.recordStepHostUploads(stream);
     return true;
 }
 
 bool BlockDiffusionDecoder::updateSelfConditioningTemperature(float temperature, cudaStream_t stream)
 {
+    mRuntime.base.pipelineIO.waitForStepHostStaging();
     check::check(mSelfConditioningTemperature.reshape({1}), "Tensor reshape failed");
     check::check(mHostSelfConditioningTemperature.reshape({1}), "Tensor reshape failed");
     mHostSelfConditioningTemperature.dataPointer<float>()[0] = temperature;
     CUDA_CHECK(cudaMemcpyAsync(mSelfConditioningTemperature.rawPointer(), mHostSelfConditioningTemperature.rawPointer(),
         sizeof(float), cudaMemcpyHostToDevice, stream));
+    mRuntime.base.pipelineIO.recordStepHostUploads(stream);
     return true;
 }
 
@@ -218,13 +260,14 @@ bool BlockDiffusionDecoder::prepareUnifiedConditioning(
     Tensor& prevSelfConditioningEmbeds = (step % 2 == 0) ? mSelfConditioningEmbedsA : mSelfConditioningEmbedsB;
     Tensor& nextSelfConditioningEmbeds = (step % 2 == 0) ? mSelfConditioningEmbedsB : mSelfConditioningEmbedsA;
 
+    check::check(mCanvasIds.reshape({batchSize * canvasLen}), "Tensor reshape failed");
     check::check(
-        io.inputsEmbeds.reshape({batchSize, canvasLen, mRuntime.deployment.base.hiddenSize}), "Tensor reshape failed");
-    check::check(prevSelfConditioningEmbeds.reshape({batchSize, canvasLen, mRuntime.deployment.base.hiddenSize}),
+        io.inputsEmbeds.reshape({batchSize * canvasLen, mRuntime.deployment.base.hiddenSize}), "Tensor reshape failed");
+    check::check(prevSelfConditioningEmbeds.reshape({batchSize * canvasLen, mRuntime.deployment.base.hiddenSize}),
         "Tensor reshape failed");
-    check::check(nextSelfConditioningEmbeds.reshape({batchSize, canvasLen, mRuntime.deployment.base.hiddenSize}),
+    check::check(nextSelfConditioningEmbeds.reshape({batchSize * canvasLen, mRuntime.deployment.base.hiddenSize}),
         "Tensor reshape failed");
-    check::check(io.outputLogits.reshape({batchSize, canvasLen, mRuntime.deployment.base.outputVocabSize}),
+    check::check(io.outputLogits.reshape({batchSize * canvasLen, mRuntime.deployment.base.outputVocabSize}),
         "Tensor reshape failed");
     if (step == 0)
     {
@@ -256,15 +299,15 @@ bool BlockDiffusionDecoder::runDenoiseStep(DenoiseStepParams const& params)
         mRuntime.preprocess.gemma4Ple->embed(mCanvasIds, params.stream);
     }
     Tensor& denoiseLogits = currentDenoiseLogits();
-    check::check(denoiseLogits.reshape({params.batchSize, params.canvasLen, mRuntime.deployment.base.outputVocabSize}),
+    check::check(denoiseLogits.reshape({params.batchSize * params.canvasLen, mRuntime.deployment.base.outputVocabSize}),
         "Tensor reshape failed");
-    if (!prepareCanvasMetadata(
-            params.batchSize, params.canvasLen, /*denoisePhase=*/true, params.stream, params.validCanvasLengths))
+    auto const denoiseDims = mRuntime.deployment.base.denoiseDims(params.batchSize, params.canvasLen);
+    if (!prepareCanvasMetadata(params.batchSize, params.canvasLen, denoiseDims, params.stream,
+            params.validCanvasLengths, params.committedLengths, params.residentRefs))
     {
         return false;
     }
 
-    auto const denoiseDims = mRuntime.deployment.base.denoiseDims(params.batchSize, params.canvasLen);
     {
         TIME_STAGE(metrics::StageNames::kBLOCK_DIFFUSION_DENOISE, params.stream);
         bool status
@@ -331,6 +374,7 @@ bool BlockDiffusionDecoder::sampleCanvasEntropyBound(
     check::check(mRuntime.sampling.indices.reshape({rows, 1}), "Tensor reshape failed");
     check::check(mRuntime.sampling.scores.reshape({rows}), "Tensor reshape failed");
     float const temperature = denoiseTemperature(step, maxDenoisingSteps);
+    check::check(mCanvasIds.reshape({batchSize, canvasLen}), "Tensor reshape failed");
     check::check(mSampledCanvasIds.reshape({batchSize, canvasLen}), "Tensor reshape failed");
     bool const forceAccept = (step + 1) >= maxDenoisingSteps;
     if (forceAccept)
@@ -423,8 +467,9 @@ bool BlockDiffusionDecoder::commitBlock(
     {
         return false;
     }
+    check::check(mCanvasIds.reshape({batchSize * commitSeqLen}), "Tensor reshape failed");
 
-    check::check(io.inputsEmbeds.reshape({batchSize, commitSeqLen, mRuntime.deployment.base.hiddenSize}),
+    check::check(io.inputsEmbeds.reshape({batchSize * commitSeqLen, mRuntime.deployment.base.hiddenSize}),
         "Tensor reshape failed");
     kernel::embeddingLookup(mCommitCanvasIds, mRuntime.preprocess.embedding.table,
         mRuntime.preprocess.embedding.scalesAsOptional(), io.inputsEmbeds, context.stream);
@@ -433,23 +478,24 @@ bool BlockDiffusionDecoder::commitBlock(
         mRuntime.preprocess.gemma4Ple->embed(mCommitCanvasIds, context.stream);
     }
     bindDefaultSelfConditioningTensors();
-    check::check(mSelfConditioningEmbedsA.reshape({batchSize, commitSeqLen, mRuntime.deployment.base.hiddenSize}),
+    check::check(mSelfConditioningEmbedsA.reshape({batchSize * commitSeqLen, mRuntime.deployment.base.hiddenSize}),
         "Tensor reshape failed");
-    check::check(mSelfConditioningEmbedsB.reshape({batchSize, commitSeqLen, mRuntime.deployment.base.hiddenSize}),
+    check::check(mSelfConditioningEmbedsB.reshape({batchSize * commitSeqLen, mRuntime.deployment.base.hiddenSize}),
         "Tensor reshape failed");
     if (!updateSelfConditioningTemperature(denoiseTemperature(0), context.stream))
     {
         return false;
     }
 
-    check::check(io.outputLogits.reshape({batchSize, commitSeqLen, mRuntime.deployment.base.outputVocabSize}),
+    check::check(io.outputLogits.reshape({batchSize * commitSeqLen, mRuntime.deployment.base.outputVocabSize}),
         "Tensor reshape failed");
-    if (!prepareCanvasMetadata(batchSize, commitSeqLen, /*denoisePhase=*/false, context.stream, &commitLengths))
+    auto const commitDims = mRuntime.deployment.base.diffusionCommitDims(batchSize, commitSeqLen);
+    if (!prepareCanvasMetadata(batchSize, commitSeqLen, commitDims, context.stream, &commitLengths,
+            &mCommittedLengthsScratch, &context.residentRefs))
     {
         return false;
     }
 
-    auto const commitDims = mRuntime.deployment.base.diffusionCommitDims(batchSize, commitSeqLen);
     {
         TIME_STAGE(metrics::StageNames::kBLOCK_DIFFUSION_COMMIT, context.stream);
         bool status
@@ -533,8 +579,8 @@ bool BlockDiffusionDecoder::decodeStep(DecodingInferenceContext& context)
     for (int32_t step = 0; step < maxDenoisingSteps; ++step)
     {
         float const temperature = denoiseTemperature(step, maxDenoisingSteps);
-        DenoiseStepParams const denoiseParams{
-            batchSize, canvasLen, step, &validCanvasLengths, temperature, context.stream};
+        DenoiseStepParams const denoiseParams{batchSize, canvasLen, step, &validCanvasLengths, &committedLengths,
+            &context.residentRefs, temperature, context.stream};
         if (!runDenoiseStep(denoiseParams))
         {
             return false;
@@ -641,7 +687,7 @@ bool BlockDiffusionDecoder::captureCudaGraphs(cudaStream_t stream)
     // Simulate a mid-sequence denoise state, matching the pattern used by other
     // graph-capture paths. KV cache bindings stay at physical capacity so graph
     // keys are independent of prompt/decode length; actual lengths are carried
-    // by the existing context_lengths and kvcache_start_index tensors.
+    // by query_lengths and past_lengths.
     for (int32_t batchSize = 1; batchSize <= mRuntime.maxRuntimeBatchSize; ++batchSize)
     {
         std::vector<int32_t> simCacheLens(batchSize, simulateCacheLength);
@@ -672,7 +718,9 @@ bool BlockDiffusionDecoder::captureCudaGraphs(cudaStream_t stream)
             {
                 mRuntime.preprocess.gemma4Ple->embed(mCanvasIds, stream);
             }
-            if (!prepareCanvasMetadata(batchSize, captureCanvasLen, /*denoisePhase=*/true, stream, &validCanvasLengths))
+            auto const denoiseDims = mRuntime.deployment.base.denoiseDims(batchSize, captureCanvasLen);
+            if (!prepareCanvasMetadata(
+                    batchSize, captureCanvasLen, denoiseDims, stream, &validCanvasLengths, &simCacheLens))
             {
                 LOG_ERROR(
                     "Failed to prepare DiffusionGemma canvas metadata for CUDA graph capture. batchSize=%d, "
@@ -681,7 +729,6 @@ bool BlockDiffusionDecoder::captureCudaGraphs(cudaStream_t stream)
                 return false;
             }
 
-            auto const denoiseDims = mRuntime.deployment.base.denoiseDims(batchSize, captureCanvasLen);
             if (!mRuntime.base.captureGraph(denoiseDims, stream))
             {
                 LOG_ERROR("Failed to capture DiffusionGemma denoise CUDA graph. batchSize=%d, canvasLen=%d, step=%d.",
@@ -694,7 +741,7 @@ bool BlockDiffusionDecoder::captureCudaGraphs(cudaStream_t stream)
         CUDA_CHECK(cudaMemsetAsync(mCommitCanvasIds.rawPointer(), 0,
             static_cast<size_t>(batchSize) * static_cast<size_t>(captureCanvasLen) * sizeof(int32_t), stream));
         check::check(mRuntime.base.pipelineIO.inputsEmbeds.reshape(
-                         {batchSize, captureCanvasLen, mRuntime.deployment.base.hiddenSize}),
+                         {batchSize * captureCanvasLen, mRuntime.deployment.base.hiddenSize}),
             "Tensor reshape failed");
         kernel::embeddingLookup(mCommitCanvasIds, mRuntime.preprocess.embedding.table,
             mRuntime.preprocess.embedding.scalesAsOptional(), mRuntime.base.pipelineIO.inputsEmbeds, stream);
@@ -704,26 +751,26 @@ bool BlockDiffusionDecoder::captureCudaGraphs(cudaStream_t stream)
         }
         bindDefaultSelfConditioningTensors();
         check::check(
-            mSelfConditioningEmbedsA.reshape({batchSize, captureCanvasLen, mRuntime.deployment.base.hiddenSize}),
+            mSelfConditioningEmbedsA.reshape({batchSize * captureCanvasLen, mRuntime.deployment.base.hiddenSize}),
             "Tensor reshape failed");
         check::check(
-            mSelfConditioningEmbedsB.reshape({batchSize, captureCanvasLen, mRuntime.deployment.base.hiddenSize}),
+            mSelfConditioningEmbedsB.reshape({batchSize * captureCanvasLen, mRuntime.deployment.base.hiddenSize}),
             "Tensor reshape failed");
         if (!updateSelfConditioningTemperature(denoiseTemperature(0), stream))
         {
             return false;
         }
         check::check(mRuntime.base.pipelineIO.outputLogits.reshape(
-                         {batchSize, captureCanvasLen, mRuntime.deployment.base.outputVocabSize}),
+                         {batchSize * captureCanvasLen, mRuntime.deployment.base.outputVocabSize}),
             "Tensor reshape failed");
-        if (!prepareCanvasMetadata(batchSize, captureCanvasLen, /*denoisePhase=*/false, stream, &validCanvasLengths))
+        auto const commitDims = mRuntime.deployment.base.diffusionCommitDims(batchSize, captureCanvasLen);
+        if (!prepareCanvasMetadata(batchSize, captureCanvasLen, commitDims, stream, &validCanvasLengths, &simCacheLens))
         {
             LOG_ERROR(
                 "Failed to prepare DiffusionGemma commit metadata for CUDA graph capture. batchSize=%d, canvasLen=%d.",
                 batchSize, captureCanvasLen);
             return false;
         }
-        auto const commitDims = mRuntime.deployment.base.diffusionCommitDims(batchSize, captureCanvasLen);
         if (!mRuntime.base.captureGraph(commitDims, stream))
         {
             LOG_ERROR("Failed to capture DiffusionGemma commit CUDA graph. batchSize=%d, canvasLen=%d.", batchSize,

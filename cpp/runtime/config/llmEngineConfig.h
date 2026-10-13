@@ -23,6 +23,7 @@
 #include "runtime/llmRuntimeUtils.h"
 
 #include <NvInferRuntime.h>
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -48,8 +49,27 @@ enum class SpecDecodeMode : int32_t
     kDSpark,
 };
 
+enum class DFlashVersion : int32_t
+{
+    kV1 = 1,
+    kV2 = 2,
+};
+
+//! Runtime storage policy for engines carrying bounded-SWA capability metadata.
+enum class SwaKVCacheMode : int32_t
+{
+    kFull,
+    kBounded,
+};
+
 char const* specDecodeModeName(SpecDecodeMode mode) noexcept;
 bool isCachedBlockDraftMode(SpecDecodeMode mode) noexcept;
+
+enum class RaggedBackendKind : int32_t
+{
+    kNone,
+    kEntryPaddedCompatibility,
+};
 
 //! Gemma4 MTP assistant-layer to target-layer shared-KV mapping.
 struct Gemma4MTPKVSharingEntry
@@ -67,20 +87,30 @@ struct Gemma4MTPKVSharingEntry
 struct LLMEngineConfig
 {
     // --- Core model dimensions ---
-    int32_t hiddenSize{};                //!< Model hidden dimension
-    int32_t outputVocabSize{};           //!< Actual output vocab (reduced if vocab reduction active)
-    int32_t numAttentionLayers{};        //!< Number of attention layers needing KV cache
-    int32_t numKVHeads{};                //!< Number of key-value heads
-    int32_t headDim{};                   //!< Dimension of each attention head
-    int32_t maxSupportedBatchSize{};     //!< Maximum supported batch size
-    int32_t maxSupportedInputLength{};   //!< Maximum supported input length
-    int32_t maxKVCacheCapacity{};        //!< Maximum KV cache capacity (sequence length)
+    int32_t hiddenSize{};              //!< Model hidden dimension
+    int32_t outputVocabSize{};         //!< Actual output vocab (reduced if vocab reduction active)
+    int32_t numAttentionLayers{};      //!< Number of attention layers needing KV cache
+    int32_t numKVHeads{};              //!< Number of key-value heads
+    int32_t headDim{};                 //!< Dimension of each attention head
+    int32_t maxSupportedBatchSize{};   //!< Maximum supported batch size
+    int32_t maxSupportedInputLength{}; //!< Maximum supported input length
+    int32_t maxKVCacheCapacity{};      //!< Maximum KV cache capacity (sequence length)
+    RaggedBackendKind raggedBackend{RaggedBackendKind::kNone};
+    int32_t maxNumSequences{};
+    int32_t maxQueryLength{};
+    int32_t maxPhysicalTokens{};
+    int32_t recurrentPoolRows{};
     int64_t skipSoftmaxScaleOverride{0}; //!< skip-softmax scale-factor override (0 = disabled)
     int32_t kvPoolPages{};               //!< Exact physical K-page count serialized in KV binding shapes
-    int32_t rotaryDim{};                 //!< Rotary embedding dimension
-    int32_t numDecoderLayers{};          //!< Total decoder layers (attention + linear)
-    int32_t vocabSize{};                 //!< Full vocabulary size
-    int32_t reducedVocabSize{0};         //!< 0 = no vocab reduction
+    //! Total physical K-page budget for the independent SWA pool. Zero means
+    //! no reduced pool; reduced markers require a positive persisted value with bounded publication headroom.
+    int32_t numSwaPages{};
+    //! Runtime-only storage selection. The exported per-layer capacity markers remain unchanged.
+    SwaKVCacheMode swaKVCacheMode{SwaKVCacheMode::kBounded};
+    int32_t rotaryDim{};         //!< Rotary embedding dimension
+    int32_t numDecoderLayers{};  //!< Total decoder layers (attention + linear)
+    int32_t vocabSize{};         //!< Full vocabulary size
+    int32_t reducedVocabSize{0}; //!< 0 = no vocab reduction
     int32_t diffusionCanvasLength{0};
     int32_t diffusionMaxDenoisingSteps{0};
     int32_t diffusionSelfConditioningSize{0};
@@ -180,6 +210,15 @@ struct LLMEngineConfig
     //! Mask token ID used to seed cached draft input blocks for DFlash/JetSpec/DSpark.
     int32_t specDraftMaskTokenId{0};
 
+    //! Versioned DFlash engine/runtime ABI. Missing metadata defaults to V1.
+    DFlashVersion dflashVersion{DFlashVersion::kV1};
+    int32_t specSelectorTopK{0};
+    int32_t specSelectorRank{0};
+    std::string dflash2SelectorFile;
+    int32_t specConvKernelSize{0};
+    int32_t specConvGroupSize{0};
+    bool specSupportsProbabilistic{false};
+
     //! Whether cached draft proposal self-attention is causal. JetSpec uses causal rows.
     bool specDraftCausalHead{false};
 
@@ -205,6 +244,15 @@ struct LLMEngineConfig
     int32_t dsparkMarkovRank{0};
     std::string dsparkHeadsFile{};
     std::string dsparkHeadsInfoFile{};
+    //! Whether the draft engine baked the contiguous-query sliding-window XQA
+    //! variant, which reconstructs each query row's position as
+    //! firstQueryPosition + queryRow. This describes the draft engine query ABI;
+    //! it does not gate the base engine's DDTree verification topology.
+    bool dsparkContiguousQuerySwa{false};
+    //! When true the anchor slot itself is a proposal and the draft query block is
+    //! `block_size` wide; when false slot 0 is the bonus token, the block carries one
+    //! extra mask slot and proposals start at slot 1.
+    bool dsparkSampleFromAnchor{true};
 
     // --- Per-layer type routing (hybrid cache) ---
 
@@ -227,6 +275,27 @@ struct LLMEngineConfig
     //! Used for Gemma4's KV sharing where the last N layers reuse a donor's cache.
     std::vector<int32_t> kvSharingDonors{};
 
+    //! Whether exported layer metadata declares bounded SWA storage capability.
+    bool supportsBoundedSwaKVCache() const;
+
+    //! Whether this runtime instance actively uses bounded SWA storage.
+    bool usesBoundedSwaKVCache() const;
+
+    //! Select the runtime storage policy without changing exported capability metadata.
+    void setSwaKVCacheMode(SwaKVCacheMode mode) noexcept;
+
+    //! Shape-only mode input length: 1 for bounded storage and 0 for full storage.
+    int32_t getSwaKVCacheModeInputLength() const;
+
+    //! Bounded-capable profile page count for one layer, independent of the active runtime policy.
+    int32_t getBoundedKVPoolPagesForLayer(KVLayerConfig const& layerConfig) const;
+
+    //! Static engine profile selectors: min, smaller-policy opt, and max across bounded and full page counts.
+    std::array<int32_t, 3> getKVPoolPageProfileForLayer(KVLayerConfig const& layerConfig) const;
+
+    //! Active physical page count for one layer's KV pool binding.
+    int32_t getKVPoolPagesForLayer(KVLayerConfig const& layerConfig) const;
+
     // ------------------------------------------------------------------
     // InferenceDims recipe methods
     //
@@ -247,7 +316,7 @@ struct LLMEngineConfig
     //! shape to `[0]` (engine's "initial prefill" sentinel) instead of `[batch]`.
     //! DiffusionGemma keeps `kvcache_start_index` at `[batch]` and uses
     //! `context_mask_selector` as its attention-mask sentinel.
-    InferenceDims prefillDims(int64_t batch, int64_t seqLen, bool kvCacheAllEmpty) const;
+    InferenceDims prefillDims(int64_t batch, int64_t seqLen, ExecutionPhase phase) const;
 
     //! Vanilla single-token decode dims.
     //! seqLen is always 1 here; packedMaskLen is 1 (no proposal mask in vanilla).

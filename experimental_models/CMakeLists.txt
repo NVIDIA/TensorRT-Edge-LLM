@@ -18,3 +18,4 @@
 
 add_subdirectory(cosmos3)
 add_subdirectory(nemotron3_5_asr)
+add_subdirectory(pi05)

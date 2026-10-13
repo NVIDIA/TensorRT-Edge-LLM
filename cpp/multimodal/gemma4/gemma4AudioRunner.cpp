@@ -224,16 +224,27 @@ bool Gemma4AudioRunner::loadMelSpectrogramFromFile(
 
 bool Gemma4AudioRunner::extractMelFromPcm(rt::audio::AudioPCM const& pcm, rt::Tensor& melGpu, cudaStream_t stream)
 {
+    int64_t const rawLen = pcm.numSamples();
+    if (rawLen == 0)
+    {
+        LOG_ERROR("Gemma4AudioRunner: empty PCM");
+        return false;
+    }
+
     // HF Gemma4AudioFeatureExtractor pads the raw waveform to a multiple of 128 samples
     // before mel extraction (pad_to_multiple_of=128). Replicate this to match frame counts.
-    static constexpr int32_t kPadToMultipleOf = 128;
-    rt::audio::AudioPCM paddedPcm = pcm;
-    size_t const rawLen = paddedPcm.samples.size();
-    size_t const paddedLen = ((rawLen + kPadToMultipleOf - 1) / kPadToMultipleOf) * kPadToMultipleOf;
-    if (paddedLen > rawLen)
-    {
-        paddedPcm.samples.resize(paddedLen, 0.0f);
-    }
+    static constexpr int64_t kPadToMultipleOf = 128;
+    int64_t const paddedLen = ((rawLen + kPadToMultipleOf - 1) / kPadToMultipleOf) * kPadToMultipleOf;
+
+    rt::Tensor const& samples = *pcm.samples;
+    std::vector<float> padded(samples.dataPointer<float>(), samples.dataPointer<float>() + rawLen);
+    padded.resize(static_cast<size_t>(paddedLen), 0.0F);
+
+    rt::audio::AudioPCM paddedPcm;
+    paddedPcm.samples = std::make_shared<rt::Tensor>(
+        padded.data(), rt::Coords{paddedLen}, rt::DeviceType::kCPU, nvinfer1::DataType::kFLOAT);
+    paddedPcm.sampleRate = pcm.sampleRate;
+    paddedPcm.numChannels = pcm.numChannels;
 
     // Extract mel-spectrogram on CPU. Output shape: [mel_bins, T] (kMelTime layout).
     rt::Tensor hostMel;
@@ -263,8 +274,8 @@ bool Gemma4AudioRunner::extractMelFromPcm(rt::audio::AudioPCM const& pcm, rt::Te
     CUDA_CHECK(cudaMemcpyAsync(melGpu.rawPointer(), transposedHalf.data(), static_cast<size_t>(numel) * sizeof(__half),
         cudaMemcpyHostToDevice, stream));
 
-    LOG_INFO("Gemma4AudioRunner: extracted mel from PCM (%zu samples @ %d Hz) -> [1, %ld, %ld]", pcm.samples.size(),
-        pcm.sampleRate, timeSteps, melBins);
+    LOG_INFO("Gemma4AudioRunner: extracted mel from PCM (%ld samples @ %d Hz) -> [1, %ld, %ld]",
+        static_cast<long>(pcm.numSamples()), pcm.sampleRate, timeSteps, melBins);
     return true;
 }
 

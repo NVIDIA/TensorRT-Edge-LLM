@@ -47,9 +47,8 @@ copyright = '2025, Nvidia'
 author = 'Nvidia'
 html_show_sphinx = False
 
-# Rendered pages link to this commit on GitHub, so a release build must be told
-# the public commit: an archive export has no repository, and a GitLab SHA does
-# not resolve there.
+# An exported source tree has no repository; explicitly select the public
+# GitHub commit used for documentation links.
 commit_sha = os.environ.get('EDGELLM_DOCS_COMMIT_SHA')
 
 if not commit_sha:

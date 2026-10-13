@@ -102,6 +102,11 @@ _VISUAL_REGISTRY: dict[str, str] = {
     # Cosmos3-Edge reasoner: SigLIP2 packed-patch ViT + Qwen3-VL-style
     # PatchMerger, exported on the qwen3_vl visual ONNX I/O contract.
     "cosmos3_edge": "cosmos3_reasoner",
+    # Muse-Glimmer: Linear patch embed + learned
+    # interpolated position table, alternating window/full attention with 2D
+    # interleaved RoPE, pixel_shuffle merge + adapter/projection.
+    "muse_glimmer": "muse_glimmer",
+    "muse_glimmer_vision": "muse_glimmer",
 }
 
 # Maps family → dotted module path inside tensorrt_edgellm
@@ -130,6 +135,8 @@ _VISUAL_FAMILY_MODULE: dict[str, str] = {
     "tensorrt_edgellm.models.nemotron_omni.modeling_nemotron_omni_visual",
     "cosmos3_reasoner":
     "tensorrt_edgellm.models.cosmos3_reasoner.modeling_cosmos3_reasoner_visual",
+    "muse_glimmer":
+    "tensorrt_edgellm.models.muse_glimmer.modeling_muse_glimmer_visual",
 }
 
 # Maps family → build function name in that module
@@ -146,6 +153,7 @@ _VISUAL_FAMILY_BUILD_FN: dict[str, str] = {
     "gemma4_unified": "build_gemma4_unified_visual",
     "nemotron_omni": "build_nemotron_omni_visual",
     "cosmos3_reasoner": "build_cosmos3_reasoner_visual",
+    "muse_glimmer": "build_muse_glimmer_visual",
 }
 
 # ---------------------------------------------------------------------------
@@ -197,10 +205,10 @@ def _get_visual_config(model_type: str, config: dict) -> dict:
                 or config.get("thinker_config", {}).get("vision_config")
                 or config)
     if (model_type in ("internvl", "internvl_chat", "gemma4", "gemma4_unified",
-                       "cosmos3_edge")
+                       "cosmos3_edge", "muse_glimmer", "muse_glimmer_vision")
             or model_type in _NEMOTRON_OMNI_MODEL_TYPES):
-        # InternVL / Gemma4 / Nemotron-Omni / Cosmos3-Edge need the full
-        # config (vision + text + projection/runtime fields).
+        # InternVL / Gemma4 / Nemotron-Omni / Cosmos3-Edge / Muse-Glimmer need
+        # the full config (vision + text + projection/runtime fields).
         return config
     if model_type in ("phi4mm", "phi4_multimodal"):
         # Phi-4mm visual config is hardcoded (not in config.json).

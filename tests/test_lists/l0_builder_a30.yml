@@ -1,5 +1,0 @@
-tests:
-  - tests/defs/test_common.py::test_build_project
-  - tests/defs/test_builder_pipeline.py::test_build_and_run[Qwen2.5-0.5B-Instruct-fp16-mxsl2048-mxbs1-mxil1024-llm_basic]
-  - tests/defs/test_builder_pipeline.py::test_build_and_run[Qwen3-ASR-0.6B-fp16-mxsl4096-mxbs1-mxil1024-mnts100-mxts3000-asr_basic]
-  - tests/defs/test_builder_pipeline.py::test_build_and_run[Qwen3-1.7B-fp16-mxsl2048-eagle-eagle3-fp16-mxbs1-mxil1024-llm_basic]

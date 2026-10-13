@@ -29,6 +29,9 @@ DEFAULT_HEIGHT = 544
 DEFAULT_MAX_UND_LEN = 512
 DEFAULT_NUM_FRAMES = 17
 DEFAULT_WIDTH = 736
+DROID_CONTENT_HEIGHT = 540
+DROID_CONTENT_WIDTH = 640
+VAE_SPATIAL_DOWNSAMPLE_FACTOR = 16
 
 
 def _component_name(component) -> str:
@@ -43,6 +46,21 @@ def _load_json(model_dir: str, subdirectory: str) -> dict | None:
         return json.load(config_file)
 
 
+def _load_policy_metadata(model_dir: str) -> dict:
+    path = os.path.join(model_dir, "checkpoint.json")
+    if not os.path.isfile(path):
+        return {}
+    with open(path) as config_file:
+        policy = json.load(config_file).get("policy") or {}
+    if not isinstance(policy, dict):
+        raise ValueError("checkpoint.json 'policy' must be an object")
+    result = dict(policy)
+    if result.get("domain_name") == "droid_lerobot":
+        result.setdefault("raw_action_dim", 8)
+        result.setdefault("use_state", True)
+    return result
+
+
 def prepare_root(model_dir: str, root: dict) -> dict:
     """Attach Diffusers component configs without importing Diffusers."""
     prepared = dict(root)
@@ -52,6 +70,9 @@ def prepare_root(model_dir: str, root: dict) -> dict:
         prepared["_direct_transformer_config"] = transformer
     if vae is not None:
         prepared["_direct_vae_config"] = vae
+    policy = _load_policy_metadata(model_dir)
+    if policy:
+        prepared["_direct_policy_config"] = policy
     return prepared
 
 
@@ -156,12 +177,25 @@ class Cosmos3PolicyGeometry:
     """Static request geometry owned by one Cosmos3 policy engine bundle."""
 
     action_chunk_size: int = DEFAULT_ACTION_CHUNK_SIZE
+    conditioning_frames: int = DEFAULT_NUM_FRAMES
+    content_height: int = DEFAULT_HEIGHT
+    content_width: int = DEFAULT_WIDTH
     domain_id: int = DEFAULT_DOMAIN_ID
     fps: float = DEFAULT_FPS
     height: int = DEFAULT_HEIGHT
     max_und_len: int = DEFAULT_MAX_UND_LEN
     num_frames: int = DEFAULT_NUM_FRAMES
+    raw_action_dim: int = 10
+    use_state: bool = False
     width: int = DEFAULT_WIDTH
+
+    @property
+    def state_rows(self) -> int:
+        return 1 if self.use_state else 0
+
+    @property
+    def action_token_count(self) -> int:
+        return self.action_chunk_size + self.state_rows
 
     @property
     def latent_t(self) -> int:
@@ -169,32 +203,61 @@ class Cosmos3PolicyGeometry:
 
     @property
     def latent_h(self) -> int:
-        return self.height // 16
+        return self.content_height // 16
 
     @property
     def latent_w(self) -> int:
-        return self.width // 16
+        return self.content_width // 16
 
     @classmethod
     def from_bundle(cls, bundle, args=None) -> "Cosmos3PolicyGeometry":
         overrides = bundle.root.get("edge_llm_builder") or {}
+        policy = bundle.root.get("_direct_policy_config") or {}
 
         def value(name: str, default):
             argument = getattr(args, name, None) if args is not None else None
             return overrides.get(name,
                                  default) if argument is None else argument
 
+        action_chunk_size = int(
+            value("action_chunk_size",
+                  policy.get("action_chunk_size", DEFAULT_ACTION_CHUNK_SIZE)))
+        default_num_frames = (action_chunk_size +
+                              1 if policy else DEFAULT_NUM_FRAMES)
+        domain_name = str(policy.get("domain_name", ""))
+        height = int(value("height", DEFAULT_HEIGHT))
+        width = int(value("width", DEFAULT_WIDTH))
         geometry = cls(
-            action_chunk_size=int(
-                value("action_chunk_size", DEFAULT_ACTION_CHUNK_SIZE)),
+            action_chunk_size=action_chunk_size,
+            conditioning_frames=int(
+                value("conditioning_frames",
+                      1 if policy else DEFAULT_NUM_FRAMES)),
+            content_height=int(
+                value(
+                    "content_height", DROID_CONTENT_HEIGHT
+                    if domain_name == "droid_lerobot" else height)),
+            content_width=int(
+                value(
+                    "content_width", DROID_CONTENT_WIDTH
+                    if domain_name == "droid_lerobot" else width)),
             domain_id=int(value("domain_id", DEFAULT_DOMAIN_ID)),
-            fps=float(value("fps", DEFAULT_FPS)),
-            height=int(value("height", DEFAULT_HEIGHT)),
+            fps=float(value("fps", policy.get("conditioning_fps",
+                                              DEFAULT_FPS))),
+            height=height,
             max_und_len=int(
                 value("max_und_len",
                       getattr(args, "max_input_len", DEFAULT_MAX_UND_LEN))),
-            num_frames=int(value("num_frames", DEFAULT_NUM_FRAMES)),
-            width=int(value("width", DEFAULT_WIDTH)),
+            num_frames=int(value("num_frames", default_num_frames)),
+            raw_action_dim=int(
+                value(
+                    "raw_action_dim",
+                    policy.get("raw_action_dim",
+                               8 if domain_name == "droid_lerobot" else 10))),
+            use_state=bool(
+                value("use_state",
+                      policy.get("use_state",
+                                 domain_name == "droid_lerobot"))),
+            width=width,
         )
         geometry.validate()
         return geometry
@@ -202,12 +265,29 @@ class Cosmos3PolicyGeometry:
     def validate(self) -> None:
         if self.action_chunk_size <= 0:
             raise ValueError("Cosmos3 action_chunk_size must be positive")
+        if self.raw_action_dim <= 0:
+            raise ValueError("Cosmos3 raw_action_dim must be positive")
+        if (self.conditioning_frames <= 0
+                or (self.conditioning_frames - 1) % 4):
+            raise ValueError(
+                "Cosmos3 conditioning_frames must have the form 4k+1")
         if self.max_und_len <= 0:
             raise ValueError("Cosmos3 max_und_len must be positive")
         if self.num_frames <= 0 or (self.num_frames - 1) % 4:
             raise ValueError("Cosmos3 num_frames must have the form 4k+1")
-        if self.height <= 0 or self.width <= 0:
+        if (self.height <= 0 or self.width <= 0 or self.content_height <= 0
+                or self.content_width <= 0):
             raise ValueError("Cosmos3 image dimensions must be positive")
-        if self.height % 16 or self.width % 16:
+        if (self.content_height > self.height
+                or self.content_width > self.width):
             raise ValueError(
-                "Cosmos3 image dimensions must be divisible by 16")
+                "Cosmos3 content dimensions must fit inside the image canvas")
+        if (self.height % VAE_SPATIAL_DOWNSAMPLE_FACTOR
+                or self.width % VAE_SPATIAL_DOWNSAMPLE_FACTOR):
+            raise ValueError(
+                "Cosmos3 image canvas dimensions must be divisible by the "
+                f"VAE downsample factor ({VAE_SPATIAL_DOWNSAMPLE_FACTOR})")
+        if self.content_height % 2 or self.content_width % 2:
+            raise ValueError(
+                "Cosmos3 content dimensions must be divisible by the VAE patch size"
+            )

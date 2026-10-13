@@ -17,6 +17,8 @@
 
 #pragma once
 
+#include "cuteDslFmhaTypes.h"
+
 #include <cuda_runtime.h>
 
 #if defined(CUTE_DSL_FMHA_ENABLED)
@@ -44,15 +46,6 @@ extern "C" cudaError_t cudaLibraryUnload(cudaLibrary_t library);
 namespace trt_edgellm
 {
 
-//! Mask contracts implemented by the FMHA-v2 CuTe DSL context kernels.
-enum class CuteDslFMHAV2MaskType
-{
-    kCAUSAL,
-    kSLIDING_CAUSAL,
-    kPADDING,
-    kVISION_BLOCK
-};
-
 //! Runner for the CuTe DSL FMHA-v2 kernels.
 //!
 //! Dense LLM kernels consume separate BSND Q/K/V tensors, while native-paged LLM kernels consume
@@ -78,6 +71,10 @@ public:
     static bool canImplementPaged(int32_t numQHeads, int32_t numKVHeads, int32_t headSize, int32_t smVersion,
         nvinfer1::DataType dataType, CuteDslFMHAV2MaskType maskType);
 
+    //! Returns whether the target AOT family covers packed-Q/O native paged attention.
+    static bool canImplementPagedRagged(int32_t numQHeads, int32_t numKVHeads, int32_t headSize, int32_t smVersion,
+        nvinfer1::DataType dataType, CuteDslFMHAV2MaskType maskType);
+
     //! Returns whether the target AOT family covers this packed ViT shape.
     static bool canImplementViT(int32_t headSize, int32_t smVersion, nvinfer1::DataType dataType);
 
@@ -86,6 +83,9 @@ public:
 
     //! Ensures the exact native-paged causal or sliding-causal LLM variant selected by runPaged() is loaded.
     bool preflightPaged(cudaStream_t stream, int32_t slidingWindowSize = INT_MAX);
+
+    //! Ensures the packed-Q/O native-paged causal or sliding-causal variant selected by runPagedRagged() is loaded.
+    bool preflightPagedRagged(cudaStream_t stream, int32_t slidingWindowSize = INT_MAX);
 
     //! Ensures the dense non-causal padding variant selected by runPadding() is loaded.
     bool preflightPadding(cudaStream_t stream);
@@ -104,6 +104,18 @@ public:
     bool runPaged(void const* qPtr, void const* pagedKVPoolPtr, int32_t const* kvCachePageList, void* oPtr,
         int32_t const* cuQSeqLens, int32_t const* cuKVSeqLens, int32_t numFlatPages, int32_t maxPagesPerSeq,
         int32_t tokensPerPage, cudaStream_t stream, float attentionScale, int32_t slidingWindowSize = INT_MAX);
+
+    /**
+     * @brief Runs causal or sliding-causal attention over packed Q/O and an FP16 NHD paged KV pool.
+     *
+     * cuQSeqLens and cuKVSeqLens are monotonic prefix arrays of length batchSize + 1. cuQSeqLens starts at zero and
+     * ends at totalQSeqLen. cuKVSeqLens contains the complete logical KV history, including prior cached tokens.
+     * maxQSeqLen is the maximum adjacent difference in cuQSeqLens, not the packed buffer allocation capacity.
+     */
+    bool runPagedRagged(void const* qPtr, void const* pagedKVPoolPtr, int32_t const* kvCachePageList, void* oPtr,
+        int32_t const* cuQSeqLens, int32_t const* cuKVSeqLens, int32_t totalQSeqLen, int32_t maxQSeqLen,
+        int32_t numFlatPages, int32_t maxPagesPerSeq, int32_t tokensPerPage, cudaStream_t stream, float attentionScale,
+        int32_t slidingWindowSize = INT_MAX);
 
     //! Runs dense non-causal padded context attention with independent logical Q/KV lengths.
     bool runPadding(void const* qPtr, void const* kPtr, void const* vPtr, void* oPtr, int32_t const* cuQSeqLens,
@@ -149,10 +161,21 @@ private:
     static detail::LazyKernelModule<fmha_v2_d128_sw_paged_Kernel_Module_t> sLLM_d128SwPaged;
     static detail::LazyKernelModule<fmha_v2_d256_sw_paged_Kernel_Module_t> sLLM_d256SwPaged;
     static detail::LazyKernelModule<fmha_v2_d512_sw_paged_Kernel_Module_t> sLLM_d512SwPaged;
+#if CUDA_VERSION >= 12000
+    static detail::LazyKernelModule<fmha_v2_d64_paged_ragged_Kernel_Module_t> sLLM_d64PagedRagged;
+    static detail::LazyKernelModule<fmha_v2_d128_paged_ragged_Kernel_Module_t> sLLM_d128PagedRagged;
+    static detail::LazyKernelModule<fmha_v2_d256_paged_ragged_Kernel_Module_t> sLLM_d256PagedRagged;
+    static detail::LazyKernelModule<fmha_v2_d512_paged_ragged_Kernel_Module_t> sLLM_d512PagedRagged;
+    static detail::LazyKernelModule<fmha_v2_d64_sw_paged_ragged_Kernel_Module_t> sLLM_d64SwPagedRagged;
+    static detail::LazyKernelModule<fmha_v2_d128_sw_paged_ragged_Kernel_Module_t> sLLM_d128SwPagedRagged;
+    static detail::LazyKernelModule<fmha_v2_d256_sw_paged_ragged_Kernel_Module_t> sLLM_d256SwPagedRagged;
+    static detail::LazyKernelModule<fmha_v2_d512_sw_paged_ragged_Kernel_Module_t> sLLM_d512SwPagedRagged;
+#endif // CUDA_VERSION >= 12000
 
     static detail::LazyKernelModule<fmha_v2_vit_d64_Kernel_Module_t> sViT_d64;
     static detail::LazyKernelModule<fmha_v2_vit_d72_Kernel_Module_t> sViT_d72;
     static detail::LazyKernelModule<fmha_v2_vit_d80_Kernel_Module_t> sViT_d80;
+    static detail::LazyKernelModule<fmha_v2_vit_d96_Kernel_Module_t> sViT_d96;
     static detail::LazyKernelModule<fmha_v2_vit_d128_Kernel_Module_t> sViT_d128;
 #endif // defined(CUTE_DSL_FMHA_ENABLED)
 };

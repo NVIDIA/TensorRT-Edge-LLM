@@ -31,9 +31,7 @@ with shared expert) configured for the Talker codec vocabulary:
 The TTS runtime only needs three extras vs a plain Qwen3.5 MoE causal LM:
 
 1. The pre-lm_head hidden states are emitted as a second ONNX output so the
-   C++ Talker -> CodePredictor residual path can pick them up. This is the
-   exact same wrapping trick used by the dense Talker (see
-   :func:`_wrap_with_hidden_states` in ``modeling_qwen3_omni_next_talker``).
+   C++ Talker -> CodePredictor residual path can pick them up.
 2. The HF Talker names its input embedding ``codec_embedding`` (not
    ``embed_tokens``) and its output projection ``codec_head`` (not
    ``lm_head``); the two tensors are independent in the checkpoint. We
@@ -45,7 +43,6 @@ The TTS runtime only needs three extras vs a plain Qwen3.5 MoE causal LM:
    class therefore does not own them, mirroring the dense Talker.
 """
 
-import dataclasses
 from typing import Tuple
 
 import torch
@@ -53,7 +50,6 @@ import torch
 from ..default.modeling_default import OnnxSpec
 from ..linear import make_linear
 from ..qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeCausalLM
-from .modeling_qwen3_omni_next_talker import _wrap_with_hidden_states
 
 __all__ = ["Qwen3OmniNextMoeTalkerCausalLM"]
 
@@ -74,6 +70,8 @@ class Qwen3OmniNextMoeTalkerCausalLM(Qwen3_5MoeCausalLM):
     script writes them as separate safetensors. This class therefore does
     not own them, matching the dense Talker.
     """
+
+    emit_hidden_states = True
 
     def __init__(self, config) -> None:
         super().__init__(config)
@@ -120,10 +118,4 @@ class Qwen3OmniNextMoeTalkerCausalLM(Qwen3_5MoeCausalLM):
         return (logits, present_kv, present_conv, present_rec)
 
     def onnx_export_spec(self) -> OnnxSpec:
-        spec = super().onnx_export_spec()
-        return dataclasses.replace(
-            spec,
-            wrapped=_wrap_with_hidden_states(spec.wrapped),
-            output_names=[spec.output_names[0], "hidden_states"] +
-            list(spec.output_names[1:]),
-        )
+        return super().onnx_export_spec()

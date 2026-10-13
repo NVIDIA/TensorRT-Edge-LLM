@@ -12,11 +12,23 @@ prompt contract from `tts_model_type` in the engine configuration.
 | Component | Precision | Notes |
 |---|---|---|
 | Talker | FP16 | Quantized Talker checkpoints are not supported for Qwen3-TTS yet |
-| CodePredictor | FP16, **FP8** | Quantize with `tensorrt-edgellm-quantize ... --cp_quantization fp8`; `down_proj`, LM heads, and KV-cache BMM remain FP16 |
+| CodePredictor | FP16, **FP8**, **NVFP4** | Quantize with `tensorrt-edgellm-quantize ... --cp_quantization {fp8,nvfp4}`; `down_proj`, LM heads, codec embeddings, and KV-cache BMM remain FP16. NVFP4 only pays off on bandwidth-limited parts |
 | Code2Wav | FP16 | |
 | Clone encoders (Base) | FP16 build from FP32 ONNX | x-vector cosine 1.0 / codes 100% vs reference at FP16 |
 
 > **Note:** Unlike Qwen3-Omni, Qwen3-TTS has no Thinker or visual encoder. The text embedding is self-contained in the Talker and exported as `text_embedding.safetensors`.
+
+> **Note:** Export the CodePredictor from the quantize output and every other component from the
+> checkpoint — the quantize output has no `speech_tokenizer/`, which Code2Wav export requires:
+>
+> ```bash
+> export QUANT_ROOT=$MODEL_ROOT/cp_fp8
+>
+> tensorrt-edgellm-quantize llm --model_dir "$MODEL_ID" \
+>     --output_dir "$QUANT_ROOT" --cp_quantization fp8
+> tensorrt-edgellm-export "$MODEL_ID" "$MODEL_ROOT/onnx"
+> tensorrt-edgellm-export "$QUANT_ROOT" "$MODEL_ROOT/onnx" --components code_predictor
+> ```
 
 > **Prerequisites:** Complete the [Installation Guide](../getting_started/installation.md) before proceeding.
 
@@ -47,7 +59,7 @@ $MODEL_ROOT/onnx/
 │   ├── text_embedding.safetensors         # TTS-only (no Thinker)
 │   ├── text_projection.safetensors
 │   ├── tokenizer_config.json
-│   ├── processed_chat_template.json
+│   ├── chat_template.model
 │   └── tokenizer files
 ├── code_predictor/
 │   ├── model.onnx + model.onnx.data       # CodePredictor ONNX
@@ -336,3 +348,26 @@ instruct / VoiceDesign / clone). Text input is consumed whole per request; strea
 > | What streams | audio output only (chunked vocoding of a fixed text) | the full Thinker→Talker pipeline (speech synthesis starts while the Thinker is still generating text) |
 > | Enabled via | CLI: `--streaming --chunkFrames=<N>` | input JSON: `"streaming": {"enable": true, "codec_chunk_frames": <N>, "talker_prefill_threshold": <M>}` |
 > | Chunk knob | `--chunkFrames` | `codec_chunk_frames` |
+>
+> Unifying the two surfaces (same JSON block / flag names) is tracked as a follow-up.
+## CodePredictor speculative decoding
+
+The CodePredictor loop dominates audio decode time and can speculate with no draft model and no
+retraining, reusing the `lm_head` the checkpoint already carries for each RVQ depth. It is off by
+default; add `--cpSpecVerifySize N` (one committed RVQ depth plus `N-1` drafted depths, valid
+range 2-8) to the command above:
+
+```bash
+./build/examples/omni/qwen3_tts_inference \
+    --talkerEngineDir $ENG/talker \
+    --code2wavEngineDir $ENG/code2wav \
+    --tokenizerDir $ENG/talker \
+    --inputFile $WORKSPACE_DIR/input.json \
+    --outputFile $WORKSPACE_DIR/output.json \
+    --outputAudioDir $WORKSPACE_DIR/audio \
+    --cpSpecVerifySize 3
+```
+
+Engines need no special build step, and the sampled output distribution is unchanged. See
+[CodePredictor Speculative Decoding](../features/codepredictor-speculative-decoding.md) for the
+design, the acceptance behaviour, and the limitations.

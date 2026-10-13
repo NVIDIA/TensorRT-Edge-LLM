@@ -33,7 +33,8 @@ template <typename T>
 std::vector<half> casualAttentionRef(std::vector<half> const& q, std::vector<T> const& k, std::vector<T> const& v,
     int32_t const qlen, int32_t kvlen, int32_t numQHeads, int32_t numKVHeads, int32_t headSize, float attentionScale,
     std::optional<std::vector<int32_t>> const& treeAttnMask = std::nullopt, float const kScaleQuantOrig = 1.0F,
-    float const vScaleQuantOrig = 1.0F);
+    float const vScaleQuantOrig = 1.0F, int32_t slidingWindowSize = 0, bool contiguousQuerySwa = false,
+    std::optional<std::vector<float>> const& attentionSinks = std::nullopt);
 
 std::vector<half> ropeRef(std::vector<half> const& input, int32_t const numHeads, int32_t const headSize,
     int32_t const rotaryDim, int32_t const seqIdx, float const ropeScale, float const ropeTheta, bool const permute);
@@ -113,7 +114,8 @@ EagleAcceptResult eagleAcceptRef(std::vector<float> const& logits, std::vector<i
 // Image utility reference functions
 void transposeToPatchQwenReference(std::vector<half> const& originalImage, std::vector<half>& patch,
     int32_t const inputOffset, int32_t const T, int32_t const height, int32_t const width, int32_t const channels,
-    int32_t const temporalPatchSize, int32_t const patchSize, int32_t const mergeSize);
+    int32_t const temporalPatchSize, int32_t const patchSize, int32_t const mergeSize, bool temporalFirst = false,
+    bool channelLast = false);
 
 void transposeToPatchInternVLReference(std::vector<half> const& originalImage, std::vector<half>& patch,
     int32_t const inputOffset, int32_t const height, int32_t const width, int32_t const channels,

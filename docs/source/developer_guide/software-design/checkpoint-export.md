@@ -74,6 +74,12 @@ is the source of truth for platform-specific layouts. Use
 `--externalize-weights nvfp4_moe` when the engine build needs lower host-memory
 usage.
 
+Set `EDGELLM_NVFP4_GEMM_ALLREDUCE_TARGET=sm12x` when exporting a
+tensor-parallel NVFP4 ONNX model for SM120 or SM121. These targets emit
+TensorRT NVFP4 Q/DQ MatMul followed by `AllReducePlugin` for row-parallel
+projections. The default `sm110` target preserves
+`FusedNvfp4GemmAllReducePlugin` on SM100, SM101, and SM110.
+
 For the quantization package design, see [Quantization Package Design](quantization-design.md). For usage from FP16/BF16 source checkpoints, see [Quantization](../../user_guide/features/quantization.md).
 
 ## Model and Component Dispatch

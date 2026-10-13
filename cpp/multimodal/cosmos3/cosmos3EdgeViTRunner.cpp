@@ -17,6 +17,7 @@
 
 #include "multimodal/cosmos3/cosmos3EdgeViTRunner.h"
 #include "common/checkMacros.h"
+#include "kernels/preprocessKernels/imageUtilKernels.h"
 #include <cmath>
 
 namespace trt_edgellm
@@ -39,6 +40,20 @@ bool Cosmos3EdgeViTRunner::validateExtraConfig(nlohmann::json const& jsonConfig)
     mNumDeepstackFeatures = 0;       // SigLIP2 has no deepstack taps
     mConfig.mropeInterleaved = true; // Cosmos3-Edge uses interleaved mrope_section [24, 20, 20] (architectural)
     return true;
+}
+
+void Cosmos3EdgeViTRunner::buildExtraInputs(
+    std::vector<VisionSpan> const& spans, int64_t totalSeqLength, int64_t /*totalImageTokens*/, cudaStream_t stream)
+{
+    check::check(mFastPosEmbIdx.reshape({4, totalSeqLength}), "Tensor reshape failed");
+    check::check(mFastPosEmbWeight.reshape({4, totalSeqLength}), "Tensor reshape failed");
+
+    for (auto const& span : spans)
+    {
+        kernel::initFastPosEmbedCosmos3ViT(mFastPosEmbIdx, mFastPosEmbWeight,
+            {span.vit.gridT, span.vit.gridH, span.vit.gridW}, mConfig.mergeSize, mNumGridPerSide, span.vit.patchStart,
+            stream);
+    }
 }
 
 bool Cosmos3EdgeViTRunner::validateAndFillConfig(std::string const& engineDir)

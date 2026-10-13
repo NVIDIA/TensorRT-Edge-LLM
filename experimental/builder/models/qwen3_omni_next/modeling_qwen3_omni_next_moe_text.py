@@ -110,9 +110,8 @@ class Qwen3OmniNextSparseMoeBlock(Module):
         cfg = self.cfg
 
         def materialize():
-            load_projection = partial(
-                weight_conversion.load_gptq_expert_projection, self.weights,
-                self.experts.prefix)
+            load_projection = partial(self.weights.gptq_expert_projection,
+                                      self.experts.prefix)
             return prepare_gated_int4_weights(self.ctx, load_projection)
 
         expert_weights = self.weights.parameter_value(

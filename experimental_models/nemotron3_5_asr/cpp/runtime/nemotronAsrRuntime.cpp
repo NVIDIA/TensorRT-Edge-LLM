@@ -157,8 +157,7 @@ NemotronAsrRuntime::NemotronAsrRuntime(
 
     mMelExtractor = audio::makeNemotronAsrExtractor();
 
-    check::check(mTokenizer.loadFromHF(tokenizerDir, /*requireChatTemplate=*/false),
-        "Failed to load tokenizer from " + tokenizerDir.string());
+    check::check(mTokenizer.loadFromHF(tokenizerDir), "Failed to load tokenizer from " + tokenizerDir.string());
     check::check(mTokenizer.getNumVocab() >= mVocabSize - 1,
         "tokenizer vocab smaller than model vocab (wrong tokenizer directory?)");
 

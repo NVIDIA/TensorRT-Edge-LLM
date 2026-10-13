@@ -39,29 +39,43 @@ namespace binding_names
 /*!
  * @brief Input embeddings tensor - contains the embedded input sequence
  *
- * Shape: [batch_size, sequence_length, hidden_size] (FLOAT16)
+ * Shape: [physical_tokens, hidden_size] for the ragged decoder contract (FLOAT16)
  */
 inline constexpr char const* kInputsEmbeds = "inputs_embeds";
+
+//! Token-aligned absolute positions: [T_exec] INT32. Entry-padding rows are -1.
+inline constexpr char const* kPositions = "positions";
+//! Physical entry starts: [N + 1] INT32. Under MR1 entry padding, offset i is i * S_pad.
+inline constexpr char const* kQueryStartOffsets = "query_start_offsets";
+//! Logical per-entry lengths: [N] INT32. Padding changes physical width, not these values.
+inline constexpr char const* kQueryLengths = "query_lengths";
+inline constexpr char const* kPastLengths = "past_lengths";
+inline constexpr char const* kAttentionSequenceLengths = "attention_sequence_lengths";
+//! Current-entry to resident KV/recurrent/conv pool row mapping: [N] INT32.
+inline constexpr char const* kStateIndices = "state_indices";
+//! Physical token-row selection for logits: [L] INT64.
+inline constexpr char const* kLogitsIndices = "logits_indices";
 
 /*!
  * @brief Gemma4 per-layer token-identity embedding input template.
  *
  * Template: "ple_token_embeds_{layer_idx}"
- * Shape: [batch_size, sequence_length, ple_hidden_size] (FLOAT16/BFLOAT16)
+ * Shape: [physical_tokens, ple_hidden_size] (FLOAT16/BFLOAT16)
  */
 inline constexpr char const* kPleTokenEmbedsTemplate = "ple_token_embeds";
 
 /*!
- * @brief Context lengths tensor - specifies the actual length of each sequence in the batch
+ * @brief Legacy/non-decoder context-length binding
  *
- * Shape: [batch_size] (INT32)
+ * Unified decoder plugins use query_lengths and attention_sequence_lengths.
+ * This name remains for standalone encoder/action engines with their own ABI.
  */
 inline constexpr char const* kContextLengths = "context_lengths";
 
 /*!
- * @brief Last token IDs tensor - indices of the last tokens to extract from hidden states
+ * @brief Legacy/non-decoder last-token selection binding
  *
- * Shape: [batch_size] for Eagle models, [batch_size, 1] for vanilla models (INT64)
+ * Unified decoders select physical token rows with logits_indices [L].
  */
 inline constexpr char const* kLastTokenIds = "last_token_ids";
 
@@ -131,6 +145,9 @@ inline constexpr char const* kAcceptHiddenStates = "accept_hidden_states";
  * Shape: [batch_size, context_length, base_output_hidden_dim] (FLOAT16)
  */
 inline constexpr char const* kDFlashTargetHiddenConcat = "dflash_target_hidden_concat";
+inline constexpr char const* kDFlashDeltaRopeCosSin = "dflash_delta_rope_cos_sin";
+inline constexpr char const* kDFlashDeltaPositions = "dflash_delta_positions";
+inline constexpr char const* kDFlashDeltaTokenToSequence = "dflash_delta_token_to_sequence";
 
 /*!
  * @brief Cached speculative draft model input: per-batch delta lengths for multi-batch.
@@ -138,6 +155,12 @@ inline constexpr char const* kDFlashTargetHiddenConcat = "dflash_target_hidden_c
  * Shape: [batch_size] (INT32)
  */
 inline constexpr char const* kDFlashDeltaLengths = "dflash_delta_lengths";
+
+//! DFlash2 draft-engine outputs consumed by the runtime candidate selector.
+inline constexpr char const* kSpecProposalSupportIds = "spec_proposal_support_ids";
+inline constexpr char const* kSpecProposalUnaryValues = "spec_proposal_unary_values";
+inline constexpr char const* kSpecProposalProjectedHidden = "spec_proposal_projected_hidden";
+inline constexpr char const* kDFlash2SelectorFileName = "dflash2_selector.safetensors";
 
 /*!
  * @brief DSpark draft model output: final proposal hidden states.
@@ -208,6 +231,24 @@ inline constexpr char const* kKVCacheStartIndex = "kvcache_start_index";
  * Shape: [batch_size, 2, max_pages_per_seq] (INT32)
  */
 inline constexpr char const* kKVPageTable = "kv_page_table";
+
+/*!
+ * @brief SWA KV page-table tensor
+ *
+ * The logical width is identical to kKVPageTable. Bounded mode uses an independent
+ * SWA physical ID space; full mode aliases this binding to kKVPageTable.
+ *
+ * Shape: [batch_size, 2, max_pages_per_seq] (INT32)
+ */
+inline constexpr char const* kSwaKVPageTable = "swa_kv_page_table";
+
+/*!
+ * @brief Runtime SWA KV-storage mode selector
+ *
+ * This is a shape-only input. Shape [1] selects bounded O(W) SWA storage;
+ * shape [0] selects ordinary full KV storage. The payload is never read.
+ */
+inline constexpr char const* kSwaKVCacheMode = "swa_kv_cache_mode";
 
 /*!
  * @brief Past key-value cache tensor template - use with layer index formatting
@@ -301,7 +342,7 @@ inline constexpr char const* kDenoisedTrajectory = "denoised_trajectory";
  * @brief Past recurrent state tensor template
  *
  * Template: "recurrent_state_{recurrent_layer_idx}"
- * Shape: [batch_size, recurrentNumHeads, recurrentHeadDim, recurrentStateSize]
+ * Shape: [resident_pool_rows, recurrentNumHeads, recurrentHeadDim, recurrentStateSize]
  */
 inline constexpr char const* kRecurrentStateTemplate = "recurrent_state";
 
@@ -309,7 +350,8 @@ inline constexpr char const* kRecurrentStateTemplate = "recurrent_state";
  * @brief Present recurrent state tensor template
  *
  * Template: "present_recurrent_state_{recurrent_layer_idx}"
- * Shape: [batch_size, recurrentNumHeads, recurrentHeadDim, recurrentStateSize]
+ * Shape: [resident_pool_rows, recurrentNumHeads, recurrentHeadDim, recurrentStateSize].
+ * Aliases the resident input pool; state_indices selects rows for the current step.
  */
 inline constexpr char const* kPresentRecurrentStateTemplate = "present_recurrent_state";
 
@@ -317,7 +359,7 @@ inline constexpr char const* kPresentRecurrentStateTemplate = "present_recurrent
  * @brief Past conv state tensor template for recurrent layers
  *
  * Template: "conv_state_{recurrent_layer_idx}"
- * Shape: [batch_size, conv_dim, conv_kernel_size] (FLOAT16)
+ * Shape: [resident_pool_rows, conv_dim, conv_kernel_size] (FLOAT16)
  */
 inline constexpr char const* kConvStateTemplate = "conv_state";
 
@@ -325,7 +367,7 @@ inline constexpr char const* kConvStateTemplate = "conv_state";
  * @brief Present conv state tensor template for recurrent layers
  *
  * Template: "present_conv_state_{recurrent_layer_idx}"
- * Shape: [batch_size, conv_dim, conv_kernel_size] (FLOAT16)
+ * Shape: [resident_pool_rows, conv_dim, conv_kernel_size] (FLOAT16). Aliases the resident input pool.
  */
 inline constexpr char const* kPresentConvStateTemplate = "present_conv_state";
 
@@ -333,7 +375,7 @@ inline constexpr char const* kPresentConvStateTemplate = "present_conv_state";
  * @brief Intermediate conv state output template for MTP speculative decoding
  *
  * Template: "intermediate_conv_state_{recurrent_layer_idx}"
- * Shape: [batch_size, seq_len, conv_dim, conv_kernel_size] (FLOAT16)
+ * Shape: [T_exec, conv_dim, conv_kernel_size] (FLOAT16). Padding rows are not commit candidates.
  */
 inline constexpr char const* kIntermediateConvStateTemplate = "intermediate_conv_state";
 
@@ -341,7 +383,8 @@ inline constexpr char const* kIntermediateConvStateTemplate = "intermediate_conv
  * @brief Intermediate recurrent state output template for MTP speculative decoding
  *
  * Template: "intermediate_recurrent_state_{recurrent_layer_idx}"
- * Shape: [batch_size, seq_len, recurrentNumHeads, recurrentHeadDim, recurrentStateSize] (FLOAT32)
+ * Shape: [T_exec, recurrentNumHeads, recurrentHeadDim, recurrentStateSize] (FLOAT32).
+ * Only an accepted logical prefix/path is committed to its resident state row.
  */
 inline constexpr char const* kIntermediateRecurrentStateTemplate = "intermediate_recurrent_state";
 
@@ -349,13 +392,15 @@ inline constexpr char const* kIntermediateRecurrentStateTemplate = "intermediate
  * @brief Mamba spec-verify replay-stash output templates (FP32). Instead of a per-token full-state
  * snapshot, the Mamba plugin stashes the minimal per-token replay inputs; the runtime reconstructs
  * the accepted recurrent state from them after verification.
- *   dA: [batch, seq_len, recurrentNumHeads]
- *   u:  [batch, seq_len, recurrentNumHeads, recurrentHeadDim]
- *   B:  [batch, seq_len, recurrentNumGroups, recurrentStateSize]
+ *   dA: [T_exec, recurrentNumHeads]
+ *   u:  [T_exec, recurrentNumHeads, recurrentHeadDim]
+ *   B:  [T_exec, recurrentNumGroups, recurrentStateSize]
+ *   dt: [T_exec, recurrentNumHeads]
  */
 inline constexpr char const* kReplayDaStateTemplate = "replay_da_state";
 inline constexpr char const* kReplayUStateTemplate = "replay_u_state";
 inline constexpr char const* kReplayBStateTemplate = "replay_b_state";
+inline constexpr char const* kReplayDtStateTemplate = "replay_dt_state";
 
 /*! @} */
 
@@ -366,42 +411,47 @@ inline constexpr char const* kReplayBStateTemplate = "replay_b_state";
 /*!
  * @brief Base model hidden states input for Eagle draft models
  *
- * Shape: [batch_size, sequence_length, base_hidden_dim] (FLOAT16)
+ * Shape: [physical_tokens, base_hidden_dim] (FLOAT16)
  */
 inline constexpr char const* kBaseModelHiddenStates = "hidden_states_input";
 
 /*!
  * @brief Draft model hidden states input for Eagle draft models
  *
- * Shape: [batch_size, sequence_length, draft_hidden_dim] (FLOAT16)
+ * Shape: [physical_tokens, draft_hidden_dim] (FLOAT16)
  */
 inline constexpr char const* kDraftModelHiddenStates = "hidden_states_from_draft";
 
 /*!
  * @brief Attention mask for Eagle models - packed tree attention mask
  *
- * Shape: [batch_size, tree_size, packed_mask_len] (INT32 for base, INT8 for draft)
+ * Shape: [physical_tokens, packed_mask_len] (INT32)
  */
-inline constexpr char const* kAttentionMask = "attention_mask";
+inline constexpr char const* kAttentionMask = "packed_attention_mask";
 
-/*! Gemma4 Unified prefill block IDs: [batch_size, sequence_length] INT32. */
+/*! Gemma4 Unified prefill block IDs: [physical_tokens] INT32. */
 inline constexpr char const* kVisionBlockIds = "vision_block_ids";
 
 /*!
  * @brief Attention position IDs for Eagle models
  *
- * Shape: [batch_size, tree_size] (INT32)
+ * Shape: [physical_tokens] (INT32)
  */
-inline constexpr char const* kAttentionPosId = "attention_pos_id";
+inline constexpr char const* kAttentionPosId = "attention_position_ids";
+
+//! Alpamayo action-engine position IDs retain their domain-specific binding name.
+inline constexpr char const* kActionAttentionPosId = "attention_pos_id";
 
 /*!
- * @brief Shape-only marker for speculative verification in hybrid MTP/DFlash base engines
+ * @brief Shape-only decoder execution phase carrier
  *
- * Shape: [0] for normal prefill/decode/reset, [1] for MTP/DFlash verification (INT32).
- * The INT32 payload is ignored. Hybrid GDN/conv plugins only need to distinguish
- * speculative verify seq_len > 1 from ordinary prefill seq_len > 1.
+ * Shape extent 1 through 7 selects context prefill, context chunk, decode,
+ * draft proposal, target verify, diffusion denoise, or diffusion commit.
+ * The INT32 payload is ignored.
  */
-inline constexpr char const* kSpecVerifyPhaseMarker = "spec_verify_phase_marker";
+inline constexpr char const* kExecutionPhaseMarker = "execution_phase_marker";
+//! Shape-only context/decode partition carrier: [N_context] INT32. Payload is never read.
+inline constexpr char const* kContextSequenceCountCarrier = "context_sequence_count_carrier";
 
 /*!
  * @brief Runtime skip-softmax override carrier (optional AttentionPlugin input).
@@ -414,18 +464,20 @@ inline constexpr char const* kSkipSoftmaxScale = "skip_softmax_scale";
 /*!
  * @brief DDTree parent node ids for hybrid DFlash base verification
  *
- * Shape: [batch_size, verify_tree_size] (INT32). Each entry points to the
- * flattened parent node whose hybrid state is used to evaluate the current node.
+ * Shape: [T_exec] (INT32). Each valid row stores its request-local parent node
+ * index; the binding itself is flat in physical token-row order. Padding rows are -1.
  */
 inline constexpr char const* kTreeParentIds = "tree_parent_ids";
 
 /*!
  * @brief DDTree node depths for hybrid DFlash base verification
  *
- * Shape: [batch_size, verify_tree_size] (INT32). Depth is used for positional
- * metadata and for tree-state kernels that need node order information.
+ * Shape: [T_exec] (INT32). Depth is token-aligned and padding rows are -1.
  */
 inline constexpr char const* kTreeDepths = "tree_depths";
+
+//! Number of valid nodes in each fixed-width speculative tree span.
+inline constexpr char const* kValidTreeCounts = "valid_tree_counts";
 
 /*! @} */
 
@@ -585,10 +637,13 @@ inline constexpr char const* kVocabMapFileName = "vocab_map.safetensors";
  *
  * SafeTensors file containing mapping from reduced draft vocabulary to full vocabulary.
  *
- * @note Currently consumed only by DFlashDecoder (gated on the draft engine config's
- *       reduced_vocab_size > 0) and produced only by the DFlash draft export path. If a
- *       future decoder adopts draft vocab reduction, it must (a) gate the load on the same
- *       config field and (b) be added as a consumer of this constant.
+ * @note Consumed by DFlashDecoder and MTPDecoder (chain mode only), each gated on the
+ *       draft engine config's reduced_vocab_size > 0; produced by the DFlash, MTP, and
+ *       JetSpec draft export paths (one shared writer: export.py
+ *       _write_draft_vocab_sidecar). The sidecar always stores the DIRECT map
+ *       (full = T[reduced]); DFlashDecoder consumes it as-is, MTPDecoder converts it to
+ *       offsets at load. If a future decoder adopts draft vocab reduction, it must
+ *       (a) gate the load on the same config field and (b) be added to this list.
  */
 inline constexpr char const* kDraftVocabMapFileName = "draft_vocab_map.safetensors";
 
@@ -834,7 +889,7 @@ inline std::string formatIntermediateConvStateName(int32_t recurrentLayerIdx)
 }
 
 /*!
- * @brief Format the Mamba spec-verify replay-stash binding names (dA / u / B).
+ * @brief Format the Mamba spec-verify replay-stash binding names (dA / x / B / dt).
  * @param recurrentLayerIdx The recurrent layer index (0-based)
  */
 inline std::string formatReplayDaStateName(int32_t recurrentLayerIdx)
@@ -850,6 +905,11 @@ inline std::string formatReplayUStateName(int32_t recurrentLayerIdx)
 inline std::string formatReplayBStateName(int32_t recurrentLayerIdx)
 {
     return std::string(kReplayBStateTemplate) + "_" + std::to_string(recurrentLayerIdx);
+}
+
+inline std::string formatReplayDtStateName(int32_t recurrentLayerIdx)
+{
+    return std::string(kReplayDtStateTemplate) + "_" + std::to_string(recurrentLayerIdx);
 }
 
 /*!

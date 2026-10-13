@@ -479,7 +479,7 @@ std::pair<std::unordered_map<std::string, std::string>, std::vector<rt::LLMGener
                             {
                                 msgContent.content = contentItemJson["image"].get<std::string>();
                                 // TODO: Need to consider multi-turn conversation, and whether to load all images.
-                                auto image = rt::imageUtils::loadImageFromFile(msgContent.content);
+                                auto image = rt::imageUtils::loadRgbImageFromFile(msgContent.content);
                                 if (image.buffer != nullptr)
                                 {
                                     image.doResize = contentItemJson.value("do_resize", true);

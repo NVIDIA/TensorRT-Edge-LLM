@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# TRT-RTX consumes the AWQ V1 ONNX from l0_onnx_export_1.
+tests:
+  - tests/defs/test_common.py::test_build_project
+
+  - tests/defs/test_llm_pipeline.py::test_engine_build[Qwen3.5-0.8B-int4_awq-mxsl4096-mxbs4-mxil2048]
+  - tests/defs/test_llm_pipeline.py::test_inference[Qwen3.5-0.8B-int4_awq-mxsl4096-mxbs4-mxil2048-llm_basic]

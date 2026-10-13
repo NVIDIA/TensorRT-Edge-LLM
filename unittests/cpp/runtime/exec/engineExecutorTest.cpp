@@ -123,3 +123,68 @@ TEST(EngineExecutorTest, BindingSnapshotDifferentShapeValues)
 
     EXPECT_FALSE(s1 == s2);
 }
+
+TEST(EngineExecutorTest, GraphKeyIncludesEngineProfileShapesAndAddresses)
+{
+    nvinfer1::Dims dims;
+    dims.nbDims = 1;
+    dims.d[0] = 4;
+    EngineExecutor::BindingSnapshot snapshot;
+    snapshot.bindings = {{0x1000, dims}};
+
+    size_t const base = computeExecutionGraphKey(0xA0, 0, snapshot);
+    EXPECT_NE(base, computeExecutionGraphKey(0xB0, 0, snapshot));
+    EXPECT_NE(base, computeExecutionGraphKey(0xA0, 1, snapshot));
+
+    snapshot.bindings[0].first = 0x2000;
+    EXPECT_NE(base, computeExecutionGraphKey(0xA0, 0, snapshot));
+    snapshot.bindings[0].first = 0x1000;
+    snapshot.bindings[0].second.d[0] = 8;
+    EXPECT_NE(base, computeExecutionGraphKey(0xA0, 0, snapshot));
+}
+
+TEST(EngineExecutorTest, RaggedDimensionRelations)
+{
+    InferenceDims dims{/*batch=*/3, /*seqLen=*/15, /*kvLen=*/128, /*selectLen=*/3, /*attnMaskSeqLen=*/15,
+        /*ropeBatch=*/1, /*packedMaskLen=*/1, /*contextMaskSelectorLen=*/0, /*startIndexLen=*/0,
+        /*executionPhaseLen=*/static_cast<int64_t>(ExecutionPhase::kContextPrefill), /*skipSoftmaxScaleLen=*/0,
+        /*swaKVCacheModeLen=*/0, /*queryOffsetLen=*/4, /*contextSequenceCount=*/3};
+    EXPECT_TRUE(validateRaggedInferenceDims(dims, /*profileIndex=*/0));
+    EXPECT_TRUE(validateRaggedInferenceDims(dims, /*profileIndex=*/1));
+
+    dims.selectLen = 15;
+    EXPECT_TRUE(validateRaggedInferenceDims(dims, /*profileIndex=*/0));
+    dims.selectLen = 16;
+    EXPECT_FALSE(validateRaggedInferenceDims(dims, /*profileIndex=*/0));
+    EXPECT_TRUE(validateRaggedInferenceDims(dims, /*profileIndex=*/0, /*allowSelectBeyondPhysicalTokens=*/true));
+    dims.selectLen = 3;
+
+    dims.attnMaskSeqLen = 1;
+    EXPECT_FALSE(validateRaggedInferenceDims(dims, /*profileIndex=*/0));
+    dims.attnMaskSeqLen = 15;
+
+    dims.seqLen = 14;
+    EXPECT_FALSE(validateRaggedInferenceDims(dims, /*profileIndex=*/0));
+    dims.seqLen = 15;
+    dims.queryOffsetLen = 3;
+    EXPECT_FALSE(validateRaggedInferenceDims(dims, /*profileIndex=*/0));
+    dims.queryOffsetLen = 4;
+    dims.executionPhaseLen = static_cast<int64_t>(ExecutionPhase::kAutoregressiveDecode);
+    dims.contextSequenceCount = 0;
+    EXPECT_FALSE(validateRaggedInferenceDims(dims, /*profileIndex=*/1));
+    dims.executionPhaseLen = static_cast<int64_t>(ExecutionPhase::kSpecTargetVerify);
+    dims.selectLen = 15;
+    EXPECT_TRUE(validateRaggedInferenceDims(dims, /*profileIndex=*/1));
+    dims.executionPhaseLen = static_cast<int64_t>(ExecutionPhase::kDiffusionDenoise);
+    EXPECT_TRUE(validateRaggedInferenceDims(dims, /*profileIndex=*/0));
+    dims.executionPhaseLen = static_cast<int64_t>(ExecutionPhase::kAutoregressiveDecode);
+    dims.selectLen = 3;
+    dims.seqLen = 3;
+    dims.attnMaskSeqLen = 3;
+    EXPECT_TRUE(validateRaggedInferenceDims(dims, /*profileIndex=*/1));
+
+    dims.contextSequenceCount = 1;
+    EXPECT_FALSE(validateRaggedInferenceDims(dims, /*profileIndex=*/1));
+    dims.executionPhaseLen = static_cast<int64_t>(ExecutionPhase::kMixedPrefillDecode);
+    EXPECT_FALSE(validateRaggedInferenceDims(dims, /*profileIndex=*/1));
+}

@@ -53,6 +53,7 @@ enum class NvFP4MoEGeforceRoutingMode : int32_t
  * @note This plugin is only supported on SM120 and SM121 (consumer Blackwell).
  * @note This plugin is only supported on FP16 I/O.
  * @note Supported activations: identity, silu, swiglu, gelu, relu2.
+ * @note Activations use token-major [T, H] and router logits use [T, E].
  */
 class NvFP4MoEPluginGeforce : public nvinfer1::IPluginV3,
                               public nvinfer1::IPluginV3OneCore,
@@ -136,7 +137,7 @@ private:
     //!     a smaller value is rejected at \c configurePlugin time so undersized
     //!     workspaces cannot escape into runtime.
     //! Runtime semantics: \c onShapeChange and \c enqueue reject any launch whose
-    //! \c batch * \c seq_len * \c top_k exceeds the resolved cap.
+    //! \c num_tokens * \c top_k exceeds the resolved cap.
     int32_t mMaxRoutedRows{};
     //! Encoding: 0=bf16, 1=fp16. v1 accepts 1 only.
     int32_t mIoDtype{};

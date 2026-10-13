@@ -1,6 +1,6 @@
 # Speculative Decoding
 
-TensorRT Edge-LLM supports MTP, EAGLE3, DFlash, DSpark, and JetSpec. Each method
+TensorRT Edge-LLM supports MTP, EAGLE3, DFlash, DFlash2, DSpark, and JetSpec. Each method
 uses a different draft architecture and checkpoint contract. Use only a base/draft
 pair listed under [Speculative Draft Checkpoints](../getting_started/supported-models.md#speculative-draft-checkpoints).
 
@@ -30,6 +30,8 @@ cd "$REPO_DIR"
 | MTP | `Qwen/Qwen3.5-4B` | Embedded in the base checkpoint | 3 draft tokens, 4 verification positions |
 | EAGLE3 | `Qwen/Qwen3-1.7B` | `AngelSlim/Qwen3-1.7B_eagle3` | 6 draft steps, top-10 tree, 60 verification positions |
 | DFlash | `Qwen/Qwen3.5-4B` | `z-lab/Qwen3.5-4B-DFlash` | One block-16 draft pass |
+| DFlash2 | `Qwen/Qwen3.8-27B` | `z-lab/Qwen3.8-27B-DFlash2` | One selector-guided block-8 draft pass |
+| DFlash2 | `RadixArk/Muse-Glimmer-NVFP4` | `incoai/Muse-Glimmer-30B-DFlash2` | One selector-guided block-16 draft pass |
 | DSpark | `Qwen/Qwen3-4B` | `deepseek-ai/dspark_qwen3_4b_block7` | Seven proposed tokens, eight verification positions |
 | JetSpec | `Qwen/Qwen3-8B` | `JetSpec/jetspec-qwen3-8b` | Block-16 draft, top-7 branching tree verification |
 
@@ -247,11 +249,130 @@ The public Nemotron 3.5 pair uses the same workflow. Set `MODEL_ID` to
 and `DRAFT_ID` to
 [`nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4-DFlash`](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4-DFlash).
 
+Muse-Glimmer uses the same block-16 workflow. Pair
+[`meta-models/Muse-Glimmer-30B-assistant`](https://huggingface.co/meta-models/Muse-Glimmer-30B-assistant)
+with either [`meta-models/Muse-Glimmer-30B`](https://huggingface.co/meta-models/Muse-Glimmer-30B)
+or [`RadixArk/Muse-Glimmer-NVFP4`](https://huggingface.co/RadixArk/Muse-Glimmer-NVFP4).
+
 A branching Qwen3.5 DDTree requires `--dflash-tree-base` during export and a
 runtime `--specDraftTopK` greater than 1. Linear and DDTree base engines are
 not interchangeable. See
 [Reduce Vocabulary](../features/reduce-vocab.md#dflash-speculative-decoding-support)
-for optional DFlash draft vocabulary reduction.
+for optional DFlash draft vocabulary reduction. Chain-MTP draft reduction is
+documented in [MTP Speculative Decoding Support](../features/reduce-vocab.md#mtp-speculative-decoding-support).
+
+## DFlash V2
+
+DFlash V2 is selected automatically from the draft checkpoint architecture and
+uses the same public `dflash` mode as DFlash V1. It adds
+dynamic grouped causal convolution around every draft attention and MLP
+sublayer, then uses an in-engine Candidate Selector to construct a
+predecessor-conditioned seven-token path. The runtime verifies this path with
+greedy matching or lossless rejection sampling.
+
+The supported workflow exports ONNX before building the matched engines:
+
+```bash
+export MODEL_DIR=/path/to/Qwen3.8-27B
+export DRAFT_DIR=/path/to/Qwen3.8-27B-DFlash2
+export MODEL_ROOT=$WORKSPACE_DIR/Qwen3.8-27B-dflash2
+
+tensorrt-edgellm-export \
+  "$MODEL_DIR" "$MODEL_ROOT/base-export" \
+  --dflash-base --dflash-draft-dir "$DRAFT_DIR"
+
+tensorrt-edgellm-export \
+  "$MODEL_DIR" "$MODEL_ROOT/draft-export" \
+  --dflash-draft --dflash-draft-dir "$DRAFT_DIR"
+
+./build/examples/llm/llm_build \
+  --onnxDir "$MODEL_ROOT/base-export/llm" \
+  --engineDir "$MODEL_ROOT/engines" \
+  --maxBatchSize 8 \
+  --maxInputLen 4096 \
+  --maxKVCacheCapacity 8192 \
+  --maxVerifyTreeSize 16 \
+  --specBase
+
+./build/examples/llm/llm_build \
+  --onnxDir "$MODEL_ROOT/draft-export/dflash_draft" \
+  --engineDir "$MODEL_ROOT/engines" \
+  --maxBatchSize 8 \
+  --maxInputLen 4096 \
+  --maxKVCacheCapacity 8192 \
+  --maxDraftTreeSize 16 \
+  --specDraft
+```
+
+The engine profile supports DFlash2 blocks from 2 through 16. With no runtime
+override, each draft uses its checkpoint block size: 8 for the listed Qwen3.8
+draft and 16 for Muse-Glimmer.
+
+The experimental ONNX-less builder is an optional alternative. One command
+builds the same matched base and draft engine layout:
+
+```bash
+export MODEL_DIR=/path/to/Qwen3.8-27B
+export DRAFT_DIR=/path/to/Qwen3.8-27B-DFlash2
+export MODEL_ROOT=$WORKSPACE_DIR/Qwen3.8-27B-dflash2
+
+.venv/bin/tensorrt-edgellm-build \
+  --model-dir "$MODEL_DIR" \
+  --draft-model-dir "$DRAFT_DIR" \
+  --spec-type dflash \
+  --components llm \
+  --engine-dir "$MODEL_ROOT/engines" \
+  --plugin-path /path/to/build/libNvInfer_edgellm_plugin.so \
+  --max-input-len 4096 \
+  --max-kv-cache-capacity 8192 \
+  --max-batch-size 8 \
+  --externalize-weights all
+```
+
+Run the pair by providing both checkpoints:
+
+```bash
+./build/examples/llm/llm_inference \
+  --engineDir "$MODEL_ROOT/engines" \
+  --checkpointDir "$MODEL_DIR" \
+  --draftCheckpointDir "$DRAFT_DIR" \
+  --inputFile "$INPUT_FILE" \
+  --outputFile "$MODEL_ROOT/output.json" \
+  --profileOutputFile "$MODEL_ROOT/profile.json" \
+  --dumpProfile \
+  --specDecode
+```
+
+With profiling enabled, every response row records `generated_token_count`,
+`spec_verify_count`, and `spec_acceptance_length` (generated tokens per target
+verification). The profile JSON also contains aggregate speculative throughput
+and acceptance length. `--profileOutputFile` without `--dumpProfile` records
+wall-clock and memory only.
+
+The experimental server downloads, builds, and loads the pair in one command:
+
+```bash
+tensorrt-edgellm-serve Qwen/Qwen3.8-27B \
+  --cache-dir /data/edgellm-cache \
+  --speculative-config \
+  '{"method":"dflash","model":"z-lab/Qwen3.8-27B-DFlash2"}'
+```
+
+The public Qwen3.8 evaluation uses `temperature=1`, `top_p=0.95`,
+`top_k=20`, and thinking enabled. Add `seed` to server requests or
+`sampling_seed` to C++ input JSON for repeatable requests, and leave
+`spec_proposal_sampling` at `auto`.
+
+`auto` makes proposal sampling follow the target policy. `greedy` and
+`probabilistic` can be forced for experiments; both remain distributionally
+correct because the verifier consumes the realized proposal distribution.
+DFlash2 has a fixed selector top-K and linear block, so DDTree options and
+proposal-topology overrides are rejected.
+
+FP16, NVFP4, and INT4 checkpoints use the same command. Precision is detected
+from checkpoint quantization metadata. When the draft is distributed only in
+FP16, create a matched quantized draft with `tensorrt-edgellm-quantize draft`
+before building the pair.
 
 ## DSpark
 
@@ -324,11 +445,23 @@ draft artifacts and supports non-greedy sampling. `--dsparkScheduler threshold`
 and `--dsparkScheduler sps` enable adaptive chain lengths; use
 `--dsparkMinProposalLen` and `--dsparkMaxProposalLen` to bound them.
 
-The ONNX export/build path also supports greedy DSpark DDTree. Build the base
-engine with a larger verification profile, such as `--maxVerifyTreeSize 16`,
-use a greedy input (`"temperature": 0.0`, `"top_k": 1`), and run with
+The ONNX export/build path also supports greedy DSpark DDTree. Export a
+tree-capable base with `--dspark-tree-base --dspark-draft-dir "$DRAFT_DIR"`,
+then build that ONNX with the intended verification budget, such as
+`--maxVerifyTreeSize 16`. Hybrid recurrent-state replay requires runtime
+`--specVerifySize` to equal this build-time budget. Use a greedy input
+(`"temperature": 0.0`, `"top_k": 1`) and run with
 `--specDraftTopK 4 --specVerifySize 16`. Tree mode accepts
 `--dsparkScheduler off` or `threshold`; `sps` applies only to chain mode.
+
+Setting the environment variable `EDGELLM_DSPARK_W2_FP8=1` converts the Markov
+correction weight (`markov_w2`) to FP8 E4M3 with per-row scales at load time,
+reducing the greedy proposal cost on bandwidth-bound devices. It applies to
+greedy chain drafting and, for rank 512, the parent-conditioned tree scorer.
+Non-greedy sampling keeps FP16 weights. Chain mode requires a Markov rank of
+`16 * 2^k` up to 512; unsupported ranks fail at startup rather than silently
+falling back. Acceptance changes from FP8 quantization are model-dependent, so
+validate both acceptance and end-to-end throughput on the deployment workload.
 
 ## JetSpec
 
@@ -487,7 +620,8 @@ tensorrt-edgellm-build \
 ```
 
 For DFlash or DSpark, use that section's checkpoint paths, tree sizes, and
-`--spec-type`; direct-built DSpark engines currently use chain mode. Run
+`--spec-type`. Direct-built DSpark supports both chain mode and greedy tree
+mode; pass `--tree-base` when building a tree-verification base. Run
 direct-built engines with the same method-specific inference settings shown
 above. Change `--engineDir` to the direct engine directory and add
 `--checkpointDir <base_checkpoint>`. Paired methods also require

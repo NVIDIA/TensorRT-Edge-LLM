@@ -117,8 +117,9 @@ cudaError_t gdnTreeVerifyChunk(float const* h0, __half const* q, __half const* k
 //! Returns the kernel launch status (cudaSuccess on success); the caller must
 //! propagate a failure rather than continue with a partially-committed state.
 cudaError_t gdnTreeReplayCommitBatched(MtpLayerInfo const* deviceLayerInfos, int32_t numLayers,
-    size_t stashBatchStrideBytes, int32_t const* acceptedIndices, int32_t const* acceptLengths, int32_t batch,
-    int32_t maxAcceptLen, int32_t numNodes, int32_t h, int32_t hv, cudaStream_t stream);
+    size_t stashBatchStrideBytes, int32_t const* acceptedIndices, int32_t const* acceptLengths,
+    int32_t const* stateIndices, int32_t batch, int32_t residentPoolRows, int32_t maxAcceptLen, int32_t numNodes,
+    int32_t h, int32_t hv, cudaStream_t stream);
 
 } // namespace kernel
 } // namespace trt_edgellm

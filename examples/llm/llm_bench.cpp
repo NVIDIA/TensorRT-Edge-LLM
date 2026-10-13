@@ -24,6 +24,8 @@
 #include "common/logger.h"
 #include "common/tensor.h"
 #include "common/trtUtils.h"
+#include "kernels/speculative/dflashRuntimeKernels.h"
+#include "kernels/speculative/eagleUtilKernels.h"
 #include "multimodal/common/multimodalRunner.h"
 #include "profiling/layerProfiler.h"
 #include "runtime/config/deploymentConfig.h"
@@ -31,6 +33,7 @@
 #include "runtime/config/inferencePhase.h"
 #include "runtime/config/llmEngineConfig.h"
 #include "runtime/exec/engineExecutor.h"
+#include "runtime/exec/raggedBatchBuilder.h"
 #include "runtime/exec/tensorMap.h"
 #include "runtime/features/deepstackBinding.h"
 #include "runtime/preprocess/stepPreparer.h"
@@ -45,6 +48,7 @@
 #include <functional>
 #include <getopt.h>
 #include <iostream>
+#include <limits>
 #include <nlohmann/json.hpp>
 #include <sstream>
 #include <string>
@@ -86,6 +90,7 @@ enum ProfileBenchOptionId : int
     BLOCK_SIZE = 835,
     CANDIDATE_TOPK = 837,
     CHECKPOINT_DIR = 838,
+    ACCEPT_LEN = 839,
 };
 
 struct ProfileBenchArgs
@@ -113,6 +118,7 @@ struct ProfileBenchArgs
     // Speculative decoding parameters - no defaults
     int32_t verifyTreeSize{-1}; // For spec_verify
     int32_t draftTreeSize{-1};  // For spec_draft_proposal/spec_draft_prefill
+    int32_t acceptLen{-1};      // For spec_draft_accept (tokens caught up per pass; default: draftStep+1)
 
     int32_t osl{1};        // Output sequence length (LLM OSL per batch, default: 1)
     int32_t acceptRate{5}; // Avg accepted tokens per spec-decode iteration (default: 5)
@@ -142,6 +148,7 @@ struct ProfileBenchArgs
         p.pastKVLen = pastKVLen;
         p.verifyTreeSize = verifyTreeSize;
         p.draftTreeSize = draftTreeSize;
+        p.acceptLen = acceptLen;
         p.osl = osl;
         p.imageHeight = imageHeight;
         p.imageWidth = imageWidth;
@@ -171,6 +178,8 @@ void printUsage(char const* programName)
     std::cerr
         << "                              spec_verify       - Speculative decoding base model verification (EAGLE/MTP)"
         << std::endl;
+    std::cerr << "                              spec_draft_accept - Speculative decoding draft accept-token"
+              << " catch-up pass (EAGLE/MTP)" << std::endl;
     std::cerr << "                              spec_draft_proposal - Speculative decoding draft proposal (EAGLE/MTP)"
               << std::endl;
     std::cerr << "                              spec_draft_prefill - Speculative decoding draft prefill (EAGLE/MTP)"
@@ -197,8 +206,17 @@ void printUsage(char const* programName)
     std::cerr << "    --verifyTreeSize        Verify tree size. Required." << std::endl;
     std::cerr << "    --pastKVLen             Past KV cache length. Required." << std::endl;
     std::cerr << "  For spec_draft_proposal mode:" << std::endl;
-    std::cerr << "    --draftTreeSize         Draft tree size. Required." << std::endl;
+    std::cerr << "    --draftTreeSize         Draft proposal size for EAGLE/tree-MTP. Required." << std::endl;
+    std::cerr << "                            Chain-MTP instead uses the production proposal geometry"
+              << " draftStep*draftingTopK (with draftingTopK=1)." << std::endl;
     std::cerr << "    --pastKVLen             Past KV cache length. Required." << std::endl;
+    std::cerr << "  For spec_draft_accept mode:" << std::endl;
+    std::cerr << "    --acceptLen             Tokens caught up per accept pass (default: draftStep+1; pass"
+              << " --draftStep matching your deployment's drafting_step)." << std::endl;
+    std::cerr << "                            With osl>1, acceptRate must not exceed acceptLen." << std::endl;
+    std::cerr << "    --pastKVLen             Past KV cache length per batch. Required." << std::endl;
+    std::cerr << "    --verifyTreeSize        Optional; defaults to draftStep+1 (chain-MTP engines"
+              << " require verifySize == draftStep+1)." << std::endl;
     std::cerr << "  For spec_draft_prefill mode:" << std::endl;
     std::cerr << "    --inputLen              Input sequence length. Required." << std::endl;
     std::cerr << "    --reuseKVLen            Reused KV cache length. Optional, default=0." << std::endl;
@@ -255,6 +273,9 @@ void printUsage(char const* programName)
     std::cerr << "  " << programName << " --engineDir ./engines --mode spec_verify --verifyTreeSize 60 --pastKVLen 128"
               << std::endl;
     std::cerr << std::endl;
+    std::cerr << "  # Spec-decode draft accept-token catch-up mode" << std::endl;
+    std::cerr << "  " << programName << " --engineDir ./engines --mode spec_draft_accept --pastKVLen 128" << std::endl;
+    std::cerr << std::endl;
     std::cerr << "  # Spec-decode draft proposal mode" << std::endl;
     std::cerr << "  " << programName
               << " --engineDir ./engines --mode spec_draft_proposal --draftTreeSize 60 --pastKVLen 128" << std::endl;
@@ -280,6 +301,7 @@ bool parseArgs(ProfileBenchArgs& args, int argc, char* argv[])
         {"pastKVLen", required_argument, 0, ProfileBenchOptionId::PAST_KV_LEN},
         {"verifyTreeSize", required_argument, 0, ProfileBenchOptionId::VERIFY_TREE_SIZE},
         {"draftTreeSize", required_argument, 0, ProfileBenchOptionId::DRAFT_TREE_SIZE},
+        {"acceptLen", required_argument, 0, ProfileBenchOptionId::ACCEPT_LEN},
         {"profile", no_argument, 0, ProfileBenchOptionId::PROFILE},
         {"outputDir", required_argument, 0, ProfileBenchOptionId::OUTPUT_DIR},
         {"osl", required_argument, 0, ProfileBenchOptionId::OSL},
@@ -358,6 +380,10 @@ bool parseArgs(ProfileBenchArgs& args, int argc, char* argv[])
                 {
                     args.mode = BenchMode::kEAGLE_DRAFT_PREFILL;
                 }
+                else if (modeStr == "spec_draft_accept" || modeStr == "eagle_draft_accept")
+                {
+                    args.mode = BenchMode::kEAGLE_DRAFT_ACCEPT;
+                }
                 else if (modeStr == "visual")
                 {
                     args.mode = BenchMode::kVISUAL;
@@ -414,6 +440,14 @@ bool parseArgs(ProfileBenchArgs& args, int argc, char* argv[])
                 if (args.draftTreeSize <= 0)
                 {
                     LOG_ERROR("Invalid draftTreeSize: must be positive");
+                    return false;
+                }
+                break;
+            case ProfileBenchOptionId::ACCEPT_LEN:
+                args.acceptLen = std::stoi(optarg);
+                if (args.acceptLen <= 0)
+                {
+                    LOG_ERROR("Invalid acceptLen: must be positive");
                     return false;
                 }
                 break;
@@ -512,6 +546,9 @@ bool parseArgs(ProfileBenchArgs& args, int argc, char* argv[])
     return true;
 }
 
+static bool isDFlashMode(BenchMode mode);
+static bool isSpecDecodeMode(BenchMode mode);
+
 bool validateArgs(ProfileBenchArgs const& args)
 {
     if (args.engineDir.empty())
@@ -523,6 +560,26 @@ bool validateArgs(ProfileBenchArgs const& args)
     if (args.mode == BenchMode::kNONE)
     {
         LOG_ERROR("--mode is required. Use --help for available modes.");
+        return false;
+    }
+
+    bool const isSpecMode = isSpecDecodeMode(args.mode);
+    if (isSpecMode && args.acceptRate <= 0)
+    {
+        LOG_ERROR("--acceptRate must be positive for speculative decoding modes");
+        return false;
+    }
+    if (isSpecMode && args.draftStep < 1)
+    {
+        LOG_ERROR("--draftStep must be at least 1 for speculative decoding modes");
+        return false;
+    }
+    if (args.mode == BenchMode::kEAGLE_DRAFT_ACCEPT && args.osl > 1 && args.acceptRate > args.acceptLen)
+    {
+        LOG_ERROR(
+            "--acceptRate (%d) cannot exceed --acceptLen (%d) for spec_draft_accept with --osl > 1; "
+            "increase --acceptLen or reduce --acceptRate",
+            args.acceptRate, args.acceptLen);
         return false;
     }
 
@@ -578,6 +635,13 @@ bool validateArgs(ProfileBenchArgs const& args)
         if (args.inputLen < 0)
         {
             LOG_ERROR("--inputLen is required for spec_draft_prefill mode");
+            return false;
+        }
+        break;
+    case BenchMode::kEAGLE_DRAFT_ACCEPT:
+        if (args.pastKVLen < 0)
+        {
+            LOG_ERROR("--pastKVLen is required for spec_draft_accept mode");
             return false;
         }
         break;
@@ -666,13 +730,14 @@ static bool needsExecutor(BenchMode mode)
 bool isDraftEngineMode(BenchMode mode)
 {
     return mode == BenchMode::kEAGLE_DRAFT_PROPOSAL || mode == BenchMode::kEAGLE_DRAFT_PREFILL
-        || mode == BenchMode::kDFLASH_DRAFT_PROPOSAL || mode == BenchMode::kDFLASH_DRAFT_FIRST_ROUND;
+        || mode == BenchMode::kEAGLE_DRAFT_ACCEPT || mode == BenchMode::kDFLASH_DRAFT_PROPOSAL
+        || mode == BenchMode::kDFLASH_DRAFT_FIRST_ROUND;
 }
 
-bool isSpecDecodeMode(BenchMode mode)
+static bool isSpecDecodeMode(BenchMode mode)
 {
     return mode == BenchMode::kEAGLE_VERIFY || mode == BenchMode::kEAGLE_DRAFT_PROPOSAL
-        || mode == BenchMode::kEAGLE_DRAFT_PREFILL || isDFlashMode(mode);
+        || mode == BenchMode::kEAGLE_DRAFT_PREFILL || mode == BenchMode::kEAGLE_DRAFT_ACCEPT || isDFlashMode(mode);
 }
 
 // ==================== main ====================
@@ -691,6 +756,28 @@ int main(int argc, char** argv)
     {
         printUsage(argv[0]);
         return EXIT_SUCCESS;
+    }
+
+    // Resolve the chain geometry before deployment creation and configuration logging.
+    if (args.mode == BenchMode::kEAGLE_DRAFT_ACCEPT)
+    {
+        int64_t const chainVerifySize = static_cast<int64_t>(args.draftStep) + 1;
+        if ((args.acceptLen <= 0 || args.verifyTreeSize <= 0) && chainVerifySize > std::numeric_limits<int32_t>::max())
+        {
+            LOG_ERROR(
+                "--draftStep is too large to derive the default acceptLen/verifyTreeSize; pass a value no "
+                "greater than %d",
+                std::numeric_limits<int32_t>::max() - 1);
+            return EXIT_FAILURE;
+        }
+        if (args.acceptLen <= 0)
+        {
+            args.acceptLen = static_cast<int32_t>(chainVerifySize);
+        }
+        if (args.verifyTreeSize <= 0)
+        {
+            args.verifyTreeSize = static_cast<int32_t>(chainVerifySize);
+        }
     }
 
     if (!validateArgs(args))
@@ -766,6 +853,7 @@ int main(int argc, char** argv)
     rt::Tensor diffusionPrevSelfConditioningEmbeds;
     rt::Tensor diffusionNextSelfConditioningEmbeds;
     rt::Tensor diffusionSelfConditioningTemperature;
+    bool useRaggedBindings{false};
 
     // Visual mode uses MultimodalRunner (unchanged from legacy)
     std::unique_ptr<rt::MultimodalRunner> visualRunner;
@@ -853,37 +941,61 @@ int main(int argc, char** argv)
 
         std::optional<std::filesystem::path> draftConfigPath;
         std::optional<rt::SpecDecodeDraftingConfig> draftingConfig;
-        if (hasSpecDecode)
-        {
-            draftConfigPath = dir / "draft_config.json";
-            // Bench needs a SpecDecodeDraftingConfig to create DeploymentConfig.
-            // Use verifyTreeSize/draftTreeSize from args; draftingTopK/draftingStep are
-            // only needed for the full pipeline. Set reasonable defaults so the config
-            // factory's positivity checks pass.
-            rt::SpecDecodeDraftingConfig dc;
-            if (isDFlashMode(args.mode))
-            {
-                // DFlash configs use different fields (topK is candidate branching factor,
-                // step is fixed to 1) — leave whatever args provided (or 1s) so the factory
-                // accepts, then fold engine-derived values into args after the deployment
-                // is loaded (see DFlash defaults block below).
-                dc.draftingStep = 1;
-                dc.draftingTopK = args.candidateTopK > 0 ? args.candidateTopK : 1;
-                dc.verifySize = args.verifyTreeSize > 0 ? args.verifyTreeSize : 1;
-                dc.dflashBlockSize = args.blockSize > 0 ? args.blockSize : 0;
-            }
-            else
-            {
-                dc.draftingTopK = std::max(args.draftTreeSize, 1);
-                dc.draftingStep = std::max(args.draftStep, 1);
-                dc.verifySize = std::max(args.verifyTreeSize, 1);
-            }
-            draftingConfig = dc;
-        }
-
-        // --- Parse configs and create DeploymentConfig ---
         try
         {
+            if (hasSpecDecode)
+            {
+                draftConfigPath = dir / "draft_config.json";
+                // Bench needs a SpecDecodeDraftingConfig to create DeploymentConfig.
+                // Most isolated modes use their requested tensor width as a harmless
+                // synthetic drafting shape. MTP proposal width is not branching,
+                // however: it remains a linear chain regardless of draftTreeSize.
+                rt::SpecDecodeDraftingConfig dc;
+                if (isDFlashMode(args.mode))
+                {
+                    // DFlash configs use different fields (topK is candidate branching factor,
+                    // step is fixed to 1) — leave whatever args provided (or 1s) so the factory
+                    // accepts, then fold engine-derived values into args after the deployment
+                    // is loaded (see DFlash defaults block below).
+                    dc.draftingStep = 1;
+                    dc.draftingTopK = args.candidateTopK > 0 ? args.candidateTopK : 1;
+                    dc.verifySize = args.verifyTreeSize > 0 ? args.verifyTreeSize : 1;
+                    dc.dflashBlockSize = args.blockSize > 0 ? args.blockSize : 0;
+                }
+                else
+                {
+                    rt::SpecDecodeMode const engineSpecMode = rt::parseEngineConfig(baseConfigPath).specDecodeType;
+                    if (args.mode == BenchMode::kEAGLE_DRAFT_ACCEPT)
+                    {
+                        ELLM_CHECK(
+                            engineSpecMode == rt::SpecDecodeMode::kEAGLE || engineSpecMode == rt::SpecDecodeMode::kMTP,
+                            "spec_draft_accept supports only spec_decode_type=eagle3 or mtp; engine config uses "
+                                + std::string(rt::specDecodeModeName(engineSpecMode))
+                                + ". Use the benchmark mode dedicated to that speculative family.");
+                    }
+
+                    if (engineSpecMode == rt::SpecDecodeMode::kMTP)
+                    {
+                        bool const explicitTree = args.verifyTreeSize > 0 && args.draftTreeSize > 1;
+                        int64_t const chainVerifySize = static_cast<int64_t>(args.draftStep) + 1;
+                        ELLM_CHECK(explicitTree || chainVerifySize <= std::numeric_limits<int32_t>::max(),
+                            "--draftStep is too large to derive MTP chain verifySize; pass a value no greater than "
+                                + std::to_string(std::numeric_limits<int32_t>::max() - 1));
+                        dc.draftingTopK = explicitTree ? args.draftTreeSize : 1;
+                        dc.draftingStep = args.draftStep;
+                        dc.verifySize = explicitTree ? args.verifyTreeSize : static_cast<int32_t>(chainVerifySize);
+                    }
+                    else
+                    {
+                        dc.draftingTopK = std::max(args.draftTreeSize, 1);
+                        dc.draftingStep = std::max(args.draftStep, 1);
+                        dc.verifySize = std::max(args.verifyTreeSize, 1);
+                    }
+                }
+                draftingConfig = dc;
+            }
+
+            // --- Parse configs and create DeploymentConfig ---
             deployment = rt::createDeploymentConfig(baseConfigPath, draftConfigPath, draftingConfig);
         }
         catch (std::exception const& e)
@@ -898,6 +1010,24 @@ int main(int argc, char** argv)
                 "uses a denoise/sample/commit runtime state machine. Use llm_inference or add a dedicated "
                 "diffusion_decode bench mode for end-to-end DG decode timing.");
             return EXIT_FAILURE;
+        }
+
+        if (args.mode == BenchMode::kEAGLE_DRAFT_ACCEPT)
+        {
+            ELLM_CHECK(deployment.draft.has_value(), "spec_draft_accept requires a draft engine");
+            ELLM_CHECK(args.acceptLen <= deployment.draft->maxDraftTreeSize,
+                "spec_draft_accept acceptLen (" + std::to_string(args.acceptLen)
+                    + ") exceeds the draft engine maxDraftTreeSize ("
+                    + std::to_string(deployment.draft->maxDraftTreeSize) + ")");
+
+            int64_t const decodeStepsForCapacity
+                = args.osl > 1 ? (static_cast<int64_t>(args.osl) - 1 + args.acceptRate - 1) / args.acceptRate : 0;
+            int64_t const requiredDraftCacheLength = static_cast<int64_t>(args.pastKVLen) + args.acceptLen
+                + decodeStepsForCapacity * static_cast<int64_t>(args.acceptRate);
+            ELLM_CHECK(requiredDraftCacheLength <= static_cast<int64_t>(deployment.draft->maxKVCacheCapacity),
+                "spec_draft_accept requires pastKVLen + acceptLen + decodeSteps * acceptRate ("
+                    + std::to_string(requiredDraftCacheLength) + ") to fit the draft engine maxKVCacheCapacity ("
+                    + std::to_string(deployment.draft->maxKVCacheCapacity) + ")");
         }
 
         // --- DFlash: engine-config consistency + CLI-default resolution ---
@@ -1019,6 +1149,7 @@ int main(int argc, char** argv)
             }
 
             rt::validateAgainstEngine(activeCfg, *executor, useDraftEngine ? "draft" : "base");
+            useRaggedBindings = executor->hasIOTensor(binding_names::kQueryStartOffsets);
 
             if (layerProfiler::LayerProfiler::getInstance().isEnabled())
             {
@@ -1041,8 +1172,12 @@ int main(int argc, char** argv)
                 resources = rt::SharedResources::createForSpecDecode(deployment, maxBatch, emptyLoraMap, stream);
                 // The bench drives no Talker, but TensorRegistry::bindAll fails on any
                 // engine I/O missing from the map, so the buffer must follow the engine.
-                io = std::make_unique<rt::PipelineIO>(rt::PipelineIO::createForSpecDecode(
-                    deployment, maxBatch, stream, executor->hasIOTensor(binding_names::kAcceptHiddenStates)));
+                bool const hasTreeParentIds = executor->hasIOTensor(binding_names::kTreeParentIds);
+                bool const hasTreeDepths = executor->hasIOTensor(binding_names::kTreeDepths);
+                ELLM_CHECK(hasTreeParentIds == hasTreeDepths,
+                    "Speculative engine must expose both tree_parent_ids and tree_depths, or neither.");
+                io = std::make_unique<rt::PipelineIO>(rt::PipelineIO::createForSpecDecode(deployment, maxBatch, stream,
+                    executor->hasIOTensor(binding_names::kAcceptHiddenStates), hasTreeParentIds && hasTreeDepths));
             }
             else
             {
@@ -1172,12 +1307,55 @@ int main(int argc, char** argv)
 
     std::function<void(int32_t)> postStep = [](int32_t) {};
     std::function<bool()> captureGraph = []() { return false; };
+    std::function<void()> prepareDraftAcceptInputs = []() {};
+    rt::Tensor draftAcceptLengths;
     int32_t decodeSteps = 1;
     bool useSequentialE2E = false;
 
     int32_t const B = args.batchSize;
     bool const useDraftEngine = isDraftEngineMode(args.mode);
     int32_t const kvCacheIndex = useDraftEngine ? 1 : 0;
+    rt::LLMEngineConfig const* activeCfg
+        = needsExecutor(args.mode) ? &(useDraftEngine ? *deployment.draft : deployment.base) : nullptr;
+    std::unique_ptr<rt::RaggedBatchBuilder> raggedBatchBuilder;
+    rt::RaggedExecutionBatch raggedBatch;
+    rt::ScheduledStep raggedStep;
+    std::vector<int32_t> raggedTokens;
+    int32_t raggedPastLength{0};
+    if (useRaggedBindings)
+    {
+        rt::RaggedEngineContract const contract{rt::TokenLayoutBackend::kEntryPaddedCompatibility,
+            activeCfg->maxNumSequences, activeCfg->maxQueryLength, activeCfg->maxPhysicalTokens,
+            activeCfg->recurrentPoolRows, /*mixedStepSupported=*/false};
+        raggedBatchBuilder = std::make_unique<rt::RaggedBatchBuilder>(contract);
+        raggedBatchBuilder->reserve(raggedBatch);
+    }
+    auto prepareRaggedBenchBindings = [&](rt::SequenceWork work, int32_t queryLength) {
+        check::check(useRaggedBindings && raggedBatchBuilder != nullptr, "Ragged benchmark state is not initialized");
+        check::check(
+            B > 0 && B <= activeCfg->maxNumSequences && queryLength > 0 && queryLength <= activeCfg->maxQueryLength,
+            "Invalid ragged benchmark shape");
+        int64_t const physicalTokens = static_cast<int64_t>(B) * queryLength;
+        check::check(physicalTokens <= activeCfg->maxPhysicalTokens, "Ragged benchmark token count exceeds profile");
+        raggedTokens.assign(static_cast<size_t>(physicalTokens), 0);
+        raggedStep.id++;
+        raggedStep.sequences.resize(static_cast<size_t>(B));
+        for (int32_t batchIdx = 0; batchIdx < B; ++batchIdx)
+        {
+            raggedStep.sequences[static_cast<size_t>(batchIdx)] = rt::ScheduledSequence{
+                rt::SequenceIdentity{static_cast<rt::RequestId>(batchIdx) + 1, rt::ResidentRef{batchIdx, 1}}, work,
+                queryLength, raggedPastLength,
+                rt::HostTokenRange{raggedTokens.data(), static_cast<int32_t>(raggedTokens.size()),
+                    batchIdx * queryLength, queryLength},
+                true};
+        }
+        raggedBatchBuilder->buildInto(raggedStep, raggedBatch);
+        rt::prepareRaggedExecutionBindings(*io, *resources, *activeCfg, raggedBatch, kvCacheIndex, stream);
+        check::check(io->inputsEmbeds.reshape({raggedBatch.shape.physicalTokens, activeCfg->hiddenSize}),
+            "Ragged benchmark inputsEmbeds reshape failed");
+        check::check(io->outputLogits.reshape({raggedBatch.shape.numLogits, activeCfg->outputVocabSize}),
+            "Ragged benchmark outputLogits reshape failed");
+    };
     // DDTree build owns its own scratch; DFlash draft modes share one scratch struct
     // whose Tensors must outlive the tensorMap (which stores raw pointers into them).
     std::unique_ptr<DDTreeBuildScratch> ddtreeScratch;
@@ -1195,8 +1373,9 @@ int main(int argc, char** argv)
         LOG_INFO("Prefill mode: InputLen=%d, ReuseKVLen=%d", args.inputLen, args.reuseKVLen);
 
         // Reshape inputsEmbeds for this bench config
-        check::check(
-            io->inputsEmbeds.reshape({B, args.inputLen, deployment.base.hiddenSize}), "inputsEmbeds reshape failed");
+        check::check(io->inputsEmbeds.reshape(useRaggedBindings ? rt::Coords{B * args.inputLen, activeCfg->hiddenSize}
+                                                                : rt::Coords{B, args.inputLen, activeCfg->hiddenSize}),
+            "inputsEmbeds reshape failed");
         if (deployment.base.isDiffusionBackbone)
         {
             check::check(
@@ -1234,13 +1413,21 @@ int main(int argc, char** argv)
         }
 
         bool const kvCacheAllEmpty = (args.reuseKVLen == 0);
-        auto const dims = deployment.base.prefillDims(B, args.inputLen, kvCacheAllEmpty);
+        rt::ExecutionPhase const phase = deployment.base.isDiffusionBackbone
+            ? rt::ExecutionPhase::kDiffusionCommit
+            : (kvCacheAllEmpty ? rt::ExecutionPhase::kContextPrefill : rt::ExecutionPhase::kContextChunk);
+        auto const dims = deployment.base.prefillDims(B, args.inputLen, phase);
 
         resetState = [&]() {
+            raggedPastLength = args.reuseKVLen;
             std::memcpy(reuseKVCacheLengths.rawPointer(), reuseKVLenVec.data(), reuseKVLenVec.size() * sizeof(int32_t));
             resources->cacheManagers[kvCacheIndex]->resetForNewSequences(reuseKVCacheLengths, stream);
         };
         step = [&, dims]() {
+            if (useRaggedBindings)
+            {
+                prepareRaggedBenchBindings(rt::SequenceWork::kContext, args.inputLen);
+            }
             stepPreparer->prepare(
                 rt::InferencePhase::kPrefill, B, *resources->cacheManagers[kvCacheIndex], *io, stream);
             if (!executor->prepare(kPrefillProfile, dims, tensorMap, stream))
@@ -1258,17 +1445,24 @@ int main(int argc, char** argv)
         LOG_INFO("OSL=%d: will run %d decode steps for E2E timing", osl, decodeTokens);
         LOG_INFO(args.noCudaGraph ? "CUDA graph disabled; using non-CUDA-graph execution" : "CUDA graph enabled");
 
-        check::check(io->inputsEmbeds.reshape({B, 1, deployment.base.hiddenSize}), "inputsEmbeds reshape failed");
+        check::check(io->inputsEmbeds.reshape(useRaggedBindings ? rt::Coords{B, activeCfg->hiddenSize}
+                                                                : rt::Coords{B, 1, activeCfg->hiddenSize}),
+            "inputsEmbeds reshape failed");
 
         pastKVLenVec.assign(B, args.pastKVLen);
 
         auto const dims = deployment.base.decodeDims(B);
 
         resetState = [&]() {
+            raggedPastLength = args.pastKVLen;
             std::memcpy(reuseKVCacheLengths.rawPointer(), pastKVLenVec.data(), pastKVLenVec.size() * sizeof(int32_t));
             resources->cacheManagers[kvCacheIndex]->resetForNewSequences(reuseKVCacheLengths, stream);
         };
         step = [&, dims]() {
+            if (useRaggedBindings)
+            {
+                prepareRaggedBenchBindings(rt::SequenceWork::kDecode, /*queryLength=*/1);
+            }
             stepPreparer->prepare(rt::InferencePhase::kDecode, B, *resources->cacheManagers[kvCacheIndex], *io, stream);
             if (!executor->prepare(kDecodeProfile, dims, tensorMap, stream))
                 return false;
@@ -1276,6 +1470,10 @@ int main(int argc, char** argv)
         };
         captureGraph = [&, dims]() {
             resetState();
+            if (useRaggedBindings)
+            {
+                prepareRaggedBenchBindings(rt::SequenceWork::kDecode, /*queryLength=*/1);
+            }
             stepPreparer->prepare(rt::InferencePhase::kDecode, B, *resources->cacheManagers[kvCacheIndex], *io, stream);
             if (!executor->prepare(kDecodeProfile, dims, tensorMap, stream))
                 return false;
@@ -1286,6 +1484,13 @@ int main(int argc, char** argv)
         {
             useSequentialE2E = true;
             decodeSteps = decodeTokens;
+            if (useRaggedBindings)
+            {
+                postStep = [&](int32_t) {
+                    resources->cacheManagers[kvCacheIndex]->commitSequenceLength(/*increment=*/1, stream);
+                    ++raggedPastLength;
+                };
+            }
         }
     }
     else if (args.mode == BenchMode::kEAGLE_VERIFY)
@@ -1347,30 +1552,42 @@ int main(int argc, char** argv)
     else if (args.mode == BenchMode::kEAGLE_DRAFT_PROPOSAL)
     {
         modeName = "Spec Draft";
-        LOG_INFO("Spec Draft mode: DraftTreeSize=%d, PastKVLen=%d", args.draftTreeSize, args.pastKVLen);
+        int64_t proposalSize = args.draftTreeSize;
+        int64_t selectLen = args.draftTreeSize;
+        if (deployment.specDecodeMode() == rt::SpecDecodeMode::kMTP)
+        {
+            ELLM_CHECK(deployment.specConfig.has_value(), "MTP draft proposal requires drafting configuration");
+            int32_t const effectiveDraftTopK
+                = deployment.specConfig->draftingTopK > 1 ? 1 : deployment.specConfig->draftingTopK;
+            proposalSize
+                = static_cast<int64_t>(deployment.specConfig->draftingStep) * static_cast<int64_t>(effectiveDraftTopK);
+            selectLen = effectiveDraftTopK;
+        }
+        ELLM_CHECK(proposalSize > 0 && selectLen > 0 && proposalSize <= std::numeric_limits<int32_t>::max()
+                && static_cast<int64_t>(args.pastKVLen) + proposalSize <= std::numeric_limits<int32_t>::max(),
+            "spec_draft_proposal production geometry exceeds the supported int32 tensor/context range");
+        LOG_INFO("Spec Draft mode: RequestedDraftTreeSize=%d, ProposalSize=%ld, SelectLen=%ld, PastKVLen=%d",
+            args.draftTreeSize, proposalSize, selectLen, args.pastKVLen);
         LOG_INFO(args.noCudaGraph ? "CUDA graph disabled; using non-CUDA-graph execution" : "CUDA graph enabled");
 
         pastKVLenVec.assign(B, args.pastKVLen);
 
         int32_t const draftHiddenSize = deployment.draft->hiddenSize;
-        check::check(io->inputsEmbeds.reshape({B, args.draftTreeSize, draftHiddenSize}), "inputsEmbeds reshape failed");
+        check::check(io->inputsEmbeds.reshape({B, proposalSize, draftHiddenSize}), "inputsEmbeds reshape failed");
 
-        // selectTokenIndices: for proposal, select draftTreeSize tokens
-        check::check(io->selectTokenIndices.reshape({B, args.draftTreeSize}), "selectTokenIndices reshape failed");
+        check::check(io->selectTokenIndices.reshape({B, selectLen}), "selectTokenIndices reshape failed");
         CUDA_CHECK(cudaMemsetAsync(
             io->selectTokenIndices.rawPointer(), 0, io->selectTokenIndices.getMemoryCapacity(), stream));
 
         // contextLengths: dummy values
         check::check(io->contextLengths.reshape({B}), "contextLengths reshape failed");
         {
-            std::vector<int32_t> ctxVec(B, args.pastKVLen + args.draftTreeSize);
+            std::vector<int32_t> ctxVec(B, static_cast<int32_t>(args.pastKVLen + proposalSize));
             CUDA_CHECK(cudaMemcpyAsync(
                 io->contextLengths.rawPointer(), ctxVec.data(), B * sizeof(int32_t), cudaMemcpyHostToDevice, stream));
         }
 
-        // The draft proposal uses proposalDims. draftTopK = draftTreeSize for bench
-        // (the actual topK doesn't matter for timing — it only affects selectLen).
-        auto const dims = deployment.draft->proposalDims(B, args.draftTreeSize, args.draftTreeSize);
+        auto const dims = deployment.draft->proposalDims(B, proposalSize, selectLen);
 
         resetState = [&]() {
             std::memcpy(reuseKVCacheLengths.rawPointer(), pastKVLenVec.data(), pastKVLenVec.size() * sizeof(int32_t));
@@ -1402,6 +1619,68 @@ int main(int argc, char** argv)
             };
         }
     }
+    else if (args.mode == BenchMode::kEAGLE_DRAFT_ACCEPT)
+    {
+        // One draft-engine execute advances state across the accepted token span.
+        int32_t const acceptLen = args.acceptLen;
+        modeName = "Spec Draft Accept";
+        LOG_INFO("Spec Draft Accept mode: AcceptLen=%d, DraftStep=%d, PastKVLen=%d", acceptLen, args.draftStep,
+            args.pastKVLen);
+        LOG_INFO(args.noCudaGraph ? "CUDA graph disabled; using non-CUDA-graph execution" : "CUDA graph enabled");
+
+        pastKVLenVec.assign(B, args.pastKVLen);
+
+        int32_t const draftHiddenSize = deployment.draft->hiddenSize;
+        check::check(io->inputsEmbeds.reshape({B, acceptLen, draftHiddenSize}), "inputsEmbeds reshape failed");
+
+        // Mirror the production accept pass metadata. For one-pass component
+        // timing, every batch entry accepts the whole engine input. Sequential
+        // timing advances by acceptRate, while acceptLen remains the fixed
+        // engine input shape and upper bound.
+        check::check(io->packedAttentionMask.reshape({B, acceptLen, static_cast<int64_t>(divUp(acceptLen, 32))}),
+            "packedAttentionMask reshape failed");
+        check::check(io->specDecodePositionIds.reshape({B, acceptLen}), "specDecodePositionIds reshape failed");
+        check::check(io->selectTokenIndices.reshape({B, 1}), "selectTokenIndices reshape failed");
+        check::check(io->contextLengths.reshape({B}), "contextLengths reshape failed");
+        draftAcceptLengths = rt::Tensor({B}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "draft_accept_lengths");
+        int32_t const acceptedTokensPerPass = args.osl > 1 ? args.acceptRate : acceptLen;
+        fillInt32(draftAcceptLengths, acceptedTokensPerPass);
+        prepareDraftAcceptInputs = [&]() {
+            kernel::prepareEagleAcceptDecodeTokenInputs(resources->cacheManagers[kvCacheIndex]->getKVCacheLengths(),
+                draftAcceptLengths, io->packedAttentionMask, io->specDecodePositionIds, io->selectTokenIndices,
+                io->contextLengths, stream);
+        };
+
+        auto const dims = deployment.draft->acceptDims(B, acceptLen);
+
+        resetState = [&]() {
+            std::memcpy(reuseKVCacheLengths.rawPointer(), pastKVLenVec.data(), pastKVLenVec.size() * sizeof(int32_t));
+            resources->cacheManagers[kvCacheIndex]->resetForNewSequences(reuseKVCacheLengths, stream);
+            prepareDraftAcceptInputs();
+        };
+        step = [&, dims]() {
+            if (!executor->prepare(kDecodeProfile, dims, tensorMap, stream))
+                return false;
+            return executor->execute(stream);
+        };
+        captureGraph = [&, dims]() {
+            resetState();
+            if (!executor->prepare(kDecodeProfile, dims, tensorMap, stream))
+                return false;
+            return executor->captureGraph(stream);
+        };
+
+        if (args.osl > 1)
+        {
+            useSequentialE2E = true;
+            // One accept pass runs per speculative-decoding iteration.
+            decodeSteps = (args.osl - 1 + args.acceptRate - 1) / args.acceptRate;
+            postStep = [&](int32_t) {
+                resources->cacheManagers[kvCacheIndex]->commitSequenceLength(args.acceptRate, stream);
+                prepareDraftAcceptInputs();
+            };
+        }
+    }
     else if (args.mode == BenchMode::kEAGLE_DRAFT_PREFILL)
     {
         modeName = "Spec Draft Prefill";
@@ -1421,7 +1700,9 @@ int main(int argc, char** argv)
         reuseKVLenVec.assign(B, args.reuseKVLen);
 
         bool const kvCacheAllEmpty = (args.reuseKVLen == 0);
-        auto const dims = deployment.draft->prefillDims(B, args.inputLen, kvCacheAllEmpty);
+        rt::ExecutionPhase const phase
+            = kvCacheAllEmpty ? rt::ExecutionPhase::kContextPrefill : rt::ExecutionPhase::kContextChunk;
+        auto const dims = deployment.draft->prefillDims(B, args.inputLen, phase);
 
         resetState = [&]() {
             std::memcpy(reuseKVCacheLengths.rawPointer(), reuseKVLenVec.data(), reuseKVLenVec.size() * sizeof(int32_t));
@@ -1444,23 +1725,14 @@ int main(int argc, char** argv)
 
         pastKVLenVec.assign(B, args.pastKVLen);
 
-        tensorMap = rt::TensorMap{};
         DFlashDraftBenchParams const draftParams{/*.batchSize=*/B, /*.blockSize=*/args.blockSize,
             /*.deltaLen=*/args.draftDeltaLen, /*.pastKVLen=*/args.pastKVLen, /*.seed=*/args.seed};
-        buildDFlashDraftTensorMap(deployment, draftParams, *resources->cacheManagers[kvCacheIndex], *resources, *io,
-            dflashDraftScratch, tensorMap);
-        fillDFlashDraftInputs(*io, *resources->cacheManagers[kvCacheIndex], dflashDraftScratch, draftParams, stream);
+        buildDFlashDraftTensorMap(
+            deployment, draftParams, *resources->cacheManagers[kvCacheIndex], *io, dflashDraftScratch, tensorMap);
+        fillDFlashDraftInputs(deployment, *io, *resources->cacheManagers[kvCacheIndex], *resources, dflashDraftScratch,
+            draftParams, stream);
 
-        rt::InferenceDims const dims{
-            /*.batch=*/B,
-            /*.seqLen=*/args.blockSize,
-            /*.kvLen=*/deployment.draft->maxKVCacheCapacity,
-            /*.selectLen=*/args.draftDeltaLen,
-            /*.attnMaskSeqLen=*/args.blockSize,
-            /*.ropeBatch=*/1,
-            /*.packedMaskLen=*/static_cast<int64_t>(divUp(args.blockSize, 32)),
-            /*.startIndexLen=*/B,
-        };
+        auto const dims = deployment.draft->proposalDims(B, args.blockSize, args.draftDeltaLen);
 
         resetState = [&]() {
             std::memcpy(reuseKVCacheLengths.rawPointer(), pastKVLenVec.data(), pastKVLenVec.size() * sizeof(int32_t));
@@ -1498,23 +1770,14 @@ int main(int argc, char** argv)
                 + ") to fit the draft KV cache maximum sequence length ("
                 + std::to_string(draftCacheConfig.maxSequenceLength) + ")");
 
-        tensorMap = rt::TensorMap{};
         DFlashDraftBenchParams const draftParams{/*.batchSize=*/B, /*.blockSize=*/args.blockSize,
             /*.deltaLen=*/args.inputLen, /*.pastKVLen=*/0, /*.seed=*/args.seed};
-        buildDFlashDraftTensorMap(deployment, draftParams, *resources->cacheManagers[kvCacheIndex], *resources, *io,
-            dflashDraftScratch, tensorMap);
-        fillDFlashDraftInputs(*io, *resources->cacheManagers[kvCacheIndex], dflashDraftScratch, draftParams, stream);
+        buildDFlashDraftTensorMap(
+            deployment, draftParams, *resources->cacheManagers[kvCacheIndex], *io, dflashDraftScratch, tensorMap);
+        fillDFlashDraftInputs(deployment, *io, *resources->cacheManagers[kvCacheIndex], *resources, dflashDraftScratch,
+            draftParams, stream);
 
-        rt::InferenceDims const dims{
-            /*.batch=*/B,
-            /*.seqLen=*/args.blockSize,
-            /*.kvLen=*/deployment.draft->maxKVCacheCapacity,
-            /*.selectLen=*/args.inputLen,
-            /*.attnMaskSeqLen=*/args.blockSize,
-            /*.ropeBatch=*/1,
-            /*.packedMaskLen=*/static_cast<int64_t>(divUp(args.blockSize, 32)),
-            /*.startIndexLen=*/B,
-        };
+        auto const dims = deployment.draft->proposalDims(B, args.blockSize, args.inputLen);
 
         resetState = [&]() {
             std::memcpy(reuseKVCacheLengths.rawPointer(), pastKVLenVec.data(), pastKVLenVec.size() * sizeof(int32_t));
@@ -1538,6 +1801,14 @@ int main(int argc, char** argv)
         LOG_INFO("DFlash Verify mode: VerifyTreeSize=%d, PastKVLen=%d", args.verifyTreeSize, args.pastKVLen);
         LOG_INFO(args.noCudaGraph ? "CUDA graph disabled; using non-CUDA-graph execution" : "CUDA graph enabled");
 
+        check::check(B > 0 && B <= activeCfg->maxNumSequences && args.verifyTreeSize <= activeCfg->maxQueryLength
+                && B <= activeCfg->recurrentPoolRows,
+            "DFlash verify shape exceeds engine capacity");
+        int64_t const physicalTokens64 = static_cast<int64_t>(B) * args.verifyTreeSize;
+        check::check(
+            physicalTokens64 <= activeCfg->maxPhysicalTokens && physicalTokens64 <= std::numeric_limits<int32_t>::max(),
+            "DFlash verify token count exceeds engine capacity");
+        int32_t const physicalTokens = static_cast<int32_t>(physicalTokens64);
         pastKVLenVec.assign(B, args.pastKVLen);
 
         check::check(io->inputsEmbeds.reshape({B, args.verifyTreeSize, deployment.base.hiddenSize}),
@@ -1562,18 +1833,48 @@ int main(int argc, char** argv)
         resetState = [&]() {
             std::memcpy(reuseKVCacheLengths.rawPointer(), pastKVLenVec.data(), pastKVLenVec.size() * sizeof(int32_t));
             resources->cacheManagers[kvCacheIndex]->resetForNewSequences(reuseKVCacheLengths, stream);
+            if (useRaggedBindings)
+            {
+                raggedBatch.shape = {B, physicalTokens, physicalTokens, args.verifyTreeSize, 0, 0, physicalTokens};
+                raggedBatch.positions.resize(static_cast<size_t>(physicalTokens));
+                raggedBatch.queryStartOffsets.resize(static_cast<size_t>(B) + 1);
+                raggedBatch.queryLengths.assign(static_cast<size_t>(B), args.verifyTreeSize);
+                raggedBatch.pastLengths.assign(static_cast<size_t>(B), args.pastKVLen);
+                raggedBatch.attentionSequenceLengths.assign(
+                    static_cast<size_t>(B), args.pastKVLen + args.verifyTreeSize);
+                raggedBatch.stateIndices.resize(static_cast<size_t>(B));
+                raggedBatch.logitsIndices.resize(static_cast<size_t>(physicalTokens));
+                for (int32_t batchIdx = 0; batchIdx < B; ++batchIdx)
+                {
+                    int32_t const start = batchIdx * args.verifyTreeSize;
+                    raggedBatch.queryStartOffsets[static_cast<size_t>(batchIdx)] = start;
+                    raggedBatch.stateIndices[static_cast<size_t>(batchIdx)] = batchIdx;
+                    for (int32_t tokenIdx = 0; tokenIdx < args.verifyTreeSize; ++tokenIdx)
+                    {
+                        int32_t const token = start + tokenIdx;
+                        raggedBatch.positions[static_cast<size_t>(token)] = args.pastKVLen + tokenIdx;
+                        raggedBatch.logitsIndices[static_cast<size_t>(token)] = token;
+                    }
+                }
+                raggedBatch.queryStartOffsets[static_cast<size_t>(B)] = physicalTokens;
+                rt::prepareRaggedExecutionBindings(*io, *resources, *activeCfg, raggedBatch, kvCacheIndex, stream);
+                check::check(io->inputsEmbeds.reshape({physicalTokens, activeCfg->hiddenSize}),
+                    "Ragged DFlash verify inputsEmbeds reshape failed");
+                check::check(io->outputLogits.reshape({physicalTokens, activeCfg->outputVocabSize}),
+                    "Ragged DFlash verify outputLogits reshape failed");
+            }
+            kernel::launchDFlashPrepareBaseVerifyInputs(
+                resources->cacheManagers[kvCacheIndex]->getKVCacheLengths().dataPointer<int32_t>(), args.verifyTreeSize,
+                io->packedAttentionMask.dataPointer<int32_t>(), io->specDecodePositionIds.dataPointer<int32_t>(),
+                io->selectTokenIndices.dataPointer<int64_t>(), io->contextLengths.dataPointer<int32_t>(), B, stream);
+            if (!io->specTreeParentIds.isEmpty())
+            {
+                check::check(io->specTreeParentIds.reshape({B, args.verifyTreeSize}), "Tensor reshape failed");
+                check::check(io->specTreeDepths.reshape({B, args.verifyTreeSize}), "Tensor reshape failed");
+                kernel::launchDFlashBuildLinearTreeMetadata(io->specTreeParentIds.dataPointer<int32_t>(),
+                    io->specTreeDepths.dataPointer<int32_t>(), B, args.verifyTreeSize, stream);
+            }
         };
-
-        // Prepare valid verification metadata once, outside the timed loop.  A
-        // linear causal tree is a safe deterministic tree for both linear and
-        // DDTree-capable engines, and the production kernel supplies identity
-        // INT64 select indices plus matching positions, mask, and context lengths.
-        resetState();
-        kernel::launchDFlashPrepareBaseVerifyInputs(
-            resources->cacheManagers[kvCacheIndex]->getKVCacheLengths().dataPointer<int32_t>(), args.verifyTreeSize,
-            io->packedAttentionMask.dataPointer<int32_t>(), io->specDecodePositionIds.dataPointer<int32_t>(),
-            io->selectTokenIndices.dataPointer<int64_t>(), io->contextLengths.dataPointer<int32_t>(), B, stream);
-        CUDA_CHECK(cudaStreamSynchronize(stream));
 
         step = [&, dims]() {
             if (!executor->prepare(kDecodeProfile, dims, tensorMap, stream))
@@ -1722,9 +2023,10 @@ int main(int argc, char** argv)
     }
     else if (useSequentialE2E)
     {
-        e2eTimeMsResult = runSequentialE2ETiming(
-            modeName, decodeSteps, resetState, step, postStep, !args.noCudaGraph, captureGraph, stream);
-        e2eNumTokens = decodeSteps;
+        int32_t const sequentialNumTokens = args.mode == BenchMode::kEAGLE_DRAFT_ACCEPT ? args.osl - 1 : decodeSteps;
+        e2eTimeMsResult = runSequentialE2ETiming(modeName, decodeSteps, sequentialNumTokens, resetState, step, postStep,
+            !args.noCudaGraph, captureGraph, stream);
+        e2eNumTokens = sequentialNumTokens;
     }
     else
     {

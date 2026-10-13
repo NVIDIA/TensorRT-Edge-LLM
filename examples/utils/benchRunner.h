@@ -110,18 +110,20 @@ struct DFlashDraftBenchParams
 struct DFlashDraftBenchScratch
 {
     rt::Tensor dflashDeltaLengths;
+    rt::Tensor dflashDeltaRopeCosSin;
+    rt::Tensor dflashDeltaPositions;
+    rt::Tensor dflashDeltaTokenToSequence;
 };
 
 //! Allocate and bind the tensors consumed and produced by a DFlash draft forward.
 //!
 //! `scratch` is populated by this function and must outlive `tensorMap`. Passing it
 //! by reference (rather than returning by value) is deliberate: `TensorMap` stores
-//! non-owning pointers into `scratch.dflashDeltaLengths`, so relying on NRVO/copy
-//! elision at the return site would leave those pointers dangling whenever the
-//! compiler chose not to elide. Caller-owned scope keeps the tensor address stable.
+//! non-owning pointers into the scratch tensors. Caller-owned scope keeps their
+//! addresses stable.
 inline void buildDFlashDraftTensorMap(rt::DeploymentConfig const& deployment, DFlashDraftBenchParams const& params,
-    rt::HybridCacheManager& draftCacheManager, rt::SharedResources& sharedResources, rt::PipelineIO& io,
-    DFlashDraftBenchScratch& scratch, rt::TensorMap& tensorMap)
+    rt::HybridCacheManager& draftCacheManager, rt::PipelineIO& io, DFlashDraftBenchScratch& scratch,
+    rt::TensorMap& tensorMap)
 {
     ELLM_CHECK(deployment.draft.has_value(), "DFlash draft tensor map requires a draft engine config");
     ELLM_CHECK(deployment.specConfig.has_value(), "DFlash draft tensor map requires a spec-decode config");
@@ -152,6 +154,13 @@ inline void buildDFlashDraftTensorMap(rt::DeploymentConfig const& deployment, DF
 
     scratch.dflashDeltaLengths
         = rt::Tensor({params.batchSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "DFlashBench::deltaLengths");
+    int64_t const deltaTokens = static_cast<int64_t>(params.batchSize) * params.deltaLen;
+    scratch.dflashDeltaRopeCosSin = rt::Tensor({deltaTokens, draftCfg.rotaryDim}, rt::DeviceType::kGPU,
+        nvinfer1::DataType::kFLOAT, "DFlashBench::deltaRopeCosSin");
+    scratch.dflashDeltaPositions
+        = rt::Tensor({deltaTokens}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "DFlashBench::deltaPositions");
+    scratch.dflashDeltaTokenToSequence = rt::Tensor(
+        {deltaTokens}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "DFlashBench::deltaTokenToSequence");
 
     tensorMap.set(binding_names::kInputsEmbeds, io.inputsEmbeds);
     tensorMap.set(binding_names::kDFlashTargetHiddenConcat, io.baseHiddenStates);
@@ -160,6 +169,9 @@ inline void buildDFlashDraftTensorMap(rt::DeploymentConfig const& deployment, DF
     tensorMap.set(binding_names::kAttentionPosId, io.specDecodePositionIds);
     tensorMap.set(binding_names::kContextLengths, io.contextLengths);
     tensorMap.set(binding_names::kDFlashDeltaLengths, scratch.dflashDeltaLengths);
+    tensorMap.set(binding_names::kDFlashDeltaRopeCosSin, scratch.dflashDeltaRopeCosSin);
+    tensorMap.set(binding_names::kDFlashDeltaPositions, scratch.dflashDeltaPositions);
+    tensorMap.set(binding_names::kDFlashDeltaTokenToSequence, scratch.dflashDeltaTokenToSequence);
 
     auto& kvManager = draftCacheManager.getKVCacheManager();
     int32_t localAttentionIndex = 0;
@@ -175,9 +187,7 @@ inline void buildDFlashDraftTensorMap(rt::DeploymentConfig const& deployment, DF
         ++localAttentionIndex;
     }
     tensorMap.set(binding_names::kKVCacheStartIndex, draftCacheManager.getKVCacheLengths());
-    tensorMap.set(binding_names::kRopeCosSin,
-        sharedResources.ropePool.getOrCreate(
-            draftCfg.ropeConfig, draftCfg.rotaryDim, deployment.base.maxKVCacheCapacity, nullptr));
+    tensorMap.set(binding_names::kRopeCosSin, io.raggedRopeCosSin);
 }
 
 //! Fill DFlash draft inputs and prepare production-equivalent proposal metadata.
@@ -185,8 +195,9 @@ inline void buildDFlashDraftTensorMap(rt::DeploymentConfig const& deployment, DF
 //! `params.pastKVLen` is the draft cache length before applying `params.deltaLen`.
 //! Consequently, the production preparation kernel writes context lengths equal to
 //! `pastKVLen + deltaLen + blockSize`.
-inline void fillDFlashDraftInputs(rt::PipelineIO& io, rt::HybridCacheManager& draftCacheManager,
-    DFlashDraftBenchScratch& scratch, DFlashDraftBenchParams const& params, cudaStream_t stream)
+inline void fillDFlashDraftInputs(rt::DeploymentConfig const& deployment, rt::PipelineIO& io,
+    rt::HybridCacheManager& draftCacheManager, rt::SharedResources& sharedResources, DFlashDraftBenchScratch& scratch,
+    DFlashDraftBenchParams const& params, cudaStream_t stream)
 {
     ELLM_CHECK(params.batchSize > 0 && params.blockSize > 0, "DFlash draft input dimensions must be positive");
     ELLM_CHECK(params.blockSize <= 1024, "DFlash proposal block size must not exceed 1024");
@@ -232,11 +243,31 @@ inline void fillDFlashDraftInputs(rt::PipelineIO& io, rt::HybridCacheManager& dr
     std::vector<int32_t> hostReuseLengths(static_cast<size_t>(params.batchSize), params.pastKVLen);
     std::memcpy(reuseLengths.rawPointer(), hostReuseLengths.data(), hostReuseLengths.size() * sizeof(int32_t));
     draftCacheManager.resetForNewSequences(reuseLengths, stream);
+    io.uploadStateIndices(nullptr, params.batchSize, stream);
 
     kernel::launchDFlashPrepareProposalInputs(draftCacheManager.getKVCacheLengths().dataPointer<int32_t>(),
         scratch.dflashDeltaLengths.dataPointer<int32_t>(), params.blockSize,
         io.packedAttentionMask.dataPointer<int32_t>(), io.specDecodePositionIds.dataPointer<int32_t>(),
-        io.contextLengths.dataPointer<int32_t>(), false, params.batchSize, stream);
+        io.contextLengths.dataPointer<int32_t>(), io.positions.dataPointer<int32_t>(),
+        io.queryStartOffsets.dataPointer<int32_t>(), io.queryLengths.dataPointer<int32_t>(),
+        io.pastLengths.dataPointer<int32_t>(), io.attentionSequenceLengths.dataPointer<int32_t>(),
+        io.stateIndices.dataPointer<int32_t>(), false, params.batchSize, stream);
+
+    rt::LLMEngineConfig const& draftCfg = *deployment.draft;
+    int32_t const proposalTokens = params.batchSize * params.blockSize;
+    int32_t const deltaTokens = params.batchSize * params.deltaLen;
+    rt::prepareRaggedKVPageTable(io, *sharedResources.kvPageTables.at(1), params.batchSize, stream);
+    rt::prepareRaggedRope(io, sharedResources, draftCfg, proposalTokens, params.batchSize, stream);
+    kernel::launchDFlashPrepareDeltaMetadata(draftCacheManager.getKVCacheLengths().dataPointer<int32_t>(),
+        scratch.dflashDeltaLengths.dataPointer<int32_t>(), params.deltaLen,
+        scratch.dflashDeltaPositions.dataPointer<int32_t>(), scratch.dflashDeltaTokenToSequence.dataPointer<int32_t>(),
+        params.batchSize, stream);
+    rt::Tensor const& ropeSource = sharedResources.ropePool.getOrCreate(
+        draftCfg.ropeConfig, draftCfg.rotaryDim, draftCfg.maxKVCacheCapacity, stream);
+    kernel::launchDFlashGatherDeltaRope(ropeSource.dataPointer<float>(),
+        scratch.dflashDeltaRopeCosSin.dataPointer<float>(), scratch.dflashDeltaPositions.dataPointer<int32_t>(),
+        scratch.dflashDeltaTokenToSequence.dataPointer<int32_t>(), nullptr, deltaTokens, params.batchSize,
+        /*sourceRows=*/1, draftCfg.maxKVCacheCapacity, draftCfg.rotaryDim, stream);
     CUDA_CHECK(cudaStreamSynchronize(stream));
 }
 
@@ -439,9 +470,9 @@ float runRepeatedE2ETiming(
 
 //! Run sequential E2E timing: runs decodeSteps in a single timed block. Used for osl>1 decode.
 template <typename ResetFn, typename StepFn, typename PostStepFn, typename CaptureGraphFn>
-float runSequentialE2ETiming(std::string const& modeName, int32_t decodeSteps, ResetFn const& resetState,
-    StepFn const& step, PostStepFn const& postStep, bool useCudaGraph, CaptureGraphFn const& captureGraph,
-    cudaStream_t stream)
+float runSequentialE2ETiming(std::string const& modeName, int32_t decodeSteps, int32_t numTokens,
+    ResetFn const& resetState, StepFn const& step, PostStepFn const& postStep, bool useCudaGraph,
+    CaptureGraphFn const& captureGraph, cudaStream_t stream)
 {
     if (useCudaGraph)
     {
@@ -488,7 +519,7 @@ float runSequentialE2ETiming(std::string const& modeName, int32_t decodeSteps, R
 
     LOG_INFO("E2E Time: %.3f ms (steps=%d)", totalTimeMs, decodeSteps);
     LOG_INFO("Per-step avg: %.3f ms", totalTimeMs / decodeSteps);
-    LOG_INFO("Throughput: %.2f tokens/sec", 1000.0f * decodeSteps / totalTimeMs);
+    LOG_INFO("Throughput: %.2f tokens/sec", 1000.0f * numTokens / totalTimeMs);
 
     return totalTimeMs;
 }

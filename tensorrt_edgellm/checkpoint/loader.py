@@ -438,29 +438,74 @@ def load_weight_shard(tensor: torch.Tensor,
     return tensor[tuple(idx)].contiguous()
 
 
+def _load_segmented_weight_shard(
+        tensor: torch.Tensor,
+        dim: int,
+        local_segment_sizes: Tuple[int, ...],
+        mapping: Optional[Mapping] = None) -> torch.Tensor:
+    """Shard concatenated logical segments independently along *dim*.
+
+    ``local_segment_sizes`` describes one rank's width for each segment. This
+    is needed for tensors such as GDN's packed ``[Q | K | V]`` projection:
+    taking one contiguous shard of the whole tensor would mix segment tails
+    from one rank with segment heads from another.
+    """
+    mapping = mapping or Mapping()
+    tp_size, tp_rank = mapping.tp_size, mapping.tp_rank
+    if tp_size <= 1:
+        return tensor
+
+    shape = tensor.get_shape() if hasattr(tensor,
+                                          "get_shape") else tensor.shape
+    full_segment_sizes = tuple(size * tp_size for size in local_segment_sizes)
+    if shape[dim] != sum(full_segment_sizes):
+        raise ValueError(
+            f"Segmented TP shard: dim-{dim} {shape[dim]} does not match "
+            f"full segment sizes {full_segment_sizes}")
+
+    shards = []
+    segment_offset = 0
+    for local_size, full_size in zip(local_segment_sizes, full_segment_sizes):
+        idx = [slice(None)] * len(shape)
+        start = segment_offset + tp_rank * local_size
+        idx[dim] = slice(start, start + local_size)
+        shards.append(tensor[tuple(idx)])
+        segment_offset += full_size
+    return torch.cat(shards, dim=dim).contiguous()
+
+
 def _shard_for_module(module: nn.Module,
                       attr: str,
                       tensor: torch.Tensor,
                       mapping: Optional[Mapping] = None) -> torch.Tensor:
     """Slice *tensor* to the per-rank shard declared by *module* for *attr*.
 
-    Dispatches on :meth:`LinearBase.tp_split_dim` so each Linear subclass
-    owns its TP rule. The loader stays uniform across quant formats.
-    Wraps the shared :func:`load_weight_shard` primitive.
+    Dispatches on a module's ``tp_split_dim`` method so the owning module
+    declares its TP rule. Linear layers inherit the default method from
+    :class:`LinearBase`; structured non-linear buffers may declare the same
+    interface. The loader stays uniform across quant formats.
     """
     mapping = mapping or Mapping()
     if mapping.tp_size == 1:
         return tensor
 
-    dim = module.tp_split_dim(attr) if isinstance(module, LinearBase) else None
+    split_dim = getattr(module, "tp_split_dim", None)
+    dim = split_dim(attr) if callable(split_dim) else None
     tp_mode = getattr(module, "tp_mode", TPMode.REPLICATED)
     if dim is None:
-        if tp_mode != TPMode.REPLICATED and tensor.dim() >= 2:
+        if (isinstance(module, LinearBase) and tp_mode != TPMode.REPLICATED
+                and tensor.dim() >= 2):
             raise NotImplementedError(
                 f"TP sharding not declared for {type(module).__name__}.{attr} "
                 f"under tp_mode={tp_mode!r}.")
         return tensor
 
+    segment_sizes = getattr(module, "tp_split_sizes", None)
+    if segment_sizes is not None:
+        return _load_segmented_weight_shard(tensor,
+                                            dim,
+                                            tuple(segment_sizes),
+                                            mapping=mapping)
     return load_weight_shard(tensor, dim, mapping=mapping)
 
 

@@ -17,6 +17,7 @@ for checkpoint IDs and [Installation](installation.md) for build commands.
 | NVIDIA DRIVE Thor | Official | DriveOS 7.2 | 13.3 | DriveOS SDK package | SDK container, then deploy `build/` | Model-dependent |
 | NVIDIA DGX Spark (GB10) | Official | DGX Spark software stack | 13.0 | System package | Device | Model-dependent |
 | Jetson Orin | Official | JetPack 7.2 | 13.2 | JetPack package | Device | FP16, INT8, and INT4 only |
+| NVIDIA IGX Thor | Official | Current Linux stack | 13.0 | 10.13.3.9 | Device | Model-dependent; SM110 iGPU or SM120 dGPU |
 | x86-64 Linux GPU | Developer | Ubuntu 22.04 / 24.04 | 12.x or 13.x | Compatible user package | Workstation | Development and validation |
 
 `Official` combinations are release-tested deployment targets. `Compatible`
@@ -30,8 +31,13 @@ mutually compatible TensorRT and CUDA packages.
 ## Wheel Packaging Matrix
 
 The wheel tooling is configured to assemble one x86_64 and one aarch64 wheel
-for each supported CPython minor: 3.10, 3.11, and 3.12. Native payload selection
-is exact; the loader does not guess a nearest SM or TensorRT major.
+for each supported CPython minor: 3.10, 3.11, and 3.12: six release artifacts,
+not separate downloads per GPU or TensorRT version. The platform tags are
+`manylinux_2_35_x86_64` (glibc 2.35+) and `manylinux_2_39_aarch64` (glibc 2.39+).
+These are installation floors, not support for every newer Linux stack.
+Native payload selection is exact; the loader does not guess a nearest SM or
+TensorRT major. See [published-wheel installation](installation.md#published-python-wheel)
+for setup and optional Python dependencies.
 
 | Wheel architecture | Configured runtime rows |
 |---|---|
@@ -41,13 +47,15 @@ is exact; the loader does not guess a nearest SM or TensorRT major.
 | aarch64 | Jetson Orin: JetPack 7.2, CUDA 13, SM87, platform TensorRT 10 |
 | aarch64 | Jetson Thor: JetPack 7.0/7.1/7.2, CUDA 13, SM110, platform TensorRT 10 |
 | aarch64 | DRIVE Thor: DriveOS 7.2, CUDA 13, SM110, platform TensorRT 10 |
+| aarch64 | IGX Thor current stack, CUDA 13, SM110/SM120, platform TensorRT 10 |
 | aarch64 | DGX Spark current stack, CUDA 13, SM121, platform TensorRT 10 |
 
-Release qualification installs the final wheel into a clean environment using
-the Python ABI provided by each target system, builds a small model through the
-installed high-level API, and runs inference through the installed runtime. An
-architecture wheel is ready for release only after every configured target row
-has passed this behavioral check.
+Release qualification first checks the [minimal base workflow](installation.md#minimal-installation-advanced)
+in a clean environment without optional workflow packages, then installs
+`[server]` and checks the high-level API. Both phases build a small model and
+require generated text and tokens. The integration gate requires evidence for
+the enabled qualification targets and their configured Python ABIs before
+publication.
 
 The wheel contract matches the observed platform release, CUDA and TensorRT
 SONAMEs, and GPU SM exactly. It does not claim NVIDIA driver-version ranges;

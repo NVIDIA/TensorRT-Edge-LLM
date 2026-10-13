@@ -63,13 +63,14 @@ from cutlass import Float16, Float32, Int32, Uint32
 from cutlass._mlir import ir
 from cutlass._mlir.dialects import llvm, vector
 from cutlass.cutlass_dsl import dsl_user_op
+from cutedsl_utils import aot_placeholders
 
 from common import (
     ceil_div,
     export_compiled_kernel,
+    make_row_major_2d_placeholder,
     mark_row_major_2d,
     parse_comma_separated_ints,
-    repacked_rows,
 )
 
 # Shared INT4 fragment-word dequant (the same path the prefill GEMM uses; both
@@ -423,15 +424,6 @@ def _gemv_defaults(m: int):
     return False, False, 3
 
 
-def _build_export_tensors(M, N, K, group_size):
-    """Zero CuPy tensors for the AOT trace (no Torch dependency)."""
-    a_cp = cp.zeros((M, K), dtype=cp.float16)
-    qw_cp = cp.zeros((repacked_rows(N, K, _BN, _BK), 128), dtype=cp.uint32)
-    scales_cp = cp.zeros((ceil_div(K, group_size), N), dtype=cp.float16)
-    out_cp = cp.zeros((M, N), dtype=cp.float16)
-    return a_cp, qw_cp, scales_cp, out_cp
-
-
 def run(
     mnk: "tuple[int, int, int]",
     group_size: int = 128,
@@ -459,7 +451,7 @@ def run(
         raise ValueError(f"K must be a multiple of 64 (got {K})")
     if group_size % 16 != 0:
         raise ValueError(f"group_size must be a multiple of 16 (got {group_size})")
-    if cp.cuda.runtime.getDeviceCount() == 0:
+    if not export_only and cp.cuda.runtime.getDeviceCount() == 0:
         raise RuntimeError("GPU is required.")
 
     # Arch-independent per-M tuning defaults (no device-SM detection), so the AOT
@@ -477,21 +469,26 @@ def run(
         m=M, group_size=group_size, warp_groups=warp_groups,
         prefetch=prefetch, unroll2=unroll2, u2_eager=u2_eager, min_blocks=min_blocks,
     )
-    current_stream = cuda.CUstream(cp.cuda.get_current_stream().ptr)
+    current_stream = (
+        aot_placeholders.make_stream()
+        if export_only
+        else cuda.CUstream(cp.cuda.get_current_stream().ptr)
+    )
 
     if export_only:
-        a_cp, qw_cp, scales_cp, out_cp = _build_export_tensors(M, N, K, group_size)
-        mA = mark_row_major_2d(a_cp)
-        mQW = mark_row_major_2d(qw_cp)
-        mScales = mark_row_major_2d(scales_cp)
-        mOut = mark_row_major_2d(out_cp)
+        mA = make_row_major_2d_placeholder(cutlass.Float16)
+        mQW = make_row_major_2d_placeholder(cutlass.Uint32)
+        mScales = make_row_major_2d_placeholder(cutlass.Float16)
+        mOut = make_row_major_2d_placeholder(cutlass.Float16)
 
-        compile_opts = ("--gpu-arch " + gpu_arch) if gpu_arch else None
+        compile_opts = aot_placeholders.compile_options(
+            ("--gpu-arch " + gpu_arch) if gpu_arch else ""
+        )
         print(f"{_tag} Compiling kernel (gpu_arch={gpu_arch or 'default'})...")
         t0 = time.time()
         compiled = cute.compile(
             kernel, mA, mQW, mScales, mOut, current_stream,
-            **(dict(options=compile_opts) if compile_opts else {}),
+            options=compile_opts,
         )
         print(f"{_tag} Compilation time: {time.time() - t0:.4f}s")
         export_compiled_kernel(

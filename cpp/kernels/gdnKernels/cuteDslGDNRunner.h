@@ -59,16 +59,21 @@ struct GDNParams
     void* dt_bias{};
     void* h0_source{};
     void* context_lengths{};   ///< [N] int32 — valid length per batch (decode / prefill; unused in MTP)
+    void* state_indices{};     ///< [N] int32 — execution row to resident state-pool row.
     void* cu_seqlens{};        ///< [N+1] int32 — prefix-sum of context_lengths (Blackwell prefill)
-    void* h0_scratch{};        ///< [N, hv, k, v] f32 — pre-allocated scratch for h0_out (Blackwell prefill);
-                               ///<   must be provided by caller (e.g. plugin workspace).
+    void* h0_scratch{};        ///< [N, hv, k, v] f32 — dense state scratch for SM100/101/110 optimized prefill;
+                               ///<   must be provided by the caller on those architectures.
     void* tensormap_scratch{}; ///< Tail-store TMA descriptors (Blackwell GeForce prefill).
     void* o{};
 
-    // MTP (multi-token) decode fields — used only when use_mtp == true.
+    // Kernel mode is selected by the plugin's explicit execution phase.
+    bool use_prefill{false}; ///< Context/chunk/diffusion or multi-row state commit.
+
+    // MTP (multi-token) verify fields — used only when use_mtp == true.
     void* intermediate_states{}; ///< [N, seq_len, HV, K, V] FP32 — per-step h cache for rollback.
                                  ///<   Must be non-null when use_mtp == true.
     bool use_mtp{false};         ///< true → MTP decode path (any seq_len).
+    bool enablePdl{false};       ///< Request PDL for the SM120/121 prefill path; the runner applies final gates.
 
     int32_t n{};
     int32_t seq_len{};
@@ -76,17 +81,27 @@ struct GDNParams
     int32_t hv{};
     int32_t k_dim{};
     int32_t v_dim{};
+    int32_t state_pool_rows{};
     int32_t smVersion{}; // GPU SM version for dispatch (e.g. 87, 110)
+};
+
+enum class GDNBackend
+{
+    kDecode,
+    kPrefill,
+    kPrefillBlackwell,
+    kPrefillBlackwellGeforce,
+    kDecodeMTP,
 };
 
 /** Lazily loads the selected AOT module, fills tensor structs from GDNParams, and calls its generated wrapper.
  *
  *  Dispatch table (evaluated in order):
  *    use_mtp == true              → runDecodeMTP()       (MTP: any seq_len)
- *    seq_len == 1                 → runDecode()          (single-token decode)
- *    seq_len > 1 && SM120/121     → runPrefillBlackwellGeforce() (Blackwell GeForce warp-MMA prefill)
- *    seq_len > 1 && SM100/101/110  → runPrefillBlackwell() (Blackwell prefill)
- *    seq_len > 1                  → runPrefill()          (sequential prefill)
+ *    use_prefill && SM120/121     → runPrefillBlackwellGeforce() (Blackwell GeForce warp-MMA prefill)
+ *    use_prefill && SM100/101/110 → runPrefillBlackwell() (Blackwell prefill)
+ *    use_prefill                  → runPrefill()          (sequential prefill)
+ *    otherwise                    → runDecode()           (single-token decode)
  *
  *  MTP note: all batch items process seq_len (T) draft tokens uniformly.
  *  context_lengths is not used in MTP mode.
@@ -104,6 +119,8 @@ public:
     CuteDslGDNRunner& operator=(CuteDslGDNRunner const&) = delete;
 
     static bool canImplement(int32_t kDim, int32_t vDim, int32_t smVersion);
+
+    static GDNBackend selectBackend(GDNParams const& params);
 
     //! Load only the module selected by \p params. This is exposed so the plugin can
     //! fail before enqueue-side preprocessing mutates device buffers.

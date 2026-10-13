@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -167,8 +167,8 @@ bool ActionBuilder::setupActionOptimizationProfile(
             createDims({mBuilderConfig.maxBatchSize, mNumDiffusionTokens, mHeadDim}));
 
     // attention_pos_id: [batch, num_diffusion_tokens]
-    result &= setOptimizationProfile(profile, binding_names::kAttentionPosId, createDims({1, mNumDiffusionTokens}),
-        createDims({mBuilderConfig.maxBatchSize, mNumDiffusionTokens}),
+    result &= setOptimizationProfile(profile, binding_names::kActionAttentionPosId,
+        createDims({1, mNumDiffusionTokens}), createDims({mBuilderConfig.maxBatchSize, mNumDiffusionTokens}),
         createDims({mBuilderConfig.maxBatchSize, mNumDiffusionTokens}));
 
     // k_cache, v_cache: [batch, num_heads, max_capacity, head_dim]

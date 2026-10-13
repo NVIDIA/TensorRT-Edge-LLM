@@ -16,28 +16,23 @@
 
 from ...core import contracts
 from ...core.bundle import BundleConfig
+from ...core.dspark_config import resolve_dspark_config
+from ..gemma4.configuration import normalize_block_draft_config
 
 
-def _dspark_config(draft: dict) -> dict:
-    nested = draft.get("dspark_config") or {}
-    return {
-        "target_layer_ids":
-        nested.get("target_layer_ids", draft.get("target_layer_ids", [])),
-        "block_size":
-        nested.get("block_size", draft.get("block_size", 7)),
-        "mask_token_id":
-        nested.get("mask_token_id", draft.get("mask_token_id", 151669)),
-        "enable_confidence_head":
-        nested.get("enable_confidence_head",
-                   draft.get("enable_confidence_head", False)),
-        "confidence_head_with_markov":
-        nested.get("confidence_head_with_markov",
-                   draft.get("confidence_head_with_markov", False)),
-        "markov_head_type":
-        nested.get("markov_head_type", draft.get("markov_head_type", "")),
-        "markov_rank":
-        nested.get("markov_rank", draft.get("markov_rank", 0)),
-    }
+def resolve_build_profile(draft: dict, max_draft_tree_size,
+                          max_verify_tree_size, tree_base: bool):
+    """Resolve DSpark profiles including its optional non-anchor mask slot."""
+    values = resolve_dspark_config(draft)
+    block_size = int(values["block_size"])
+    slot_offset = 0 if values["sample_from_anchor"] else 1
+    draft_size = (block_size + slot_offset
+                  if max_draft_tree_size is None else int(max_draft_tree_size))
+    default_verify_size = (block_size + 1 if tree_base else
+                           min(block_size, draft_size - slot_offset) + 1)
+    verify_size = (default_verify_size if max_verify_tree_size is None else
+                   int(max_verify_tree_size))
+    return verify_size, draft_size
 
 
 def _validate_dimensions(draft, target) -> None:
@@ -49,15 +44,23 @@ def _validate_dimensions(draft, target) -> None:
                          f"{target.vocab_size} != {draft.vocab_size}")
 
 
-def _validate_runtime_contract(config, build_args) -> None:
+def _validate_runtime_contract(config, build_args,
+                               role: contracts.SpecRole) -> None:
     if build_args is None:
         return
-    if build_args.max_verify_tree_size != build_args.max_draft_tree_size + 1:
+    slot_offset = 0 if config.dspark_sample_from_anchor else 1
+    max_draft_input = config.dspark_block_size + slot_offset
+    if build_args.max_draft_tree_size > max_draft_input:
         raise ValueError(
-            "DSpark requires max_verify_tree_size == max_draft_tree_size + 1")
-    if build_args.max_draft_tree_size > config.dspark_block_size:
-        raise ValueError(
-            "DSpark max_draft_tree_size exceeds the checkpoint block_size")
+            "DSpark max_draft_tree_size exceeds the checkpoint input block")
+    if role == contracts.SpecRole.BASE and not build_args.tree_base:
+        proposal_size = build_args.max_verify_tree_size - 1
+        if proposal_size < 1 or proposal_size > config.dspark_block_size:
+            raise ValueError(
+                "DSpark chain verification size exceeds the checkpoint block")
+        if proposal_size + slot_offset > build_args.max_draft_tree_size:
+            raise ValueError(
+                "DSpark chain draft profile does not include the mask slot")
     if build_args.reduced_vocab_dir or build_args.draft_reduced_vocab_dir:
         raise ValueError("DSpark does not support reduced-vocabulary engines")
     markov_type = config.dspark_markov_head_type or "vanilla"
@@ -79,7 +82,7 @@ def configure_base(config,
         raise ValueError("DSpark base requires a paired draft checkpoint")
     bundle = BundleConfig.from_pretrained(paired_draft_dir)
     draft = bundle.component_dict(contracts.Component.LLM)
-    values = _dspark_config(draft)
+    values = resolve_dspark_config(draft)
     target_layers = [int(index) for index in values["target_layer_ids"]]
     if not target_layers:
         raise ValueError("DSpark draft config must provide target_layer_ids")
@@ -102,6 +105,7 @@ def configure_base(config,
                          f"{config.vocab_size} != {draft_vocab}")
 
     config.dspark_base = True
+    config.dspark_tree_base = bool(build_args and build_args.tree_base)
     config.dspark_target_layer_ids = target_layers
     config.dspark_block_size = int(values["block_size"])
     config.dspark_mask_token_id = int(values["mask_token_id"])
@@ -111,7 +115,10 @@ def configure_base(config,
         values["confidence_head_with_markov"])
     config.dspark_markov_head_type = str(values["markov_head_type"])
     config.dspark_markov_rank = int(values["markov_rank"])
-    _validate_runtime_contract(config, build_args)
+    config.dspark_causal_proposal = bool(values["causal_head"])
+    config.dspark_contiguous_query_swa = bool(values["contiguous_query_swa"])
+    config.dspark_sample_from_anchor = bool(values["sample_from_anchor"])
+    _validate_runtime_contract(config, build_args, contracts.SpecRole.BASE)
 
 
 def configure_draft(config,
@@ -127,4 +134,5 @@ def configure_draft(config,
         raise ValueError("DSpark draft config must provide target_layer_ids")
     if config.dspark_markov_rank <= 0:
         raise ValueError("DSpark draft requires markov_rank > 0")
-    _validate_runtime_contract(config, build_args)
+    normalize_block_draft_config(config)
+    _validate_runtime_contract(config, build_args, contracts.SpecRole.DRAFT)

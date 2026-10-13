@@ -73,8 +73,7 @@ TEST_F(ActionKvBatchMaterializationTest, PrefillTerminalSnapshotDeepCopiesItsLog
     collector.beginRequest({true, false}, {101, 202});
 
     rt::Tensor lengths = makeDeviceLengths({terminalLength, rt::kTOKENS_PER_PAGE + 9});
-    collector.captureFinished(pageTable, lengths, {1, 0}, {0, 1}, mStream);
-    pageTable.compactRows({-1, 0}, 1);
+    collector.captureFinished(pageTable, lengths, {1, 0}, {0, 1}, {{0, 1}, {1, 1}}, mStream);
     std::vector<int32_t> const changedLengths{rt::kTOKENS_PER_PAGE + 41, 0};
     CUDA_CHECK(cudaMemcpyAsync(lengths.rawPointer(), changedLengths.data(), changedLengths.size() * sizeof(int32_t),
         cudaMemcpyHostToDevice, mStream));
@@ -97,7 +96,8 @@ TEST_F(ActionKvBatchMaterializationTest, RejectsAMissingActionTerminalSnapshot)
     collector.beginRequest({true, true}, {101, 202});
 
     rt::Tensor lengths = makeDeviceLengths({17, 23});
-    collector.captureFinished(pageTable, lengths, /*finished=*/{1, 0}, /*originalIndices=*/{0, 1}, mStream);
+    collector.captureFinished(pageTable, lengths, /*finished=*/{1, 0}, /*originalIndices=*/{0, 1},
+        /*residentRefs=*/{{0, 1}, {1, 1}}, mStream);
     CUDA_CHECK(cudaStreamSynchronize(mStream));
     collector.completeCapture();
 
@@ -125,20 +125,20 @@ TEST_F(ActionKvBatchMaterializationTest, MaterializesMixedActionRowsAfterMultipl
     rt::Tensor firstLengths
         = makeDeviceLengths({action0Length, rt::kTOKENS_PER_PAGE + 9, rt::kTOKENS_PER_PAGE * 2 + 17});
     collector.captureFinished(pageTable, firstLengths, /*finished=*/{1, 0, 0},
-        /*originalIndices=*/{0, 1, 2}, mStream);
+        /*originalIndices=*/{0, 1, 2}, /*residentRefs=*/{{0, 1}, {1, 1}, {2, 1}}, mStream);
     CUDA_CHECK(cudaStreamSynchronize(mStream));
     collector.completeCapture();
 
-    pageTable.compactRows({-1, 0, 1}, 2);
     rt::Tensor secondLengths = makeDeviceLengths({rt::kTOKENS_PER_PAGE + 9, rt::kTOKENS_PER_PAGE * 2 + 17});
-    collector.captureFinished(pageTable, secondLengths, /*finished=*/{1, 0}, /*originalIndices=*/{1, 2}, mStream);
+    collector.captureFinished(pageTable, secondLengths, /*finished=*/{1, 0}, /*originalIndices=*/{1, 2},
+        /*residentRefs=*/{{1, 1}, {2, 1}}, mStream);
     CUDA_CHECK(cudaStreamSynchronize(mStream));
     collector.completeCapture();
 
-    pageTable.compactRows({-1, 0}, 1);
     int32_t const action2Length = rt::kTOKENS_PER_PAGE * 2 + 1;
     rt::Tensor thirdLengths = makeDeviceLengths({action2Length});
-    collector.captureFinished(pageTable, thirdLengths, /*finished=*/{1}, /*originalIndices=*/{2}, mStream);
+    collector.captureFinished(pageTable, thirdLengths, /*finished=*/{1}, /*originalIndices=*/{2},
+        /*residentRefs=*/{{2, 1}}, mStream);
     CUDA_CHECK(cudaStreamSynchronize(mStream));
     collector.completeCapture();
 
@@ -158,6 +158,35 @@ TEST_F(ActionKvBatchMaterializationTest, MaterializesMixedActionRowsAfterMultipl
     collector.beginRequest({true, false, false}, {444, 555, 666});
     EXPECT_THROW(static_cast<void>(collector.materialize(mStream)), std::runtime_error)
         << "the next request must not reuse the previous request's frozen action rows";
+}
+
+TEST_F(ActionKvBatchMaterializationTest, SnapshotsResidentPageRowAfterLogicalCompaction)
+{
+    constexpr int32_t maxBatch{3};
+    constexpr int32_t maxPagesPerSeq{2};
+    constexpr int32_t numPages{6};
+    std::vector<int32_t> const retiredPages{0};
+    std::vector<int32_t> const survivorPages{4, 5};
+
+    rt::KVPageTable pageTable(maxBatch, maxPagesPerSeq, numPages);
+    pageTable.setRow(0, retiredPages.data(), static_cast<int32_t>(retiredPages.size()));
+    pageTable.setRow(2, survivorPages.data(), static_cast<int32_t>(survivorPages.size()));
+
+    rt::ActionKvBatchCollector collector(maxBatch, maxPagesPerSeq, numPages);
+    collector.beginRequest({false, true}, {101, 202});
+    int32_t const terminalLength = rt::kTOKENS_PER_PAGE + 3;
+    rt::Tensor lengths = makeDeviceLengths({terminalLength});
+
+    collector.captureFinished(pageTable, lengths, /*finished=*/{1}, /*originalIndices=*/{1},
+        /*residentRefs=*/{{2, 1}}, mStream);
+    CUDA_CHECK(cudaStreamSynchronize(mStream));
+    collector.completeCapture();
+
+    rt::ActionKvBatchView const batch = collector.materialize(mStream);
+    CUDA_CHECK(cudaStreamSynchronize(mStream));
+    ASSERT_EQ(batch.batchSize, 1);
+    EXPECT_EQ(batch.kvLengthsHost.dataPointer<int32_t>()[0], terminalLength);
+    EXPECT_EQ(std::vector<int32_t>(batch.pageTable.hostRow(0), batch.pageTable.hostRow(0) + 2), survivorPages);
 }
 
 } // namespace

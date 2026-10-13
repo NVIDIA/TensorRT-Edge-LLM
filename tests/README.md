@@ -9,6 +9,9 @@ export ONNX_DIR=/path/to/onnx/models                # Required: ONNX model direc
 export ENGINE_DIR=/path/to/engine/outputs           # Required for pipeline tests
 export LLM_MODELS_DIR=/path/to/pytorch/models       # Required for export tests (LLM torch models)
 export EDGELLM_DATA_DIR=/path/to/datasets           # Required for datasets and draft models
+export QUANT_CHECKPOINT_DIR=/path/to/quantized/checkpoints
+export HF_CHECKPOINT_DOWNLOAD_DIR=/managed/checkpoints/huggingface  # Optional
+export EDGE_LLM_ALLOW_HF_DOWNLOAD=0                 # Optional: disable downloads
 export TRT_PACKAGE_DIR=/path/to/tensorrt            # Optional: TensorRT installation
 ```
 
@@ -20,6 +23,26 @@ export TRT_PACKAGE_DIR=/path/to/tensorrt            # Optional: TensorRT install
   - `/scratch.edge_llm_cache`
   - `/home/edge_llm_cache` (fallback)
   - `/home/scratch.edge_llm_cache` (fallback)
+
+Checkpoint lookup first uses paths registered in the TRT-LLM model mirror,
+then managed quantized checkpoints. If downloads are enabled, missing public
+checkpoints are stored under `HF_CHECKPOINT_DOWNLOAD_DIR/<organization>/<model>`;
+CI enables this fallback and uses
+`/scratch.edge_llm_cache/checkpoints/huggingface`. Set `HF_HOME` beneath the same
+managed directory to avoid implicit downloads in a user home directory. Local
+tests also enable downloading by default and use
+`EDGELLM_DATA_DIR/checkpoints/huggingface` when
+`HF_CHECKPOINT_DOWNLOAD_DIR` is unset.
+An explicit Hugging Face ID such as `Qwen/Qwen2.5-0.5B` may use this fallback
+without an inventory entry. Unregistered short names can use local checkpoints;
+downloads require the full `organization/model` ID. Set
+`EDGE_LLM_ALLOW_HF_DOWNLOAD=0` to disable network downloads while retaining
+access to checkpoints already in the managed cache.
+
+For local checkpoints, place models under
+`<LLM_MODELS_DIR>/<organization>/<model>` or `<LLM_MODELS_DIR>/<model>`.
+Each model directory must contain `config.json` and Safetensors weights
+(`*.safetensors`).
 
 ### 2. Install Dependencies
 ```bash
@@ -42,8 +65,8 @@ make -j$(nproc) && cd ..
 ### 4. Run Tests
 ```bash
 # Run specific test suite
-pytest --priority=l0_pipeline_a30 -v
-pytest --priority=l0_checkpoint_export_ampere -v
+pytest --priority=l0_e2e_a30 -v
+pytest --priority=l0_e2e_orin -v
 ```
 
 ## Test Structure
@@ -55,14 +78,15 @@ pytest --priority=l0_checkpoint_export_ampere -v
 - **Common Tests** (`test_common.py`) - Build and unit tests
 
 ### Available Test Suites
-- `l0_checkpoint_export_ampere.yml` - Checkpoint export tests (Ampere GPUs)
-- `l0_checkpoint_export.yml` - Checkpoint export tests (Blackwell/Thor models)
-- `l0_pipeline_a30.yml` - Pipeline tests (A30 GPU)
-- `l0_pipeline_orin.yml` - Pipeline tests (Jetson Orin)
-- `l0_pipeline_rtx5080.yml` - Pipeline tests (RTX 5080)
-- `l0_pipeline_thor_1.yml` - Pipeline tests (Drive Thor 1)
-- `l0_pipeline_thor_2.yml` - Pipeline tests (Drive Thor 2, EAGLE)
-- `l0_pipeline_jedha.yml` - Pipeline tests (Jedha, large models + accuracy + EAGLE)
+- `l0_onnx_export_1.yml` - Shared small-model checkpoint-to-ONNX exports
+- `l0_onnx_export_2.yml` - Parallel 4B speculative checkpoint-to-ONNX exports
+- `l0_e2e_a30.yml` - Audio, direct builds, few-layer validation, and speculative decoding on A30
+- `l0_e2e_a30_trtrtx.yml` - TensorRT RTX engine and runtime checks on A30
+- `l0_e2e_orin.yml` - INT4 VLM checks on Jetson Orin
+- `l0_e2e_drive_thor.yml` - VLM server, MTP, and EAGLE checks on DRIVE Thor
+- `l0_e2e_spark.yml` - DFlash checks on DGX Spark
+- `l0_e2e_b100.yml` - MTP, DSpark, and MoE validation on B100
+- `l0_e2e_rtx5090.yml` - JetSpec and few-layer validation on RTX 5090
 
 ## Parameter Format
 
@@ -172,7 +196,7 @@ tests/
 Tests support remote execution on target devices (e.g., Jetson Orin):
 
 ```bash
-pytest --priority=l0_pipeline_orin \
+pytest --priority=l0_e2e_orin \
        --execution-mode=remote \
        --remote-host=192.168.55.1 \
        --remote-user=nvidia \

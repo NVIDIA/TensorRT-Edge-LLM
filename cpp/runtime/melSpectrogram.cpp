@@ -369,7 +369,7 @@ bool MelExtractor::extract(AudioPCM const& pcm, Tensor& out)
             mConfig.sampleRate);
         return false;
     }
-    if (pcm.samples.empty())
+    if (pcm.numSamples() == 0)
     {
         LOG_ERROR("MelExtractor[%s]: empty PCM", mConfig.name.c_str());
         return false;
@@ -389,8 +389,10 @@ bool MelExtractor::extract(AudioPCM const& pcm, Tensor& out)
     // Whisper (no preemph) and Parakeet (preemph applied to full waveform)
     // share the "preempBuf = preemph(samples)" path; per-frame preemph with
     // a separate post-scale is handled inline in the framing loop below.
-    float const* srcPtr = pcm.samples.data();
-    int32_t const numSamples = static_cast<int32_t>(pcm.samples.size());
+    Tensor const& samplesTensor = *pcm.samples;
+    float const* const pcmSamples = samplesTensor.dataPointer<float>();
+    float const* srcPtr = pcmSamples;
+    int32_t const numSamples = static_cast<int32_t>(pcm.numSamples());
 
     bool const preemphPerFrame = mConfig.preemphCoeff != 0.0f && mConfig.preemphPostScale != 0.0f;
     if (mConfig.preemphCoeff != 0.0f && !preemphPerFrame)
@@ -398,11 +400,11 @@ bool MelExtractor::extract(AudioPCM const& pcm, Tensor& out)
         // HF Parakeet preemph: y[t] = x[t] - c * x[t-1], with y[0] = x[0]
         // (the first sample is *unchanged*; see
         // models/parakeet/feature_extraction_parakeet.py: cat([x[:1], x[1:] - c*x[:-1]])).
-        mImpl->preempBuf.assign(pcm.samples.begin(), pcm.samples.end());
+        mImpl->preempBuf.assign(pcmSamples, pcmSamples + numSamples);
         float const c = mConfig.preemphCoeff;
         for (int32_t i = numSamples - 1; i >= 1; --i)
         {
-            mImpl->preempBuf[i] = pcm.samples[i] - c * pcm.samples[i - 1];
+            mImpl->preempBuf[i] = pcmSamples[i] - c * pcmSamples[i - 1];
         }
         srcPtr = mImpl->preempBuf.data();
     }
@@ -603,7 +605,12 @@ bool MelExtractor::extract(AudioPCM const& pcm, Tensor& out)
                     float const d = outData[idx] - mean;
                     ss += d * d;
                 }
-                float const denom = std::sqrt(ss / static_cast<float>(validT)) + kEps;
+                // Bessel-corrected, matching HF ParakeetFeatureExtractor's
+                // `variance = ... / (features_lengths - 1)` and the GPU path in
+                // `melStatsLnPerFeature`. Dividing by validT instead scales
+                // every feature by sqrt(validT / (validT - 1)).
+                int32_t const dof = validT > 1 ? validT - 1 : 1;
+                float const denom = std::sqrt(ss / static_cast<float>(dof)) + kEps;
                 for (int32_t t = 0; t < outFrames; ++t)
                 {
                     size_t const idx = (mConfig.layout == MelLayout::kMelTime) ? static_cast<size_t>(m) * outFrames + t

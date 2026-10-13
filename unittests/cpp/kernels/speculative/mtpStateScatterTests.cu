@@ -52,6 +52,16 @@ T* uploadVec(std::vector<T> const& host)
     return dev;
 }
 
+std::vector<int32_t> identityStateIndices(int32_t batchSize)
+{
+    std::vector<int32_t> indices(batchSize);
+    for (int32_t batch = 0; batch < batchSize; ++batch)
+    {
+        indices[batch] = batch;
+    }
+    return indices;
+}
+
 } // anonymous namespace
 
 // ============================================================================
@@ -104,8 +114,10 @@ protected:
         // Upload MtpLayerInfo array + acceptLengths.
         MtpLayerInfo* dInfos = uploadVec(hostInfos);
         int32_t* dAccept = uploadVec(acceptLengthsHost);
+        int32_t* dStateIndices = uploadVec(identityStateIndices(batchSize));
 
-        mtpScatterRecurrentStates(dInfos, numLayers, batchSize, verifyTreeSize, stateElements, dAccept, nullptr);
+        mtpScatterRecurrentStates(
+            dInfos, numLayers, batchSize, batchSize, verifyTreeSize, stateElements, dAccept, dStateIndices, nullptr);
         cudaDeviceSynchronize();
 
         // Read back and verify.
@@ -120,7 +132,7 @@ protected:
                 int32_t const step = acceptLen - 1;
                 int64_t const dstBase = static_cast<int64_t>(b) * stateElements;
 
-                if (step < 0 || step >= verifyTreeSize - 1)
+                if (step < 0 || step >= verifyTreeSize)
                 {
                     for (int32_t e = 0; e < stateElements; ++e)
                     {
@@ -141,6 +153,7 @@ protected:
         }
         cudaFree(dInfos);
         cudaFree(dAccept);
+        cudaFree(dStateIndices);
     }
 };
 
@@ -152,6 +165,66 @@ TEST_F(MTPStateScatterRecurrentTest, SingleLayer_PartialReject)
 TEST_F(MTPStateScatterRecurrentTest, SingleLayer_AllAccept)
 {
     runTest(1, 1, 4, 128, {4});
+}
+
+TEST(MTPStateScatterRecurrentResidentSlotTest, CommitsFullAndPartialAcceptsToSelectedSlots)
+{
+    constexpr int32_t batchSize = 2;
+    constexpr int32_t verifyTreeSize = 4;
+    constexpr int32_t stateElements = 8;
+    constexpr int32_t poolRows = 5;
+
+    std::vector<float> source(static_cast<size_t>(batchSize) * verifyTreeSize * stateElements);
+    for (int32_t batch = 0; batch < batchSize; ++batch)
+    {
+        for (int32_t step = 0; step < verifyTreeSize; ++step)
+        {
+            for (int32_t element = 0; element < stateElements; ++element)
+            {
+                source[(static_cast<size_t>(batch) * verifyTreeSize + step) * stateElements + element]
+                    = refRecurrent(0, batch, step, element);
+            }
+        }
+    }
+    std::vector<float> destination(static_cast<size_t>(poolRows) * stateElements, kSentinel);
+    std::vector<int32_t> const acceptLengths{verifyTreeSize, 2};
+    std::vector<int32_t> const stateIndices{3, 1};
+
+    float* sourceDevice = uploadVec(source);
+    float* destinationDevice = uploadVec(destination);
+    MtpLayerInfo* layerInfoDevice
+        = uploadVec(std::vector<MtpLayerInfo>{{destinationDevice, sourceDevice, nullptr, nullptr}});
+    int32_t* acceptLengthsDevice = uploadVec(acceptLengths);
+    int32_t* stateIndicesDevice = uploadVec(stateIndices);
+
+    mtpScatterRecurrentStates(layerInfoDevice, 1, batchSize, poolRows, verifyTreeSize, stateElements,
+        acceptLengthsDevice, stateIndicesDevice, nullptr);
+    cudaDeviceSynchronize();
+    cudaMemcpy(destination.data(), destinationDevice, destination.size() * sizeof(float), cudaMemcpyDeviceToHost);
+
+    for (int32_t slot = 0; slot < poolRows; ++slot)
+    {
+        for (int32_t element = 0; element < stateElements; ++element)
+        {
+            float expected = kSentinel;
+            if (slot == stateIndices[0])
+            {
+                expected = refRecurrent(0, 0, verifyTreeSize - 1, element);
+            }
+            else if (slot == stateIndices[1])
+            {
+                expected = refRecurrent(0, 1, acceptLengths[1] - 1, element);
+            }
+            EXPECT_EQ(destination[static_cast<size_t>(slot) * stateElements + element], expected)
+                << "slot=" << slot << " element=" << element;
+        }
+    }
+
+    cudaFree(sourceDevice);
+    cudaFree(destinationDevice);
+    cudaFree(layerInfoDevice);
+    cudaFree(acceptLengthsDevice);
+    cudaFree(stateIndicesDevice);
 }
 
 TEST_F(MTPStateScatterRecurrentTest, SingleLayer_Skip)
@@ -227,9 +300,11 @@ TEST(MTPStateScatterRecurrentPackedStrideTest, BatchedReadStride)
 
     MtpLayerInfo* dInfos = uploadVec(hostInfos);
     int32_t* dAccept = uploadVec(acceptLengthsHost);
+    int32_t* dStateIndices = uploadVec(identityStateIndices(batchSize));
 
     // Pass verifyTreeSize = verifyTreeSize (NOT maxAlloc).
-    mtpScatterRecurrentStates(dInfos, numLayers, batchSize, verifyTreeSize, stateElements, dAccept, nullptr);
+    mtpScatterRecurrentStates(
+        dInfos, numLayers, batchSize, batchSize, verifyTreeSize, stateElements, dAccept, dStateIndices, nullptr);
     cudaDeviceSynchronize();
 
     for (int32_t L = 0; L < numLayers; ++L)
@@ -251,6 +326,7 @@ TEST(MTPStateScatterRecurrentPackedStrideTest, BatchedReadStride)
     }
     cudaFree(dInfos);
     cudaFree(dAccept);
+    cudaFree(dStateIndices);
 }
 
 // ============================================================================
@@ -301,8 +377,10 @@ protected:
 
         MtpLayerInfo* dInfos = uploadVec(hostInfos);
         int32_t* dAccept = uploadVec(acceptLengthsHost);
+        int32_t* dStateIndices = uploadVec(identityStateIndices(batchSize));
 
-        mtpScatterConvStates(dInfos, numLayers, batchSize, verifyTreeSize, stateElements, dAccept, nullptr);
+        mtpScatterConvStates(
+            dInfos, numLayers, batchSize, batchSize, verifyTreeSize, stateElements, dAccept, dStateIndices, nullptr);
         cudaDeviceSynchronize();
 
         for (int32_t L = 0; L < numLayers; ++L)
@@ -316,7 +394,7 @@ protected:
                 int32_t const step = acceptLen - 1;
                 int64_t const dstBase = static_cast<int64_t>(b) * stateElements;
 
-                if (step < 0 || step >= verifyTreeSize - 1)
+                if (step < 0 || step >= verifyTreeSize)
                 {
                     for (int32_t e = 0; e < stateElements; ++e)
                     {
@@ -339,6 +417,7 @@ protected:
         }
         cudaFree(dInfos);
         cudaFree(dAccept);
+        cudaFree(dStateIndices);
     }
 };
 
@@ -430,6 +509,7 @@ TEST(MambaCacheManagerAcceptedTreeScatterTest, UsesLastNonNegativeAcceptedNodeId
     rt::Tensor acceptedNodeIds(
         {kBatchSize, kMaxAcceptLen}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "acceptedNodeIds");
     rt::Tensor acceptLengths({kBatchSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "acceptLengths");
+    rt::Tensor stateIndices({kBatchSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32, "stateIndices");
 
     std::vector<int32_t> hAcceptedNodeIds{
         0, 5, -1, -1, // batch 0: bonus token at the end, scatter node 5
@@ -437,12 +517,15 @@ TEST(MambaCacheManagerAcceptedTreeScatterTest, UsesLastNonNegativeAcceptedNodeId
         -1, -1, 0, 0  // batch 2: no accepted verify node in range, leave state unchanged
     };
     std::vector<int32_t> hAcceptLengths{4, 3, 2};
+    std::vector<int32_t> hStateIndices{0, 1, 2};
     cudaMemcpy(acceptedNodeIds.rawPointer(), hAcceptedNodeIds.data(), hAcceptedNodeIds.size() * sizeof(int32_t),
         cudaMemcpyHostToDevice);
     cudaMemcpy(acceptLengths.rawPointer(), hAcceptLengths.data(), hAcceptLengths.size() * sizeof(int32_t),
         cudaMemcpyHostToDevice);
+    cudaMemcpy(stateIndices.rawPointer(), hStateIndices.data(), hStateIndices.size() * sizeof(int32_t),
+        cudaMemcpyHostToDevice);
 
-    mgr.scatterAcceptedTreeStates(acceptedNodeIds, acceptLengths, nullptr);
+    mgr.scatterAcceptedTreeStates(acceptedNodeIds, acceptLengths, stateIndices, nullptr);
     cudaDeviceSynchronize();
 
     std::vector<int32_t> const expectedNodeIds{5, 1, -1};

@@ -44,13 +44,11 @@ import threading
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import (TYPE_CHECKING, Any, Dict, Iterator, List, Mapping,
-                    Optional, Sequence, Union)
+                    Optional, Sequence, Tuple, Union)
 
-from ..config import ContextCacheConfig
+from ..config import DEFAULT_MAX_QUEUED_REQUESTS, ContextCacheConfig
 from ..parsing.tool_calling import (ToolConfig, parse_assistant_output,
                                     validate_tool_request)
-from ..parsing.tool_chat_template import (ToolChatTemplateFormatter,
-                                          needs_tool_chat_template)
 from .engine_layout import BundleLayout, EngineType, inspect_bundle
 
 logger = logging.getLogger("edgellm.server")
@@ -82,12 +80,17 @@ class SamplingParams:
     temperature: float = 0.7
     top_p: float = 0.9
     top_k: int = 50
+    seed: Optional[int] = None
     max_tokens: int = 2048
     enable_thinking: bool = False
+    reasoning_effort: str = ""
     disable_spec_decode: bool = False
     num_logprobs: int = 0
     stop: List[str] = field(default_factory=list)
     logit_bias: Dict[int, float] = field(default_factory=dict)
+    # Low-level grammar constraint as (guide_type, guide_text); see
+    # _normalize_guided_decoding. None means unconstrained.
+    guided_decoding: Optional[Tuple[str, str]] = None
     skip_special_tokens: bool = True
     reuse_context: bool = True
     cache_generated_tokens: bool = True
@@ -373,6 +376,37 @@ class _SpecDecodeRuntimeOptions:
     dflash_block_size: int = 0
 
 
+def _resolve_tree_size(method: str, top_k: int, requested_size: Optional[int],
+                       max_size: int, linear_size: int) -> int:
+    """Resolve an active tree node budget within the compiled profile.
+
+    ``top_k == 1`` is the degenerate linear tree, whose node count is fixed by
+    the proposal path. Branching trees may use any node budget large enough to
+    hold the root and its first fanout, up to the engine profile maximum.
+    """
+    minimum_size = linear_size if top_k == 1 else top_k + 1
+    default_size = linear_size if top_k == 1 else max_size
+    size = requested_size or default_size
+    if top_k == 1 and size != linear_size:
+        raise ValueError(
+            f"{method} linear decoding requires verify_tree_size="
+            f"{linear_size}; use max_verify_tree_size to set a larger engine "
+            "profile")
+    if not minimum_size <= size <= max_size:
+        raise ValueError(
+            f"{method} verify_tree_size must be within the active topology "
+            f"and compiled capacity [{minimum_size}, {max_size}]")
+    return size
+
+
+def _internvl_geometry(cfg: dict, key: str) -> int:
+    """InternVL writes vision_config image_size/patch_size as [H, W] and the
+    C++ builder and runtime both read index 0. Other families put a scalar
+    here and never read the result, so they get 0."""
+    value = (cfg.get("vision_config") or {}).get(key)
+    return int(value[0]) if isinstance(value, list) and value else 0
+
+
 def _read_json(path: str) -> dict:
     with open(path, encoding="utf-8") as file:
         return json.load(file)
@@ -407,6 +441,8 @@ def _resolve_spec_decode_runtime_options(
     max_verify_size = int(
         base.get("builder_config", {}).get("max_verify_tree_size",
                                            _DEFAULT_VERIFY_TREE_SIZE))
+    max_draft_size = int(
+        draft.get("builder_config", {}).get("max_draft_tree_size", 0))
 
     if engine_method == "eagle3":
         return _SpecDecodeRuntimeOptions(
@@ -417,12 +453,14 @@ def _resolve_spec_decode_runtime_options(
 
     if engine_method in {"mtp", "gemma4_mtp"}:
         top_k = draft_top_k or 1
-        if engine_method == "gemma4_mtp" and top_k != 1:
-            raise ValueError("Gemma4 MTP supports linear drafting only; "
-                             "set draft_top_k=1")
         step = num_speculative_tokens or draft_step or _DEFAULT_DRAFT_STEP
-        verify_size = (verify_tree_size
-                       or (step + 1 if top_k == 1 else max_verify_size))
+        verify_size = _resolve_tree_size(engine_method, top_k,
+                                         verify_tree_size, max_verify_size,
+                                         step + 1)
+        if max_draft_size > 0 and step > max_draft_size:
+            raise ValueError(
+                f"{engine_method} draft_step={step} exceeds the compiled "
+                f"proposal capacity {max_draft_size}")
         return _SpecDecodeRuntimeOptions(top_k, step, verify_size)
 
     if engine_method in {"dflash", "jetspec"}:
@@ -434,18 +472,21 @@ def _resolve_spec_decode_runtime_options(
                        or draft.get("dflash_config") or {})
         checkpoint_block_size = int(
             mode_config.get("block_size", draft.get("block_size", 0)))
-        block_size = num_speculative_tokens or checkpoint_block_size
-        if checkpoint_block_size < 2:
+        compiled_block_size = min(checkpoint_block_size, max_draft_size
+                                  or checkpoint_block_size)
+        if checkpoint_block_size < 2 or compiled_block_size < 2:
             raise ValueError(
                 f"compiled {engine_method} draft has an invalid proposal "
-                f"block size {checkpoint_block_size}")
-        if not 2 <= block_size <= checkpoint_block_size:
+                f"capacity {compiled_block_size}")
+        block_size = num_speculative_tokens or compiled_block_size
+        if not 2 <= block_size <= compiled_block_size:
             raise ValueError(
                 f"{engine_method} num_speculative_tokens must be within the "
-                f"compiled proposal block size [2, {checkpoint_block_size}]")
+                f"compiled proposal capacity [2, {compiled_block_size}]")
         top_k = draft_top_k or 1
-        verify_size = (verify_tree_size
-                       or (block_size if top_k == 1 else max_verify_size))
+        verify_size = _resolve_tree_size(engine_method, top_k,
+                                         verify_tree_size, max_verify_size,
+                                         block_size)
         return _SpecDecodeRuntimeOptions(top_k, 1, verify_size, block_size)
 
     if engine_method == "dspark":
@@ -456,17 +497,36 @@ def _resolve_spec_decode_runtime_options(
         mode_config = draft.get("dspark_config") or {}
         block_size = int(
             mode_config.get("block_size", draft.get("block_size", 0)))
-        proposal_size = num_speculative_tokens or block_size
-        if not 1 <= proposal_size <= block_size:
-            raise ValueError(
-                "dspark num_speculative_tokens must be within the compiled "
-                f"proposal block size [1, {block_size}]")
+        if max_draft_size <= 0:
+            max_draft_size = block_size
         top_k = draft_top_k or 1
-        if top_k > 1 and proposal_size != block_size:
+        if top_k > 1:
+            if num_speculative_tokens is not None:
+                raise ValueError(
+                    "dspark tree uses verify_tree_size as its node budget; "
+                    "omit num_speculative_tokens")
+            verify_size = _resolve_tree_size("dspark", top_k, verify_tree_size,
+                                             max_verify_size, 2)
+        else:
+            proposal_capacity = min(block_size, max_draft_size)
+            if proposal_capacity < 1:
+                raise ValueError(
+                    "compiled dspark draft has no proposal capacity")
+            proposal_size = num_speculative_tokens or proposal_capacity
+            if not 1 <= proposal_size <= proposal_capacity:
+                raise ValueError(
+                    "dspark num_speculative_tokens must be within the "
+                    f"compiled proposal capacity [1, {proposal_capacity}]")
+            verify_size = _resolve_tree_size("dspark", top_k, verify_tree_size,
+                                             max_verify_size,
+                                             proposal_size + 1)
+        if (top_k > 1 and int(base.get("num_linear_attn_layers", 0)) > 0
+                and base.get("recurrent_spec_verify_mode") == "replay"
+                and verify_size != max_verify_size):
             raise ValueError(
-                "dspark tree drafting always uses the complete checkpoint "
-                "proposal block")
-        verify_size = verify_tree_size or proposal_size + 1
+                "dspark tree recurrent-state replay requires "
+                "verify_tree_size to match the base engine's compiled "
+                f"maximum {max_verify_size}")
         return _SpecDecodeRuntimeOptions(top_k, 1, verify_size)
 
     raise ValueError(f"unsupported speculative engine mode {engine_method!r}")
@@ -489,6 +549,41 @@ def _ensure_plugin_path() -> None:
         if candidate.is_file():
             os.environ["EDGELLM_PLUGIN_PATH"] = str(candidate)
             return
+
+
+def ifb_unsupported_reason(layout,
+                           model_type: Optional[str] = None) -> Optional[str]:
+    """Why ``--enable-in-flight-batching`` cannot serve this deployment, or
+    ``None`` when it can.
+
+    The deployment-level half of the IFB support matrix, decided in one place
+    and once, at load time: the request engine drives one vanilla text
+    runtime, so a deployment whose runtime is reached beyond
+    ``handleRequest`` (the speculative decoders, standalone TTS) cannot honour
+    the flag. A Qwen3-Omni bundle is not refused: its Thinker is a text
+    runtime the engine serves, so the deployment runs text-only and the
+    speech endpoints refuse per request (``speech_available``). Request-level
+    refusals (per-request LoRA, speech output, trajectories) live in the
+    engine's ``submit()``.
+    """
+    if model_type == "qwen3_tts":
+        return ("standalone TTS models are not supported under in-flight "
+                "batching")
+    if layout is not None and layout.engine_type == EngineType.SPEC_DECODE:
+        return "speculative decoding is not supported under in-flight batching"
+    return None
+
+
+_IFB_TEXT_ONLY_MESSAGE = (
+    "speech output is unavailable under in-flight batching: the engine serves "
+    "text only, so the Omni talker/code_predictor/code2wav engines were not "
+    "loaded. Start without --enable-in-flight-batching to use speech output.")
+
+
+def _ifb_unsupported_error(reason: str) -> ValueError:
+    return ValueError(
+        "--enable-in-flight-batching is not supported for this deployment: "
+        f"{reason}. Start without the flag to use the blocking path.")
 
 
 def _import_runtime():
@@ -534,6 +629,111 @@ def _import_runtime():
         "Could not import _edgellm_runtime. Build the C++ extension first:\n"
         "  TRT_PACKAGE_DIR=/path/to/tensorrt python experimental/server/setup_pybind.py build_ext --inplace"
     )
+
+
+_GUIDE_TYPE_NAMES = ("json_object", "json_schema", "regex", "ebnf",
+                     "structural_tag", "choice")
+
+# The pybind module is imported at runtime, so the enum members are resolved lazily.
+_GUIDE_TYPE_ENUM = {
+    "json_object": lambda rt: rt.GuideType.JSON_OBJECT,
+    "json_schema": lambda rt: rt.GuideType.JSON_SCHEMA,
+    "regex": lambda rt: rt.GuideType.REGEX,
+    "ebnf": lambda rt: rt.GuideType.EBNF,
+    "structural_tag": lambda rt: rt.GuideType.STRUCTURAL_TAG,
+    "choice": lambda rt: rt.GuideType.CHOICE,
+}
+
+
+def _normalize_response_format(
+        response_format: Optional[Dict[str,
+                                       Any]]) -> Optional[Tuple[str, str]]:
+    """Translate OpenAI's `response_format` into a low-level guide.
+
+    `strict` is ignored: guided decoding is always enforced, matching vLLM. The
+    high-level field cannot express regex / ebnf / structural_tag, which is why the
+    low-level `guided_decoding` field stays available alongside it.
+    """
+    if response_format is None:
+        return None
+    if not isinstance(response_format, dict):
+        raise ValueError("'response_format' must be an object")
+
+    kind = response_format.get("type")
+    if kind in (None, "text"):
+        return None
+    if kind == "json_object":
+        return ("json_object", "")
+    if kind == "json_schema":
+        wrapper = response_format.get("json_schema")
+        if not isinstance(wrapper, dict):
+            raise ValueError("'response_format.json_schema' must be an object")
+        schema = wrapper.get("schema")
+        if not isinstance(schema, dict):
+            raise ValueError(
+                "'response_format.json_schema.schema' must be an object")
+        return ("json_schema", json.dumps(schema, sort_keys=True))
+    raise ValueError(
+        f"'response_format.type' must be text, json_object or json_schema, got {kind!r}"
+    )
+
+
+def _normalize_guided_decoding(
+        guided_decoding: Optional[Dict[str,
+                                       Any]]) -> Optional[Tuple[str, str]]:
+    """Validate the low-level `guided_decoding` field and flatten it to (type, guide).
+
+    Exactly one mode may be set. An empty string or list means "not requested" rather
+    than "constrain to nothing", which would otherwise compile to a grammar accepting
+    no token at all.
+    """
+    if guided_decoding is None:
+        return None
+    if not isinstance(guided_decoding, dict):
+        raise ValueError("'guided_decoding' must be an object")
+
+    unknown = set(guided_decoding) - set(_GUIDE_TYPE_NAMES)
+    if unknown:
+        raise ValueError("'guided_decoding' has unknown field(s): " +
+                         ", ".join(sorted(unknown)))
+
+    chosen: Optional[Tuple[str, str]] = None
+    for name in _GUIDE_TYPE_NAMES:
+        value = guided_decoding.get(name)
+        if value is None:
+            continue
+        if name == "json_object":
+            if not isinstance(value, bool):
+                raise ValueError(
+                    "'guided_decoding.json_object' must be a boolean")
+            if not value:
+                continue
+            guide = ""
+        elif name == "choice":
+            # Checked before the string branch: a bare string would otherwise be carried
+            # through as a guide and only fail in the backend as "not valid JSON".
+            if not isinstance(value, list):
+                raise ValueError(
+                    "'guided_decoding.choice' must be an array of strings")
+            if not value:
+                continue
+            guide = json.dumps(value)
+        elif isinstance(value, str):
+            if not value:
+                continue
+            guide = value
+        elif name in ("json_schema", "structural_tag") and isinstance(
+                value, dict):
+            guide = json.dumps(value, sort_keys=True)
+        else:
+            raise ValueError(f"'guided_decoding.{name}' must be a string")
+
+        if chosen is not None:
+            raise ValueError(
+                "'guided_decoding' sets more than one mode; exactly one is allowed"
+            )
+        chosen = (name, guide)
+    return chosen
 
 
 def _normalize_logit_bias(
@@ -655,13 +855,18 @@ class LLM:
         max_input_len: int = _DEFAULT_MAX_INPUT_LEN,
         max_batch_size: int = _DEFAULT_MAX_BATCH_SIZE,
         max_kv_cache_capacity: int = _DEFAULT_MAX_KV_CACHE_CAPACITY,
+        max_image_tokens: Optional[int] = None,
+        max_image_tokens_per_image: Optional[int] = None,
         draft_top_k: Optional[int] = None,
         draft_step: Optional[int] = None,
         verify_tree_size: Optional[int] = None,
+        max_verify_tree_size: Optional[int] = None,
+        max_draft_tree_size: Optional[int] = None,
         build_options: Optional["BuildOptions"] = None,
         speculative_config: Optional[Any] = None,
         context_cache_config: Optional[Union[ContextCacheConfig,
                                              Mapping[str, Any]]] = None,
+        enable_in_flight_batching: bool = False,
     ):
         if not model:
             raise ValueError("'model' must be provided")
@@ -669,9 +874,13 @@ class LLM:
                 or not math.isfinite(engine_cache_max_size_gb)
                 or engine_cache_max_size_gb <= 0):
             raise ValueError("engine_cache_max_size_gb must be positive")
-        for name, value in (("draft_top_k", draft_top_k),
-                            ("draft_step", draft_step), ("verify_tree_size",
-                                                         verify_tree_size)):
+        for name, value in (
+            ("draft_top_k", draft_top_k),
+            ("draft_step", draft_step),
+            ("verify_tree_size", verify_tree_size),
+            ("max_verify_tree_size", max_verify_tree_size),
+            ("max_draft_tree_size", max_draft_tree_size),
+        ):
             if value is None:
                 continue
             if (isinstance(value, bool) or not isinstance(value, int)
@@ -689,8 +898,7 @@ class LLM:
         self._max_kv_cache_capacity = max_kv_cache_capacity
         self._context_cache_config = ContextCacheConfig.parse(
             context_cache_config)
-        self._tool_template_formatter: Optional[
-            ToolChatTemplateFormatter] = None
+        self._enable_in_flight_batching = enable_in_flight_batching
         self._admission_sem = threading.Semaphore(1)
         self._infer_lock = threading.Lock()
         self._close_lock = threading.Lock()
@@ -704,6 +912,7 @@ class LLM:
         self._prev_ctx_admitted_sequences = 0
         self._closed = False
         self._runtime = None
+        self._engine = None
 
         from .engine_build import BuildOptions, cache_root, prepare_model
 
@@ -711,6 +920,10 @@ class LLM:
             max_input_len=max_input_len,
             max_batch_size=max_batch_size,
             max_kv_cache_capacity=max_kv_cache_capacity,
+            max_verify_tree_size=max_verify_tree_size,
+            max_draft_tree_size=max_draft_tree_size,
+            max_image_tokens=max_image_tokens,
+            max_image_tokens_per_image=max_image_tokens_per_image,
         )
         spec_method = options.spec_type
         num_speculative_tokens = None
@@ -725,13 +938,22 @@ class LLM:
             num_speculative_tokens = spec.num_speculative_tokens
 
         resolved_top_k = draft_top_k or (10 if spec_method == "eagle3" else 1)
-        if (options.builder_spec_type == "gemma4_mtp" and resolved_top_k != 1):
-            raise ValueError("Gemma4 MTP supports linear drafting only; "
-                             "set draft_top_k=1")
         tree_base = (resolved_top_k > 1 and options.builder_spec_type
-                     in {"mtp", "dflash", "jetspec"})
+                     in {"mtp", "dflash", "jetspec", "dspark"})
         if options.spec_type != "none":
-            options = replace(options, tree_base=tree_base)
+            profile_options = {"tree_base": tree_base}
+            profile_verify_size = max_verify_tree_size or verify_tree_size
+            if (profile_verify_size is not None
+                    and options.max_verify_tree_size is None):
+                profile_options["max_verify_tree_size"] = profile_verify_size
+            profile_draft_size = max_draft_tree_size
+            if (profile_draft_size is None
+                    and options.builder_spec_type == "dflash"):
+                profile_draft_size = profile_verify_size
+            if (profile_draft_size is not None
+                    and options.max_draft_tree_size is None):
+                profile_options["max_draft_tree_size"] = profile_draft_size
+            options = replace(options, **profile_options)
 
         prepared = prepare_model(
             model,
@@ -792,6 +1014,13 @@ class LLM:
         context_cache_config = _native_context_cache_config(
             self._rt, self._context_cache_config)
         logger.info("Loading runtime bundle from %s", self._bundle_dir)
+        # Asked for and not available is a configuration error, not a silent
+        # fallback: the operator would otherwise believe requests overlap when
+        # they are being served one at a time.
+        if getattr(self, "_enable_in_flight_batching", False):
+            reason = ifb_unsupported_reason(self._layout)
+            if reason:
+                raise _ifb_unsupported_error(reason)
         if self._layout.engine_type == EngineType.SPEC_DECODE:
             logger.info(
                 "Speculative decoding enabled (top_k=%d, step=%d, "
@@ -813,7 +1042,44 @@ class LLM:
                 context_cache_config,
                 self._dflash_block_size,
             )
-        else:
+        elif self._use_ifb():
+            # In-flight batching: the engine owns the runtime and the one
+            # thread driving it, so requests overlap at step boundaries
+            # instead of queueing on a Python lock. The deployment passed
+            # ifb_unsupported_reason above; the engine itself refuses what it
+            # cannot admit into. An Omni bundle runs text-only here (see
+            # speech_available).
+            try:
+                self._engine = self._rt.RequestEngine(
+                    self._bundle_dir,
+                    self._media_dir,
+                    {},
+                    self._model_dir,
+                    context_cache_config,
+                    max_batch_size=self._max_batch_size,
+                )
+                logger.info("In-flight batching enabled (max_batch_size=%d)",
+                            self._max_batch_size)
+                # The engine overlaps requests, so the gate no longer serialises
+                # them; it only bounds how many direct-API requests hold decoded
+                # media at once: the running batch plus the same queue depth the
+                # server allows (running + queued, as vLLM, SGLang and
+                # TensorRT-LLM count it). Callers past that block rather than
+                # being refused; the server path has its own gate and never
+                # takes this one.
+                self._admission_sem = threading.Semaphore(
+                    self._max_batch_size + DEFAULT_MAX_QUEUED_REQUESTS)
+                if self._layout.has_speech:
+                    logger.warning("Omni speech-output engines not loaded: %s",
+                                   _IFB_TEXT_ONLY_MESSAGE)
+            except RuntimeError as error:
+                # The engine refused the deployment at construction (a batch it
+                # cannot reseat). The flag was explicit, so this is a startup
+                # error with the engine's own reason, not a quiet return to
+                # the blocking path.
+                raise _ifb_unsupported_error(str(error)) from error
+        if (getattr(self, "_engine", None) is None
+                and getattr(self, "_runtime", None) is None):
             self._runtime = self._rt.LLMRuntime(
                 self._bundle_dir,
                 self._media_dir,
@@ -821,13 +1087,43 @@ class LLM:
                 self._model_dir,
                 context_cache_config,
             )
-        self._runtime.capture_decoding_cuda_graph()
-        self._load_omni_runtime()
+        if getattr(self, "_runtime", None) is not None:
+            self._runtime.capture_decoding_cuda_graph()
+            self._load_omni_runtime()
         logger.info("Engine loaded and ready.")
+
+    def _use_ifb(self) -> bool:
+        """In-flight batching is opt-in: ``--enable-in-flight-batching``.
+
+        The flag is the whole decision: whether the deployment can honour it
+        was settled once in ``_load_runtime`` (``ifb_unsupported_reason``),
+        which raises rather than falling back. When enabled it serves text and
+        multimodal-input deployments; a media request joins a running batch
+        like any other — its encoders run at admission — except under a
+        visual-token pruner, where media is founder-only because a seated
+        prefill would skip pruning and diverge from the founding path.
+        """
+        return bool(getattr(self, "_enable_in_flight_batching", False))
+
+    @property
+    def speech_available(self) -> bool:
+        """Whether this process can produce speech: the Omni stack is in the
+        bundle and the runtime is the blocking one that drives it. Under
+        in-flight batching the engine owns the runtime and serves text only.
+        """
+        return bool(self._layout.has_speech
+                    and getattr(self, "_engine", None) is None)
 
     def _load_omni_runtime(self) -> None:
         """Load the Qwen3-Omni audio-output stack when its engines exist."""
         if not self._layout.has_speech:
+            return
+        if getattr(self, "_engine", None) is not None:
+            # Text-only mode: the Talker pipeline drives the runtime outside
+            # handleRequest, which the engine's actor does not mediate, so the
+            # speech engines stay unloaded and the speech endpoints refuse.
+            logger.warning("Omni speech-output engines not loaded: %s",
+                           _IFB_TEXT_ONLY_MESSAGE)
             return
         logger.info("Auto-detected Omni engines: talker=%s",
                     self._layout.talker_dir)
@@ -837,26 +1133,6 @@ class LLM:
                                 self._layout.code2wav_dir, self._bundle_dir,
                                 self._model_dir)
         logger.info("Omni audio output ready.")
-
-    def _tool_template_dirs(self) -> List[str]:
-        return [self._model_dir]
-
-    def _get_tool_template_formatter(self) -> ToolChatTemplateFormatter:
-        if self._tool_template_formatter is None:
-            self._tool_template_formatter = ToolChatTemplateFormatter(
-                self._tool_template_dirs())
-        return self._tool_template_formatter
-
-    def _tool_choice_for_template(
-            self, tool_config: ToolConfig) -> Union[str, Dict[str, Any]]:
-        if tool_config.forced_name:
-            return {
-                "type": "function",
-                "function": {
-                    "name": tool_config.forced_name
-                },
-            }
-        return tool_config.tool_choice
 
     def _visual_config(self) -> dict:
         """Read the model-specific visual component configuration once."""
@@ -885,7 +1161,7 @@ class LLM:
         config = self._visual_config()
         model_type = config.get("model_type", "")
         qwen_video_types = ("qwen2_vl", "qwen2_5_vl", "qwen3_vl", "qwen3_5",
-                            "qwen3_omni")
+                            "qwen3_omni", "cosmos3_edge_vision")
         # Audio-side model types have no video path (qwen3_omni_audio_encoder,
         # qwen3_omni_code2wav, qwen3_asr*); the omni ones share the qwen3_omni
         # prefix, so exclude before the prefix match.
@@ -896,6 +1172,8 @@ class LLM:
             os.path.join(root, "visual", "visual.engine"))
         if "internvl" in model_type and has_visual:
             family = "internvl"
+        elif model_type == "muse_glimmer_vision" and has_visual:
+            family = "muse"
         elif ("nemotron" in model_type and not is_audio_type and has_visual
               and config.get("supports_video", True)):
             family = "nemotron"
@@ -908,8 +1186,9 @@ class LLM:
             raise ValueError(
                 f"video input is not supported for model_type={model_type!r}"
                 " in this runtime bundle; supported families: Qwen-VL "
-                "(qwen2_vl/qwen2_5_vl/qwen3_vl/qwen3_5/qwen3_omni), InternVL, "
-                "and Nemotron-Omni")
+                "(qwen2_vl/qwen2_5_vl/qwen3_vl/qwen3_5/qwen3_omni), "
+                "Cosmos3-Edge, InternVL, "
+                "Nemotron-Omni, and Muse-Glimmer")
         self._video_family_cache = family
         return family
 
@@ -933,7 +1212,23 @@ class LLM:
             except (OSError, ValueError):
                 pre = {}
         pre = pre.get("image_processor", pre)
+        processor: dict = {}
+        processor_path = os.path.join(root, "visual", "processor_config.json")
+        if os.path.isfile(processor_path):
+            try:
+                with open(processor_path) as f:
+                    processor = json.load(f)
+            except (OSError, ValueError):
+                processor = {}
+        video_processor = processor.get("video_processor") or {}
         if builder.get("max_image_tokens"):
+            # Cosmos3 processes every sampled frame. Its processor omits the
+            # Qwen temporal-patching field, so match the compiled runner's
+            # default instead of applying Qwen's two-frame grouping.
+            temporal_patch_size = pre.get("temporal_patch_size")
+            if temporal_patch_size is None:
+                temporal_patch_size = (1 if cfg.get("model_type")
+                                       == "cosmos3_edge_vision" else 2)
             limits = {
                 "model_type":
                 cfg.get("model_type", ""),
@@ -950,7 +1245,11 @@ class LLM:
                 "merge_size":
                 int(pre.get("merge_size", 0)),
                 "temporal_patch_size":
-                int(pre.get("temporal_patch_size", 2)),
+                int(temporal_patch_size),
+                "max_image_tokens_checkpoint":
+                int(pre.get("max_image_tokens", 0)),
+                "max_video_frame_tokens":
+                int(video_processor.get("max_video_frame_tokens", 0)),
                 # Nemotron-Omni video geometry (top-level visual config.json).
                 "video_pruning_rate":
                 float(cfg.get("video_pruning_rate", 0.0)),
@@ -960,6 +1259,11 @@ class LLM:
                 int(cfg.get("video_target_num_patches", 1024)),
                 "downsample_ratio":
                 float(cfg.get("downsample_ratio", 0.5)),
+                # InternVL geometry (visual config.json vision_config).
+                "internvl_image_size":
+                _internvl_geometry(cfg, "image_size"),
+                "internvl_patch_size":
+                _internvl_geometry(cfg, "patch_size"),
             }
         self._video_limits_cache = limits
         return limits
@@ -967,66 +1271,12 @@ class LLM:
     def _prepare_messages_for_runtime(
         self,
         messages: List[Dict[str, Any]],
-        *,
-        tools: Optional[Sequence[Dict[str, Any]]] = None,
-        tool_choice: Optional[Union[str, Dict[str, Any]]] = None,
-        tool_config: Optional[ToolConfig] = None,
-        enable_thinking: bool = False,
-        derive_replay_tail: bool = False,
     ):
-        """Prepare messages for the C++ runtime.
-
-        Returns the replay-tail length alongside the prepared messages. It is
-        non-zero only when the caller asked for it, which is what lets a
-        Hybrid+MTP checkpoint be reused across turns.
-        """
-        tool_config = tool_config or validate_tool_request(
-            messages, tools, tool_choice)
-        template_tools = (tool_config.tools
-                          if tool_config.tool_choice != "none" else [])
+        """Preserve structured messages for the model-owned C++ renderer."""
         image_buffers = _load_image_buffers(self._rt, messages,
                                             self._video_model_family,
                                             self._video_frame_limits)
-
-        if needs_tool_chat_template(messages, template_tools,
-                                    tool_config.tool_choice):
-            template_tool_choice = None
-            if tool_config.tool_choice != "none":
-                template_tool_choice = self._tool_choice_for_template(
-                    tool_config)
-            formatter = self._get_tool_template_formatter()
-            replay_tail_length = 0
-            if derive_replay_tail:
-                # Derive the multi-turn replay tail from the tokenized template
-                # so a Hybrid+MTP checkpoint can be reused across turns.
-                prompt, replay_tail_length = formatter.format_with_replay_tail(
-                    messages,
-                    tools=template_tools,
-                    tool_choice=template_tool_choice,
-                    parallel_tool_calls=tool_config.parallel_tool_calls,
-                    enable_thinking=enable_thinking,
-                )
-            else:
-                prompt = formatter.format(
-                    messages,
-                    tools=template_tools,
-                    tool_choice=template_tool_choice,
-                    parallel_tool_calls=tool_config.parallel_tool_calls,
-                    add_generation_prompt=True,
-                    enable_thinking=enable_thinking,
-                )
-            cpp_messages = _convert_messages_to_cpp(
-                self._rt,
-                [{
-                    "role": "user",
-                    "content": prompt,
-                }],
-            )
-            return (cpp_messages, image_buffers, False, False,
-                    replay_tail_length)
-
-        cpp_messages = _convert_messages_to_cpp(self._rt, messages)
-        return cpp_messages, image_buffers, True, True, 0
+        return _convert_messages_to_cpp(self._rt, messages), image_buffers
 
     def _make_generation_request(
         self,
@@ -1036,6 +1286,8 @@ class LLM:
         tools: Optional[Sequence[Dict[str, Any]]] = None,
         tool_choice: Optional[Union[str, Dict[str, Any]]] = None,
         tool_config: Optional[ToolConfig] = None,
+        apply_chat_template: bool = True,
+        add_generation_prompt: bool = True,
         stream_channel: Optional[Any] = None,
     ):
         normalized_logit_bias = _normalize_logit_bias(params.logit_bias)
@@ -1044,22 +1296,15 @@ class LLM:
         # The replay tail only matters for a prefill-state-only commit against a
         # draft model with reuse enabled: that is the deployment whose
         # checkpoint must land on a turn boundary the next render reproduces.
-        # The server tests build bare objects that skip __init__, so read the
-        # config defensively and let the `and` chain short-circuit before it
-        # reaches the attributes only a constructed LLM has.
+        # A negative value asks the native renderer/tokenizer to derive it.
         cache_config = getattr(self, "_context_cache_config", None)
         derive_replay_tail = (cache_config is not None and cache_config.enabled
                               and not params.cache_generated_tokens
-                              and self.has_draft_model)
-        (cpp_messages, image_buffers, apply_template, add_prompt,
-         replay_tail_length) = (self._prepare_messages_for_runtime(
-             messages,
-             tools=tool_config.tools,
-             tool_choice=tool_config.tool_choice,
-             tool_config=tool_config,
-             enable_thinking=params.enable_thinking,
-             derive_replay_tail=derive_replay_tail,
-         ))
+                              and self.has_draft_model and apply_chat_template
+                              and add_generation_prompt)
+        replay_tail_length = -1 if derive_replay_tail else 0
+        cpp_messages, image_buffers = self._prepare_messages_for_runtime(
+            messages)
 
         audio_buffers = _load_audio_buffers(self._rt, messages)
 
@@ -1068,7 +1313,12 @@ class LLM:
         req.image_buffers = image_buffers
         req.audio_buffers = audio_buffers
         req.stop_strings = params.stop
+        req.sampling_seed = params.seed
         req.logit_bias = normalized_logit_bias
+        if params.guided_decoding is not None:
+            guide_type, guide = params.guided_decoding
+            req.guided_decoding = self._rt.GuidedDecodingParams(
+                _GUIDE_TYPE_ENUM[guide_type](self._rt), guide)
         request.requests = [req]
         if stream_channel is not None:
             request.stream_channels = [stream_channel]
@@ -1076,10 +1326,16 @@ class LLM:
         request.top_p = params.top_p
         request.top_k = params.top_k
         request.max_generate_length = params.max_tokens
-        request.apply_chat_template = apply_template
-        request.add_generation_prompt = add_prompt
+        request.apply_chat_template = apply_chat_template
+        request.add_generation_prompt = add_generation_prompt
         request.enable_thinking = params.enable_thinking
+        request.reasoning_effort = params.reasoning_effort
+        request.tools = _convert_tools_to_cpp(self._rt, tool_config)
+        request.tool_choice = _convert_tool_choice_to_cpp(
+            self._rt, tool_config)
+        request.parallel_tool_calls = tool_config.parallel_tool_calls
         request.disable_spec_decode = params.disable_spec_decode
+        request.skip_special_tokens = params.skip_special_tokens
         request.num_logprobs = params.num_logprobs
         _set_context_cache_request_policies(self._rt, request, params)
         request.context_cache_replay_tail_length = replay_tail_length
@@ -1087,7 +1343,8 @@ class LLM:
 
     def _count_prepared_prompt_tokens(self, request) -> Optional[int]:
         """Count tokens only for an explicit token-count API request."""
-        if not hasattr(self._runtime, "count_prompt_tokens"):
+        counter = getattr(self, "_engine", None) or self._runtime
+        if not hasattr(counter, "count_prompt_tokens"):
             return None
         rows = getattr(request, "requests", ())
         if any(
@@ -1096,7 +1353,7 @@ class LLM:
                 or getattr(row, "past_trajectory", None) is not None
                 for row in rows):
             return None
-        counts = self._runtime.count_prompt_tokens(request)
+        counts = counter.count_prompt_tokens(request)
         return counts[0] if counts else None
 
     def _parse_generation_output(
@@ -1135,8 +1392,9 @@ class LLM:
         *,
         tool_parser: str = "auto",
         reasoning_parser: str = "none",
+        on_handle=None,
     ) -> CompletionOutput:
-        response = self._handle_request(request)
+        response = self._handle_request(request, on_handle=on_handle)
         text = response.output_texts[0] if response.output_texts else ""
         token_ids = response.output_ids[0] if response.output_ids else []
         prompt_tokens = (response.prompt_token_counts[0]
@@ -1164,7 +1422,9 @@ class LLM:
     def _admission(self):
         """Per-instance gate from media decode through inference completion:
         queued requests must not each pin decoded frames. Semaphore, not Lock --
-        streaming releases from the worker/SSE side."""
+        streaming releases from the worker/SSE side. One slot on the blocking
+        path, batch plus queue depth under in-flight batching (see
+        ``_load_runtime``)."""
         return self._admission_sem
 
     def _infer_guard(self):
@@ -1172,7 +1432,9 @@ class LLM:
         return self._infer_lock
 
     def _ensure_open(self) -> None:
-        if self._closed or self._runtime is None:
+        # getattr: callable on duck-typed non-LLM objects in the server tests.
+        if self._closed or (self._runtime is None
+                            and getattr(self, "_engine", None) is None):
             raise RuntimeError("Edge-LLM runtime is closed")
 
     @staticmethod
@@ -1223,15 +1485,33 @@ class LLM:
             int(cc.hybrid_restores),
         )
 
-    def _handle_request(self, request):
-        """Serialized entry to the C++ runtime."""
-        with self._infer_guard():
+    def _handle_request(self, request, on_handle=None):
+        """Entry to the C++ runtime: submitted to the engine's actor under
+        in-flight batching, serialized under a lock on the blocking path.
+
+        ``on_handle`` receives the engine's RequestHandle as soon as the
+        request is submitted, so a caller that gives up on the result (a
+        disconnected client) can cancel it instead of leaving it decoding in
+        its batch seat until ``max_tokens``.
+        """
+        engine = getattr(self, "_engine", None)
+        if engine is not None:
             self._ensure_open()
-            response = self._runtime.handle_request(request)
+            handle = engine.submit(request)
+            if on_handle is not None:
+                on_handle(handle)
+            response = handle.get()
+        else:
+            with self._infer_guard():
+                self._ensure_open()
+                response = self._runtime.handle_request(request)
         # Callable on duck-typed non-LLM objects in the server tests, which have
         # no config to inherit a class default from.
         cache_config = getattr(self, "_context_cache_config", None)
-        if cache_config is not None and cache_config.enabled:
+        # Reuse metrics come off the runtime handle; the engine does not expose
+        # them, so under in-flight batching the log line is simply absent.
+        if (cache_config is not None and cache_config.enabled
+                and self._runtime is not None):
             self._log_context_reuse_metrics()
         return response
 
@@ -1241,6 +1521,12 @@ class LLM:
             if self._closed:
                 return
             self._closed = True
+            if getattr(self, "_engine", None) is not None:
+                # DRAIN lets accepted requests finish; the join inside makes
+                # this the same "no work in flight afterwards" guarantee the
+                # lock pair gives the blocking path.
+                self._engine.shutdown(self._rt.ShutdownMode.DRAIN)
+                self._engine = None
             with self._admission_sem:
                 with self._infer_lock:
                     self._runtime = None
@@ -1351,14 +1637,24 @@ class LLM:
     ) -> Iterator[StreamDelta]:
         """Stream generation deltas for a single message list.
 
-        Runs ``handleRequest`` in a background thread with a
-        ``StreamChannel`` attached, yielding ``StreamDelta`` objects as
-        tokens are produced.
+        Yields ``StreamDelta`` objects as tokens are produced. Under
+        in-flight batching the request is submitted to the engine and this
+        thread reads the attached ``StreamChannel`` directly; on the blocking
+        path ``handleRequest`` runs in a background thread instead.
         """
         params = sampling_params or SamplingParams()
         state = {}
 
         def _cancel():
+            # close() after a clean EOF must stay a no-op: a founder's outcome
+            # is published only when its whole batch drains, and a cancel flag
+            # planted in that window records a completed request as cancelled.
+            if state.get("finished_cleanly"):
+                return
+            state["cancelled_by_caller"] = True
+            handle = state.get("handle")
+            if handle is not None:
+                handle.cancel()
             channel = state.get("channel")
             if channel is not None:
                 channel.cancel()
@@ -1370,7 +1666,11 @@ class LLM:
             channel.set_skip_special_tokens(params.skip_special_tokens)
 
             # The HTTP layer owns admission for a prebuilt request. Direct
-            # callers acquire the per-LLM gate here.
+            # callers take the per-LLM gate here; under in-flight batching it
+            # is wide enough for a batch plus a queue, and there is no worker
+            # thread: the engine queues the request and this thread just reads
+            # the channel it attached.
+            engine = getattr(self, "_engine", None)
             sem = None if prebuilt_request is not None else self._admission()
             if sem is not None:
                 sem.acquire()
@@ -1393,29 +1693,54 @@ class LLM:
                 raise
 
             error_holder = [None]
+            worker = None
 
-            def _run():
-                try:
-                    self._handle_request(request)
-                except Exception as exc:
-                    error_holder[0] = exc
-                    channel.cancel()
-                finally:
-                    if sem is not None:
-                        sem.release()
+            if engine is not None:
+                state["handle"] = engine.submit(request)
+            else:
 
-            worker = threading.Thread(target=_run, daemon=True)
-            worker.start()
+                def _run():
+                    try:
+                        self._handle_request(request)
+                    except Exception as exc:
+                        error_holder[0] = exc
+                        channel.cancel()
+                    finally:
+                        if sem is not None:
+                            sem.release()
 
+                worker = threading.Thread(target=_run, daemon=True)
+                worker.start()
+
+            saw_finished = False
             try:
                 while True:
                     chunk = channel.wait_pop(timeout_ms=200)
                     if chunk is None:
                         if channel.is_finished() or channel.is_cancelled():
                             break
-                        continue
+                        # A terminal outcome with a silent channel means the
+                        # request retired without ever reaching the runtime
+                        # (rejected, or a founder that failed before decoding);
+                        # nothing will touch this channel again. Without this,
+                        # the consumer waits out its transport timeout. Drain
+                        # once more before breaking: push/finish/publish can
+                        # all land between the checks above, leaving the
+                        # terminal chunk in the channel.
+                        handle = state.get("handle")
+                        if handle is not None and handle.ready():
+                            chunk = channel.wait_pop(timeout_ms=0)
+                            if chunk is None:
+                                break
+                        else:
+                            continue
                     reason = finish_reason_name(
                         self._rt, chunk.reason) if chunk.finished else None
+                    if chunk.finished:
+                        # Before the yield: a consumer that closes the stream
+                        # right after the terminal delta must not be taken for
+                        # a disconnect and cancel a request that completed.
+                        state["finished_cleanly"] = True
                     yield StreamDelta(
                         text=chunk.text,
                         token_ids=list(chunk.token_ids),
@@ -1427,14 +1752,38 @@ class LLM:
                         logprobs=_convert_logprobs(chunk.logprobs),
                     )
                     if chunk.finished:
+                        saw_finished = True
                         break
             finally:
-                if not (channel.is_finished() or channel.is_cancelled()):
+                # The producer pushes the finished chunk before it marks the
+                # channel finished; a consumer that raced past that window
+                # must not cancel a stream that ended cleanly, or the tail
+                # below would mistake it for an actor failure and block on
+                # get() until the whole batch drains.
+                if not (saw_finished or channel.is_finished()
+                        or channel.is_cancelled()):
                     channel.cancel()
-                worker.join()
+                if worker is not None:
+                    worker.join()
+                elif sem is not None:
+                    # Engine path: the stream is over (or abandoned) and the
+                    # request's decoded media may be released; the blocking
+                    # path releases from its worker instead.
+                    sem.release()
 
             if error_holder[0] is not None:
                 raise error_holder[0]
+
+            # The outcome is the request's verdict, the channel only its
+            # tokens: a sequence that ended in FinishReason.ERROR, or whose
+            # response failed to materialize, still delivered a terminal chunk.
+            # Every stream the caller did not cancel therefore collects its
+            # outcome — get() raises the real reason for a failure and returns
+            # promptly otherwise, since a resident's outcome is published at
+            # the tick that evicts it, not when the whole batch drains.
+            handle = state.get("handle")
+            if handle is not None and not state.get("cancelled_by_caller"):
+                handle.get()
 
         return _CancellableIterator(_iterate(), _cancel)
 
@@ -1457,6 +1806,9 @@ class LLM:
         if not self._layout.has_speech:
             raise ValueError("Omni audio output not available: talker / "
                              "code_predictor / code2wav engines not loaded.")
+        if self._engine is not None:
+            # In-flight batching: the engine serves text only.
+            raise ValueError(_IFB_TEXT_ONLY_MESSAGE)
         params = sampling_params or SamplingParams()
         state = {}
 
@@ -1531,6 +1883,9 @@ class LLM:
         if not self._layout.has_speech:
             raise ValueError("TTS not available: Omni audio components "
                              "(talker/code_predictor/code2wav) not loaded")
+        if self._engine is not None:
+            # In-flight batching: the engine serves text only.
+            raise ValueError(_IFB_TEXT_ONLY_MESSAGE)
         sem = self._admission()
         return _stream_tts(self._rt,
                            self._runtime,
@@ -1541,8 +1896,9 @@ class LLM:
                            ensure_open=self._ensure_open)
 
     def list_voices(self) -> List[str]:
-        """Speaker names accepted as ``voice``; empty when not Omni-capable."""
-        if not self._layout.has_speech:
+        """Speaker names accepted as ``voice``; empty when not Omni-capable
+        (or when in-flight batching left the speech stack unloaded)."""
+        if not self.speech_available:
             return []
         self._ensure_open()
         return sorted(self._runtime.get_speaker_names())
@@ -1619,6 +1975,10 @@ class LLM:
     @property
     def has_draft_model(self) -> bool:
         """Whether speculative decoding is active."""
+        # The engine only serves vanilla deployments, so under in-flight
+        # batching there is no runtime handle and the answer is simply no.
+        if self._runtime is None:
+            return False
         return self._runtime.has_draft_model()
 
     @property
@@ -1626,8 +1986,35 @@ class LLM:
         """Whether this runtime reuses matching text prefixes."""
         return self._context_cache_config.enabled
 
+    def get_scheduling_metrics(self):
+        """Engine scheduling counters as a dict, or ``None`` on the blocking path."""
+        engine = getattr(self, "_engine", None)
+        if engine is None or not hasattr(engine, "metrics"):
+            return None
+        m = engine.metrics()
+        counters = {
+            field: getattr(m, field)
+            for field in ("submitted", "refused", "stalls_incompatible",
+                          "stalls_guided", "stalls_no_capacity",
+                          "admitted_mid_flight", "completed", "cancelled",
+                          "failed", "queue_latency_max_us")
+        }
+        counters["queue_latency_avg_us"] = (m.queue_latency_total_us //
+                                            m.queue_latency_count
+                                            if m.queue_latency_count else 0)
+        # Live gauges alongside the counters: current depth is what an
+        # operator reading /health actually wants first.
+        counters["queued"] = getattr(engine, "queued", 0)
+        counters["resident"] = getattr(engine, "resident", 0)
+        return counters
+
     def get_context_cache_metrics(self):
         """Return native reuse counters, or ``None`` when reuse is disabled."""
+        # The engine exposes no metrics passthrough; reuse counters are a
+        # blocking-path feature until the context cache is wired into
+        # admission.
+        if self._runtime is None:
+            return None
         with self._infer_guard():
             self._ensure_open()
             return self._runtime.get_context_cache_metrics()
@@ -1785,13 +2172,17 @@ def load_model(**kwargs):
         model_type = json.load(file).get("model_type")
     if model_type == "qwen3_tts":
         runtime_class = TTS
-        for name in ("draft_top_k", "draft_step", "verify_tree_size"):
+        for name in ("draft_top_k", "draft_step", "verify_tree_size",
+                     "max_verify_tree_size", "max_draft_tree_size"):
             if kwargs.pop(name, None) is not None:
                 raise ValueError(
                     f"standalone TTS models do not support {name}")
         if kwargs.pop("speculative_config", None):
             raise ValueError(
                 "standalone TTS models do not support speculative decoding")
+        if kwargs.pop("enable_in_flight_batching", False):
+            raise _ifb_unsupported_error(
+                ifb_unsupported_reason(None, model_type=model_type))
         context_cache = ContextCacheConfig.parse(
             kwargs.pop("context_cache_config", None))
         if context_cache.enabled:
@@ -1834,10 +2225,55 @@ def _convert_messages_to_cpp(rt_module, messages: List[Dict[str, Any]]):
     for msg in messages:
         cpp_msg = rt_module.Message()
         cpp_msg.role = msg["role"]
-        content = msg["content"]
+        reasoning_key = ("reasoning_content" if "reasoning_content" in msg else
+                         "reasoning" if "reasoning" in msg else None)
+        cpp_msg.has_reasoning_content = reasoning_key is not None
+        cpp_msg.reasoning_content = (str(msg.get(reasoning_key) or "")
+                                     if reasoning_key else "")
+        cpp_msg.tool_call_id = str(msg.get("tool_call_id") or "")
+        cpp_msg.name = str(msg.get("name") or "")
+        cpp_msg.has_content = "content" in msg
+        cpp_msg.content_is_array = isinstance(msg.get("content"), list)
+        cpp_msg.content_is_null = cpp_msg.has_content and msg["content"] is None
+
+        raw_tool_calls = msg.get("tool_calls") or []
+        if msg.get("function_call") and not raw_tool_calls:
+            raw_tool_calls = [{
+                "type": "function",
+                "function": msg["function_call"],
+            }]
+        # vLLM drops an empty tool_calls field so provider templates keep the
+        # ordinary assistant-message path.
+        cpp_msg.has_tool_calls = bool(raw_tool_calls)
+        cpp_tool_calls = []
+        for raw_call in raw_tool_calls:
+            function = raw_call.get("function", raw_call)
+            call = rt_module.MessageToolCall()
+            call.id = str(raw_call.get("id") or "")
+            call.type = str(raw_call.get("type") or "function")
+            call.name = str(function.get("name") or "")
+            arguments = function.get("arguments", {})
+            arguments_is_string = isinstance(arguments, str)
+            if arguments_is_string:
+                try:
+                    json.loads(arguments) if arguments else {}
+                except json.JSONDecodeError as error:
+                    raise ValueError(
+                        f"Invalid JSON in assistant tool-call arguments: "
+                        f"{error.msg}") from error
+            call.arguments_is_string = arguments_is_string
+            call.arguments = (arguments if arguments_is_string else json.dumps(
+                arguments, ensure_ascii=False, separators=(",", ":")))
+            cpp_tool_calls.append(call)
+        cpp_msg.tool_calls = cpp_tool_calls
+
+        content = msg.get("content")
         contents_list = []
         if isinstance(content, str):
             contents_list.append(rt_module.MessageContent("text", content))
+        elif content is not None and not isinstance(content, list):
+            raise ValueError(
+                "Message content must be a string, an array, or null")
         elif isinstance(content, list):
             for item in content:
                 if isinstance(item, str):
@@ -1845,7 +2281,7 @@ def _convert_messages_to_cpp(rt_module, messages: List[Dict[str, Any]]):
                         "text", item))
                 elif isinstance(item, dict):
                     ct = item.get("type", "text")
-                    if ct == "text":
+                    if ct in ("text", "input_text"):
                         contents_list.append(
                             rt_module.MessageContent(
                                 "text",
@@ -1872,9 +2308,47 @@ def _convert_messages_to_cpp(rt_module, messages: List[Dict[str, Any]]):
                             rt_module.MessageContent("audio", ""))
                     else:
                         raise ValueError(f"Unsupported content type: {ct}")
+                else:
+                    raise ValueError(
+                        "Message content array items must be strings or objects"
+                    )
         cpp_msg.contents = contents_list
         cpp_messages.append(cpp_msg)
     return cpp_messages
+
+
+def _convert_tools_to_cpp(rt_module, tool_config: ToolConfig):
+    """Convert validated OpenAI function tools to the native render contract."""
+    if tool_config.tool_choice == "none":
+        return []
+    result = []
+    for raw_tool in tool_config.tools:
+        function = raw_tool["function"]
+        tool = rt_module.ToolDefinition()
+        tool.name = function["name"]
+        tool.description = function.get("description", "")
+        tool.has_description = "description" in function
+        tool.parameters = json.dumps(function.get("parameters", {}),
+                                     ensure_ascii=False,
+                                     separators=(",", ":"))
+        tool.has_parameters = "parameters" in function
+        tool.strict = bool(function.get("strict", False))
+        tool.has_strict = "strict" in function
+        result.append(tool)
+    return result
+
+
+def _convert_tool_choice_to_cpp(rt_module, tool_config: ToolConfig):
+    choice = rt_module.ToolChoice()
+    modes = {
+        "none": rt_module.ToolChoiceMode.NONE,
+        "auto": rt_module.ToolChoiceMode.AUTO,
+        "required": rt_module.ToolChoiceMode.REQUIRED,
+        "function": rt_module.ToolChoiceMode.FUNCTION,
+    }
+    choice.mode = modes[tool_config.tool_choice]
+    choice.function_name = tool_config.forced_name or ""
+    return choice
 
 
 def _load_image_buffers(rt_module,

@@ -1,5 +1,39 @@
 # Release Notes
 
+## 0.11.0
+
+### New features and models
+
+- Added published Python wheels for qualified x86-64 and AArch64 platforms, with exact native-payload selection and target-specific local wheel builds
+- Replaced copied chat-template schemas with native C++ rendering of provider-owned Jinja templates for structured, multimodal, reasoning, and tool-calling requests
+- Added Muse-Glimmer FP16 vision-language inference, NVFP4 text inference, DFlash, DFlash2, streaming, and native tool-call support
+- Added Hunyuan dense model support for HY-MT1.5-7B and HY-MT2-7B
+- Added experimental pi0.5 FP16 policy inference for LIBERO, DROID, and ALOHA contracts
+- Added XGrammar guided decoding for JSON, JSON Schema, regex, EBNF, structural tags, and choices
+- Added opt-in single-rank in-flight batching to the experimental OpenAI-compatible server
+- Added Qwen3.8 DFlash2 speculative decoding
+- Added CodePredictor speculative decoding for Qwen3-Omni and Qwen3-TTS audio generation
+- Expanded Nemotron and Gemma speculative decoding with DSpark, greedy trees, reduced-vocabulary chain MTP, and quantized drafts
+- Added GPU-free CuTe DSL AOT artifact generation for every supported target architecture
+- Added NVIDIA IGX Thor source and wheel support for its SM110 integrated GPU and SM120 discrete GPU
+- Added Qwen3.5 tensor-parallel inference for multi-device deployments
+
+### Runtime and performance
+
+- Added native Cosmos3-Edge reasoner video input
+- Added fused RGB/NV12 preprocessing and copy-free handoff of caller-owned PCM buffers
+- Added pre-tokenized requests and online benchmark scheduling
+- Added incremental tool-call streaming
+- Added bounded Gemma 4 sliding-window KV storage, DiffusionGemma prompt-KV reuse, and GPU media hashing for context-cache entries
+- Improved Blackwell performance with batched DART pruning, ragged paged FMHA, PDL-enabled decode/RoPE/GDN paths, and CuTe DSL LayerNorm
+- Added Thor-optimized NVFP4-A16 dense and routed-MoE kernels
+
+### Correctness fixes
+
+- Fixed tokenizer special-token handling, Gemma 4 BPE merging, and chat-template resolution for Qwen3-Omni thinking behavior and Nemotron-Omni multimodal messages
+- Fixed INT4, NVFP4, FP8 KV-cache, tensor-parallel, audio calibration, and speculative-draft export accuracy issues
+- Fixed ragged inference, MTP and tree shape contracts, long-context admission with KV reuse, and speculative accept-length synchronization
+
 ## 0.10.1
 - Added experimental Dual NVIDIA DGX Spark support with TP=2 tensor-parallel inference over MPI and NCCL
 - Redesigned the experimental OpenAI-compatible server for faster cold launches and lower memory usage
@@ -27,6 +61,7 @@
 - Fixed cross-platform GPU memory reporting
 
 ## 0.10.0
+- Added chain-MTP reduced draft vocabulary export/runtime support and `spec_draft_accept` component benchmarking
 - Added Day-0 support for Qwen3.8-27B
 - Added NVIDIA Nemotron-3.5 Lightning support with MTP and DFlash speculative decoding
 - Added an experimental ONNX-less workflow to build TensorRT engines directly from supported checkpoints

@@ -320,6 +320,15 @@ class PluginRunner:
                 f"{plugin_name} plugin not available in this build")
 
         layer = network.add_plugin_v3(inputs, [], plugin)
+        if layer is None:
+            # The plugin refused the network I/O contract (getOutputDataTypes
+            # etc.) -- expected only when the caller opts in; otherwise a
+            # missing gate or a broken build.
+            if expect_unsupported:
+                raise PluginUnsupportedError(
+                    f"{plugin_name} rejected the network I/O contract")
+            _fail_unsupported(
+                f"{plugin_name} rejected the network I/O contract")
         for i, oname in enumerate(output_names):
             layer.get_output(i).name = oname
             network.mark_output(layer.get_output(i))

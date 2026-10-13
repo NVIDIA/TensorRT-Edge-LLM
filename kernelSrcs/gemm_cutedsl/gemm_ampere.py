@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025 - 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -38,8 +38,10 @@ import cutlass.cute as cute
 import cutlass.cute.testing as testing
 import cutlass.utils as utils
 import numpy as np
+from cutedsl_utils import aot_placeholders
 from common import (
     create_bias_tensor,
+    create_fake_row_major_2d_tensor,
     create_row_major_2d_tensors,
     export_compiled_kernel,
     mark_2d_row_major_dynamic,
@@ -714,7 +716,7 @@ def run(
     if fused_epilogue not in ("none", "bias", "bias_silu"):
         raise ValueError(f"Unknown fused_epilogue={fused_epilogue!r}")
 
-    if cp.cuda.runtime.getDeviceCount() == 0:
+    if not export_only and cp.cuda.runtime.getDeviceCount() == 0:
         raise RuntimeError("GPU is required.")
 
     epilogue_str = f" +{fused_epilogue}" if fused_epilogue != "none" else ""
@@ -722,9 +724,15 @@ def run(
     print(f"{_tag} A[{M},{K}] row-major x B[{N},{K}]^T → C[{M},{N}] row-major")
     print(f"{_tag} Tile {cta_tiler_mnk}, MMA (16,8,16), atoms {atom_layout_mnk}, stages={num_stages}")
 
-    mA, mB, mC, a_cp, b_cp, c_cp = _create_cute_tensors(
-        M, N, K, ab_dtype, c_dtype, export_only
-    )
+    if export_only:
+        mA = create_fake_row_major_2d_tensor(dtype=ab_dtype)
+        mB = create_fake_row_major_2d_tensor(dtype=ab_dtype)
+        mC = create_fake_row_major_2d_tensor(dtype=c_dtype)
+        a_cp = b_cp = c_cp = None
+    else:
+        mA, mB, mC, a_cp, b_cp, c_cp = _create_cute_tensors(
+            M, N, K, ab_dtype, c_dtype, False
+        )
 
     # Bias tensor for fused epilogues.
     mBias = None
@@ -742,9 +750,15 @@ def run(
         num_stages=num_stages,
         atom_layout_mnk=atom_layout_mnk,
     )
-    current_stream = cuda.CUstream(cp.cuda.get_current_stream().ptr)
+    current_stream = (
+        aot_placeholders.make_stream()
+        if export_only
+        else cuda.CUstream(cp.cuda.get_current_stream().ptr)
+    )
 
-    compile_opts = ("--gpu-arch " + gpu_arch) if gpu_arch else None
+    compile_opts = aot_placeholders.compile_options(
+        ("--gpu-arch " + gpu_arch) if gpu_arch else ""
+    ) if export_only else None
     extra_str = " +unpredicated" if use_unpredicated else ""
     print(f"{_tag} Compiling kernel (gpu_arch={gpu_arch or 'default'}){extra_str}{epilogue_str}...")
     t0 = time.time()
@@ -753,7 +767,7 @@ def run(
         use_silu=use_silu,
         mBias=mBias,
         skip_predication=use_unpredicated,
-        **(dict(options=compile_opts) if compile_opts else {}),
+        **(dict(options=compile_opts) if export_only else {}),
     )
     print(f"{_tag} Compilation time: {time.time() - t0:.4f}s")
 

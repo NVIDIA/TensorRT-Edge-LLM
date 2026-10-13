@@ -109,6 +109,25 @@ bool RopeCache::configsMatch(RopeConfig const& a, int32_t rotaryDimA, int32_t ma
             }
         }
     }
+    if (a.type == RopeType::kLlama3)
+    {
+        bool const aHasLlama3 = a.llama3.has_value();
+        bool const bHasLlama3 = b.llama3.has_value();
+        if (aHasLlama3 != bHasLlama3)
+        {
+            return false;
+        }
+        if (aHasLlama3)
+        {
+            auto const& la = *a.llama3;
+            auto const& lb = *b.llama3;
+            if (la.originalMaxPositionEmbeddings != lb.originalMaxPositionEmbeddings || la.factor != lb.factor
+                || la.lowFreqFactor != lb.lowFreqFactor || la.highFreqFactor != lb.highFreqFactor)
+            {
+                return false;
+            }
+        }
+    }
     return true;
 }
 

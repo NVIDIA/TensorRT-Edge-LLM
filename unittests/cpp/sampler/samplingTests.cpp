@@ -308,6 +308,32 @@ TEST_F(SamplingTest, TemperatureZeroParameterOverride)
     }
 }
 
+TEST_F(SamplingTest, TopPProbabilitiesIncludeCrossingTokenAndPreserveVocabularyOrder)
+{
+    constexpr int32_t rows{2};
+    constexpr int32_t vocabSize{4};
+    rt::Tensor logits({rows, vocabSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor probabilities({rows, vocabSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    copyHostToDevice<float>(logits,
+        {std::log(0.05F), std::log(0.50F), std::log(0.15F), std::log(0.30F), std::log(0.40F), std::log(0.10F),
+            std::log(0.30F), std::log(0.20F)});
+    rt::Tensor workspace({static_cast<int64_t>(getTopPProbabilitiesWorkspaceSize(rows, vocabSize))},
+        rt::DeviceType::kGPU, nvinfer1::DataType::kINT8);
+
+    topPProbabilitiesFromLogits(logits, probabilities, 1.0F, 0.75F, workspace, nullptr);
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    auto const actual = copyDeviceToHost<float>(probabilities);
+    EXPECT_NEAR(actual[0], 0.0F, 1.0e-6F);
+    EXPECT_NEAR(actual[1], 0.625F, 1.0e-5F);
+    EXPECT_NEAR(actual[2], 0.0F, 1.0e-6F);
+    EXPECT_NEAR(actual[3], 0.375F, 1.0e-5F);
+    EXPECT_NEAR(actual[4], 4.0F / 9.0F, 1.0e-5F);
+    EXPECT_NEAR(actual[5], 0.0F, 1.0e-6F);
+    EXPECT_NEAR(actual[6], 1.0F / 3.0F, 1.0e-5F);
+    EXPECT_NEAR(actual[7], 2.0F / 9.0F, 1.0e-5F);
+}
+
 TEST(SamplingUtilsTest, ShouldUseNonGreedySampling)
 {
     EXPECT_FALSE(trt_edgellm::shouldUseNonGreedySampling(1.0f, 0, 1.0f));
@@ -1011,6 +1037,104 @@ protected:
         return result;
     }
 };
+
+TEST_F(SamplingTest, PerRowUniformsAreStableUnderBatchReorder)
+{
+    constexpr int32_t batchSize{3};
+    constexpr int32_t vocabSize{5};
+    std::vector<float> const logits{2, 1.5, 1, .5, 0, 0, .5, 1, 1.5, 2, 1, 0, 2, .5, 1.5};
+    std::vector<float> const uniforms{.05, .55, .95};
+    std::vector<int32_t> const permutation{2, 0, 1};
+    auto sample = [&](std::vector<float> const& values, std::vector<float> const& randoms) {
+        rt::Tensor logitsTensor({batchSize, vocabSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+        rt::Tensor uniformsTensor({batchSize}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+        rt::Tensor selected({batchSize, 1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+        CUDA_CHECK(cudaMemcpy(
+            logitsTensor.rawPointer(), values.data(), values.size() * sizeof(float), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(
+            uniformsTensor.rawPointer(), randoms.data(), randoms.size() * sizeof(float), cudaMemcpyHostToDevice));
+        SamplingParams params(batchSize, vocabSize, 1.0F, vocabSize, 1.0F);
+        rt::Tensor workspace({static_cast<int64_t>(getTopKtopPSamplingWorkspaceSize(batchSize, vocabSize, params))},
+            rt::DeviceType::kGPU, nvinfer1::DataType::kINT8);
+        topKtopPSamplingFromLogits(logitsTensor, selected, params, workspace, 0, TEST_SEED, 0, &uniformsTensor);
+        CUDA_CHECK(cudaDeviceSynchronize());
+        return copyDeviceToHost<int32_t>(selected);
+    };
+    auto const original = sample(logits, uniforms);
+    std::vector<float> permutedLogits(logits.size());
+    std::vector<float> permutedUniforms(uniforms.size());
+    for (int32_t row = 0; row < batchSize; ++row)
+    {
+        int32_t const source = permutation[row];
+        std::copy_n(logits.begin() + source * vocabSize, vocabSize, permutedLogits.begin() + row * vocabSize);
+        permutedUniforms[row] = uniforms[source];
+    }
+    auto const permuted = sample(permutedLogits, permutedUniforms);
+    for (int32_t row = 0; row < batchSize; ++row)
+    {
+        EXPECT_EQ(permuted[row], original[permutation[row]]);
+    }
+}
+
+TEST_F(SamplingTest, NucleusSamplingKeepsTheFullCrossingToken)
+{
+    constexpr int32_t kBATCH_SIZE{1};
+    constexpr int32_t kVOCAB_SIZE{3};
+    constexpr float kTOP_P{0.8F};
+    std::vector<float> const logits{std::log(0.6F), std::log(0.3F), std::log(0.1F)};
+    std::vector<float> const uniforms{0.7F};
+
+    for (int32_t const topK : {0, kVOCAB_SIZE})
+    {
+        rt::Tensor logitsTensor({kBATCH_SIZE, kVOCAB_SIZE}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+        rt::Tensor uniformsTensor({kBATCH_SIZE}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+        rt::Tensor selected({kBATCH_SIZE, 1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+        CUDA_CHECK(cudaMemcpy(
+            logitsTensor.rawPointer(), logits.data(), logits.size() * sizeof(float), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(
+            uniformsTensor.rawPointer(), uniforms.data(), uniforms.size() * sizeof(float), cudaMemcpyHostToDevice));
+        SamplingParams params(kBATCH_SIZE, kVOCAB_SIZE, 1.0F, topK, kTOP_P);
+        rt::Tensor workspace({static_cast<int64_t>(getTopKtopPSamplingWorkspaceSize(kBATCH_SIZE, kVOCAB_SIZE, params))},
+            rt::DeviceType::kGPU, nvinfer1::DataType::kINT8);
+        topKtopPSamplingFromLogits(logitsTensor, selected, params, workspace, 0, TEST_SEED, 0, &uniformsTensor);
+        CUDA_CHECK(cudaDeviceSynchronize());
+
+        EXPECT_EQ(copyDeviceToHost<int32_t>(selected), (std::vector<int32_t>{1})) << "topK=" << topK;
+    }
+}
+
+TEST_F(SamplingTest, NucleusSamplingNearOneUsesFullMassFallback)
+{
+    constexpr int32_t kBATCH_SIZE{1};
+    constexpr int32_t kVOCAB_SIZE{4097};
+    std::vector<float> const logits(kVOCAB_SIZE, 0.0F);
+    std::vector<float> const uniforms{std::nextafter(1.0F, 0.0F)};
+    rt::Tensor logitsTensor({kBATCH_SIZE, kVOCAB_SIZE}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor uniformsTensor({kBATCH_SIZE}, rt::DeviceType::kGPU, nvinfer1::DataType::kFLOAT);
+    rt::Tensor selected({kBATCH_SIZE, 1}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    CUDA_CHECK(
+        cudaMemcpy(logitsTensor.rawPointer(), logits.data(), logits.size() * sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(
+        uniformsTensor.rawPointer(), uniforms.data(), uniforms.size() * sizeof(float), cudaMemcpyHostToDevice));
+    SamplingParams params(kBATCH_SIZE, kVOCAB_SIZE, 1.0F, 0, std::nextafter(1.0F, 0.0F));
+    rt::Tensor workspace({static_cast<int64_t>(getTopKtopPSamplingWorkspaceSize(kBATCH_SIZE, kVOCAB_SIZE, params))},
+        rt::DeviceType::kGPU, nvinfer1::DataType::kINT8);
+
+    int32_t first{-1};
+    for (int32_t iteration = 0; iteration < 10; ++iteration)
+    {
+        topKtopPSamplingFromLogits(logitsTensor, selected, params, workspace, 0, TEST_SEED, 0, &uniformsTensor);
+        CUDA_CHECK(cudaDeviceSynchronize());
+        int32_t const token = copyDeviceToHost<int32_t>(selected).front();
+        EXPECT_GE(token, 0);
+        EXPECT_LT(token, kVOCAB_SIZE);
+        if (iteration == 0)
+        {
+            first = token;
+        }
+        EXPECT_EQ(token, first);
+    }
+}
 
 // SelectAllTopK tests - simplified to only test raw value return functionality
 class ReturnAllTopKTests : public SamplingTest

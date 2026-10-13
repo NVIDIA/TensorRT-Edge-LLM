@@ -4,9 +4,17 @@
 
 | Workflow | Use it when | Data flow |
 |---|---|---|
+| [Published Python wheel](#published-python-wheel) | The target matches a qualified release-wheel configuration. | PyPI wheel → exact native payload selection → Python inference |
 | [C++ source deployment](#source-workflow-c-runtime) | The application uses the supported ONNX export, engine build, and C++ runtime workflow. | Hugging Face checkpoint → optional quantization → ONNX export → C++ engine build → C++ inference |
 | [Python from source](#optional-python-frontend) | The application uses the experimental checkpoint-direct builder or Python server from the same source and build tree. | Hugging Face checkpoint → checkpoint-direct builder → TensorRT engine → Python inference |
-| [Experimental local wheel](#experimental-local-wheel) | A developer needs to evaluate a relocatable Python installation on the current target. | Local source build → target-specific wheel → Python inference |
+| [Local wheel build](#build-a-local-wheel-from-source) | A source user needs a wheel from the current checkout or for a custom target subset. | Local source build → target-specific wheel → Python inference |
+
+## Inference Prerequisite
+
+The target must have at least the deployed model size plus 2 GB of available
+device memory before starting inference. Treat this as a minimum: KV cache,
+multimodal components, speculative draft engines, and larger batch or sequence
+profiles can require additional memory.
 
 ## Source workflow: C++ runtime
 
@@ -129,6 +137,50 @@ cmake .. \
     -DENABLE_CUTE_DSL=ALL
 ```
 
+**IGX Thor with an RTX SM120 GPU**
+
+An IGX Thor system with both the integrated Thor GPU and an attached RTX
+Blackwell GPU can use one plugin/runtime build. Generate one AArch64 CuTe DSL
+artifact containing every supported SM110 and SM120 kernel, then compile the
+CUDA sources for both architectures in one CMake build:
+
+```bash
+python kernelSrcs/build_cutedsl.py \
+    --kernels ALL \
+    --gpu_arch sm_110,sm_120 \
+    --arch aarch64 \
+    --cuda-version 13 \
+    --clean
+
+cmake -S . -B build-igx-thor \
+    -DTRT_PACKAGE_DIR=/usr \
+    -DCMAKE_TOOLCHAIN_FILE=cmake/aarch64_linux_toolchain.cmake \
+    -DEMBEDDED_TARGET=igx-thor \
+    -DCUDA_CTK_VERSION=13.0 \
+    -DENABLE_CUTE_DSL=ALL
+
+cmake --build build-igx-thor --parallel
+```
+
+`EMBEDDED_TARGET=igx-thor` compiles the CUDA sources for `110a` and `120`,
+requires CUDA 13 or newer, and selects the combined `sm_110_sm_120` CuTe DSL
+artifact. On a native IGX host, set
+`CUDA_DEVICE_ORDER=PCI_BUS_ID`, then use
+`CUDA_VISIBLE_DEVICES=0` for Thor or `CUDA_VISIBLE_DEVICES=1` for RTX. Confirm
+the selection before building or running an engine:
+
+```bash
+python3 -c 'import torch; print(torch.cuda.get_device_name(0))'
+```
+
+In an NVIDIA container use `NVIDIA_VISIBLE_DEVICES=0` or
+`NVIDIA_VISIBLE_DEVICES=1`. The selected physical GPU appears as CUDA device 0
+inside the container, so do not copy the physical ordinal into
+`CUDA_VISIBLE_DEVICES` there. GPU selection is fixed for the life of an
+inference process. To switch GPUs, stop the process, update the selector, use
+the engine built for the selected SM, and restart. TensorRT engines remain
+architecture specific even though the plugin binary is shared.
+
 **DGX Spark (GB10)**
 
 Run this directly on the DGX Spark system. Use `gb10` as the embedded target
@@ -229,12 +281,12 @@ cmake .. \
 |:-------|:------------|:--------|
 | `TRT_PACKAGE_DIR` | Path to TensorRT installation. Auto-detected; manual hint to disambiguate multiple versions. | N/A |
 | `CMAKE_TOOLCHAIN_FILE` | **Required for Edge devices**: Use `cmake/aarch64_linux_toolchain.cmake` for Edge device builds. **Not needed for GPU builds** | N/A |
-| `EMBEDDED_TARGET` | **Required for Edge devices**: `jetson-thor` (Jetson Thor), `auto-thor` (DRIVE Thor / DriveOS), `gb10` (DGX Spark), or `jetson-orin` (Jetson Orin). **Not needed for GPU builds** | N/A |
+| `EMBEDDED_TARGET` | **Required for Edge devices**: `jetson-thor` (Jetson Thor), `igx-thor` (IGX Thor plus RTX SM120), `auto-thor` (DRIVE Thor / DriveOS), `gb10` (DGX Spark), or `jetson-orin` (Jetson Orin). **Not needed for GPU builds** | N/A |
 | `CUDA_CTK_VERSION` | CUDA Toolkit version. Use the platform command above to select `13.3`, `13.2`, or `13.0`. Do not pass `-DCUDA_VERSION`; CMake reserves that name for CUDA headers and rejects it. | target default |
 | `BUILD_UNIT_TESTS` | Build unit tests | OFF |
 | `ENABLE_COVERAGE` | Enable gcov code coverage instrumentation (see [Code Coverage](../../developer_guide/testing/code-coverage.md)) | OFF |
 | `ENABLE_CUTE_DSL` | Select generated CuTe DSL kernels: `fmha`, `ALL`, or a group list such as `gdn`, `gemm`, or `ssd`. Any selection also links `fmha`, which the attention plugins require. Use `ALL` for customer builds. | fmha |
-| `CUTE_DSL_ARTIFACT_TAG` | Artifact tag under `cpp/kernels/cuteDSLArtifact/<arch>/`, for example `sm_87`, `sm_110`, or `sm_121`. Edge targets infer it from `EMBEDDED_TARGET`; pass it explicitly for x86 prebuilt artifacts or when multiple local tags exist for one CPU architecture. | auto |
+| `CUTE_DSL_ARTIFACT_TAG` | Artifact tag under `cpp/kernels/cuteDSLArtifact/<arch>/`, for example `sm_87`, `sm_110`, `sm_110_sm_120`, or `sm_121`. Edge targets infer it from `EMBEDDED_TARGET`; pass it explicitly for x86 prebuilt artifacts or when multiple local tags exist for one CPU architecture. | auto |
 
 **CuTe DSL Kernel Artifacts**
 
@@ -419,49 +471,195 @@ tensorrt-edgellm-merge-lora --help
 tensorrt-edgellm-reduce-vocab --help
 ```
 
-**4. Configure HuggingFace Access (Optional)**
+**4. Configure Hugging Face Access (Optional)**
 
-Some models on HuggingFace require you to accept terms before downloading.
-
-**Models that require HuggingFace login:**
-- Llama family (Llama 3.x)
-- Phi-4-Multimodal
-- Alpamayo-R1-10B
-- Other models marked as "gated" on HuggingFace
-
-**To configure access:**
+Some Hugging Face checkpoints require accepting the provider's terms before
+download. After accepting those terms, authenticate with a read token:
 
 ```bash
-# Install HuggingFace CLI and login
 hf auth login
-# Enter your HuggingFace access token when prompted
 ```
 
-> **How to get a token:** Visit [HuggingFace Settings - Tokens](https://huggingface.co/settings/tokens), create a new token (read access is sufficient), and copy it.
+> **How to get a token:** Visit [Hugging Face Settings - Tokens](https://huggingface.co/settings/tokens) and create a read token.
 
-**You're done with export pipeline setup!** You can now quantize and export models with the checkpoint-based workflow. The ONNX files will be transferred to the Edge device for runtime deployment.
+The environment is now ready to quantize or export a supported checkpoint.
 
 ---
 
-## Experimental local wheel
+## Published Python wheel
 
-Wheels are not published or the default installation path in 0.10.1. To
-evaluate a target-specific wheel locally, install the packaging requirements
-and run the local builder:
+TensorRT Edge-LLM 0.11.0 publishes `tensorrt-edgellm` wheels for CPython 3.10,
+3.11, and 3.12 on both `x86_64` and `aarch64`. `pip` selects the wheel matching
+the interpreter ABI and CPU architecture. Each wheel contains every qualified
+native payload for that architecture; at runtime, Edge-LLM selects one exact
+match for the platform release, CUDA and TensorRT SONAMEs, and GPU SM listed in
+the [Wheel Packaging Matrix](support-matrix.md#wheel-packaging-matrix).
+
+Release wheels are published on PyPI and NVIDIA's Python package index. Install
+on the target machine; no Edge-LLM checkout, CMake build, or CuTe DSL download is
+needed. Install the CUDA and TensorRT stack supported by the target platform,
+including the TensorRT Python bindings.
+TensorRT is deliberately not a package extra: one Edge-LLM architecture wheel
+contains payloads for several platform and TensorRT releases, which Python
+package metadata cannot select from the GPU and platform release.
+
+For a standalone TensorRT SDK, install its Python wheel for your interpreter
+and expose its shared libraries before starting Python:
 
 ```bash
-python -m pip install -r packaging/wheel-toolchain-requirements.txt
-python packaging/wheel_cli.py build-wheel \
-    --local \
-    --trt-package-dir /path/to/TensorRT \
-    --output-dir dist/local
-python -m pip install dist/local/tensorrt_edgellm-*.whl
+export TRT_PACKAGE_DIR=/path/to/TensorRT
+export LD_LIBRARY_PATH="$TRT_PACKAGE_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 ```
 
-This experimental path requires a matching unpublished CuTe DSL tarball and
-checksum under `kernelSrcs/cuteDSLPrebuilt/`; see `packaging/README.md` in the
-source checkout. The resulting wheel supports only the detected target and is
-not a general release artifact.
+`LD_LIBRARY_PATH` is needed only when the libraries are not already on the
+system loader search path. `TRT_PACKAGE_DIR` is a convenience in this example
+and a source-build setting; setting it alone does not configure wheel loading.
+No TensorRT-specific `PATH` or `PYTHONPATH` change is needed when its Python
+bindings are installed in the active environment.
+
+On Debian or Ubuntu, install venv support before creating the environment. Use
+the package matching the selected interpreter; the stock JetPack 7.2 Python
+3.12 image, for example, requires:
+
+```bash
+sudo apt update
+sudo apt install -y python3.12-venv
+```
+
+### Recommended: Python API and server
+
+Use the `server` extra for the high-level Python API, model downloads, and HTTP
+serving. It does not install the PyTorch/ONNX export toolchain.
+Use CPython 3.10, 3.11, or 3.12 below. `--system-site-packages` exposes a
+platform-provided TensorRT Python package; it does not install TensorRT.
+
+```bash
+python3 -m venv --system-site-packages .venv-edgellm
+source .venv-edgellm/bin/activate
+python -m pip install --upgrade pip
+python -m pip install "tensorrt-edgellm[server]==0.11.0"
+python -c "import tensorrt; from tensorrt_edgellm import runtime; runtime.load()"
+```
+
+Run the check outside a source checkout so it imports the installed wheel.
+Unlike an import or `--help` alone, `runtime.load()` validates native payload
+selection. A matching wheel filename does not guarantee a matching runtime
+stack; if selection fails, use a listed configuration or build from source.
+
+To serve a model, run outside a source checkout:
+
+```bash
+tensorrt-edgellm-serve Qwen/Qwen3.5-0.8B
+```
+
+The first launch downloads the checkpoint and builds its engines. For gated
+models, accept the provider's terms and run `hf auth login` first.
+
+### Optional Python dependencies
+
+All extras use the same wheel and native payloads; they select additional pip
+dependencies, not separate builds. Commands may be present without their
+dependencies: installing the base package does not enable every workflow.
+
+| Install selection | Use case | Main additional dependencies |
+|---|---|---|
+| No extra | Low-level native runtime; direct builds from local Safetensors checkpoints | Base dependencies: NumPy and CUDA Python |
+| `[server]` (recommended for inference) | High-level `LLM` API, Hub downloads, and HTTP serving | Hugging Face Hub, FastAPI, Uvicorn, PyAV |
+| `[export]` | Checkpoint-to-ONNX export | PyTorch, Transformers, ONNX, ONNX Script, Safetensors |
+| `[tools]` | Export plus quantization, LoRA, vocabulary, and audio tools | Export dependencies plus ModelOpt, PEFT, datasets, and audio tooling |
+| `[server-tools]` | Optional Transformers-based reference/tooling environment | Transformers; combine with `[server]` for serving |
+| `[native-build]` | Building Python bindings from source, not using published wheels | pybind11 |
+
+`[tools]` includes the export dependencies, but not the complete server stack.
+For serving and all export/tools workflows, install
+`"tensorrt-edgellm[server,tools]==0.11.0"` using the pip command above. Extras can
+also be added later in the same environment. `[builder]` is an empty
+compatibility alias (the direct builder is in the base package); `[dev]`
+currently adds no dependencies. No extra installs the platform CUDA/TensorRT
+stack. Do not install `.` or use `-e .` over a published wheel unless switching
+to the source workflow.
+
+### Minimal installation (advanced)
+
+Use the base wheel for low-level native integration without the server/export
+dependencies. Keep the same CUDA/TensorRT prerequisites, but use a fresh venv
+without system site-packages for the base-only check. Replace the TensorRT
+wheel path below with the matching SDK wheel:
+
+```bash
+python3 -m venv .venv-edgellm-base
+source .venv-edgellm-base/bin/activate
+python -m pip install "/path/to/TensorRT/python/tensorrt-<version>-<python-abi>-none-linux_<arch>.whl"
+python -m pip install tensorrt-edgellm==0.11.0
+```
+
+For a concrete base-only workflow,
+{download}`save the build-and-infer example <../../../../examples/python/installed_wheel_build_and_infer.py>`
+as a standalone file outside the checkout. Provide a local, complete
+`Qwen2.5-0.5B-Instruct` Safetensors checkpoint and a disposable output directory:
+
+```bash
+python -I /path/to/installed_wheel_build_and_infer.py \
+  /path/to/Qwen2.5-0.5B-Instruct /tmp/edgellm-base-engines \
+  --workflow base --require-base-only
+```
+
+This builds a text engine directly, then runs a prompt through
+`tensorrt_edgellm.runtime.LLMRuntime` and checks for generated text and tokens.
+The output directory is replaced. `--require-base-only` rejects common optional
+workflow packages so they cannot hide missing base dependencies.
+The native inference portion also works with an existing compatible text
+engine directory (this example's output directory):
+
+Save the function below with `from pathlib import Path` and
+`from typing import Tuple`, then call
+`_infer_base(Path("/path/to/checkpoint"), Path("/path/to/engines"), "Hello", 32)`:
+
+```{literalinclude} ../../../../examples/python/installed_wheel_build_and_infer.py
+:language: python
+:pyobject: _infer_base
+```
+
+The base path does not download checkpoints. PyTorch `.bin` checkpoints need
+PyTorch from `[export]` or `[tools]`; high-level serving uses `[server]`.
+
+C++ example executables, including those under `experimental_models/`, remain
+part of the source workflow. See the [Python server quick start](quick-start-guide.md#option-2-one-line-python-server)
+or [direct builder guide](direct-engine-builder.md) for wheel-based inference.
+
+## Build a local wheel from source
+
+Use this path to package the current checkout for one detected target. Unlike a
+published architecture wheel, `--local` includes only the exact platform,
+CUDA/TensorRT, and GPU payload detected during the build.
+
+Clone the repository with submodules and generate the matching CuTe DSL archive
+as described in the repository's
+[Wheel Tooling](https://github.com/NVIDIA/TensorRT-Edge-LLM/blob/main/packaging/README.md)
+guide. Then build and install the wheel:
+
+```bash
+python3 -m venv --system-site-packages .venv-wheel
+source .venv-wheel/bin/activate
+python -m pip install -r packaging/wheel-toolchain-requirements.txt
+
+export TRT_PACKAGE_DIR=/usr  # Use the TensorRT SDK root on this target.
+python packaging/wheel_cli.py build-wheel \
+    --local \
+    --trt-package-dir "$TRT_PACKAGE_DIR" \
+    --output-dir dist/local
+
+WHEEL=$(find dist/local -maxdepth 1 -name 'tensorrt_edgellm-*.whl' -print -quit)
+python3 -m venv --system-site-packages .venv-install
+.venv-install/bin/python -m pip install "$WHEEL"
+.venv-install/bin/python -c \
+    "import tensorrt_edgellm; print(tensorrt_edgellm.__version__)"
+.venv-install/bin/tensorrt-edgellm-build --help
+```
+
+The local wheel supports only the detected platform release, CPU architecture,
+CUDA/TensorRT ABI, GPU architecture, and Python ABI. Use a standalone TensorRT
+SDK root instead of `/usr` on an x86 workstation.
 
 ---
 
@@ -504,7 +702,7 @@ Solution: Specify TensorRT package directory. This directory should contain `lib
 cmake .. \
     -DTRT_PACKAGE_DIR=/usr/local/TensorRT-10.x.x \
     -DCMAKE_TOOLCHAIN_FILE=cmake/aarch64_linux_toolchain.cmake \
-    -DEMBEDDED_TARGET=<jetson-thor|auto-thor|gb10|jetson-orin> \
+    -DEMBEDDED_TARGET=<jetson-thor|igx-thor|auto-thor|gb10|jetson-orin> \
     -DCUDA_CTK_VERSION=<target CUDA version> \
     -DENABLE_CUTE_DSL=ALL
 ```

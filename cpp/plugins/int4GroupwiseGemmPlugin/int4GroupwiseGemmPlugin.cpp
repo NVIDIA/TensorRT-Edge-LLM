@@ -159,10 +159,16 @@ int32_t Int4GroupwiseGemmPlugin::getOutputShapes(DimsExprs const* inputs, [[mayb
     {
         assert(nbInputs == 3);
         assert(nbOutputs == 1);
-        outputs[0].nbDims = 3;
-        outputs[0].d[0] = inputs[0].d[0];
-        outputs[0].d[1] = inputs[0].d[1];
-        outputs[0].d[2] = exprBuilder.constant(mGemmN);
+        if (inputs[0].nbDims != 2 && inputs[0].nbDims != 3)
+        {
+            return -1;
+        }
+        outputs[0].nbDims = inputs[0].nbDims;
+        for (int32_t i = 0; i < inputs[0].nbDims - 1; ++i)
+        {
+            outputs[0].d[i] = inputs[0].d[i];
+        }
+        outputs[0].d[inputs[0].nbDims - 1] = exprBuilder.constant(mGemmN);
         return 0;
     }
     catch (std::exception const& e)
@@ -187,8 +193,9 @@ bool Int4GroupwiseGemmPlugin::supportsFormatCombination(int32_t pos, DynamicPlug
         {
             status &= tensorDesc.type == DataType::kHALF;
             status &= tensorDesc.format == PluginFormat::kLINEAR;
-            status &= tensorDesc.dims.nbDims == 3;
-            status &= tensorDesc.dims.d[2] == mGemmK;
+            bool const supportedRank = tensorDesc.dims.nbDims == 2 || tensorDesc.dims.nbDims == 3;
+            status &= supportedRank;
+            status &= supportedRank && tensorDesc.dims.d[tensorDesc.dims.nbDims - 1] == mGemmK;
             break;
         }
         case 1:
@@ -213,8 +220,9 @@ bool Int4GroupwiseGemmPlugin::supportsFormatCombination(int32_t pos, DynamicPlug
         {
             status &= tensorDesc.type == DataType::kHALF;
             status &= tensorDesc.format == PluginFormat::kLINEAR;
-            status &= tensorDesc.dims.nbDims == 3;
-            status &= tensorDesc.dims.d[2] == mGemmN;
+            bool const supportedRank = tensorDesc.dims.nbDims == 2 || tensorDesc.dims.nbDims == 3;
+            status &= supportedRank;
+            status &= supportedRank && tensorDesc.dims.d[tensorDesc.dims.nbDims - 1] == mGemmN;
             break;
         }
         default: break;
@@ -245,7 +253,11 @@ int32_t Int4GroupwiseGemmPlugin::enqueue(PluginTensorDesc const* inputDesc, Plug
     try
     {
         auto const& inputDesc0 = inputDesc[0];
-        int32_t const M = inputDesc0.dims.d[0] * inputDesc0.dims.d[1];
+        int32_t M{1};
+        for (int32_t i = 0; i < inputDesc0.dims.nbDims - 1; ++i)
+        {
+            M *= inputDesc0.dims.d[i];
+        }
 
         half* gemmInPtr = reinterpret_cast<half*>(const_cast<void*>(inputs[0]));
         int8_t* weightsInPtr = reinterpret_cast<int8_t*>(const_cast<void*>(inputs[1]));

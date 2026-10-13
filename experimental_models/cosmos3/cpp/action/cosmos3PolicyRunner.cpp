@@ -168,6 +168,11 @@ void Cosmos3PolicyRunner::parseModelConfig(std::string const& configPath)
     mConfig.latentChannel = requireInt("latent_channel");
     mConfig.latentPatchSize = requireInt("latent_patch_size");
     mConfig.actionChunkSize = requireInt("action_chunk_size");
+    mConfig.stateRows = j.value("state_rows", 0);
+    mConfig.historyLength = j.value("history_length", mConfig.stateRows);
+    mConfig.useState = j.value("use_state", false);
+    ELLM_CHECK(mConfig.stateRows == mConfig.historyLength, "Cosmos3 state_rows and history_length must match");
+    ELLM_CHECK(mConfig.useState == (mConfig.stateRows > 0), "Cosmos3 use_state must agree with state_rows");
     mConfig.rawActionDim = requireInt("raw_action_dim");
     mConfig.maxActionDim = requireInt("max_action_dim");
     mConfig.numInferenceSteps = requireInt("num_inference_steps");
@@ -215,6 +220,8 @@ void Cosmos3PolicyRunner::allocateTensors(cudaStream_t stream)
     mMaxUndLen = static_cast<int32_t>(
         mEngine->getProfileShape(binding_names::formatUndKName(0).c_str(), 0, OptProfileSelector::kMAX).d[1]);
     mMaxBatch = batch;
+    ELLM_CHECK(mMaxActionChunk == mConfig.actionChunkSize + mConfig.stateRows,
+        "Cosmos3 action profile must equal action_chunk_size + state_rows");
     mActiveBatch = batch;
     mVideoShape = {batch, channel, tDim, hDim, wDim};
     mActiveT = tDim;                    // default (vsf == 1) is the full/regular temporal extent.
@@ -253,6 +260,8 @@ void Cosmos3PolicyRunner::allocateTensors(cudaStream_t stream)
         rt::Coords{batch, numVideoTokens, 1}, rt::DeviceType::kCPU, DataType::kFLOAT, "cosmos3::tokenNoisyMaskHost");
     mActionNoisyMaskHost = rt::Tensor(
         rt::Coords{batch, mMaxActionChunk, 1}, rt::DeviceType::kCPU, DataType::kFLOAT, "cosmos3::actionNoisyMaskHost");
+    mCurrentStateHost = rt::Tensor(
+        rt::Coords{batch, mConfig.rawActionDim}, rt::DeviceType::kCPU, DataType::kFLOAT, "cosmos3::currentStateHost");
 
     // attention_pos_id: identity gather indices 0..genLen-1; genLen is fixed for the policy grid, so the
     // buffer is filled once here.
@@ -396,6 +405,41 @@ void Cosmos3PolicyRunner::reinjectConditioning(rt::Tensor const& condLatent, cud
     size_t const tailBytes = static_cast<size_t>(mConfig.maxActionDim - mConfig.rawActionDim) * sizeof(float);
     CUDA_CHECK(cudaMemset2DAsync(actionBase + static_cast<size_t>(mConfig.rawActionDim) * sizeof(float), rowPitch, 0,
         tailBytes, static_cast<size_t>(batch) * mActiveActionLen, stream));
+    if (mConfig.stateRows > 0)
+    {
+        ELLM_CHECK(mConfig.stateRows == 1, "Cosmos3 runtime currently supports exactly one current-state row");
+        size_t const stateBytes = static_cast<size_t>(mConfig.rawActionDim) * sizeof(float);
+        size_t const batchActionPitch = static_cast<size_t>(mActiveActionLen) * mConfig.maxActionDim * sizeof(float);
+        CUDA_CHECK(cudaMemcpy2DAsync(actionBase, batchActionPitch, mCurrentStateHost.rawPointer(), stateBytes,
+            stateBytes, batch, cudaMemcpyHostToDevice, stream));
+    }
+}
+
+void Cosmos3PolicyRunner::maskCleanPredictions(cudaStream_t stream)
+{
+    int32_t const batch = mActiveBatch;
+    int32_t const channel = static_cast<int32_t>(mVideoShape[1]);
+    int32_t const tDim = mActiveT;
+    int32_t const hDim = static_cast<int32_t>(mVideoShape[3]);
+    int32_t const wDim = static_cast<int32_t>(mVideoShape[4]);
+    size_t const planeBytes = static_cast<size_t>(hDim) * wDim * sizeof(float);
+    char* predBase = static_cast<char*>(mPredDevice.rawPointer());
+
+    CUDA_CHECK(cudaMemset2DAsync(
+        predBase, static_cast<size_t>(tDim) * planeBytes, 0, planeBytes, static_cast<size_t>(batch) * channel, stream));
+
+    size_t const videoBytes = static_cast<size_t>(batch) * activeVideoElems() * sizeof(float);
+    char* actionPred = predBase + videoBytes;
+    size_t const rowPitch = static_cast<size_t>(mConfig.maxActionDim) * sizeof(float);
+    size_t const tailBytes = static_cast<size_t>(mConfig.maxActionDim - mConfig.rawActionDim) * sizeof(float);
+    CUDA_CHECK(cudaMemset2DAsync(actionPred + static_cast<size_t>(mConfig.rawActionDim) * sizeof(float), rowPitch, 0,
+        tailBytes, static_cast<size_t>(batch) * mActiveActionLen, stream));
+    for (int32_t b = 0; b < batch && mConfig.stateRows > 0; ++b)
+    {
+        char* dst = actionPred + static_cast<size_t>(b) * mActiveActionLen * mConfig.maxActionDim * sizeof(float);
+        CUDA_CHECK(cudaMemsetAsync(
+            dst, 0, static_cast<size_t>(mConfig.stateRows) * mConfig.maxActionDim * sizeof(float), stream));
+    }
 }
 
 void Cosmos3PolicyRunner::setDynamicInputShapes(int32_t batch, int32_t actionLen, int32_t undLen)
@@ -460,8 +504,15 @@ void Cosmos3PolicyRunner::prepareStatic(int32_t actionLen, int32_t undLen, std::
     }
     CUDA_CHECK(cudaMemcpyAsync(mTokenNoisyMaskDevice.rawPointer(), tmask,
         static_cast<size_t>(batch) * numVideoTokens * sizeof(float), cudaMemcpyHostToDevice, stream));
-    auto* amask = static_cast<float*>(mActionNoisyMaskHost.rawPointer()); // policy: all action tokens noisy
+    auto* amask = static_cast<float*>(mActionNoisyMaskHost.rawPointer());
     std::fill(amask, amask + static_cast<size_t>(batch) * actionLen, 1.0F);
+    for (int32_t b = 0; b < batch; ++b)
+    {
+        for (int32_t row = 0; row < mConfig.stateRows; ++row)
+        {
+            amask[static_cast<size_t>(b) * actionLen + row] = 0.0F;
+        }
+    }
     CUDA_CHECK(cudaMemcpyAsync(mActionNoisyMaskDevice.rawPointer(), amask,
         static_cast<size_t>(batch) * actionLen * sizeof(float), cudaMemcpyHostToDevice, stream));
 
@@ -569,9 +620,16 @@ bool Cosmos3PolicyRunner::runDenoiseStep(int32_t stepIdx, rt::Tensor const& cond
         }
     }
 
+    // The GEN engine uses a TensorRT auxiliary stream, while the sampler immediately reads and then
+    // overwrites its shared prediction/state buffers.  On TensorRT 11.0 / GB300, relying on enqueueV3's
+    // main-stream join here changed the deterministic action output; complete the GEN work before the
+    // first non-TensorRT consumer touches those buffers.
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+
     // Device-resident UniPC update over the packed [video ⧺ action] state, then re-impose the
     // conditioning constraints (frame-0 latent, zero padded action dims) — all on device; the
     // denoising state never visits the host.
+    maskCleanPredictions(stream);
     mScheduler->step(mPredDevice, mStateDevice, stepIdx, stream);
     reinjectConditioning(condLatent, stream);
     return true;
@@ -579,7 +637,7 @@ bool Cosmos3PolicyRunner::runDenoiseStep(int32_t stepIdx, rt::Tensor const& cond
 
 std::vector<float> Cosmos3PolicyRunner::generate(rt::Tensor const& condLatent, std::vector<rt::Tensor> const& undKeys,
     std::vector<rt::Tensor> const& undValues, std::vector<rt::Tensor> const& undKeysUncond,
-    std::vector<rt::Tensor> const& undValuesUncond, cudaStream_t stream)
+    std::vector<rt::Tensor> const& undValuesUncond, std::vector<float> const& currentState, cudaStream_t stream)
 {
     NVTX_SCOPED_RANGE(genRange, "cosmos3::gen_denoise");
 
@@ -602,6 +660,12 @@ std::vector<float> Cosmos3PolicyRunner::generate(rt::Tensor const& condLatent, s
     ELLM_CHECK(static_cast<int32_t>(undKeys.front().getShape()[0]) == batch,
         "UND K/V batch does not match the conditioning latent batch");
     mActiveBatch = batch;
+    if (mConfig.stateRows > 0)
+    {
+        ELLM_CHECK(currentState.size() == static_cast<size_t>(batch) * mConfig.rawActionDim,
+            "State-conditioned Cosmos3 policy requires one raw_action_dim state row per batch item");
+        std::copy(currentState.begin(), currentState.end(), static_cast<float*>(mCurrentStateHost.rawPointer()));
+    }
     // Resolve the per-request shape on every dynamic GEN axis and clamp each into the engine's built
     // profile [min, max]; warn once per axis (only when the out-of-range request value changes) so a
     // serving/benchmark loop does not spam. Buffers are preallocated at each axis max, so the smaller
@@ -620,7 +684,7 @@ std::vector<float> Cosmos3PolicyRunner::generate(rt::Tensor const& condLatent, s
     mActiveT = std::max(mMinT, std::min(reqT, maxT));
     warnClamp("video latent planes", reqT, mActiveT, mMinT, maxT, mLastWarnedT);
 
-    int32_t const reqAction = mRequestedActionChunk > 0 ? mRequestedActionChunk : mMaxActionChunk;
+    int32_t const reqAction = mRequestedActionChunk > 0 ? mRequestedActionChunk + mConfig.stateRows : mMaxActionChunk;
     mActiveActionLen = std::max(mMinActionChunk, std::min(reqAction, mMaxActionChunk));
     warnClamp("action_chunk_size", reqAction, mActiveActionLen, mMinActionChunk, mMaxActionChunk, mLastWarnedAction);
 
@@ -730,12 +794,19 @@ std::vector<float> Cosmos3PolicyRunner::generate(rt::Tensor const& condLatent, s
     // Slice the action chunk action_latent[:, :, :rawActionDim] straight out of the packed device state:
     // one strided 2D D2H copy (row = one action step; rawActionDim of maxActionDim columns).
     size_t const videoBytes = static_cast<size_t>(batch) * activeVideoElems() * sizeof(float);
-    result.resize(static_cast<size_t>(batch) * mActiveActionLen * mConfig.rawActionDim);
-    CUDA_CHECK(cudaMemcpy2DAsync(result.data(), static_cast<size_t>(mConfig.rawActionDim) * sizeof(float),
-        static_cast<char const*>(mStateDevice.rawPointer()) + videoBytes,
-        static_cast<size_t>(mConfig.maxActionDim) * sizeof(float),
-        static_cast<size_t>(mConfig.rawActionDim) * sizeof(float), static_cast<size_t>(batch) * mActiveActionLen,
-        cudaMemcpyDeviceToHost, stream));
+    int32_t const outputRows = mActiveActionLen - mConfig.stateRows;
+    ELLM_CHECK(outputRows > 0, "Cosmos3 policy has no predicted rows after dropping state context");
+    result.resize(static_cast<size_t>(batch) * outputRows * mConfig.rawActionDim);
+    char const* actionBase = static_cast<char const*>(mStateDevice.rawPointer()) + videoBytes;
+    for (int32_t b = 0; b < batch; ++b)
+    {
+        char const* src = actionBase
+            + (static_cast<size_t>(b) * mActiveActionLen + mConfig.stateRows) * mConfig.maxActionDim * sizeof(float);
+        float* dst = result.data() + static_cast<size_t>(b) * outputRows * mConfig.rawActionDim;
+        CUDA_CHECK(cudaMemcpy2DAsync(dst, static_cast<size_t>(mConfig.rawActionDim) * sizeof(float), src,
+            static_cast<size_t>(mConfig.maxActionDim) * sizeof(float),
+            static_cast<size_t>(mConfig.rawActionDim) * sizeof(float), outputRows, cudaMemcpyDeviceToHost, stream));
+    }
     CUDA_CHECK(cudaStreamSynchronize(stream));
     return result;
 }

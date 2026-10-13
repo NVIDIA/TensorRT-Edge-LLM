@@ -16,6 +16,10 @@ Small JSON request sets for `llm_inference` smoke and runtime-sanity runs.
   and extra retained base-KV pages for cross-request reuse.
   Hybrid engines additionally require at least one recurrent snapshot slot and, when they contain attention, at least one partial-KV snapshot slot.
   EAGLE engines additionally require extra retained draft-KV pages and greedy sampling; this fixture sets `top_k: 1`.
+- `llm_sliding_window.json`
+  Deterministic text request whose prompt exceeds Gemma4's 1024-token sliding window.
+  Recommended engine: Gemma4 FP16 with context reuse disabled, `maxInputLen >= 1536`, and
+  `maxKVCacheCapacity >= 4096` so the bounded `2M+1` reservation is smaller than full storage.
 - `llm_spec_prefill_evict.json`
   Batch-2 speculative regression where slot 0 stops on its first generated token and slot 1 survives managed row
   compaction. The survivor is repeated with an explicit cache-bypass cold control and must remain token-identical.

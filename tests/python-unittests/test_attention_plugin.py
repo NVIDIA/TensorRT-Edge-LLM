@@ -27,8 +27,8 @@ attention is covered in test_sliding_window_attention_plugin.py.
 The plugin's KV-cache ABI is paged: a pool binding [2, numPages, PAGE_SIZE,
 Hkv, D] plus an int32 page table [batch, 2, maxPagesPerSeq]. The tests (and
 the torch reference) keep working in the logical per-slot layout
-[batch, 2, Hkv, cap, D]; AttentionPluginRunner converts between the two under
-an identity page table.
+[batch, 2, Hkv, cap, D]; AttentionPluginRunner converts between the two using
+the bound page table.
 
 Run:
     python3 -m pytest tests/python-unittests/test_attention_plugin.py -v
@@ -42,6 +42,7 @@ import os
 import random
 import traceback
 from dataclasses import dataclass, field, replace
+from typing import List, Optional, Tuple
 
 import pytest
 from test_plugin_base import (DEPENDENCIES_AVAILABLE, IMPORT_ERROR,
@@ -274,6 +275,7 @@ def compute_attention(
     q_norm_gamma: Optional[torch.Tensor] = None,
     k_norm_gamma: Optional[torch.Tensor] = None,
     rms_norm_eps: float = 1e-6,
+    qk_norm_post_rope: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Full attention with RoPE + KV cache. Returns (out, k_cache, v_cache).
 
@@ -283,6 +285,7 @@ def compute_attention(
 
     ``q_norm_gamma`` / ``k_norm_gamma`` ([head_size]) enable qk_norm: per-head
     FP32 RMSNorm applied to Q / K before RoPE (V is never normalized).
+    ``qk_norm_post_rope`` flips the order to rotate-then-normalize (HunYuan V1).
     """
     b, s = params.batch_size, params.seq_len
     Hq, Hkv, d = params.num_q_heads, params.num_kv_heads, params.head_size
@@ -295,13 +298,20 @@ def compute_attention(
     k = k.reshape(b, s, Hkv, d).transpose(1, 2)
     v = v.reshape(b, s, Hkv, d).transpose(1, 2)
 
-    if q_norm_gamma is not None:
-        q = rms_norm(q, q_norm_gamma, rms_norm_eps)
-    if k_norm_gamma is not None:
-        k = rms_norm(k, k_norm_gamma, rms_norm_eps)
+    if not qk_norm_post_rope:
+        if q_norm_gamma is not None:
+            q = rms_norm(q, q_norm_gamma, rms_norm_eps)
+        if k_norm_gamma is not None:
+            k = rms_norm(k, k_norm_gamma, rms_norm_eps)
 
     q = apply_rotary_embedding(q, cos_cache, sin_cache, position_ids)
     k = apply_rotary_embedding(k, cos_cache, sin_cache, position_ids)
+
+    if qk_norm_post_rope:
+        if q_norm_gamma is not None:
+            q = rms_norm(q, q_norm_gamma, rms_norm_eps)
+        if k_norm_gamma is not None:
+            k = rms_norm(k, k_norm_gamma, rms_norm_eps)
 
     if params.enable_fp8_kv_cache:
         qs, ks, vs = params.qkv_scales
@@ -353,7 +363,7 @@ def get_tree_attention_mask(seq_len: int):
 
 def pack_tree_mask(mask: torch.Tensor, seq_len: int,
                    batch_size: int) -> torch.Tensor:
-    """Bit-pack tree mask to [B, S, ceil(S/32)] int32 for the XQA kernel.
+    """Bit-pack tree mask to [B*S, ceil(S/32)] int32 for the XQA kernel.
 
     Column ``c`` of a row goes to word ``c // 32``, bit ``c % 32`` (so widths
     above 32 span multiple words). Word values are wrapped to signed int32 so
@@ -368,7 +378,9 @@ def pack_tree_mask(mask: torch.Tensor, seq_len: int,
                 words[col // 32] |= (1 << (col % 32))
         for w, val in enumerate(words):
             packed[row, w] = val - (1 << 32) if val >= (1 << 31) else val
-    return packed[None].expand(batch_size, *packed.shape).contiguous()
+    return packed[None].expand(batch_size,
+                               *packed.shape).reshape(batch_size * seq_len,
+                                                      num_packed).contiguous()
 
 
 def commit_kv_cache(k_cache: torch.Tensor, v_cache: torch.Tensor,
@@ -399,25 +411,31 @@ def _fp8_available() -> bool:
 
 
 class AttentionPluginRunner:
-    """Builds + runs the AttentionPlugin for a given AttentionParams config.
+    """Builds + runs an attention plugin for a given AttentionParams config.
 
-    The plugin takes a single packed QKV input [B, S, C].  The
+    The runner accepts packed QKV as [B, S, C] and binds it to the plugin as
+    token-major [B*S, C]. The
     ``enable_kv_shared`` plugin field selects the layout: C = (Hq + 2*Hkv)*D
-    for normal (own-KV) layers, or C = Hq*D (Q only) for shared-KV (Gemma4
-    KV-sharing) layers, where K/V are read from a donor layer's cache without
-    being written.
+    for normal (own-KV) layers. Shared-KV layers use C = Hq*D (Q only) when
+    reading the donor cache directly, or the packed width when bounded SWA also
+    needs the donor's current K/V. Shared layers never write the donor cache.
 
     The plugin's kv_cache binding is a paged POOL [2, numPages, PAGE_SIZE,
     Hkv, D] plus an int32 page table [batch, 2, maxPagesPerSeq], but the tests
     keep working in the LOGICAL per-slot layout [batch, 2, Hkv, cap, D]:
-    ``run`` scatters the logical cache into the pool under an identity page
-    table (slot b owns pages [b*mpps, (b+1)*mpps)), executes, and gathers the
-    pool back into the logical tensor in place.
+    ``run`` scatters the logical cache into the pool through the configured
+    page table, executes, and gathers the pool back into the logical tensor in
+    place. Existing tests use identity mappings; bounded SWA tests also use
+    scrambled mappings and a physical pool smaller than the logical table.
 
     ``q_norm_gamma`` / ``k_norm_gamma`` ([head_size] float tensors) enable
     fused qk_norm: per-head FP32 RMSNorm on Q and K before RoPE. They are
     wired as OPTIONAL engine-weight constant inputs (enable_qk_norm=1); when
     omitted the plugin gets no gamma inputs at all (enable_qk_norm=0).
+
+    ``swa_cache_mode`` builds an SWA-capable plugin and selects its runtime
+    storage path: ``"bounded"`` binds mode shape [1], while ``"full"`` binds
+    [0]. ``bounded_swa_cache=True`` is retained as shorthand for the former.
     """
 
     def __init__(self,
@@ -425,31 +443,57 @@ class AttentionPluginRunner:
                  enable_tree_attention=False,
                  q_norm_gamma=None,
                  k_norm_gamma=None,
+                 qk_norm_post_rope: bool = False,
                  attention_scale: Optional[float] = None,
                  enable_kv_shared: int = 0,
                  enable_context_mask_selector: bool = False,
                  enable_vision_block_attention: bool = False,
                  expect_unsupported: bool = False,
-                 shuffle_pages: bool = False):
+                 shuffle_pages: bool = False,
+                 bounded_swa_cache: bool = False,
+                 swa_cache_mode: Optional[str] = None,
+                 scramble_page_table=False,
+                 shared_current_kv: bool = False,
+                 num_physical_pages: Optional[int] = None):
         self.p = p
         self.tree = enable_tree_attention
         self.vision = enable_vision_block_attention
         self.q_norm_gamma = q_norm_gamma
         self.k_norm_gamma = k_norm_gamma
+        self.qk_norm_post_rope = qk_norm_post_rope
         self.attention_scale = attention_scale
         self.kv_shared = enable_kv_shared
+        self.shared_current_kv = shared_current_kv
         self.context_mask_selector = enable_context_mask_selector
         self.expect_unsupported = expect_unsupported
-        # shuffle_pages: give each slot non-contiguous physical pages so the
-        # page table stops being identity -- proves the kernel follows it.
-        self.shuffle_pages = shuffle_pages
-        self._page_perm = None
+        if bounded_swa_cache:
+            assert swa_cache_mode in (None, "bounded")
+            swa_cache_mode = "bounded"
+        assert swa_cache_mode in (None, "bounded", "full")
+        self.swa_cache_mode = swa_cache_mode
+        self.swa_capable = swa_cache_mode is not None
+        self.bounded_swa_cache = swa_cache_mode == "bounded"
+        self.scramble_page_table = scramble_page_table or shuffle_pages
+        self.page_table_name = "swa_kv_page_table" \
+            if self.swa_capable \
+            else "kv_page_table"
+        if self.swa_capable:
+            assert p.sliding_window_size > 0
+            assert not enable_tree_attention
+            assert not p.enable_fp8_kv_cache
+            assert not enable_kv_shared or shared_current_kv
+            assert q_norm_gamma is None and k_norm_gamma is None
+            assert not enable_context_mask_selector
+        assert not shared_current_kv or enable_kv_shared
         self.kv_dtype = trt.fp8 if p.enable_fp8_kv_cache else trt.float16
-        # Paged-pool geometry: capacity padded up to whole pages, one fixed
-        # page range per batch slot (identity page table).
+        # Paged-pool geometry: capacity padded up to whole pages.
         self.cap_padded = -(-p.kv_cache_capacity // PAGE_SIZE) * PAGE_SIZE
         self.mpps = self.cap_padded // PAGE_SIZE  # maxPagesPerSeq
-        self.num_pages = p.max_batch_size * self.mpps
+        default_num_pages = p.max_batch_size * self.mpps
+        self.num_pages = (default_num_pages if num_physical_pages is None else
+                          num_physical_pages)
+        assert 0 < self.num_pages <= default_num_pages
+        self.compact_physical_pool = num_physical_pages is not None
         self._pool = None
         self._page_table = None
         self.runner = PluginRunner()
@@ -459,56 +503,61 @@ class AttentionPluginRunner:
         p = self.p
         qh = p.q_hidden
         D, Hkv = p.head_size, p.num_kv_heads
-        mb, ms, mpe = p.max_batch_size, p.max_seq_len, p.max_position_embeddings
+        mb, ms = p.max_batch_size, p.max_seq_len
 
         input_specs = [
-            ("qkv", trt.float16, (-1, -1, -1)),
+            ("qkv", trt.float16, (-1, -1)),
             ("kv_cache", self.kv_dtype, (2, -1, PAGE_SIZE, Hkv, D)),
-            ("context_lengths", trt.int32, (-1, )),
-            ("rope_cos_sin", trt.float32, (1, mpe, D)),
+            ("query_lengths", trt.int32, (-1, )),
+            ("rope_cos_sin", trt.float32, (-1, D)),
             ("kv_cache_indices", trt.int32, (-1, )),
-            ("kv_page_table", trt.int32, (-1, 2, self.mpps)),
+            (self.page_table_name, trt.int32, (-1, 2, self.mpps)),
         ]
         # The pool never resizes: numPages is fixed per engine (min=opt=max).
         pool_shape = (2, self.num_pages, PAGE_SIZE, Hkv, D)
-        # Channel width is fixed by the mode: Q-only (q_hidden) for shared-KV
-        # engines, the full packed width otherwise.
-        qkv_c = qh if self.kv_shared else p.qkv_hidden_size
+        # Shared-KV normally carries Q only. Bounded SWA consumers also carry
+        # transient current donor K/V in the packed-QKV input.
+        qkv_c = (qh if self.kv_shared and not self.shared_current_kv else
+                 p.qkv_hidden_size)
         profiles = {
             "qkv":
-            ((1, 1, qkv_c), (p.batch_size, p.seq_len, qkv_c), (mb, ms, qkv_c)),
+            ((1, qkv_c), (p.batch_size * p.seq_len, qkv_c), (mb * ms, qkv_c)),
             "kv_cache": (pool_shape, pool_shape, pool_shape),
-            "context_lengths": ((1, ), (p.batch_size, ), (mb, )),
-            "rope_cos_sin": ((1, mpe, D), (1, mpe, D), (1, mpe, D)),
+            "query_lengths": ((1, ), (p.batch_size, ), (mb, )),
+            "rope_cos_sin":
+            ((1, D), (p.batch_size * p.seq_len, D), (mb * ms, D)),
             # min 0: an empty kv_cache_indices binding selects normal prefill.
             "kv_cache_indices": ((0, ), (p.batch_size, ), (mb, )),
-            "kv_page_table": ((1, 2, self.mpps), (p.batch_size, 2, self.mpps),
-                              (mb, 2, self.mpps)),
+            self.page_table_name:
+            ((1, 2, self.mpps), (p.batch_size, 2, self.mpps), (mb, 2,
+                                                               self.mpps)),
         }
+        plugin_input_order = [
+            "qkv", "kv_cache", "query_lengths", "rope_cos_sin",
+            "kv_cache_indices", self.page_table_name
+        ]
         if self.tree:
             input_specs += [
-                ("tree_mask", trt.int32, (-1, -1, -1)),
-                ("position_ids", trt.int32, (-1, -1)),
+                ("tree_mask", trt.int32, (-1, -1)),
+                ("position_ids", trt.int32, (-1, )),
             ]
-            profiles["tree_mask"] = ((1, 1, 1), (p.batch_size, p.seq_len,
-                                                 p.seq_len), (mb, ms, ms))
-            profiles["position_ids"] = ((1, 1), (p.batch_size, p.seq_len),
-                                        (mb, ms))
+            profiles["tree_mask"] = ((1, 1), (p.batch_size * p.seq_len,
+                                              (p.seq_len + 31) // 32),
+                                     (mb * ms, (ms + 31) // 32))
+            profiles["position_ids"] = ((1, ), (p.batch_size * p.seq_len, ),
+                                        (mb * ms, ))
         if self.vision:
-            # vision_block_ids [B, S]: -1 for text/pad, non-negative per image
+            # vision_block_ids [B*S]: -1 for text/pad, non-negative per image
             # run. Occupies the optional attention-mask input slot.
-            input_specs.append(("vision_block_ids", trt.int32, (-1, -1)))
-            profiles["vision_block_ids"] = ((1, 1), (p.batch_size, p.seq_len),
-                                            (mb, ms))
+            input_specs.append(("vision_block_ids", trt.int32, (-1, )))
+            profiles["vision_block_ids"] = ((1, ),
+                                            (p.batch_size * p.seq_len, ),
+                                            (mb * ms, ))
 
         # qk_norm gammas are OPTIONAL engine-weight constant inputs, wired only
         # when enable_qk_norm=1.
         qk_norm = self.q_norm_gamma is not None or self.k_norm_gamma is not None
         constant_specs = []
-        plugin_input_order = [
-            "qkv", "kv_cache", "context_lengths", "rope_cos_sin",
-            "kv_cache_indices", "kv_page_table"
-        ]
         if qk_norm:
             constant_specs = [
                 ("q_norm_gamma", trt.float16, (D, ), self.q_norm_gamma),
@@ -524,11 +573,35 @@ class AttentionPluginRunner:
             plugin_input_order += ["tree_mask", "position_ids"]
         if self.vision:
             plugin_input_order.append("vision_block_ids")
+        if self.swa_capable:
+            input_specs.append(("swa_kv_cache_mode", trt.int8, (-1, )))
+            profiles["swa_kv_cache_mode"] = ((0, ), (1, ), (1, ))
+            plugin_input_order.append("swa_kv_cache_mode")
+        input_specs += [
+            ("query_start_offsets", trt.int32, (-1, )),
+            ("attention_sequence_lengths", trt.int32, (-1, )),
+            ("execution_phase_marker", trt.int32, (-1, )),
+            ("context_sequence_count_carrier", trt.int32, (-1, )),
+        ]
+        profiles.update({
+            "query_start_offsets": ((2, ), (p.batch_size + 1, ), (mb + 1, )),
+            "attention_sequence_lengths": ((1, ), (p.batch_size, ), (mb, )),
+            "execution_phase_marker":
+            ((1, ), (1 if p.is_prefill else 3, ), (8, )),
+            "context_sequence_count_carrier":
+            ((0, ), (p.batch_size if p.is_prefill else 0, ), (mb, )),
+        })
+        plugin_input_order += [
+            "query_start_offsets", "attention_sequence_lengths",
+            "execution_phase_marker", "context_sequence_count_carrier"
+        ]
 
         fields = [
             pf_int32("num_q_heads", p.num_q_heads),
             pf_int32("num_kv_heads", p.num_kv_heads),
-            pf_int32("head_size", p.head_size),
+            pf_int32("head_size", p.head_size)
+        ]
+        fields += [
             pf_int32("enable_tree_attention", int(self.tree)),
             pf_int32("enable_vision_block_attention", int(self.vision)),
             pf_int32("enable_qk_norm", int(qk_norm)),
@@ -537,6 +610,7 @@ class AttentionPluginRunner:
                      int(self.context_mask_selector)),
             pf_int32("enable_fp8_kv_cache", int(p.enable_fp8_kv_cache)),
             pf_int32("sliding_window_size", p.sliding_window_size),
+            pf_int32("supports_bounded_kv_cache", int(self.swa_capable)),
         ]
         if p.enable_fp8_kv_cache:
             fields.append(pf_float32("qkv_scales", p.qkv_scales))
@@ -544,6 +618,8 @@ class AttentionPluginRunner:
             fields.append(pf_float32("attention_scale", self.attention_scale))
         if qk_norm:
             fields.append(pf_float32("rms_norm_eps", p.rms_norm_eps))
+            fields.append(
+                pf_int32("qk_norm_post_rope", int(self.qk_norm_post_rope)))
 
         self.runner.build(
             input_specs=input_specs,
@@ -557,47 +633,106 @@ class AttentionPluginRunner:
             expect_unsupported=self.expect_unsupported,
         )
 
-    def _pool_views(self, kv_dtype):
-        """The (lazily allocated) pool plus its K/V halves viewed logically.
-
-        Under the identity page table the K half [numPages, PAGE_SIZE, Hkv, D]
-        is exactly slot-major/token-major, so viewing it as [max_batch,
-        cap_padded, Hkv, D] gives slot b's token t at [b, t] (NHD); same for
-        the V half. Tokens [cap:cap_padded] are padding and stay zero.
-        """
+    def _get_pool(self, kv_dtype):
+        """Return the lazily allocated paged KV pool."""
         p = self.p
         if self._pool is None:
             self._pool = torch.zeros(
                 (2, self.num_pages, PAGE_SIZE, p.num_kv_heads, p.head_size),
                 dtype=kv_dtype,
                 device=DEV)
-        view_shape = (p.max_batch_size, self.cap_padded, p.num_kv_heads,
-                      p.head_size)
-        return (self._pool, self._pool[0].view(view_shape),
-                self._pool[1].view(view_shape))
+        return self._pool
 
-    def _k_page_ids(self, batch):
-        """[batch, mpps] physical K page ids. Identity = b*mpps+pi; shuffled =
-        a fixed random permutation of all num_pages pages (non-contiguous)."""
-        if self.shuffle_pages:
-            if self._page_perm is None:
-                perm = torch.randperm(
-                    self.num_pages, generator=torch.Generator().manual_seed(7))
-                self._page_perm = perm.to(torch.int32).to(DEV).reshape(
-                    self.p.max_batch_size, self.mpps)
-            return self._page_perm[:batch]
-        return torch.arange(batch * self.mpps, dtype=torch.int32,
-                            device=DEV).reshape(batch, self.mpps)
+    def _pool_views(self, kv_dtype):
+        """Return the pool and identity-mapped K/V token views."""
+        pool = self._get_pool(kv_dtype)
+        view_shape = (self.p.max_batch_size, self.cap_padded,
+                      self.p.num_kv_heads, self.p.head_size)
+        return pool, pool[0].view(view_shape), pool[1].view(view_shape)
 
-    def _identity_page_table(self, batch):
-        """int32 [batch, 2, mpps]: K page ids then V page ids (K + numPages,
-        the V half of the pool). K ids are contiguous (identity) or a fixed
-        permutation (shuffle_pages)."""
+    def _make_page_table(self, batch):
+        """Build an identity or deterministic scrambled paged-KV mapping."""
         if self._page_table is None or self._page_table.shape[0] != batch:
-            k_ids = self._k_page_ids(batch)
+            if self.compact_physical_pool:
+                self._page_table = torch.full((batch, 2, self.mpps),
+                                              -1,
+                                              dtype=torch.int32,
+                                              device=DEV)
+                return self._page_table
+            k_ids = torch.arange(batch * self.mpps,
+                                 dtype=torch.int32,
+                                 device=DEV)
+            if self.scramble_page_table:
+                k_ids = k_ids.flip(0)
+            k_ids = k_ids.reshape(batch, self.mpps)
             self._page_table = torch.stack((k_ids, k_ids + self.num_pages),
                                            dim=1)
         return self._page_table
+
+    def _scatter_cache(self, pool, kv_cache, page_table):
+        """Scatter logical HND caches into physical paged NHD storage."""
+        cap = self.p.kv_cache_capacity
+        if not self.scramble_page_table and not self.compact_physical_pool:
+            view_shape = (self.p.max_batch_size, self.cap_padded,
+                          self.p.num_kv_heads, self.p.head_size)
+            pool[0].view(
+                view_shape)[:kv_cache.shape[0], :cap] = kv_cache[:, 0].permute(
+                    0, 2, 1, 3)
+            pool[1].view(
+                view_shape)[:kv_cache.shape[0], :cap] = kv_cache[:, 1].permute(
+                    0, 2, 1, 3)
+            return
+        for batch_idx in range(kv_cache.shape[0]):
+            for logical_page in range(self.mpps):
+                begin = logical_page * PAGE_SIZE
+                end = min(begin + PAGE_SIZE, cap)
+                k_page = int(page_table[batch_idx, 0, logical_page])
+                v_page = int(page_table[batch_idx, 1, logical_page]) \
+                    - self.num_pages
+                if k_page < 0 or v_page < 0:
+                    continue
+                assert k_page < self.num_pages and v_page < self.num_pages
+                pool[0, k_page].zero_()
+                pool[1, v_page].zero_()
+                if begin < end:
+                    pool[0,
+                         k_page, :end - begin] = kv_cache[batch_idx, 0, :,
+                                                          begin:end].permute(
+                                                              1, 0, 2)
+                    pool[1,
+                         v_page, :end - begin] = kv_cache[batch_idx, 1, :,
+                                                          begin:end].permute(
+                                                              1, 0, 2)
+
+    def _gather_cache(self, pool, kv_cache, page_table):
+        """Gather physical paged NHD storage into logical HND caches."""
+        cap = self.p.kv_cache_capacity
+        if not self.scramble_page_table and not self.compact_physical_pool:
+            view_shape = (self.p.max_batch_size, self.cap_padded,
+                          self.p.num_kv_heads, self.p.head_size)
+            kv_cache[:, 0] = pool[0].view(
+                view_shape)[:kv_cache.shape[0], :cap].permute(0, 2, 1, 3)
+            kv_cache[:, 1] = pool[1].view(
+                view_shape)[:kv_cache.shape[0], :cap].permute(0, 2, 1, 3)
+            return
+        for batch_idx in range(kv_cache.shape[0]):
+            for logical_page in range(self.mpps):
+                begin = logical_page * PAGE_SIZE
+                end = min(begin + PAGE_SIZE, cap)
+                if begin >= end:
+                    continue
+                k_page = int(page_table[batch_idx, 0, logical_page])
+                v_page = int(page_table[batch_idx, 1, logical_page]) \
+                    - self.num_pages
+                if k_page < 0 or v_page < 0:
+                    continue
+                assert k_page < self.num_pages and v_page < self.num_pages
+                kv_cache[batch_idx, 0, :,
+                         begin:end] = pool[0, k_page, :end - begin].permute(
+                             1, 0, 2)
+                kv_cache[batch_idx, 1, :,
+                         begin:end] = pool[1, v_page, :end - begin].permute(
+                             1, 0, 2)
 
     def run(self,
             qkv,
@@ -610,7 +745,8 @@ class AttentionPluginRunner:
             vision_block_ids=None,
             input_shapes=None,
             context_mask_selector=None,
-            attention_output=None):
+            attention_output=None,
+            execution_phase=None):
         """Execute; returns (attn_output fp16, kv_cache after update).
 
         ``qkv`` is the packed [B, S, (Hq+2*Hkv)*D] input, or a Q-only
@@ -630,75 +766,101 @@ class AttentionPluginRunner:
         tests can verify that enqueue returned before any output write.
         """
         p = self.p
-        batch, cap = kv_cache.shape[0], p.kv_cache_capacity
-        pool, pool_k, pool_v = self._pool_views(kv_cache.dtype)
-        if self.shuffle_pages:
-            self._scatter_paged(pool, kv_cache, batch)
+        batch = kv_cache.shape[0]
+        pool = self._get_pool(kv_cache.dtype)
+        page_table = self._make_page_table(batch)
+        self._scatter_cache(pool, kv_cache, page_table)
+        batch_size, seq_len = qkv.shape[:2]
+        physical_tokens = batch_size * seq_len
+        empty_cache_indices = (cache_indices.numel() == 0
+                               or input_shapes is not None and
+                               input_shapes.get("kv_cache_indices") == (0, ))
+        has_token_positions = (position_ids is not None
+                               and position_ids.numel() == physical_tokens)
+        if has_token_positions:
+            positions = position_ids.reshape(-1).to(torch.int32)
         else:
-            # Scatter logical [batch, 2, Hkv, cap, D] (HND) into the pool's
-            # slot-major NHD view (identity page table).
-            pool_k[:batch, :cap] = kv_cache[:, 0].permute(0, 2, 1, 3)
-            pool_v[:batch, :cap] = kv_cache[:, 1].permute(0, 2, 1, 3)
+            starts = (cache_indices if not empty_cache_indices else
+                      torch.zeros(batch_size, dtype=torch.int32, device=DEV))
+            positions = (starts[:, None] + torch.arange(
+                seq_len, dtype=torch.int32, device=DEV)[None, :]).reshape(-1)
+        rope_rows = rope_cos_sin[0].index_select(0, positions.to(torch.int64))
+        query_start_offsets = torch.arange(0,
+                                           physical_tokens + 1,
+                                           seq_len,
+                                           dtype=torch.int32,
+                                           device=DEV)
+        query_lengths = context_lengths.clamp(min=0, max=seq_len)
+        tree_step = self.tree and has_token_positions
+        if execution_phase is None:
+            if tree_step:
+                phase = 5
+            elif empty_cache_indices:
+                phase = 1
+            elif seq_len == 1:
+                phase = 3
+            else:
+                phase = 2
+        else:
+            phase = execution_phase
+        execution_phase_marker = torch.zeros(phase,
+                                             dtype=torch.int32,
+                                             device=DEV)
+        context_sequences = batch_size if phase in (1, 2) else 0
+        context_sequence_count_carrier = torch.empty(max(1, context_sequences),
+                                                     dtype=torch.int32,
+                                                     device=DEV)
         attn_out = attention_output
         if attn_out is None:
-            attn_out = torch.empty((qkv.shape[0], qkv.shape[1], p.q_hidden),
+            attn_out = torch.empty((physical_tokens, p.q_hidden),
                                    dtype=torch.float16,
                                    device=DEV)
+        else:
+            attn_out = attn_out.reshape(physical_tokens, p.q_hidden)
         tensors = {
-            "qkv": qkv,
+            "qkv": qkv.reshape(physical_tokens, qkv.shape[-1]),
             "kv_cache": pool,
-            "context_lengths": context_lengths,
-            "rope_cos_sin": rope_cos_sin,
+            "query_lengths": query_lengths,
+            "rope_cos_sin": rope_rows,
             "kv_cache_indices": cache_indices,
-            "kv_page_table": self._identity_page_table(batch),
+            self.page_table_name: page_table,
+            "query_start_offsets": query_start_offsets,
+            "attention_sequence_lengths": context_lengths,
+            "execution_phase_marker": execution_phase_marker,
+            "context_sequence_count_carrier": context_sequence_count_carrier,
             "attention_output": attn_out,
             "kv_cache_output": pool,  # aliased in-place to the pool binding
         }
         if self.tree:
-            tensors["tree_mask"] = tree_mask
-            tensors["position_ids"] = position_ids
+            mask_words = tree_mask.shape[-1]
+            if tree_mask.numel() == batch_size * mask_words:
+                tree_mask = tree_mask.reshape(batch_size, 1,
+                                              mask_words).expand(
+                                                  batch_size, seq_len,
+                                                  mask_words)
+            tensors["tree_mask"] = tree_mask.reshape(physical_tokens,
+                                                     mask_words)
+            if position_ids.numel() == batch_size:
+                position_ids = position_ids.reshape(batch_size, 1).expand(
+                    batch_size, seq_len)
+            tensors["position_ids"] = position_ids.reshape(-1)
         if self.context_mask_selector:
             tensors["context_mask_selector"] = context_mask_selector
         if self.vision:
-            tensors["vision_block_ids"] = vision_block_ids
+            tensors["vision_block_ids"] = vision_block_ids.reshape(-1)
+        if self.swa_capable:
+            tensors["swa_kv_cache_mode"] = torch.zeros(1,
+                                                       dtype=torch.int8,
+                                                       device=DEV)
+            input_shapes = dict(input_shapes or {})
+            input_shapes["swa_kv_cache_mode"] = (
+                1, ) if self.bounded_swa_cache else (0, )
+        if context_sequences == 0:
+            input_shapes = dict(input_shapes or {})
+            input_shapes["context_sequence_count_carrier"] = (0, )
         self.runner.execute(tensors, input_shapes)
-        # Gather the (possibly updated) pool back into the logical cache.
-        if self.shuffle_pages:
-            self._gather_paged(pool, kv_cache, batch)
-        else:
-            kv_cache[:, 0] = pool_k[:batch, :cap].permute(0, 2, 1, 3)
-            kv_cache[:, 1] = pool_v[:batch, :cap].permute(0, 2, 1, 3)
-        return attn_out, kv_cache
-
-    def _paged_indices(self, batch):
-        """Flat physical page ids into the [2*numPages, ...] pool for the K
-        then V halves of each slot's pages, in logical page order."""
-        k_ids = self._k_page_ids(batch).long().reshape(-1)  # [batch*mpps]
-        return k_ids, k_ids + self.num_pages
-
-    def _scatter_paged(self, pool, kv_cache, batch):
-        """Place each logical page at its (possibly shuffled) physical page."""
-        p = self.p
-        cap, capp = p.kv_cache_capacity, self.cap_padded
-        Hkv, D = p.num_kv_heads, p.head_size
-        flat = pool.view(2 * self.num_pages, PAGE_SIZE, Hkv, D)
-        k_idx, v_idx = self._paged_indices(batch)
-        for half, idx in ((0, k_idx), (1, v_idx)):
-            logical = torch.zeros((batch, capp, Hkv, D),
-                                  dtype=pool.dtype,
-                                  device=DEV)
-            logical[:, :cap] = kv_cache[:, half].permute(0, 2, 1, 3)
-            flat[idx] = logical.reshape(batch * self.mpps, PAGE_SIZE, Hkv, D)
-
-    def _gather_paged(self, pool, kv_cache, batch):
-        p = self.p
-        cap, capp = p.kv_cache_capacity, self.cap_padded
-        Hkv, D = p.num_kv_heads, p.head_size
-        flat = pool.view(2 * self.num_pages, PAGE_SIZE, Hkv, D)
-        k_idx, v_idx = self._paged_indices(batch)
-        for half, idx in ((0, k_idx), (1, v_idx)):
-            pages = flat[idx].reshape(batch, capp, Hkv, D)
-            kv_cache[:, half] = pages[:, :cap].permute(0, 2, 1, 3)
+        self._gather_cache(pool, kv_cache, page_table)
+        return attn_out.reshape(batch_size, seq_len, p.q_hidden), kv_cache
 
 
 # --------------------------------------------------------------------------- #
@@ -758,8 +920,12 @@ def _run_rounds(p: AttentionParams,
                 q_prescale: float = 1.0,
                 q_norm_gamma=None,
                 k_norm_gamma=None,
+                qk_norm_post_rope: bool = False,
                 attention_scale: Optional[float] = None,
-                shuffle_pages: bool = False):
+                shuffle_pages: bool = False,
+                bounded_swa_cache: bool = False,
+                swa_cache_mode: Optional[str] = None,
+                scramble_page_table=False):
     """Generic multi-round decode/prefill driver comparing plugin vs reference.
 
     ``q_prescale`` multiplies the plugin-side Q only (the export-time Q
@@ -777,8 +943,12 @@ def _run_rounds(p: AttentionParams,
     runner = AttentionPluginRunner(p,
                                    q_norm_gamma=q_norm_gamma,
                                    k_norm_gamma=k_norm_gamma,
+                                   qk_norm_post_rope=qk_norm_post_rope,
                                    attention_scale=attention_scale,
-                                   shuffle_pages=shuffle_pages)
+                                   shuffle_pages=shuffle_pages,
+                                   bounded_swa_cache=bounded_swa_cache,
+                                   swa_cache_mode=swa_cache_mode,
+                                   scramble_page_table=scramble_page_table)
     cos, sin, combined = _make_rope(p, gen)
     ref_k, ref_v, plugin_kv = _empty_caches(p)
 
@@ -815,20 +985,22 @@ def _run_rounds(p: AttentionParams,
                                        p.sliding_window_size, DEV) \
                 if p.sliding_window_size > 0 else None
 
-        ref_out, ref_k, ref_v = compute_attention(qkv.float(),
-                                                  ref_k,
-                                                  ref_v,
-                                                  cos,
-                                                  sin,
-                                                  position_ids,
-                                                  cache_idx,
-                                                  p,
-                                                  mask,
-                                                  q_norm_gamma=q_norm_gamma,
-                                                  k_norm_gamma=k_norm_gamma,
-                                                  rms_norm_eps=p.rms_norm_eps)
+        ref_out, ref_k, ref_v = compute_attention(
+            qkv.float(),
+            ref_k,
+            ref_v,
+            cos,
+            sin,
+            position_ids,
+            cache_idx,
+            p,
+            mask,
+            q_norm_gamma=q_norm_gamma,
+            k_norm_gamma=k_norm_gamma,
+            rms_norm_eps=p.rms_norm_eps,
+            qk_norm_post_rope=qk_norm_post_rope)
 
-        # First prefill
+        # An empty cache-index binding selects the first prefill.
         input_shapes = {"kv_cache_indices": (0, )} \
             if p.is_prefill and r == 0 else None
         attn_out, plugin_kv = runner.run(qkv_plugin,
@@ -1260,7 +1432,8 @@ def _run_vision_prefill_then_decode(*,
     cfg["head_size"] = head_size
     cfg["num_q_heads"] = num_q_heads
     cfg["num_kv_heads"] = num_kv_heads
-    cfg["kv_cache_capacity"] = 256
+    bounded_swa_cache = window > 0
+    cfg["kv_cache_capacity"] = window if bounded_swa_cache else 256
     cfg["max_seq_len"] = 256
     cfg["max_position_embeddings"] = 256
     p = AttentionParams(batch_size=b,
@@ -1271,7 +1444,8 @@ def _run_vision_prefill_then_decode(*,
     gen = torch.Generator().manual_seed(808)
     runner = AttentionPluginRunner(p,
                                    enable_vision_block_attention=True,
-                                   shuffle_pages=True)
+                                   shuffle_pages=True,
+                                   bounded_swa_cache=bounded_swa_cache)
     cos, sin, combined = _make_rope(p, gen)
     ref_k, ref_v, plugin_kv = _empty_caches(p)
     vbid_row = torch.full((seq_len, ), -1, dtype=torch.int32)
@@ -1328,8 +1502,8 @@ def _run_vision_prefill_then_decode(*,
 
 
 # Both Gemma4 Unified layer types: vision-block prefill -> vanilla XQA decode.
-# Only the D512 global case needs the CuTe DSL FMHA; the D256 sliding case runs
-# FMHA-v2 bidirectional and must exercise Orin too, so gate per-param.
+# The D256 sliding case exercises the bounded SWA policy; the
+# D512 global case keeps the full-cache policy and needs the CuTe DSL FMHA.
 @pytest.mark.parametrize("head,num_q,num_kv,window", [
     pytest.param(512,
                  16,
@@ -1397,9 +1571,8 @@ def test_head512_sliding_vision_accepted_off_blackwell():
 
 @pytest.mark.skipif(_device_sm() not in NATIVE_SMS,
                     reason="D512 CuTe DSL FMHA is unavailable on this SM")
-@pytest.mark.parametrize("route", ["chunked", "shared"])
-def test_head512_vision_prefill_route_rejections(route):
-    """Vision blocks are supported only for normal prefill with owned KV."""
+def test_head512_vision_chunked_prefill_rejected():
+    """Vision blocks are supported only during normal prefill."""
     p = AttentionParams(batch_size=1,
                         seq_len=8,
                         num_q_heads=4,
@@ -1410,15 +1583,11 @@ def test_head512_vision_prefill_route_rejections(route):
                         max_seq_len=8,
                         max_position_embeddings=16,
                         is_prefill=True)
-    shared = route == "shared"
-    runner = AttentionPluginRunner(p,
-                                   enable_kv_shared=int(shared),
-                                   enable_vision_block_attention=True)
+    runner = AttentionPluginRunner(p, enable_vision_block_attention=True)
     gen = torch.Generator().manual_seed(626)
     _, _, combined = _make_rope(p, gen)
     _, _, plugin_kv = _empty_caches(p)
-    width = p.q_hidden if shared else p.qkv_hidden_size
-    qkv = torch.randn((1, p.seq_len, width),
+    qkv = torch.randn((1, p.seq_len, p.qkv_hidden_size),
                       generator=gen,
                       dtype=torch.float32).to(DEV)
     context_lengths = torch.full((1, ),
@@ -1426,11 +1595,8 @@ def test_head512_vision_prefill_route_rejections(route):
                                  dtype=torch.int32,
                                  device=DEV)
     cache_idx = torch.zeros(1, dtype=torch.int32, device=DEV)
-    input_shapes = {"kv_cache_indices": (0, )}
-    if route == "chunked":
-        cache_idx.fill_(1)
-        context_lengths.fill_(p.seq_len + 1)
-        input_shapes = None
+    cache_idx.fill_(1)
+    context_lengths.fill_(p.seq_len + 1)
     vision_block_ids = torch.full((1, p.seq_len),
                                   -1,
                                   dtype=torch.int32,
@@ -1441,8 +1607,153 @@ def test_head512_vision_prefill_route_rejections(route):
                    context_lengths,
                    combined,
                    cache_idx,
-                   vision_block_ids=vision_block_ids,
-                   input_shapes=input_shapes)
+                   vision_block_ids=vision_block_ids)
+
+
+@pytest.mark.skipif(_device_sm() not in NATIVE_SMS,
+                    reason="D512 CuTe DSL FMHA is unavailable on this SM")
+def test_head512_shared_vision_prefill_reads_donor_cache():
+    """A full-cache shared layer applies vision attention without mutating its donor."""
+    seq_len = 128
+    p = AttentionParams(batch_size=1,
+                        seq_len=seq_len,
+                        num_q_heads=4,
+                        num_kv_heads=2,
+                        head_size=512,
+                        kv_cache_capacity=seq_len,
+                        max_batch_size=1,
+                        max_seq_len=seq_len,
+                        max_position_embeddings=seq_len,
+                        is_prefill=True)
+    gen = torch.Generator().manual_seed(627)
+    writer = AttentionPluginRunner(p)
+    consumer = AttentionPluginRunner(p,
+                                     enable_kv_shared=1,
+                                     enable_vision_block_attention=True)
+    cos, sin, combined = _make_rope(p, gen)
+    ref_k, ref_v, plugin_kv = _empty_caches(p)
+    donor_qkv = (0.1 * torch.randn(
+        (1, seq_len, p.qkv_hidden_size), generator=gen,
+        dtype=torch.float32)).to(DEV)
+    positions = torch.arange(seq_len, dtype=torch.int32, device=DEV)[None]
+    cache_idx = torch.zeros(1, dtype=torch.int32, device=DEV)
+    context_lengths = torch.full((1, ), seq_len, dtype=torch.int32, device=DEV)
+    _, ref_k, ref_v = compute_attention(donor_qkv, ref_k, ref_v, cos, sin,
+                                        positions, cache_idx, p)
+    _, plugin_kv = writer.run(donor_qkv.to(torch.float16),
+                              plugin_kv,
+                              context_lengths,
+                              combined,
+                              cache_idx,
+                              input_shapes={"kv_cache_indices": (0, )})
+
+    shared_q = (0.1 * torch.randn(
+        (1, seq_len, p.q_hidden), generator=gen, dtype=torch.float32)).to(DEV)
+    vision_block_ids = torch.full((1, seq_len),
+                                  -1,
+                                  dtype=torch.int32,
+                                  device=DEV)
+    vision_block_ids[:, 8:40] = 0
+    vision_block_ids[:, 80:112] = 1
+    mask = attention_bidirectional_mask(vision_block_ids, context_lengths)
+    shared_q_roped = apply_rotary_embedding(
+        shared_q.reshape(1, seq_len, p.num_q_heads,
+                         p.head_size).transpose(1, 2), cos, sin, positions)
+    shared_ref = scaled_dot_product_attention(shared_q_roped, ref_k, ref_v,
+                                              p.qk_scale, mask, p.num_q_heads,
+                                              p.num_kv_heads)
+    shared_ref = shared_ref.transpose(1, 2).reshape(1, seq_len, p.q_hidden)
+    donor_before = plugin_kv.clone()
+    shared_actual, plugin_kv = consumer.run(
+        shared_q.to(torch.float16),
+        plugin_kv,
+        context_lengths,
+        combined,
+        cache_idx,
+        vision_block_ids=vision_block_ids,
+        input_shapes={"kv_cache_indices": (0, )})
+    assert_close("shared-vision-full-cache",
+                 shared_ref,
+                 shared_actual,
+                 atol=2e-2,
+                 rtol=2e-2)
+    assert torch.equal(donor_before.view(torch.int16),
+                       plugin_kv.view(torch.int16))
+
+
+@pytest.mark.skipif(_device_sm() not in NATIVE_SMS,
+                    reason="D512 CuTe DSL FMHA is unavailable on this SM")
+def test_head512_shared_vision_prefill_uses_token_aligned_rope():
+    """A reused vision prefill must not offset already-gathered RoPE rows."""
+    history = 16
+    seq_len = 64
+    total_length = history + seq_len
+    p = AttentionParams(batch_size=1,
+                        seq_len=seq_len,
+                        num_q_heads=4,
+                        num_kv_heads=2,
+                        head_size=512,
+                        kv_cache_capacity=128,
+                        max_batch_size=1,
+                        max_seq_len=seq_len,
+                        max_position_embeddings=128,
+                        is_prefill=True)
+    gen = torch.Generator().manual_seed(628)
+    runner = AttentionPluginRunner(p,
+                                   enable_kv_shared=1,
+                                   enable_vision_block_attention=True)
+    cos, sin, combined = _make_rope(p, gen)
+    ref_k, ref_v, plugin_kv = _empty_caches(p)
+    plugin_kv[:, :, :, :total_length] = (0.1 * torch.randn(
+        (1, 2, p.num_kv_heads, total_length, p.head_size),
+        generator=gen,
+        dtype=torch.float32)).to(DEV).to(torch.float16)
+    ref_k[:, :, :total_length] = plugin_kv[:, 0, :, :total_length].float()
+    ref_v[:, :, :total_length] = plugin_kv[:, 1, :, :total_length].float()
+
+    shared_q = (0.1 * torch.randn(
+        (1, seq_len, p.q_hidden), generator=gen, dtype=torch.float32)).to(DEV)
+    positions = torch.arange(history,
+                             total_length,
+                             dtype=torch.int32,
+                             device=DEV)[None]
+    shared_q_roped = apply_rotary_embedding(
+        shared_q.reshape(1, seq_len, p.num_q_heads,
+                         p.head_size).transpose(1, 2), cos, sin, positions)
+    mask = sliding_window_mask(seq_len, total_length, -1, DEV)
+    shared_ref = scaled_dot_product_attention(shared_q_roped,
+                                              ref_k[:, :, :total_length],
+                                              ref_v[:, :, :total_length],
+                                              p.qk_scale, mask, p.num_q_heads,
+                                              p.num_kv_heads)
+    shared_ref = shared_ref.transpose(1, 2).reshape(1, seq_len, p.q_hidden)
+    past_lengths = torch.full((1, ), history, dtype=torch.int32, device=DEV)
+    attention_lengths = torch.full((1, ),
+                                   total_length,
+                                   dtype=torch.int32,
+                                   device=DEV)
+    vision_block_ids = torch.full((1, seq_len),
+                                  -1,
+                                  dtype=torch.int32,
+                                  device=DEV)
+    donor_before = plugin_kv.clone()
+
+    shared_actual, plugin_kv = runner.run(shared_q.to(torch.float16),
+                                          plugin_kv,
+                                          attention_lengths,
+                                          combined,
+                                          past_lengths,
+                                          position_ids=positions,
+                                          vision_block_ids=vision_block_ids,
+                                          execution_phase=1)
+
+    assert_close("shared-vision-token-aligned-rope",
+                 shared_ref,
+                 shared_actual,
+                 atol=2e-2,
+                 rtol=2e-2)
+    assert torch.equal(donor_before.view(torch.int16),
+                       plugin_kv.view(torch.int16))
 
 
 @pytest.mark.skipif(not _fp8_available(),
@@ -1905,14 +2216,21 @@ def test_batch_permutation_invariance_decode():
 # --------------------------------------------------------------------------- #
 # Tree (speculative) attention
 # --------------------------------------------------------------------------- #
-def _tree_attention_rounds(q_norm_gamma=None, k_norm_gamma=None):
-    p = AttentionParams(batch_size=4, seq_len=4, **BASE)
+def _tree_attention_rounds(q_norm_gamma=None,
+                           k_norm_gamma=None,
+                           shuffle_pages=False,
+                           seq_len=4,
+                           execution_phase=None):
+    # max_seq_len has to admit the widest round, and the cache the rounds it commits.
+    base = dict(BASE, max_seq_len=max(BASE["max_seq_len"], seq_len))
+    p = AttentionParams(batch_size=4, seq_len=seq_len, **base)
     num_rounds = 5
     gen = torch.Generator().manual_seed(42)
     runner = AttentionPluginRunner(p,
                                    enable_tree_attention=True,
                                    q_norm_gamma=q_norm_gamma,
-                                   k_norm_gamma=k_norm_gamma)
+                                   k_norm_gamma=k_norm_gamma,
+                                   shuffle_pages=shuffle_pages)
     cos, sin, combined = _make_rope(p, gen)
     ref_k, ref_v, plugin_kv = _empty_caches(p)
 
@@ -1921,7 +2239,14 @@ def _tree_attention_rounds(q_norm_gamma=None, k_norm_gamma=None):
     tree_mask = tree_mask.to(DEV)
 
     pos = 0
+    # get_tree_attention_mask gives every token past the four-node base tree the root
+    # plus itself, so they all sit one level under the root. Without the tail the ids
+    # would be shorter than the query, which silently stops testing the wide case.
     base_depth = torch.tensor([0, 1, 1, 2], dtype=torch.int32)
+    base_depth = torch.cat([
+        base_depth,
+        torch.ones(max(0, seq_len - base_depth.numel()), dtype=torch.int32)
+    ])
     for r in range(num_rounds):
         qkv = torch.randn((p.batch_size, p.seq_len, p.qkv_hidden_size),
                           generator=gen,
@@ -1956,9 +2281,14 @@ def _tree_attention_rounds(q_norm_gamma=None, k_norm_gamma=None):
             k_norm_gamma=k_norm_gamma,
             rms_norm_eps=p.rms_norm_eps)
 
-        attn_out, plugin_kv = runner.run(qkv.to(torch.float16), plugin_kv,
-                                         ctx_len, combined, cache_idx, packed,
-                                         pos_ids)
+        attn_out, plugin_kv = runner.run(qkv.to(torch.float16),
+                                         plugin_kv,
+                                         ctx_len,
+                                         combined,
+                                         cache_idx,
+                                         packed,
+                                         pos_ids,
+                                         execution_phase=execution_phase)
         pk, pv = _plugin_kv_to_ref(plugin_kv, p)
 
         assert_close(f"tree-attn[r{r}]", ref_out, attn_out, 1e-2, 1e-2)
@@ -1984,8 +2314,21 @@ def _tree_attention_rounds(q_norm_gamma=None, k_norm_gamma=None):
         pos += int(len(accepted))
 
 
-def test_tree_attention():
-    _tree_attention_rounds()
+# 50 is the pi0.5 ALOHA action horizon: the widest chunk any model sends through this
+# path, and the first that needs two words of packed mask per query token.
+@pytest.mark.parametrize("seq_len", [4, 50])
+def test_tree_attention(seq_len):
+    _tree_attention_rounds(seq_len=seq_len)
+
+
+# The cases above reach the tree kernel through a spec-decode phase. pi0.5 reaches it
+# through kDiffusionDenoise, which the plugin resolves on a separate branch.
+def test_tree_attention_diffusion_phase():
+    _tree_attention_rounds(seq_len=50, execution_phase=6)
+
+
+def test_tree_attention_shuffled_page_table():
+    _tree_attention_rounds(shuffle_pages=True)
 
 
 def test_tree_attention_qknorm():
@@ -2276,6 +2619,33 @@ def test_prefill_qknorm_odd_tokens():
                 k_norm_gamma=kg)
 
 
+def test_prefill_qknorm_post_rope():
+    """HunYuan V1 order: rotate first, then per-head RMSNorm on the rotated Q/K."""
+    p = AttentionParams(batch_size=2, seq_len=8, is_prefill=True, **BASE)
+    gen = torch.Generator().manual_seed(1015)
+    qg, kg = _make_qk_norm_gammas(p.head_size, gen)
+    _run_rounds(p,
+                num_rounds=3,
+                atol=1e-2,
+                rtol=1e-2,
+                q_norm_gamma=qg,
+                k_norm_gamma=kg,
+                qk_norm_post_rope=True)
+
+
+def test_decode_qknorm_post_rope():
+    p = AttentionParams(batch_size=2, seq_len=1, **BASE)
+    gen = torch.Generator().manual_seed(1016)
+    qg, kg = _make_qk_norm_gammas(p.head_size, gen)
+    _run_rounds(p,
+                num_rounds=4,
+                atol=1e-2,
+                rtol=1e-2,
+                q_norm_gamma=qg,
+                k_norm_gamma=kg,
+                qk_norm_post_rope=True)
+
+
 @pytest.mark.skipif(not _fp8_available(),
                     reason="FP8 XQA decode not supported on this device")
 def test_decode_qknorm_fp8kv():
@@ -2361,7 +2731,7 @@ def test_prefill_decode_handoff(seed):
 # length (padded to the max), per-row context_lengths, padding poisoned. The
 # reference computes each row's causal attention over its own valid length.
 # --------------------------------------------------------------------------- #
-def _ragged_prefill_ref(qkv, cos, sin, seqlens, p):
+def _ragged_prefill_ref(qkv, cos, sin, seqlens, p, sliding_window_size=-1):
     """Per-row causal attention over each row's valid length. Returns a list of
     [L_b, q_hidden] outputs."""
     outs = []
@@ -2375,7 +2745,7 @@ def _ragged_prefill_ref(qkv, cos, sin, seqlens, p):
         pos = torch.arange(L, dtype=torch.int32, device=DEV)[None]
         q = apply_rotary_embedding(q, cos, sin, pos)
         k = apply_rotary_embedding(k, cos, sin, pos)
-        mask = sliding_window_mask(L, L, -1, DEV)
+        mask = sliding_window_mask(L, L, sliding_window_size, DEV)
         o = scaled_dot_product_attention(q, k, v, p.qk_scale, mask,
                                          p.num_q_heads, p.num_kv_heads)
         outs.append(o.transpose(1, 2).reshape(L, p.num_q_heads * p.head_size))

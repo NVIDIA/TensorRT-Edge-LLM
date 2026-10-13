@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <iosfwd>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -50,8 +51,53 @@ struct Message
         std::string content; //!< Text content when content type is text. Image data will be stored in corresponding
                              //!< imageBuffers. For type "trajectory", data is stored in Request::pastTrajectory.
     };
-    std::string role;                     //!< Message role (system, user, assistant)
+    struct ToolCall
+    {
+        std::string id;               //!< Provider tool-call identifier
+        std::string type{"function"}; //!< Tool-call type
+        std::string name;             //!< Function name
+        std::string arguments;        //!< JSON object text or provider-native argument text
+        bool argumentsIsString{true}; //!< Preserve the provider's argument representation
+    };
+
+    std::string role;                     //!< Message role (system, user, assistant, tool)
     std::vector<MessageContent> contents; //!< Contents of the message
+    std::string reasoningContent;         //!< Optional reasoning for assistant history
+    bool hasReasoningContent{false};      //!< Distinguish an absent reasoning field from an empty one
+    std::vector<ToolCall> toolCalls;      //!< Optional assistant tool calls
+    bool hasToolCalls{false};             //!< Distinguish an absent tool_calls field from an empty one
+    std::string toolCallId;               //!< Tool call answered by a tool-role message
+    std::string name;                     //!< Optional participant or tool name
+    bool hasContent{true};                //!< Distinguish an absent content field from a null value
+    bool contentIsArray{false};           //!< Preserve the provider's string-vs-content-block contract
+    bool contentIsNull{false};            //!< Preserve a null content value for tool-only assistant turns
+};
+
+/*! \brief OpenAI-compatible function tool definition used by chat templates. */
+struct ToolDefinition
+{
+    std::string name;
+    std::string description;
+    std::string parameters{"{}"}; //!< JSON Schema object text
+    bool strict{false};
+    bool hasDescription{true}; //!< Preserve whether the provider supplied the optional field
+    bool hasParameters{true};  //!< Preserve whether the provider supplied the optional field
+    bool hasStrict{false};     //!< Preserve an explicitly supplied false value
+};
+
+/*! \brief Tool selection forwarded to provider chat templates. */
+struct ToolChoice
+{
+    enum class Mode : uint8_t
+    {
+        kNone,
+        kAuto,
+        kRequired,
+        kFunction,
+    };
+
+    Mode mode{Mode::kAuto};
+    std::string functionName;
 };
 
 // Streaming types (StreamChannel, StreamChunk, SlotStreamState, FinishReason,
@@ -90,8 +136,55 @@ struct LogprobEntry
     std::string piece; //!< Raw token bytes; empty until filled at assembly time
 };
 
+/*!
+ * \brief Which grammar dialect a guided-decoding request supplies.
+ *
+ * The set mirrors the low-level `guided_decoding` request field. All but kChoice map
+ * onto an XGrammar entry point directly; kChoice has no native primitive. The
+ * high-level OpenAI-compatible `response_format` is a server-side translation onto
+ * this same enum.
+ */
+enum class GuideType : int32_t
+{
+    kJsonObject,    //!< Any JSON *object*; compiled as the schema {"type":"object"}.
+    kJsonSchema,    //!< A JSON Schema document.
+    kRegex,         //!< XGrammar's regex dialect (not PCRE: no lookaround/backreferences).
+    kEbnf,          //!< XGrammar's GBNF-style EBNF; must define a rule named "root".
+    kStructuralTag, //!< A structural-tag document (modern "triggered_tags" form).
+    kChoice         //!< JSON array of the permitted outputs; lowered to an EBNF alternation.
+};
+
+/*!
+ * \brief Per-request grammar constraint (discriminated union).
+ *
+ * A single string holds every dialect: structural tags and choice lists keep their
+ * JSON document here verbatim and are parsed by the backend, matching how vLLM and
+ * SGLang carry the same field. `guide` is empty only for kJsonObject.
+ */
+struct GuidedDecodingParams
+{
+    GuideType type{GuideType::kJsonObject};
+    std::string guide;
+};
+
+//! Human-readable name for logs and error messages.
+char const* guideTypeName(GuideType type);
+
 /*! \brief LLM Generation Request structure
  */
+enum class SpecProposalSampling : uint8_t
+{
+    kAuto,
+    kGreedy,
+    kProbabilistic,
+};
+
+inline constexpr uint64_t kDefaultSamplingSeed = 0xED6E5EED20260001ULL;
+
+//! Adding a field? Decide whether two requests that differ on it may share a forward pass, and
+//! record that decision in scheduler/batchCompatibility.cpp -- either in the compared list or the
+//! exempt list. An unclassified batch-relevant field lets one request generate with another's
+//! settings, silently.
 struct LLMGenerationRequest
 {
     //! \cond INTERNAL
@@ -120,6 +213,16 @@ struct LLMGenerationRequest
         //! Sparse per-token logit bias map keyed by full tokenizer token ID.
         std::unordered_map<int32_t, float> logitBias;
 
+        //! Optional grammar constraint. Unset means unconstrained generation.
+        //! Independent of `logitBias`: that is a soft preference applied to every
+        //! step alike, this is a hard per-step constraint recomputed from grammar state.
+        std::optional<GuidedDecodingParams> guidedDecoding;
+        //! Stable seed for this logical request; independent of its active batch slot.
+        std::optional<uint64_t> samplingSeed;
+
+        //! Optional sequence-level override of the batch context-cache lookup policy.
+        std::optional<ContextCacheLookupPolicy> contextCacheLookupPolicy;
+
         mutable FormattedRequest formatted; //!< Formatted request (populated by tokenizer or user-provided)
     };
     //! \endcond
@@ -131,6 +234,8 @@ struct LLMGenerationRequest
     float topP;                                             //!< Top-p (nucleus) sampling parameter
     int64_t topK;                                           //!< Top-k sampling parameter
     int64_t maxGenerateLength;                              //!< Max length of the generated tokens
+    std::optional<uint64_t> samplingSeed;                   //!< Stable request-level sampling seed
+    SpecProposalSampling proposalSampling{SpecProposalSampling::kAuto}; //!< Draft proposal sampling policy
     int32_t diffusionMaxDenoisingSteps{0}; //!< Optional DiffusionGemma denoise-step override (0 = runtime default)
     std::string loraWeightsName{""};       //!< Name of the LoRA weights. Default to empty string for no LoRA weights
 
@@ -143,11 +248,18 @@ struct LLMGenerationRequest
     bool addGenerationPrompt{true};
     // Whether to enable thinking mode for models that support it. Default is disabled.
     bool enableThinking{false};
+    std::string reasoningEffort;       //!< Optional model-native reasoning effort
+    std::vector<ToolDefinition> tools; //!< Tools available to this request batch
+    ToolChoice toolChoice;             //!< Requested tool selection mode
+    bool parallelToolCalls{true};      //!< Whether the model may emit parallel calls
     // Disable speculative decoding for this request when the loaded engine contract supports vanilla fallback.
     bool disableSpecDecode{false};
+    //! Preserve model control tokens when false so an output parser can consume them.
+    bool skipSpecialTokens{true};
 
     //! Number of top log-probabilities to return per generated token (0 = disabled, max = kMaxLogprobsK).
     //! Logprobs are computed as log(softmax(logits)) and returned in LLMGenerationResponse::logprobs.
+    //! Values above the maximum are clamped to it; values below zero are treated as disabled, like zero.
     int32_t numLogprobs{0};
 
     //! Per-slot streaming channels. Size 0 disables streaming globally.
@@ -174,7 +286,7 @@ struct LLMGenerationRequest
     //! Ready endpoints to retain when the context cache is enabled.
     ContextCacheCommitPolicy contextCacheCommitPolicy{ContextCacheCommitPolicy::kIncludingGeneratedTokens};
 
-    //! Hybrid+MTP boundary-replay tail length carried into the context cache. Not consumed yet.
+    //! Hybrid+MTP boundary-replay tail length. Set to -1 to derive it with the native provider-template renderer.
     int32_t contextCacheReplayTailLength{0};
 
     //! Periodic recurrent-state capture interval (0 disables). Hybrid+MTP endpoint reuse requires this to be 0 so the
@@ -201,6 +313,12 @@ struct LLMGenerationResponse
 
     //! Prompt length per request, counted after chat templating and media expansion.
     std::vector<int32_t> inputTokenCounts;
+
+    //! Speculative verification iterations per request; zero for vanilla decoding.
+    std::vector<int32_t> specVerifyCounts;
+
+    //! Per-request generated tokens divided by speculative verification iterations.
+    std::vector<float> specAcceptanceLengths;
 };
 
 /*! \brief RoPE (Rotary Position Embedding) type enumeration
@@ -214,6 +332,7 @@ enum class RopeType
     kMRope,        //!< MRope type used by Qwen2-VL
     kNoRope,       //!< No positional encoding (e.g., Nemotron-Nano)
     kYarn,         //!< YaRN NTK-by-parts scaling
+    kLlama3,       //!< Llama-3 wavelength-banded scaling
 };
 
 /*! \brief Long-Rope specific parameters */
@@ -225,6 +344,24 @@ struct LongRopeParams
 };
 
 /*! \brief YaRN specific parameters (NTK-by-parts interpolation) */
+//! Llama-3 rope scaling, which rescales the inverse frequencies by wavelength band rather than by position.
+//!
+//! Long-wavelength components are divided by `factor`, short-wavelength ones are left alone, and the band between
+//! is interpolated. The split is stated in units of the pre-scaling training length: a component is "long" when its
+//! wavelength exceeds `originalMaxPositionEmbeddings / lowFreqFactor`.
+//!
+//! This applies at every position, not only past the original context: the affected bands are chosen by wavelength,
+//! and a short sequence uses the same inverse frequencies as a long one.
+//! `collectRopeConfig` requires all four to be stated; the values below are the Llama-3.1 ones, kept only so a
+//! directly constructed instance is not left uninitialized.
+struct Llama3Params
+{
+    int32_t originalMaxPositionEmbeddings{-1}; //!< Pre-scaling training length; the wavelength reference
+    float factor{8.0F};                        //!< Divisor applied to the long-wavelength bands
+    float lowFreqFactor{1.0F};                 //!< Sets the wavelength above which a band is fully scaled
+    float highFreqFactor{4.0F};                //!< Sets the wavelength below which a band is untouched
+};
+
 struct YarnParams
 {
     int32_t originalMaxPositionEmbeddings{-1}; //!< Pre-YaRN training length; the interpolation reference
@@ -245,8 +382,10 @@ struct RopeConfig
     float rotaryTheta{100000.0F};             //!< Base frequency for rotary embeddings
     float partialRotaryFactor{1.0F};          //!< Fraction of head angles rotated by proportional RoPE
     int32_t maxPositionEmbeddings{32768};     //!< Maximum position embeddings supported
+    std::vector<int32_t> mropeSection;        //!< MRoPE frequency partition, empty for non-MRoPE
     std::optional<LongRopeParams> longRope{}; //!< Long-Rope specific parameters
     std::optional<YarnParams> yarn{};         //!< YaRN specific parameters
+    std::optional<Llama3Params> llama3{};     //!< Llama-3 scaling parameters
 };
 
 /*! \brief Collect rope configuration from the model config
@@ -292,6 +431,10 @@ bool initializeNopeCosSinCache(rt::Tensor& cosSinCache, cudaStream_t stream) noe
  */
 bool initializeLongRopeCosSinCache(
     rt::Tensor& shortCosSinCache, rt::Tensor& longCosSinCache, RopeConfig const& config, cudaStream_t stream);
+
+//! Name the rope variant rather than its underlying integer, so assertion and log
+//! output identifies the type directly.
+std::ostream& operator<<(std::ostream& os, RopeType const& type);
 
 /*!
  * @brief Format rope configuration into string

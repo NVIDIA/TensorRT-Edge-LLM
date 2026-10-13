@@ -19,7 +19,7 @@ from typing import Any, List
 
 from ._native import (NativeDetectionError, NativeLoadError,
                       NativeManifestError, NativeRuntimeError,
-                      NativeSelectionError)
+                      NativeSelectionError, TensorRTDependencyError)
 from ._native.load import get_loaded_runtime, load_runtime
 
 
@@ -54,5 +54,6 @@ __all__ = [
     "NativeManifestError",
     "NativeRuntimeError",
     "NativeSelectionError",
+    "TensorRTDependencyError",
     "load",
 ]

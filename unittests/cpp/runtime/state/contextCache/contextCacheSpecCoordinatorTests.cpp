@@ -170,9 +170,10 @@ protected:
         ContextCacheBatchAdmission admission;
         admission.speculativeRequest = speculativeRequest;
         DecodingKvHeadroom const headroom = speculativeRequest ? specHeadroom() : DecodingKvHeadroom{1, 0};
-        for (auto& tokens : batch)
+        for (size_t slot = 0; slot < batch.size(); ++slot)
         {
-            admission.sequences.push_back(ContextCacheSequenceAdmission{std::move(tokens), {}});
+            admission.sequences.push_back(ContextCacheSequenceAdmission{
+                std::move(batch[slot]), {}, {}, ResidentRef{static_cast<int32_t>(slot), 1}});
         }
         ContextCacheCoordinator::BeginRequestResult result = mCoordinator->beginRequest(admission, headroom, mStream);
         EXPECT_EQ(result.status, ContextCacheCoordinatorStatus::kOk);
@@ -266,7 +267,7 @@ TEST_F(ContextCacheSpecCoordinatorTests, SpeculativeMediaAdmissionBypassesLookup
     ContextCacheBatchAdmission admission;
     admission.speculativeRequest = true;
     admission.lookupPolicy = ContextCacheLookupPolicy::kUseCache;
-    admission.sequences.push_back(ContextCacheSequenceAdmission{tokens, {}, std::move(mediaHashes)});
+    admission.sequences.push_back(ContextCacheSequenceAdmission{tokens, {}, std::move(mediaHashes), ResidentRef{0, 1}});
 
     ContextCacheMetrics const before = mCoordinator->metrics();
     ContextCacheCoordinator::BeginRequestResult result = mCoordinator->beginRequest(admission, specHeadroom(), mStream);
@@ -291,8 +292,9 @@ TEST_F(ContextCacheSpecCoordinatorTests, MediaInOneSpeculativeBatchSlotBypassesE
     ContextCacheBatchAdmission admission;
     admission.speculativeRequest = true;
     admission.lookupPolicy = ContextCacheLookupPolicy::kUseCache;
-    admission.sequences.push_back(ContextCacheSequenceAdmission{makeTokens(kInputLength), {}});
-    admission.sequences.push_back(ContextCacheSequenceAdmission{makeTokens(kInputLength), {}, std::move(mediaHashes)});
+    admission.sequences.push_back(ContextCacheSequenceAdmission{makeTokens(kInputLength), {}, {}, ResidentRef{0, 1}});
+    admission.sequences.push_back(
+        ContextCacheSequenceAdmission{makeTokens(kInputLength), {}, std::move(mediaHashes), ResidentRef{1, 1}});
 
     ContextCacheMetrics const before = mCoordinator->metrics();
     ContextCacheCoordinator::BeginRequestResult result = mCoordinator->beginRequest(admission, specHeadroom(), mStream);
@@ -402,7 +404,7 @@ TEST_F(ContextCacheSpecCoordinatorTests, VanillaRequestReusesBaseSideOfPairedRec
     EXPECT_EQ(mCoordinator->finish(eagleConsumer.request), ContextCacheCoordinatorStatus::kOk);
 }
 
-TEST_F(ContextCacheSpecCoordinatorTests, FirstRoundCompactionRemovesTerminalSlotAndKeepsEagleSurvivorExecutable)
+TEST_F(ContextCacheSpecCoordinatorTests, FirstRoundCompactionPreservesEagleSurvivorResidentSlot)
 {
     constexpr int32_t kInputLength{2 * kTOKENS_PER_PAGE};
     auto request = beginBatch({makeTokens(kInputLength), makeTokens(kInputLength)});
@@ -423,7 +425,10 @@ TEST_F(ContextCacheSpecCoordinatorTests, FirstRoundCompactionRemovesTerminalSlot
     ASSERT_EQ(mCoordinator->beginBatchCompaction(request.request, {-1, 0}, 1, deviceMapping),
         ContextCacheCoordinatorStatus::kOk);
     ASSERT_EQ(mCoordinator->compactBatch(request.request), ContextCacheCoordinatorStatus::kOk);
-    EXPECT_TRUE(std::equal(survivingDraftRow.begin(), survivingDraftRow.end(), mDraftPageTable->hostRow(0)));
+    EXPECT_TRUE(
+        std::all_of(mDraftPageTable->hostRow(0), mDraftPageTable->hostRow(0) + mDraftPageTable->maxPagesPerSeq(),
+            [](PageId page) { return page == kUNUSED_PAGE_ENTRY; }));
+    EXPECT_TRUE(std::equal(survivingDraftRow.begin(), survivingDraftRow.end(), mDraftPageTable->hostRow(1)));
 
     completeDecode(request, {41, 42}, kInputLength + 2, kInputLength, false);
     EXPECT_EQ(mCoordinator->finish(request.request), ContextCacheCoordinatorStatus::kOk);
@@ -488,7 +493,8 @@ TEST_F(ContextCacheSpecCoordinatorTests, InitialHeadroomAllowsUnequalBaseAndDraf
     ContextCacheBatchAdmission admission;
     admission.speculativeRequest = true;
     DecodingKvHeadroom const headroom{/*baseExtraTokens=*/2, /*draftExtraTokens=*/130};
-    admission.sequences.push_back(ContextCacheSequenceAdmission{makeTokens(kTOKENS_PER_PAGE - 1), {}});
+    admission.sequences.push_back(
+        ContextCacheSequenceAdmission{makeTokens(kTOKENS_PER_PAGE - 1), {}, {}, ResidentRef{0, 1}});
 
     ContextCacheCoordinator::BeginRequestResult result = mCoordinator->beginRequest(admission, headroom, mStream);
     ASSERT_EQ(result.status, ContextCacheCoordinatorStatus::kOk);
@@ -547,7 +553,7 @@ protected:
     {
         ContextCacheBatchAdmission admission;
         admission.speculativeRequest = true;
-        admission.sequences.push_back(ContextCacheSequenceAdmission{std::move(tokens), {}});
+        admission.sequences.push_back(ContextCacheSequenceAdmission{std::move(tokens), {}, {}, ResidentRef{0, 1}});
         ContextCacheCoordinator::BeginRequestResult result
             = mCoordinator->beginRequest(admission, DecodingKvHeadroom{5, 0}, mStream);
         EXPECT_EQ(result.status, ContextCacheCoordinatorStatus::kOk);

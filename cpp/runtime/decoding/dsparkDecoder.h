@@ -52,6 +52,12 @@ public:
         return true;
     }
 
+    DecodingStrategyCapabilities capabilities() const noexcept override
+    {
+        return {/*.ownsBaseVerificationCudaGraphs=*/false, /*.supportsLosslessSampling=*/true,
+            /*.maxSamplingSupport=*/0, /*.fallbackToVanillaForNonGreedySampling=*/mUseTree};
+    }
+
     DecodingKvHeadroom requiredKvHeadroom() const override;
 
     bool decodeStep(DecodingInferenceContext& context) override;
@@ -63,7 +69,8 @@ public:
     void setContextMemory(Tensor& memory) override;
 
     bool hasSystemPromptKVCache(SystemPromptCacheKey const& key) const override;
-    void restoreSystemPromptKVCache(SystemPromptCacheKey const& key, int32_t batchIdx, cudaStream_t stream) override;
+    void restoreSystemPromptKVCache(
+        SystemPromptCacheKey const& key, int32_t residentSlot, cudaStream_t stream) override;
     bool runSystemPromptPrefill(DecodingInferenceContext& context) override;
     void saveSystemPromptKVCache(SystemPromptCacheKey const& key, std::string const& prompt,
         std::vector<tokenizer::Rank> const& tokenizedPrompt, int32_t promptIdsLength, cudaStream_t stream) override;
@@ -76,6 +83,8 @@ private:
     bool runDraftForward(DecodingInferenceContext& context);
     bool runBaseVerification(DecodingInferenceContext& context);
     bool buildTreeVerifyInputs(int32_t activeBatchSize, cudaStream_t stream, bool useConfidence);
+    void prepareDraftRaggedBindings(int32_t activeBatchSize, int32_t executionWidth, int32_t deltaWidth,
+        cudaStream_t stream, std::vector<ResidentRef> const* residentRefs = nullptr);
     void commitAcceptedTreePath(DecodingInferenceContext& context, int32_t verifySize, int32_t maxAcceptLength);
     void dsparkBiasMarkovGreedy(DecodingInferenceContext& context, int32_t activeBatchSize, int32_t proposalLen);
     void dsparkBiasMarkovSample(DecodingInferenceContext& context, int32_t activeBatchSize, int32_t proposalLen);
@@ -97,11 +106,14 @@ private:
     Tensor mDraftHiddenStates; //!< [B, proposalLen, draftHiddenSize] FP16
 
     //! Proposal attention inputs
-    Tensor mDraftPackedAttentionMask; //!< [B, proposalLen, divUp(proposalLen,32)] INT32
-    Tensor mDraftAttentionPosId;      //!< [B, proposalLen] INT32
-    Tensor mDraftContextLengths;      //!< [B] INT32
-    Tensor mDraftDeltaLenCommit;      //!< [B] INT32
-    Tensor mDraftDeltaLens;           //!< [B] INT32
+    Tensor mDraftPackedAttentionMask;  //!< [B, proposalLen, divUp(proposalLen,32)] INT32
+    Tensor mDraftAttentionPosId;       //!< [B, proposalLen] INT32
+    Tensor mDraftContextLengths;       //!< [B] INT32
+    Tensor mDraftDeltaLenCommit;       //!< [B] INT32
+    Tensor mDraftDeltaLens;            //!< [B] INT32
+    Tensor mDraftDeltaRopeCosSin;      //!< [T_delta, rotaryDim] FLOAT
+    Tensor mDraftDeltaPositions;       //!< [T_delta] INT32
+    Tensor mDraftDeltaTokenToSequence; //!< [T_delta] INT32
 
     //! Draft/verify/accepted tokens
     Tensor mDraftTokenIds;        //!< [B, proposalLen] INT32
@@ -110,6 +122,10 @@ private:
     Tensor mAcceptLength;         //!< [B] INT32
     Tensor mHostAcceptLengths;    //!< [B] INT32 (CPU)
     Tensor mHostAcceptedTokenIds; //!< [B, verifyLen] INT32 (CPU)
+
+    //! Proposal self-attention inside the draft block is causal rather than
+    //! bidirectional. Sourced from dspark_config.causal_head.
+    bool mCausalProposalMask{false};
 
     SpecCommonStateTracker mCommonStateTracker;
     Tensor mHostDraftInputIds;      //!< [B, proposalLen] INT32 (CPU)
@@ -140,34 +156,39 @@ private:
     //! Last accepted token per batch [maxBatch] INT32 (GPU)
     Tensor mLastAcceptedTokens;
 
-    //! DDTree drafting state (draftingTopK > 1): the fanout happens in ddtreeBuild
-    //! after drafting, on the stacked per-depth Markov-corrected logits.
-    Tensor mStackedMarkovLogits;  //!< [maxBatch, blockSize+1, vocabSize] FP32, row 0 = root placeholder
+    //! Tree drafting state.
+    Tensor mStackedMarkovLogits;  //!< [maxBatch, blockSize+1, vocabSize] FP32, row 0 is a root placeholder
     Tensor mTreeTokenIds;         //!< [maxBatch, verifySize] INT32 flattened tree token ids
-    Tensor mTreeNodeDepths;       //!< [maxBatch, verifySize] INT32 node depths (root = 0)
-    Tensor mTreeParentIds;        //!< [maxBatch, verifySize] INT32 parent node indices
     Tensor mTreeNodeScores;       //!< [maxBatch, verifySize] FP32 prefix log-prob scores
     Tensor mValidCounts;          //!< [maxBatch] INT32 valid node counts
     Tensor mVerifyTreeMask;       //!< [maxBatch, verifySize, verifySize] INT8 unpacked accept mask
-    Tensor mTreeBuildWorkspace;   //!< ddtreeBuild scratch
+    Tensor mTreeBuildWorkspace;   //!< ddtreeBuild scratch for scheduler and biased requests
     Tensor mAcceptedTokenIndices; //!< [maxBatch, verifySize] INT32 accepted verify-node indices
 
     //! DSpark Markov/confidence sidecars
-    Tensor mMarkovW1;         //!< [vocabSize, markovRank] FP16
-    Tensor mMarkovW2;         //!< [vocabSize, markovRank] FP16
-    Tensor mConfidenceWeight; //!< [hiddenSize + optional markovRank] FP16
-    Tensor mConfidenceBias;   //!< [1] FP16
+    Tensor mMarkovW1;          //!< [vocabSize, markovRank] FP16
+    Tensor mMarkovW2;          //!< [vocabSize, markovRank] FP16
+    Tensor mMarkovW2Fp8;       //!< [vocabSize, markovRank] E4M3 bytes (EDGELLM_DSPARK_W2_FP8=1)
+    Tensor mMarkovW2RowScales; //!< [vocabSize] FP16 per-row scales for the FP8 layout
+    Tensor mMarkovGreedySlots; //!< [maxBatch, proposalLen] packed per-step greedy winners (fused kernel)
+    Tensor mConfidenceWeight;  //!< [hiddenSize + optional markovRank] FP16
+    Tensor mConfidenceBias;    //!< [1] FP16
     bool mHasConfidenceHead{false};
     bool mConfidenceHeadWithMarkov{false};
+    bool mUseFp8W2{false}; //!< EDGELLM_DSPARK_W2_FP8=1: FP8 E4M3 markov_w2 for greedy drafting
 
     //! System prompt KV cache for draft target KV
     hash_utils::HashMap<SystemPromptCacheKey, SystemPromptKVCache> mSystemPromptKVCacheDraft;
 
     //! DSpark-specific parameters
-    bool mUseTree{false};          //!< draftingTopK > 1 selects DDTree drafting
-    bool mUseTreeScheduler{false}; //!< scheduler!=off in tree mode: log(conf) bias on ddtree growth scores
+    bool mUseTree{false};          //!< draftingTopK > 1 selects tree drafting
+    bool mUseTreeScheduler{false}; //!< threshold scheduling uses confidence-guided ddtreeBuild
     int32_t mProposalLen{7};
     int32_t mVerifyLen{8};
+    int32_t mDraftBlockLen{0};
+    //! Index of the first draft query slot that carries a proposal. 0 when the checkpoint
+    //! samples from the anchor, 1 when slot 0 is the bonus token (the validated layout).
+    int32_t mDraftSlotOffset{1};
     int32_t mCurrentProposalLen{7};
     int32_t mCurrentVerifyLen{8};
     int32_t mMaskTokenId{151669};
@@ -180,6 +201,8 @@ private:
     int32_t mLastBaseVerifyHiddenStride{0};
     int32_t mMinScheduledProposalLen{1};
     int32_t mMaxScheduledProposalLen{0};
+    //! Per-slot scheduled proposal lengths for the current round (scheduler on); empty otherwise.
+    std::vector<int32_t> mScheduledProposalLengths;
 };
 
 } // namespace rt

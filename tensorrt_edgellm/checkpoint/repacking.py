@@ -23,13 +23,13 @@ in-place on ``module._buffers`` or return new tensors; they are called by
 """
 
 import logging
-from typing import Iterable, Optional, Tuple
+from typing import Iterable, NamedTuple, Optional, Tuple
 
 import numpy as np
 import torch
 import torch.nn as nn
 
-from ..models.ops import int4_gemm_plugin_version
+from ..models.ops import int4_gemm_plugin_version, use_blackwell_nvfp4_a16_gemm
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +40,12 @@ __all__ = [
     "repack_gptq_to_plugin",
     "decode_modelopt_nvfp4",
     "unpack_nvfp4_codes",
+    "repack_nvfp4_a16_blackwell_linear",
+    "NVFP4_A16_BLACKWELL_MOE_TILE_N",
+    "NVFP4_A16_BLACKWELL_MOE_TILE_K",
+    "nvfp4_a16_blackwell_moe_offsets",
+    "repack_nvfp4_a16_blackwell_moe_experts",
+    "swizzle_nvfp4_a16_blackwell_moe_row_tiles",
     "repack_nvfp4_a16_marlin_linear",
     "repack_nvfp4_a16_marlin_moe_experts",
     "repack_nvfp4_a16_marlin_gated_moe_experts",
@@ -372,7 +378,7 @@ def apply_all_repacking(model: nn.Module) -> None:
     _cast_modelopt_awq_prepacked(model)
     _cast_fp8_linear_scales(model)
     _cast_nvfp4_weights(model)
-    _repack_nvfp4_a16_marlin_linears(model)
+    _repack_nvfp4_a16_linears(model)
 
 
 def _cast_modelopt_awq_prepacked(model: nn.Module) -> None:
@@ -441,16 +447,18 @@ def _cast_modelopt_awq_prepacked(model: nn.Module) -> None:
                 torch.float16)
 
 
-def _repack_nvfp4_a16_marlin_linears(model: nn.Module) -> None:
-    """Transform NVFP4A16MarlinLinear checkpoint buffers into Marlin layout.
+def _repack_nvfp4_a16_linears(model: nn.Module) -> None:
+    """Transform dense NVFP4-A16 checkpoint buffers for the export target.
 
     Replaces the raw ModelOpt ``weight`` / ``weight_scale`` / ``weight_scale_2``
     buffers with the plugin buffers ``qweight`` / ``block_scales`` /
-    ``global_scale`` and records ``n_padded`` for the forward slice.
+    ``global_scale`` and records ``n_padded`` for the forward slice. Explicit
+    SM110 exports use ``BLACKWELL_N128_K64_V1``; all other targets retain the
+    Marlin layout. Routed MoE experts remain on their separate Marlin path.
     """
-    from ..models.linear import NVFP4A16MarlinLinear  # local import
+    from ..models.linear import NVFP4A16Linear  # local import
     for module in model.modules():
-        if not isinstance(module, NVFP4A16MarlinLinear):
+        if not isinstance(module, NVFP4A16Linear):
             continue
         # Routed MoE experts are stacked into the MoE plugin at export time
         # (repack_nvfp4_a16_marlin_moe_experts), so leave their raw buffers.
@@ -460,21 +468,31 @@ def _repack_nvfp4_a16_marlin_linears(model: nn.Module) -> None:
         ws = module._buffers.get("weight_scale")
         wg = module._buffers.get("weight_scale_2")
         if wp is None:
-            logger.warning(
-                "NVFP4A16MarlinLinear missing weight; skipping repack")
+            logger.warning("NVFP4A16Linear missing weight; skipping repack")
             continue
         if wp.dtype in (torch.float16, torch.bfloat16, torch.float32):
             logger.warning(
-                "NVFP4A16MarlinLinear has dense %s weight; refusing to "
+                "NVFP4A16Linear has dense %s weight; refusing to "
                 "quantize in-export. Checkpoint must provide packed NVFP4 "
                 "(uint8 weight + e4m3 scales). Skipping repack.", wp.dtype)
             continue
         if ws is None or wg is None:
-            logger.warning("NVFP4A16MarlinLinear missing packed buffers; "
+            logger.warning("NVFP4A16Linear missing packed buffers; "
                            "skipping repack")
             continue
-        qweight, block_scales, global_scale, _, n_padded = (
-            repack_nvfp4_a16_marlin_linear(wp, ws, wg, pad_n_to=128))
+        use_blackwell = getattr(module, "_use_blackwell_gemm", None)
+        expected_use_blackwell = use_blackwell_nvfp4_a16_gemm()
+        if use_blackwell != expected_use_blackwell:
+            raise ValueError(
+                "NVFP4A16Linear plugin route changed between model "
+                f"construction ({use_blackwell}) and repacking "
+                f"({expected_use_blackwell})")
+        if use_blackwell:
+            qweight, block_scales, global_scale, _, n_padded = (
+                repack_nvfp4_a16_blackwell_linear(wp, ws, wg, pad_n_to=128))
+        else:
+            qweight, block_scales, global_scale, _, n_padded = (
+                repack_nvfp4_a16_marlin_linear(wp, ws, wg, pad_n_to=128))
         # Drop the raw checkpoint buffers and install the plugin buffers.
         for name in ("weight", "weight_scale", "weight_scale_2"):
             module._buffers.pop(name, None)
@@ -975,6 +993,86 @@ def repack_nvfp4_a16_marlin_linear(
     return qweights, block_scales, global_scale, n_logical, n_padded
 
 
+def repack_nvfp4_a16_blackwell_linear(
+    weight_packed: torch.Tensor,
+    weight_scale: torch.Tensor,
+    weight_scale_2: torch.Tensor,
+    pad_n_to: int = 128,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, int, int]:
+    """Repack ModelOpt NVFP4 weights into ``BLACKWELL_N128_K64_V1``.
+
+    The Blackwell GEMM and GEMV kernels share one opaque physical layout. Each
+    contiguous tile holds 128 output rows by 64 input columns: 32 packed FP4
+    bytes and four raw E4M3 K16 scales per output row. ModelOpt already stores
+    adjacent K codes in the required low/high nibble order, so the conversion
+    is a tile reshape and permutation with no numeric transformation.
+
+    Unlike Marlin, the Blackwell plugin consumes the checkpoint's FP32
+    per-tensor multiplier directly; it must not be multiplied by the Marlin
+    skip-flop factor.
+
+    Returns:
+      qweights:     ``[N_pad/128, K/64, 128, 32]`` int8
+      block_scales: ``[N_pad/128, K/64, 128, 4]`` int8
+      global_scale: ``[1]`` float32
+      n_logical:    original N
+      n_padded:     N rounded up to ``pad_n_to``
+    """
+    if pad_n_to <= 0 or pad_n_to % 128 != 0:
+        raise ValueError("pad_n_to must be a positive multiple of 128")
+
+    wp = weight_packed
+    if wp.dtype == torch.int8:
+        wp = wp.view(torch.uint8)
+    if wp.dtype != torch.uint8 or wp.ndim != 2:
+        raise TypeError(
+            "weight_packed must be a rank-2 uint8/int8 ModelOpt tensor")
+
+    n_logical, k_half = wp.shape
+    k = k_half * 2
+    if k <= 0 or k % 64 != 0:
+        raise ValueError(f"K={k} must be a positive multiple of 64")
+
+    ws = weight_scale
+    if ws.dtype == torch.float8_e4m3fn:
+        ws_i8 = ws.view(torch.int8)
+    elif ws.dtype in (torch.int8, torch.uint8):
+        ws_i8 = ws.view(torch.int8)
+    else:
+        raise TypeError(f"unexpected weight_scale dtype {ws.dtype}")
+    expected_scale_shape = (n_logical, k // _NVFP4_GROUP_SIZE)
+    if tuple(ws_i8.shape) != expected_scale_shape:
+        raise ValueError(f"weight_scale shape {tuple(ws_i8.shape)} != "
+                         f"{expected_scale_shape}")
+
+    n_padded = ((n_logical + pad_n_to - 1) // pad_n_to) * pad_n_to
+    if n_padded != n_logical:
+        wp_padded = torch.zeros((n_padded, k_half),
+                                dtype=torch.uint8,
+                                device=wp.device)
+        wp_padded[:n_logical].copy_(wp)
+        wp = wp_padded
+        ws_padded = torch.zeros((n_padded, k // _NVFP4_GROUP_SIZE),
+                                dtype=torch.int8,
+                                device=ws_i8.device)
+        ws_padded[:n_logical].copy_(ws_i8)
+        ws_i8 = ws_padded
+
+    n_tiles = n_padded // 128
+    k_tiles = k // 64
+    qweights = (wp.reshape(n_tiles, 128, k_tiles,
+                           32).permute(0, 2, 1,
+                                       3).contiguous().view(torch.int8))
+    block_scales = (ws_i8.reshape(n_tiles, 128, k_tiles,
+                                  4).permute(0, 2, 1, 3).contiguous())
+
+    if weight_scale_2.numel() != 1:
+        raise ValueError("weight_scale_2 must contain exactly one value")
+    global_scale = weight_scale_2.detach().reshape(1).to(
+        dtype=torch.float32).contiguous()
+    return qweights, block_scales, global_scale, n_logical, n_padded
+
+
 def _pad_nvfp4_linear_k(weight_packed: torch.Tensor,
                         weight_scale: torch.Tensor, k_padded: int):
     """Zero-pad a packed NVFP4 linear along the input dimension K.
@@ -1128,6 +1226,156 @@ _FP4_E2M1_POSITIVE_LEVELS = np.array([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0],
 _E2M1_BOUNDS = np.array([0.25, 0.75, 1.25, 1.75, 2.5, 3.5, 5.0],
                         dtype=np.float32)
 
+# ---------------------------------------------------------------------------
+# BLACKWELL_MOE_N128_K64_V1 -- Thor (SM110) routed-MoE NVFP4 W4A16 layout
+#
+# One weight buffer per projection serves both the tcgen05 grouped prefill GEMM
+# and the CUDA-core decode kernels of ``Nvfp4A16BlackwellMoePlugin``; there is
+# never a second copy of the MoE weights.  Per expert it is the
+# dense ``BLACKWELL_N128_K64_V1`` tile layout produced by
+# :func:`repack_nvfp4_a16_blackwell_linear`; the expert index is a leading mode
+# so one TMA descriptor with L = num_experts addresses every expert without
+# tensormap updates:
+#
+#   qweight      int8 [E, N_pad/128, K/64, 128, 32]  64 E2M1 codes per row tile,
+#                                                     low nibble = even k
+#   block_scales int8 [E, N_pad/128, K/64, 128, 4]   raw E4M3, one per 16 k
+#   global_scale fp32 [E]                            verbatim weight_scale_2
+#
+# N (output features) is zero-padded to a 128 multiple; K is never padded.  For
+# Nemotron 3.5 Lightning, FC1 [I=1856, H=2688] -> [E, 15, 42, 128, 32] and FC2
+# [H=2688, I=1856] -> [E, 21, 29, 128, 32].  The global scale is the checkpoint's
+# fp32 multiplier: unlike Marlin there is no 2**7 skip-flop factor and no fp16
+# narrowing, because the Blackwell kernels dequantize E2M1 with the exact
+# ``cvt.rn.*.e2m1x2`` instructions.
+# ---------------------------------------------------------------------------
+NVFP4_A16_BLACKWELL_MOE_TILE_N = 128
+NVFP4_A16_BLACKWELL_MOE_TILE_K = 64
+
+
+def nvfp4_a16_blackwell_moe_offsets(n: int, k: int,
+                                    num_k_tiles: int) -> Tuple[int, bool, int]:
+    """Closed-form addresses of logical weight element ``(n, k)`` in one expert plane.
+
+    Returns ``(qweight_byte, is_high_nibble, scale_byte)`` relative to the start
+    of the expert's plane; the caller adds the expert strides ``N_pad*K/2`` and
+    ``N_pad*K/16``.  This is the executable specification of
+    ``BLACKWELL_MOE_N128_K64_V1`` that the repacker, the grouped tcgen05 GEMM
+    and the decode kernels are all checked against.
+    """
+    tile_n = NVFP4_A16_BLACKWELL_MOE_TILE_N
+    tile_k = NVFP4_A16_BLACKWELL_MOE_TILE_K
+    row_tile = ((n // tile_n) * num_k_tiles +
+                (k // tile_k)) * tile_n + (n % tile_n)
+    # Row bytes carry the TMA SWIZZLE_32B image (CuTe Swizzle<1,4,3>): rows
+    # with bit 2 of their in-tile index set swap their two 16-byte halves, so
+    # a 4 KB row tile is one linear TMA box (2 x 2 KB rows) into the kernel's
+    # swizzled SMEM image.
+    byte_in_row = (k % tile_k) // 2
+    half = (byte_in_row // 16) ^ (((n % tile_n) >> 2) & 1)
+    qweight_byte = row_tile * (tile_k // 2) + half * 16 + byte_in_row % 16
+    scale_byte = (row_tile * (tile_k // _NVFP4_GROUP_SIZE) +
+                  (k % tile_k) // _NVFP4_GROUP_SIZE)
+    return qweight_byte, (k % 2) == 1, scale_byte
+
+
+def swizzle_nvfp4_a16_blackwell_moe_row_tiles(
+        qweights: torch.Tensor) -> torch.Tensor:
+    """Bake the TMA SWIZZLE_32B image into ``[..., 128, 32]`` int8 row tiles.
+
+    Rows whose in-tile index has bit 2 set (rows 4-7 of every 8) swap their
+    two 16-byte halves; everything else is untouched.  This is exactly what
+    ``cp.async.bulk.tensor`` with ``CU_TENSOR_MAP_SWIZZLE_32B`` writes into
+    shared memory, measured on Thor, so the grouped GEMM can stream each 4 KB
+    row tile as one linear TMA box with 2 KB rows instead of 128 separate
+    32-byte rows (230 vs 260 GB/s on Thor).
+    """
+    if qweights.shape[-2:] != (NVFP4_A16_BLACKWELL_MOE_TILE_N,
+                               NVFP4_A16_BLACKWELL_MOE_TILE_K // 2):
+        raise ValueError("expected [..., 128, 32] row tiles")
+    tiles = qweights.reshape(*qweights.shape[:-2], 16, 8, 2, 16)
+    out = tiles.clone()
+    out[..., 4:8, 0, :] = tiles[..., 4:8, 1, :]
+    out[..., 4:8, 1, :] = tiles[..., 4:8, 0, :]
+    return out.reshape(qweights.shape).contiguous()
+
+
+def repack_nvfp4_a16_blackwell_moe_experts(
+    fc1_packed: "list",
+    fc1_scale: "list",
+    fc1_global: "list",
+    fc2_packed: "list",
+    fc2_scale: "list",
+    fc2_global: "list",
+) -> Tuple[torch.Tensor, ...]:
+    """Stack per-expert NVFP4 (W4A16) MoE weights into ``BLACKWELL_MOE_N128_K64_V1``.
+
+    Non-gated (ReLU2) contract for ``Nvfp4A16BlackwellMoePlugin``:
+
+      FC1 (up_proj):   per expert ``[I, H]``; N=I is zero-padded to a 128
+                       multiple inside the layout, K=H is not padded.
+      FC2 (down_proj): per expert ``[H, I]``; N=H must already be a 128
+                       multiple, K=I is not padded (K % 64 == 0).
+
+    Each argument is a list of the ``E`` per-expert checkpoint tensors (packed
+    codes ``[N, K/2]``, E4M3 scales ``[N, K/16]``, fp32 ``weight_scale_2``).
+    Every expert goes through :func:`repack_nvfp4_a16_blackwell_linear` followed
+    by :func:`swizzle_nvfp4_a16_blackwell_moe_row_tiles` (both pure byte permutations; the second
+    bakes the TMA 32-byte swizzle into each row tile so the grouped GEMM can load
+    it as one linear 4 KB box), and the results are stacked so each expert plane is one
+    contiguous slab.
+
+    Returns ``(fc1_qweight [E,I_pad/128,H/64,128,32], fc1_block_scales
+    [E,I_pad/128,H/64,128,4], fc1_global [E] fp32, fc2_qweight
+    [E,H/128,I/64,128,32], fc2_block_scales [E,H/128,I/64,128,4], fc2_global [E]
+    fp32)``.
+    """
+    num_experts = len(fc1_packed)
+    if num_experts == 0:
+        raise ValueError("at least one expert is required")
+    lists = (fc1_scale, fc1_global, fc2_packed, fc2_scale, fc2_global)
+    if any(len(lst) != num_experts for lst in lists):
+        raise ValueError("per-expert weight, scale and global lists must have "
+                         f"the same length ({num_experts})")
+
+    def _stack(packed, scale, glob, name):
+        qs, ss, gs = [], [], []
+        shape0 = None
+        for e in range(num_experts):
+            q, s, g, n_logical, n_padded = repack_nvfp4_a16_blackwell_linear(
+                packed[e], scale[e], glob[e], pad_n_to=128)
+            q = swizzle_nvfp4_a16_blackwell_moe_row_tiles(q)
+            k = q.shape[1] * NVFP4_A16_BLACKWELL_MOE_TILE_K
+            shape_e = (n_logical, n_padded, k)
+            if shape0 is None:
+                shape0 = shape_e
+            elif shape_e != shape0:
+                raise ValueError(f"{name}: expert {e} has (N, N_pad, K)="
+                                 f"{shape_e}, expected {shape0}")
+            qs.append(q)
+            ss.append(s)
+            gs.append(g)
+        return (torch.stack(qs, dim=0).contiguous(),
+                torch.stack(ss, dim=0).contiguous(),
+                torch.cat(gs, dim=0).contiguous(), shape0)
+
+    fc1_q, fc1_s, fc1_g, (fc1_n, fc1_n_pad,
+                          fc1_k) = _stack(fc1_packed, fc1_scale, fc1_global,
+                                          "fc1")
+    fc2_q, fc2_s, fc2_g, (fc2_n, fc2_n_pad,
+                          fc2_k) = _stack(fc2_packed, fc2_scale, fc2_global,
+                                          "fc2")
+    if fc2_k != fc1_n:
+        raise ValueError(f"FC2 K={fc2_k} must equal the logical FC1 N={fc1_n} "
+                         "(moe_inter_size); the layout never pads K")
+    if fc2_n != fc2_n_pad:
+        raise ValueError(f"FC2 N (hidden_size={fc2_n}) must be a multiple of "
+                         f"{NVFP4_A16_BLACKWELL_MOE_TILE_N}")
+    if fc1_k % NVFP4_A16_BLACKWELL_MOE_TILE_N != 0:
+        raise ValueError(f"FC1 K (hidden_size={fc1_k}) must be a multiple of "
+                         f"{NVFP4_A16_BLACKWELL_MOE_TILE_N}")
+    return fc1_q, fc1_s, fc1_g, fc2_q, fc2_s, fc2_g
+
 
 def decode_modelopt_nvfp4(
     weight: torch.Tensor,
@@ -1183,34 +1431,122 @@ def decode_modelopt_nvfp4(
     return dense.astype(np.float32)
 
 
-def _decode_or_passthrough_nvfp4(proj: nn.Module,
-                                 group_size: int = 16) -> np.ndarray:
-    """Return a gated-expert projection as dense fp32 ``[out, in]``.
+class _Nvfp4GatedProjection(NamedTuple):
+    """One gated-expert projection as stored in the checkpoint.
 
-    Pre-quantized NVFP4 MoE checkpoints keep small gate/router-style
-    projections in float16/bfloat16 while packing the heavy experts to NVFP4.
-    Such a weight loads into an NVFP4-typed linear (so ``is_nvfp4_linear`` is
-    True) but its buffer stays float, not packed int8/uint8. Decode only the
-    genuinely packed weights; pass a float weight through unchanged so it is
-    re-packed downstream by ``_pack_nvfp4_moe_weight``. Any other dtype is
-    unexpected and raised so the failure surfaces here rather than as a
-    downstream precision/shape mismatch.
+    Quantized: packed FP4 ``qweight`` ``[out, in//2]``, raw E4M3 ``sf_bytes``
+    ``[out, in//16]`` and ``weight_scale_2``.  Float16/bfloat16 (some
+    pre-quantized checkpoints keep the gate unquantized): fp32 ``dense`` with
+    the per-tensor scale that puts its largest block scale at the FP8 maximum.
     """
+    qweight: Optional[np.ndarray]
+    sf_bytes: Optional[np.ndarray]
+    dense: Optional[np.ndarray]
+    weight_scale_2: float
+
+
+def _e4m3_encode(values: np.ndarray) -> np.ndarray:
+    """Round fp32 to FP8 E4M3 (saturating at 448) and return the raw bytes."""
+    clipped = np.minimum(np.ascontiguousarray(values, dtype=np.float32),
+                         np.float32(_FP8_MAX))
+    return torch.from_numpy(clipped).to(torch.float8_e4m3fn).view(
+        torch.uint8).numpy()
+
+
+def _e4m3_decode(sf_bytes: np.ndarray) -> np.ndarray:
+    """Decode raw FP8 E4M3 bytes to fp32."""
+    return torch.from_numpy(np.ascontiguousarray(
+        sf_bytes,
+        dtype=np.uint8)).view(torch.float8_e4m3fn).to(torch.float32).numpy()
+
+
+def _nvfp4_gated_projection(proj: nn.Module) -> _Nvfp4GatedProjection:
+    """Load one gated-expert projection without decoding it."""
     w = proj.weight
     if w.dtype in (torch.int8, torch.uint8):
-        return decode_modelopt_nvfp4(w, proj.weight_scale, proj.weight_scale_2,
-                                     group_size)
+        qweight = w.detach().cpu().view(torch.uint8).numpy()
+        sf_bytes = _sf_bytes_from_checkpoint(proj.weight_scale)
+        weight_scale_2 = float(proj.weight_scale_2.detach().reshape(-1)[0])
+        if not (np.isfinite(weight_scale_2) and weight_scale_2 > 0.0):
+            raise ValueError("NVFP4 weight_scale_2 must be finite and "
+                             f"positive, got {weight_scale_2}")
+        return _Nvfp4GatedProjection(qweight, sf_bytes, None, weight_scale_2)
     if w.dtype not in (torch.float16, torch.bfloat16):
         raise TypeError(
             f"unexpected gated-MoE projection weight dtype {w.dtype}; expected "
             "packed int8/uint8 or unquantized float16/bfloat16")
-    return w.detach().to(torch.float32).cpu().numpy()
+    dense = w.detach().to(torch.float32).cpu().numpy()
+    amax = float(np.abs(dense).max()) if dense.size else 0.0
+    weight_scale_2 = amax / (6.0 * _FP8_MAX) if amax > 0.0 else 1.0
+    return _Nvfp4GatedProjection(None, None, dense, weight_scale_2)
 
 
-def _round_dense_to_bf16(dense: np.ndarray) -> np.ndarray:
-    """Round a dense fp32 weight through BF16 while returning fp32 storage."""
-    dense_t = torch.from_numpy(np.ascontiguousarray(dense, dtype=np.float32))
-    return dense_t.to(torch.bfloat16).to(torch.float32).cpu().numpy()
+def _quantize_nvfp4_moe_weight(
+        dense_w_mk: np.ndarray, group_size: int,
+        global_scale: float) -> Tuple[np.ndarray, np.ndarray]:
+    """Quantize a dense ``[M, K]`` fp32 weight to NVFP4 under ``global_scale``.
+
+    Returns ``(qweight uint8 [M, K/2], sf_bytes uint8 [M, K/group_size])``;
+    ``global_scale`` must be at least ``amax / (6 * 448)``.
+    """
+    m_dim, k_dim = dense_w_mk.shape
+    if k_dim % group_size != 0 or k_dim % 2 != 0:
+        raise ValueError(
+            f"K ({k_dim}) must be a multiple of {group_size} and even")
+    blocks = np.ascontiguousarray(dense_w_mk, dtype=np.float32).reshape(
+        m_dim, k_dim // group_size, group_size)
+    sf_bytes = _e4m3_encode(
+        np.abs(blocks).max(axis=-1) / np.float32(6.0 * global_scale))
+    step = (_e4m3_decode(sf_bytes) * np.float32(global_scale))[..., np.newaxis]
+    scaled = np.divide(blocks, step, out=np.zeros_like(blocks), where=step
+                       > 0).clip(-6.0, 6.0)
+    abs_idx = np.searchsorted(_E2M1_BOUNDS, np.abs(scaled)).astype(np.uint8)
+    sign_bit = (scaled < 0).astype(np.uint8) << np.uint8(3)
+    nibbles = (abs_idx | sign_bit).reshape(m_dim, k_dim)
+    qweight = (nibbles[:, 0::2] | (nibbles[:, 1::2] << np.uint8(4))).astype(
+        np.uint8)
+    return qweight, sf_bytes
+
+
+def _nvfp4_in_shared_alpha(
+    proj: _Nvfp4GatedProjection, alpha: float, group_size: int
+) -> Tuple[np.ndarray, np.ndarray, Optional[Tuple[int, int]]]:
+    """Express one projection as ``qweight * fp8(block_scale) * alpha``.
+
+    A quantized projection with ``weight_scale_2 == alpha`` passes through
+    byte-for-byte; a smaller one has its block scales multiplied by
+    ``weight_scale_2 / alpha`` (<= 1: cannot overflow, but small scales move
+    towards the E4M3 subnormal range) and re-rounded once, and the third
+    element reports ``(subnormal, zeroed)`` counts (None if not rescaled).
+    A float projection is quantized with ``alpha`` as its global scale.
+    """
+    if proj.dense is not None:
+        qweight, sf_bytes = _quantize_nvfp4_moe_weight(proj.dense, group_size,
+                                                       alpha)
+        return qweight, sf_bytes, None
+    if proj.weight_scale_2 == alpha:
+        return proj.qweight, proj.sf_bytes, None
+    if proj.weight_scale_2 > alpha:
+        raise ValueError("the shared NVFP4 alpha must be the largest "
+                         "weight_scale_2 of the fused projections")
+    factor = np.float32(proj.weight_scale_2 / alpha)
+    rescaled = _e4m3_decode(proj.sf_bytes) * factor
+    sf_bytes = _e4m3_encode(rescaled)
+    nonzero = proj.sf_bytes != 0
+    subnormal = int(np.count_nonzero(nonzero & (rescaled < 2.0**-6)))
+    zeroed = int(np.count_nonzero(nonzero & (sf_bytes == 0)))
+    return proj.qweight, sf_bytes, (subnormal, zeroed)
+
+
+def _zero_pad_2d(array: np.ndarray, rows: int, cols: int) -> np.ndarray:
+    """Zero-pad a 2-D array at the bottom / right to ``[rows, cols]``."""
+    if array.shape[0] > rows or array.shape[1] > cols:
+        raise ValueError(f"cannot pad shape {array.shape} to ({rows}, {cols})")
+    if array.shape == (rows, cols):
+        return array
+    padded = np.zeros((rows, cols), dtype=array.dtype)
+    padded[:array.shape[0], :array.shape[1]] = array
+    return padded
 
 
 def _swizzle_nvfp4_mma_scales(scale_bytes: np.ndarray, m_dim: int,
@@ -1236,44 +1572,15 @@ def _swizzle_nvfp4_mma_scales(scale_bytes: np.ndarray, m_dim: int,
     return sf_5d.transpose(0, 3, 2, 1, 4).copy().view(np.int8)
 
 
-def _pack_nvfp4_moe_weight(
-        dense_w_mk: np.ndarray,
-        group_size: int = 16) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Pack dense ``[M, K]`` weights for ``Nvfp4MoePlugin``.
-
-    Returns ``(qweights [M, K/2] int8,
-    blocks_scale [m_tiles, k_tiles, 32, 4, 4] int8)``.  The scale tensor
-    stores raw FP8 E4M3 block scales in the physical CuTeDSL MMA layout.
-    """
-    if group_size != 16:
-        raise NotImplementedError("Nvfp4MoePlugin requires group_size=16")
-
-    m_dim, k_dim = dense_w_mk.shape
-    if k_dim % group_size != 0 or k_dim % 2 != 0:
-        raise ValueError(
-            f"K ({k_dim}) must be a multiple of {group_size} and even")
-
-    dense = _round_dense_to_bf16(dense_w_mk)
-    k_sf_dim = k_dim // group_size
-    dense_blocks = dense.reshape(m_dim, k_sf_dim, group_size)
-    block_scales = np.maximum(np.abs(dense_blocks).max(axis=-1) / 6.0,
-                              1e-12).astype(np.float32)
-
-    scaled = (dense_blocks / block_scales[..., np.newaxis]).clip(-6.0, 6.0)
-    abs_idx = np.searchsorted(_E2M1_BOUNDS, np.abs(scaled)).astype(np.uint8)
-    sign_bit = (scaled < 0).astype(np.uint8) << np.uint8(3)
-    nibbles = (abs_idx | sign_bit).reshape(m_dim, k_dim)
-
-    lo = nibbles[:, 0::2]
-    hi = nibbles[:, 1::2]
-    qweights = (lo | (hi << np.uint8(4))).astype(np.uint8).view(np.int8)
-
-    sf_bytes = torch.from_numpy(block_scales.copy()).to(
-        torch.float8_e4m3fn).view(torch.uint8).cpu().numpy()
-    blocks_scale = _swizzle_nvfp4_mma_scales(sf_bytes, m_dim, k_sf_dim)
-
-    return (torch.from_numpy(qweights.copy()),
-            torch.from_numpy(blocks_scale.copy()))
+def _nvfp4_moe_plugin_tensors(
+        qweight: np.ndarray,
+        sf_bytes: np.ndarray) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Turn one ``[M, K/2]`` FP4 / ``[M, K/16]`` E4M3 byte pair into the
+    ``Nvfp4MoePlugin`` tensors: int8 qweight and the swizzled 6D MMA scales."""
+    m_dim, k_sf_dim = sf_bytes.shape
+    return (torch.from_numpy(np.ascontiguousarray(qweight).view(np.int8)),
+            torch.from_numpy(
+                _swizzle_nvfp4_mma_scales(sf_bytes, m_dim, k_sf_dim)))
 
 
 def _interleave_gated_moe_fc1(
@@ -1287,6 +1594,8 @@ def _interleave_gated_moe_fc1(
     Layout: ``[up_chunk(64), gate_chunk(64), up_chunk(64), gate_chunk(64), ...]``
     along the M axis. Consumed natively by the SM100/101/110 ``Nvfp4MoePlugin`` split
     FC1 kernel.
+    ``hidden_size`` is the row width: H for dense weights, H/2 for packed FP4
+    bytes, H/16 for block scales.
     """
     if gate_dense.shape != up_dense.shape:
         raise ValueError(
@@ -1324,6 +1633,8 @@ def _concat_gated_moe_fc1(
     Layout: all ``moe_inter_size`` up rows followed by all ``moe_inter_size``
     gate rows along the M axis. Consumed natively by the SM12x
     ``NvFP4MoEPluginGeforce`` fused kernel.
+    ``hidden_size`` is the row width: H for dense weights, H/2 for packed FP4
+    bytes, H/16 for block scales.
     """
     if gate_dense.shape != up_dense.shape:
         raise ValueError(
@@ -1342,44 +1653,6 @@ def _concat_gated_moe_fc1(
                           axis=0).reshape(2 * moe_inter_size, hidden_size)
 
 
-def _pad_nvfp4_gated_moe_dense_weights(
-    gate_dense: np.ndarray,
-    up_dense: np.ndarray,
-    down_dense: np.ndarray,
-    hidden_size: int,
-    moe_inter_size: int,
-    padded_moe_inter_size: int,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Zero-pad gated MoE dense weights along the intermediate dimension."""
-    if gate_dense.shape != up_dense.shape:
-        raise ValueError(
-            f"gate dense shape {gate_dense.shape} != up dense shape "
-            f"{up_dense.shape}")
-    if gate_dense.shape != (moe_inter_size, hidden_size):
-        raise ValueError(f"gate/up dense shape {gate_dense.shape} != "
-                         f"({moe_inter_size}, {hidden_size})")
-    if down_dense.shape != (hidden_size, moe_inter_size):
-        raise ValueError(f"down dense shape {down_dense.shape} != "
-                         f"({hidden_size}, {moe_inter_size})")
-    if padded_moe_inter_size < moe_inter_size:
-        raise ValueError(
-            f"padded_moe_inter_size ({padded_moe_inter_size}) must be >= "
-            f"moe_inter_size ({moe_inter_size})")
-    if padded_moe_inter_size == moe_inter_size:
-        return gate_dense, up_dense, down_dense
-
-    padded_gate_dense = np.zeros((padded_moe_inter_size, hidden_size),
-                                 dtype=gate_dense.dtype)
-    padded_up_dense = np.zeros((padded_moe_inter_size, hidden_size),
-                               dtype=up_dense.dtype)
-    padded_down_dense = np.zeros((hidden_size, padded_moe_inter_size),
-                                 dtype=down_dense.dtype)
-    padded_gate_dense[:moe_inter_size] = gate_dense
-    padded_up_dense[:moe_inter_size] = up_dense
-    padded_down_dense[:, :moe_inter_size] = down_dense
-    return padded_gate_dense, padded_up_dense, padded_down_dense
-
-
 def repack_nvfp4_gated_moe_experts(
     experts: Iterable[nn.Module],
     hidden_size: int,
@@ -1387,12 +1660,14 @@ def repack_nvfp4_gated_moe_experts(
     group_size: int = 16,
     fc1_layout: str = "interleave",
     moe_inter_size_alignment: int = NVFP4_MOE_INTERLEAVE_SIZE_ALIGNMENT,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
+           torch.Tensor, torch.Tensor]:
     """Pack gated NVFP4 experts for the active NVFP4 MoE plugin.
 
     Each expert is expected to contain ModelOpt NVFP4 gate/up/down
-    projection tensors.  Dense weights are decoded, rounded through BF16, and
-    repacked for the CuTeDSL plugin.
+    projection tensors.  Their FP4 weights and FP8 block scales pass through
+    byte-for-byte; ``weight_scale_2`` becomes the per-expert alpha (folding it
+    into the FP8 block scales would leave them in the E4M3 subnormal range).
 
     Args:
         experts: per-expert ``nn.Module`` containers exposing
@@ -1409,15 +1684,24 @@ def repack_nvfp4_gated_moe_experts(
             :data:`NVFP4_MOE_INTERLEAVE_SIZE_ALIGNMENT` for
             ``"interleave"`` and
             :data:`NVFP4_MOE_INTERMEDIATE_SIZE_ALIGNMENT` for ``"concat"``.
+
+    Returns:
+        ``(fc1_qweights, fc1_blocks_scale, fc1_alpha, fc2_qweights,
+        fc2_blocks_scale, fc2_alpha)``.  FC1 has one alpha per expert,
+        ``max(gate, up)`` ``weight_scale_2`` (identical in the ModelOpt
+        checkpoints; otherwise the smaller projection's block scales are
+        rescaled into it).
     """
     from ..models.linear import \
         is_nvfp4_linear  # local import to avoid circular dep
 
+    if group_size != 16:
+        raise NotImplementedError("Nvfp4MoePlugin requires group_size=16")
     if fc1_layout == "interleave":
-        build_fc1_dense = _interleave_gated_moe_fc1
+        build_fc1 = _interleave_gated_moe_fc1
         layout_alignment = NVFP4_MOE_INTERLEAVE_SIZE_ALIGNMENT
     elif fc1_layout == "concat":
-        build_fc1_dense = _concat_gated_moe_fc1
+        build_fc1 = _concat_gated_moe_fc1
         layout_alignment = NVFP4_MOE_INTERMEDIATE_SIZE_ALIGNMENT
     else:
         raise ValueError(
@@ -1445,11 +1729,18 @@ def repack_nvfp4_gated_moe_experts(
         raise ValueError(
             f"padded_moe_inter_size ({padded_moe_inter_size}) must be a "
             f"multiple of group_size ({group_size})")
+    hidden_sf = hidden_size // group_size
+    padded_inter_sf = padded_moe_inter_size // group_size
 
     fc1_qweights = []
     fc1_blocks_scale = []
+    fc1_alpha = []
     fc2_qweights = []
     fc2_blocks_scale = []
+    fc2_alpha = []
+    rescaled_experts = 0
+    subnormal_scales = 0
+    zeroed_scales = 0
 
     for expert in experts:
         gate = expert.gate_proj
@@ -1459,27 +1750,82 @@ def repack_nvfp4_gated_moe_experts(
                 and is_nvfp4_linear(down)):
             raise TypeError("Gated NVFP4 MoE experts must use NVFP4 quant")
 
-        gate_dense = _decode_or_passthrough_nvfp4(gate, group_size)
-        up_dense = _decode_or_passthrough_nvfp4(up, group_size)
-        down_dense = _decode_or_passthrough_nvfp4(down, group_size)
+        for name, proj, out_f, in_f in (
+            ("gate_proj", gate, moe_inter_size, hidden_size),
+            ("up_proj", up, moe_inter_size, hidden_size),
+            ("down_proj", down, hidden_size, moe_inter_size),
+        ):
+            packed = proj.weight.dtype in (torch.int8, torch.uint8)
+            weight_shape = (out_f, in_f // 2 if packed else in_f)
+            if tuple(proj.weight.shape) != weight_shape:
+                raise ValueError(
+                    f"{name} weight shape {tuple(proj.weight.shape)} != "
+                    f"{weight_shape}")
+            if packed:
+                scale_shape = (out_f, in_f // group_size)
+                if tuple(proj.weight_scale.shape) != scale_shape:
+                    raise ValueError(
+                        f"{name} scale shape {tuple(proj.weight_scale.shape)} != "
+                        f"{scale_shape}")
 
-        gate_dense, up_dense, down_dense = _pad_nvfp4_gated_moe_dense_weights(
-            gate_dense, up_dense, down_dense, hidden_size, moe_inter_size,
-            padded_moe_inter_size)
+        gate_src = _nvfp4_gated_projection(gate)
+        up_src = _nvfp4_gated_projection(up)
+        down_src = _nvfp4_gated_projection(down)
 
-        fc1_dense = build_fc1_dense(gate_dense, up_dense, hidden_size,
-                                    padded_moe_inter_size)
-        fc1_qw, fc1_sf = _pack_nvfp4_moe_weight(fc1_dense, group_size)
-        fc2_qw, fc2_sf = _pack_nvfp4_moe_weight(down_dense, group_size)
-        fc1_qweights.append(fc1_qw)
+        alpha1 = max(gate_src.weight_scale_2, up_src.weight_scale_2)
+        gate_qweight, gate_sf, gate_rescale = _nvfp4_in_shared_alpha(
+            gate_src, alpha1, group_size)
+        up_qweight, up_sf, up_rescale = _nvfp4_in_shared_alpha(
+            up_src, alpha1, group_size)
+        for rescale in (gate_rescale, up_rescale):
+            if rescale is not None:
+                rescaled_experts += 1
+                subnormal_scales += rescale[0]
+                zeroed_scales += rescale[1]
+        alpha2 = down_src.weight_scale_2
+        down_qweight, down_sf, _ = _nvfp4_in_shared_alpha(
+            down_src, alpha2, group_size)
+
+        # Zero rows / columns for the padded intermediate slots: FP4 byte 0
+        # and scale byte 0 both decode to 0.0.
+        gate_qweight = _zero_pad_2d(gate_qweight, padded_moe_inter_size,
+                                    hidden_size // 2)
+        up_qweight = _zero_pad_2d(up_qweight, padded_moe_inter_size,
+                                  hidden_size // 2)
+        gate_sf = _zero_pad_2d(gate_sf, padded_moe_inter_size, hidden_sf)
+        up_sf = _zero_pad_2d(up_sf, padded_moe_inter_size, hidden_sf)
+        down_qweight = _zero_pad_2d(down_qweight, hidden_size,
+                                    padded_moe_inter_size // 2)
+        down_sf = _zero_pad_2d(down_sf, hidden_size, padded_inter_sf)
+
+        fc1_qweight, fc1_sf = _nvfp4_moe_plugin_tensors(
+            build_fc1(gate_qweight, up_qweight, hidden_size // 2,
+                      padded_moe_inter_size),
+            build_fc1(gate_sf, up_sf, hidden_sf, padded_moe_inter_size))
+        fc2_qweight, fc2_sf = _nvfp4_moe_plugin_tensors(down_qweight, down_sf)
+        fc1_qweights.append(fc1_qweight)
         fc1_blocks_scale.append(fc1_sf)
-        fc2_qweights.append(fc2_qw)
+        fc1_alpha.append(alpha1)
+        fc2_qweights.append(fc2_qweight)
         fc2_blocks_scale.append(fc2_sf)
+        fc2_alpha.append(alpha2)
+
+    if rescaled_experts:
+        logger.warning(
+            "%d gated NVFP4 experts quantize gate_proj and up_proj with "
+            "different weight_scale_2; the smaller projection's block scales "
+            "were rescaled into the shared FC1 alpha (one extra FP8 rounding; "
+            "%d block scales landed in the E4M3 subnormal range, %d were "
+            "flushed to zero)", rescaled_experts, subnormal_scales,
+            zeroed_scales)
 
     return (torch.stack(fc1_qweights,
                         dim=0), torch.stack(fc1_blocks_scale, dim=0),
-            torch.stack(fc2_qweights,
-                        dim=0), torch.stack(fc2_blocks_scale, dim=0))
+            torch.tensor(fc1_alpha,
+                         dtype=torch.float32), torch.stack(fc2_qweights,
+                                                           dim=0),
+            torch.stack(fc2_blocks_scale,
+                        dim=0), torch.tensor(fc2_alpha, dtype=torch.float32))
 
 
 def repack_nvfp4_moe_experts(

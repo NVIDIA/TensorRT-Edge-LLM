@@ -79,21 +79,81 @@ def repack_nvfp4_experts(load_expert, num_experts: int, hidden_size: int,
     )
 
 
-def load_gptq_expert_projection(weights, experts_prefix: str,
-                                expert_index: int, projection: str):
-    """Load one Qwen3.5 GPTQ expert projection in provider layout."""
-    prefix = f"{experts_prefix}.{expert_index}.{projection}"
-    if weights.has(prefix + ".g_idx"):
-        group_index = weights.array(prefix + ".g_idx").reshape(-1)
-        expected = np.arange(group_index.size) // weights.group_size
-        if not np.array_equal(group_index, expected):
+def prepare_fp16_experts(weights, experts_prefix: str, num_experts: int,
+                         hidden_size: int, intermediate_size: int) -> dict:
+    """Pack provider FP16/BF16 experts for ``Fp16MoePlugin``."""
+    chunk_rows = 64
+    if intermediate_size % chunk_rows:
+        raise ValueError("Qwen3.5 FP16 MoE intermediate size must be a "
+                         f"multiple of {chunk_rows}, got {intermediate_size}")
+
+    fc1_weights = []
+    fc2_weights = []
+    chunks = intermediate_size // chunk_rows
+    for expert in range(num_experts):
+        prefix = f"{experts_prefix}.{expert}"
+        up = weights.f16(prefix + ".up_proj.weight")
+        gate = weights.f16(prefix + ".gate_proj.weight")
+        down = weights.f16(prefix + ".down_proj.weight")
+        expected_fc1 = (intermediate_size, hidden_size)
+        expected_fc2 = (hidden_size, intermediate_size)
+        if up.shape != expected_fc1 or gate.shape != expected_fc1:
             raise ValueError(
-                f"Qwen3.5 MoE does not support act-order GPTQ: {prefix}")
-    qzeros = (weights.array(prefix + ".qzeros")
-              if weights.has(prefix + ".qzeros") else np.empty(
-                  (1, 0), dtype=np.int32))
-    return (weights.array(prefix + ".qweight"), qzeros,
-            weights.f16(prefix + ".scales"))
+                f"{prefix} gate/up shape must be {expected_fc1}, got "
+                f"{gate.shape} and {up.shape}")
+        if down.shape != expected_fc2:
+            raise ValueError(
+                f"{prefix}.down_proj shape must be {expected_fc2}, got "
+                f"{down.shape}")
+        interleaved = np.stack(
+            (up.reshape(chunks, chunk_rows, hidden_size),
+             gate.reshape(chunks, chunk_rows, hidden_size)),
+            axis=1,
+        ).reshape(2 * intermediate_size, hidden_size)
+        fc1_weights.append(np.ascontiguousarray(interleaved))
+        fc2_weights.append(np.ascontiguousarray(down))
+    return {
+        "fc1_weights": np.stack(fc1_weights),
+        "fc2_weights": np.stack(fc2_weights),
+    }
+
+
+def fp16_expert_specs(weights, experts_prefix: str, num_experts: int) -> dict:
+    """Describe final FP16 MoE buffers without reading expert payloads."""
+    up = weights.parameter_spec(f"{experts_prefix}.0.up_proj.weight",
+                                np.float16)
+    down = weights.parameter_spec(f"{experts_prefix}.0.down_proj.weight",
+                                  np.float16)
+    return {
+        "fc1_weights":
+        ParameterSpec((num_experts, 2 * up.shape[0], up.shape[1]), np.float16),
+        "fc2_weights":
+        ParameterSpec((num_experts, *down.shape), np.float16),
+    }
+
+
+def fp16_expert_bindings(weights, experts_prefix: str,
+                         num_experts: int) -> dict:
+    """Map provider FP16/BF16 experts to final plugin buffers."""
+    fc1_names = []
+    fc2_names = []
+    for expert in range(num_experts):
+        prefix = f"{experts_prefix}.{expert}"
+        fc1_names.extend(
+            (prefix + ".up_proj.weight", prefix + ".gate_proj.weight"))
+        fc2_names.append(prefix + ".down_proj.weight")
+    return {
+        "fc1_weights":
+        weights.checkpoint_binding(fc1_names,
+                                   "fp16",
+                                   "fp16_moe_fc1",
+                                   num_experts=num_experts),
+        "fc2_weights":
+        weights.checkpoint_binding(fc2_names,
+                                   "fp16",
+                                   "fp16_moe_fc2",
+                                   num_experts=num_experts),
+    }
 
 
 def int4_expert_bindings(weights, experts_prefix: str, num_experts: int,

@@ -29,6 +29,8 @@ XQA_FILES = [
 
 XQA_MAIN_SOURCE = 'mha.cu'
 BLACKWELL_GEMV_MAIN_SOURCE = 'nvfp4A16BlackwellGemv.cu'
+QSA_INDEXER_MAIN_SOURCE = 'qsaIndexerJitKernels.cu'
+BLACKWELL_MOE_MAIN_SOURCE = 'nvfp4A16BlackwellMoeKernels.cu'
 
 PROJECT_HEADERS = [
     'common/cudaMacros.h',
@@ -80,7 +82,8 @@ def to_raw_string_literal(content, path):
         '{}: content collides with every raw string delimiter'.format(path))
 
 
-def collect_entries(xqa_dir, gemv_dir, cpp_dir, cuda_include_dir):
+def collect_entries(xqa_dir, gemv_dir, qsa_indexer_dir, moe_dir, cpp_dir,
+                    cuda_include_dir):
     entries = []
     for name in XQA_FILES:
         entries.append(
@@ -93,6 +96,17 @@ def collect_entries(xqa_dir, gemv_dir, cpp_dir, cuda_include_dir):
                                       BLACKWELL_GEMV_MAIN_SOURCE),
               include_name=BLACKWELL_GEMV_MAIN_SOURCE,
               var_name='kSrc_' + to_identifier(BLACKWELL_GEMV_MAIN_SOURCE)))
+
+    entries.append(
+        Entry(input_path=os.path.join(qsa_indexer_dir,
+                                      QSA_INDEXER_MAIN_SOURCE),
+              include_name=QSA_INDEXER_MAIN_SOURCE,
+              var_name='kSrc_' + to_identifier(QSA_INDEXER_MAIN_SOURCE)))
+
+    entries.append(
+        Entry(input_path=os.path.join(moe_dir, BLACKWELL_MOE_MAIN_SOURCE),
+              include_name=BLACKWELL_MOE_MAIN_SOURCE,
+              var_name='kSrc_' + to_identifier(BLACKWELL_MOE_MAIN_SOURCE)))
 
     for rel_path in PROJECT_HEADERS:
         entries.append(
@@ -139,12 +153,14 @@ def generate(entries):
         out.append('static char const {}[] = {};\n\n'.format(
             entry.var_name,
             to_raw_string_literal(content, entry.input_path)))
-        if entry.include_name in (XQA_MAIN_SOURCE,
-                                  BLACKWELL_GEMV_MAIN_SOURCE):
+        if entry.include_name in (XQA_MAIN_SOURCE, BLACKWELL_GEMV_MAIN_SOURCE,
+                                  QSA_INDEXER_MAIN_SOURCE,
+                                  BLACKWELL_MOE_MAIN_SOURCE):
             main_vars[entry.include_name] = entry.var_name
         source_vars[entry.include_name] = entry.var_name
 
-    for main_source in (XQA_MAIN_SOURCE, BLACKWELL_GEMV_MAIN_SOURCE):
+    for main_source in (XQA_MAIN_SOURCE, BLACKWELL_GEMV_MAIN_SOURCE,
+                        QSA_INDEXER_MAIN_SOURCE, BLACKWELL_MOE_MAIN_SOURCE):
         if main_source not in main_vars:
             raise SystemExit(
                 'error: main source {} was not embedded'.format(main_source))
@@ -177,12 +193,36 @@ def generate(entries):
     for name in cuda_headers:
         out.append('            {{"{}", {}}},\n'.format(
             name, source_vars[name]))
+    out.append('        }};\n')
+    out.append(
+        '    static PluginJitEmbeddedSources const sQsaIndexerSources{\n')
+    out.append('        "{}",\n'.format(QSA_INDEXER_MAIN_SOURCE))
+    out.append('        {},\n'.format(main_vars[QSA_INDEXER_MAIN_SOURCE]))
+    out.append('        {\n')
+    for name in cuda_headers:
+        out.append('            {{"{}", {}}},\n'.format(
+            name, source_vars[name]))
+    out.append('        }};\n')
+    out.append(
+        '    static PluginJitEmbeddedSources const sBlackwellMoeSources{\n')
+    out.append('        "{}",\n'.format(BLACKWELL_MOE_MAIN_SOURCE))
+    out.append('        {},\n'.format(main_vars[BLACKWELL_MOE_MAIN_SOURCE]))
+    out.append('        {\n')
+    for name in cuda_headers:
+        out.append('            {{"{}", {}}},\n'.format(
+            name, source_vars[name]))
     out.append('        }};\n\n')
     out.append('    PluginJitEmbeddedSources const* result{};\n')
     out.append('    switch (program)\n    {\n')
     out.append('    case PluginJitProgram::kXQA: result = &sXqaSources; break;\n')
     out.append('    case PluginJitProgram::kNVFP4_A16_BLACKWELL_GEMV:\n')
     out.append('        result = &sBlackwellGemvSources;\n')
+    out.append('        break;\n')
+    out.append('    case PluginJitProgram::kQSA_INDEXER:\n')
+    out.append('        result = &sQsaIndexerSources;\n')
+    out.append('        break;\n')
+    out.append('    case PluginJitProgram::kNVFP4_A16_BLACKWELL_MOE:\n')
+    out.append('        result = &sBlackwellMoeSources;\n')
     out.append('        break;\n')
     out.append('    }\n')
     out.append('    if (result == nullptr)\n    {\n')
@@ -201,13 +241,15 @@ def main():
     parser.add_argument('-o', '--output', required=True)
     parser.add_argument('--xqa_dir', required=True)
     parser.add_argument('--gemv_dir', required=True)
+    parser.add_argument('--qsa_indexer_dir', required=True)
+    parser.add_argument('--moe_dir', required=True)
     parser.add_argument('--cpp_dir', required=True)
     parser.add_argument('--cuda_include_dir', required=True)
     args = parser.parse_args()
 
     content = generate(
-        collect_entries(args.xqa_dir, args.gemv_dir, args.cpp_dir,
-                        args.cuda_include_dir))
+        collect_entries(args.xqa_dir, args.gemv_dir, args.qsa_indexer_dir,
+                        args.moe_dir, args.cpp_dir, args.cuda_include_dir))
     output = Path(args.output)
     if output.exists() and output.read_text() == content:
         print('{} is up to date'.format(output))

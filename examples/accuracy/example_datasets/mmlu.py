@@ -13,8 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import hashlib
+import json
 import os
 import sys
+from collections import defaultdict
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 # Add the current directory to the Python path to import edgellm_dataset
@@ -22,6 +26,85 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from datasets import Dataset, load_dataset
 from edgellm_dataset import DatasetConfig, EdgeLLMDataset
+
+
+def select_subject_prefixes(requests, sample_count):
+    """Select near-equal per-subject prefixes while preserving source order."""
+    if sample_count <= 0:
+        raise ValueError("sample_count must be positive")
+    if sample_count > len(requests):
+        raise ValueError(
+            f"sample_count ({sample_count}) exceeds request count "
+            f"({len(requests)})")
+
+    subject_rows = defaultdict(list)
+    for source_index, request in enumerate(requests):
+        subject = request.get("subject")
+        if not subject:
+            raise ValueError(
+                f"Request at source index {source_index} has no subject")
+        subject_rows[subject].append((source_index, request))
+
+    subjects = sorted(subject_rows)
+    if sample_count < len(subjects):
+        raise ValueError(f"sample_count ({sample_count}) must cover all "
+                         f"{len(subjects)} subjects")
+
+    per_subject, remainder = divmod(sample_count, len(subjects))
+    selected_rows = []
+    subject_counts = {}
+    for subject_index, subject in enumerate(subjects):
+        quota = per_subject + (1 if subject_index < remainder else 0)
+        available = subject_rows[subject]
+        if len(available) < quota:
+            raise ValueError(
+                f"Subject {subject!r} has {len(available)} rows, fewer than "
+                f"the required prefix quota of {quota}")
+        selected_rows.extend(available[:quota])
+        subject_counts[subject] = quota
+
+    selected_rows.sort(key=lambda row: row[0])
+    return [request for _, request in selected_rows], subject_counts
+
+
+def _sha256(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def create_mmlu_lite_dataset(input_file, output_dir, sample_count=2000):
+    """Create deterministic Lite data from an existing MMLU Full JSON file."""
+    input_file = Path(input_file)
+    output_dir = Path(output_dir)
+    source = json.loads(input_file.read_text(encoding="utf-8"))
+    requests = source.get("requests")
+    if not isinstance(requests, list):
+        raise ValueError("Input dataset must contain a requests list")
+
+    selected, subject_counts = select_subject_prefixes(requests, sample_count)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    dataset_path = output_dir / "mmlu_dataset.json"
+    lite = dict(source)
+    lite["requests"] = selected
+    dataset_path.write_text(json.dumps(lite, indent=4) + "\n",
+                            encoding="utf-8")
+
+    manifest = {
+        "source_file": input_file.name,
+        "source_sha256": _sha256(input_file),
+        "source_request_count": len(requests),
+        "sample_count": sample_count,
+        "subject_count": len(subject_counts),
+        "selection_rule": "first_n_per_subject_in_source_order",
+        "remainder_rule":
+        "first_subjects_in_lexicographic_order_receive_one_extra",
+        "subject_samples": dict(sorted(subject_counts.items())),
+        "dataset_file": dataset_path.name,
+        "dataset_sha256": _sha256(dataset_path),
+    }
+    manifest_path = output_dir / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n",
+                             encoding="utf-8")
+    return dataset_path, manifest_path
 
 
 class MMLUDataset(EdgeLLMDataset):

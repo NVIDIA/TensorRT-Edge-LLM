@@ -59,6 +59,7 @@ Json makeBaseConfig(
     bc["max_kv_cache_capacity"] = 256;
     bc["max_kv_pool_pages"] = computeMinimumKvPoolPages(maxBatchSize, 256);
     bc["max_lora_rank"] = 0;
+    bc["ragged_backend"] = "entry_padded_compatibility";
     if (specDecodeMaxVerifyTreeSize > 0)
     {
         config["spec_decode_type"] = "eagle3";
@@ -102,6 +103,7 @@ Json makeDraftConfig(int32_t /*maxVerifyTreeSize*/, int32_t maxDraftTreeSize, in
     bc["max_kv_pool_pages"] = computeMinimumKvPoolPages(maxBatchSize, 256);
     bc["spec_draft"] = true;
     bc["max_draft_tree_size"] = maxDraftTreeSize;
+    bc["ragged_backend"] = "entry_padded_compatibility";
     config["builder_config"] = bc;
     return config;
 }
@@ -121,6 +123,21 @@ Json makeMTPDraftConfig(int32_t maxDraftTreeSize, int32_t maxBatchSize = 2)
     config["engine_role"] = "draft";
     config["base_model_hidden_size"] = config["hidden_size"];
     return config;
+}
+
+void enableMRope(Json& config, float ropeTheta = 1000000.0F)
+{
+    config["rope_scaling"] = {{"rope_type", "mrope"}, {"mrope_section", Json::array({16, 24, 24})}};
+    config["rope_theta"] = ropeTheta;
+    config["partial_rotary_factor"] = 1.0F;
+}
+
+void enableDualRope(Json& config)
+{
+    config["sliding_rope_config"] = Json::object();
+    config["full_rope_config"] = Json::object();
+    config["sliding_rotary_dim"] = config["head_dim"];
+    config["full_rotary_dim"] = config["head_dim"];
 }
 
 Json makeHybridMTPBaseConfig(int32_t maxVerifyTreeSize, int32_t maxBatchSize = 2)
@@ -194,6 +211,33 @@ Json makeDFlashDraftConfig(int32_t maxDraftTreeSize, int32_t maxBatchSize = 2)
     return config;
 }
 
+Json makeDFlash2ConfigSection()
+{
+    return Json{{"version", 2}, {"block_size", 8}, {"mask_token_id", 248070}, {"is_causal", false},
+        {"conv_kernel_size", 2}, {"conv_group_size", 16}, {"selector_rank", 256}, {"selector_top_k", 16},
+        {"supports_probabilistic_sampling", true}, {"target_layer_ids", Json::array({1, 3, 5, 8, 11})}};
+}
+
+Json makeDFlash2BaseConfig(int32_t maxVerifyTreeSize, int32_t maxBatchSize = 2)
+{
+    Json config = makeBaseConfig(maxVerifyTreeSize, /*maxDraft=*/0, maxBatchSize);
+    config["spec_decode_type"] = "dflash";
+    config["engine_role"] = "base";
+    config["dflash_config"] = makeDFlash2ConfigSection();
+    return config;
+}
+
+Json makeDFlash2DraftConfig(int32_t maxDraftTreeSize, int32_t maxBatchSize = 2)
+{
+    Json config = makeDraftConfig(/*maxVerify=*/0, maxDraftTreeSize, maxBatchSize);
+    config["spec_decode_type"] = "dflash";
+    config["engine_role"] = "draft";
+    config["num_hidden_layers"] = 5;
+    config["base_model_hidden_size"] = config["hidden_size"].get<int32_t>() * 5;
+    config["dflash_config"] = makeDFlash2ConfigSection();
+    return config;
+}
+
 Json makeDSparkConfigSection(int32_t blockSize)
 {
     return Json{{"block_size", blockSize}, {"mask_token_id", 31999}, {"markov_head_type", "vanilla"},
@@ -241,21 +285,21 @@ Json makeJetSpecDraftConfig(int32_t maxDraftTreeSize, int32_t maxBatchSize = 2)
 }
 
 //! Gemma4-MTP base config: gemma4_mtp spec type, engine_role=base.
-Json makeGemma4MTPBaseConfig(int32_t maxBatchSize = 2, int32_t maxKVCacheCapacity = 256)
+Json makeGemma4MTPBaseConfig(int32_t maxBatchSize = 2, int32_t maxKVCacheCapacity = 256, int32_t maxVerifyTreeSize = 4)
 {
     Json config = makeBaseConfig(/*maxVerify=*/0, /*maxDraft=*/0, maxBatchSize);
     config["spec_decode_type"] = "gemma4_mtp";
     config["engine_role"] = "base";
     config["model"] = "gemma4_text";
     config["builder_config"]["spec_base"] = true;
-    config["builder_config"]["max_verify_tree_size"] = 4;
+    config["builder_config"]["max_verify_tree_size"] = maxVerifyTreeSize;
     config["builder_config"]["max_kv_cache_capacity"] = maxKVCacheCapacity;
     config["builder_config"]["max_kv_pool_pages"] = computeMinimumKvPoolPages(maxBatchSize, maxKVCacheCapacity);
     return config;
 }
 
 //! Gemma4-MTP assistant (draft) config: shares the target KV, no own cache.
-Json makeGemma4MTPDraftConfig(int32_t maxBatchSize = 2, int32_t maxKVCacheCapacity = 256)
+Json makeGemma4MTPDraftConfig(int32_t maxBatchSize = 2, int32_t maxKVCacheCapacity = 256, int32_t maxDraftTreeSize = 4)
 {
     Json config;
     config["spec_decode_type"] = "gemma4_mtp";
@@ -281,7 +325,8 @@ Json makeGemma4MTPDraftConfig(int32_t maxBatchSize = 2, int32_t maxKVCacheCapaci
     bc["max_kv_pool_pages"] = computeMinimumKvPoolPages(maxBatchSize, maxKVCacheCapacity);
     bc["max_lora_rank"] = 0;
     bc["spec_base"] = false;
-    bc["max_draft_tree_size"] = 4;
+    bc["max_draft_tree_size"] = maxDraftTreeSize;
+    bc["ragged_backend"] = "entry_padded_compatibility";
     config["builder_config"] = bc;
     return config;
 }
@@ -648,6 +693,31 @@ TEST_F(DeploymentConfigTest, MTPTopKGreaterThanOneSelectsTree)
     EXPECT_EQ(bundle.specConfig->verifySize, 8);
 }
 
+TEST_F(DeploymentConfigTest, MTPTreeRejectsReducedDraftVocabMap)
+{
+    Json const baseJson = makeMTPBaseConfig(/*maxVerify=*/16);
+    Json draftJson = makeMTPDraftConfig(/*maxDraft=*/16);
+    draftJson["reduced_vocab_size"] = 16000;
+    auto const basePath = writeJsonToTempFile(baseJson, "base");
+    auto const draftPath = writeJsonToTempFile(draftJson, "draft");
+
+    SpecDecodeDraftingConfig drafting{};
+    drafting.draftingTopK = 2;
+    drafting.draftingStep = 4;
+    drafting.verifySize = 8;
+
+    try
+    {
+        static_cast<void>(createDeploymentConfig(basePath, std::optional<std::filesystem::path>{draftPath},
+            std::optional<SpecDecodeDraftingConfig>{drafting}));
+        FAIL() << "Expected reduced-vocabulary MTP tree drafting to be rejected.";
+    }
+    catch (std::runtime_error const& error)
+    {
+        EXPECT_NE(std::string(error.what()).find("use --specDraftTopK 1"), std::string::npos) << error.what();
+    }
+}
+
 TEST_F(DeploymentConfigTest, MTPTreeRejectsTopKNotLessThanVerifySize)
 {
     Json const baseJson = makeMTPBaseConfig(/*maxVerify=*/16);
@@ -727,6 +797,23 @@ TEST_F(DeploymentConfigTest, MTPTreeHybridBaseValidatesOk)
     ASSERT_TRUE(bundle.specConfig.has_value());
     EXPECT_EQ(bundle.specConfig->draftingTopK, 2);
     EXPECT_EQ(bundle.specConfig->verifySize, 7);
+}
+
+TEST_F(DeploymentConfigTest, MTPTreeHybridBaseRejectsVerifySizeAboveTransactionalLimit)
+{
+    Json const baseJson = makeHybridMTPBaseConfig(/*maxVerify=*/128);
+    Json const draftJson = makeMTPDraftConfig(/*maxDraft=*/32);
+    auto const basePath = writeJsonToTempFile(baseJson, "base");
+    auto const draftPath = writeJsonToTempFile(draftJson, "draft");
+
+    SpecDecodeDraftingConfig drafting{};
+    drafting.draftingTopK = 4;
+    drafting.draftingStep = 4;
+    drafting.verifySize = 65;
+
+    EXPECT_THROW(createDeploymentConfig(basePath, std::optional<std::filesystem::path>{draftPath},
+                     std::optional<SpecDecodeDraftingConfig>{drafting}),
+        std::runtime_error);
 }
 
 TEST_F(DeploymentConfigTest, MTPTreeRejectsDraftStepAboveDepthLimit)
@@ -1219,6 +1306,24 @@ TEST_F(DeploymentConfigTest, DFlashHybridBlockSizeAbove16Throws)
         std::runtime_error);
 }
 
+TEST_F(DeploymentConfigTest, DFlashHybridTreeRejectsVerifySizeAboveTransactionalLimit)
+{
+    Json const baseJson = makeHybridDFlashBaseConfig(/*maxVerify=*/128);
+    Json const draftJson = makeDFlashDraftConfig(/*maxDraft=*/16);
+    auto const basePath = writeJsonToTempFile(baseJson, "base");
+    auto const draftPath = writeJsonToTempFile(draftJson, "draft");
+
+    SpecDecodeDraftingConfig drafting{};
+    drafting.draftingTopK = 4;
+    drafting.draftingStep = 1;
+    drafting.verifySize = 65;
+    drafting.dflashBlockSize = 16;
+
+    EXPECT_THROW(createDeploymentConfig(basePath, std::optional<std::filesystem::path>{draftPath},
+                     std::optional<SpecDecodeDraftingConfig>{drafting}),
+        std::runtime_error);
+}
+
 TEST_F(DeploymentConfigTest, DFlashChainInfersBlockSizeFromEngineConfig)
 {
     Json const baseJson = makeDenseDFlashBaseConfig(/*maxVerify=*/32);
@@ -1375,6 +1480,119 @@ TEST_F(DeploymentConfigTest, MaxRuntimeBatchSizeBaseAndDraftAgree)
     EXPECT_EQ(bundle.maxRuntimeBatchSize(), 3);
 }
 
+TEST_F(DeploymentConfigTest, SpecDecodeMRopeMatchingGeometryValidates)
+{
+    Json base = makeMTPBaseConfig(/*maxVerifyTreeSize=*/4);
+    Json draft = makeMTPDraftConfig(/*maxDraftTreeSize=*/4);
+    enableMRope(base);
+    enableMRope(draft);
+    auto const basePath = writeJsonToTempFile(base, "base");
+    auto const draftPath = writeJsonToTempFile(draft, "draft");
+
+    DeploymentConfig const deployment
+        = createDeploymentConfig(basePath, std::optional<std::filesystem::path>{draftPath}, std::nullopt);
+    EXPECT_EQ(deployment.maxRuntimeBatchSize(), 2);
+    EXPECT_EQ(deployment.base.recurrentPoolRows, 2);
+    ASSERT_TRUE(deployment.draft.has_value());
+    EXPECT_EQ(deployment.draft->recurrentPoolRows, 2);
+}
+
+TEST_F(DeploymentConfigTest, DFlashAllowsMRopeBaseWithDefaultRopeDraft)
+{
+    Json base = makeHybridDFlashBaseConfig(/*maxVerifyTreeSize=*/16);
+    Json draft = makeDFlashDraftConfig(/*maxDraftTreeSize=*/16);
+    enableMRope(base);
+    auto const basePath = writeJsonToTempFile(base, "base");
+    auto const draftPath = writeJsonToTempFile(draft, "draft");
+
+    EXPECT_NO_THROW(createDeploymentConfig(basePath, std::optional<std::filesystem::path>{draftPath}, std::nullopt));
+}
+
+TEST_F(DeploymentConfigTest, CachedDraftModeRejectsDualRopeDraft)
+{
+    Json base = makeDenseDFlashBaseConfig(/*maxVerifyTreeSize=*/16);
+    Json draft = makeDFlashDraftConfig(/*maxDraftTreeSize=*/16);
+    enableDualRope(draft);
+    auto const basePath = writeJsonToTempFile(base, "base");
+    auto const draftPath = writeJsonToTempFile(draft, "draft");
+
+    EXPECT_THROW(
+        {
+            try
+            {
+                createDeploymentConfig(basePath, std::optional<std::filesystem::path>{draftPath}, std::nullopt);
+            }
+            catch (std::exception const& e)
+            {
+                EXPECT_NE(std::string(e.what()).find("single RoPE binding"), std::string::npos) << e.what();
+                throw;
+            }
+        },
+        std::exception);
+}
+
+TEST_F(DeploymentConfigTest, DSparkRejectsDualRopeDraft)
+{
+    Json base = makeDSparkBaseConfig(/*maxVerifyTreeSize=*/8);
+    Json draft = makeDSparkDraftConfig(/*maxDraftTreeSize=*/7);
+    enableDualRope(draft);
+    auto const basePath = writeJsonToTempFile(base, "base");
+    auto const draftPath = writeJsonToTempFile(draft, "draft");
+
+    EXPECT_THROW(
+        {
+            try
+            {
+                createDeploymentConfig(basePath, std::optional<std::filesystem::path>{draftPath}, std::nullopt);
+            }
+            catch (std::exception const& e)
+            {
+                EXPECT_NE(std::string(e.what()).find("single RoPE binding"), std::string::npos) << e.what();
+                throw;
+            }
+        },
+        std::exception);
+}
+
+TEST_F(DeploymentConfigTest, SpecDecodeMRopeDraftRequiresMRopeBase)
+{
+    Json base = makeMTPBaseConfig(/*maxVerifyTreeSize=*/4);
+    Json draft = makeMTPDraftConfig(/*maxDraftTreeSize=*/4);
+    enableMRope(draft);
+    auto const basePath = writeJsonToTempFile(base, "base");
+    auto const draftPath = writeJsonToTempFile(draft, "draft");
+
+    EXPECT_THROW(createDeploymentConfig(basePath, std::optional<std::filesystem::path>{draftPath}, std::nullopt),
+        std::runtime_error);
+}
+
+TEST_F(DeploymentConfigTest, SpecDecodeMRopeMismatchedGeometryThrows)
+{
+    Json base = makeMTPBaseConfig(/*maxVerifyTreeSize=*/4);
+    Json draft = makeMTPDraftConfig(/*maxDraftTreeSize=*/4);
+    enableMRope(base);
+    enableMRope(draft, /*ropeTheta=*/500000.0F);
+    auto const basePath = writeJsonToTempFile(base, "base");
+    auto const draftPath = writeJsonToTempFile(draft, "draft");
+
+    EXPECT_THROW(createDeploymentConfig(basePath, std::optional<std::filesystem::path>{draftPath}, std::nullopt),
+        std::runtime_error);
+}
+
+TEST_F(DeploymentConfigTest, SpecDecodeMRopeMismatchedFrequencyPartitionThrows)
+{
+    Json base = makeMTPBaseConfig(/*maxVerifyTreeSize=*/4);
+    Json draft = makeMTPDraftConfig(/*maxDraftTreeSize=*/4);
+    enableMRope(base);
+    enableMRope(draft);
+    draft["rope_scaling"]["mrope_section"] = Json::array({24, 20, 20});
+    auto const basePath = writeJsonToTempFile(base, "base");
+    auto const draftPath = writeJsonToTempFile(draft, "draft");
+
+    EXPECT_THROW(createDeploymentConfig(basePath, std::optional<std::filesystem::path>{draftPath}, std::nullopt),
+        std::runtime_error);
+}
+
 TEST_F(DeploymentConfigTest, MaxRuntimeBatchSizeMismatchReturnsMin)
 {
     // Base and draft disagree on batch → fall back to the smaller of the two.
@@ -1450,6 +1668,56 @@ TEST_F(DeploymentConfigTest, Gemma4MTPMatchingPoolGeometryValidatesOk)
     auto const draftPath = writeJsonToTempFile(makeGemma4MTPDraftConfig(/*maxBatch=*/4, /*maxCap=*/256), "draft");
 
     EXPECT_NO_THROW(createDeploymentConfig(basePath, std::optional<std::filesystem::path>{draftPath}, std::nullopt));
+}
+
+TEST_F(DeploymentConfigTest, Gemma4MTPTreeValidatesOk)
+{
+    auto const basePath = writeJsonToTempFile(makeGemma4MTPBaseConfig(), "base");
+    auto const draftPath = writeJsonToTempFile(makeGemma4MTPDraftConfig(), "draft");
+
+    SpecDecodeDraftingConfig drafting{};
+    drafting.draftingTopK = 2;
+    drafting.draftingStep = 3;
+    drafting.verifySize = 4;
+
+    DeploymentConfig const bundle = createDeploymentConfig(
+        basePath, std::optional<std::filesystem::path>{draftPath}, std::optional<SpecDecodeDraftingConfig>{drafting});
+
+    EXPECT_EQ(bundle.specDecodeMode(), SpecDecodeMode::kGemma4MTP);
+    ASSERT_TRUE(bundle.specConfig.has_value());
+    EXPECT_EQ(bundle.specConfig->draftingTopK, 2);
+    EXPECT_EQ(bundle.specConfig->draftingStep, 3);
+    EXPECT_EQ(bundle.specConfig->verifySize, 4);
+}
+
+TEST_F(DeploymentConfigTest, Gemma4MTPLinearChainRejectsMismatchedVerifySize)
+{
+    auto const basePath = writeJsonToTempFile(makeGemma4MTPBaseConfig(), "base");
+    auto const draftPath = writeJsonToTempFile(makeGemma4MTPDraftConfig(), "draft");
+
+    SpecDecodeDraftingConfig drafting{};
+    drafting.draftingTopK = 1;
+    drafting.draftingStep = 2;
+    drafting.verifySize = 4;
+
+    EXPECT_THROW(createDeploymentConfig(basePath, std::optional<std::filesystem::path>{draftPath},
+                     std::optional<SpecDecodeDraftingConfig>{drafting}),
+        std::runtime_error);
+}
+TEST_F(DeploymentConfigTest, Gemma4MTPLongLinearChainRemainsSupported)
+{
+    auto const basePath
+        = writeJsonToTempFile(makeGemma4MTPBaseConfig(/*maxBatch=*/2, /*maxCap=*/256, /*maxVerify=*/17), "base");
+    auto const draftPath
+        = writeJsonToTempFile(makeGemma4MTPDraftConfig(/*maxBatch=*/2, /*maxCap=*/256, /*maxDraft=*/16), "draft");
+
+    SpecDecodeDraftingConfig drafting{};
+    drafting.draftingTopK = 1;
+    drafting.draftingStep = 16;
+    drafting.verifySize = 17;
+
+    EXPECT_NO_THROW(createDeploymentConfig(
+        basePath, std::optional<std::filesystem::path>{draftPath}, std::optional<SpecDecodeDraftingConfig>{drafting}));
 }
 
 // Differing max batch sizes imply different fixed pool page counts -> must be rejected with the
@@ -1534,6 +1802,94 @@ TEST_F(DeploymentConfigTest, DSparkCandidateTopKGreaterThanOneSelectsTree)
     EXPECT_EQ(bundle.specConfig->draftingTopK, 4);
 }
 
+TEST_F(DeploymentConfigTest, DSparkTreeRecurrentReplayRequiresExactVerifyProfile)
+{
+    Json baseJson = makeDSparkBaseConfig(/*maxVerify=*/16);
+    baseJson["num_attention_layers"] = 8;
+    baseJson["num_linear_attn_layers"] = 4;
+    baseJson["recurrent_state_num_heads"] = 4;
+    baseJson["recurrent_state_head_dim"] = 64;
+    baseJson["recurrent_state_size"] = 64;
+    baseJson["conv_dim"] = 768;
+    baseJson["conv_kernel"] = 4;
+    baseJson["recurrent_state_dtype"] = "fp16";
+    baseJson["conv_state_dtype"] = "fp16";
+    baseJson["recurrent_spec_verify_mode"] = "replay";
+    auto const basePath = writeJsonToTempFile(baseJson, "base");
+    auto const draftPath = writeJsonToTempFile(makeDSparkDraftConfig(/*maxDraft=*/7), "draft");
+
+    SpecDecodeDraftingConfig drafting{};
+    drafting.draftingTopK = 2;
+    drafting.draftingStep = 1;
+    drafting.verifySize = 3;
+
+    try
+    {
+        static_cast<void>(createDeploymentConfig(basePath, std::optional<std::filesystem::path>{draftPath},
+            std::optional<SpecDecodeDraftingConfig>{drafting}));
+        FAIL() << "Expected an exact recurrent replay verify-profile error";
+    }
+    catch (std::runtime_error const& error)
+    {
+        EXPECT_NE(std::string(error.what()).find("tree recurrent-state replay requires verifySize"), std::string::npos);
+        EXPECT_NE(std::string(error.what()).find("maxVerifyTreeSize"), std::string::npos);
+    }
+
+    drafting.verifySize = 16;
+    EXPECT_NO_THROW(createDeploymentConfig(
+        basePath, std::optional<std::filesystem::path>{draftPath}, std::optional<SpecDecodeDraftingConfig>{drafting}));
+
+    drafting.draftingTopK = 1;
+    drafting.verifySize = 4;
+    EXPECT_NO_THROW(createDeploymentConfig(
+        basePath, std::optional<std::filesystem::path>{draftPath}, std::optional<SpecDecodeDraftingConfig>{drafting}));
+}
+
+TEST_F(DeploymentConfigTest, DSparkCausalTreeRequiresFullBlockDraftProfile)
+{
+    Json baseJson = makeDSparkBaseConfig(/*maxVerify=*/3, /*blockSize=*/16);
+    Json draftJson = makeDSparkDraftConfig(/*maxDraft=*/1, /*blockSize=*/16);
+    baseJson["dspark_config"]["causal_head"] = true;
+    draftJson["dspark_config"]["causal_head"] = true;
+    auto const basePath = writeJsonToTempFile(baseJson, "base");
+    auto const draftPath = writeJsonToTempFile(draftJson, "draft");
+
+    SpecDecodeDraftingConfig drafting{};
+    drafting.draftingTopK = 2;
+    drafting.draftingStep = 1;
+    drafting.verifySize = 3;
+
+    EXPECT_THROW(createDeploymentConfig(basePath, std::optional<std::filesystem::path>{draftPath},
+                     std::optional<SpecDecodeDraftingConfig>{drafting}),
+        std::runtime_error);
+}
+
+TEST_F(DeploymentConfigTest, DSparkCausalTreeAccountsForNonAnchorInputSlot)
+{
+    Json baseJson = makeDSparkBaseConfig(/*maxVerify=*/3, /*blockSize=*/16);
+    Json draftJson = makeDSparkDraftConfig(/*maxDraft=*/15, /*blockSize=*/16);
+    baseJson["dspark_config"]["causal_head"] = true;
+    draftJson["dspark_config"]["causal_head"] = true;
+    baseJson["dspark_config"]["sample_from_anchor"] = false;
+    draftJson["dspark_config"]["sample_from_anchor"] = false;
+    auto const basePath = writeJsonToTempFile(baseJson, "base");
+    auto draftPath = writeJsonToTempFile(draftJson, "draft");
+
+    SpecDecodeDraftingConfig drafting{};
+    drafting.draftingTopK = 2;
+    drafting.draftingStep = 1;
+    drafting.verifySize = 3;
+
+    EXPECT_THROW(createDeploymentConfig(basePath, std::optional<std::filesystem::path>{draftPath},
+                     std::optional<SpecDecodeDraftingConfig>{drafting}),
+        std::runtime_error);
+
+    draftJson["builder_config"]["max_draft_tree_size"] = 16;
+    draftPath = writeJsonToTempFile(draftJson, "draft_with_anchor_slot");
+    EXPECT_NO_THROW(createDeploymentConfig(
+        basePath, std::optional<std::filesystem::path>{draftPath}, std::optional<SpecDecodeDraftingConfig>{drafting}));
+}
+
 TEST_F(DeploymentConfigTest, DSparkTreeRejectsTopKNotLessThanVerifySize)
 {
     auto const basePath = writeJsonToTempFile(makeDSparkBaseConfig(/*maxVerify=*/8), "base");
@@ -1579,10 +1935,8 @@ TEST_F(DeploymentConfigTest, DSparkTreeVerifySizeAboveNodeBudgetThrows)
         std::runtime_error);
 }
 
-TEST_F(DeploymentConfigTest, DSparkTreeAllowsScheduler)
+TEST_F(DeploymentConfigTest, DSparkTreeAllowsThresholdScheduler)
 {
-    // Tree mode supports confidence scheduling: scheduled depths shrink the DDTree
-    // verify budget (dynamic window), so threshold/sps both validate.
     auto const basePath = writeJsonToTempFile(makeDSparkBaseConfig(/*maxVerify=*/16), "base");
     auto const draftPath = writeJsonToTempFile(makeDSparkDraftConfig(/*maxDraft=*/7), "draft");
 
@@ -1601,7 +1955,6 @@ TEST_F(DeploymentConfigTest, DSparkTreeAllowsScheduler)
 
 TEST_F(DeploymentConfigTest, DSparkTreeRejectsSPS)
 {
-    // Fixed tree budget has no verify cost for SPS to trade; only threshold applies.
     auto const basePath = writeJsonToTempFile(makeDSparkBaseConfig(/*maxVerify=*/16), "base");
     auto const draftPath = writeJsonToTempFile(makeDSparkDraftConfig(/*maxDraft=*/7), "draft");
 
@@ -1711,4 +2064,95 @@ TEST_F(DeploymentConfigTest, DSparkTreeSurvivalThresholdOfOneThrows)
     EXPECT_THROW(createDeploymentConfig(basePath, std::optional<std::filesystem::path>{draftPath},
                      std::optional<SpecDecodeDraftingConfig>{drafting}),
         std::runtime_error);
+}
+
+TEST_F(DeploymentConfigTest, DFlash2LinearContractValidates)
+{
+    auto const basePath = writeJsonToTempFile(makeDFlash2BaseConfig(/*maxVerify=*/8), "base");
+    auto const draftPath = writeJsonToTempFile(makeDFlash2DraftConfig(/*maxDraft=*/8), "draft");
+    SpecDecodeDraftingConfig drafting{};
+    drafting.draftingTopK = 1;
+    drafting.draftingStep = 1;
+    drafting.verifySize = 8;
+
+    DeploymentConfig bundle = createDeploymentConfig(
+        basePath, std::optional<std::filesystem::path>{draftPath}, std::optional<SpecDecodeDraftingConfig>{drafting});
+    EXPECT_EQ(bundle.specDecodeMode(), SpecDecodeMode::kDFlash);
+    EXPECT_EQ(bundle.specConfig->dflashBlockSize, 8);
+    EXPECT_EQ(bundle.specConfig->verifySize, 8);
+    EXPECT_EQ(bundle.maxAcceptedTokensPerRound(), 8);
+}
+
+TEST_F(DeploymentConfigTest, DFlashRejectsVersionMismatchWithoutDraftingOverrides)
+{
+    auto const basePath = writeJsonToTempFile(makeDFlash2BaseConfig(/*maxVerify=*/8), "base");
+    auto const draftPath = writeJsonToTempFile(makeDFlashDraftConfig(/*maxDraft=*/8), "draft");
+
+    EXPECT_THROW(createDeploymentConfig(basePath, std::optional<std::filesystem::path>{draftPath}, std::nullopt),
+        std::runtime_error);
+}
+
+TEST_F(DeploymentConfigTest, DFlash2RejectsMismatchedProductionPair)
+{
+    auto expectInvalid = [&](Json const& draft) {
+        auto const basePath = writeJsonToTempFile(makeDFlash2BaseConfig(/*maxVerify=*/8), "base");
+        auto const draftPath = writeJsonToTempFile(draft, "draft");
+        SpecDecodeDraftingConfig drafting{};
+        drafting.draftingTopK = 1;
+        drafting.draftingStep = 1;
+        drafting.verifySize = 8;
+        EXPECT_THROW(createDeploymentConfig(basePath, std::optional<std::filesystem::path>{draftPath}, drafting),
+            std::runtime_error);
+    };
+
+    Json targetMismatch = makeDFlash2DraftConfig(/*maxDraft=*/8);
+    targetMismatch["dflash_config"]["target_layer_ids"] = Json::array({1, 3, 5, 9, 11});
+    expectInvalid(targetMismatch);
+
+    Json layerCountMismatch = makeDFlash2DraftConfig(/*maxDraft=*/8);
+    layerCountMismatch["num_hidden_layers"] = 4;
+    expectInvalid(layerCountMismatch);
+
+    Json conditioningMismatch = makeDFlash2DraftConfig(/*maxDraft=*/8);
+    conditioningMismatch["base_model_hidden_size"] = 768;
+    expectInvalid(conditioningMismatch);
+
+    Json hiddenMismatch = makeDFlash2DraftConfig(/*maxDraft=*/8);
+    hiddenMismatch["hidden_size"] = 512;
+    expectInvalid(hiddenMismatch);
+
+    Json vocabMismatch = makeDFlash2DraftConfig(/*maxDraft=*/8);
+    vocabMismatch["draft_vocab_size"] = 31999;
+    expectInvalid(vocabMismatch);
+}
+
+TEST_F(DeploymentConfigTest, DFlash2RejectsDDTreeFanout)
+{
+    auto const basePath = writeJsonToTempFile(makeDFlash2BaseConfig(/*maxVerify=*/8), "base");
+    auto const draftPath = writeJsonToTempFile(makeDFlash2DraftConfig(/*maxDraft=*/8), "draft");
+    SpecDecodeDraftingConfig drafting{};
+    drafting.draftingTopK = 2;
+    drafting.draftingStep = 1;
+    drafting.verifySize = 8;
+
+    EXPECT_THROW(createDeploymentConfig(basePath, std::optional<std::filesystem::path>{draftPath},
+                     std::optional<SpecDecodeDraftingConfig>{drafting}),
+        std::runtime_error);
+}
+
+TEST_F(DeploymentConfigTest, DFlash2AcceptsRuntimeBlockOverrideWithinEngineProfiles)
+{
+    auto const basePath = writeJsonToTempFile(makeDFlash2BaseConfig(/*maxVerify=*/16), "base");
+    auto const draftPath = writeJsonToTempFile(makeDFlash2DraftConfig(/*maxDraft=*/16), "draft");
+    SpecDecodeDraftingConfig drafting{};
+    drafting.draftingTopK = 1;
+    drafting.draftingStep = 1;
+    drafting.verifySize = 0;
+    drafting.dflashBlockSize = 16;
+
+    DeploymentConfig bundle = createDeploymentConfig(
+        basePath, std::optional<std::filesystem::path>{draftPath}, std::optional<SpecDecodeDraftingConfig>{drafting});
+    EXPECT_EQ(bundle.specConfig->dflashBlockSize, 16);
+    EXPECT_EQ(bundle.specConfig->verifySize, 16);
+    EXPECT_EQ(bundle.maxAcceptedTokensPerRound(), 16);
 }

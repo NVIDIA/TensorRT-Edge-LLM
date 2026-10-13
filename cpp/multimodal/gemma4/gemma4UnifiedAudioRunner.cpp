@@ -198,7 +198,7 @@ void Gemma4UnifiedAudioRunner::frameAudioTokenLengthsOnly(rt::LLMGenerationReque
         for (auto const& audio : req.audioBuffers)
         {
             ELLM_CHECK(audio.pcm != nullptr, "Gemma4 Unified AudioData.pcm is null");
-            int64_t const sampleCount = static_cast<int64_t>(audio.pcm->samples.size());
+            int64_t const sampleCount = audio.pcm->numSamples();
             int64_t const frameCount = (sampleCount + mConfig.samplesPerFrame - 1) / mConfig.samplesPerFrame;
             totalFrames += frameCount;
             audioTokenLengths.push_back(frameCount);
@@ -224,8 +224,10 @@ void Gemma4UnifiedAudioRunner::frameAudio(rt::LLMGenerationRequest const& reques
             ELLM_CHECK(audio.pcm != nullptr, "Gemma4 Unified AudioData.pcm is null");
             ELLM_CHECK(audio.pcm->sampleRate == mConfig.sampleRate && audio.pcm->numChannels == 1,
                 "Gemma4 Unified audio requires mono 16-kHz PCM");
-            ELLM_CHECK(!audio.pcm->samples.empty(), "Gemma4 Unified audio clip is empty");
-            int64_t const sampleCount = static_cast<int64_t>(audio.pcm->samples.size());
+            ELLM_CHECK(audio.pcm->numSamples() > 0, "Gemma4 Unified audio clip is empty");
+            int64_t const sampleCount = audio.pcm->numSamples();
+            rt::Tensor const& clipTensor = *audio.pcm->samples;
+            float const* const clipSamples = clipTensor.dataPointer<float>();
             int64_t const frameCount = (sampleCount + mConfig.samplesPerFrame - 1) / mConfig.samplesPerFrame;
             ELLM_CHECK(totalFrames + frameCount <= mConfig.maxFrames,
                 "Gemma4 Unified audio request exceeds engine profile maximum");
@@ -235,7 +237,7 @@ void Gemma4UnifiedAudioRunner::frameAudio(rt::LLMGenerationRequest const& reques
             std::fill(framedPcm + frameStart, framedPcm + frameStart + framedSampleCount, __float2half(0.0F));
             for (int64_t i = 0; i < sampleCount; ++i)
             {
-                framedPcm[frameStart + i] = __float2half(audio.pcm->samples[static_cast<size_t>(i)]);
+                framedPcm[frameStart + i] = __float2half(clipSamples[i]);
             }
             totalFrames += frameCount;
             audioTokenLengths.push_back(frameCount);

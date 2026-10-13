@@ -448,9 +448,10 @@ bool NemotronOmniAudioRunner::runGpuFbankClip(
     rt::audio::AudioPCM const& pcm, int64_t const numFrames, rt::Tensor& melSpec, cudaStream_t stream)
 {
     // Upload host FP32 PCM [-1, 1] into the pre-allocated [N] staging tensor
-    // (metadata-only reshape; the pass-1 maxFrames gate bounds N). pcm.samples is
-    // owned by the request and outlives preprocess, covering the async fbank launches.
-    if (!audioUtils::uploadHostPcmF32ToGpu(pcm.samples, mPcmF32Device, stream))
+    // (metadata-only reshape; the pass-1 maxFrames gate bounds N). pcm.samples stays
+    // valid for the whole request and so outlives preprocess, covering the async
+    // fbank launches.
+    if (!audioUtils::uploadHostPcmF32ToGpu(*pcm.samples, mPcmF32Device, stream))
     {
         return false;
     }
@@ -523,7 +524,7 @@ bool NemotronOmniAudioRunner::encodeAllClips(
             {
                 // GPU path: T = floor(N / hop), no kernel needed to size the buffer.
                 int32_t const t = audioUtils::computeNumMelFramesParakeet(
-                    static_cast<int64_t>(audio.pcm->samples.size()), mFbankResourcesParakeet.hopLength);
+                    audio.pcm->numSamples(), mFbankResourcesParakeet.hopLength);
                 // The fbank buffers were pre-allocated for up to maxFrames frames;
                 // clips too short for the framing (t <= 0) and clips beyond that
                 // bound (t > maxFrames) fall back to the CPU MelExtractor without

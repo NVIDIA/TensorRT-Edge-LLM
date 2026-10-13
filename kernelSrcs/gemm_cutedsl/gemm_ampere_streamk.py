@@ -46,7 +46,9 @@ import cutlass.cute as cute
 import cutlass.cute.testing as testing
 import cutlass.utils as utils
 import numpy as np
+from cutedsl_utils import aot_placeholders
 from common import (
+    create_fake_row_major_2d_tensor,
     create_row_major_2d_tensors,
     export_compiled_kernel,
     mark_2d_row_major_dynamic,
@@ -399,26 +401,44 @@ def run(mnk=(1, 2048, 2048), split_k=4, cta_tiler_mnk=(16, 128, 128),
     _tag = f"[{file_name}]"
     print(f"{_tag} Split-K GEMM: M={M}, N={N}, K={K}, split_k={split_k}")
 
-    a_cp = cp.random.uniform(-1, 1, (M, K)).astype(cp.float16)
-    b_cp = cp.random.uniform(-1, 1, (N, K)).astype(cp.float16)
     # Workspace: each split needs ceil(M, bM) rows, not just M rows.
     padded_m = ((M + cta_tiler_mnk[0] - 1) // cta_tiler_mnk[0]) * cta_tiler_mnk[0]
-    c_ws = cp.zeros((split_k * padded_m, N), dtype=cp.float16)
-
-    mA = mark_2d_row_major_dynamic(to_cute_tensor(a_cp))
-    mB = mark_2d_row_major_dynamic(to_cute_tensor(b_cp))
-    mC = mark_2d_row_major_dynamic(to_cute_tensor(c_ws))
+    if export_only:
+        mA = create_fake_row_major_2d_tensor()
+        mB = create_fake_row_major_2d_tensor()
+        mC = create_fake_row_major_2d_tensor()
+        a_cp = b_cp = c_ws = None
+    else:
+        a_cp = cp.random.uniform(-1, 1, (M, K)).astype(cp.float16)
+        b_cp = cp.random.uniform(-1, 1, (N, K)).astype(cp.float16)
+        c_ws = cp.zeros((split_k * padded_m, N), dtype=cp.float16)
+        mA = mark_2d_row_major_dynamic(to_cute_tensor(a_cp))
+        mB = mark_2d_row_major_dynamic(to_cute_tensor(b_cp))
+        mC = mark_2d_row_major_dynamic(to_cute_tensor(c_ws))
 
     gemm = GemmAmpereSplitKFP16(
         cta_tiler_mnk=cta_tiler_mnk, atom_layout_mnk=atom_layout_mnk,
         num_stages=num_stages, split_k=split_k,
     )
-    stream_ptr = cuda.CUstream(cp.cuda.get_current_stream().ptr)
+    stream_ptr = (
+        aot_placeholders.make_stream()
+        if export_only
+        else cuda.CUstream(cp.cuda.get_current_stream().ptr)
+    )
 
     print(f"{_tag} Compiling...")
     t0 = time.time()
-    compiled = cute.compile(gemm, mA, mB, mC, stream_ptr,
-                            **(dict(options="--gpu-arch " + gpu_arch) if gpu_arch else {}))
+    compile_opts = aot_placeholders.compile_options(
+        ("--gpu-arch " + gpu_arch) if gpu_arch else ""
+    ) if export_only else None
+    compiled = cute.compile(
+        gemm,
+        mA,
+        mB,
+        mC,
+        stream_ptr,
+        **(dict(options=compile_opts) if export_only else {}),
+    )
     print(f"{_tag} Compilation: {time.time() - t0:.2f}s")
 
     if export_only:

@@ -14,8 +14,10 @@ tests:
   - tests/defs/test_llm_pipeline.py::test_inference[Qwen3.5-0.8B-fp16-mxsl4096-mtp-mxbs1-mxil2048-llm_basic]
   - tests/defs/test_llm_pipeline.py::test_inference[Qwen3.5-0.8B-fp16-mxsl4096-mtp-mxbs1-mxil2048-llm_logit_bias]
 
-  # Gemma4 E2B smoke: vanilla FP16 + paired MTP. Keep sequence/input modest for L0 runtime.
+  # Gemma4 E2B smoke: mxsl2048 selects full storage because 16 pages are smaller than bounded SWA's 19.
+  # The L1 mxsl4096 case exercises bounded storage; paired MTP retains the existing fallback here.
   - tests/defs/test_llm_pipeline.py::test_engine_build[gemma-4-E2B-it-fp16-mxsl2048-mxbs1-mxil1024]
   - tests/defs/test_llm_pipeline.py::test_inference[gemma-4-E2B-it-fp16-mxsl2048-mxbs1-mxil1024-llm_basic]
+  - tests/defs/test_llm_pipeline.py::test_inference[gemma-4-E2B-it-fp16-mxsl2048-mxbs1-mxil1024-ctxreuse-llm_context_reuse]
   - tests/defs/test_llm_pipeline.py::test_engine_build[gemma-4-E2B-it-fp16-mxsl2048-mtp-mxbs1-mxil1024]
   - tests/defs/test_llm_pipeline.py::test_inference[gemma-4-E2B-it-fp16-mxsl2048-mtp-mxbs1-mxil1024-llm_basic]

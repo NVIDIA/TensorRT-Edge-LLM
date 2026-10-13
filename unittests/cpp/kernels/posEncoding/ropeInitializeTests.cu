@@ -279,6 +279,26 @@ TEST(InitializeYarnRopeCosSin, Accuracy)
     TestYarnRopeCosSin(128, 16384); // beyond originalMaxPositionEmbeddings=8192
 }
 
+TEST(InitializeYarnRopeCosSin, LargeAnglesKeepPhaseAccuracy)
+{
+    // Given unit inverse frequencies and long-context positions, when initializing the cache,
+    // then both sine and cosine retain phase accuracy relative to the double-precision reference.
+    constexpr int32_t kDIM = 64;
+    constexpr int32_t kPOSITIONS = 16384;
+    thrust::device_vector<float> inverse(kDIM / 2, 1.0F);
+    thrust::device_vector<float> output(kDIM * kPOSITIONS);
+    initializeYarnCosSin(thrust::raw_pointer_cast(output.data()), thrust::raw_pointer_cast(inverse.data()), 1.0F, kDIM,
+        kPOSITIONS, nullptr);
+    CUDA_CHECK(cudaStreamSynchronize(nullptr));
+    thrust::host_vector<float> result(output);
+    for (int32_t const position : {6437, 8191, 8192, 15950, 16383})
+    {
+        EXPECT_NEAR(result[position * kDIM], std::cos(static_cast<double>(position)), 2e-6) << "position=" << position;
+        EXPECT_NEAR(result[position * kDIM + kDIM / 2], std::sin(static_cast<double>(position)), 2e-6)
+            << "position=" << position;
+    }
+}
+
 void TestMRopeCosSin(int32_t rotaryDim, int32_t rotaryEmbeddingMaxPositions, int32_t batchSize,
     float rotaryBaseFrequency = 10000.0f, bool interleaved = false, int32_t sectionH = 20, int32_t sectionW = 20)
 {

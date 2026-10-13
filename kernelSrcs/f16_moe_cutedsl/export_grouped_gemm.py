@@ -41,10 +41,10 @@ def _make_kernel(family: str):
 
 def export_grouped_gemm(args: argparse.Namespace) -> tuple[str, str]:
     """Compile and export the selected family with the shared C ABI."""
-    import cupy
     import cutlass
     import cutlass.cute as cute
     from cuda.bindings import driver as cuda
+    from cutedsl_utils import aot_placeholders
 
     class ExportWrapper:
         """Bind raw pointers plus max_m/max_n/max_k bounds to device layouts.
@@ -135,76 +135,42 @@ def export_grouped_gemm(args: argparse.Namespace) -> tuple[str, str]:
             )
             return cutlass.Int32(0)
 
-    cupy.cuda.Device(0).use()
     kernel = _make_kernel(args.family)
     export_wrapper = ExportWrapper(kernel)
-    # This value only seeds the runtime-typed compile argument. Deployment
-    # passes the target GPU's persistent block count through the exported ABI.
-    max_active_clusters = export_common.get_max_active_clusters(args.family)
-    if max_active_clusters <= 0:
-        raise RuntimeError("No active CTA clusters are available for f16_moe")
-
-    buffers = {
-        "a":
-        cupy.zeros((128, 128), dtype=cupy.float16),
-        "b":
-        cupy.zeros((128, 128), dtype=cupy.float16),
-        "d":
-        cupy.zeros((128, 128), dtype=cupy.float16),
-        "problem_shapes":
-        cupy.zeros((export_common.MAX_NUM_EXPERTS, 4), dtype=cupy.int32),
-        "strides":
-        cupy.zeros((export_common.MAX_NUM_EXPERTS, 3, 2), dtype=cupy.int32),
-        "addresses":
-        cupy.zeros((export_common.MAX_NUM_EXPERTS, 3), dtype=cupy.int64),
-        "scratch":
-        cupy.zeros(
-            (
-                export_common.MAX_NUM_EXPERTS,
-                export_common.TENSORMAPS_PER_BLOCK,
-                export_common.BYTES_PER_TENSORMAP,
-            ),
-            dtype=cupy.uint8,
-        ),
-    }
+    # Runtime-typed compile argument: deployment passes the target GPU's
+    # persistent block count through the exported ABI.
+    max_active_clusters = export_common.runtime_max_active_clusters(args.family)
     pointers = (
         export_common.make_ptr(
             cutlass.Float16,
-            buffers["a"].data.ptr,
             export_common.DESCRIPTOR_ALIGNMENT,
         ),
         export_common.make_ptr(
             cutlass.Float16,
-            buffers["b"].data.ptr,
             export_common.DESCRIPTOR_ALIGNMENT,
         ),
         export_common.make_ptr(
             cutlass.Float16,
-            buffers["d"].data.ptr,
             export_common.DESCRIPTOR_ALIGNMENT,
         ),
         export_common.make_ptr(
             cutlass.Int32,
-            buffers["problem_shapes"].data.ptr,
             export_common.DESCRIPTOR_ALIGNMENT,
         ),
         export_common.make_ptr(
             cutlass.Int32,
-            buffers["strides"].data.ptr,
             export_common.DESCRIPTOR_ALIGNMENT,
         ),
         export_common.make_ptr(
             cutlass.Int64,
-            buffers["addresses"].data.ptr,
             export_common.DESCRIPTOR_ALIGNMENT,
         ),
         export_common.make_ptr(
             cutlass.Uint8,
-            buffers["scratch"].data.ptr,
             export_common.TENSORMAP_ALIGNMENT,
         ),
     )
-    stream = cuda.CUstream(cupy.cuda.get_current_stream().ptr)
+    stream = aot_placeholders.make_stream()
     compiled = cute.compile(
         export_wrapper.wrapper,
         *pointers,
@@ -214,6 +180,7 @@ def export_grouped_gemm(args: argparse.Namespace) -> tuple[str, str]:
         export_common.MAX_NUM_EXPERTS,
         max_active_clusters,
         stream,
+        options=aot_placeholders.compile_options(),
     )
 
     os.makedirs(args.output_dir, exist_ok=True)

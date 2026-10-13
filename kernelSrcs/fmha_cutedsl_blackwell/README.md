@@ -209,16 +209,25 @@ independent knobs:
   `skip_softmax_threshold` compiles the skip path in (the `*_skipsoftmax`
   variants in `build_cutedsl.py` pass a sentinel `1.0` for exactly this);
   `None` compiles it out, bit-identical to the dense build.
-- **runtime lambda** — the compiled kernel takes `log2(lambda)` as a trailing
-  runtime float. Deployment never bakes a lambda: the calibrated **scale
-  factor S** is an `AttentionPlugin` attribute (`skip_softmax_scale_factor`,
-  set at ONNX export), and at every enqueue the plugin derives
-  `lambda = S / L` with `L` floored at `kvCacheCapacity`: raw per-request
-  `S / seq_k` (ModelOpt's formula) holds the sparsity target on short prompts,
-  where there is no negligible tail to skip — measured MMLU -0.08 on ~1k-token
-  prompts — so every request uses the engine-max, calibration-validated lambda
-  instead. Cross-engine scaling is preserved (bigger-context engine -> bigger
-  capacity -> smaller lambda). `S = 0` (default) dispatches the dense kernel.
+- **runtime scale factor** — deployment never bakes a lambda: the calibrated
+  **scale factor S** is an `AttentionPlugin` attribute
+  (`skip_softmax_scale_factor`, set at ONNX export), passed through to the
+  kernel, which derives `log2(lambda_i) = log2(S) - log2(seqlen_kv_i)` PER
+  SEQUENCE (same formula as TensorRT-LLM's `threshold_scale_factor`, no
+  clamp). `S = 0` (default) dispatches the dense
+  kernel.
+
+> **DEPLOYMENT RULE — long-context only.** A sequence shorter than S runs at
+> `lambda > 1`, outside the calibrated domain, and degrades sharply: measured
+> MMLU **-10.5pts** (edge-llm, Qwen3.5-0.8B, S=8298) and **-16.3pts**
+> (official TensorRT-LLM 1.2.1, Qwen3-1.7B, S=8192, lambda ~ 10) while
+> 13k-context retrieval at `lambda = 0.6` stays intact. TensorRT-LLM ships the
+> identical formula with no guard — this is an ecosystem-wide property of the
+> S/L semantics, not an implementation defect. **If deployment traffic
+> contains requests with `L < S`, serve them with a dense engine (S = 0), or
+> pick S no larger than the shortest expected request.** Accuracy gates are
+> long-context only (RULER + LongBench); MMLU is reported as an advisory
+> short-sequence column.
 
 Restricted to plain causal FP16 attention (no sliding window, no FP8 input,
 no ViT/bidirectional), prefill/context path only.
@@ -242,16 +251,22 @@ threshold follows `lambda = scale_factor / L` with a model-specific scale
 factor. The subcommand wraps the official calibration in
 `modelopt.torch.sparsity.attention_sparsity` (the same machinery behind
 TensorRT-LLM's `threshold_scale_factor`): ModelOpt auto-generates a RULER
-calibration set (default 24 samples across power-of-2 length bins), runs one
-forward pass evaluating 20 built-in threshold trials at once, and fits
-`scale_factor = a * exp(b * sparsity)` with scipy. Requires `torch`,
-`transformers`, `nvidia-modelopt`, `scipy`, `wonderwords`; the model loads
-with `attn_implementation="eager"`.
+calibration set, runs one forward pass evaluating 20 built-in threshold
+trials at once, and fits `scale_factor = a * exp(b * sparsity)` with scipy.
+Defaults are aligned with ModelOpt's official `SKIP_SOFTMAX_CALIB` preset —
+the same parameters TRT-LLM ships with: 64 samples, max_seqlen 16384
+(power-of-2 length bins), chunked prefill 4096. The a/b fit does not
+extrapolate beyond its calibration max_seqlen, so keep it at or above the
+deployment context (short calibrations leave the sparsity targets in the
+extrapolated zone — visible as a low R^2 and a narrow observed-sparsity
+range in the report). Requires `torch`, `transformers`, `nvidia-modelopt`,
+`scipy`, `nltk`, `wonderwords`; the model loads with
+`attn_implementation="eager"`.
 
 ```bash
 python kernelSrcs/fmha_cutedsl_blackwell/calibrate_skip_softmax.py calibrate \
-    --model-dir /path/to/Qwen3-1.7B --max-seqlen 4096 \
-    --target-sparsity 0.3 0.5 --max-context 4096 \
+    --model-dir /path/to/Qwen3-1.7B \
+    --target-sparsity 0.3 0.5 --max-context 16384 \
     --cache-dir /path/with/room/modelopt-cache   # RULER gen cache; ModelOpt
                                                  # defaults to ~/.cache (quota!)
 # [calibrate 1/3] load model ... [calibrate 2/3] ModelOpt calibration

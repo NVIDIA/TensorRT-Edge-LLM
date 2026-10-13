@@ -424,10 +424,9 @@ def test_raw_tail_swallows_wrapper_junk():
 
 
 def test_preconfirm_raw_truncation_flushes_as_content():
-    # MR review (greptile P1): RAW mode entered but truncated before the
-    # scanner confirmed -- nothing streamed yet, so flush must re-parse the
-    # withheld bytes as content instead of dropping them or emitting a
-    # phantom tool_done.
+    # RAW mode entered but truncated before the scanner confirmed. Nothing
+    # streamed yet, so flush must re-parse the withheld bytes as content
+    # instead of dropping them or emitting a phantom tool_done.
     config = _config()
     text = 'before <tool_call>{"name": "get_weather", "arguments": {'
     events = _stream_events(list(text), config)  # char-by-char

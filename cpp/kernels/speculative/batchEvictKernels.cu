@@ -20,7 +20,6 @@
 #include "common/cudaUtils.h"
 #include "common/pagedKvTypes.h"
 #include "common/stringUtils.h"
-#include "kernels/common/vectorizedTypes.cuh"
 #include <cstdint>
 #include <cuda_fp16.h>
 
@@ -34,8 +33,8 @@ namespace kernel
 //=============================================================================
 
 template <typename T>
-__global__ void compactTensorBatchKernel(
-    T const* src, int32_t const* batchMapping, T* dst, int32_t oldActiveBatch, int32_t batchStride)
+__global__ void compactTensorBatchKernel(T const* src, int32_t const* batchMapping, T* dst, int32_t oldActiveBatch,
+    int32_t newActiveBatch, int32_t batchStride)
 {
     // Each CTA handles all elements (no batch-specific assignment)
     int32_t const elemIdx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -49,7 +48,7 @@ __global__ void compactTensorBatchKernel(
     {
         int32_t const newBatchIdx = batchMapping[oldBatchIdx];
 
-        if (newBatchIdx < 0 || newBatchIdx >= oldActiveBatch)
+        if (newBatchIdx < 0 || newBatchIdx >= newActiveBatch)
         {
             continue;
         }
@@ -71,6 +70,13 @@ void compactTensorBatch(rt::Tensor const& src, rt::Tensor const& batchMapping, r
     check::check(dst.getDeviceType() == rt::DeviceType::kGPU, "Destination tensor must be on GPU");
     check::check(src.getDeviceType() == rt::DeviceType::kGPU, "Source tensor must be on GPU");
     check::check(batchMapping.getDeviceType() == rt::DeviceType::kGPU, "Batch mapping must be on GPU");
+    check::check(oldActiveBatch > 0, "Old active batch must be positive");
+    check::check(newActiveBatch >= 0 && newActiveBatch <= oldActiveBatch,
+        "New active batch must be non-negative and no larger than the old active batch");
+    check::check(batchMapping.getDataType() == nvinfer1::DataType::kINT32 && batchMapping.getShape().getNumDims() == 1
+            && batchMapping.getShape()[0] == oldActiveBatch,
+        "Batch mapping must be an INT32 vector matching oldActiveBatch");
+    check::check(src.getDataType() == dst.getDataType(), "Source and destination data types must match");
 
     auto const& srcShape = src.getShape();
     check::check(srcShape.getNumDims() >= 1, "Tensor must have at least 1 dimension");
@@ -105,30 +111,30 @@ void compactTensorBatch(rt::Tensor const& src, rt::Tensor const& batchMapping, r
     switch (dataType)
     {
     case nvinfer1::DataType::kHALF:
-        compactTensorBatchKernel<half><<<gridDim, blockDim, 0, stream>>>(
-            src.dataPointer<half>(), batchMappingPtr, dst.dataPointer<half>(), oldActiveBatch, batchStrideInt);
+        compactTensorBatchKernel<half><<<gridDim, blockDim, 0, stream>>>(src.dataPointer<half>(), batchMappingPtr,
+            dst.dataPointer<half>(), oldActiveBatch, newActiveBatch, batchStrideInt);
         break;
     case nvinfer1::DataType::kFLOAT:
-        compactTensorBatchKernel<float><<<gridDim, blockDim, 0, stream>>>(
-            src.dataPointer<float>(), batchMappingPtr, dst.dataPointer<float>(), oldActiveBatch, batchStrideInt);
+        compactTensorBatchKernel<float><<<gridDim, blockDim, 0, stream>>>(src.dataPointer<float>(), batchMappingPtr,
+            dst.dataPointer<float>(), oldActiveBatch, newActiveBatch, batchStrideInt);
         break;
     case nvinfer1::DataType::kINT32:
-        compactTensorBatchKernel<int32_t><<<gridDim, blockDim, 0, stream>>>(
-            src.dataPointer<int32_t>(), batchMappingPtr, dst.dataPointer<int32_t>(), oldActiveBatch, batchStrideInt);
+        compactTensorBatchKernel<int32_t><<<gridDim, blockDim, 0, stream>>>(src.dataPointer<int32_t>(), batchMappingPtr,
+            dst.dataPointer<int32_t>(), oldActiveBatch, newActiveBatch, batchStrideInt);
         break;
     case nvinfer1::DataType::kINT64:
-        compactTensorBatchKernel<int64_t><<<gridDim, blockDim, 0, stream>>>(
-            src.dataPointer<int64_t>(), batchMappingPtr, dst.dataPointer<int64_t>(), oldActiveBatch, batchStrideInt);
+        compactTensorBatchKernel<int64_t><<<gridDim, blockDim, 0, stream>>>(src.dataPointer<int64_t>(), batchMappingPtr,
+            dst.dataPointer<int64_t>(), oldActiveBatch, newActiveBatch, batchStrideInt);
         break;
     case nvinfer1::DataType::kINT8:
-        compactTensorBatchKernel<int8_t><<<gridDim, blockDim, 0, stream>>>(
-            src.dataPointer<int8_t>(), batchMappingPtr, dst.dataPointer<int8_t>(), oldActiveBatch, batchStrideInt);
+        compactTensorBatchKernel<int8_t><<<gridDim, blockDim, 0, stream>>>(src.dataPointer<int8_t>(), batchMappingPtr,
+            dst.dataPointer<int8_t>(), oldActiveBatch, newActiveBatch, batchStrideInt);
         break;
     // FP8 is 1-byte POD storage; copy it byte-wise via uint8_t.
     case nvinfer1::DataType::kFP8:
         compactTensorBatchKernel<uint8_t>
             <<<gridDim, blockDim, 0, stream>>>(static_cast<uint8_t const*>(src.rawPointer()), batchMappingPtr,
-                static_cast<uint8_t*>(dst.rawPointer()), oldActiveBatch, batchStrideInt);
+                static_cast<uint8_t*>(dst.rawPointer()), oldActiveBatch, newActiveBatch, batchStrideInt);
         break;
     default:
         throw std::invalid_argument(format::fmtstr(
@@ -140,115 +146,93 @@ void compactTensorBatch(rt::Tensor const& src, rt::Tensor const& batchMapping, r
     CUDA_CHECK(cudaGetLastError());
 }
 
-//=============================================================================
-// Batched KV pool compaction — grouped, vectorized, live-prefix
-//=============================================================================
-
-// One launch covers every layer of a headDim group; blockIdx.y selects (layer, K/V half). In the
-// NHD pool a row's live data is its contiguous [0, liveLen*H*D) prefix, so the copy is a flat
-// vectorized move. gridDim.x is a small fixed CTA count per (layer, half): scheduled work stays
-// proportional to layers, while per-thread loops scale with the LIVE bytes actually moved (not the
-// allocated capacity).
-//
-// In-place overlap safety: compaction only moves a survivor to a strictly lower row
-// (newIdx < oldIdx). Every element column is owned by one fixed thread across all rows (ownership
-// depends only on the in-row offset), each thread walks oldBatchIdx in ascending order, and it
-// reads row r's element during iteration r — before any later iteration (old > r) can overwrite
-// row r. Different (layer, half) planes are disjoint, so cross-CTA order does not matter.
-template <typename T>
-__global__ void compactKVCacheBatchedKernel(KVLayerInfo const* __restrict__ layerInfos,
-    int32_t const* __restrict__ batchMapping, int32_t const* __restrict__ liveLengths, int32_t headDim,
-    int32_t kvPoolPages, int32_t oldActiveBatch)
-{
-    KVLayerInfo const info = layerInfos[blockIdx.y >> 1];
-    int64_t const elemsPerToken = static_cast<int64_t>(info.numKVHeads) * headDim;
-    int64_t const rowElems = static_cast<int64_t>(info.maxSeqLen) * elemsPerToken;
-    T* base = static_cast<T*>(info.data);
-    if ((blockIdx.y & 1) != 0)
-    {
-        base += static_cast<int64_t>(kvPoolPages) * rt::kTOKENS_PER_PAGE * elemsPerToken; // V half
-    }
-
-    using Vec = DVec<T>;
-    constexpr int32_t kVEC = static_cast<int32_t>(Vec::vec_size);
-    int64_t const laneStart = (static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x) * kVEC;
-    int64_t const stride = static_cast<int64_t>(gridDim.x) * blockDim.x * kVEC;
-
-    for (int32_t oldBatchIdx = 0; oldBatchIdx < oldActiveBatch; ++oldBatchIdx)
-    {
-        int32_t const newBatchIdx = batchMapping[oldBatchIdx];
-        if (newBatchIdx < 0 || newBatchIdx >= oldActiveBatch || newBatchIdx == oldBatchIdx)
-        {
-            continue;
-        }
-
-        // Only the live prefix of the row is moved; padding beyond it is left untouched.
-        int64_t const liveElems = static_cast<int64_t>(liveLengths[oldBatchIdx]) * elemsPerToken;
-        T const* src = base + static_cast<int64_t>(oldBatchIdx) * rowElems;
-        T* dst = base + static_cast<int64_t>(newBatchIdx) * rowElems;
-
-        for (int64_t e = laneStart; e < liveElems; e += stride)
-        {
-            if (e + kVEC <= liveElems)
-            {
-                Vec v;
-                v.load(src + e);
-                v.store(dst + e);
-            }
-            else
-            {
-                // Ragged tail of the live prefix: finish element-wise from the same owning thread
-                // (chunk ownership is offset-only, so this stays overlap-safe).
-                for (int64_t t = e; t < liveElems; ++t)
-                {
-                    dst[t] = src[t];
-                }
-            }
-        }
-    }
-}
-
-void compactKVCacheBatched(KVLayerInfo const* layerInfos, rt::Tensor const& batchMapping, rt::Tensor const& liveLengths,
-    int32_t numLayers, int32_t headDim, int32_t kvPoolPages, nvinfer1::DataType kvCacheType, int32_t oldActiveBatch,
+void compactExecutionTensorBatch(rt::Tensor& tensor, rt::Tensor const& batchMapping, int32_t oldActiveBatch,
     int32_t newActiveBatch, cudaStream_t stream)
 {
-    check::check(batchMapping.getDeviceType() == rt::DeviceType::kGPU, "Batch mapping must be on GPU");
-    check::check(liveLengths.getDeviceType() == rt::DeviceType::kGPU, "Live lengths must be on GPU");
-    check::check(kvPoolPages > 0, "KV pool page count must be positive");
+    check::check(oldActiveBatch > 0, "Old active batch must be positive");
+    check::check(newActiveBatch > 0 && newActiveBatch <= oldActiveBatch,
+        "New active batch must be positive and no larger than the old active batch");
+    rt::Coords const originalShape = tensor.getShape();
+    check::check(originalShape.getNumDims() > 0, "Execution tensor must have at least one dimension");
+    check::check(originalShape[0] % oldActiveBatch == 0,
+        "Execution tensor leading dimension must contain equally sized sequence blocks");
 
-    // Identity (nothing finished) and all-evicted (nothing survives) both move zero rows.
-    if (numLayers == 0 || oldActiveBatch == newActiveBatch || newActiveBatch <= 0)
+    int64_t const rowsPerSequence = originalShape[0] / oldActiveBatch;
+    std::vector<int64_t> batchedShape;
+    batchedShape.reserve(static_cast<size_t>(originalShape.getNumDims()) + 1);
+    batchedShape.push_back(oldActiveBatch);
+    batchedShape.push_back(rowsPerSequence);
+    for (int32_t dim = 1; dim < originalShape.getNumDims(); ++dim)
+    {
+        batchedShape.push_back(originalShape[dim]);
+    }
+    check::check(tensor.reshape(batchedShape), "Failed to expose execution sequence blocks for compaction");
+    compactTensorBatch(tensor, batchMapping, tensor, oldActiveBatch, newActiveBatch, stream);
+
+    std::vector<int64_t> compactedShape;
+    compactedShape.reserve(originalShape.getNumDims());
+    compactedShape.push_back(newActiveBatch * rowsPerSequence);
+    for (int32_t dim = 1; dim < originalShape.getNumDims(); ++dim)
+    {
+        compactedShape.push_back(originalShape[dim]);
+    }
+    check::check(tensor.reshape(compactedShape), "Failed to restore compacted execution tensor shape");
+}
+
+__global__ void compactExecutionRowIndicesKernel(int64_t* indices, int32_t const* batchMapping, int32_t oldActiveBatch,
+    int32_t newActiveBatch, int32_t indicesPerSequence, int32_t executionRowsPerSequence)
+{
+    int32_t const indexInSequence = blockIdx.x * blockDim.x + threadIdx.x;
+    if (indexInSequence >= indicesPerSequence)
     {
         return;
     }
 
-    // Small fixed CTA count per (layer, half): each CTA grid-strides over the live prefix.
-    constexpr int32_t kCTAS_PER_ROW = 32;
-    dim3 const gridDim(kCTAS_PER_ROW, 2 * numLayers);
-    dim3 const blockDim(256);
-
-    int32_t const* batchMappingPtr = batchMapping.dataPointer<int32_t>();
-    int32_t const* liveLengthsPtr = liveLengths.dataPointer<int32_t>();
-
-    switch (kvCacheType)
+    for (int32_t oldSlot = 0; oldSlot < oldActiveBatch; ++oldSlot)
     {
-    case nvinfer1::DataType::kHALF:
-        compactKVCacheBatchedKernel<half><<<gridDim, blockDim, 0, stream>>>(
-            layerInfos, batchMappingPtr, liveLengthsPtr, headDim, kvPoolPages, oldActiveBatch);
-        break;
-    // FP8 is 1-byte POD storage; copy it byte-wise via uint8_t.
-    case nvinfer1::DataType::kFP8:
-        compactKVCacheBatchedKernel<uint8_t><<<gridDim, blockDim, 0, stream>>>(
-            layerInfos, batchMappingPtr, liveLengthsPtr, headDim, kvPoolPages, oldActiveBatch);
-        break;
-    default:
-        throw std::invalid_argument(
-            format::fmtstr("compactKVCacheBatched: Unsupported KV cache data type=%d. Only HALF and FP8 are "
-                           "supported.",
-                static_cast<int>(kvCacheType)));
+        int32_t const newSlot = batchMapping[oldSlot];
+        if (newSlot < 0 || newSlot >= newActiveBatch)
+        {
+            continue;
+        }
+        int64_t const sourceIndex = static_cast<int64_t>(oldSlot) * indicesPerSequence + indexInSequence;
+        int64_t const destinationIndex = static_cast<int64_t>(newSlot) * indicesPerSequence + indexInSequence;
+        int64_t const value = indices[sourceIndex];
+        indices[destinationIndex] = value - static_cast<int64_t>(oldSlot) * executionRowsPerSequence
+            + static_cast<int64_t>(newSlot) * executionRowsPerSequence;
     }
+}
 
+void compactExecutionRowIndices(rt::Tensor& indices, rt::Tensor const& batchMapping, int32_t oldActiveBatch,
+    int32_t newActiveBatch, int32_t executionRowsPerSequence, cudaStream_t stream)
+{
+    check::check(indices.getDeviceType() == rt::DeviceType::kGPU, "Execution-row indices must be on GPU");
+    check::check(indices.getDataType() == nvinfer1::DataType::kINT64, "Execution-row indices must be INT64");
+    check::check(batchMapping.getDeviceType() == rt::DeviceType::kGPU
+            && batchMapping.getDataType() == nvinfer1::DataType::kINT32 && batchMapping.getShape().getNumDims() == 1
+            && batchMapping.getShape()[0] == oldActiveBatch,
+        "Batch mapping must be a GPU INT32 vector matching oldActiveBatch");
+    check::check(oldActiveBatch > 0, "Old active batch must be positive");
+    check::check(newActiveBatch > 0 && newActiveBatch <= oldActiveBatch,
+        "New active batch must be positive and no larger than the old active batch");
+    check::check(executionRowsPerSequence > 0, "Execution rows per sequence must be positive");
+    check::check(indices.getShape().getNumDims() > 0 && indices.getShape()[0] == oldActiveBatch,
+        "Execution-row indices must be batch-major");
+
+    int64_t const indicesPerSequence64 = indices.getShape().volume() / oldActiveBatch;
+    check::check(indicesPerSequence64 > 0 && indicesPerSequence64 <= std::numeric_limits<int32_t>::max(),
+        "Execution-row indices per sequence are outside the supported range");
+    int32_t const indicesPerSequence = static_cast<int32_t>(indicesPerSequence64);
+    constexpr int32_t kThreadsPerBlock = 256;
+    int32_t const blocks = (indicesPerSequence + kThreadsPerBlock - 1) / kThreadsPerBlock;
+    compactExecutionRowIndicesKernel<<<blocks, kThreadsPerBlock, 0, stream>>>(indices.dataPointer<int64_t>(),
+        batchMapping.dataPointer<int32_t>(), oldActiveBatch, newActiveBatch, indicesPerSequence,
+        executionRowsPerSequence);
     CUDA_CHECK(cudaGetLastError());
+
+    rt::Coords compactedShape = indices.getShape();
+    compactedShape[0] = newActiveBatch;
+    check::check(indices.reshape(compactedShape), "Failed to reshape compacted execution-row indices");
 }
 
 } // namespace kernel

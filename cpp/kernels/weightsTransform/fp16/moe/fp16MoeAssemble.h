@@ -36,7 +36,8 @@ enum class Fp16MoeSourceType : int32_t
 //! When secondSources is non-null, each source pair is emitted in the
 //! Fp16MoePlugin's fixed 64-row up/gate interleave.
 cudaError_t launchFp16MoeSourceBatch(uint8_t const* const* firstSources, uint8_t const* const* secondSources,
-    int32_t count, void* output, int32_t rows, int32_t columns, Fp16MoeSourceType sourceType, cudaStream_t stream);
+    int32_t count, void* output, int32_t sourceRows, int32_t sourceColumns, int32_t outputRows, int32_t outputColumns,
+    Fp16MoeSourceType sourceType, cudaStream_t stream);
 
 } // namespace kernel
 } // namespace trt_edgellm

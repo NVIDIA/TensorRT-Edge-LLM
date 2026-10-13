@@ -16,6 +16,7 @@
  */
 
 #include "kernels/decodeAttentionKernels/decoderXQAJitCompiler.h"
+#include "kernels/decodeAttentionKernels/decoderXQARunner.h"
 
 #include <gtest/gtest.h>
 
@@ -27,6 +28,8 @@ namespace
 {
 
 using trt_edgellm::canCompileXQAKernel;
+using trt_edgellm::compileXQAKernel;
+using trt_edgellm::DecoderXQARunner;
 using trt_edgellm::deserializeXQAJitKernels;
 using trt_edgellm::serializeXQAJitKernels;
 using trt_edgellm::XQAJitKernel;
@@ -38,7 +41,7 @@ TEST(XQAJitCapabilityTest, SupportsSm90Qwen25)
     EXPECT_TRUE(canCompileXQAKernel(14, 2, 64, 90, nvinfer1::DataType::kHALF, nvinfer1::DataType::kFP8));
 }
 
-XQAJitKey makeKey(bool specDecode)
+XQAJitKey makeKey(bool specDecode, bool contiguousQuerySwa = false)
 {
     XQAJitKey key{};
     key.sm = 121;
@@ -49,6 +52,7 @@ XQAJitKey makeKey(bool specDecode)
     key.tokensPerPage = 128;
     key.slidingWindow = true;
     key.specDecode = specDecode;
+    key.contiguousQuerySwa = contiguousQuerySwa;
     return key;
 }
 
@@ -95,6 +99,25 @@ TEST(XQAJitSerializationTest, RoundTripsDistinctTreeAttentionVariants)
     }
 }
 
+TEST(XQAJitSerializationTest, RoundTripsDistinctContiguousQuerySwaVariants)
+{
+    std::vector<XQAJitKernel> const kernels{
+        {makeKey(/*specDecode=*/true), makeCubin(0x50, 64)},
+        {makeKey(/*specDecode=*/true, /*contiguousQuerySwa=*/true), makeCubin(0x60, 96)},
+    };
+
+    std::vector<uint8_t> const blob = serializeXQAJitKernels(kernels);
+    std::vector<XQAJitKernel> const restored = deserializeXQAJitKernels(blob.data(), blob.size());
+
+    ASSERT_EQ(restored.size(), 2U);
+    EXPECT_FALSE(restored[0].key == restored[1].key);
+    for (size_t i = 0; i < kernels.size(); ++i)
+    {
+        EXPECT_TRUE(restored[i].key == kernels[i].key) << "entry " << i;
+        EXPECT_EQ(restored[i].cubin, kernels[i].cubin) << "entry " << i;
+    }
+}
+
 TEST(XQAJitSerializationTest, EmptyKernelListRoundTrips)
 {
     std::vector<uint8_t> const blob = serializeXQAJitKernels({});
@@ -103,11 +126,11 @@ TEST(XQAJitSerializationTest, EmptyKernelListRoundTrips)
 
 TEST(XQAJitSerializationTest, SizeIsDeterministicAndCarriesNoPadding)
 {
-    // 8 uint32 key fields + 1 uint32 cubin length, plus the version and count
+    // 9 uint32 key fields + 1 uint32 cubin length, plus the version and count
     // headers. Serializing the key field by field (rather than memcpy-ing the
     // struct) is what keeps engine bytes reproducible.
     constexpr size_t kHeaderBytes = 2 * sizeof(uint32_t);
-    constexpr size_t kPerEntryBytes = 9 * sizeof(uint32_t);
+    constexpr size_t kPerEntryBytes = 10 * sizeof(uint32_t);
     constexpr size_t kCubinBytes = 128;
 
     std::vector<XQAJitKernel> const kernels{{makeKey(/*specDecode=*/false), makeCubin(0x01, kCubinBytes)}};
@@ -141,6 +164,47 @@ TEST(XQAJitSerializationTest, RejectsUnknownFormatVersion)
     std::vector<XQAJitKernel> const kernels{{makeKey(/*specDecode=*/false), makeCubin(0x30, 32)}};
     std::vector<uint8_t> blob = serializeXQAJitKernels(kernels);
     blob[0] = static_cast<uint8_t>(blob[0] + 1U);
+
+    EXPECT_THROW(deserializeXQAJitKernels(blob.data(), blob.size()), std::runtime_error);
+}
+
+TEST(XQAJitSerializationTest, RejectsVersionOne)
+{
+    std::vector<XQAJitKernel> const kernels{{makeKey(/*specDecode=*/false), makeCubin(0x30, 32)}};
+    std::vector<uint8_t> blob = serializeXQAJitKernels(kernels);
+    blob[0] = 1U;
+
+    EXPECT_THROW(deserializeXQAJitKernels(blob.data(), blob.size()), std::runtime_error);
+}
+
+TEST(XQAJitSerializationTest, RejectsInvalidContiguousQuerySwaVariant)
+{
+    XQAJitKey key = makeKey(/*specDecode=*/false, /*contiguousQuerySwa=*/true);
+    EXPECT_THROW(serializeXQAJitKernels({{key, makeCubin(0x30, 32)}}), std::runtime_error);
+
+    key.specDecode = true;
+    key.slidingWindow = false;
+    EXPECT_THROW(serializeXQAJitKernels({{key, makeCubin(0x30, 32)}}), std::runtime_error);
+}
+
+TEST(XQAJitValidationTest, RejectsInvalidContiguousQuerySwaBeforeCompileOrLoad)
+{
+    XQAJitKey const key = makeKey(/*specDecode=*/false, /*contiguousQuerySwa=*/true);
+    uint8_t const cubinByte{0};
+
+    EXPECT_THROW(compileXQAKernel(key), std::runtime_error);
+    EXPECT_THROW(
+        DecoderXQARunner::loadDecodeXQAKernelFromCubin(key, &cubinByte, sizeof(cubinByte)), std::runtime_error);
+}
+
+TEST(XQAJitSerializationTest, RejectsDeserializedInvalidContiguousQuerySwaVariant)
+{
+    std::vector<XQAJitKernel> const kernels{
+        {makeKey(/*specDecode=*/true, /*contiguousQuerySwa=*/true), makeCubin(0x30, 32)}};
+    std::vector<uint8_t> blob = serializeXQAJitKernels(kernels);
+    constexpr size_t kBlobHeaderBytes{2U * sizeof(uint32_t)};
+    constexpr size_t kSlidingWindowFieldIndex{6U};
+    blob[kBlobHeaderBytes + kSlidingWindowFieldIndex * sizeof(uint32_t)] = 0U;
 
     EXPECT_THROW(deserializeXQAJitKernels(blob.data(), blob.size()), std::runtime_error);
 }

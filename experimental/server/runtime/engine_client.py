@@ -17,6 +17,8 @@
 import asyncio
 import json
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import partial
 from typing import Any, AsyncGenerator, Dict, List, Optional, Sequence, Union
@@ -46,6 +48,7 @@ class EngineCapabilities:
     speculative_decoding: bool
     speculative_method: str
     context_reuse: bool
+    in_flight_batching: bool = False
 
 
 class _AdmissionController:
@@ -127,6 +130,90 @@ class _AdmissionLease:
         self._controller.release()
 
 
+class _IFBAdmissionGate:
+    """Rate limiter for an engine that schedules its own requests.
+
+    The blocking runtime has a single generation slot, so _AdmissionController
+    serializes: one active caller, a bounded queue of waiters. The request
+    engine queues and overlaps requests itself, so this gate keeps only the
+    bound — at most ``max_concurrency + max_queued`` requests holding leases
+    at once, where the concurrency is the engine's batch capacity — and
+    never parks a caller: a full gate is an immediate overload response, the
+    HTTP translation of the engine's own submit() refusal. The lease guards
+    total in-flight capacity, not exclusive access; sizing it from the queue
+    depth alone would serialize the very batching the engine exists for
+    whenever the queue is configured small.
+    """
+
+    def __init__(self,
+                 max_queued_requests: int,
+                 max_concurrency: int = 1) -> None:
+        self._limit = max_queued_requests + max(1, max_concurrency)
+        self._active = 0
+        self._closing = False
+        self._drained = asyncio.Event()
+        self._drained.set()
+
+    @property
+    def active(self) -> int:
+        return self._active
+
+    @property
+    def waiting(self) -> int:
+        # Nothing ever waits here; a caller either holds a lease or was
+        # refused. The property exists for interface parity with the
+        # serializing controller.
+        return 0
+
+    async def reserve(self) -> "_AdmissionLease":
+        if self._closing:
+            raise ServerUnavailableError()
+        if self._active >= self._limit:
+            raise ServerOverloadedError()
+        self._active += 1
+        self._drained.clear()
+        return _AdmissionLease(self)
+
+    def release(self) -> None:
+        self._active -= 1
+        if self._active == 0:
+            self._drained.set()
+
+    async def close(self) -> None:
+        """Reject new work and wait until every lease has been released."""
+        self._closing = True
+        await self._drained.wait()
+
+
+class _HandleLatch:
+    """Joins a request's engine handle with a cancellation that may arrive
+    before it exists.
+
+    The handle is published from the worker thread once ``submit()`` returns;
+    the cancellation comes from the event loop when the client disconnects.
+    Whichever happens second does the cancelling, so a disconnect that lands
+    while the worker is still inside ``submit()`` still stops the request
+    instead of leaving it to decode to ``max_tokens`` in its batch seat.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._handle = None
+        self._cancelled = False
+
+    def publish(self, handle) -> None:
+        with self._lock:
+            self._handle = handle
+            if self._cancelled:
+                handle.cancel()
+
+    def cancel(self) -> None:
+        with self._lock:
+            self._cancelled = True
+            if self._handle is not None:
+                self._handle.cancel()
+
+
 @dataclass
 class PreparedRequest:
     """One native request and the generation lease owning its buffers."""
@@ -162,6 +249,9 @@ def _capabilities_for(llm: Union[LLM, TTS]) -> EngineCapabilities:
     builder = config.get("builder_config", {})
     if not isinstance(builder, dict):
         builder = {}
+    speculative_method = str(config.get("spec_decode_type", "none"))
+    if speculative_method == "gemma4_mtp":
+        speculative_method = "mtp"
 
     chat = llm.runtime_kind == "chat"
     input_modalities = ["text"]
@@ -172,16 +262,26 @@ def _capabilities_for(llm: Union[LLM, TTS]) -> EngineCapabilities:
     if chat and layout.audio_dir:
         input_modalities.append("audio")
     output_modalities = ["text"] if chat else []
-    if layout.has_speech:
+    # Under in-flight batching the engine serves text only; the Omni speech
+    # stack is not loaded, so it must not be advertised either.
+    speech = bool(layout.has_speech) and getattr(llm, "_engine", None) is None
+    if speech:
         output_modalities.append("audio")
 
     max_kv = builder.get("max_kv_cache_capacity")
     max_positions = config.get("max_position_embeddings")
     max_model_len = max_kv if isinstance(max_kv, int) else max_positions
+    # Sequences that can genuinely overlap: the engine's batch dimension under
+    # in-flight batching, a single slot on the blocking path.
+    in_flight = getattr(llm, "_engine", None) is not None
+    builder_batch = builder.get("max_batch_size")
+    max_num_seqs = 1
+    if in_flight and isinstance(builder_batch, int) and builder_batch > 0:
+        max_num_seqs = builder_batch
     return EngineCapabilities(
         chat=chat,
         transcription=chat and layout.has_transcription,
-        speech=layout.has_speech,
+        speech=speech,
         input_modalities=tuple(input_modalities),
         output_modalities=tuple(output_modalities),
         max_model_len=max_model_len
@@ -190,11 +290,12 @@ def _capabilities_for(llm: Union[LLM, TTS]) -> EngineCapabilities:
             builder.get("max_input_len"), int) else None,
         max_batch_size=builder.get("max_batch_size") if isinstance(
             builder.get("max_batch_size"), int) else None,
-        max_num_seqs=1,
+        max_num_seqs=max_num_seqs,
         kv_cache_dtype=str(config.get("kv_cache_dtype", "unknown")),
         speculative_decoding=llm.has_draft_model,
-        speculative_method=str(config.get("spec_decode_type", "none")),
+        speculative_method=speculative_method,
         context_reuse=bool(getattr(llm, "context_cache_enabled", False)),
+        in_flight_batching=in_flight,
     )
 
 
@@ -217,16 +318,25 @@ def _close_stream(iterator) -> None:
         pass
 
 
-async def _iterate_sync(iterator):
+async def _in_thread(executor, function, *args):
+    """Run ``function`` off the event loop: on ``executor`` when the client has
+    one of its own, otherwise on the loop's default pool."""
+    if executor is None:
+        return await asyncio.to_thread(function, *args)
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(executor, partial(function, *args))
+
+
+async def _iterate_sync(iterator, executor=None):
     """Advance a native stream and cancel it before waiting on disconnect."""
     while True:
         next_task = asyncio.create_task(
-            asyncio.to_thread(_next_stream_item, iterator))
+            _in_thread(executor, _next_stream_item, iterator))
         try:
             item = await asyncio.shield(next_task)
         except asyncio.CancelledError:
             close_task = asyncio.create_task(
-                asyncio.to_thread(_close_stream, iterator))
+                _in_thread(executor, _close_stream, iterator))
             await asyncio.shield(
                 asyncio.gather(next_task, close_task, return_exceptions=True))
             raise
@@ -235,18 +345,30 @@ async def _iterate_sync(iterator):
         yield item
 
 
-async def _run_sync(operation):
-    """Run blocking work without outliving the request that owns its lease."""
-    worker = asyncio.create_task(asyncio.to_thread(operation))
+async def _run_sync(operation, on_cancel=None, executor=None):
+    """Run blocking work without outliving the request that owns its lease.
+
+    ``on_cancel`` runs first when the awaiting task is cancelled, before this
+    waits for the worker: it is how a disconnected client's request is
+    cancelled in the engine instead of being waited out to completion.
+    """
+    worker = asyncio.create_task(_in_thread(executor, operation))
     try:
         return await asyncio.shield(worker)
     except asyncio.CancelledError:
+        if on_cancel is not None:
+            on_cancel()
         await asyncio.shield(asyncio.gather(worker, return_exceptions=True))
         raise
 
 
 class EngineClient:
     """Asynchronous, bounded-queue adapter for one Edge-LLM runtime."""
+
+    #: The dedicated pool for in-flight-batching streams; None means the
+    #: loop's default pool (the blocking path, and clients built without
+    #: __init__ in tests).
+    _executor = None
 
     def __init__(self,
                  llm: Union[LLM, TTS],
@@ -257,10 +379,30 @@ class EngineClient:
         self._model_name = (self._api_config.served_model_name or llm.model_id
                             or os.path.basename(model_dir) or model_dir
                             or "model")
-        self._admission = _AdmissionController(
-            self._api_config.max_queued_requests,
-            self._api_config.queue_timeout,
-        )
+        # The engine's own refusal, translated to the overload response where
+        # the HTTP layer expects it. A tuple so the except clause below stays
+        # valid when the native module (and thus the type) is absent.
+        submit_error = getattr(getattr(llm, "_rt", None), "SubmitError", None)
+        self._submit_errors = (submit_error, ) if submit_error else ()
+        self._executor = None
+        if getattr(llm, "_engine", None) is not None:
+            self._admission = _IFBAdmissionGate(
+                self._api_config.max_queued_requests,
+                getattr(llm, "_max_batch_size", 1) or 1)
+            # Every admitted stream parks one thread on its channel for its
+            # whole life. The loop's default pool (min(32, cpus + 4)) is sized
+            # for short hops, so under load the gate's worth of streams would
+            # starve preparation, token counting and close() behind them:
+            # give the streams a pool sized for the gate, plus headroom for
+            # those short hops.
+            self._executor = ThreadPoolExecutor(
+                max_workers=self._admission._limit + 4,
+                thread_name_prefix="edgellm-ifb")
+        else:
+            self._admission = _AdmissionController(
+                self._api_config.max_queued_requests,
+                self._api_config.queue_timeout,
+            )
         self._capabilities = _capabilities_for(llm)
         self._close_lock = asyncio.Lock()
         self._close_task = None
@@ -308,6 +450,8 @@ class EngineClient:
             await asyncio.to_thread(self._llm.close)
         finally:
             self._closed = True
+            if self._executor is not None:
+                self._executor.shutdown(wait=False)
 
     async def count_prompt_tokens(
         self,
@@ -358,6 +502,7 @@ class EngineClient:
                     tool_choice=tool_config.tool_choice,
                     tool_config=tool_config,
                 )
+            latch = _HandleLatch()
             operation = partial(
                 self._llm._complete_prepared_request,
                 owned.request,
@@ -365,10 +510,15 @@ class EngineClient:
                 tool_config,
                 tool_parser=tool_parser,
                 reasoning_parser=reasoning_parser,
+                on_handle=latch.publish,
             )
-            return await _run_sync(operation)
+            return await _run_sync(operation,
+                                   on_cancel=latch.cancel,
+                                   executor=self._executor)
         except (ServerError, KeyError, TypeError, ValueError):
             raise
+        except getattr(self, "_submit_errors", ()) as exc:
+            raise ServerOverloadedError(str(exc)) from exc
         except Exception as exc:
             raise EngineError(str(exc)) from exc
         finally:
@@ -383,6 +533,8 @@ class EngineClient:
         tools: Optional[Sequence[Dict[str, Any]]] = None,
         tool_choice: Optional[Union[str, Dict[str, Any]]] = None,
         tool_config: Optional[ToolConfig] = None,
+        apply_chat_template: bool = True,
+        add_generation_prompt: bool = True,
     ) -> PreparedRequest:
         lease = await self._admission.reserve()
         try:
@@ -394,6 +546,8 @@ class EngineClient:
                     tools=tools,
                     tool_choice=tool_choice,
                     tool_config=tool_config,
+                    apply_chat_template=apply_chat_template,
+                    add_generation_prompt=add_generation_prompt,
                 ))
             return PreparedRequest(request=request, lease=lease)
         except BaseException:
@@ -424,12 +578,14 @@ class EngineClient:
                 tool_choice=tool_choice,
                 prebuilt_request=owned.request,
             )
-            async for item in _iterate_sync(iterator):
+            async for item in _iterate_sync(iterator, self._executor):
                 yield item
         except (ServerError, KeyError, TypeError, ValueError):
             raise
         except asyncio.CancelledError:
             raise
+        except getattr(self, "_submit_errors", ()) as exc:
+            raise ServerOverloadedError(str(exc)) from exc
         except Exception as exc:
             raise EngineError(str(exc)) from exc
         finally:

@@ -1,10 +1,47 @@
 # TensorRT Edge-LLM wheel tooling
 
+Public releases contain six wheels: CPython 3.10, 3.11, and 3.12, each for
+`x86_64` and `aarch64`. The filename identifies the Python ABI and CPU
+architecture; each wheel contains every qualified platform, CUDA/TensorRT, and
+GPU-SM payload for that architecture. The installed runtime detects those
+properties and loads one exact payload. It does not fall back to another SM or
+TensorRT major.
+
+The wheels package the Python APIs and
+[checkpoint-direct builder](../docs/source/user_guide/getting_started/direct-engine-builder.md)
+model families together with the native runtime and plugins. Model-specific
+C++ executables under `experimental_models/` are built separately from source.
+
+## Install a published wheel
+
+Published wheels do not require a checkout or the build tools below. Follow
+the [installation guide](../docs/source/user_guide/getting_started/installation.md#published-python-wheel)
+to prepare CUDA, TensorRT, and a compatible Python environment, then install:
+
+```bash
+python -m pip install --only-binary=tensorrt-edgellm \
+  --extra-index-url https://pypi.nvidia.com "tensorrt-edgellm[server]==0.11.0"
+```
+
+`[server]` is recommended for high-level inference. See the
+[extras guide](../docs/source/user_guide/getting_started/installation.md#optional-python-dependencies)
+for export/tools workflows, or the [minimal base example](../docs/source/user_guide/getting_started/installation.md#minimal-installation-advanced)
+for low-level runtime use without extras. Do not install the repository package
+over the published wheel.
+
+`pip` selects the matching Python/architecture wheel. Edge-LLM then validates
+the platform release, CUDA and TensorRT SONAMEs, and GPU SM when loading its
+native runtime. See the
+[Wheel Packaging Matrix](../docs/source/user_guide/getting_started/support-matrix.md#wheel-packaging-matrix)
+for the exact payloads included in the release.
+
+## Build wheels from source
+
 The source tree can build a wheel for the current machine, a compatible subset
 of configured GPUs, or every configured payload for one CPU architecture.
 Normal package installation does not install these build-only tools.
 
-## Prerequisites
+### Prerequisites
 
 Clone the repository with submodules and create a build environment using the
 same CPython minor version as the wheel:
@@ -12,7 +49,7 @@ same CPython minor version as the wheel:
 ```bash
 git clone --recurse-submodules https://github.com/NVIDIA/TensorRT-Edge-LLM.git
 cd TensorRT-Edge-LLM
-python3.12 -m venv .venv-wheel
+python3 -m venv --system-site-packages .venv-wheel
 source .venv-wheel/bin/activate
 python -m pip install -r packaging/wheel-toolchain-requirements.txt
 python packaging/wheel_cli.py validate-matrix
@@ -70,7 +107,7 @@ requires an appropriate platform SDK image or environment that supplies the
 target toolchain, sysroot, TensorRT SDK, and Python headers; overriding
 `BASE_IMAGE` alone is not sufficient.
 
-## Build for the current target
+### Build for the current target
 
 Expose one GPU architecture and provide the TensorRT SDK root:
 
@@ -78,7 +115,7 @@ Expose one GPU architecture and provide the TensorRT SDK root:
 export TRT_PACKAGE_DIR=/path/to/TensorRT
 export LD_LIBRARY_PATH="$TRT_PACKAGE_DIR/lib:${LD_LIBRARY_PATH:-}"
 
-CUDA_VISIBLE_DEVICES=GPU-<UUID> \
+CUDA_VISIBLE_DEVICES="$(nvidia-smi --query-gpu=uuid --format=csv,noheader | sed -n '1p')" \
 python packaging/wheel_cli.py build-wheel \
     --local \
     --trt-package-dir "$TRT_PACKAGE_DIR" \
@@ -90,7 +127,27 @@ TensorRT runtime, and visible GPU SM to one row in `packaging/variants.toml`.
 On a heterogeneous host, select a GPU by the stable UUID reported by
 `nvidia-smi --query-gpu=uuid,name,compute_cap --format=csv,noheader`.
 
-## Build for selected GPUs
+On IGX Thor, the `igx-thor-cu13-sm110-sm120` row is one native payload with
+SM110 and SM120 device images. Select either physical GPU before `--local`;
+both selections resolve to the same build row and resulting payload.
+
+#### Install the local wheel
+
+Install into a clean environment on the same target configuration:
+
+```bash
+WHEEL=$(find dist/local -maxdepth 1 -name 'tensorrt_edgellm-*.whl' -print -quit)
+python3 -m venv --system-site-packages .venv-install
+.venv-install/bin/python -m pip install "$WHEEL"
+.venv-install/bin/python -c \
+    "import tensorrt_edgellm; print(tensorrt_edgellm.__version__)"
+.venv-install/bin/tensorrt-edgellm-build --help
+```
+
+Build and install with the same CPython minor version. The runtime rejects a
+wheel whose platform, CUDA/TensorRT ABI, or GPU architecture does not match.
+
+### Build for selected GPUs
 
 Repeat `--variant` to combine compatible SM payloads built with the same
 platform, CUDA, TensorRT, and toolchain context:
@@ -111,7 +168,21 @@ For an aarch64 cross build, also pass `--toolchain-file`, `--target-sysroot`,
 and `--target-python-include-dir`. Selected variants must share one build
 context; build incompatible platform or TensorRT variants separately.
 
-## Build a complete architecture wheel
+The IGX Thor dual-GPU payload is already represented by one variant, so do not
+repeat `--variant` for its two SMs:
+
+```bash
+python packaging/wheel_cli.py build-wheel \
+    --variant igx-thor-cu13-sm110-sm120 \
+    --trt-package-dir /usr \
+    --output-dir dist/igx-thor
+```
+
+This produces one normal AArch64 platform wheel. Its runtime manifest contains
+exact SM110 and SM120 identities that reference the same extension and plugin,
+so the CuTe DSL archive and native targets are compiled and packaged once.
+
+### Build a complete architecture wheel
 
 A complete x86_64 or aarch64 wheel combines payloads produced in several
 platform-specific SDK environments. Build and verify each matrix row with the
@@ -129,7 +200,16 @@ Complete assembly requires every matrix row for the requested architecture and
 preserves the release-compatible wheel name. Missing, extra, stale, or
 revision-mismatched payloads are rejected.
 
-## Low-level commands
+Final x86_64 wheels use `manylinux_2_35_x86_64`, matching the oldest selected
+Ubuntu 22.04 payload. Final aarch64 wheels use `manylinux_2_39_aarch64`, matching
+the Ubuntu 24.04 platform baseline of the configured Jetson, DRIVE, and DGX
+Spark payloads. The runtime selects one exact platform payload before loading
+native code, so newer mutually exclusive payloads do not raise the x86_64
+installation floor. Payload verification audits ELF architecture, dependencies,
+RPATHs, and target-library resolution before fan-in; release validation rejects
+other platform tags before publication.
+
+### Low-level commands
 
 Every stage remains independently reviewable and usable for custom build
 environments:
@@ -159,3 +239,32 @@ The build commands require clean output directories and a clean tracked source
 checkout by default. Use distinct `--work-dir` and `--output-dir` paths for a
 new run. `--allow-dirty-source` and `--no-device-image-check` are explicit
 development overrides and must not be used for release artifacts.
+
+## OSS release builds (internal checkout)
+
+Wheel tooling stages a tracked-source copy, including pinned submodules, and
+applies the repository OSS policy before packaging Python or compiling native
+code. It does not sanitize the developer's checkout. Public source exports
+retain the source-build workflow above without the internal release policy.
+
+Internal wheel builds require separate OSS CuTe archives; ordinary internal
+test archives are not accepted. In the CuTe builder environment, generate them
+from the same checkout before building wheels (Git must also be installed):
+
+```bash
+python3 packaging/wheel_cli.py build-oss-cutedsl \
+    --output-dir kernelSrcs/cuteDSLOssPrebuilt
+```
+
+The internal `build-wheel` default uses this directory. Each archive has a
+checksum and an OSS provenance receipt binding the policy, sanitized kernel
+sources, and extracted files. Policy or kernel changes require regeneration.
+CI generates these separately from internal-test kernels.
+
+Base packaging, native payload verification, final assembly, and publication
+enforce the OSS checks. Final wheel checks scan all members, including metadata
+and native library bytes; internal CI paths, nested build archives, and loose
+kernels are rejected. Wheel builds omit CUDA device line information, which can
+embed private build paths even after host debug-symbol stripping. Normal source
+builds retain CUDA line information for profiling.
+Legacy unstamped artifacts must be rebuilt, not relabeled.

@@ -49,16 +49,55 @@ detail::LazyKernelModule<rmsnorm_bf16_h8192_wbc1_Kernel_Module_t> CuteDslRmsNorm
 namespace
 {
 
-#if !defined(CUTE_DSL_RMSNORM_ARTIFACT_SM)
-#error "CUTE_DSL_RMSNORM_ARTIFACT_SM must identify the linked RMSNorm artifact"
-constexpr int32_t kARTIFACT_SM{0};
-#else
+#if !defined(CUTE_DSL_RMSNORM_ARTIFACT_SM) && !defined(CUTE_DSL_RMSNORM_MULTI_ARCH_ENABLED)
+#error "The linked RMSNorm artifact SM metadata is missing"
+#endif
+#if defined(CUTE_DSL_RMSNORM_ARTIFACT_SM)
 constexpr int32_t kARTIFACT_SM{CUTE_DSL_RMSNORM_ARTIFACT_SM};
 static_assert(kARTIFACT_SM == 80 || kARTIFACT_SM == 86 || kARTIFACT_SM == 87 || kARTIFACT_SM == 90
         || kARTIFACT_SM == 100 || kARTIFACT_SM == 101 || kARTIFACT_SM == 110 || kARTIFACT_SM == 120
         || kARTIFACT_SM == 121,
     "CUTE_DSL_RMSNORM_ARTIFACT_SM must be one of 80, 86, 87, 90, 100, 101, 110, 120, or 121");
 #endif
+
+bool isArtifactSm(int32_t smVersion) noexcept
+{
+#if defined(CUTE_DSL_RMSNORM_ARTIFACT_SM)
+    return smVersion == kARTIFACT_SM;
+#else
+    switch (smVersion)
+    {
+#if defined(CUTE_DSL_RMSNORM_ARTIFACT_SM_80)
+    case 80: return true;
+#endif
+#if defined(CUTE_DSL_RMSNORM_ARTIFACT_SM_86)
+    case 86: return true;
+#endif
+#if defined(CUTE_DSL_RMSNORM_ARTIFACT_SM_87)
+    case 87: return true;
+#endif
+#if defined(CUTE_DSL_RMSNORM_ARTIFACT_SM_90)
+    case 90: return true;
+#endif
+#if defined(CUTE_DSL_RMSNORM_ARTIFACT_SM_100)
+    case 100: return true;
+#endif
+#if defined(CUTE_DSL_RMSNORM_ARTIFACT_SM_101)
+    case 101: return true;
+#endif
+#if defined(CUTE_DSL_RMSNORM_ARTIFACT_SM_110)
+    case 110: return true;
+#endif
+#if defined(CUTE_DSL_RMSNORM_ARTIFACT_SM_120)
+    case 120: return true;
+#endif
+#if defined(CUTE_DSL_RMSNORM_ARTIFACT_SM_121)
+    case 121: return true;
+#endif
+    default: return false;
+    }
+#endif
+}
 
 bool isSupportedDataType(nvinfer1::DataType dataType) noexcept
 {
@@ -134,7 +173,7 @@ int32_t launchWbc1Variant(
 bool CuteDslRmsNormRunner::canImplement(
     int32_t rows, int32_t hiddenSize, int32_t smVersion, nvinfer1::DataType dataType) noexcept
 {
-    return rows >= kMinRows && rows <= kMaxRows && isSupportedHiddenSize(hiddenSize) && smVersion == kARTIFACT_SM
+    return rows >= kMinRows && rows <= kMaxRows && isSupportedHiddenSize(hiddenSize) && isArtifactSm(smVersion)
         && isSupportedDataType(dataType);
 }
 

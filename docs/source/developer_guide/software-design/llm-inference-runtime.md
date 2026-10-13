@@ -454,7 +454,7 @@ mmMsg.contents.push_back({"image", "/path/to/image.jpg"});
 mmMsg.contents.push_back({"text", "What's in this image?"});
 request.requests[0].messages.push_back(std::move(mmMsg));
 // Image bytes are provided separately via imageBuffers.
-request.requests[0].imageBuffers.push_back(imageUtils::loadImageFromFile("/path/to/image.jpg"));
+request.requests[0].imageBuffers.push_back(imageUtils::loadRgbImageFromFile("/path/to/image.jpg"));
 request.maxGenerateLength = 150;
 request.temperature = 1.0;
 request.topK = 50;

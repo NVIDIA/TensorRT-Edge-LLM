@@ -38,8 +38,8 @@ family to these contracts.
 
 ## Action Output
 
-- [Vision-Language-Action](vla/index.md): Alpamayo trajectory generation and
-  Cosmos3 policy action generation
+- [Vision-Language-Action](vla/index.md): Alpamayo trajectory generation, and
+  Cosmos3 and pi0.5 policy action generation
 
 ## Serving and Evaluation
 
