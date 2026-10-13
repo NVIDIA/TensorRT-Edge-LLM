@@ -115,6 +115,31 @@ find_package(
   REQUIRED)
 find_package(pybind11 CONFIG REQUIRED)
 
+# ── Work around Debian/Ubuntu pybind11-dev exporting /usr/include ─────────
+# The apt-installed `pybind11-dev` package ships a CMake config whose
+# `pybind11::pybind11_headers` target sets
+#     INTERFACE_INCLUDE_DIRECTORIES = ${_IMPORT_PREFIX}/include
+# and `_IMPORT_PREFIX` resolves to `/usr`, so `/usr/include` gets propagated
+# to every consumer via `-isystem`. When nvcc then invokes host g++ on a CUDA
+# source, `-isystem /usr/include` reorders g++'s system header chain and
+# places `/usr/include` before `/usr/include/c++/<ver>`. libstdc++'s <cmath>
+# uses `#include_next <math.h>`, which now finds nothing after itself in the
+# search order, and compilation fails with:
+#   /usr/include/c++/13/cmath: fatal error: math.h: No such file or directory
+# Filter `/usr/include` out of the interface so the real pybind11 headers
+# (in a subdirectory under _IMPORT_PREFIX) are still exposed but the bogus
+# root include is not. No-op for pip-installed pybind11 (its _IMPORT_PREFIX
+# points at the venv's site-packages, not /usr).
+if(TARGET pybind11::pybind11_headers)
+  get_target_property(_pybind11_iface_inc pybind11::pybind11_headers
+                      INTERFACE_INCLUDE_DIRECTORIES)
+  if(_pybind11_iface_inc)
+    list(REMOVE_ITEM _pybind11_iface_inc "/usr/include")
+    set_property(TARGET pybind11::pybind11_headers PROPERTY
+                 INTERFACE_INCLUDE_DIRECTORIES "${_pybind11_iface_inc}")
+  endif()
+endif()
+
 # ── Header include paths (from source tree) ───────────────────────────────
 set(NEMOTRON_ASR_DIR ${EDGELLM_ROOT}/experimental_models/nemotron3_5_asr/cpp)
 set(EDGELLM_NEMOTRON_ASR_RUNTIME)
