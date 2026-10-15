@@ -150,6 +150,11 @@ tensorrt-edgellm-export \
   --fp8-embedding
 ```
 
+`--int8-embedding` writes the runtime embedding sidecar and the Gemma 4
+per-layer embedding table as symmetric INT8 with FP32 row scales, as an
+alternative to `--fp8-embedding`. See
+[INT8 Embedding Sidecars](int8-embedding.md) for the file contracts.
+
 ## Supported Methods
 
 | Component | Methods |

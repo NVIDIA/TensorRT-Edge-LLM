@@ -99,7 +99,7 @@ This keeps component-specific model code separate while preserving one checkpoin
 
 The exported ONNX graphs use TensorRT Edge-LLM custom-op domains for operations that must lower to C++ runtime plugins or specialized kernels. The graph exporter registers ONNX schemas before export and provides custom dynamo translations so exported graphs match the engine builder's expected node signatures.
 
-Runtime sidecars are written next to exported graphs and include normalized config files, tokenizer/chat-template assets, embedding tables, and optional sidecars such as FP8 embedding data. These artifacts are part of the contract with `llm_build`, `llm_inference`, and `experimental/server`.
+Runtime sidecars are written next to exported graphs and include normalized config files, tokenizer/chat-template assets, embedding tables, and optional sidecars such as FP8 or INT8 embedding data. These artifacts are part of the contract with `llm_build`, `llm_inference`, and `experimental/server`.
 
 ## LoRA Integration
 
