@@ -2253,14 +2253,18 @@ def _convert_messages_to_cpp(rt_module, messages: List[Dict[str, Any]]):
             call.type = str(raw_call.get("type") or "function")
             call.name = str(function.get("name") or "")
             arguments = function.get("arguments", {})
-            arguments_is_string = isinstance(arguments, str)
-            if arguments_is_string:
+            if isinstance(arguments, str) and arguments:
                 try:
-                    json.loads(arguments) if arguments else {}
+                    decoded = json.loads(arguments)
                 except json.JSONDecodeError as error:
                     raise ValueError(
                         f"Invalid JSON in assistant tool-call arguments: "
                         f"{error.msg}") from error
+                # OpenAI clients send arguments as a JSON string, while HF
+                # templates (Gemma 4 raises otherwise) expect a mapping.
+                if isinstance(decoded, dict):
+                    arguments = decoded
+            arguments_is_string = isinstance(arguments, str)
             call.arguments_is_string = arguments_is_string
             call.arguments = (arguments if arguments_is_string else json.dumps(
                 arguments, ensure_ascii=False, separators=(",", ":")))
