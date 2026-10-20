@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: CPU runner no-op
+name: CodeQL and CPU runner no-op
 
 on:
   push:
@@ -22,9 +22,26 @@ on:
 
 permissions: {}
 
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  codeql:
+    name: CodeQL security analysis
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    uses: NVIDIA/security-workflows/.github/workflows/sast-scan-codeql.yml@c736f0454dc99764a66af6b906adfcdfbf621985 # v0.4.0
+    with:
+      languages: '["actions","python"]'
+      runs-on: ubuntu-latest
+      build-mode: none
+
   noop:
     name: Verify CPU runner access
+    needs: codeql
     runs-on: linux-amd64-cpu4
     timeout-minutes: 5
     steps:
