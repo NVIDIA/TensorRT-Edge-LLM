@@ -35,7 +35,7 @@ jobs:
       security-events: write
     uses: NVIDIA/security-workflows/.github/workflows/sast-scan-codeql.yml@c736f0454dc99764a66af6b906adfcdfbf621985 # v0.4.0
     with:
-      languages: '["actions","python"]'
+      languages: '["actions","python","c-cpp"]'
       runs-on: ubuntu-latest
       build-mode: none
 
