@@ -18,30 +18,38 @@ name: Security scans
 on:
   push:
     branches:
+      - main
       - 'pull-request/[0-9]+'
+  workflow_dispatch:
 
 permissions: {}
 
 concurrency:
-  group: codeql-${{ github.ref }}
+  group: security-suite-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  codeql:
-    name: CodeQL security analysis
+  security-suite:
+    name: Security Suite
+    if: github.repository == 'NVIDIA/TensorRT-Edge-LLM'
     permissions:
       actions: read
       contents: read
+      id-token: write
       security-events: write
-    uses: NVIDIA/security-workflows/.github/workflows/sast-scan-codeql.yml@c736f0454dc99764a66af6b906adfcdfbf621985 # v0.4.0
+    uses: NVIDIA/security-workflows/.github/workflows/security-suite.yml@c736f0454dc99764a66af6b906adfcdfbf621985 # v0.4.0
     with:
-      languages: '["actions","python","c-cpp"]'
-      runs-on: ubuntu-latest
-      build-mode: none
+      enable-secret-scan: true
+      enable-sast-scan: true
+      secret-runs-on: linux-amd64-cpu4
+      secret-failure-policy: unverified
+      sast-languages: '["actions","python","c-cpp"]'
+      sast-runs-on: ubuntu-latest
+      sast-build-mode: none
 
   noop:
     name: Verify CPU runner access
-    needs: codeql
+    needs: security-suite
     runs-on: linux-amd64-cpu4
     timeout-minutes: 5
     steps:
