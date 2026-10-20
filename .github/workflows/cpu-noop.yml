@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: CodeQL and CPU runner no-op
+name: Security scans
 
 on:
   push:
