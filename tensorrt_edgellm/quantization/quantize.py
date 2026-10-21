@@ -363,6 +363,29 @@ def _extract_mtp_layer_prefixes(keys: Iterable[str]) -> list[str]:
     return sorted(prefixes)
 
 
+def _untie_lm_head(model) -> None:
+    """Give a quantized lm_head its own weight tensor.
+
+    With tied embeddings, AWQ smoothing rewrites the tensor shared with
+    embed_tokens in place, so the exported embedding table would no longer
+    match the original checkpoint.
+    """
+    get_output = getattr(model, "get_output_embeddings", None)
+    get_input = getattr(model, "get_input_embeddings", None)
+    if get_output is None or get_input is None:
+        return
+    output_embeddings = get_output()
+    input_embeddings = get_input()
+    if (output_embeddings is None or input_embeddings is None
+            or output_embeddings.weight is not input_embeddings.weight):
+        return
+    output_embeddings.weight = torch.nn.Parameter(
+        output_embeddings.weight.detach().clone())
+    for cfg in (model.config, getattr(model.config, "text_config", None)):
+        if cfg is not None and hasattr(cfg, "tie_word_embeddings"):
+            cfg.tie_word_embeddings = False
+
+
 def _load_mtp_weights_for_unified_export(
         model: torch.nn.Module,
         model_dir: str) -> "tuple[list[str], dict[str, torch.Tensor]]":
@@ -1090,6 +1113,8 @@ def quantize_and_export(
             cp_quantization=cp_quantization,
             fuse_gdn_qkvzba_scales=fuse_gdn_qkvzba_scales,
         )
+        if lm_head_quantization is not None:
+            _untie_lm_head(model)
         # When INT4 is exported to the cuteDSL GEMM kernel's fragment layout, repack
         # requires N%64==0 && K%64==0. Small hybrid/GDN projections (e.g. Qwen3.5
         # in_proj_a / in_proj_b with out_features=16/32) cannot be repacked, so
