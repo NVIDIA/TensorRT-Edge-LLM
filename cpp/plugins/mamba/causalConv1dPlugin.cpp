@@ -233,7 +233,11 @@ int32_t CausalConv1dPlugin::getOutputShapes(DimsExprs const* inputs, [[maybe_unu
         if (mUseSpecVerifyState)
         {
             outputs[kOUT_INTERMEDIATE_CONV_STATES].nbDims = 3;
-            outputs[kOUT_INTERMEDIATE_CONV_STATES].d[0] = inputs[kIN_X_IDX].d[0];
+            // Prefill does not write rollback snapshots.
+            auto const* generation = exprBuilder.operation(
+                DimensionOperation::kEQUAL, *inputs[kIN_CONTEXT_SEQUENCE_COUNT_IDX].d[0], *exprBuilder.constant(0));
+            outputs[kOUT_INTERMEDIATE_CONV_STATES].d[0]
+                = exprBuilder.operation(DimensionOperation::kPROD, *inputs[kIN_X_IDX].d[0], *generation);
             outputs[kOUT_INTERMEDIATE_CONV_STATES].d[1] = inputs[kIN_CONV_STATE_IDX].d[1];
             outputs[kOUT_INTERMEDIATE_CONV_STATES].d[2] = inputs[kIN_CONV_STATE_IDX].d[2];
         }

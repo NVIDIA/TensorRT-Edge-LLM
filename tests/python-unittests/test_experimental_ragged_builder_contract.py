@@ -572,7 +572,52 @@ def test_spec_prefill_profiles_keep_sequence_and_logits_extents_distinct():
     prefill, _ = decoder_profile_ranges(args)
 
     assert prefill.sequence() == ((1, ), (3, ), (3, ))
-    assert prefill.logits_rows == (1, 24, 51)
+    assert prefill.logits_rows == (1, 3, 51)
+
+
+@pytest.mark.parametrize("role",
+                         [contracts.SpecRole.BASE, contracts.SpecRole.DRAFT])
+@pytest.mark.parametrize("batch_size", [1, 3])
+@pytest.mark.parametrize("input_len", [1, 196608])
+def test_spec_prefill_profiles_tune_final_rows_without_reducing_capacity(
+        role, batch_size, input_len):
+    args = _build_args(resolved_spec_role=role,
+                       spec_type="mtp",
+                       max_batch_size=batch_size,
+                       max_input_len=input_len)
+    prefill, generation = decoder_profile_ranges(args)
+
+    assert prefill.logits_rows == (1, batch_size, batch_size * input_len)
+    assert prefill.physical_tokens == (1, batch_size * max(1, input_len // 2),
+                                       batch_size * input_len)
+    generation_width = (args.max_verify_tree_size
+                        if role == contracts.SpecRole.BASE else
+                        args.max_draft_tree_size)
+    assert generation.logits_rows == (1, batch_size * generation_width,
+                                      batch_size * generation_width)
+
+
+@pytest.mark.parametrize("role",
+                         [contracts.SpecRole.BASE, contracts.SpecRole.DRAFT])
+def test_spec_prefill_builder_tunes_logits_separately_from_context_tokens(
+        role):
+    network = _ProfileNetwork([
+        _RecordedInput("inputs_embeds", None, (-1, 16)),
+        _RecordedInput("logits_indices", None, (-1, )),
+    ])
+    config = _ProfileConfig()
+    args = _build_args(resolved_spec_role=role,
+                       spec_type="mtp",
+                       max_batch_size=1,
+                       max_input_len=196608)
+
+    _setup_llm_profiles(_ProfileBuilder(), config, network, _dense_config(),
+                        args)
+
+    assert config.profiles[0].shapes["inputs_embeds"] == ((1, 16), (98304, 16),
+                                                          (196608, 16))
+    assert config.profiles[0].shapes["logits_indices"] == ((1, ), (1, ),
+                                                           (196608, ))
 
 
 def test_common_decoder_input_bundle_declares_exact_mandatory_contract():

@@ -132,7 +132,9 @@ def decoder_profile_ranges(
     opt_prefill_tokens = checked_physical_tokens(max_sequences,
                                                  max(1, max_query_length // 2))
     spec_engine = args.resolved_spec_role != contracts.SpecRole.NONE
-    prefill_logits = (1, opt_prefill_tokens,
+    # Prefill usually needs one LM-head row per sequence. Speculative callers
+    # that gather wider subsets retain the full physical-token capacity.
+    prefill_logits = (1, max_sequences,
                       max_prefill_tokens) if spec_engine else (1,
                                                                max_sequences,
                                                                max_sequences)
