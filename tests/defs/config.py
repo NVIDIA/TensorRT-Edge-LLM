@@ -518,6 +518,8 @@ class TestConfig:
     # Embedding options
     fp8_embedding: Optional[
         bool] = None  # If true, write embedding.safetensors in FP8 E4M3 format
+    int8_embedding: Optional[
+        bool] = None  # If true, write runtime embedding sidecars in INT8 format
 
     # Benchmark parameters
     batch_size: Optional[int] = None
@@ -623,6 +625,13 @@ class TestConfig:
             "fp8_embedding",
             "fp8emb",
             {
+                TaskType.EXPORT, TaskType.BUILD, TaskType.E2E_BENCH,
+                TaskType.INFERENCE
+            }, {ModelType.LLM, ModelType.VLM, ModelType.ASR, ModelType.OMNI},
+            is_required=False),
+        ParameterSpec(
+            "int8_embedding",
+            "int8emb", {
                 TaskType.EXPORT, TaskType.BUILD, TaskType.E2E_BENCH,
                 TaskType.INFERENCE
             }, {ModelType.LLM, ModelType.VLM, ModelType.ASR, ModelType.OMNI},
@@ -925,6 +934,8 @@ class TestConfig:
                 parsed_params['fp8_kv_cache'] = True
             elif part == "fp8emb":
                 parsed_params['fp8_embedding'] = True
+            elif part == "int8emb":
+                parsed_params['int8_embedding'] = True
             elif part == "mtp":
                 parsed_params['is_mtp'] = True
                 parsed_params['is_eagle'] = True
@@ -1444,6 +1455,8 @@ class TestConfig:
             model_id += "-AUDFP8"
         if self.fp8_kv_cache:
             model_id += "-FP8-KV"
+        if self.int8_embedding:
+            model_id += "-INT8-EMB"
         if self.reduced_vocab_size:
             model_id += f"-rvs{self.reduced_vocab_size}"
         if self.trt_native_attn:
@@ -1976,6 +1989,8 @@ class TestConfig:
         onnx_model_id = f"{self.llm_precision.lower()}-{self.lm_head_precision.lower()}"
         if self.fp8_kv_cache:
             onnx_model_id += "-fp8kv"
+        if self.int8_embedding:
+            onnx_model_id += "-int8emb"
         if self.reduced_vocab_size:
             onnx_model_id += f"-rvs{self.reduced_vocab_size}"
         if self.nvfp4_moe_target:

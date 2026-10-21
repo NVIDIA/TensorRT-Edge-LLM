@@ -5,3 +5,5 @@ tests:
   - tests/defs/test_checkpoint_export.py::test_checkpoint_export[Qwen3.5-0.8B-FP8-FP8-KV-fp8-fp8kv]
   - tests/defs/test_checkpoint_export.py::test_checkpoint_export[Qwen3.5-0.8B-int4_awq-gemmv1]
   - tests/defs/test_checkpoint_export.py::test_checkpoint_eagle_export[Qwen3-1.7B-NVFP4-nvfp4-eagle-eagle3-nvfp4]
+  # Qwen2.5-0.5B FP16 export with the INT8 token-embedding sidecar, consumed by l0_pipeline_a30
+  - tests/defs/test_checkpoint_export.py::test_checkpoint_export[Qwen2.5-0.5B-Instruct-fp16-int8emb]

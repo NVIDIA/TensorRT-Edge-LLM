@@ -1045,7 +1045,9 @@ def write_runtime_artifacts(model: "CausalLM",
                             fp8_embedding: bool = False,
                             reduced_vocab_dir: str = "",
                             config_filename: str = "config.json",
-                            write_shared_artifacts: bool = True) -> None:
+                            write_shared_artifacts: bool = True,
+                            *,
+                            int8_embedding: bool = False) -> None:
     """Write runtime config and the shared model-input artifacts.
 
     ``config_filename`` selects the filename for the runtime config. Use
@@ -1056,6 +1058,15 @@ def write_runtime_artifacts(model: "CausalLM",
     sidecar files are emitted. TP ranks share those artifacts, so rank 0 can
     write them once while every rank still writes the shared runtime config.
     """
+    if fp8_embedding and int8_embedding:
+        raise ValueError(
+            "FP8 and INT8 embedding sidecars are mutually exclusive")
+    model_type = str(getattr(getattr(model, "config", None), "model_type", ""))
+    if int8_embedding and model_type.startswith("qwen3_omni"):
+        raise ValueError(
+            "INT8 embedding sidecars are not supported by Qwen3-Omni talker runtimes"
+        )
+
     import torch
 
     from tensorrt_edgellm._safetensors_io import save_file
@@ -1150,7 +1161,7 @@ def write_runtime_artifacts(model: "CausalLM",
             embedding_scale = _runtime_embedding_scale(model)
             if embedding_scale != 1.0:
                 weight = weight * embedding_scale
-            # C++ runtime requires FP16 (or FP8) embedding; cast if needed.
+            # C++ runtime requires FP16 or a supported quantized sidecar.
             if weight.dtype in (torch.float32, torch.bfloat16):
                 weight = weight.to(torch.float16)
             embedding_path = os.path.join(out_dir, "embedding.safetensors")
@@ -1163,6 +1174,20 @@ def write_runtime_artifacts(model: "CausalLM",
                         "embedding_scale": scales
                     }, embedding_path)
                 logger.info("Wrote FP8 embedding.safetensors (%s)",
+                            list(weight.shape))
+            elif int8_embedding:
+                from . import embedding_quantization
+                embedding_int8, scales = embedding_quantization.quantize_embedding_to_int8(
+                    weight)
+                save_file(
+                    {
+                        "embedding": embedding_int8,
+                        "embedding_scale": scales
+                    },
+                    embedding_path,
+                    metadata=embedding_quantization.int8_sidecar_metadata(
+                        "embedding"))
+                logger.info("Wrote INT8 embedding.safetensors (%s)",
                             list(weight.shape))
             else:
                 save_file({"embedding": weight}, embedding_path)
