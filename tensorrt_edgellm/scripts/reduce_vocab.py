@@ -82,7 +82,7 @@ def main() -> None:
         print(f"Method: {args.method}")
 
         print("Loading example dataset: cnn_dailymail")
-        dataset = load_dataset("cnn_dailymail", "3.0.0", split="train")
+        dataset = load_dataset("abisee/cnn_dailymail", "3.0.0", split="train")
         dataset = dataset.select(range(min(args.max_samples, len(dataset))))
         print(f"Using {len(dataset)} samples for vocabulary analysis")
 
