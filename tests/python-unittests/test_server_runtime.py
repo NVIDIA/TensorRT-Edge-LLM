@@ -175,7 +175,7 @@ def _message_runtime():
                            MessageToolCall=_NativeMessageValue)
 
 
-def test_message_conversion_preserves_string_tool_call_arguments():
+def test_message_conversion_decodes_object_string_tool_call_arguments():
     messages = _convert_messages_to_cpp(
         _message_runtime(),
         [{
@@ -197,8 +197,28 @@ def test_message_conversion_preserves_string_tool_call_arguments():
     assert messages[0].has_tool_calls
     assert messages[0].has_content
     assert messages[0].content_is_null
-    assert messages[0].tool_calls[0].arguments_is_string
+    assert not messages[0].tool_calls[0].arguments_is_string
     assert messages[0].tool_calls[0].arguments == '{"city":"Paris"}'
+
+
+def test_message_conversion_preserves_non_object_string_tool_call_arguments():
+    messages = _convert_messages_to_cpp(
+        _message_runtime(),
+        [{
+            "role":
+            "assistant",
+            "tool_calls": [{
+                "type": "function",
+                "function": {
+                    "name": "weather",
+                    "arguments": '["Paris"]',
+                },
+            }],
+        }],
+    )
+
+    assert messages[0].tool_calls[0].arguments_is_string
+    assert messages[0].tool_calls[0].arguments == '["Paris"]'
 
 
 def test_message_conversion_preserves_absent_content_and_object_arguments():
