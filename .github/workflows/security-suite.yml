@@ -55,3 +55,10 @@ jobs:
     steps:
       - name: Verify CPU runner access
         run: echo "CPU runner access verified."
+
+  prechecks:
+    name: Prechecks
+    needs: security-suite
+    permissions:
+      contents: read
+    uses: ./.github/workflows/precheck-jobs.yml
