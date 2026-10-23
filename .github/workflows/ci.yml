@@ -16,18 +16,17 @@
 name: CI
 
 on:
-  push:
-    branches:
-      - 'pull-request/[0-9]+'
-  workflow_dispatch:
+  workflow_call:
 
 permissions: {}
 
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
+  prechecks:
+    name: Prechecks
+    permissions:
+      contents: read
+    uses: ./.github/workflows/precheck-jobs.yml
+
   internal-ci:
     name: Trigger internal CI
     if: >-
