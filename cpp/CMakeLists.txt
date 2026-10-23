@@ -333,6 +333,7 @@ target_link_options(NvInfer_edgellm_plugin PRIVATE "-Wl,--exclude-libs,ALL")
 #   nvfp4_fused_moe  -- SM12x (consumer Blackwell / Spark GB10) fused NVFP4
 #                       MoE; consumed by ``NvFP4MoEPluginGeforce``
 #   rmsnorm          -- FP16/BF16 RMSNorm for supported production hidden sizes
+#   fp8_blockwise_gemm -- SM110 blockwise FP8 GEMM
 #   layernorm        -- FP16/BF16 LayerNorm for benchmarked hidden sizes plus
 #                       odd-H correctness coverage
 # or a semicolon-separated list (e.g. fmha;gdn), or ALL. fmha is always linked.

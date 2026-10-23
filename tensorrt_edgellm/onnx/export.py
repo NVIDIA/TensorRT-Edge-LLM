@@ -60,6 +60,7 @@ from ..external_weights import (externalize_model_weights,
                                 reject_quantized_lm_head_externalization,
                                 resolve_externalize_weights)
 from ..models.default.modeling_default import CausalLM
+from ..models.linear import FP8BlockLinear
 from .dynamo_translations import build_custom_translation_table
 
 _ATTENTION_SINK_INIT_PREFIX = "attention_sinks_fp32"
@@ -608,6 +609,7 @@ def _initializer_dtype_fixup_required(
         return True
 
     plugin_fp32_init_names: set = set()
+    fp8_block_plugin_init_names: set = set()
     for node in model.graph.node:
         if node.op_type == "update_ssm_state" and len(node.input) > 1:
             plugin_fp32_init_names.add(node.input[1])
@@ -623,6 +625,10 @@ def _initializer_dtype_fixup_required(
                     plugin_fp32_init_names.add(node.input[input_idx])
         if node.op_type == "Fp16MoePlugin" and len(node.input) > 4:
             plugin_fp32_init_names.add(node.input[4])
+        if node.op_type == "Fp8BlockGemmPlugin":
+            fp8_block_plugin_init_names.update(node.input)
+            if len(node.input) > 2:
+                plugin_fp32_init_names.add(node.input[2])
         if node.op_type == "AttentionPlugin":
             plugin_fp32_init_names.update(
                 name for name in node.input
@@ -682,6 +688,8 @@ def _initializer_dtype_fixup_required(
                     or init.name.endswith("_scale_2")):
                 continue
             if init.name in plugin_fp32_init_names:
+                continue
+            if init.name in fp8_block_plugin_init_names:
                 continue
             if _is_preserved_fp32(init.name):
                 continue
@@ -926,6 +934,7 @@ def _fix_initializer_dtypes(
     # - Nvfp4A16BlackwellMoePlugin: inputs[4,7] are the FP32 per-expert global
     #   scales; input[8] is the FP32 router correction bias.
     plugin_fp32_init_names: set = set()
+    fp8_block_plugin_init_names: set = set()
     for node in model.graph.node:
         if node.op_type == "update_ssm_state" and len(node.input) > 1:
             plugin_fp32_init_names.add(node.input[1])
@@ -943,6 +952,10 @@ def _fix_initializer_dtypes(
                     plugin_fp32_init_names.add(node.input[input_idx])
         if node.op_type == "Fp16MoePlugin" and len(node.input) > 4:
             plugin_fp32_init_names.add(node.input[4])
+        if node.op_type == "Fp8BlockGemmPlugin":
+            fp8_block_plugin_init_names.update(node.input)
+            if len(node.input) > 2:
+                plugin_fp32_init_names.add(node.input[2])
         if node.op_type == "AttentionPlugin":
             plugin_fp32_init_names.update(
                 name for name in node.input
@@ -1010,6 +1023,8 @@ def _fix_initializer_dtypes(
         if init.data_type != 1:  # not FP32
             continue
         if init.name in plugin_fp32_init_names:  # already FP32, must stay
+            continue
+        if init.name in fp8_block_plugin_init_names:
             continue
         if _is_preserved_fp32(init.name):  # caller opted this init out
             logger.info(
@@ -1132,6 +1147,9 @@ def _export_model(
 ) -> "list[dict[str, object]]":
     setup_fp8_qkv_scales_for_export(model)
     _capture_qk_norm_gammas_for_export(model)
+    for module in model.modules():
+        if isinstance(module, FP8BlockLinear):
+            module.repack_for_export()
     _capture_attention_sinks_for_export(model)
     spec = model.onnx_export_spec()
 

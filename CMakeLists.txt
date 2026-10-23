@@ -235,13 +235,14 @@ target_link_options(commonLibraryExt INTERFACE
 #   layernorm        -- homogeneous FP16/BF16 LayerNorm for benchmarked hidden
 #                       sizes plus odd-H correctness coverage
 #   rmsnorm          -- FP16/BF16 RMSNorm for supported production hidden sizes
+#   fp8_blockwise_gemm -- SM110 blockwise FP8 GEMM
 #   semicolon-separated group list (e.g. -DENABLE_CUTE_DSL=fmha;gdn)
 # cmake-format: on
 set(ENABLE_CUTE_DSL
     "fmha"
     CACHE
       STRING
-      "CuTe DSL kernels: fmha (default), ALL, or semicolon-separated group list (fmha;gdn;f16_moe;layernorm;rmsnorm)"
+      "CuTe DSL kernels: fmha (default), ALL, or semicolon-separated group list (fmha;gdn;f16_moe;layernorm;rmsnorm;fp8_blockwise_gemm)"
 )
 
 # Guided decoding: defines XGRAMMAR_INCLUDE_DIRS and the xgrammarCore target.

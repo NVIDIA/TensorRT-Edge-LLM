@@ -47,8 +47,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ...config import ModelConfig
-from ..linear import (FP16Linear, NVFP4LinearMethod, ReplicatedLinear, TPMode,
-                      is_int4_linear, is_nvfp4_linear, make_linear)
+from ..linear import (FP8BlockLinear, FP16Linear, NVFP4LinearMethod,
+                      ReplicatedLinear, TPMode, is_int4_linear,
+                      is_nvfp4_linear, make_linear)
 from ..ops import KV_PAGE_SIZE, attention_plugin, qkv_concat
 
 logger = logging.getLogger(__name__)
@@ -490,11 +491,11 @@ def fuse_qkv_projections(model: nn.Module) -> int:
     A single fused GEMM feeds the packed-QKV plugin input directly (no Concat,
     no reliance on the compiler backend's horizontal GEMM fusion).
 
-    Per quant type: FP16 always fuses; NVFP4 fuses only when the per-tensor
-    scales (``input_scale``, ``weight_scale_2``) match across Q/K/V (mismatch
-    => warn and fall back to 3 GEMMs + concat); other quant types skip.
-    For FP8 KV cache, the Q/K/V attention scales are preserved as Python
-    floats before the original projection modules are removed.
+    Per quant type: FP16 and blockwise FP8 fuse; NVFP4 fuses only when the
+    per-tensor scales (``input_scale``, ``weight_scale_2``) match across Q/K/V
+    (mismatch => warn and fall back to 3 GEMMs + concat); other quant types
+    skip. For FP8 KV cache, the Q/K/V attention scales are preserved as
+    Python floats before the original projection modules are removed.
 
     Fused layers replace the three sub-modules with ``qkv_proj_fused``
     (auto-detected in ``Attention.forward``). Returns the number fused.
@@ -523,6 +524,18 @@ def fuse_qkv_projections(model: nn.Module) -> int:
             continue
         if isinstance(first_proj, FP16Linear):
             pass  # always fusible
+        elif isinstance(first_proj, FP8BlockLinear):
+            if any(getattr(p, "bias", None) is not None for p in proj_modules):
+                logger.warning(
+                    "QKV fusion skipped for %s: blockwise FP8 projections "
+                    "must not have bias.", name)
+                continue
+            if any(p.block_size != first_proj.block_size
+                   for p in proj_modules[1:]):
+                logger.warning(
+                    "QKV fusion skipped for %s: blockwise FP8 block sizes "
+                    "differ across projections.", name)
+                continue
         elif is_nvfp4_linear(first_proj):
             if not _can_fuse_nvfp4_scales(attn):
                 logger.warning(
@@ -531,7 +544,7 @@ def fuse_qkv_projections(model: nn.Module) -> int:
                     "enabled to equalise scales.", name)
                 continue
         else:
-            # INT4, FP8, MXFP8, etc. — not fusible.
+            # INT4, per-tensor FP8, MXFP8, etc. — not fusible.
             continue
 
         fp8_kv_scales = (_fp8_kv_scales_as_floats(attn)
@@ -567,12 +580,12 @@ def fuse_qkv_projections(model: nn.Module) -> int:
                 raise RuntimeError(
                     f"QKV fusion: attribute '{attr}' present on only a "
                     "subset of q/k/v projections; cannot fuse.")
-            if parts[0].numel() == 1:
+            if parts[0].numel() == 1 and attr != "weight_scale_inv":
                 # Per-tensor scalar (0-d or (1,)-shaped): take first —
                 # equality across Q/K/V is a fusion precondition.
                 fused_buffers[attr] = parts[0]
             else:
-                # Per-output-channel: concat along dim 0.
+                # Per-output-channel or per-output-block: concat along dim 0.
                 fused_buffers[attr] = torch.cat(parts, dim=0)
 
         # Build a fused linear with correct type.
@@ -588,6 +601,9 @@ def fuse_qkv_projections(model: nn.Module) -> int:
                                             dtype=torch.float16,
                                             mapping=first_proj.mapping,
                                             quant_method=method)
+        elif isinstance(first_proj, FP8BlockLinear):
+            fused_linear = FP8BlockLinear(in_features, fused_out_dim)
+            fused_linear.tp_mode = first_proj.tp_mode
         else:
             fused_linear = FP16Linear(in_features,
                                       fused_out_dim,

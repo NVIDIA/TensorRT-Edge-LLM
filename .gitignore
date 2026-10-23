@@ -7,6 +7,7 @@ engines/
 feature-spec/
 dist/
 /artifacts/
+/tmp/
 *.egg-info
 *_engine/
 *.engine
