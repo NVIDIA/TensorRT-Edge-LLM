@@ -74,7 +74,6 @@ TEST(ParallelConfigTest, BuildsSingleDeviceMappingByDefault)
     EXPECT_FALSE(mapping.isParallel());
 }
 
-
 TEST(ParallelConfigTest, BuildsNamedGroupConfig)
 {
     ParallelConfig config{};
