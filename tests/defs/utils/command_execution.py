@@ -923,7 +923,6 @@ def execute_inference_test(
                 'test_type': TaskType.INFERENCE.value
             }
 
-
     # Calculate metrics based on dataset type
     final_result = {
         'success': True,

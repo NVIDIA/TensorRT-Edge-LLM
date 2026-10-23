@@ -24,7 +24,6 @@ CHECKPOINTS_BY_ID = {}
 PRIVATE_CHECKPOINT_IDS = frozenset()
 
 
-
 def _build_alias_index(*, quantized: bool) -> dict[str, str]:
     index: dict[str, str] = {}
     for checkpoint_id, checkpoint in CHECKPOINTS_BY_ID.items():
