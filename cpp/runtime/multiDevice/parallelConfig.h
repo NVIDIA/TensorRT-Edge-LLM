@@ -68,7 +68,6 @@ struct ParallelConfig
     ParallelLaunchMode launchMode{ParallelLaunchMode::kThread};
     std::vector<int32_t> devices{}; //!< Optional local CUDA device list. Empty means [0, size).
 
-
     std::string toString() const;
 };
 

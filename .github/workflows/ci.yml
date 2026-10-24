@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: Security scans
+name: CI
 
 on:
   push:
@@ -25,7 +25,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: security-suite-${{ github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -47,11 +47,9 @@ jobs:
       sast-runs-on: ubuntu-latest
       sast-build-mode: none
 
-  noop:
-    name: Verify CPU runner access
+  prechecks:
+    name: Prechecks
     needs: security-suite
-    runs-on: linux-amd64-cpu4
-    timeout-minutes: 5
-    steps:
-      - name: Verify CPU runner access
-        run: echo "CPU runner access verified."
+    permissions:
+      contents: read
+    uses: ./.github/workflows/precheck-jobs.yml
