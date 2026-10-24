@@ -645,6 +645,35 @@ _GUIDE_TYPE_ENUM = {
 }
 
 
+def _canonical_schema_value(value: Any, ordered_keys: bool = False) -> Any:
+    """Canonicalise a JSON-schema value for the compiled-grammar cache key.
+
+    Object keys are sorted so that two spellings of one schema share a compiled
+    grammar, except the property names inside a ``properties`` map: XGrammar emits
+    an object's properties in the order the schema lists them, so that order is
+    part of the output format (a client that asks for ``answer`` before
+    ``verdict`` gets them generated in that order) and must survive.
+    """
+    if isinstance(value, dict):
+        keys = list(value) if ordered_keys else sorted(value)
+        return {
+            key:
+            _canonical_schema_value(
+                value[key],
+                ordered_keys=(not ordered_keys and key == "properties"
+                              and isinstance(value[key], dict)))
+            for key in keys
+        }
+    if isinstance(value, list):
+        return [_canonical_schema_value(item) for item in value]
+    return value
+
+
+def _canonical_schema_json(schema: Dict[str, Any]) -> str:
+    """Serialise a schema canonically; see ``_canonical_schema_value``."""
+    return json.dumps(_canonical_schema_value(schema))
+
+
 def _normalize_response_format(
         response_format: Optional[Dict[str,
                                        Any]]) -> Optional[Tuple[str, str]]:
@@ -672,7 +701,7 @@ def _normalize_response_format(
         if not isinstance(schema, dict):
             raise ValueError(
                 "'response_format.json_schema.schema' must be an object")
-        return ("json_schema", json.dumps(schema, sort_keys=True))
+        return ("json_schema", _canonical_schema_json(schema))
     raise ValueError(
         f"'response_format.type' must be text, json_object or json_schema, got {kind!r}"
     )
@@ -724,7 +753,7 @@ def _normalize_guided_decoding(
             guide = value
         elif name in ("json_schema", "structural_tag") and isinstance(
                 value, dict):
-            guide = json.dumps(value, sort_keys=True)
+            guide = _canonical_schema_json(value)
         else:
             raise ValueError(f"'guided_decoding.{name}' must be a string")
 

@@ -282,6 +282,9 @@ request file:
 
 Setting both surfaces on one request is rejected rather than one silently
 winning. Streaming works normally, and the assembled output satisfies the guide.
+Object properties are generated in the order the schema lists them, so list them
+in the order the model should write them, for example a computed value before a
+verdict about it.
 A schema keyword that the backend accepts but cannot enforce is rejected with a
 400 naming the keyword. See [Guided Decoding](../features/guided-decoding.md).
 

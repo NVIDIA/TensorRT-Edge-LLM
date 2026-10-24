@@ -14,6 +14,8 @@
 # limitations under the License.
 """Tests for guided-decoding request translation and validation in the server."""
 
+import json
+
 import pytest
 
 from experimental.server.runtime.engine import (CompletionOutput,
@@ -268,3 +270,58 @@ def test_api_accepts_a_supported_schema():
     )
 
     assert response.status_code == 200
+
+
+def test_response_format_keeps_property_order():
+    # XGrammar generates an object's properties in schema order, so the order of a
+    # `properties` map is part of the requested output format: a model asked for
+    # `sql` before `reason` must write the query before judging it. Canonicalisation
+    # for the grammar cache sorts keywords but must not reorder properties.
+    guide = _normalize_response_format({
+        "type": "json_schema",
+        "json_schema": {
+            "name": "answer",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "sql": {
+                        "type": "string"
+                    },
+                    "reason": {
+                        "type": "string",
+                        "enum": ["none", "impossible"]
+                    },
+                },
+                "required": ["sql", "reason"],
+            },
+        },
+    })
+    assert guide is not None
+    properties = list(json.loads(guide[1])["properties"])
+    # Alphabetical order would put "reason" first.
+    assert properties == ["sql", "reason"]
+
+
+def test_guided_decoding_keyword_order_still_shares_cache_entry():
+    # Keyword order inside a property schema carries no meaning and still canonicalises.
+    first = {
+        "type": "object",
+        "properties": {
+            "b": {
+                "type": "string",
+                "description": "x"
+            }
+        }
+    }
+    second = {
+        "properties": {
+            "b": {
+                "description": "x",
+                "type": "string"
+            }
+        },
+        "type": "object"
+    }
+    assert (_normalize_guided_decoding({"json_schema":
+                                        first}) == _normalize_guided_decoding(
+                                            {"json_schema": second}))
