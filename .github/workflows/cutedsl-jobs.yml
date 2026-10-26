@@ -1,0 +1,49 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: CuTeDSL jobs
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build_cutedsl_docker_image:
+    timeout-minutes: 60
+    runs-on:
+      group: nv-cpu-general
+      labels: linux-amd64-cpu4
+    env:
+      CUTE_DSL_BUILDER_VERSION: '4.7.0'
+      CUTE_DSL_BUILDER_IMAGE: ghcr.io/nvidia/tensorrt-edge-llm/cutedsl-kernel-builder
+      CUTE_DSL_BUILDER_CACHE_IMAGE: ghcr.io/nvidia/tensorrt-edge-llm/cutedsl-kernel-builder-cache:buildkit
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build and publish CuTeDSL image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ./kernelSrcs
+          file: ./kernelSrcs/Dockerfile.cutedsl
+          platforms: linux/amd64
+          build-args: |
+            CUTE_DSL_BUILDER_VERSION=${{ env.CUTE_DSL_BUILDER_VERSION }}
+          push: true
+          tags: ${{ env.CUTE_DSL_BUILDER_IMAGE }}:cutedsl-${{ env.CUTE_DSL_BUILDER_VERSION }}-pipeline-${{ github.run_id }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          cache-from: type=registry,ref=${{ env.CUTE_DSL_BUILDER_CACHE_IMAGE }}
+          cache-to: type=registry,ref=${{ env.CUTE_DSL_BUILDER_CACHE_IMAGE }},mode=max
