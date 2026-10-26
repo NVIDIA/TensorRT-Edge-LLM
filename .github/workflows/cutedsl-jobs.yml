@@ -12,6 +12,8 @@ permissions:
 
 jobs:
   build_cutedsl_docker_image:
+    outputs:
+      image: ${{ steps.image.outputs.image }}
     timeout-minutes: 60
     runs-on:
       group: nv-cpu-general
@@ -33,6 +35,10 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Define builder image reference
+        id: image
+        shell: bash
+        run: echo "image=${CUTE_DSL_BUILDER_IMAGE}:cutedsl-${CUTE_DSL_BUILDER_VERSION}-pipeline-${GITHUB_RUN_ID}" >> "$GITHUB_OUTPUT"
       - name: Build and publish CuTeDSL image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -42,8 +48,40 @@ jobs:
           build-args: |
             CUTE_DSL_BUILDER_VERSION=${{ env.CUTE_DSL_BUILDER_VERSION }}
           push: true
-          tags: ${{ env.CUTE_DSL_BUILDER_IMAGE }}:cutedsl-${{ env.CUTE_DSL_BUILDER_VERSION }}-pipeline-${{ github.run_id }}
+          tags: ${{ steps.image.outputs.image }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
           cache-from: type=registry,ref=${{ env.CUTE_DSL_BUILDER_CACHE_IMAGE }}
           cache-to: type=registry,ref=${{ env.CUTE_DSL_BUILDER_CACHE_IMAGE }},mode=max
+
+  build_cutedsl_docker_matrix:
+    needs: build_cutedsl_docker_image
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    runs-on:
+      group: nv-cpu-general
+      labels: linux-amd64-cpu4
+    container:
+      image: ${{ needs.build_cutedsl_docker_image.outputs.image }}
+    env:
+      CUTE_DSL_JOBS: '32'
+    steps:
+      - name: Build and validate CuTeDSL kernel matrix
+        shell: bash
+        run: |
+          export CUTE_DSL_OUTPUT_DIR="$GITHUB_WORKSPACE/cutedsl-out/artifacts"
+          export CUTE_DSL_PREBUILT_DIR="$GITHUB_WORKSPACE/kernelSrcs/cuteDSLPrebuilt"
+          bash /workspace/kernelSrcs/build_cutedsl_tarballs.sh
+          compgen -G "$CUTE_DSL_PREBUILT_DIR/cutedsl_*.tar.gz" >/dev/null
+          (cd "$CUTE_DSL_PREBUILT_DIR" && sha256sum -c cutedsl_*.tar.gz.sha256)
+          ls -lh "$CUTE_DSL_PREBUILT_DIR"/cutedsl_*.tar.gz*
+      - name: Upload CuTeDSL kernel artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cutedsl-matrix-${{ github.sha }}
+          path: |
+            kernelSrcs/cuteDSLPrebuilt/*.tar.gz
+            kernelSrcs/cuteDSLPrebuilt/*.tar.gz.sha256
+          retention-days: 30
+          if-no-files-found: error
