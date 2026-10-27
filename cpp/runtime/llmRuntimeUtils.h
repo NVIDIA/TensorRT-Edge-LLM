@@ -477,30 +477,32 @@ std::vector<int32_t> buildBatchMapping(std::vector<int8_t> const& finishedStates
  */
 inline constexpr int64_t kFP8EmbeddingBlockSize = 128;
 
-/*! \brief Embedding data - supports both FP16 and FP8 formats
+/*! \brief Embedding data for dense and row-scaled quantized formats
  *
  *  The embedding table datatype determines the format:
  *  - FP16: table is FP16, tableScalingFactor is empty
  *  - FP8: table is FP8 (E4M3), tableScalingFactor contains FP32 per-group scales
+ *  - INT8: table is signed INT8, tableScalingFactor contains one FP32 scale per row
  *
  *  The kernel functions automatically dispatch based on table.getDataType().
  */
 struct EmbeddingData
 {
-    rt::Tensor table;              //!< Embedding table [vocabSize, hiddenSize] (FP16 or FP8)
-    rt::Tensor tableScalingFactor; //!< FP32 per-group scales [vocabSize, hiddenSize/128] (only if FP8)
+    rt::Tensor table;              //!< Embedding table [vocabSize, hiddenSize] (FP16, FP8, or INT8)
+    rt::Tensor tableScalingFactor; //!< FP32 scales for quantized table formats
 
-    //! \brief Returns scales as OptionalInputTensor (std::nullopt when FP16, reference when FP8)
+    //! \brief Returns scales as OptionalInputTensor (std::nullopt for FP16)
     rt::OptionalInputTensor scalesAsOptional() const
     {
         return tableScalingFactor.getShape().volume() > 0 ? rt::OptionalInputTensor{tableScalingFactor} : std::nullopt;
     }
 };
 
-/*! \brief Load embedding table from safetensors file (auto-detects FP16 vs FP8 by dtype)
+/*! \brief Load an embedding table from safetensors and validate its dtype-specific contract
  *
  *  Loads embedding.safetensors and detects format by checking the "embedding" tensor dtype:
  *  - FP8: loads "embedding" (FP8) + "embedding_scale" (FP32)
+ *  - INT8: loads "embedding" (INT8) + "embedding_scale" (FP32 [vocabSize])
  *  - FP16: loads "embedding" (FP16)
  *
  *  \param embeddingPath Path to embedding.safetensors file

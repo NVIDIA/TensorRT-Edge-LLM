@@ -19,5 +19,7 @@ tests:
   - tests/defs/test_llm_pipeline.py::test_engine_build[gemma-4-E2B-it-fp16-mxsl2048-mxbs1-mxil1024]
   - tests/defs/test_llm_pipeline.py::test_inference[gemma-4-E2B-it-fp16-mxsl2048-mxbs1-mxil1024-llm_basic]
   - tests/defs/test_llm_pipeline.py::test_inference[gemma-4-E2B-it-fp16-mxsl2048-mxbs1-mxil1024-ctxreuse-llm_context_reuse]
+  - tests/defs/test_llm_pipeline.py::test_engine_build[gemma-4-E2B-it-fp16-mxsl2048-mxbs1-mxil1024-int8emb]
+  - tests/defs/test_llm_pipeline.py::test_inference[gemma-4-E2B-it-fp16-mxsl2048-mxbs1-mxil1024-int8emb-llm_basic]
   - tests/defs/test_llm_pipeline.py::test_engine_build[gemma-4-E2B-it-fp16-mxsl2048-mtp-mxbs1-mxil1024]
   - tests/defs/test_llm_pipeline.py::test_inference[gemma-4-E2B-it-fp16-mxsl2048-mtp-mxbs1-mxil1024-llm_basic]

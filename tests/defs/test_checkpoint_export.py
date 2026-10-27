@@ -29,6 +29,7 @@ import tempfile
 import pytest
 from conftest import EnvironmentConfig
 from pytest_helpers import run_command, timer_context
+from safetensors import safe_open
 
 from tensorrt_edgellm import config as edgellm_config
 
@@ -58,6 +59,41 @@ _EXTW_FILE_BY_KIND = {
 _DFLASH_TARGET_KV_UPDATE_OP = "DFlashTargetKVCacheUpdate"
 _DFLASH_TARGET_KV_UPDATE_INPUT_COUNT = 7
 _DFLASH_TARGET_KV_PAGE_TABLE_INPUT_INDEX = 6
+
+
+def _verify_int8_embedding_outputs(out_dir, require_ple=False):
+    embedding_path = os.path.join(out_dir, "embedding.safetensors")
+    if not os.path.isfile(embedding_path):
+        pytest.fail(f"INT8 export missing {embedding_path}")
+    with safe_open(embedding_path, framework="pt", device="cpu") as sidecar:
+        if set(sidecar.keys()) != {"embedding", "embedding_scale"}:
+            pytest.fail("INT8 embedding sidecar has unexpected tensor names")
+        embedding = sidecar.get_slice("embedding")
+        scales = sidecar.get_slice("embedding_scale")
+        embedding_shape = embedding.get_shape()
+        scale_shape = scales.get_shape()
+        if embedding.get_dtype() != "I8" or scales.get_dtype() != "F32":
+            pytest.fail("INT8 embedding sidecar has unexpected tensor dtypes")
+        if (len(embedding_shape) != 2 or scale_shape != [embedding_shape[0]]):
+            pytest.fail("INT8 embedding sidecar has inconsistent shapes")
+
+    ple_path = os.path.join(out_dir, "ple_embedding.safetensors")
+    if require_ple and not os.path.isfile(ple_path):
+        pytest.fail(f"INT8 Gemma PLE export missing {ple_path}")
+    if os.path.isfile(ple_path):
+        with safe_open(ple_path, framework="pt", device="cpu") as sidecar:
+            if set(sidecar.keys()) != {"weight", "weight_scale"}:
+                pytest.fail("INT8 PLE sidecar has unexpected tensor names")
+            weight = sidecar.get_slice("weight")
+            scales = sidecar.get_slice("weight_scale")
+            weight_shape = weight.get_shape()
+            scale_shape = scales.get_shape()
+            if weight.get_dtype() != "I8" or scales.get_dtype() != "F32":
+                pytest.fail("INT8 PLE sidecar has unexpected tensor dtypes")
+            if (len(weight_shape) != 2 or len(scale_shape) != 2
+                    or scale_shape[0] != weight_shape[0]
+                    or weight_shape[1] % scale_shape[1] != 0):
+                pytest.fail("INT8 PLE sidecar has inconsistent shapes")
 
 
 def _extw_cli_kinds(extw_token):
@@ -210,6 +246,8 @@ def test_checkpoint_export(test_param: str, test_logger,
             torch_dir,
             tmp_dir,
         ]
+        if config.int8_embedding:
+            export_cmd.append("--int8-embedding")
 
         if config.model_name.startswith("Cosmos3-Edge-reasoning"):
             export_cmd += ["--task", "reasoning"]
@@ -304,6 +342,10 @@ def test_checkpoint_export(test_param: str, test_logger,
                             dirs_exist_ok=True)
 
         _verify_externalized_outputs(llm_onnx_dir, extw_kinds)
+        if config.int8_embedding:
+            _verify_int8_embedding_outputs(llm_onnx_dir,
+                                           require_ple="gemma-4-E"
+                                           in config.model_name)
 
     finally:
         # Clean up temp directory
