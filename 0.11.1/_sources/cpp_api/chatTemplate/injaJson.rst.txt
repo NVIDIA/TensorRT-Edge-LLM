@@ -1,0 +1,24 @@
+Inja Json
+=========
+
+.. doxygenfunction:: trt_edgellm::chat_template::injaObjectKeys
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::chat_template::injaVisibleSize
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::chat_template::injaPythonRepr
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::chat_template::injaPythonString
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::chat_template::makeInjaObject
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::chat_template::setInjaObjectField
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::chat_template::preserveJsonOrder
+   :project: TensorRT Edge-LLM
+

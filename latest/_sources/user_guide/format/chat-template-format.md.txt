@@ -8,7 +8,7 @@ model-family template.
 
 ## Exported Artifact
 
-`tensorrt-edgellm-export` and the checkpoint-direct builder copy the provider
+`trtedge export` and the checkpoint-direct builder copy the provider
 template beside the LLM engine artifacts:
 
 ```text

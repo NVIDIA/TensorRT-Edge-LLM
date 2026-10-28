@@ -43,3 +43,6 @@ Fp16 Layout Convert
 .. doxygenfunction:: trt_edgellm::kernel::launchWriteFp32
    :project: TensorRT Edge-LLM
 
+.. doxygenfunction:: trt_edgellm::kernel::launchWriteFp16
+   :project: TensorRT Edge-LLM
+

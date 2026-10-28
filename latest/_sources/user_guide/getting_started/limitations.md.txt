@@ -23,5 +23,5 @@ This page documents the known limitations and issues for each release version of
 ## 0.6.0
 
 - TensorRT 10.15 may cause accuracy degradation with NVFP4 for some models. Use TensorRT 10.13.3.9 shipped with Jetpack 7.1 instead.
-- Fixed in 0.7.0: Setting `--maxBatchSize=1` could cause accuracy degradation or engine build failure for some models. Setting `--maxBatchSize=2` was the 0.6.0 workaround.
+- Fixed in 0.7.0: Setting `--max-batch-size=1` could cause accuracy degradation or engine build failure for some models. Setting `--max-batch-size=2` was the 0.6.0 workaround.
 - Fixed in 0.7.0: CuTe DSL kernels could hang for some inputs when runtime batch size > 1, so the kernels were only enabled when runtime batch size = 1 in 0.6.0.

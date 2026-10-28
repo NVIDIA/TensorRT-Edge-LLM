@@ -1,0 +1,1630 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Streaming &#8212; TensorRT Edge-LLM</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../_static/styles/theme.css?digest=18bd87630a240e9c25be" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=18bd87630a240e9c25be" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=03e43079" />
+    <link rel="stylesheet" type="text/css" href="../../_static/styles/nvidia-sphinx-theme.css?v=933278ad" />
+    <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../../_static/autodoc_pydantic.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/togglebutton.css?v=9c3e77be" />
+    <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=e02be394" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../../_static/scripts/fontawesome.js?digest=18bd87630a240e9c25be"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=18bd87630a240e9c25be" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=18bd87630a240e9c25be" />
+
+
+
+    <script src="../../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../../_static/copybutton.js?v=65e89d2a"></script>
+    <script>let toggleHintShow = 'Click to show';</script>
+    <script>let toggleHintHide = 'Click to hide';</script>
+    <script>let toggleOpenOnPrint = 'true';</script>
+    <script src="../../_static/togglebutton.js?v=b8b12719"></script>
+    <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'cpp_api/runtime/streaming';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.23.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = './_static/switcher.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.11.1';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner =
+            false;
+        </script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+
+    <link rel="icon" href="../../_static/favicon.png"/>
+
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="System Prompt KV Cache" href="systemPromptKVCache.html" />
+    <link rel="prev" title="Step Preparer" href="stepPreparer.html" />
+
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="color-scheme" content="light dark"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.11.1" />
+  
+    
+    <script src="../../_static/searchtools.js"></script>
+    <script src="../../_static/language_data.js"></script>
+    <script src="../../searchindex.js"></script>
+  
+
+
+  </head>
+
+  <body data-default-mode="">
+
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button type="button" class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../../_static/nvidia-logo-horiz-rgb-blk-for-screen.svg" class="logo__image only-light" alt="TensorRT Edge-LLM - Home"/>
+    <img src="../../_static/nvidia-logo-horiz-rgb-wht-for-screen.svg" class="logo__image only-dark pst-js-only" alt="TensorRT Edge-LLM - Home"/>
+  
+  
+    <p class="title logo__title">TensorRT Edge-LLM</p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+
+
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-2"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-2"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-2"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-2">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button type="button" class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button type="button" class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button type="button" class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button type="button" class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../../_static/nvidia-logo-horiz-rgb-blk-for-screen.svg" class="logo__image only-light" alt="TensorRT Edge-LLM - Home"/>
+    <img src="../../_static/nvidia-logo-horiz-rgb-wht-for-screen.svg" class="logo__image only-dark pst-js-only" alt="TensorRT Edge-LLM - Home"/>
+  
+  
+    <p class="title logo__title">TensorRT Edge-LLM</p>
+  
+</a>
+
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+
+
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-3"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-3"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-3"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-3">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button type="button" class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+
+
+
+<nav class="bd-docs-nav bd-links"
+     aria-label="Table of Contents">
+  <p class="bd-links__title" role="heading" aria-level="1">Table of Contents</p>
+  <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../overview.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/support-matrix.html">Official Support Matrix</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/supported-models.html">Supported Models</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/quick-start-guide.html">Quick Start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/cli.html">trtedge CLI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/direct-engine-builder.html">Experimental ONNX-less Engine Build</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/limitations.html">Limitations and Known Issues</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Examples</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/index.html">Examples</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/interactive-chat.html">Interactive Text Chat</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/python-runtime.html">Run inference with the Python runtime</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/speculative-decoding.html">Speculative Decoding</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/phi4.html">Phi-4-Multimodal</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/asr.html">ASR (Automatic Speech Recognition)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/tts.html">TTS (Text-to-Speech)</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../../user_guide/examples/vla/index.html">Vision-Language-Action</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../../user_guide/examples/vla/alpamayo.html">Alpamayo-R1-10B (Vision-Language-Action)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../user_guide/examples/vla/cosmos3.html">Cosmos3-Edge</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../user_guide/examples/vla/pi05.html">pi0.5</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/omni.html">Omni (Audio + Vision + Speech I/O)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/experimental-server.html">Experimental Python API and Server</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/nemo-evaluator.html">Evaluate with NeMo Evaluator</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Features</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/lora.html">LoRA (Low-Rank Adaptation)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/quantization.html">Quantization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/multi-device.html">Multi-Device Inference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/reduce-vocab.html">Vocabulary Reduction</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/FP8KV.html">FP8 KV Cache</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/fp8-embedding.html">FP8 Embedding</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/streaming.html">Streaming Output</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/guided-decoding.html">Guided Decoding</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/visual-token-pruning.html">Visual-Token Pruning (DART)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/kv-cache-reuse.html">KV Cache Reuse</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/in-flight-batching.html">In-Flight Batching</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/features/codepredictor-speculative-decoding.html">CodePredictor Speculative Decoding</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Input &amp; Chat Format</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/format/input-format.html">Input JSON Format</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/format/chat-template-format.html">Chat Template Format</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Performance</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/performance/performance-benchmarks.html">Performance Benchmarks</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Software Design</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/checkpoint-export.html">Checkpoint Exporter Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/onnxless-builder.html">Experimental ONNX-less Builder Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/quantization-design.html">Quantization Package Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/engine-builder.html">Engine Builder</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/cpp-runtime-overview.html">C++ Runtime Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/llm-inference-runtime.html">LLM Inference Runtime</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/llm-streaming.html">LLM Streaming — Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/in-flight-batching.html">In-Flight Batching (V0)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/memory-monitoring.html">Memory monitoring</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/openai-server.html">HTTP Inference Server Architecture</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Models</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/models/cosmos3.html">Cosmos3-Edge Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/models/nemotron3_5_asr.html">Nemotron-3.5-ASR</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/models/pi05.html">pi0.5 Design</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Customization</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/customization-guide.html">Customization Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/calibration-datasets.html">Calibration Dataset Customization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/tensorrt-plugins.html">TensorRT Plugins Guide</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Testing</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/runtime-unit-tests.html">Unit-Testing the Runtime with a Substitute Engine</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/code-coverage.html">Code Coverage with SonarQube</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/few-layer-validation.html">Few-Layer Numeric Validation</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">APIs</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../python_api.html">Python API Reference</a></li>
+<li class="toctree-l1 current active has-children"><a class="reference internal" href="../../cpp_api.html">C++ API Reference</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
+<li class="toctree-l2 has-children"><a class="reference internal" href="../action/index.html">Action Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../action/actionKvBatch.html">Action KV Batch</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../action/actionModelTypes.html">Action Model Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../action/actionUtils.html">Action Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../action/alpamayo1ActionRunner.html">Alpamayo1 Action Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../action/alpamayo1RunnerUtils.html">Alpamayo1 Runner Utils</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../builder/index.html">Builder Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../builder/actionBuilder.html">Action Builder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../builder/audioBuilder.html">Audio Builder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../builder/builderUtils.html">Builder Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../builder/llmBuilder.html">LLM Builder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../builder/visualBuilder.html">Visual Builder</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../chatTemplate/index.html">Chattemplate Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../chatTemplate/chatTemplate.html">Chat Template</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../chatTemplate/injaCallbacks.html">Inja Callbacks</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../chatTemplate/injaJson.html">Inja Json</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../chatTemplate/injaRenderer.html">Inja Renderer</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../common/index.html">Common Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../common/allReducePath.html">All Reduce Path</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/bindingNames.html">Binding Names</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/checkMacros.html">Check Macros</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/cudaMacros.html">CUDA Macros</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/cudaUtils.html">CUDA Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/executionPhase.html">Execution Phase</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/fileUtils.html">File Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/hashUtils.html">Hash Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/inputLimits.html">Input Limits</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/logger.html">Logger</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/mathUtils.html">Math Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/mmapReader.html">MMAP Reader</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/pagedKvTypes.html">Paged KV Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/parallelArtifactNames.html">Parallel Artifact Names</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/ropeUtils.html">Rope Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/safetensorsUtils.html">Safetensors Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/specDecodeConfigUtils.html">Spec Decode Config Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/stringUtils.html">String Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/tensor.html">Tensor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/trtUtils.html">TRT Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/utf8.html">Utf8</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../common/version.html">Version</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../kernels/index.html">Kernels Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/NvFP4MoEUtils.html">Nv Fp4 Mo E Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/applyRopeWriteKV.html">Apply Rope Write KV</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/argmaxKernel.html">Argmax Kernel</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/attentionScaleUtils.html">Attention Scale Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/audioFbankKernels.html">Audio Fbank Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/batchEvictKernels.html">Batch Evict Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/blockHashKernel.html">Block Hash Kernel</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/buildLayout.html">Build Layout</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/causalConv1d.html">Causal Conv1d</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/checkpointSourceBatch.html">Checkpoint Source Batch</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/common.html">Common</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/conversion.html">Conversion</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cpSpecKernels.html">Cp Spec Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslF16MoeRunner.html">Cute Dsl F16 Moe Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslFMHARunner.html">Cute Dsl FMHA Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslFMHAV2Runner.html">Cute Dsl Fmhav2 Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslFmhaParams.html">Cute Dsl FMHA Params</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslFmhaTypes.html">Cute Dsl FMHA Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGDNRunner.html">Cute Dsl Gdn Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGemmNvFp4Runner.html">Cute Dsl GEMM Nv Fp4 Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslGemmRunner.html">Cute Dsl GEMM Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslLayerNormRunner.html">Cute Dsl Layer Norm Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslModuleLoader.html">Cute Dsl Module Loader</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslNvfp4MoeRunner.html">Cute Dsl Nvfp4 Moe Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslNvfp4MoeSm110Runner.html">Cute Dsl Nvfp4 Moe Sm110 Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslQsaSparseRunner.html">Cute Dsl Qsa Sparse Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslRmsNormRunner.html">Cute Dsl Rms Norm Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslSSDRunner.html">Cute Dsl Ssd Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/cuteDslTensorDescriptors.html">Cute Dsl Tensor Descriptors</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/dartGatherKernels.html">Dart Gather Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/dartSelectorKernels.html">Dart Selector Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/ddtreeKernels.html">Ddtree Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/decoderXQAJitCompiler.html">Decoder XQA Jit Compiler</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/decoderXQARunner.html">Decoder XQA Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/dequant.html">Dequant</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/dequantize.html">Dequantize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/dflash2CandidateSelector.html">Dflash2 Candidate Selector</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/dflash2GroupedDynamicConv.html">Dflash2 Grouped Dynamic Conv</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/dflashRuntimeKernels.html">Dflash Runtime Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/dsparkKernels.html">Dspark Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/eagleAcceptKernels.html">EAGLE Accept Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/eagleUtilKernels.html">EAGLE Util Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/embeddingKernels.html">Embedding Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/f16MoeSupportKernels.html">F16 Moe Support Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/fp16LayoutConvert.html">Fp16 Layout Convert</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/fp16MoeAssemble.html">Fp16 Moe Assemble</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/fp4Quantize.html">Fp4 Quantize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/gdnKernelUtils.html">Gdn Kernel Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/gdnPdlConfig.html">Gdn Pdl Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/gdnTreeChunkKernels.html">Gdn Tree Chunk Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/gemma4AudioAttention.html">Gemma4 Audio Attention</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/gemma4MTPRuntimeKernels.html">Gemma4 Mtp Runtime Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/gptqActivationPermutation.html">Gptq Activation Permutation</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/gptqMarlinRepack.html">Gptq Marlin Repack</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/imageUtilKernels.html">Image Util Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/initializeCosSinCache.html">Initialize Cos Sin Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/int4CuteDslRepack.html">Int4 Cute Dsl Repack</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/int4GroupwiseGemm.html">Int4 Groupwise GEMM</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/int4MoeScaleRepack.html">Int4 Moe Scale Repack</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/int4PluginV1Repack.html">Int4 Plugin V1 Repack</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/int4QkvScaleConcat.html">Int4 Qkv Scale Concat</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/int4SourceAccessors.html">Int4 Source Accessors</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/kernel.html">Kernel</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/kernel_selector.html">Kernel Selector</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/kvCacheUtilsKernels.html">KV Cache Utils Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/marlin.html">Marlin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/marlinRepackIndex.html">Marlin Repack Index</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/marlin_dtypes.html">Marlin Dtypes</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/marlin_mma.html">Marlin Mma</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/marlin_template.html">Marlin Template</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moeActivationKernels.html">Moe Activation Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moeAlignSumKernels.html">Moe Align Sum Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moeMarlin.html">Moe Marlin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moeMarlinIndicesKernels.html">Moe Marlin Indices Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moePerExpertScaleKernels.html">Moe Per Expert Scale Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moeSigmoidGroupTopkKernels.html">Moe Sigmoid Group Topk Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/moeTopkSoftmaxKernels.html">Moe Topk Softmax Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/mtpStateScatterKernels.html">Mtp State Scatter Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4A16BlackwellGemmRunner.html">Nvfp4 A16 Blackwell GEMM Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4A16BlackwellGemvJitCompiler.html">Nvfp4 A16 Blackwell Gemv Jit Compiler</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4A16BlackwellGemvJitRunner.html">Nvfp4 A16 Blackwell Gemv Jit Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4A16BlackwellMoeDispatchPolicy.html">Nvfp4 A16 Blackwell Moe Dispatch Policy</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4A16BlackwellMoeJitCompiler.html">Nvfp4 A16 Blackwell Moe Jit Compiler</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4A16BlackwellMoeJitRunner.html">Nvfp4 A16 Blackwell Moe Jit Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4A16BlackwellMoeRunner.html">Nvfp4 A16 Blackwell Moe Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4A16BlackwellSupport.html">Nvfp4 A16 Blackwell Support</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoeLayout.html">Nvfp4 Moe Layout</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoeNormalize.html">Nvfp4 Moe Normalize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoePdlConfig.html">Nvfp4 Moe Pdl Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoePluginGeforceTransform.html">Nvfp4 Moe Plugin Geforce Transform</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoePluginTransform.html">Nvfp4 Moe Plugin Transform</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoeScaleTransform.html">Nvfp4 Moe Scale Transform</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoeTypes.html">Nvfp4 Moe Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoeWeightTransform.html">Nvfp4 Moe Weight Transform</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4W4A16MarlinRepack.html">Nvfp4 W4 A16 Marlin Repack</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4_dequant.html">Nvfp4 Dequant</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4_scale.html">Nvfp4 Scale</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4_tensor.html">Nvfp4 Tensor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/pluginJitCompileCache.html">Plugin Jit Compile Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/pluginJitCompiler.html">Plugin Jit Compiler</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/pluginJitEmbeddedSources.html">Plugin Jit Embedded Sources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/qsaIndexerJitCompiler.html">Qsa Indexer Jit Compiler</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/qsaIndexerKernels.html">Qsa Indexer Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/qsaIndexerRunner.html">Qsa Indexer Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/requestStableRngKernels.html">Request Stable Rng Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/scaleConvert.html">Scale Convert</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/selectiveStateUpdate.html">Selective State Update</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/slidingWindowUtils.html">Sliding Window Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/speculativeKernelsUtils.html">Speculative Kernels Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/speculativeSampling.html">Speculative Sampling</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/speculativeSamplingKernels.html">Speculative Sampling Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/ssdVarlenMetadata.html">Ssd Varlen Metadata</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/talkerMLPKernels.html">Talker Mlp Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/utilKernels.html">Util Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/vectorizedTypes.html">Vectorized Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/xqaKernelTypes.html">XQA Kernel Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/xqaLaunchConfig.html">XQA Launch Config</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../multimodal/index.html">Multimodal Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/audioRunner.html">Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/audioUtils.html">Audio Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/cloneEncoderRunner.html">Clone Encoder Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/code2WavRunner.html">Code2 Wav Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/cosmos3EdgeViTRunner.html">Cosmos3 Edge ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4AudioRunner.html">Gemma4 Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4UnifiedAudioRunner.html">Gemma4 Unified Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4UnifiedVisionRunner.html">Gemma4 Unified Vision Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/gemma4ViTRunner.html">Gemma4 ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/imageUtils.html">Image Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/internViTRunner.html">Intern ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/modelTypes.html">Model Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/multimodalRunner.html">Multimodal Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/museGlimmerViTRunner.html">Muse Glimmer ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/nemotronOmniAudioRunner.html">Nemotron Omni Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/nemotronOmniViTRunner.html">Nemotron Omni ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/phi4mmViTRunner.html">Phi4mm ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwen25vlViTRunner.html">Qwen25vl ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwen3omniViTRunner.html">Qwen3omni ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwen3vlViTRunner.html">Qwen3vl ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../multimodal/qwenViTRunner.html">Qwen ViT Runner</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../plugins/index.html">Plugins Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/allReducePlugin.html">All Reduce Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/attentionPlugin.html">Attention Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/causalConv1dPlugin.html">Causal Conv1d Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/cuteDslInt4Gemm.html">Cute Dsl Int4 GEMM</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/cuteDslInt4Gemv.html">Cute Dsl Int4 Gemv</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/dflash2GroupedDynamicConvPlugin.html">Dflash2 Grouped Dynamic Conv Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/dflashTargetKVCacheUpdatePlugin.html">Dflash Target KV Cache Update Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/fp16MoePlugin.html">Fp16 Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/fusedNvfp4GemmAllReducePlugin.html">Fused Nvfp4 GEMM All Reduce Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/gatedDeltaNetPlugin.html">Gated Delta Net Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/gemma4AudioAttentionPlugin.html">Gemma4 Audio Attention Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/int4GroupwiseGemmPlugin.html">Int4 Groupwise GEMM Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/int4GroupwiseGemmPluginV2.html">Int4 Groupwise GEMM Plugin V2</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/int4MoePlugin.html">Int4 Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/layerNormPlugin.html">Layer Norm Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/mambaPlugin.html">Mamba Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4A16BlackwellDispatchPolicy.html">Nvfp4 A16 Blackwell Dispatch Policy</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4A16BlackwellGemmPlugin.html">Nvfp4 A16 Blackwell GEMM Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4A16BlackwellMoePlugin.html">Nvfp4 A16 Blackwell Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4A16GemmPlugin.html">Nvfp4 A16 GEMM Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4A16MoePlugin.html">Nvfp4 A16 Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4MoePlugin.html">Nvfp4 Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/nvfp4MoePluginGeforce.html">Nvfp4 Moe Plugin Geforce</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/pluginUtils.html">Plugin Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/qkvConcatPlugin.html">Qkv Concat Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/qsaAttentionPlugin.html">Qsa Attention Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/raggedPluginMetadata.html">Ragged Plugin Metadata</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/rmsNormPlugin.html">Rms Norm Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../plugins/vitAttentionPlugin.html">VIT Attention Plugin</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../profiling/index.html">Profiling Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../profiling/layerProfiler.html">Layer Profiler</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../profiling/metrics.html">Metrics</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../profiling/nvtx_wrapper.html">Nvtx Wrapper</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../profiling/requestProfiler.html">Request Profiler</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../profiling/timer.html">Timer</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 current active has-children"><a class="reference internal" href="index.html">Runtime Module</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
+<li class="toctree-l3"><a class="reference internal" href="audioLoader.html">Audio Loader</a></li>
+<li class="toctree-l3"><a class="reference internal" href="audioUtils.html">Audio Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="blockDiffusionDecoder.html">Block Diffusion Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="blockHash.html">Block Hash</a></li>
+<li class="toctree-l3"><a class="reference internal" href="blockIndex.html">Block Index</a></li>
+<li class="toctree-l3"><a class="reference internal" href="boundedSwaKVPageManager.html">Bounded Swa KV Page Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="cacheRecord.html">Cache Record</a></li>
+<li class="toctree-l3"><a class="reference internal" href="checkpointReader.html">Checkpoint Reader</a></li>
+<li class="toctree-l3"><a class="reference internal" href="checkpointWeightAssemble.html">Checkpoint Weight Assemble</a></li>
+<li class="toctree-l3"><a class="reference internal" href="collectiveGroup.html">Collective Group</a></li>
+<li class="toctree-l3"><a class="reference internal" href="contextCacheConfig.html">Context Cache Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="contextCacheCoordinator.html">Context Cache Coordinator</a></li>
+<li class="toctree-l3"><a class="reference internal" href="contextCacheDeployment.html">Context Cache Deployment</a></li>
+<li class="toctree-l3"><a class="reference internal" href="contextCacheManager.html">Context Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="contextCacheMetrics.html">Context Cache Metrics</a></li>
+<li class="toctree-l3"><a class="reference internal" href="contextCacheRequest.html">Context Cache Request</a></li>
+<li class="toctree-l3"><a class="reference internal" href="contextCacheTypes.html">Context Cache Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dartPruner.html">Dart Pruner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="decoderRegistry.html">Decoder Registry</a></li>
+<li class="toctree-l3"><a class="reference internal" href="decoderUtils.html">Decoder Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="decodingInferenceContext.html">Decoding Inference Context</a></li>
+<li class="toctree-l3"><a class="reference internal" href="decodingStrategy.html">Decoding Strategy</a></li>
+<li class="toctree-l3"><a class="reference internal" href="deepstackBinding.html">Deepstack Binding</a></li>
+<li class="toctree-l3"><a class="reference internal" href="deploymentConfig.html">Deployment Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dflashDecodeUtils.html">Dflash Decode Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dflashDecoder.html">Dflash Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dsparkDecoder.html">Dspark Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="eagleDecoder.html">EAGLE Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="embeddingPreprocessor.html">Embedding Preprocessor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="encoderEmbeddingCache.html">Encoder Embedding Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="engineExecutor.html">Engine Executor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="evictionPlanner.html">Eviction Planner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="externalWeightManager.html">External Weight Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="gemma4EmbeddingPreprocessor.html">Gemma4 Embedding Preprocessor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="gemma4MTPDecoder.html">Gemma4 Mtp Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="generationBoundary.html">Generation Boundary</a></li>
+<li class="toctree-l3"><a class="reference internal" href="guidedDecoder.html">Guided Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="hybridCacheManager.html">Hybrid Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="hybridSnapshotStorage.html">Hybrid Snapshot Storage</a></li>
+<li class="toctree-l3"><a class="reference internal" href="imageUtils.html">Image Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="inferenceDims.html">Inference Dims</a></li>
+<li class="toctree-l3"><a class="reference internal" href="inferencePhase.html">Inference Phase</a></li>
+<li class="toctree-l3"><a class="reference internal" href="kvCacheManager.html">KV Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="kvPageTable.html">KV Page Table</a></li>
+<li class="toctree-l3"><a class="reference internal" href="layerDebugger.html">Layer Debugger</a></li>
+<li class="toctree-l3"><a class="reference internal" href="llmEngineConfig.html">LLM Engine Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="llmInferenceRuntime.html">LLM Inference Runtime</a></li>
+<li class="toctree-l3"><a class="reference internal" href="llmRankRuntime.html">LLM Rank Runtime</a></li>
+<li class="toctree-l3"><a class="reference internal" href="llmRuntimeUtils.html">LLM Runtime Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="logitBias.html">Logit Bias</a></li>
+<li class="toctree-l3"><a class="reference internal" href="loraManager.html">Lora Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="mambaCacheManager.html">Mamba Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="managedKVCacheRequest.html">Managed KV Cache Request</a></li>
+<li class="toctree-l3"><a class="reference internal" href="melSpectrogram.html">Mel Spectrogram</a></li>
+<li class="toctree-l3"><a class="reference internal" href="modelArtifacts.html">Model Artifacts</a></li>
+<li class="toctree-l3"><a class="reference internal" href="mtpDecoder.html">Mtp Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="multiDevicePluginCommRegistry.html">Multi Device Plugin Comm Registry</a></li>
+<li class="toctree-l3"><a class="reference internal" href="multiDevicePluginResourceFactory.html">Multi Device Plugin Resource Factory</a></li>
+<li class="toctree-l3"><a class="reference internal" href="multiDevicePluginResources.html">Multi Device Plugin Resources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="ncclCollectiveBackend.html">Nccl Collective Backend</a></li>
+<li class="toctree-l3"><a class="reference internal" href="parallelConfig.html">Parallel Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="pipelineIO.html">Pipeline Io</a></li>
+<li class="toctree-l3"><a class="reference internal" href="qwen3OmniTTSRuntime.html">Qwen3 Omni Tts Runtime</a></li>
+<li class="toctree-l3"><a class="reference internal" href="raggedBatchBuilder.html">Ragged Batch Builder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="registryBuilder.html">Registry Builder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="requestStableRng.html">Request Stable Rng</a></li>
+<li class="toctree-l3"><a class="reference internal" href="residentSlotPool.html">Resident Slot Pool</a></li>
+<li class="toctree-l3"><a class="reference internal" href="resourcePools.html">Resource Pools</a></li>
+<li class="toctree-l3"><a class="reference internal" href="reusePlan.html">Reuse Plan</a></li>
+<li class="toctree-l3"><a class="reference internal" href="ropeCache.html">Rope Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="rtxRuntimeCache.html">Rtx Runtime Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="runtimeCoordinator.html">Runtime Coordinator</a></li>
+<li class="toctree-l3"><a class="reference internal" href="runtimeStepper.html">Runtime Stepper</a></li>
+<li class="toctree-l3"><a class="reference internal" href="scheduledStep.html">Scheduled Step</a></li>
+<li class="toctree-l3"><a class="reference internal" href="sharedResources.html">Shared Resources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="specCommonStateTracker.html">Spec Common State Tracker</a></li>
+<li class="toctree-l3"><a class="reference internal" href="specReuseContract.html">Spec Reuse Contract</a></li>
+<li class="toctree-l3"><a class="reference internal" href="specStatePlan.html">Spec State Plan</a></li>
+<li class="toctree-l3"><a class="reference internal" href="stepPreparer.html">Step Preparer</a></li>
+<li class="toctree-l3 current active"><a aria-current="page" class="current reference internal" href="#">Streaming</a></li>
+<li class="toctree-l3"><a class="reference internal" href="systemPromptKVCache.html">System Prompt KV Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="tensorMap.html">Tensor Map</a></li>
+<li class="toctree-l3"><a class="reference internal" href="tensorParallelNcclResources.html">Tensor Parallel Nccl Resources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="tensorParallelPluginResources.html">Tensor Parallel Plugin Resources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="tensorRegistry.html">Tensor Registry</a></li>
+<li class="toctree-l3"><a class="reference internal" href="vanillaDecoder.html">Vanilla Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="visualTokenPruner.html">Visual Token Pruner</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../sampler/index.html">Sampler Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../sampler/diffusionGemmaSampling.html">Diffusion Gemma Sampling</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../sampler/sampling.html">Sampling</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../scheduler/index.html">Scheduler Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../scheduler/batchCompatibility.html">Batch Compatibility</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../scheduler/commandQueue.html">Command Queue</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../scheduler/engineChannel.html">Engine Channel</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../scheduler/engineCommand.html">Engine Command</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../scheduler/requestCoordinator.html">Request Coordinator</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../scheduler/requestEngine.html">Request Engine</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../scheduler/requestIdentity.html">Request Identity</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../scheduler/requestRecord.html">Request Record</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../tokenizer/index.html">Tokenizer Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../tokenizer/preTokenizer.html">Pre Tokenizer</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../tokenizer/tokenEncoder.html">Token Encoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../tokenizer/tokenizer.html">Tokenizer</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../tokenizer/tokenizerUtils.html">Tokenizer Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../tokenizer/unicodeData.html">Unicode Data</a></li>
+</ul>
+</details></li>
+</ul>
+</details></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Quick Links</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference external" href="https://github.com/NVIDIA/TensorRT-Edge-LLM/releases">Releases</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/NVIDIA/TensorRT-Edge-LLM">GitHub</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/NVIDIA/TensorRT-Edge-LLM/issues?q=is%3Aissue%20state%3Aopen%20label%3ARoadmap">Roadmap</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+  </div>
+
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="../../cpp_api.html" class="nav-link">C++ API Reference</a></li>
+    
+    
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Runtime Module</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Streaming</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="streaming">
+<h1>Streaming<a class="headerlink" href="#streaming" title="Link to this heading">#</a></h1>
+<dl class="cpp class">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt13StreamChannelE">
+<span id="_CPPv3N11trt_edgellm2rt13StreamChannelE"></span><span id="_CPPv2N11trt_edgellm2rt13StreamChannelE"></span><span id="trt_edgellm::rt::StreamChannel"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1StreamChannel"></span><span class="k"><span class="pre">class</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">StreamChannel</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt13StreamChannelE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Per-slot streaming channel. </p>
+<p>Encapsulated MPSC pipe between the runtime (producer) and a single consumer. State is private; consumer interacts via <a class="reference internal" href="#classtrt__edgellm_1_1rt_1_1StreamChannel_1a9065f0317d94b94a0ecc881c042b33c0"><span class="std std-ref">consume()</span></a>/waitPop()/tryPop()/cancel(). Runtime-side operations (push, finish, setOriginalBatchIdx) are accessed via friendship so consumers cannot hold the lock or skip chunks. </p>
+<div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-functions">Public Functions</p>
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm2rt13StreamChannel17getCollectMetricsEv">
+<span id="_CPPv3NK11trt_edgellm2rt13StreamChannel17getCollectMetricsEv"></span><span id="_CPPv2NK11trt_edgellm2rt13StreamChannel17getCollectMetricsEv"></span><span id="trt_edgellm::rt::StreamChannel::getCollectMetricsC"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1StreamChannel_1a443db950867fdc7913805b0ab817d8f4"></span><span class="k"><span class="pre">inline</span></span><span class="w"> </span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">getCollectMetrics</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm2rt13StreamChannel17getCollectMetricsEv" title="Link to this definition">#</a><br /></dt>
+<dd><p>Collect per-request wall timings without enabling aggregate GPU profiling. </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt13StreamChannel13StreamChannelERK13StreamChannel">
+<span id="_CPPv3N11trt_edgellm2rt13StreamChannel13StreamChannelERK13StreamChannel"></span><span id="_CPPv2N11trt_edgellm2rt13StreamChannel13StreamChannelERK13StreamChannel"></span><span id="trt_edgellm::rt::StreamChannel::StreamChannel__StreamChannelCR"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1StreamChannel_1a7890202a76f92944f93fe4a062205998"></span><span class="sig-name descname"><span class="n"><span class="pre">StreamChannel</span></span></span><span class="sig-paren">(</span><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt13StreamChannel13StreamChannelERK13StreamChannel" title="trt_edgellm::rt::StreamChannel::StreamChannel"><span class="n"><span class="pre">StreamChannel</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="p"><span class="pre">&amp;</span></span></em><span class="sig-paren">)</span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="k"><span class="pre">delete</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt13StreamChannel13StreamChannelERK13StreamChannel" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt13StreamChannelaSERK13StreamChannel">
+<span id="_CPPv3N11trt_edgellm2rt13StreamChannelaSERK13StreamChannel"></span><span id="_CPPv2N11trt_edgellm2rt13StreamChannelaSERK13StreamChannel"></span><span id="trt_edgellm::rt::StreamChannel::assign-operator__StreamChannelCR"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1StreamChannel_1a93573b9b874258977ffb57f80eba3789"></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt13StreamChannelE" title="trt_edgellm::rt::StreamChannel"><span class="n"><span class="pre">StreamChannel</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="k"><span class="pre">operator</span></span><span class="o"><span class="pre">=</span></span></span><span class="sig-paren">(</span><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt13StreamChannelE" title="trt_edgellm::rt::StreamChannel"><span class="n"><span class="pre">StreamChannel</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="p"><span class="pre">&amp;</span></span></em><span class="sig-paren">)</span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="k"><span class="pre">delete</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt13StreamChannelaSERK13StreamChannel" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt13StreamChannel13StreamChannelERR13StreamChannel">
+<span id="_CPPv3N11trt_edgellm2rt13StreamChannel13StreamChannelERR13StreamChannel"></span><span id="_CPPv2N11trt_edgellm2rt13StreamChannel13StreamChannelERR13StreamChannel"></span><span id="trt_edgellm::rt::StreamChannel::StreamChannel__StreamChannelRR"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1StreamChannel_1a4fed9b0f4ac08790e2d90da4e8609ef1"></span><span class="sig-name descname"><span class="n"><span class="pre">StreamChannel</span></span></span><span class="sig-paren">(</span><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt13StreamChannel13StreamChannelERR13StreamChannel" title="trt_edgellm::rt::StreamChannel::StreamChannel"><span class="n"><span class="pre">StreamChannel</span></span></a><span class="p"><span class="pre">&amp;</span></span><span class="p"><span class="pre">&amp;</span></span></em><span class="sig-paren">)</span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="k"><span class="pre">delete</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt13StreamChannel13StreamChannelERR13StreamChannel" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt13StreamChannelaSERR13StreamChannel">
+<span id="_CPPv3N11trt_edgellm2rt13StreamChannelaSERR13StreamChannel"></span><span id="_CPPv2N11trt_edgellm2rt13StreamChannelaSERR13StreamChannel"></span><span id="trt_edgellm::rt::StreamChannel::assign-operator__StreamChannelRR"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1StreamChannel_1aa0321c5648058be4e9b143ad298afc3b"></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt13StreamChannelE" title="trt_edgellm::rt::StreamChannel"><span class="n"><span class="pre">StreamChannel</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="k"><span class="pre">operator</span></span><span class="o"><span class="pre">=</span></span></span><span class="sig-paren">(</span><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt13StreamChannelE" title="trt_edgellm::rt::StreamChannel"><span class="n"><span class="pre">StreamChannel</span></span></a><span class="p"><span class="pre">&amp;</span></span><span class="p"><span class="pre">&amp;</span></span></em><span class="sig-paren">)</span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="k"><span class="pre">delete</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt13StreamChannelaSERR13StreamChannel" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt13StreamChannelD0Ev">
+<span id="_CPPv3N11trt_edgellm2rt13StreamChannelD0Ev"></span><span id="_CPPv2N11trt_edgellm2rt13StreamChannelD0Ev"></span><span id="trt_edgellm::rt::StreamChannel::~StreamChannel"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1StreamChannel_1aea7089c996dcdab861714336bb0c1f62"></span><span class="sig-name descname"><span class="n"><span class="pre">~StreamChannel</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="k"><span class="pre">default</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt13StreamChannelD0Ev" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4I0EN11trt_edgellm2rt13StreamChannel7consumeEvRR7HandlerNSt6chrono12millisecondsE">
+<span id="_CPPv3I0EN11trt_edgellm2rt13StreamChannel7consumeERR7HandlerNSt6chrono12millisecondsE"></span><span id="_CPPv2I0EN11trt_edgellm2rt13StreamChannel7consumeERR7HandlerNSt6chrono12millisecondsE"></span><span class="k"><span class="pre">template</span></span><span class="p"><span class="pre">&lt;</span></span><span class="k"><span class="pre">typename</span></span><span class="w"> </span><span class="sig-name descname sig-name-template"><span class="n"><span class="pre">Handler</span></span></span><span class="p"><span class="pre">&gt;</span></span><br /><span class="target" id="classtrt__edgellm_1_1rt_1_1StreamChannel_1a9065f0317d94b94a0ecc881c042b33c0"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">consume</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="#_CPPv4I0EN11trt_edgellm2rt13StreamChannel7consumeEvRR7HandlerNSt6chrono12millisecondsE" title="trt_edgellm::rt::StreamChannel::consume::Handler"><span class="n"><span class="pre">Handler</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">handler</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">chrono</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">milliseconds</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">poll</span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">chrono</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">milliseconds</span></span><span class="p"><span class="pre">{</span></span><span class="m"><span class="pre">100</span></span><span class="p"><span class="pre">}</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4I0EN11trt_edgellm2rt13StreamChannel7consumeEvRR7HandlerNSt6chrono12millisecondsE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Block until <code class="docutils literal notranslate"><span class="pre">finished</span></code> or <code class="docutils literal notranslate"><span class="pre">cancelled</span></code>, delivering every chunk. </p>
+<p>Exits when <code class="docutils literal notranslate"><span class="pre">pending</span></code> is empty AND either <code class="docutils literal notranslate"><span class="pre">finished</span></code> or <code class="docutils literal notranslate"><span class="pre">cancelled</span></code> is set. Lock is held only for pop; <code class="docutils literal notranslate"><span class="pre">handler</span></code> runs with the mutex released.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Template Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>Handler</strong> – Callable with signature <code class="docutils literal notranslate"><span class="pre">void(</span><a class="reference internal" href="#structtrt__edgellm_1_1rt_1_1StreamChunk"><span class="std std-ref"><span class="pre">StreamChunk</span></span></a><span class="pre">&amp;&amp;)</span></code>. </p>
+</dd>
+<dt class="field-even">Parameters<span class="colon">:</span></dt>
+<dd class="field-even"><ul class="simple">
+<li><p><strong>handler</strong> – Invoked once per chunk delivered. </p></li>
+<li><p><strong>poll</strong> – Max interval between wakeups (defaults to 100ms). </p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt13StreamChannel6tryPopEv">
+<span id="_CPPv3N11trt_edgellm2rt13StreamChannel6tryPopEv"></span><span id="_CPPv2N11trt_edgellm2rt13StreamChannel6tryPopEv"></span><span id="trt_edgellm::rt::StreamChannel::tryPop"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1StreamChannel_1ace58697b63feee0edef830bb4c1c25be"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">optional</span></span><span class="p"><span class="pre">&lt;</span></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt11StreamChunkE" title="trt_edgellm::rt::StreamChunk"><span class="n"><span class="pre">StreamChunk</span></span></a><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">tryPop</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt13StreamChannel6tryPopEv" title="Link to this definition">#</a><br /></dt>
+<dd><p>Non-blocking single-chunk pop. </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt13StreamChannel7waitPopENSt6chrono12millisecondsE">
+<span id="_CPPv3N11trt_edgellm2rt13StreamChannel7waitPopENSt6chrono12millisecondsE"></span><span id="_CPPv2N11trt_edgellm2rt13StreamChannel7waitPopENSt6chrono12millisecondsE"></span><span id="trt_edgellm::rt::StreamChannel::waitPop__std::chrono::milliseconds"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1StreamChannel_1acdc21f793456c5eb1bafe6e90266a726"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">optional</span></span><span class="p"><span class="pre">&lt;</span></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt11StreamChunkE" title="trt_edgellm::rt::StreamChunk"><span class="n"><span class="pre">StreamChunk</span></span></a><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">waitPop</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">chrono</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">milliseconds</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">timeout</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt13StreamChannel7waitPopENSt6chrono12millisecondsE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Blocking single-chunk pop with timeout. </p>
+<p>Returns std::nullopt on timeout, or when woken by finish()/cancel() with empty deque. Callers that need the terminal signal should combine <a class="reference internal" href="#classtrt__edgellm_1_1rt_1_1StreamChannel_1acdc21f793456c5eb1bafe6e90266a726"><span class="std std-ref">waitPop()</span></a> with isFinished()/isCancelled(). </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm2rt13StreamChannel10isFinishedEv">
+<span id="_CPPv3NK11trt_edgellm2rt13StreamChannel10isFinishedEv"></span><span id="_CPPv2NK11trt_edgellm2rt13StreamChannel10isFinishedEv"></span><span id="trt_edgellm::rt::StreamChannel::isFinishedC"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1StreamChannel_1a013a7ebb9837a6fa516cda4cfbf89d5b"></span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">isFinished</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm2rt13StreamChannel10isFinishedEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm2rt13StreamChannel9getReasonEv">
+<span id="_CPPv3NK11trt_edgellm2rt13StreamChannel9getReasonEv"></span><span id="_CPPv2NK11trt_edgellm2rt13StreamChannel9getReasonEv"></span><span id="trt_edgellm::rt::StreamChannel::getReasonC"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1StreamChannel_1aa93071e3d0b6d639b5f329fda0aed31b"></span><span class="n"><span class="pre">FinishReason</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">getReason</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm2rt13StreamChannel9getReasonEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm2rt13StreamChannel19getOriginalBatchIdxEv">
+<span id="_CPPv3NK11trt_edgellm2rt13StreamChannel19getOriginalBatchIdxEv"></span><span id="_CPPv2NK11trt_edgellm2rt13StreamChannel19getOriginalBatchIdxEv"></span><span id="trt_edgellm::rt::StreamChannel::getOriginalBatchIdxC"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1StreamChannel_1a68ec35cee2e065349ca90e865b42cc44"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">getOriginalBatchIdx</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm2rt13StreamChannel19getOriginalBatchIdxEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm2rt13StreamChannel11isCancelledEv">
+<span id="_CPPv3NK11trt_edgellm2rt13StreamChannel11isCancelledEv"></span><span id="_CPPv2NK11trt_edgellm2rt13StreamChannel11isCancelledEv"></span><span id="trt_edgellm::rt::StreamChannel::isCancelledC"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1StreamChannel_1a4af65b04cb28735fd793eae1abbe8f86"></span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">isCancelled</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm2rt13StreamChannel11isCancelledEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt13StreamChannel6cancelEv">
+<span id="_CPPv3N11trt_edgellm2rt13StreamChannel6cancelEv"></span><span id="_CPPv2N11trt_edgellm2rt13StreamChannel6cancelEv"></span><span id="trt_edgellm::rt::StreamChannel::cancel"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1StreamChannel_1a684e05ad58c7cbab30e959a3dcb7b346"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">cancel</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt13StreamChannel6cancelEv" title="Link to this definition">#</a><br /></dt>
+<dd><p>Fire-and-forget cancellation. Safe from any thread. Wakes blocked consume/waitPop. </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt13StreamChannel17setStreamIntervalE7int32_t">
+<span id="_CPPv3N11trt_edgellm2rt13StreamChannel17setStreamIntervalE7int32_t"></span><span id="_CPPv2N11trt_edgellm2rt13StreamChannel17setStreamIntervalE7int32_t"></span><span id="trt_edgellm::rt::StreamChannel::setStreamInterval__int32_t"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1StreamChannel_1a7ab922b838e494def28d6ac3e2705ad5"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">setStreamInterval</span></span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">n</span></span></em><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt13StreamChannel17setStreamIntervalE7int32_t" title="Link to this definition">#</a><br /></dt>
+<dd><p>Per-request emit throttle. Values &lt; 1 are clamped to 1. Default 1. </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm2rt13StreamChannel17getStreamIntervalEv">
+<span id="_CPPv3NK11trt_edgellm2rt13StreamChannel17getStreamIntervalEv"></span><span id="_CPPv2NK11trt_edgellm2rt13StreamChannel17getStreamIntervalEv"></span><span id="trt_edgellm::rt::StreamChannel::getStreamIntervalC"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1StreamChannel_1acead06ae8baa356f8a43e04d8f1755d8"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">getStreamInterval</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm2rt13StreamChannel17getStreamIntervalEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt13StreamChannel20setSkipSpecialTokensEb">
+<span id="_CPPv3N11trt_edgellm2rt13StreamChannel20setSkipSpecialTokensEb"></span><span id="_CPPv2N11trt_edgellm2rt13StreamChannel20setSkipSpecialTokensEb"></span><span id="trt_edgellm::rt::StreamChannel::setSkipSpecialTokens__b"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1StreamChannel_1abc6df6d6682a90d3b29b546fe04362c1"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">setSkipSpecialTokens</span></span></span><span class="sig-paren">(</span><em class="sig-param"><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">skip</span></span></em><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt13StreamChannel20setSkipSpecialTokensEb" title="Link to this definition">#</a><br /></dt>
+<dd><p>Filter special tokens (EOS, <code class="docutils literal notranslate"><span class="pre">&lt;|im_end|&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;think&gt;</span></code>, vision placeholders, etc.) out of <code class="docutils literal notranslate"><span class="pre">chunk.text</span></code>. Default <code class="docutils literal notranslate"><span class="pre">true</span></code>. <code class="docutils literal notranslate"><span class="pre">chunk.tokenIds</span></code> is unaffected either way. Set before the channel is attached. </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm2rt13StreamChannel20getSkipSpecialTokensEv">
+<span id="_CPPv3NK11trt_edgellm2rt13StreamChannel20getSkipSpecialTokensEv"></span><span id="_CPPv2NK11trt_edgellm2rt13StreamChannel20getSkipSpecialTokensEv"></span><span id="trt_edgellm::rt::StreamChannel::getSkipSpecialTokensC"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1StreamChannel_1a4b72590cf6dea8de6f588675791ca1ae"></span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">getSkipSpecialTokens</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm2rt13StreamChannel20getSkipSpecialTokensEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+</div>
+<div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-static-functions">Public Static Functions</p>
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt13StreamChannel6createEb">
+<span id="_CPPv3N11trt_edgellm2rt13StreamChannel6createEb"></span><span id="_CPPv2N11trt_edgellm2rt13StreamChannel6createEb"></span><span id="trt_edgellm::rt::StreamChannel::create__b"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1StreamChannel_1a9e4e7ba47ba7a3819a67c4d1bac164c2"></span><span class="k"><span class="pre">static</span></span><span class="w"> </span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">shared_ptr</span></span><span class="p"><span class="pre">&lt;</span></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt13StreamChannelE" title="trt_edgellm::rt::StreamChannel"><span class="n"><span class="pre">StreamChannel</span></span></a><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">create</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">collectMetrics</span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="k"><span class="pre">false</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt13StreamChannel6createEb" title="Link to this definition">#</a><br /></dt>
+<dd><p>Factory — only way to construct. Enforces shared_ptr ownership. </p>
+</dd></dl>
+
+</div>
+</dd></dl>
+
+<dl class="cpp class">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt18AudioStreamChannelE">
+<span id="_CPPv3N11trt_edgellm2rt18AudioStreamChannelE"></span><span id="_CPPv2N11trt_edgellm2rt18AudioStreamChannelE"></span><span id="trt_edgellm::rt::AudioStreamChannel"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1AudioStreamChannel"></span><span class="k"><span class="pre">class</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">AudioStreamChannel</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt18AudioStreamChannelE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Thread-safe MPSC queue carrying PCM chunks from the vocode callback to a single consumer. push()/finish() are public (unlike <a class="reference internal" href="#classtrt__edgellm_1_1rt_1_1StreamChannel"><span class="std std-ref">StreamChannel</span></a>’s friend-guarded producer API) because producers are pipeline callbacks composed outside the runtime. </p>
+<div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-functions">Public Functions</p>
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt18AudioStreamChannel7waitPopENSt6chrono12millisecondsE">
+<span id="_CPPv3N11trt_edgellm2rt18AudioStreamChannel7waitPopENSt6chrono12millisecondsE"></span><span id="_CPPv2N11trt_edgellm2rt18AudioStreamChannel7waitPopENSt6chrono12millisecondsE"></span><span id="trt_edgellm::rt::AudioStreamChannel::waitPop__std::chrono::milliseconds"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1AudioStreamChannel_1a722e13c0972b070cd24297ceecdae45d"></span><span class="k"><span class="pre">inline</span></span><span class="w"> </span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">optional</span></span><span class="p"><span class="pre">&lt;</span></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt10AudioChunkE" title="trt_edgellm::rt::AudioChunk"><span class="n"><span class="pre">AudioChunk</span></span></a><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">waitPop</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">chrono</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">milliseconds</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">timeout</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt18AudioStreamChannel7waitPopENSt6chrono12millisecondsE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Blocking pop; nullopt on timeout or terminal wake — combine with isFinished()/isCancelled(). A zero timeout is a non-blocking pop. </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm2rt18AudioStreamChannel10isFinishedEv">
+<span id="_CPPv3NK11trt_edgellm2rt18AudioStreamChannel10isFinishedEv"></span><span id="_CPPv2NK11trt_edgellm2rt18AudioStreamChannel10isFinishedEv"></span><span id="trt_edgellm::rt::AudioStreamChannel::isFinishedC"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1AudioStreamChannel_1af48778fb1339f560e552a2638f533813"></span><span class="k"><span class="pre">inline</span></span><span class="w"> </span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">isFinished</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm2rt18AudioStreamChannel10isFinishedEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4NK11trt_edgellm2rt18AudioStreamChannel11isCancelledEv">
+<span id="_CPPv3NK11trt_edgellm2rt18AudioStreamChannel11isCancelledEv"></span><span id="_CPPv2NK11trt_edgellm2rt18AudioStreamChannel11isCancelledEv"></span><span id="trt_edgellm::rt::AudioStreamChannel::isCancelledC"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1AudioStreamChannel_1a3ff6e89119bf1f4dba3cefa9862b91d8"></span><span class="k"><span class="pre">inline</span></span><span class="w"> </span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">isCancelled</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4NK11trt_edgellm2rt18AudioStreamChannel11isCancelledEv" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt18AudioStreamChannel6cancelEv">
+<span id="_CPPv3N11trt_edgellm2rt18AudioStreamChannel6cancelEv"></span><span id="_CPPv2N11trt_edgellm2rt18AudioStreamChannel6cancelEv"></span><span id="trt_edgellm::rt::AudioStreamChannel::cancel"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1AudioStreamChannel_1af4ac41adad928b14c1b03e5ff38fe634"></span><span class="k"><span class="pre">inline</span></span><span class="w"> </span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">cancel</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt18AudioStreamChannel6cancelEv" title="Link to this definition">#</a><br /></dt>
+<dd><p>Wakes a blocked waitPop; producers observe it via isCancelled(). </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt18AudioStreamChannel4pushE10AudioChunk">
+<span id="_CPPv3N11trt_edgellm2rt18AudioStreamChannel4pushE10AudioChunk"></span><span id="_CPPv2N11trt_edgellm2rt18AudioStreamChannel4pushE10AudioChunk"></span><span id="trt_edgellm::rt::AudioStreamChannel::push__AudioChunk"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1AudioStreamChannel_1a1a76a20fed8d4ae7bd458f95b09b2b72"></span><span class="k"><span class="pre">inline</span></span><span class="w"> </span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">push</span></span></span><span class="sig-paren">(</span><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt10AudioChunkE" title="trt_edgellm::rt::AudioChunk"><span class="n"><span class="pre">AudioChunk</span></span></a><span class="w"> </span><span class="n sig-param"><span class="pre">chunk</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt18AudioStreamChannel4pushE10AudioChunk" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt18AudioStreamChannel6finishEv">
+<span id="_CPPv3N11trt_edgellm2rt18AudioStreamChannel6finishEv"></span><span id="_CPPv2N11trt_edgellm2rt18AudioStreamChannel6finishEv"></span><span id="trt_edgellm::rt::AudioStreamChannel::finish"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1AudioStreamChannel_1a6e82cf90db22a73084314c045f032059"></span><span class="k"><span class="pre">inline</span></span><span class="w"> </span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">finish</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt18AudioStreamChannel6finishEv" title="Link to this definition">#</a><br /></dt>
+<dd><p>Idempotent end-of-stream marker. </p>
+</dd></dl>
+
+</div>
+</dd></dl>
+
+<dl class="cpp class">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt22StreamChannelFinalizerE">
+<span id="_CPPv3N11trt_edgellm2rt22StreamChannelFinalizerE"></span><span id="_CPPv2N11trt_edgellm2rt22StreamChannelFinalizerE"></span><span id="trt_edgellm::rt::StreamChannelFinalizer"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1StreamChannelFinalizer"></span><span class="k"><span class="pre">class</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">StreamChannelFinalizer</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt22StreamChannelFinalizerE" title="Link to this definition">#</a><br /></dt>
+<dd><p>RAII guard that guarantees every attached <a class="reference internal" href="#classtrt__edgellm_1_1rt_1_1StreamChannel"><span class="std std-ref">StreamChannel</span></a> terminates. </p>
+<p>On destruction, for every slot whose channel has not yet been finalized the guard:<ol class="loweralpha simple">
+<li><p>Tries to build a terminal chunk containing any un-emitted tokens + text (sanitized + flushed to U+FFFD) with reason=kError and push()es it.</p></li>
+<li><p>Calls finish(kError) — idempotent, no-throw — to guarantee the consumer unblocks even if (1) failed under OOM. </p></li>
+</ol>
+</p>
+<div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-functions">Public Functions</p>
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt22StreamChannelFinalizer22StreamChannelFinalizerER24DecodingInferenceContextRKN9tokenizer9TokenizerE">
+<span id="_CPPv3N11trt_edgellm2rt22StreamChannelFinalizer22StreamChannelFinalizerER24DecodingInferenceContextRKN9tokenizer9TokenizerE"></span><span id="_CPPv2N11trt_edgellm2rt22StreamChannelFinalizer22StreamChannelFinalizerER24DecodingInferenceContextRKN9tokenizer9TokenizerE"></span><span id="trt_edgellm::rt::StreamChannelFinalizer::StreamChannelFinalizer__DecodingInferenceContextR.tokenizer::TokenizerCR"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1StreamChannelFinalizer_1a927cb3e43eaa6ed5abc4dd8582a20088"></span><span class="sig-name descname"><span class="n"><span class="pre">StreamChannelFinalizer</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="decodingInferenceContext.html#_CPPv4N11trt_edgellm2rt24DecodingInferenceContextE" title="trt_edgellm::rt::DecodingInferenceContext"><span class="n"><span class="pre">DecodingInferenceContext</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">ctx</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">tokenizer</span></span><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../tokenizer/tokenizer.html#_CPPv4N11trt_edgellm9tokenizer9TokenizerE" title="trt_edgellm::tokenizer::Tokenizer"><span class="n"><span class="pre">Tokenizer</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">tok</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt22StreamChannelFinalizer22StreamChannelFinalizerER24DecodingInferenceContextRKN9tokenizer9TokenizerE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt22StreamChannelFinalizerD0Ev">
+<span id="_CPPv3N11trt_edgellm2rt22StreamChannelFinalizerD0Ev"></span><span id="_CPPv2N11trt_edgellm2rt22StreamChannelFinalizerD0Ev"></span><span id="trt_edgellm::rt::StreamChannelFinalizer::~StreamChannelFinalizer"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1StreamChannelFinalizer_1ab6a37b581a6d34838210c3d35686d67e"></span><span class="sig-name descname"><span class="n"><span class="pre">~StreamChannelFinalizer</span></span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt22StreamChannelFinalizerD0Ev" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt22StreamChannelFinalizer22StreamChannelFinalizerERK22StreamChannelFinalizer">
+<span id="_CPPv3N11trt_edgellm2rt22StreamChannelFinalizer22StreamChannelFinalizerERK22StreamChannelFinalizer"></span><span id="_CPPv2N11trt_edgellm2rt22StreamChannelFinalizer22StreamChannelFinalizerERK22StreamChannelFinalizer"></span><span id="trt_edgellm::rt::StreamChannelFinalizer::StreamChannelFinalizer__StreamChannelFinalizerCR"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1StreamChannelFinalizer_1a2eb4702ad627853bf045fb3ef58c0868"></span><span class="sig-name descname"><span class="n"><span class="pre">StreamChannelFinalizer</span></span></span><span class="sig-paren">(</span><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt22StreamChannelFinalizer22StreamChannelFinalizerERK22StreamChannelFinalizer" title="trt_edgellm::rt::StreamChannelFinalizer::StreamChannelFinalizer"><span class="n"><span class="pre">StreamChannelFinalizer</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="p"><span class="pre">&amp;</span></span></em><span class="sig-paren">)</span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="k"><span class="pre">delete</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt22StreamChannelFinalizer22StreamChannelFinalizerERK22StreamChannelFinalizer" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt22StreamChannelFinalizeraSERK22StreamChannelFinalizer">
+<span id="_CPPv3N11trt_edgellm2rt22StreamChannelFinalizeraSERK22StreamChannelFinalizer"></span><span id="_CPPv2N11trt_edgellm2rt22StreamChannelFinalizeraSERK22StreamChannelFinalizer"></span><span id="trt_edgellm::rt::StreamChannelFinalizer::assign-operator__StreamChannelFinalizerCR"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1StreamChannelFinalizer_1a3216d8c8cc7ebd8aa4eef3519bb7a878"></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt22StreamChannelFinalizerE" title="trt_edgellm::rt::StreamChannelFinalizer"><span class="n"><span class="pre">StreamChannelFinalizer</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="k"><span class="pre">operator</span></span><span class="o"><span class="pre">=</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt22StreamChannelFinalizerE" title="trt_edgellm::rt::StreamChannelFinalizer"><span class="n"><span class="pre">StreamChannelFinalizer</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="p"><span class="pre">&amp;</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="k"><span class="pre">delete</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt22StreamChannelFinalizeraSERK22StreamChannelFinalizer" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt22StreamChannelFinalizer22StreamChannelFinalizerERR22StreamChannelFinalizer">
+<span id="_CPPv3N11trt_edgellm2rt22StreamChannelFinalizer22StreamChannelFinalizerERR22StreamChannelFinalizer"></span><span id="_CPPv2N11trt_edgellm2rt22StreamChannelFinalizer22StreamChannelFinalizerERR22StreamChannelFinalizer"></span><span id="trt_edgellm::rt::StreamChannelFinalizer::StreamChannelFinalizer__StreamChannelFinalizerRR"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1StreamChannelFinalizer_1a6eb97b73bc7e347c87cb72183b3a86a2"></span><span class="sig-name descname"><span class="n"><span class="pre">StreamChannelFinalizer</span></span></span><span class="sig-paren">(</span><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt22StreamChannelFinalizer22StreamChannelFinalizerERR22StreamChannelFinalizer" title="trt_edgellm::rt::StreamChannelFinalizer::StreamChannelFinalizer"><span class="n"><span class="pre">StreamChannelFinalizer</span></span></a><span class="p"><span class="pre">&amp;</span></span><span class="p"><span class="pre">&amp;</span></span></em><span class="sig-paren">)</span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="k"><span class="pre">delete</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt22StreamChannelFinalizer22StreamChannelFinalizerERR22StreamChannelFinalizer" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt22StreamChannelFinalizeraSERR22StreamChannelFinalizer">
+<span id="_CPPv3N11trt_edgellm2rt22StreamChannelFinalizeraSERR22StreamChannelFinalizer"></span><span id="_CPPv2N11trt_edgellm2rt22StreamChannelFinalizeraSERR22StreamChannelFinalizer"></span><span id="trt_edgellm::rt::StreamChannelFinalizer::assign-operator__StreamChannelFinalizerRR"></span><span class="target" id="classtrt__edgellm_1_1rt_1_1StreamChannelFinalizer_1a34986742df44718d202bc0a62ad2ff24"></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt22StreamChannelFinalizerE" title="trt_edgellm::rt::StreamChannelFinalizer"><span class="n"><span class="pre">StreamChannelFinalizer</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="sig-name descname"><span class="k"><span class="pre">operator</span></span><span class="o"><span class="pre">=</span></span></span><span class="sig-paren">(</span><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt22StreamChannelFinalizerE" title="trt_edgellm::rt::StreamChannelFinalizer"><span class="n"><span class="pre">StreamChannelFinalizer</span></span></a><span class="p"><span class="pre">&amp;</span></span><span class="p"><span class="pre">&amp;</span></span></em><span class="sig-paren">)</span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="k"><span class="pre">delete</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt22StreamChannelFinalizeraSERR22StreamChannelFinalizer" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+</div>
+</dd></dl>
+
+<dl class="cpp struct">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt11StreamChunkE">
+<span id="_CPPv3N11trt_edgellm2rt11StreamChunkE"></span><span id="_CPPv2N11trt_edgellm2rt11StreamChunkE"></span><span id="trt_edgellm::rt::StreamChunk"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1StreamChunk"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">StreamChunk</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt11StreamChunkE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Single delta chunk on a streaming channel. </p>
+<p><code class="docutils literal notranslate"><span class="pre">text</span></code> is always well-formed UTF-8 when pushed by the runtime — invalid byte sequences are replaced with U+FFFD before emission. Empty <code class="docutils literal notranslate"><span class="pre">text</span></code> chunks are legal (e.g., terminal chunks after all bytes were emitted). </p>
+<div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-members">Public Members</p>
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt11StreamChunk8tokenIdsE">
+<span id="_CPPv3N11trt_edgellm2rt11StreamChunk8tokenIdsE"></span><span id="_CPPv2N11trt_edgellm2rt11StreamChunk8tokenIdsE"></span><span id="trt_edgellm::rt::StreamChunk::tokenIds__std::vector:int32_t:"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1StreamChunk_1a9108905f6c35f01670c805a18b66600a"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">int32_t</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">tokenIds</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt11StreamChunk8tokenIdsE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Delta tokens since last chunk (may be &gt;1 under spec-decode). </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt11StreamChunk4textE">
+<span id="_CPPv3N11trt_edgellm2rt11StreamChunk4textE"></span><span id="_CPPv2N11trt_edgellm2rt11StreamChunk4textE"></span><span id="trt_edgellm::rt::StreamChunk::text__ss"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1StreamChunk_1abdd7dfe00cb079c798f4ac4fc03c7335"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">string</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">text</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt11StreamChunk4textE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Delta text; always well-formed UTF-8. </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt11StreamChunk16promptTokenCountE">
+<span id="_CPPv3N11trt_edgellm2rt11StreamChunk16promptTokenCountE"></span><span id="_CPPv2N11trt_edgellm2rt11StreamChunk16promptTokenCountE"></span><span id="trt_edgellm::rt::StreamChunk::promptTokenCount__int32_t"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1StreamChunk_1ad8e86f44e016c7d8b18b467ca184b07e"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">promptTokenCount</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="o"><span class="pre">-</span></span><span class="m"><span class="pre">1</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt11StreamChunk16promptTokenCountE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Exact input-token count, or -1 when unavailable. </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt11StreamChunk7metricsE">
+<span id="_CPPv3N11trt_edgellm2rt11StreamChunk7metricsE"></span><span id="_CPPv2N11trt_edgellm2rt11StreamChunk7metricsE"></span><span id="trt_edgellm::rt::StreamChunk::metrics__StreamMetrics"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1StreamChunk_1aab9306902a55440c64cd79c6b60ae688"></span><span class="n"><span class="pre">StreamMetrics</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">metrics</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt11StreamChunk7metricsE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Producer-side cumulative snapshot, independent of emission interval. </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt11StreamChunk8finishedE">
+<span id="_CPPv3N11trt_edgellm2rt11StreamChunk8finishedE"></span><span id="_CPPv2N11trt_edgellm2rt11StreamChunk8finishedE"></span><span id="trt_edgellm::rt::StreamChunk::finished__b"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1StreamChunk_1ac749d37786e6c5b8f3af88fe3dfc8acc"></span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">finished</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="k"><span class="pre">false</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt11StreamChunk8finishedE" title="Link to this definition">#</a><br /></dt>
+<dd><p>True for the final chunk on this channel. </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt11StreamChunk6reasonE">
+<span id="_CPPv3N11trt_edgellm2rt11StreamChunk6reasonE"></span><span id="_CPPv2N11trt_edgellm2rt11StreamChunk6reasonE"></span><span id="trt_edgellm::rt::StreamChunk::reason__FinishReason"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1StreamChunk_1a1c0682290d11b49c016b73af0c078937"></span><span class="n"><span class="pre">FinishReason</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">reason</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="n"><span class="pre">FinishReason</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">kNotFinished</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt11StreamChunk6reasonE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Terminal reason (only meaningful when <code class="docutils literal notranslate"><span class="pre">finished==true</span></code>). </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt11StreamChunk8logprobsE">
+<span id="_CPPv3N11trt_edgellm2rt11StreamChunk8logprobsE"></span><span id="_CPPv2N11trt_edgellm2rt11StreamChunk8logprobsE"></span><span id="trt_edgellm::rt::StreamChunk::logprobs__std::vector:std::vector:LogprobEntry::"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1StreamChunk_1a95146a8f8b261826a55901717db729b2"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><a class="reference internal" href="llmRuntimeUtils.html#_CPPv4N11trt_edgellm2rt12LogprobEntryE" title="trt_edgellm::rt::LogprobEntry"><span class="n"><span class="pre">LogprobEntry</span></span></a><span class="p"><span class="pre">&gt;</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">logprobs</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt11StreamChunk8logprobsE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Per-token top-K logprobs: logprobs[i] = [<a class="reference internal" href="llmRuntimeUtils.html#structtrt__edgellm_1_1rt_1_1LogprobEntry"><span class="std std-ref">LogprobEntry</span></a>, …] for tokenIds[i]. Empty when numLogprobs == 0. </p>
+</dd></dl>
+
+</div>
+</dd></dl>
+
+<dl class="cpp struct">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt16StopMatchOutcomeE">
+<span id="_CPPv3N11trt_edgellm2rt16StopMatchOutcomeE"></span><span id="_CPPv2N11trt_edgellm2rt16StopMatchOutcomeE"></span><span id="trt_edgellm::rt::StopMatchOutcome"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1StopMatchOutcome"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">StopMatchOutcome</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt16StopMatchOutcomeE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Result of applyStopStringMatch. </p>
+<div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-members">Public Members</p>
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt16StopMatchOutcome7emittedE">
+<span id="_CPPv3N11trt_edgellm2rt16StopMatchOutcome7emittedE"></span><span id="_CPPv2N11trt_edgellm2rt16StopMatchOutcome7emittedE"></span><span id="trt_edgellm::rt::StopMatchOutcome::emitted__ss"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1StopMatchOutcome_1a326457b96042cf5c1aa7100b733a8f40"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">string</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">emitted</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt16StopMatchOutcome7emittedE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Bytes safe to push right now. </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt16StopMatchOutcome11stopMatchedE">
+<span id="_CPPv3N11trt_edgellm2rt16StopMatchOutcome11stopMatchedE"></span><span id="_CPPv2N11trt_edgellm2rt16StopMatchOutcome11stopMatchedE"></span><span id="trt_edgellm::rt::StopMatchOutcome::stopMatched__b"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1StopMatchOutcome_1a7f813d7f2ce6757c07e36c09f49fcb94"></span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">stopMatched</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="k"><span class="pre">false</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt16StopMatchOutcome11stopMatchedE" title="Link to this definition">#</a><br /></dt>
+<dd><p>True iff a stop string was found and triggered truncation. </p>
+</dd></dl>
+
+</div>
+</dd></dl>
+
+<dl class="cpp struct">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10AudioChunkE">
+<span id="_CPPv3N11trt_edgellm2rt10AudioChunkE"></span><span id="_CPPv2N11trt_edgellm2rt10AudioChunkE"></span><span id="trt_edgellm::rt::AudioChunk"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1AudioChunk"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">AudioChunk</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10AudioChunkE" title="Link to this definition">#</a><br /></dt>
+<dd><p>One PCM chunk emitted by a streaming audio (TTS / Omni) pipeline. </p>
+<div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-members">Public Members</p>
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10AudioChunk5pcm16E">
+<span id="_CPPv3N11trt_edgellm2rt10AudioChunk5pcm16E"></span><span id="_CPPv2N11trt_edgellm2rt10AudioChunk5pcm16E"></span><span id="trt_edgellm::rt::AudioChunk::pcm16__ss"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1AudioChunk_1a1e0b633102181d598a3aa37047c91a0e"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">string</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">pcm16</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10AudioChunk5pcm16E" title="Link to this definition">#</a><br /></dt>
+<dd><p>Little-endian int16 mono PCM samples. </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10AudioChunk7isFinalE">
+<span id="_CPPv3N11trt_edgellm2rt10AudioChunk7isFinalE"></span><span id="_CPPv2N11trt_edgellm2rt10AudioChunk7isFinalE"></span><span id="trt_edgellm::rt::AudioChunk::isFinal__b"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1AudioChunk_1a5d5cd708153985546b29ab0ff577550f"></span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">isFinal</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="k"><span class="pre">false</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10AudioChunk7isFinalE" title="Link to this definition">#</a><br /></dt>
+<dd><p>True on the last chunk of the request. </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10AudioChunk9numFramesE">
+<span id="_CPPv3N11trt_edgellm2rt10AudioChunk9numFramesE"></span><span id="_CPPv2N11trt_edgellm2rt10AudioChunk9numFramesE"></span><span id="trt_edgellm::rt::AudioChunk::numFrames__int32_t"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1AudioChunk_1a17ce1d818b05317a7d6a2fd0b1cecf98"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">numFrames</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="m"><span class="pre">0</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10AudioChunk9numFramesE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Codec frames vocoded into this chunk. </p>
+</dd></dl>
+
+</div>
+</dd></dl>
+
+<dl class="cpp struct">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt15SlotStreamStateE">
+<span id="_CPPv3N11trt_edgellm2rt15SlotStreamStateE"></span><span id="_CPPv2N11trt_edgellm2rt15SlotStreamStateE"></span><span id="trt_edgellm::rt::SlotStreamState"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1SlotStreamState"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">SlotStreamState</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt15SlotStreamStateE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Per-slot detokenization and streaming state. </p>
+<p>Lives in <a class="reference internal" href="decodingInferenceContext.html#structtrt__edgellm_1_1rt_1_1DecodingInferenceContext"><span class="std std-ref">DecodingInferenceContext</span></a>, compacted in lockstep with tokenIds. </p>
+<div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-members">Public Members</p>
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt15SlotStreamState7channelE">
+<span id="_CPPv3N11trt_edgellm2rt15SlotStreamState7channelE"></span><span id="_CPPv2N11trt_edgellm2rt15SlotStreamState7channelE"></span><span id="trt_edgellm::rt::SlotStreamState::channel__std::shared_ptr:StreamChannel:"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1SlotStreamState_1a3fd133d7560601709297beb3bb07f3b1"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">shared_ptr</span></span><span class="p"><span class="pre">&lt;</span></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt13StreamChannelE" title="trt_edgellm::rt::StreamChannel"><span class="n"><span class="pre">StreamChannel</span></span></a><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">channel</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt15SlotStreamState7channelE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Channel (null ⇒ streaming disabled for this slot). </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt15SlotStreamState17skipSpecialTokensE">
+<span id="_CPPv3N11trt_edgellm2rt15SlotStreamState17skipSpecialTokensE"></span><span id="_CPPv2N11trt_edgellm2rt15SlotStreamState17skipSpecialTokensE"></span><span id="trt_edgellm::rt::SlotStreamState::skipSpecialTokens__b"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1SlotStreamState_1aadc304bf54a14e05dd9e20075c5609f9"></span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">skipSpecialTokens</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="k"><span class="pre">true</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt15SlotStreamState17skipSpecialTokensE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Non-streaming detokenization policy. Streaming slots read this from their channel. </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt15SlotStreamState8profilerE">
+<span id="_CPPv3N11trt_edgellm2rt15SlotStreamState8profilerE"></span><span id="_CPPv2N11trt_edgellm2rt15SlotStreamState8profilerE"></span><span id="trt_edgellm::rt::SlotStreamState::profiler__metrics::LLMRequestProfiler"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1SlotStreamState_1ad51049a91bfaebfdcdd99c07c508a0f9"></span><span class="n"><span class="pre">metrics</span></span><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../profiling/requestProfiler.html#_CPPv4I0EN11trt_edgellm7metrics18LLMRequestProfilerE" title="trt_edgellm::metrics::LLMRequestProfiler"><span class="n"><span class="pre">LLMRequestProfiler</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">profiler</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt15SlotStreamState8profilerE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt15SlotStreamState14sentTokenCountE">
+<span id="_CPPv3N11trt_edgellm2rt15SlotStreamState14sentTokenCountE"></span><span id="_CPPv2N11trt_edgellm2rt15SlotStreamState14sentTokenCountE"></span><span id="trt_edgellm::rt::SlotStreamState::sentTokenCount__s"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1SlotStreamState_1ac72e96888d84960fe11d09b22d89e4d9"></span><span class="n"><span class="pre">size_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">sentTokenCount</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="m"><span class="pre">0</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt15SlotStreamState14sentTokenCountE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Count of tokens whose piece bytes have been fed through emitDelta. </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt15SlotStreamState21lastEmittedTokenCountE">
+<span id="_CPPv3N11trt_edgellm2rt15SlotStreamState21lastEmittedTokenCountE"></span><span id="_CPPv2N11trt_edgellm2rt15SlotStreamState21lastEmittedTokenCountE"></span><span id="trt_edgellm::rt::SlotStreamState::lastEmittedTokenCount__s"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1SlotStreamState_1ae240324046220a5b944f60578cc6969d"></span><span class="n"><span class="pre">size_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">lastEmittedTokenCount</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="m"><span class="pre">0</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt15SlotStreamState21lastEmittedTokenCountE" title="Link to this definition">#</a><br /></dt>
+<dd><p>sentTokenCount at last push (for streamInterval gating). </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt15SlotStreamState20logprobsEmittedCountE">
+<span id="_CPPv3N11trt_edgellm2rt15SlotStreamState20logprobsEmittedCountE"></span><span id="_CPPv2N11trt_edgellm2rt15SlotStreamState20logprobsEmittedCountE"></span><span id="trt_edgellm::rt::SlotStreamState::logprobsEmittedCount__s"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1SlotStreamState_1a268d486f44e99d0b10fd78631450eed2"></span><span class="n"><span class="pre">size_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">logprobsEmittedCount</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="m"><span class="pre">0</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt15SlotStreamState20logprobsEmittedCountE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Number of logprob steps already pushed (0-based, independent of prompt length). </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt15SlotStreamState12pendingBytesE">
+<span id="_CPPv3N11trt_edgellm2rt15SlotStreamState12pendingBytesE"></span><span id="_CPPv2N11trt_edgellm2rt15SlotStreamState12pendingBytesE"></span><span id="trt_edgellm::rt::SlotStreamState::pendingBytes__ss"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1SlotStreamState_1a9a0294ea96e876a525a93f5047757367"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">string</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">pendingBytes</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt15SlotStreamState12pendingBytesE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Trailing incomplete UTF-8 bytes carried across iterations. </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt15SlotStreamState14terminalReasonE">
+<span id="_CPPv3N11trt_edgellm2rt15SlotStreamState14terminalReasonE"></span><span id="_CPPv2N11trt_edgellm2rt15SlotStreamState14terminalReasonE"></span><span id="trt_edgellm::rt::SlotStreamState::terminalReason__FinishReason"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1SlotStreamState_1aaa69ca8c3ffbe0d9fcb156540b1f2315"></span><span class="n"><span class="pre">FinishReason</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">terminalReason</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="n"><span class="pre">FinishReason</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">kNotFinished</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt15SlotStreamState14terminalReasonE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Terminal reason latched at the moment finishedStates[i] flips to 1. One writer (the code that flips the state), one reader (the emit hook). </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt15SlotStreamState15stopMatchBufferE">
+<span id="_CPPv3N11trt_edgellm2rt15SlotStreamState15stopMatchBufferE"></span><span id="_CPPv2N11trt_edgellm2rt15SlotStreamState15stopMatchBufferE"></span><span id="trt_edgellm::rt::SlotStreamState::stopMatchBuffer__ss"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1SlotStreamState_1a9fe2ca3c200f07003f56f2c602a03ff7"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">string</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">stopMatchBuffer</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt15SlotStreamState15stopMatchBufferE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Hold-back buffer for cross-iteration stop-string matching; bounded by maxStopLen - 1 bytes. </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt15SlotStreamState10maxStopLenE">
+<span id="_CPPv3N11trt_edgellm2rt15SlotStreamState10maxStopLenE"></span><span id="_CPPv2N11trt_edgellm2rt15SlotStreamState10maxStopLenE"></span><span id="trt_edgellm::rt::SlotStreamState::maxStopLen__s"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1SlotStreamState_1ae4f83fb49eed34d82054d586540329ff"></span><span class="n"><span class="pre">size_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">maxStopLen</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="m"><span class="pre">0</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt15SlotStreamState10maxStopLenE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Cached max(stopStrings[*].size()) for this slot; 0 if no stops. Pre-computed once at handleRequest entry so applyStopStringMatch can skip the per-call scan. </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt15SlotStreamState15pendingEmitTextE">
+<span id="_CPPv3N11trt_edgellm2rt15SlotStreamState15pendingEmitTextE"></span><span id="_CPPv2N11trt_edgellm2rt15SlotStreamState15pendingEmitTextE"></span><span id="trt_edgellm::rt::SlotStreamState::pendingEmitText__ss"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1SlotStreamState_1abf7f114765a1493e87ae4b912bb3b75d"></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">string</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">pendingEmitText</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt15SlotStreamState15pendingEmitTextE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Per-iteration emit text; populated by decodePerSlot, consumed (moved out) by emitChunks. Empty between iterations. </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt15SlotStreamState19stopMatchedThisIterE">
+<span id="_CPPv3N11trt_edgellm2rt15SlotStreamState19stopMatchedThisIterE"></span><span id="_CPPv2N11trt_edgellm2rt15SlotStreamState19stopMatchedThisIterE"></span><span id="trt_edgellm::rt::SlotStreamState::stopMatchedThisIter__b"></span><span class="target" id="structtrt__edgellm_1_1rt_1_1SlotStreamState_1a231c526cde2016c7950851092293b7ca"></span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">stopMatchedThisIter</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="k"><span class="pre">false</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt15SlotStreamState19stopMatchedThisIterE" title="Link to this definition">#</a><br /></dt>
+<dd><p>True iff stop-string match fired in decodePerSlot this iteration. Read by updateFinishStates to apply the kStopWords override; reset at top of each decodePerSlot pass. </p>
+</dd></dl>
+
+</div>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt19attachStreamChannelERKNSt10shared_ptrI13StreamChannelEE7int32_t">
+<span id="_CPPv3N11trt_edgellm2rt19attachStreamChannelERKNSt10shared_ptrI13StreamChannelEE7int32_t"></span><span id="_CPPv2N11trt_edgellm2rt19attachStreamChannelERKNSt10shared_ptrI13StreamChannelEE7int32_t"></span><span id="trt_edgellm::rt::attachStreamChannel__std::shared_ptr:StreamChannel:CR.int32_t"></span><span class="target" id="streaming_8cpp_1ac8ffe1898f6198b6e81d8343e55eb26b"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><span class="n"><span class="pre">trt_edgellm</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">rt</span></span><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">attachStreamChannel</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">shared_ptr</span></span><span class="p"><span class="pre">&lt;</span></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt13StreamChannelE" title="trt_edgellm::rt::StreamChannel"><span class="n"><span class="pre">StreamChannel</span></span></a><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">channel</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">originalIdx</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt19attachStreamChannelERKNSt10shared_ptrI13StreamChannelEE7int32_t" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt27validateStreamingSubmissionERK20LLMGenerationRequest">
+<span id="_CPPv3N11trt_edgellm2rt27validateStreamingSubmissionERK20LLMGenerationRequest"></span><span id="_CPPv2N11trt_edgellm2rt27validateStreamingSubmissionERK20LLMGenerationRequest"></span><span id="trt_edgellm::rt::validateStreamingSubmission__LLMGenerationRequestCR"></span><span class="target" id="streaming_8cpp_1a15cf4ee1395fa7bc042d9c73453eb60b"></span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-prename descclassname"><span class="n"><span class="pre">trt_edgellm</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">rt</span></span><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">validateStreamingSubmission</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="llmRuntimeUtils.html#_CPPv4N11trt_edgellm2rt20LLMGenerationRequestE" title="trt_edgellm::rt::LLMGenerationRequest"><span class="n"><span class="pre">LLMGenerationRequest</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">request</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt27validateStreamingSubmissionERK20LLMGenerationRequest" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt16finishReasonNameE12FinishReason">
+<span id="_CPPv3N11trt_edgellm2rt16finishReasonNameE12FinishReason"></span><span id="_CPPv2N11trt_edgellm2rt16finishReasonNameE12FinishReason"></span><span id="trt_edgellm::rt::finishReasonName__FinishReason"></span><span class="target" id="streaming_8cpp_1af8de7d1d5b97977005f01487f4c6e499"></span><span class="kt"><span class="pre">char</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-prename descclassname"><span class="n"><span class="pre">trt_edgellm</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">rt</span></span><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">finishReasonName</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><span class="n"><span class="pre">FinishReason</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">r</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><span class="w"> </span><span class="k"><span class="pre">noexcept</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt16finishReasonNameE12FinishReason" title="Link to this definition">#</a><br /></dt>
+<dd><p>Human-readable name for a FinishReason. Returns a static, NUL-terminated C-string. Useful for logs, footer lines, and JSON output. </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt20applyStopStringMatchERNSt6stringERKNSt6vectorINSt6stringEEE6size_tb">
+<span id="_CPPv3N11trt_edgellm2rt20applyStopStringMatchERNSt6stringERKNSt6vectorINSt6stringEEE6size_tb"></span><span id="_CPPv2N11trt_edgellm2rt20applyStopStringMatchERNSt6stringERKNSt6vectorINSt6stringEEE6size_tb"></span><span id="trt_edgellm::rt::applyStopStringMatch__ssR.std::vector:ss:CR.s.b"></span><span class="target" id="streaming_8cpp_1a31dcff910105a83dd332216de0e4837e"></span><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt16StopMatchOutcomeE" title="trt_edgellm::rt::StopMatchOutcome"><span class="n"><span class="pre">StopMatchOutcome</span></span></a><span class="w"> </span><span class="sig-prename descclassname"><span class="n"><span class="pre">trt_edgellm</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">rt</span></span><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">applyStopStringMatch</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">string</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">buffer</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">vector</span></span><span class="p"><span class="pre">&lt;</span></span><span class="n"><span class="pre">std</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">string</span></span><span class="p"><span class="pre">&gt;</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">stops</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">size_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">maxStopLen</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">isFinal</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt20applyStopStringMatchERNSt6stringERKNSt6vectorINSt6stringEEE6size_tb" title="Link to this definition">#</a><br /></dt>
+<dd><p>Stop-string match against a per-slot rolling buffer. </p>
+<p>Caller appends new decoded bytes into <code class="docutils literal notranslate"><span class="pre">buffer</span></code> before invoking and passes <code class="docutils literal notranslate"><span class="pre">maxStopLen</span> <span class="pre">=</span> <span class="pre">max(stops[*].size())</span></code> (cached at request entry; 0 ⇒ no stops or all-empty entries — degenerates to pass-through). On return:</p>
+<p><ul class="simple">
+<li><p>Match found (earliest position wins): <code class="docutils literal notranslate"><span class="pre">emitted</span></code> = bytes before the match, <code class="docutils literal notranslate"><span class="pre">stopMatched</span> <span class="pre">=</span> <span class="pre">true</span></code>, <code class="docutils literal notranslate"><span class="pre">buffer</span></code> cleared.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">isFinal</span></code>, no match: full flush — <code class="docutils literal notranslate"><span class="pre">emitted</span> <span class="pre">=</span> <span class="pre">buffer</span></code>, <code class="docutils literal notranslate"><span class="pre">buffer</span></code> cleared.</p></li>
+<li><p>Otherwise: emit <code class="docutils literal notranslate"><span class="pre">buffer</span></code> minus its trailing <code class="docutils literal notranslate"><span class="pre">maxStopLen</span> <span class="pre">-</span> <span class="pre">1</span></code> bytes; those bytes stay in <code class="docutils literal notranslate"><span class="pre">buffer</span></code> for cross-iteration matching.</p></li>
+</ul>
+</p>
+<p>Matching is byte-level; caller must guarantee UTF-8. </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt31applyCancellationToFinishStatesER24DecodingInferenceContext">
+<span id="_CPPv3N11trt_edgellm2rt31applyCancellationToFinishStatesER24DecodingInferenceContext"></span><span id="_CPPv2N11trt_edgellm2rt31applyCancellationToFinishStatesER24DecodingInferenceContext"></span><span id="trt_edgellm::rt::applyCancellationToFinishStates__DecodingInferenceContextR"></span><span class="target" id="streaming_8cpp_1ab63fe9799d585451905a20df22ef6dda"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><span class="n"><span class="pre">trt_edgellm</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">rt</span></span><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">applyCancellationToFinishStates</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="decodingInferenceContext.html#_CPPv4N11trt_edgellm2rt24DecodingInferenceContextE" title="trt_edgellm::rt::DecodingInferenceContext"><span class="n"><span class="pre">DecodingInferenceContext</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">context</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt31applyCancellationToFinishStatesER24DecodingInferenceContext" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt13decodePerSlotER24DecodingInferenceContextRKN9tokenizer9TokenizerE">
+<span id="_CPPv3N11trt_edgellm2rt13decodePerSlotER24DecodingInferenceContextRKN9tokenizer9TokenizerE"></span><span id="_CPPv2N11trt_edgellm2rt13decodePerSlotER24DecodingInferenceContextRKN9tokenizer9TokenizerE"></span><span id="trt_edgellm::rt::decodePerSlot__DecodingInferenceContextR.tokenizer::TokenizerCR"></span><span class="target" id="streaming_8cpp_1a1cceae4e8311ce9fd53f5133bfa039f2"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><span class="n"><span class="pre">trt_edgellm</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">rt</span></span><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">decodePerSlot</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="decodingInferenceContext.html#_CPPv4N11trt_edgellm2rt24DecodingInferenceContextE" title="trt_edgellm::rt::DecodingInferenceContext"><span class="n"><span class="pre">DecodingInferenceContext</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">context</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">tokenizer</span></span><span class="p"><span class="pre">::</span></span><a class="reference internal" href="../tokenizer/tokenizer.html#_CPPv4N11trt_edgellm9tokenizer9TokenizerE" title="trt_edgellm::tokenizer::Tokenizer"><span class="n"><span class="pre">Tokenizer</span></span></a><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">tok</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt13decodePerSlotER24DecodingInferenceContextRKN9tokenizer9TokenizerE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Stage 1 of the per-iter pipeline: decode new tokens into per-slot UTF-8 bytes and run stop-string matching. Sets <code class="docutils literal notranslate"><span class="pre">s.pendingEmitText</span></code> (bytes safe to emit this iter) and <code class="docutils literal notranslate"><span class="pre">s.stopMatchedThisIter</span></code> (signal for updateFinishStates to apply the kStopWords override). Does not push chunks and does not modify finishedStates / terminalReason — termination decisions live in updateFinishStates. </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt10emitChunksER24DecodingInferenceContextRKN9tokenizer9TokenizerE">
+<span id="_CPPv3N11trt_edgellm2rt10emitChunksER24DecodingInferenceContextRKN9tokenizer9TokenizerE"></span><span id="_CPPv2N11trt_edgellm2rt10emitChunksER24DecodingInferenceContextRKN9tokenizer9TokenizerE"></span><span id="trt_edgellm::rt::emitChunks__DecodingInferenceContextR.tokenizer::TokenizerCR"></span><span class="target" id="streaming_8cpp_1a1f61d7c82282e7449cb86e02e1fd817a"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><span class="n"><span class="pre">trt_edgellm</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">rt</span></span><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">emitChunks</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="decodingInferenceContext.html#_CPPv4N11trt_edgellm2rt24DecodingInferenceContextE" title="trt_edgellm::rt::DecodingInferenceContext"><span class="n"><span class="pre">DecodingInferenceContext</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">context</span></span></em>,</dd>
+<dd><em class="sig-param"><a class="reference internal" href="#_CPPv4N11trt_edgellm2rt10emitChunksER24DecodingInferenceContextRKN9tokenizer9TokenizerE" title="trt_edgellm::rt::emitChunks::tokenizer"><span class="n"><span class="pre">tokenizer</span></span></a><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">Tokenizer</span></span><span class="w"> </span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">tokenizer</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt10emitChunksER24DecodingInferenceContextRKN9tokenizer9TokenizerE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Stage 2 of the per-iter pipeline (after updateFinishStates): push chunks to channels using the pre-computed <code class="docutils literal notranslate"><span class="pre">pendingEmitText</span></code> and finalized <code class="docutils literal notranslate"><span class="pre">terminalReason</span></code>. Non-streaming slots are skipped here — their output is assembled at handleRequest finalization. <code class="docutils literal notranslate"><span class="pre">tokenizer</span></code> is used to resolve the raw token piece for per-token logprobs (<a class="reference internal" href="llmRuntimeUtils.html#structtrt__edgellm_1_1rt_1_1LogprobEntry_1a8491b9a295014d499920f89c788cf33c"><span class="std std-ref">LogprobEntry::piece</span></a>). </p>
+</dd></dl>
+
+<dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm2rt18emitTokenCallbacksER24DecodingInferenceContext">
+<span id="_CPPv3N11trt_edgellm2rt18emitTokenCallbacksER24DecodingInferenceContext"></span><span id="_CPPv2N11trt_edgellm2rt18emitTokenCallbacksER24DecodingInferenceContext"></span><span id="trt_edgellm::rt::emitTokenCallbacks__DecodingInferenceContextR"></span><span class="target" id="streaming_8cpp_1a5f829c45b2a23e8be5ffd244e63488fa"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-prename descclassname"><span class="n"><span class="pre">trt_edgellm</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">rt</span></span><span class="p"><span class="pre">::</span></span></span><span class="sig-name descname"><span class="n"><span class="pre">emitTokenCallbacks</span></span></span><span class="sig-paren">(</span>
+
+<dl>
+<dd><em class="sig-param"><a class="reference internal" href="decodingInferenceContext.html#_CPPv4N11trt_edgellm2rt24DecodingInferenceContextE" title="trt_edgellm::rt::DecodingInferenceContext"><span class="n"><span class="pre">DecodingInferenceContext</span></span></a><span class="w"> </span><span class="p"><span class="pre">&amp;</span></span><span class="n sig-param"><span class="pre">context</span></span></em></dd>
+</dl>
+
+<span class="sig-paren">)</span><a class="headerlink" href="#_CPPv4N11trt_edgellm2rt18emitTokenCallbacksER24DecodingInferenceContext" title="Link to this definition">#</a><br /></dt>
+<dd><p>Fires <code class="docutils literal notranslate"><span class="pre">context.onTokenGenerated</span></code> for every token appended since the previous callback emission. Speculative decoders and DiffusionGemma can accept more than one token in a single decode iteration. </p>
+</dd></dl>
+
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="stepPreparer.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Step Preparer</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="systemPromptKVCache.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">System Prompt KV Cache</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+
+
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt13StreamChannelE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::rt::StreamChannel</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt13StreamChannel17getCollectMetricsEv"><code class="docutils literal notranslate"><span class="pre">getCollectMetrics()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt13StreamChannel13StreamChannelERK13StreamChannel"><code class="docutils literal notranslate"><span class="pre">StreamChannel()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt13StreamChannelaSERK13StreamChannel"><code class="docutils literal notranslate"><span class="pre">operator=()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt13StreamChannel13StreamChannelERR13StreamChannel"><code class="docutils literal notranslate"><span class="pre">StreamChannel()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt13StreamChannelaSERR13StreamChannel"><code class="docutils literal notranslate"><span class="pre">operator=()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt13StreamChannelD0Ev"><code class="docutils literal notranslate"><span class="pre">~StreamChannel()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4I0EN11trt_edgellm2rt13StreamChannel7consumeEvRR7HandlerNSt6chrono12millisecondsE"><code class="docutils literal notranslate"><span class="pre">consume()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt13StreamChannel6tryPopEv"><code class="docutils literal notranslate"><span class="pre">tryPop()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt13StreamChannel7waitPopENSt6chrono12millisecondsE"><code class="docutils literal notranslate"><span class="pre">waitPop()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt13StreamChannel10isFinishedEv"><code class="docutils literal notranslate"><span class="pre">isFinished()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt13StreamChannel9getReasonEv"><code class="docutils literal notranslate"><span class="pre">getReason()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt13StreamChannel19getOriginalBatchIdxEv"><code class="docutils literal notranslate"><span class="pre">getOriginalBatchIdx()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt13StreamChannel11isCancelledEv"><code class="docutils literal notranslate"><span class="pre">isCancelled()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt13StreamChannel6cancelEv"><code class="docutils literal notranslate"><span class="pre">cancel()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt13StreamChannel17setStreamIntervalE7int32_t"><code class="docutils literal notranslate"><span class="pre">setStreamInterval()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt13StreamChannel17getStreamIntervalEv"><code class="docutils literal notranslate"><span class="pre">getStreamInterval()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt13StreamChannel20setSkipSpecialTokensEb"><code class="docutils literal notranslate"><span class="pre">setSkipSpecialTokens()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt13StreamChannel20getSkipSpecialTokensEv"><code class="docutils literal notranslate"><span class="pre">getSkipSpecialTokens()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt13StreamChannel6createEb"><code class="docutils literal notranslate"><span class="pre">create()</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt18AudioStreamChannelE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::rt::AudioStreamChannel</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt18AudioStreamChannel7waitPopENSt6chrono12millisecondsE"><code class="docutils literal notranslate"><span class="pre">waitPop()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt18AudioStreamChannel10isFinishedEv"><code class="docutils literal notranslate"><span class="pre">isFinished()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4NK11trt_edgellm2rt18AudioStreamChannel11isCancelledEv"><code class="docutils literal notranslate"><span class="pre">isCancelled()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt18AudioStreamChannel6cancelEv"><code class="docutils literal notranslate"><span class="pre">cancel()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt18AudioStreamChannel4pushE10AudioChunk"><code class="docutils literal notranslate"><span class="pre">push()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt18AudioStreamChannel6finishEv"><code class="docutils literal notranslate"><span class="pre">finish()</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt22StreamChannelFinalizerE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::rt::StreamChannelFinalizer</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt22StreamChannelFinalizer22StreamChannelFinalizerER24DecodingInferenceContextRKN9tokenizer9TokenizerE"><code class="docutils literal notranslate"><span class="pre">StreamChannelFinalizer()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt22StreamChannelFinalizerD0Ev"><code class="docutils literal notranslate"><span class="pre">~StreamChannelFinalizer()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt22StreamChannelFinalizer22StreamChannelFinalizerERK22StreamChannelFinalizer"><code class="docutils literal notranslate"><span class="pre">StreamChannelFinalizer()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt22StreamChannelFinalizeraSERK22StreamChannelFinalizer"><code class="docutils literal notranslate"><span class="pre">operator=()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt22StreamChannelFinalizer22StreamChannelFinalizerERR22StreamChannelFinalizer"><code class="docutils literal notranslate"><span class="pre">StreamChannelFinalizer()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt22StreamChannelFinalizeraSERR22StreamChannelFinalizer"><code class="docutils literal notranslate"><span class="pre">operator=()</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt11StreamChunkE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::rt::StreamChunk</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt11StreamChunk8tokenIdsE"><code class="docutils literal notranslate"><span class="pre">tokenIds</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt11StreamChunk4textE"><code class="docutils literal notranslate"><span class="pre">text</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt11StreamChunk16promptTokenCountE"><code class="docutils literal notranslate"><span class="pre">promptTokenCount</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt11StreamChunk7metricsE"><code class="docutils literal notranslate"><span class="pre">metrics</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt11StreamChunk8finishedE"><code class="docutils literal notranslate"><span class="pre">finished</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt11StreamChunk6reasonE"><code class="docutils literal notranslate"><span class="pre">reason</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt11StreamChunk8logprobsE"><code class="docutils literal notranslate"><span class="pre">logprobs</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt16StopMatchOutcomeE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::rt::StopMatchOutcome</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt16StopMatchOutcome7emittedE"><code class="docutils literal notranslate"><span class="pre">emitted</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt16StopMatchOutcome11stopMatchedE"><code class="docutils literal notranslate"><span class="pre">stopMatched</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10AudioChunkE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::rt::AudioChunk</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10AudioChunk5pcm16E"><code class="docutils literal notranslate"><span class="pre">pcm16</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10AudioChunk7isFinalE"><code class="docutils literal notranslate"><span class="pre">isFinal</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10AudioChunk9numFramesE"><code class="docutils literal notranslate"><span class="pre">numFrames</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt15SlotStreamStateE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::rt::SlotStreamState</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt15SlotStreamState7channelE"><code class="docutils literal notranslate"><span class="pre">channel</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt15SlotStreamState17skipSpecialTokensE"><code class="docutils literal notranslate"><span class="pre">skipSpecialTokens</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt15SlotStreamState8profilerE"><code class="docutils literal notranslate"><span class="pre">profiler</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt15SlotStreamState14sentTokenCountE"><code class="docutils literal notranslate"><span class="pre">sentTokenCount</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt15SlotStreamState21lastEmittedTokenCountE"><code class="docutils literal notranslate"><span class="pre">lastEmittedTokenCount</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt15SlotStreamState20logprobsEmittedCountE"><code class="docutils literal notranslate"><span class="pre">logprobsEmittedCount</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt15SlotStreamState12pendingBytesE"><code class="docutils literal notranslate"><span class="pre">pendingBytes</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt15SlotStreamState14terminalReasonE"><code class="docutils literal notranslate"><span class="pre">terminalReason</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt15SlotStreamState15stopMatchBufferE"><code class="docutils literal notranslate"><span class="pre">stopMatchBuffer</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt15SlotStreamState10maxStopLenE"><code class="docutils literal notranslate"><span class="pre">maxStopLen</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt15SlotStreamState15pendingEmitTextE"><code class="docutils literal notranslate"><span class="pre">pendingEmitText</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt15SlotStreamState19stopMatchedThisIterE"><code class="docutils literal notranslate"><span class="pre">stopMatchedThisIter</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt19attachStreamChannelERKNSt10shared_ptrI13StreamChannelEE7int32_t"><code class="docutils literal notranslate"><span class="pre">attachStreamChannel()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt27validateStreamingSubmissionERK20LLMGenerationRequest"><code class="docutils literal notranslate"><span class="pre">validateStreamingSubmission()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt16finishReasonNameE12FinishReason"><code class="docutils literal notranslate"><span class="pre">finishReasonName()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt20applyStopStringMatchERNSt6stringERKNSt6vectorINSt6stringEEE6size_tb"><code class="docutils literal notranslate"><span class="pre">applyStopStringMatch()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt31applyCancellationToFinishStatesER24DecodingInferenceContext"><code class="docutils literal notranslate"><span class="pre">applyCancellationToFinishStates()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt13decodePerSlotER24DecodingInferenceContextRKN9tokenizer9TokenizerE"><code class="docutils literal notranslate"><span class="pre">decodePerSlot()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt10emitChunksER24DecodingInferenceContextRKN9tokenizer9TokenizerE"><code class="docutils literal notranslate"><span class="pre">emitChunks()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm2rt18emitTokenCallbacksER24DecodingInferenceContext"><code class="docutils literal notranslate"><span class="pre">emitTokenCallbacks()</span></code></a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../../_static/scripts/bootstrap.js?digest=18bd87630a240e9c25be"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=18bd87630a240e9c25be"></script>
+
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+<a class="footer-brand logo" href="https://www.nvidia.com">
+  <img src="../../_static/nvidia-logo-horiz-rgb-1c-blk-for-screen.svg" class="logo__image only-light" alt="NVIDIA"/>
+  <img src="../../_static/nvidia-logo-horiz-rgb-1c-wht-for-screen.svg" class="logo__image only-dark" alt="NVIDIA"/>
+</a></div>
+      
+        <div class="footer-item">
+
+<div class="footer-links">
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/about-nvidia/privacy-policy/">Privacy Policy</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/about-nvidia/privacy-center/">Your Privacy Choices</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/about-nvidia/terms-of-service/">Terms of Service</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/about-nvidia/accessibility/">Accessibility</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/about-nvidia/company-policies/">Corporate Policies</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/product-security/">Product Security</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/contact/">Contact</a>
+  
+  
+  
+</div>
+</div>
+      
+        <div class="footer-item">
+
+
+
+
+  <p class="copyright">
+    
+      Copyright © 2025, Nvidia.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+<div class="extra_footer">
+  
+  <p>Last updated on October 28, 2026.</p>
+  
+  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/1231d6415ce38d0b2f20b3308ac24e58ec4100a8">1231d64</a>.</p>
+  
+</div></div>
+      
+    </div>
+  
+  
+  
+</div>
+
+  </footer>
+  </body>
+</html>

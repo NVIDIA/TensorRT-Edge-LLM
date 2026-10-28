@@ -1,0 +1,13 @@
+Request Coordinator
+===================
+
+.. doxygenclass:: trt_edgellm::rt::scheduler::RequestCoordinator
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::scheduler::RequestCoordinator::TerminalOutcome
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

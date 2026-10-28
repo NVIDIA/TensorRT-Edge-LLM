@@ -1,0 +1,6 @@
+Check Macros
+============
+
+.. doxygenfile:: common/checkMacros.h
+   :project: TensorRT Edge-LLM
+

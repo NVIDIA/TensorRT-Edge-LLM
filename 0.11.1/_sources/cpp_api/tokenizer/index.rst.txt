@@ -1,0 +1,13 @@
+Tokenizer Module
+================
+
+API documentation for the tokenizer module.
+
+.. toctree::
+   :maxdepth: 1
+
+   preTokenizer
+   tokenEncoder
+   tokenizer
+   tokenizerUtils
+   unicodeData

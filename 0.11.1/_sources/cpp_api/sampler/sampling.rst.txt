@@ -1,0 +1,56 @@
+Sampling
+========
+
+.. doxygenstruct:: trt_edgellm::SamplingParams
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::getTopKtopPSamplingWorkspaceSize
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::getTopPProbabilitiesWorkspaceSize
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::getSelectAllTopKWorkspaceSize
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::applyLogitBias
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::applyLogitBiasRepeatedRows
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::applyTokenBitmask
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::topKtopPSamplingFromLogits
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::topPProbabilitiesFromLogits
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::topKLogitsToDenseProbabilities
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::selectAllTopK
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::selectArgmaxAndComputeEntropy
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::getExtractTopKLogprobsWorkspaceSize
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::extractTopKLogprobs
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::gatherSpecVerifyAcceptedLogitRows
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::mapReducedVocabToFullVocab
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::shouldUseNonGreedySampling
+   :project: TensorRT Edge-LLM
+

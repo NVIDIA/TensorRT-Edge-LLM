@@ -1,0 +1,8 @@
+Managed KV Cache Request
+========================
+
+.. doxygenclass:: trt_edgellm::rt::ManagedKVCacheRequest
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

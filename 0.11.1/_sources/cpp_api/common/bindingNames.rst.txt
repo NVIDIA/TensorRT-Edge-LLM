@@ -1,0 +1,6 @@
+Binding Names
+=============
+
+.. doxygenfile:: common/bindingNames.h
+   :project: TensorRT Edge-LLM
+

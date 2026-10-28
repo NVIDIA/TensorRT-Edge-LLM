@@ -9,4 +9,5 @@ API documentation for the profiling module.
    layerProfiler
    metrics
    nvtx_wrapper
+   requestProfiler
    timer

@@ -1,0 +1,12 @@
+Chattemplate Module
+===================
+
+API documentation for the chatTemplate module.
+
+.. toctree::
+   :maxdepth: 1
+
+   chatTemplate
+   injaCallbacks
+   injaJson
+   injaRenderer

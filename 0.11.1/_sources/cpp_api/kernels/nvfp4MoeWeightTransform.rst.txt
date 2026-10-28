@@ -1,0 +1,18 @@
+Nvfp4 Moe Weight Transform
+==========================
+
+.. doxygenfunction:: trt_edgellm::kernel::launchCheckpointSourceBatchCopy
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchCheckpointSourceBatchPaddedCopy
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchNvfp4MoeFc1WeightTransformSourceBatch
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchNvfp4MoeFc1WeightTransformSourceBatchPadded
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchNvfp4MoeWeightNormalizeSourceBatchPadded
+   :project: TensorRT Edge-LLM
+

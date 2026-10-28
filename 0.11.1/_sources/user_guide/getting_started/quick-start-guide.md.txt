@@ -1,0 +1,224 @@
+# Quick Start
+
+Choose one of three ways to run [Qwen/Qwen3.5-0.8B](https://huggingface.co/Qwen/Qwen3.5-0.8B):
+start a chat directly, run a local HTTP server, or use the C++ runtime.
+
+## Option 1: Start a chat directly
+
+Complete the [published wheel installation](installation.md#published-python-wheel)
+with `[server]` and keep that Python environment activated. For a source
+installation, follow the [source installation instructions](installation.md#source-workflow-c-runtime),
+including the optional Python frontend setup.
+
+For gated models, accept the provider's terms and run `hf auth login` before
+launching chat or the server.
+
+```bash
+trtedge chat Qwen/Qwen3.5-0.8B
+```
+
+The first launch downloads the checkpoint and builds its TensorRT engines.
+Later launches reuse matching cached engines. When the chat prompt appears,
+enter a message, such as `Explain CUDA streams briefly.` The response appears
+in the terminal. Enter `/exit` to end the session.
+
+Downloaded checkpoints and built engines are stored in
+`~/.cache/tensorrt-edgellm` by default. To use another writable directory, add
+`--cache-dir /path/to/cache` to either `trtedge chat` or `trtedge serve`.
+Choose a location with space for both the model files and engines, and use the
+same cache directory for both commands to reuse matching builds.
+
+See [Interactive Text Chat](../examples/interactive-chat.md) for chat commands,
+saved settings, generation options, and timing metrics.
+
+(option-2-one-line-python-server)=
+## Option 2: Run a local HTTP server
+
+Use the Python environment from [Installation](installation.md) to serve the
+model through an OpenAI-compatible HTTP API. The server downloads and builds the model as
+needed; it does not require the ONNX export or C++ steps below.
+
+```bash
+trtedge serve Qwen/Qwen3.5-0.8B
+```
+
+Wait for server startup to finish. In another terminal, check that it is ready:
+
+```bash
+curl -fsS http://127.0.0.1:8000/health/ready
+```
+
+The response includes `"status":"ready"`. Send a text prompt:
+
+```bash
+curl -fsS http://127.0.0.1:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "Qwen/Qwen3.5-0.8B",
+    "messages": [{"role": "user", "content": "Explain CUDA streams briefly."}],
+    "temperature": 0.0,
+    "max_tokens": 64
+  }'
+```
+
+The generated text appears in `choices[0].message.content` in the JSON response.
+
+### Send an image (optional)
+
+Stop the server with Ctrl+C, then restart it with access to a local image
+directory. Replace `/absolute/path/to/images` with a directory on the server
+machine:
+
+```bash
+trtedge serve Qwen/Qwen3.5-0.8B --allowed-local-media-path /absolute/path/to/images
+```
+
+In another terminal, use an image inside that directory on the server machine:
+
+```bash
+IMAGE_PATH=/absolute/path/to/images/example.jpeg
+
+curl -s http://127.0.0.1:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  --data-binary @- <<EOF
+{
+  "model": "Qwen/Qwen3.5-0.8B",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {"type": "image_url", "image_url": {"url": "file://$IMAGE_PATH"}},
+        {"type": "text", "text": "Describe this image."}
+      ]
+    }
+  ],
+  "temperature": 0.0,
+  "max_tokens": 64
+}
+EOF
+```
+
+The response follows the OpenAI chat-completions schema. See
+[Experimental High-Level Python API and Server](../examples/experimental-server.md)
+for streaming, batching, audio, video, and tool-calling options.
+
+(option-1-onnx-and-c-runtime)=
+## Option 3: Use the C++ runtime
+
+This path exports the checkpoint to ONNX, builds TensorRT engines, and runs
+image-and-text inference with C++ executables. Complete the
+[C++ source installation](installation.md#source-workflow-c-runtime) and install
+the [export dependencies](installation.md#optional-python-dependencies) first.
+
+Create a directory for the exported model and engines:
+
+Before building engines or launching inference, verify that the target has at
+least the deployed model size plus 2 GB of available device memory. KV cache,
+multimodal components, speculative draft engines, and larger batch or sequence
+profiles can require more.
+
+```bash
+export WORKSPACE_DIR=$HOME/tensorrt-edgellm-workspace/Qwen3.5-0.8B
+mkdir -p "$WORKSPACE_DIR"
+```
+
+(export-the-checkpoint)=
+### 1. Export the Checkpoint
+
+Run export in the active Edge-LLM Python environment. Unquantized and supported
+pre-quantized checkpoints export on CPU:
+
+```bash
+trtedge export \
+  Qwen/Qwen3.5-0.8B \
+  "$WORKSPACE_DIR/onnx"
+```
+
+The command exports both `onnx/llm` and `onnx/visual`. If export and inference
+use different machines, copy the complete output directory to the target:
+
+```bash
+rsync -a "$WORKSPACE_DIR/onnx/" \
+  <user>@<target>:~/tensorrt-edgellm-workspace/Qwen3.5-0.8B/onnx/
+```
+
+Quantization is optional. Start from a supported pre-quantized checkpoint, or
+run `trtedge quantize` on an x86 GPU host before export. Quantization
+changes model accuracy; validate a generated checkpoint against its source
+model before deployment. See [Quantization](../features/quantization.md).
+
+### 2. Build the Engines
+
+Run both builders on the target from the repository root. Engine profile values
+are deployment limits; increase them only when the workload requires it.
+
+```bash
+./build/examples/llm/llm_build \
+  --onnx-dir "$WORKSPACE_DIR/onnx/llm" \
+  --engine-dir "$WORKSPACE_DIR/engines/llm" \
+  --max-batch-size 2 \
+  --max-input-len 4096 \
+  --max-kv-cache-capacity 4096
+
+./build/examples/multimodal/visual_build \
+  --onnx-dir "$WORKSPACE_DIR/onnx/visual" \
+  --engine-dir "$WORKSPACE_DIR/engines" \
+  --min-image-tokens 128 \
+  --max-image-tokens 4096 \
+  --max-image-tokens-per-image 512
+```
+
+### 3. Run Vision-Language Inference
+
+The repository includes the image used below. Create `$WORKSPACE_DIR/input.json`:
+
+```json
+{
+  "batch_size": 1,
+  "temperature": 0.0,
+  "max_generate_length": 64,
+  "requests": [
+    {
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "image",
+              "image": "examples/multimodal/pics/red_panda.jpeg"
+            },
+            {
+              "type": "text",
+              "text": "Describe this image."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+Run from the repository root so the relative image path resolves:
+
+```bash
+./build/examples/llm/llm_inference \
+  --engine-dir "$WORKSPACE_DIR/engines/llm" \
+  --multimodal-engine-dir "$WORKSPACE_DIR/engines" \
+  --input-file "$WORKSPACE_DIR/input.json" \
+  --output-file "$WORKSPACE_DIR/output.json"
+
+cat "$WORKSPACE_DIR/output.json"
+```
+
+The response contains generated text, token IDs, token counts, and the finish
+reason.
+
+## Next steps
+
+See [Input JSON Format](../format/input-format.md) for C++ request fields,
+[Examples](../examples/index.md) for other model contracts, and
+[Direct Engine Builder](direct-engine-builder.md) for the experimental
+checkpoint-to-engine frontend. See
+[Multi-Device Inference](../features/multi-device.md) for TP2 export,
+per-rank engine builds, and local multi-GPU execution.

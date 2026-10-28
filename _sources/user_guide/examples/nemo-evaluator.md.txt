@@ -18,8 +18,8 @@ python -m pip install -r /path/to/TensorRT-Edge-LLM/requirements-nemo-evaluator.
 Start the server in one terminal:
 
 ```bash
-tensorrt-edgellm-serve \
-  Qwen/Qwen2.5-0.5B-Instruct \
+trtedge serve \
+  Qwen/Qwen3.5-0.8B \
   --port 8000
 ```
 

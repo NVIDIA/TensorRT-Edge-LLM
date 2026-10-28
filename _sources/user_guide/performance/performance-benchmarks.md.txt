@@ -87,18 +87,18 @@ and decoding mode. Use these benchmark-specific build parameters:
 
 | Engine | `llm_build` / `visual_build` parameters |
 |--------|-----------------------------------------|
-| Vanilla LLM | `--maxBatchSize <batch>` `--maxInputLen 2048` `--maxKVCacheCapacity 2200` |
-| Vanilla VLM LLM engine | `--maxBatchSize <batch>` `--maxInputLen 2048` `--maxKVCacheCapacity 2200` |
-| VLM visual engine | `--minImageTokens 8` `--maxImageTokens 16384` `--maxImageTokensPerImage 2048` |
-| Orin NX / Orin Nano VLM visual engine | `--minImageTokens 8` `--maxImageTokens 2048` `--maxImageTokensPerImage 2048` |
-| EAGLE3 base engine | Vanilla LLM parameters plus `--specBase --maxVerifyTreeSize 60` |
-| EAGLE3 draft engine | Vanilla LLM parameters plus `--specDraft --maxDraftTreeSize 60` |
-| MTP base engine | Vanilla LLM parameters plus `--specBase --maxVerifyTreeSize 4` |
-| MTP draft engine | Vanilla LLM parameters plus `--specDraft --maxDraftTreeSize 4` |
-| DFlash base engine | Vanilla LLM parameters plus `--specBase --maxVerifyTreeSize 16` |
-| DFlash draft engine | Vanilla LLM parameters plus `--specDraft --maxDraftTreeSize 16` |
-| JetSpec tree base engine | Vanilla LLM parameters plus `--specBase --maxVerifyTreeSize 128` |
-| JetSpec draft engine | Vanilla LLM parameters plus `--specDraft --maxDraftTreeSize 128` |
+| Vanilla LLM | `--max-batch-size <batch>` `--max-input-len 2048` `--max-kv-cache-capacity 2200` |
+| Vanilla VLM LLM engine | `--max-batch-size <batch>` `--max-input-len 2048` `--max-kv-cache-capacity 2200` |
+| VLM visual engine | `--min-image-tokens 8` `--max-image-tokens 16384` `--max-image-tokens-per-image 2048` |
+| Orin NX / Orin Nano VLM visual engine | `--min-image-tokens 8` `--max-image-tokens 2048` `--max-image-tokens-per-image 2048` |
+| EAGLE3 base engine | Vanilla LLM parameters plus `--spec-base --max-verify-tree-size 60` |
+| EAGLE3 draft engine | Vanilla LLM parameters plus `--spec-draft --max-draft-tree-size 60` |
+| MTP base engine | Vanilla LLM parameters plus `--spec-base --max-verify-tree-size 4` |
+| MTP draft engine | Vanilla LLM parameters plus `--spec-draft --max-draft-tree-size 4` |
+| DFlash base engine | Vanilla LLM parameters plus `--spec-base --max-verify-tree-size 16` |
+| DFlash draft engine | Vanilla LLM parameters plus `--spec-draft --max-draft-tree-size 16` |
+| JetSpec tree base engine | Vanilla LLM parameters plus `--spec-base --max-verify-tree-size 128` |
+| JetSpec draft engine | Vanilla LLM parameters plus `--spec-draft --max-draft-tree-size 128` |
 
 Use the batch size shown in the benchmark row. Thor and Jetson AGX Orin rows may
 use batch `1` or `8`; Jetson Orin NX and Orin Nano rows are generally batch `1`.
@@ -111,25 +111,25 @@ For speculative decoding, follow the exact export layouts in
 and draft export, MTP uses the MTP base and `mtp_draft` export, and DFlash uses
 the paired DFlash base and draft export. JetSpec uses the paired JetSpec
 tree-base and draft export. For DFlash, use the linear DFlash base export for
-`--specDraftTopK 1`; use the tree-base export only for DDTree runs. For JetSpec,
-use the tree-base export with `--specDraftTopK > 1`.
+`--spec-draft-top-k 1`; use the tree-base export only for DDTree runs. For JetSpec,
+use the tree-base export with `--spec-draft-top-k > 1`.
 
 ### 3. Runtime Benchmark Specs
 
-Use `llm_inference` with the generated datasets and `--dumpProfile` to collect
+Use `llm_inference` with the generated datasets and `--dump-profile` to collect
 runtime prefill, generation, visual, memory, and speculative-decoding metrics in
 the profile JSON. Use these common runtime settings:
 
 | Workload | `llm_inference` settings |
 |----------|--------------------------|
-| LLM runtime benchmark | `--inputFile ${DATASET_DIR}/mtbench/mtbench_dataset.json` |
-| VLM runtime benchmark | `--inputFile ${DATASET_DIR}/coco/dataset.json --multimodalEngineDir <visual_engine_dir>` |
-| All runtime benchmarks | `--batchSize <batch>` `--warmup 10` `--dumpProfile --profileOutputFile <profile.json>` |
-| EAGLE3 runtime | Common settings plus `--specDecode --specVerifySize 60` |
-| MTP runtime | Common settings plus `--specDecode --specDraftTopK 1 --specDraftStep 3 --specVerifySize 4` |
-| DFlash linear runtime | Common settings plus `--specDecode --specDraftTopK 1 --specDraftStep 1 --specVerifySize 16` |
-| DFlash DDTree runtime | Follow the DFlash guide; use `--specDraftTopK > 1` with the tree-base export |
-| JetSpec tree runtime | Common settings plus `--specDecode --specDraftTopK 7 --specDraftStep 1 --specVerifySize 128 --jetspecBlockSize 16` |
+| LLM runtime benchmark | `--input-file ${DATASET_DIR}/mtbench/mtbench_dataset.json` |
+| VLM runtime benchmark | `--input-file ${DATASET_DIR}/coco/dataset.json --multimodal-engine-dir <visual_engine_dir>` |
+| All runtime benchmarks | `--batch-size <batch>` `--warmup 10` `--dump-profile --profile-output-file <profile.json>` |
+| EAGLE3 runtime | Common settings plus `--spec-decode --spec-verify-size 60` |
+| MTP runtime | Common settings plus `--spec-decode --spec-draft-top-k 1 --spec-draft-step 3 --spec-verify-size 4` |
+| DFlash linear runtime | Common settings plus `--spec-decode --spec-draft-top-k 1 --spec-draft-step 1 --spec-verify-size 16` |
+| DFlash DDTree runtime | Follow the DFlash guide; use `--spec-draft-top-k > 1` with the tree-base export |
+| JetSpec tree runtime | Common settings plus `--spec-decode --spec-draft-top-k 7 --spec-draft-step 1 --spec-verify-size 128 --jetspec-block-size 16` |
 
 For Qwen3.5 DFlash inputs, set `"enable_thinking": true`; for Qwen3 DFlash and
 Qwen3 JetSpec inputs, set `"enable_thinking": false`. These settings match the
@@ -140,13 +140,13 @@ For synthetic component timing, run `llm_bench` on the same engines:
 
 | Component | `llm_bench` settings |
 |-----------|----------------------|
-| LLM prefill | `--mode prefill --batchSize <batch> --inputLen 2048 --warmup 3 --iterations 10 --profile` |
-| LLM decode | `--mode decode --batchSize <batch> --pastKVLen 2048 --warmup 3 --iterations 10 --profile` |
-| Visual encoder | `--mode visual --imageSize 1024x2048 --warmup 3 --iterations 10 --profile` |
-| Spec draft prefill | `--mode spec_draft_prefill --batchSize <batch> --inputLen 2048 --warmup 3 --iterations 10 --profile` |
-| Spec draft proposal | `--mode spec_draft_proposal --batchSize <batch> --draftTreeSize <draft_tree_size> --pastKVLen 2048 --warmup 3 --iterations 10 --profile` |
-| Spec draft accept | `--mode spec_draft_accept --batchSize <batch> --draftStep <drafting_step> --pastKVLen 2048 --warmup 3 --iterations 10 --profile` |
-| Spec verify | `--mode spec_verify --batchSize <batch> --verifyTreeSize <verify_tree_size> --pastKVLen 2048 --warmup 3 --iterations 10 --profile` |
+| LLM prefill | `--mode prefill --batch-size <batch> --input-len 2048 --warmup 3 --iterations 10 --profile` |
+| LLM decode | `--mode decode --batch-size <batch> --past-kv-len 2048 --warmup 3 --iterations 10 --profile` |
+| Visual encoder | `--mode visual --image-size 1024x2048 --warmup 3 --iterations 10 --profile` |
+| Spec draft prefill | `--mode spec_draft_prefill --batch-size <batch> --input-len 2048 --warmup 3 --iterations 10 --profile` |
+| Spec draft proposal | `--mode spec_draft_proposal --batch-size <batch> --draft-tree-size <draft_tree_size> --past-kv-len 2048 --warmup 3 --iterations 10 --profile` |
+| Spec draft accept | `--mode spec_draft_accept --batch-size <batch> --draft-step <drafting_step> --past-kv-len 2048 --warmup 3 --iterations 10 --profile` |
+| Spec verify | `--mode spec_verify --batch-size <batch> --verify-tree-size <verify_tree_size> --past-kv-len 2048 --warmup 3 --iterations 10 --profile` |
 
 Use `draftTreeSize` / `verifyTreeSize` values of `60` for EAGLE3, `4` for MTP,
 `16` for linear DFlash, and `128` for JetSpec tree runs.
@@ -804,8 +804,8 @@ Every row contains end-to-end decode throughput: generated-token throughput for 
 ### v0.10.0 Collection Method
 
 - Engines were built from exported v0.10.0 ONNX artifacts using the build limits in [Export and Build Specs](#2-export-and-build-specs).
-- Runtime throughput was collected with `llm_inference --warmup 10 --dumpProfile --profileOutputFile <profile.json>` using benchmark JSON inputs for each model family.
-- Synthetic component timing was collected with `llm_bench --warmup 3 --iterations 10`; prefill uses `--inputLen 2048` and decode uses `--pastKVLen 2048`.
+- Runtime throughput was collected with `llm_inference --warmup 10 --dump-profile --profile-output-file <profile.json>` using benchmark JSON inputs for each model family.
+- Synthetic component timing was collected with `llm_bench --warmup 3 --iterations 10`; prefill uses `--input-len 2048` and decode uses `--past-kv-len 2048`.
 - Jetson AGX Thor and DGX Spark runs include the supported NVFP4 and INT4 entries. Jetson AGX Orin, Orin NX, and Orin Nano run the externalized INT4 entries supported by each memory target.
 
 ---
@@ -1228,8 +1228,8 @@ Runtime rows are split by device and include batch size, prefill sequence length
 ### v0.9.0 Collection Method
 
 - Engines were built from exported v0.9.0 ONNX artifacts using the build limits in [Export and Build Specs](#2-export-and-build-specs).
-- Runtime throughput was collected with `llm_inference --warmup 10 --dumpProfile --profileOutputFile <profile.json>` using benchmark JSON inputs for each model family.
-- Synthetic component timing was collected with `llm_bench --warmup 3 --iterations 10`; prefill uses `--inputLen 2048` and decode uses `--pastKVLen 2048`.
+- Runtime throughput was collected with `llm_inference --warmup 10 --dump-profile --profile-output-file <profile.json>` using benchmark JSON inputs for each model family.
+- Synthetic component timing was collected with `llm_bench --warmup 3 --iterations 10`; prefill uses `--input-len 2048` and decode uses `--past-kv-len 2048`.
 - Jetson AGX Thor and DGX Spark runs include the supported NVFP4 and INT4 entries. Jetson AGX Orin, Orin NX, and Orin Nano run the externalized INT4 entries supported by each memory target.
 
 ---
@@ -1247,31 +1247,31 @@ The v0.8.0 release benchmarks use `llm_bench` for synthetic component timing. Th
 ```bash
 # Prefill throughput
 ./build/examples/llm/llm_bench \
-    --engineDir <llm_engine_dir> \
+    --engine-dir <llm_engine_dir> \
     --mode prefill \
-    --batchSize <batch_size> \
-    --inputLen <input_len> \
+    --batch-size <batch_size> \
+    --input-len <input_len> \
     --warmup 2 \
     --iterations 10 \
     --profile
 
 # Decode throughput
 ./build/examples/llm/llm_bench \
-    --engineDir <llm_engine_dir> \
+    --engine-dir <llm_engine_dir> \
     --mode decode \
-    --batchSize <batch_size> \
-    --pastKVLen <past_kv_len> \
+    --batch-size <batch_size> \
+    --past-kv-len <past_kv_len> \
     --warmup 2 \
     --iterations 10 \
     --profile
 
 # Speculative decoding component timing
-./build/examples/llm/llm_bench --engineDir <engine_dir> --mode spec_draft_prefill --batchSize <batch_size> --inputLen <input_len> --warmup 2 --iterations 10 --profile
-./build/examples/llm/llm_bench --engineDir <engine_dir> --mode spec_draft_proposal --batchSize <batch_size> --draftTreeSize <draft_tree_size> --pastKVLen <past_kv_len> --warmup 2 --iterations 10 --profile
-./build/examples/llm/llm_bench --engineDir <engine_dir> --mode spec_verify --batchSize <batch_size> --verifyTreeSize <verify_tree_size> --pastKVLen <past_kv_len> --warmup 2 --iterations 10 --profile
+./build/examples/llm/llm_bench --engine-dir <engine_dir> --mode spec_draft_prefill --batch-size <batch_size> --input-len <input_len> --warmup 2 --iterations 10 --profile
+./build/examples/llm/llm_bench --engine-dir <engine_dir> --mode spec_draft_proposal --batch-size <batch_size> --draft-tree-size <draft_tree_size> --past-kv-len <past_kv_len> --warmup 2 --iterations 10 --profile
+./build/examples/llm/llm_bench --engine-dir <engine_dir> --mode spec_verify --batch-size <batch_size> --verify-tree-size <verify_tree_size> --past-kv-len <past_kv_len> --warmup 2 --iterations 10 --profile
 
 # Visual encoder timing
-./build/examples/llm/llm_bench --engineDir <visual_engine_dir> --mode visual --imageSize <height>x<width> --warmup 2 --iterations 10 --profile
+./build/examples/llm/llm_bench --engine-dir <visual_engine_dir> --mode visual --image-size <height>x<width> --warmup 2 --iterations 10 --profile
 ```
 
 ### `llm_bench` Prefill Performance (Jetson AGX Thor Only)

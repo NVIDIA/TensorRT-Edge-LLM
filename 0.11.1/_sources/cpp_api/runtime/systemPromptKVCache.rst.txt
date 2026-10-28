@@ -1,0 +1,13 @@
+System Prompt KV Cache
+======================
+
+.. doxygenstruct:: trt_edgellm::SystemPromptKVCache
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::SystemPromptReuseResult
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

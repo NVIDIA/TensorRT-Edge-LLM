@@ -1,0 +1,13 @@
+VIT Attention Plugin
+====================
+
+.. doxygenclass:: trt_edgellm::plugins::ViTAttentionPlugin
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::plugins::ViTAttentionPluginCreator
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

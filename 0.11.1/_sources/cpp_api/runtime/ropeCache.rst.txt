@@ -1,0 +1,8 @@
+Rope Cache
+==========
+
+.. doxygenclass:: trt_edgellm::rt::RopeCache
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

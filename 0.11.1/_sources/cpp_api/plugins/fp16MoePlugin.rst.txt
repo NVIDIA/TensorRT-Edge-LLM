@@ -1,0 +1,13 @@
+Fp16 Moe Plugin
+===============
+
+.. doxygenclass:: trt_edgellm::plugins::Fp16MoePlugin
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::plugins::Fp16MoePluginCreator
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

@@ -1,0 +1,8 @@
+Mtp Decoder
+===========
+
+.. doxygenclass:: trt_edgellm::rt::MTPDecoder
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

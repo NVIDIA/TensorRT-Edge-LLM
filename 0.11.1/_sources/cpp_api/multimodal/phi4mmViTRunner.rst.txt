@@ -1,0 +1,13 @@
+Phi4mm ViT Runner
+=================
+
+.. doxygenclass:: trt_edgellm::rt::Phi4MMViTRunner
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::Phi4MMViTConfig
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

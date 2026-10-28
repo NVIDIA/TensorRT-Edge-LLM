@@ -1,0 +1,12 @@
+Int4 Plugin V1 Repack
+=====================
+
+.. doxygenfunction:: trt_edgellm::kernel::launchModelOptInt4PluginV1Repack
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchGptqInt4PluginV1Repack
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchAwqInt4PluginV1Repack
+   :project: TensorRT Edge-LLM
+

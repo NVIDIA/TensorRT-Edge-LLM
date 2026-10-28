@@ -29,21 +29,3 @@ Tensor
 .. doxygenfunction:: trt_edgellm::rt::utils::computeStrides
    :project: TensorRT Edge-LLM
 
-.. doxygenfunction:: trt_edgellm::rt::utils::getTypeSize
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::rt::utils::formatString
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::rt::utils::toKB
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::rt::utils::toMB
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::rt::utils::toGB
-   :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::rt::utils::getMaxInt32Value
-   :project: TensorRT Edge-LLM
-

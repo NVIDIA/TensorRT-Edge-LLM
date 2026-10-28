@@ -1,0 +1,13 @@
+Builder Module
+==============
+
+API documentation for the builder module.
+
+.. toctree::
+   :maxdepth: 1
+
+   actionBuilder
+   audioBuilder
+   builderUtils
+   llmBuilder
+   visualBuilder

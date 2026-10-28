@@ -1,0 +1,1815 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Installation &#8212; TensorRT Edge-LLM</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../_static/styles/theme.css?digest=18bd87630a240e9c25be" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=18bd87630a240e9c25be" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=03e43079" />
+    <link rel="stylesheet" type="text/css" href="../../_static/styles/nvidia-sphinx-theme.css?v=933278ad" />
+    <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../../_static/autodoc_pydantic.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/togglebutton.css?v=9c3e77be" />
+    <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=e02be394" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../../_static/scripts/fontawesome.js?digest=18bd87630a240e9c25be"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=18bd87630a240e9c25be" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=18bd87630a240e9c25be" />
+
+
+
+    <script src="../../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../../_static/copybutton.js?v=65e89d2a"></script>
+    <script>let toggleHintShow = 'Click to show';</script>
+    <script>let toggleHintHide = 'Click to hide';</script>
+    <script>let toggleOpenOnPrint = 'true';</script>
+    <script src="../../_static/togglebutton.js?v=b8b12719"></script>
+    <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'user_guide/getting_started/installation';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.23.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = './_static/switcher.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.11.1';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner =
+            false;
+        </script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+
+    <link rel="icon" href="../../_static/favicon.png"/>
+
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="Quick Start" href="quick-start-guide.html" />
+    <link rel="prev" title="Supported Models" href="supported-models.html" />
+
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="color-scheme" content="light dark"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.11.1" />
+  
+    
+    <script src="../../_static/searchtools.js"></script>
+    <script src="../../_static/language_data.js"></script>
+    <script src="../../searchindex.js"></script>
+  
+
+
+  </head>
+
+  <body data-default-mode="">
+
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button type="button" class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../../_static/nvidia-logo-horiz-rgb-blk-for-screen.svg" class="logo__image only-light" alt="TensorRT Edge-LLM - Home"/>
+    <img src="../../_static/nvidia-logo-horiz-rgb-wht-for-screen.svg" class="logo__image only-dark pst-js-only" alt="TensorRT Edge-LLM - Home"/>
+  
+  
+    <p class="title logo__title">TensorRT Edge-LLM</p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+
+
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-2"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-2"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-2"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-2">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button type="button" class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button type="button" class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button type="button" class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button type="button" class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../../_static/nvidia-logo-horiz-rgb-blk-for-screen.svg" class="logo__image only-light" alt="TensorRT Edge-LLM - Home"/>
+    <img src="../../_static/nvidia-logo-horiz-rgb-wht-for-screen.svg" class="logo__image only-dark pst-js-only" alt="TensorRT Edge-LLM - Home"/>
+  
+  
+    <p class="title logo__title">TensorRT Edge-LLM</p>
+  
+</a>
+
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+
+
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-3"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-3"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-3"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-3">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button type="button" class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+
+
+
+<nav class="bd-docs-nav bd-links"
+     aria-label="Table of Contents">
+  <p class="bd-links__title" role="heading" aria-level="1">Table of Contents</p>
+  <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../overview.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="support-matrix.html">Official Support Matrix</a></li>
+<li class="toctree-l1"><a class="reference internal" href="supported-models.html">Supported Models</a></li>
+<li class="toctree-l1 current active"><a aria-current="page" class="current reference internal" href="#">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="quick-start-guide.html">Quick Start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="cli.html">trtedge CLI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="direct-engine-builder.html">Experimental ONNX-less Engine Build</a></li>
+<li class="toctree-l1"><a class="reference internal" href="limitations.html">Limitations and Known Issues</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Examples</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../examples/index.html">Examples</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../examples/interactive-chat.html">Interactive Text Chat</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../examples/python-runtime.html">Run inference with the Python runtime</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../examples/speculative-decoding.html">Speculative Decoding</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../examples/phi4.html">Phi-4-Multimodal</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../examples/asr.html">ASR (Automatic Speech Recognition)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../examples/tts.html">TTS (Text-to-Speech)</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../examples/vla/index.html">Vision-Language-Action</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../examples/vla/alpamayo.html">Alpamayo-R1-10B (Vision-Language-Action)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../examples/vla/cosmos3.html">Cosmos3-Edge</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../examples/vla/pi05.html">pi0.5</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="../examples/omni.html">Omni (Audio + Vision + Speech I/O)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../examples/experimental-server.html">Experimental Python API and Server</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../examples/nemo-evaluator.html">Evaluate with NeMo Evaluator</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Features</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../features/lora.html">LoRA (Low-Rank Adaptation)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../features/quantization.html">Quantization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../features/multi-device.html">Multi-Device Inference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../features/reduce-vocab.html">Vocabulary Reduction</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../features/FP8KV.html">FP8 KV Cache</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../features/fp8-embedding.html">FP8 Embedding</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../features/streaming.html">Streaming Output</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../features/guided-decoding.html">Guided Decoding</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../features/visual-token-pruning.html">Visual-Token Pruning (DART)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../features/kv-cache-reuse.html">KV Cache Reuse</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../features/in-flight-batching.html">In-Flight Batching</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../features/codepredictor-speculative-decoding.html">CodePredictor Speculative Decoding</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Input &amp; Chat Format</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../format/input-format.html">Input JSON Format</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../format/chat-template-format.html">Chat Template Format</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Performance</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../performance/performance-benchmarks.html">Performance Benchmarks</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Software Design</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/checkpoint-export.html">Checkpoint Exporter Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/onnxless-builder.html">Experimental ONNX-less Builder Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/quantization-design.html">Quantization Package Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/engine-builder.html">Engine Builder</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/cpp-runtime-overview.html">C++ Runtime Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/llm-inference-runtime.html">LLM Inference Runtime</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/llm-streaming.html">LLM Streaming — Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/in-flight-batching.html">In-Flight Batching (V0)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/memory-monitoring.html">Memory monitoring</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/software-design/openai-server.html">HTTP Inference Server Architecture</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Models</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/models/cosmos3.html">Cosmos3-Edge Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/models/nemotron3_5_asr.html">Nemotron-3.5-ASR</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/models/pi05.html">pi0.5 Design</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Customization</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/customization-guide.html">Customization Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/calibration-datasets.html">Calibration Dataset Customization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/customization/tensorrt-plugins.html">TensorRT Plugins Guide</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Testing</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/runtime-unit-tests.html">Unit-Testing the Runtime with a Substitute Engine</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/code-coverage.html">Code Coverage with SonarQube</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../developer_guide/testing/few-layer-validation.html">Few-Layer Numeric Validation</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">APIs</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../python_api.html">Python API Reference</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../../cpp_api.html">C++ API Reference</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/action/index.html">Action Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/action/actionKvBatch.html">Action KV Batch</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/action/actionModelTypes.html">Action Model Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/action/actionUtils.html">Action Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/action/alpamayo1ActionRunner.html">Alpamayo1 Action Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/action/alpamayo1RunnerUtils.html">Alpamayo1 Runner Utils</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/builder/index.html">Builder Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/builder/actionBuilder.html">Action Builder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/builder/audioBuilder.html">Audio Builder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/builder/builderUtils.html">Builder Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/builder/llmBuilder.html">LLM Builder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/builder/visualBuilder.html">Visual Builder</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/chatTemplate/index.html">Chattemplate Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/chatTemplate/chatTemplate.html">Chat Template</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/chatTemplate/injaCallbacks.html">Inja Callbacks</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/chatTemplate/injaJson.html">Inja Json</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/chatTemplate/injaRenderer.html">Inja Renderer</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/common/index.html">Common Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/allReducePath.html">All Reduce Path</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/bindingNames.html">Binding Names</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/checkMacros.html">Check Macros</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/cudaMacros.html">CUDA Macros</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/cudaUtils.html">CUDA Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/executionPhase.html">Execution Phase</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/fileUtils.html">File Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/hashUtils.html">Hash Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/inputLimits.html">Input Limits</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/logger.html">Logger</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/mathUtils.html">Math Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/mmapReader.html">MMAP Reader</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/pagedKvTypes.html">Paged KV Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/parallelArtifactNames.html">Parallel Artifact Names</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/ropeUtils.html">Rope Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/safetensorsUtils.html">Safetensors Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/specDecodeConfigUtils.html">Spec Decode Config Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/stringUtils.html">String Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/tensor.html">Tensor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/trtUtils.html">TRT Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/utf8.html">Utf8</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/common/version.html">Version</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/kernels/index.html">Kernels Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/NvFP4MoEUtils.html">Nv Fp4 Mo E Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/applyRopeWriteKV.html">Apply Rope Write KV</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/argmaxKernel.html">Argmax Kernel</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/attentionScaleUtils.html">Attention Scale Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/audioFbankKernels.html">Audio Fbank Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/batchEvictKernels.html">Batch Evict Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/blockHashKernel.html">Block Hash Kernel</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/buildLayout.html">Build Layout</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/causalConv1d.html">Causal Conv1d</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/checkpointSourceBatch.html">Checkpoint Source Batch</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/common.html">Common</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/conversion.html">Conversion</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cpSpecKernels.html">Cp Spec Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslF16MoeRunner.html">Cute Dsl F16 Moe Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslFMHARunner.html">Cute Dsl FMHA Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslFMHAV2Runner.html">Cute Dsl Fmhav2 Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslFmhaParams.html">Cute Dsl FMHA Params</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslFmhaTypes.html">Cute Dsl FMHA Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslGDNRunner.html">Cute Dsl Gdn Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslGemmNvFp4Runner.html">Cute Dsl GEMM Nv Fp4 Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslGemmRunner.html">Cute Dsl GEMM Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslLayerNormRunner.html">Cute Dsl Layer Norm Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslModuleLoader.html">Cute Dsl Module Loader</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslNvfp4MoeRunner.html">Cute Dsl Nvfp4 Moe Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslNvfp4MoeSm110Runner.html">Cute Dsl Nvfp4 Moe Sm110 Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslQsaSparseRunner.html">Cute Dsl Qsa Sparse Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslRmsNormRunner.html">Cute Dsl Rms Norm Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslSSDRunner.html">Cute Dsl Ssd Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/cuteDslTensorDescriptors.html">Cute Dsl Tensor Descriptors</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dartGatherKernels.html">Dart Gather Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dartSelectorKernels.html">Dart Selector Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/ddtreeKernels.html">Ddtree Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/decoderXQAJitCompiler.html">Decoder XQA Jit Compiler</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/decoderXQARunner.html">Decoder XQA Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dequant.html">Dequant</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dequantize.html">Dequantize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dflash2CandidateSelector.html">Dflash2 Candidate Selector</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dflash2GroupedDynamicConv.html">Dflash2 Grouped Dynamic Conv</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dflashRuntimeKernels.html">Dflash Runtime Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/dsparkKernels.html">Dspark Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/eagleAcceptKernels.html">EAGLE Accept Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/eagleUtilKernels.html">EAGLE Util Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/embeddingKernels.html">Embedding Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/f16MoeSupportKernels.html">F16 Moe Support Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/fp16LayoutConvert.html">Fp16 Layout Convert</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/fp16MoeAssemble.html">Fp16 Moe Assemble</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/fp4Quantize.html">Fp4 Quantize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/gdnKernelUtils.html">Gdn Kernel Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/gdnPdlConfig.html">Gdn Pdl Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/gdnTreeChunkKernels.html">Gdn Tree Chunk Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/gemma4AudioAttention.html">Gemma4 Audio Attention</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/gemma4MTPRuntimeKernels.html">Gemma4 Mtp Runtime Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/gptqActivationPermutation.html">Gptq Activation Permutation</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/gptqMarlinRepack.html">Gptq Marlin Repack</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/imageUtilKernels.html">Image Util Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/initializeCosSinCache.html">Initialize Cos Sin Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/int4CuteDslRepack.html">Int4 Cute Dsl Repack</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/int4GroupwiseGemm.html">Int4 Groupwise GEMM</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/int4MoeScaleRepack.html">Int4 Moe Scale Repack</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/int4PluginV1Repack.html">Int4 Plugin V1 Repack</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/int4QkvScaleConcat.html">Int4 Qkv Scale Concat</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/int4SourceAccessors.html">Int4 Source Accessors</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/kernel.html">Kernel</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/kernel_selector.html">Kernel Selector</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/kvCacheUtilsKernels.html">KV Cache Utils Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/marlin.html">Marlin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/marlinRepackIndex.html">Marlin Repack Index</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/marlin_dtypes.html">Marlin Dtypes</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/marlin_mma.html">Marlin Mma</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/marlin_template.html">Marlin Template</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeActivationKernels.html">Moe Activation Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeAlignSumKernels.html">Moe Align Sum Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeMarlin.html">Moe Marlin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeMarlinIndicesKernels.html">Moe Marlin Indices Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moePerExpertScaleKernels.html">Moe Per Expert Scale Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeSigmoidGroupTopkKernels.html">Moe Sigmoid Group Topk Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/moeTopkSoftmaxKernels.html">Moe Topk Softmax Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/mtpStateScatterKernels.html">Mtp State Scatter Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4A16BlackwellGemmRunner.html">Nvfp4 A16 Blackwell GEMM Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4A16BlackwellGemvJitCompiler.html">Nvfp4 A16 Blackwell Gemv Jit Compiler</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4A16BlackwellGemvJitRunner.html">Nvfp4 A16 Blackwell Gemv Jit Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4A16BlackwellMoeDispatchPolicy.html">Nvfp4 A16 Blackwell Moe Dispatch Policy</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4A16BlackwellMoeJitCompiler.html">Nvfp4 A16 Blackwell Moe Jit Compiler</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4A16BlackwellMoeJitRunner.html">Nvfp4 A16 Blackwell Moe Jit Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4A16BlackwellMoeRunner.html">Nvfp4 A16 Blackwell Moe Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4A16BlackwellSupport.html">Nvfp4 A16 Blackwell Support</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4MoeLayout.html">Nvfp4 Moe Layout</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4MoeNormalize.html">Nvfp4 Moe Normalize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4MoePdlConfig.html">Nvfp4 Moe Pdl Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4MoePluginGeforceTransform.html">Nvfp4 Moe Plugin Geforce Transform</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4MoePluginTransform.html">Nvfp4 Moe Plugin Transform</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4MoeScaleTransform.html">Nvfp4 Moe Scale Transform</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4MoeTypes.html">Nvfp4 Moe Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4MoeWeightTransform.html">Nvfp4 Moe Weight Transform</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4W4A16MarlinRepack.html">Nvfp4 W4 A16 Marlin Repack</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4_dequant.html">Nvfp4 Dequant</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4_scale.html">Nvfp4 Scale</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/nvfp4_tensor.html">Nvfp4 Tensor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/pluginJitCompileCache.html">Plugin Jit Compile Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/pluginJitCompiler.html">Plugin Jit Compiler</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/pluginJitEmbeddedSources.html">Plugin Jit Embedded Sources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/qsaIndexerJitCompiler.html">Qsa Indexer Jit Compiler</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/qsaIndexerKernels.html">Qsa Indexer Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/qsaIndexerRunner.html">Qsa Indexer Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/requestStableRngKernels.html">Request Stable Rng Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/scaleConvert.html">Scale Convert</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/selectiveStateUpdate.html">Selective State Update</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/slidingWindowUtils.html">Sliding Window Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/speculativeKernelsUtils.html">Speculative Kernels Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/speculativeSampling.html">Speculative Sampling</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/speculativeSamplingKernels.html">Speculative Sampling Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/ssdVarlenMetadata.html">Ssd Varlen Metadata</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/talkerMLPKernels.html">Talker Mlp Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/utilKernels.html">Util Kernels</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/vectorizedTypes.html">Vectorized Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/xqaKernelTypes.html">XQA Kernel Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/kernels/xqaLaunchConfig.html">XQA Launch Config</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/multimodal/index.html">Multimodal Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/audioRunner.html">Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/audioUtils.html">Audio Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/cloneEncoderRunner.html">Clone Encoder Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/code2WavRunner.html">Code2 Wav Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/cosmos3EdgeViTRunner.html">Cosmos3 Edge ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/gemma4AudioRunner.html">Gemma4 Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/gemma4UnifiedAudioRunner.html">Gemma4 Unified Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/gemma4UnifiedVisionRunner.html">Gemma4 Unified Vision Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/gemma4ViTRunner.html">Gemma4 ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/imageUtils.html">Image Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/internViTRunner.html">Intern ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/modelTypes.html">Model Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/multimodalRunner.html">Multimodal Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/museGlimmerViTRunner.html">Muse Glimmer ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/nemotronOmniAudioRunner.html">Nemotron Omni Audio Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/nemotronOmniViTRunner.html">Nemotron Omni ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/phi4mmViTRunner.html">Phi4mm ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/qwen25vlViTRunner.html">Qwen25vl ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/qwen3omniViTRunner.html">Qwen3omni ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/qwen3vlViTRunner.html">Qwen3vl ViT Runner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/multimodal/qwenViTRunner.html">Qwen ViT Runner</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/plugins/index.html">Plugins Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/allReducePlugin.html">All Reduce Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/attentionPlugin.html">Attention Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/causalConv1dPlugin.html">Causal Conv1d Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/cuteDslInt4Gemm.html">Cute Dsl Int4 GEMM</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/cuteDslInt4Gemv.html">Cute Dsl Int4 Gemv</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/dflash2GroupedDynamicConvPlugin.html">Dflash2 Grouped Dynamic Conv Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/dflashTargetKVCacheUpdatePlugin.html">Dflash Target KV Cache Update Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/fp16MoePlugin.html">Fp16 Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/fusedNvfp4GemmAllReducePlugin.html">Fused Nvfp4 GEMM All Reduce Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/gatedDeltaNetPlugin.html">Gated Delta Net Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/gemma4AudioAttentionPlugin.html">Gemma4 Audio Attention Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/int4GroupwiseGemmPlugin.html">Int4 Groupwise GEMM Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/int4GroupwiseGemmPluginV2.html">Int4 Groupwise GEMM Plugin V2</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/int4MoePlugin.html">Int4 Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/layerNormPlugin.html">Layer Norm Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/mambaPlugin.html">Mamba Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/nvfp4A16BlackwellDispatchPolicy.html">Nvfp4 A16 Blackwell Dispatch Policy</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/nvfp4A16BlackwellGemmPlugin.html">Nvfp4 A16 Blackwell GEMM Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/nvfp4A16BlackwellMoePlugin.html">Nvfp4 A16 Blackwell Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/nvfp4A16GemmPlugin.html">Nvfp4 A16 GEMM Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/nvfp4A16MoePlugin.html">Nvfp4 A16 Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/nvfp4MoePlugin.html">Nvfp4 Moe Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/nvfp4MoePluginGeforce.html">Nvfp4 Moe Plugin Geforce</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/pluginUtils.html">Plugin Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/qkvConcatPlugin.html">Qkv Concat Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/qsaAttentionPlugin.html">Qsa Attention Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/raggedPluginMetadata.html">Ragged Plugin Metadata</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/rmsNormPlugin.html">Rms Norm Plugin</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/plugins/vitAttentionPlugin.html">VIT Attention Plugin</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/profiling/index.html">Profiling Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/profiling/layerProfiler.html">Layer Profiler</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/profiling/metrics.html">Metrics</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/profiling/nvtx_wrapper.html">Nvtx Wrapper</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/profiling/requestProfiler.html">Request Profiler</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/profiling/timer.html">Timer</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/runtime/index.html">Runtime Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/audioLoader.html">Audio Loader</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/audioUtils.html">Audio Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/blockDiffusionDecoder.html">Block Diffusion Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/blockHash.html">Block Hash</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/blockIndex.html">Block Index</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/boundedSwaKVPageManager.html">Bounded Swa KV Page Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/cacheRecord.html">Cache Record</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/checkpointReader.html">Checkpoint Reader</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/checkpointWeightAssemble.html">Checkpoint Weight Assemble</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/collectiveGroup.html">Collective Group</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/contextCacheConfig.html">Context Cache Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/contextCacheCoordinator.html">Context Cache Coordinator</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/contextCacheDeployment.html">Context Cache Deployment</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/contextCacheManager.html">Context Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/contextCacheMetrics.html">Context Cache Metrics</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/contextCacheRequest.html">Context Cache Request</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/contextCacheTypes.html">Context Cache Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/dartPruner.html">Dart Pruner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/decoderRegistry.html">Decoder Registry</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/decoderUtils.html">Decoder Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/decodingInferenceContext.html">Decoding Inference Context</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/decodingStrategy.html">Decoding Strategy</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/deepstackBinding.html">Deepstack Binding</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/deploymentConfig.html">Deployment Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/dflashDecodeUtils.html">Dflash Decode Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/dflashDecoder.html">Dflash Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/dsparkDecoder.html">Dspark Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/eagleDecoder.html">EAGLE Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/embeddingPreprocessor.html">Embedding Preprocessor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/encoderEmbeddingCache.html">Encoder Embedding Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/engineExecutor.html">Engine Executor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/evictionPlanner.html">Eviction Planner</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/externalWeightManager.html">External Weight Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/gemma4EmbeddingPreprocessor.html">Gemma4 Embedding Preprocessor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/gemma4MTPDecoder.html">Gemma4 Mtp Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/generationBoundary.html">Generation Boundary</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/guidedDecoder.html">Guided Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/hybridCacheManager.html">Hybrid Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/hybridSnapshotStorage.html">Hybrid Snapshot Storage</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/imageUtils.html">Image Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/inferenceDims.html">Inference Dims</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/inferencePhase.html">Inference Phase</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/kvCacheManager.html">KV Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/kvPageTable.html">KV Page Table</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/layerDebugger.html">Layer Debugger</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmEngineConfig.html">LLM Engine Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmInferenceRuntime.html">LLM Inference Runtime</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmRankRuntime.html">LLM Rank Runtime</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/llmRuntimeUtils.html">LLM Runtime Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/logitBias.html">Logit Bias</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/loraManager.html">Lora Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/mambaCacheManager.html">Mamba Cache Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/managedKVCacheRequest.html">Managed KV Cache Request</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/melSpectrogram.html">Mel Spectrogram</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/modelArtifacts.html">Model Artifacts</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/mtpDecoder.html">Mtp Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/multiDevicePluginCommRegistry.html">Multi Device Plugin Comm Registry</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/multiDevicePluginResourceFactory.html">Multi Device Plugin Resource Factory</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/multiDevicePluginResources.html">Multi Device Plugin Resources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/ncclCollectiveBackend.html">Nccl Collective Backend</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/parallelConfig.html">Parallel Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/pipelineIO.html">Pipeline Io</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/qwen3OmniTTSRuntime.html">Qwen3 Omni Tts Runtime</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/raggedBatchBuilder.html">Ragged Batch Builder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/registryBuilder.html">Registry Builder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/requestStableRng.html">Request Stable Rng</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/residentSlotPool.html">Resident Slot Pool</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/resourcePools.html">Resource Pools</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/reusePlan.html">Reuse Plan</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/ropeCache.html">Rope Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/rtxRuntimeCache.html">Rtx Runtime Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/runtimeCoordinator.html">Runtime Coordinator</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/runtimeStepper.html">Runtime Stepper</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/scheduledStep.html">Scheduled Step</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/sharedResources.html">Shared Resources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/specCommonStateTracker.html">Spec Common State Tracker</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/specReuseContract.html">Spec Reuse Contract</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/specStatePlan.html">Spec State Plan</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/stepPreparer.html">Step Preparer</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/streaming.html">Streaming</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/systemPromptKVCache.html">System Prompt KV Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/tensorMap.html">Tensor Map</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/tensorParallelNcclResources.html">Tensor Parallel Nccl Resources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/tensorParallelPluginResources.html">Tensor Parallel Plugin Resources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/tensorRegistry.html">Tensor Registry</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/vanillaDecoder.html">Vanilla Decoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/runtime/visualTokenPruner.html">Visual Token Pruner</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/sampler/index.html">Sampler Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/sampler/diffusionGemmaSampling.html">Diffusion Gemma Sampling</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/sampler/sampling.html">Sampling</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/scheduler/index.html">Scheduler Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/scheduler/batchCompatibility.html">Batch Compatibility</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/scheduler/commandQueue.html">Command Queue</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/scheduler/engineChannel.html">Engine Channel</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/scheduler/engineCommand.html">Engine Command</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/scheduler/requestCoordinator.html">Request Coordinator</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/scheduler/requestEngine.html">Request Engine</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/scheduler/requestIdentity.html">Request Identity</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/scheduler/requestRecord.html">Request Record</a></li>
+</ul>
+</details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../../cpp_api/tokenizer/index.html">Tokenizer Module</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/tokenizer/preTokenizer.html">Pre Tokenizer</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/tokenizer/tokenEncoder.html">Token Encoder</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/tokenizer/tokenizer.html">Tokenizer</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/tokenizer/tokenizerUtils.html">Tokenizer Utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../cpp_api/tokenizer/unicodeData.html">Unicode Data</a></li>
+</ul>
+</details></li>
+</ul>
+</details></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Quick Links</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference external" href="https://github.com/NVIDIA/TensorRT-Edge-LLM/releases">Releases</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/NVIDIA/TensorRT-Edge-LLM">GitHub</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/NVIDIA/TensorRT-Edge-LLM/issues?q=is%3Aissue%20state%3Aopen%20label%3ARoadmap">Roadmap</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+  </div>
+
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Installation</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section class="tex2jax_ignore mathjax_ignore" id="installation">
+<h1>Installation<a class="headerlink" href="#installation" title="Link to this heading">#</a></h1>
+<section id="choose-an-installation-method">
+<span id="choose-a-deployment-workflow"></span><h2>Choose an installation method<a class="headerlink" href="#choose-an-installation-method" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Installation method</p></th>
+<th class="head"><p>Choose this when</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><a class="reference internal" href="#published-python-wheel">Python wheel (recommended)</a></p></td>
+<td><p>You want to run chat, an HTTP server, or the Python API on a <a class="reference internal" href="support-matrix.html#wheel-packaging-matrix"><span class="std std-ref">supported system</span></a>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#source-workflow-c-runtime">C++ from source</a></p></td>
+<td><p>You want to build and run the C++ runtime, or modify its source code.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#optional-python-frontend">Python from source</a></p></td>
+<td><p>You want to develop or modify Edge-LLM and use its Python interface.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#build-a-local-wheel-from-source">Build a wheel from source</a></p></td>
+<td><p>You need to package a source build as an installable Python wheel.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="published-python-wheel">
+<h2>Published Python wheel<a class="headerlink" href="#published-python-wheel" title="Link to this heading">#</a></h2>
+<p>Install a wheel to run Edge-LLM without downloading or compiling its source code.</p>
+<p>Use CPython 3.10–3.12 on a target listed in the
+<a class="reference internal" href="support-matrix.html#wheel-packaging-matrix"><span class="std std-ref">wheel support matrix</span></a>. Install the
+required NVIDIA driver, CUDA, and TensorRT, including its Python bindings,
+before continuing. See the <a class="reference external" href="https://docs.nvidia.com/deeplearning/tensorrt/latest/installing-tensorrt/installing.html">TensorRT installation guide</a>
+for your supported TensorRT version. On Jetson and DRIVE, use the TensorRT
+version supplied by the platform SDK.</p>
+<p>If you extracted TensorRT into a local directory, follow the
+<a class="reference internal" href="#using-tensorrt-from-a-local-sdk-directory">local SDK setup instructions</a>
+to make it available in your Python environment.</p>
+<section id="install">
+<span id="install-and-chat"></span><span id="recommended-python-api-and-server"></span><h3>Install<a class="headerlink" href="#install" title="Link to this heading">#</a></h3>
+<p>The <code class="docutils literal notranslate"><span class="pre">[server]</span></code> extra installs Python dependencies for chat and HTTP serving.
+CUDA and TensorRT must already be installed.</p>
+<p>Run the commands below. Use a supported Python interpreter for <code class="docutils literal notranslate"><span class="pre">python3</span></code>.
+The TensorRT Python bindings must match that interpreter’s Python version.
+<code class="docutils literal notranslate"><span class="pre">--system-site-packages</span></code> makes bindings installed for that interpreter available
+in the new environment; it does not provide bindings for a different Python version.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python3<span class="w"> </span>-m<span class="w"> </span>venv<span class="w"> </span>--system-site-packages<span class="w"> </span>.venv-edgellm
+<span class="nb">source</span><span class="w"> </span>.venv-edgellm/bin/activate
+python<span class="w"> </span>-m<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>--upgrade<span class="w"> </span>pip
+python<span class="w"> </span>-m<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">"tensorrt-edgellm[server]"</span>
+</pre></div>
+</div>
+</section>
+<section id="verify-your-installation">
+<h3>Verify your installation<a class="headerlink" href="#verify-your-installation" title="Link to this heading">#</a></h3>
+<p>If TensorRT is in a local SDK directory, complete the
+<a class="reference internal" href="#using-tensorrt-from-a-local-sdk-directory">local SDK setup</a> in the environment
+you just activated before running the check below.</p>
+<p>To check that the Edge-LLM runtime can load without downloading a model, run:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-c<span class="w"> </span><span class="s2">"import tensorrt; from tensorrt_edgellm import runtime; runtime.load()"</span>
+</pre></div>
+</div>
+<p>Successful completion confirms that the Edge-LLM runtime can load. If the check
+reports no compatible payload, compare your platform, CUDA, TensorRT, and GPU
+with the <a class="reference internal" href="support-matrix.html#wheel-packaging-matrix"><span class="std std-ref">wheel support matrix</span></a>.
+Use a listed configuration or <a class="reference internal" href="#source-workflow-c-runtime">build from source</a>.
+For other installation errors, see <a class="reference internal" href="#wheel-installation-issues">Wheel installation issues</a>.</p>
+<p>To download a model and run chat or inference, continue to
+<a class="reference internal" href="quick-start-guide.html"><span class="std std-doc">Quick Start</span></a>.</p>
+<p>The installation above includes the Python dependencies needed for chat and
+HTTP serving. For quantization, ONNX export, or build tools, see
+<a class="reference internal" href="#optional-python-dependencies">Optional Python dependencies</a>.</p>
+</section>
+<section id="using-tensorrt-from-a-local-sdk-directory">
+<span id="using-a-standalone-tensorrt-sdk"></span><h3>Using TensorRT from a local SDK directory<a class="headerlink" href="#using-tensorrt-from-a-local-sdk-directory" title="Link to this heading">#</a></h3>
+<p>If TensorRT comes from a standalone SDK, install its Python wheel in your
+activated environment. Choose the wheel matching your Python version and CPU
+architecture:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">"/path/to/TensorRT/python/tensorrt-&lt;version&gt;-&lt;python-abi&gt;-none-linux_&lt;arch&gt;.whl"</span>
+</pre></div>
+</div>
+<p>If the SDK’s shared libraries are not on the system library path, expose them
+before starting Python. Replace <code class="docutils literal notranslate"><span class="pre">/path/to/TensorRT</span></code> with the SDK directory:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">TRT_PACKAGE_DIR</span><span class="o">=</span>/path/to/TensorRT
+<span class="nb">export</span><span class="w"> </span><span class="nv">LD_LIBRARY_PATH</span><span class="o">=</span><span class="s2">"</span><span class="nv">$TRT_PACKAGE_DIR</span><span class="s2">/lib</span><span class="si">${</span><span class="nv">LD_LIBRARY_PATH</span><span class="p">:+:</span><span class="nv">$LD_LIBRARY_PATH</span><span class="si">}</span><span class="s2">"</span>
+</pre></div>
+</div>
+</section>
+</section>
+<hr class="docutils" />
+<section id="inference-prerequisite">
+<h2>Inference Prerequisite<a class="headerlink" href="#inference-prerequisite" title="Link to this heading">#</a></h2>
+<p>The target must have at least the deployed model size plus 2 GB of available
+device memory before starting inference. Treat this as a minimum: KV cache,
+multimodal components, speculative draft engines, and larger batch or sequence
+profiles can require additional memory.</p>
+</section>
+<section id="source-workflow-c-runtime">
+<h2>Source workflow: C++ runtime<a class="headerlink" href="#source-workflow-c-runtime" title="Link to this heading">#</a></h2>
+<p>The C++ runtime builds TensorRT engines and runs inference on the target. For
+the authoritative JetPack, DriveOS, CUDA, TensorRT, and TensorRT Edge-LLM
+compatibility table, see the <a class="reference internal" href="support-matrix.html"><span class="std std-doc">Official Support Matrix</span></a>.
+Then use the matching platform command below for your device or SDK image.</p>
+<p>Jetson Orin does not support FP8, MXFP8, FP4, or NVFP4 runtime precision in
+this release. Use FP16, INT8, or INT4 checkpoints for Orin.</p>
+<section id="system-requirements">
+<h3>System Requirements<a class="headerlink" href="#system-requirements" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p>CUDA and TensorRT from the target JetPack, DriveOS SDK, or DGX Spark software release</p></li>
+<li><p>Disk space: ~20-50GB for ONNX files and TensorRT engines</p></li>
+</ul>
+</section>
+<section id="build-instructions">
+<h3>Build Instructions<a class="headerlink" href="#build-instructions" title="Link to this heading">#</a></h3>
+<p><strong>1. Install System Dependencies (on Edge device)</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>apt<span class="w"> </span>update
+sudo<span class="w"> </span>apt<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>cmake<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>build-essential<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>git
+</pre></div>
+</div>
+<p><strong>2. Verify CUDA and TensorRT Installation</strong></p>
+<p>After JetPack is installed, inside the DriveOS SDK Docker image, or on DGX
+Spark, TensorRT should be installed in <code class="docutils literal notranslate"><span class="pre">/usr</span></code>.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Check CUDA version</span>
+nvcc<span class="w"> </span>--version<span class="w">  </span><span class="c1"># Should match the CUDA_CTK_VERSION for your platform below</span>
+
+<span class="c1"># Check TensorRT version</span>
+dpkg<span class="w"> </span>-l<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>tensorrt<span class="w">  </span><span class="c1"># Should show TensorRT 10.x+</span>
+</pre></div>
+</div>
+<p><strong>3. Clone Repository (on Edge device)</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Clone to your chosen source directory</span>
+<span class="nb">cd</span><span class="w"> </span>/path/to/parent-directory
+git<span class="w"> </span>clone<span class="w"> </span>https://github.com/NVIDIA/TensorRT-Edge-LLM.git
+<span class="nb">cd</span><span class="w"> </span>TensorRT-Edge-LLM
+git<span class="w"> </span>submodule<span class="w"> </span>update<span class="w"> </span>--init<span class="w"> </span>--recursive
+</pre></div>
+</div>
+<section id="optional-python-frontend">
+<h4>Optional Python frontend<a class="headerlink" href="#optional-python-frontend" title="Link to this heading">#</a></h4>
+<p>Skip this step for the C++ and ONNX workflow. To also use the experimental
+checkpoint-direct builder or OpenAI-compatible server, create the Python
+environment and install the binding build dependency before configuring CMake:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python3<span class="w"> </span>-m<span class="w"> </span>venv<span class="w"> </span>--system-site-packages<span class="w"> </span>.venv
+<span class="nb">source</span><span class="w"> </span>.venv/bin/activate
+python<span class="w"> </span>-m<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span><span class="nv">pybind11</span><span class="o">==</span><span class="m">3</span>.0.4
+</pre></div>
+</div>
+<p>Retain every argument from the complete platform command in Step 4 and append
+<code class="docutils literal notranslate"><span class="pre">-DBUILD_PYTHON_BINDINGS=ON</span></code> and
+<code class="docutils literal notranslate"><span class="pre">-Dpybind11_DIR=&quot;$(python</span> <span class="pre">-m</span> <span class="pre">pybind11</span> <span class="pre">--cmakedir)&quot;</span></code>. The directory argument is
+required because pip installs the pybind11 CMake configuration outside CMake’s
+default search prefixes.</p>
+<p><strong>4. Configure Build</strong></p>
+<p>Use the CMake command for your platform. All commands enable CuTe DSL kernels
+because Qwen3.5 and several other model paths require them.</p>
+<p><strong>JetPack 7.0/7.1 Thor</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mkdir<span class="w"> </span>-p<span class="w"> </span>build
+<span class="nb">cd</span><span class="w"> </span>build
+
+cmake<span class="w"> </span>..<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DCMAKE_BUILD_TYPE<span class="o">=</span>Release<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DTRT_PACKAGE_DIR<span class="o">=</span>/usr<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DCMAKE_TOOLCHAIN_FILE<span class="o">=</span>cmake/aarch64_linux_toolchain.cmake<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DEMBEDDED_TARGET<span class="o">=</span>jetson-thor<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DCUDA_CTK_VERSION<span class="o">=</span><span class="m">13</span>.0<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DENABLE_CUTE_DSL<span class="o">=</span>ALL
+</pre></div>
+</div>
+<p><strong>JetPack 7.2 Thor</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mkdir<span class="w"> </span>-p<span class="w"> </span>build
+<span class="nb">cd</span><span class="w"> </span>build
+
+cmake<span class="w"> </span>..<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DCMAKE_BUILD_TYPE<span class="o">=</span>Release<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DTRT_PACKAGE_DIR<span class="o">=</span>/usr<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DCMAKE_TOOLCHAIN_FILE<span class="o">=</span>cmake/aarch64_linux_toolchain.cmake<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DEMBEDDED_TARGET<span class="o">=</span>jetson-thor<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DCUDA_CTK_VERSION<span class="o">=</span><span class="m">13</span>.2<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DENABLE_CUTE_DSL<span class="o">=</span>ALL
+</pre></div>
+</div>
+<p><strong>DriveOS 7.2 Thor</strong></p>
+<p>Run this inside the DriveOS SDK Docker image, then copy <code class="docutils literal notranslate"><span class="pre">build/</span></code> to the DRIVE
+system.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mkdir<span class="w"> </span>-p<span class="w"> </span>build
+<span class="nb">cd</span><span class="w"> </span>build
+
+cmake<span class="w"> </span>..<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DCMAKE_BUILD_TYPE<span class="o">=</span>Release<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DTRT_PACKAGE_DIR<span class="o">=</span>/usr<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DCMAKE_TOOLCHAIN_FILE<span class="o">=</span>cmake/aarch64_linux_toolchain.cmake<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DEMBEDDED_TARGET<span class="o">=</span>auto-thor<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DCUDA_CTK_VERSION<span class="o">=</span><span class="m">13</span>.3<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DENABLE_CUTE_DSL<span class="o">=</span>ALL
+</pre></div>
+</div>
+<p><strong>IGX Thor with an RTX SM120 GPU</strong></p>
+<p>An IGX Thor system with both the integrated Thor GPU and an attached RTX
+Blackwell GPU can use one plugin/runtime build. Generate one AArch64 CuTe DSL
+artifact containing every supported SM110 and SM120 kernel, then compile the
+CUDA sources for both architectures in one CMake build:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>kernelSrcs/build_cutedsl.py<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--kernels<span class="w"> </span>ALL<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--gpu_arch<span class="w"> </span>sm_110,sm_120<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--arch<span class="w"> </span>aarch64<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--cuda-version<span class="w"> </span><span class="m">13</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--clean
+
+cmake<span class="w"> </span>-S<span class="w"> </span>.<span class="w"> </span>-B<span class="w"> </span>build-igx-thor<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DTRT_PACKAGE_DIR<span class="o">=</span>/usr<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DCMAKE_TOOLCHAIN_FILE<span class="o">=</span>cmake/aarch64_linux_toolchain.cmake<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DEMBEDDED_TARGET<span class="o">=</span>igx-thor<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DCUDA_CTK_VERSION<span class="o">=</span><span class="m">13</span>.0<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DENABLE_CUTE_DSL<span class="o">=</span>ALL
+
+cmake<span class="w"> </span>--build<span class="w"> </span>build-igx-thor<span class="w"> </span>--parallel
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">EMBEDDED_TARGET=igx-thor</span></code> compiles the CUDA sources for <code class="docutils literal notranslate"><span class="pre">110a</span></code> and <code class="docutils literal notranslate"><span class="pre">120</span></code>,
+requires CUDA 13 or newer, and selects the combined <code class="docutils literal notranslate"><span class="pre">sm_110_sm_120</span></code> CuTe DSL
+artifact. On a native IGX host, set
+<code class="docutils literal notranslate"><span class="pre">CUDA_DEVICE_ORDER=PCI_BUS_ID</span></code>, then use
+<code class="docutils literal notranslate"><span class="pre">CUDA_VISIBLE_DEVICES=0</span></code> for Thor or <code class="docutils literal notranslate"><span class="pre">CUDA_VISIBLE_DEVICES=1</span></code> for RTX. Confirm
+the selection before building or running an engine:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python3<span class="w"> </span>-c<span class="w"> </span><span class="s1">'import torch; print(torch.cuda.get_device_name(0))'</span>
+</pre></div>
+</div>
+<p>In an NVIDIA container use <code class="docutils literal notranslate"><span class="pre">NVIDIA_VISIBLE_DEVICES=0</span></code> or
+<code class="docutils literal notranslate"><span class="pre">NVIDIA_VISIBLE_DEVICES=1</span></code>. The selected physical GPU appears as CUDA device 0
+inside the container, so do not copy the physical ordinal into
+<code class="docutils literal notranslate"><span class="pre">CUDA_VISIBLE_DEVICES</span></code> there. GPU selection is fixed for the life of an
+inference process. To switch GPUs, stop the process, update the selector, use
+the engine built for the selected SM, and restart. TensorRT engines remain
+architecture specific even though the plugin binary is shared.</p>
+<p><strong>DGX Spark (GB10)</strong></p>
+<p>Run this directly on the DGX Spark system. Use <code class="docutils literal notranslate"><span class="pre">gb10</span></code> as the embedded target
+and CUDA Toolkit 13.0.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mkdir<span class="w"> </span>-p<span class="w"> </span>build
+<span class="nb">cd</span><span class="w"> </span>build
+
+cmake<span class="w"> </span>..<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DCMAKE_BUILD_TYPE<span class="o">=</span>Release<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DTRT_PACKAGE_DIR<span class="o">=</span>/usr<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DCMAKE_TOOLCHAIN_FILE<span class="o">=</span>cmake/aarch64_linux_toolchain.cmake<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DEMBEDDED_TARGET<span class="o">=</span>gb10<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DCUDA_CTK_VERSION<span class="o">=</span><span class="m">13</span>.0<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DENABLE_CUTE_DSL<span class="o">=</span>ALL
+</pre></div>
+</div>
+<p><strong>JetPack 7.2 Orin</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mkdir<span class="w"> </span>-p<span class="w"> </span>build
+<span class="nb">cd</span><span class="w"> </span>build
+
+cmake<span class="w"> </span>..<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DCMAKE_BUILD_TYPE<span class="o">=</span>Release<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DTRT_PACKAGE_DIR<span class="o">=</span>/usr<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DCMAKE_TOOLCHAIN_FILE<span class="o">=</span>cmake/aarch64_linux_toolchain.cmake<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DEMBEDDED_TARGET<span class="o">=</span>jetson-orin<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DCUDA_CTK_VERSION<span class="o">=</span><span class="m">13</span>.2<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DENABLE_CUTE_DSL<span class="o">=</span>ALL
+</pre></div>
+</div>
+<p><strong>QNX Standard 8.0 (AArch64 cross-compilation)</strong></p>
+<p>QNX is a C++ source-deployment workflow. Install the QNX SDP 8.0 host and
+target trees, a cross-capable host CUDA Toolkit, the matching QNX CUDA target
+package, and a QNX TensorRT package. <code class="docutils literal notranslate"><span class="pre">QNX_HOST</span></code> must contain the host <code class="docutils literal notranslate"><span class="pre">qcc</span></code> and
+<code class="docutils literal notranslate"><span class="pre">q++</span></code> tools; <code class="docutils literal notranslate"><span class="pre">QNX_TARGET</span></code> is the AArch64 QNX sysroot. The TensorRT root passed
+to CMake must expose target headers and libraries under <code class="docutils literal notranslate"><span class="pre">include</span></code> and <code class="docutils literal notranslate"><span class="pre">lib</span></code>, or
+under the <code class="docutils literal notranslate"><span class="pre">include/aarch64-qnx</span></code> and <code class="docutils literal notranslate"><span class="pre">lib/aarch64-qnx</span></code> subdirectories.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">QNX_HOST</span><span class="o">=</span>/path/to/qnx800/host/linux/x86_64
+<span class="nb">export</span><span class="w"> </span><span class="nv">QNX_TARGET</span><span class="o">=</span>/path/to/qnx800/target/qnx
+
+cmake<span class="w"> </span>-S<span class="w"> </span>.<span class="w"> </span>-B<span class="w"> </span>build-qnx<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DCMAKE_BUILD_TYPE<span class="o">=</span>Release<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DCMAKE_TOOLCHAIN_FILE<span class="o">=</span>cmake/aarch64_qnx_toolchain.cmake<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DTRT_PACKAGE_DIR<span class="o">=</span>/path/to/tensorrt-qnx<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DCUDA_CTK_VERSION<span class="o">=</span><span class="m">13</span>.3<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DCUDA_TOOLKIT_ROOT<span class="o">=</span>/usr/local/cuda-13.3<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DQNX_CUDA_TARGET_ROOT<span class="o">=</span>/usr/local/cuda-safe-13.3<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DENABLE_CUTE_DSL<span class="o">=</span>OFF
+
+cmake<span class="w"> </span>--build<span class="w"> </span>build-qnx<span class="w"> </span>--parallel<span class="w"> </span><span class="s2">"</span><span class="k">$(</span>nproc<span class="k">)</span><span class="s2">"</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">QNX_CUDA_TARGET_ROOT</span></code> must contain <code class="docutils literal notranslate"><span class="pre">targets/aarch64-qnx</span></code>. The toolchain also
+uses <code class="docutils literal notranslate"><span class="pre">${QNX_CUDA_TARGET_ROOT}/thor/targets/aarch64-qnx</span></code> by default; override
+<code class="docutils literal notranslate"><span class="pre">CUDA_TARGET_DIR</span></code> when that additional target tree is elsewhere. CUDA Toolkit
+13.x defaults to SM110a. CUDA Toolkit 12.7 through 12.x defaults to SM101a;
+set <code class="docutils literal notranslate"><span class="pre">CMAKE_CUDA_ARCHITECTURES</span></code> explicitly for another supported target.</p>
+<p>Deploy the cross-built binaries and libraries from <code class="docutils literal notranslate"><span class="pre">build-qnx/</span></code> with the
+matching QNX CUDA and TensorRT runtime libraries. CuTe DSL kernels are not
+available for QNX; CMake rejects <code class="docutils literal notranslate"><span class="pre">ENABLE_CUTE_DSL</span></code> values other than <code class="docutils literal notranslate"><span class="pre">OFF</span></code>.
+The standard autoregressive LLM and VLM paths require CuTe DSL FMHA for
+prefill, so their <code class="docutils literal notranslate"><span class="pre">llm_build</span></code> and <code class="docutils literal notranslate"><span class="pre">llm_inference</span></code> workflows are not supported
+by this QNX build. Components implemented entirely with TensorRT-native or
+CUDA operators can be cross-compiled, but this release does not claim a
+model-level QNX qualification for them. Python wheels and the experimental
+Python server are not part of this cross-compilation workflow.</p>
+<p><strong>Alternative: Building on x86 GPU Systems (Optional for Developers)</strong></p>
+<p>If you want to build and test on an x86 workstation with NVIDIA GPU (for development purposes before deploying to Edge devices), you can use this configuration instead:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mkdir<span class="w"> </span>-p<span class="w"> </span>build
+<span class="nb">cd</span><span class="w"> </span>build
+
+cmake<span class="w"> </span>..<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DCMAKE_BUILD_TYPE<span class="o">=</span>Release<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DTRT_PACKAGE_DIR<span class="o">=</span>/usr/local/TensorRT-10.x.x<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DCUDA_CTK_VERSION<span class="o">=</span>&lt;YOUR_CUDA_VERSION&gt;<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DCUTE_DSL_ARTIFACT_TAG<span class="o">=</span>sm_&lt;YOUR_SM&gt;<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DENABLE_CUTE_DSL<span class="o">=</span>ALL
+</pre></div>
+</div>
+<blockquote>
+<div><p><strong>Note:</strong> Replace <code class="docutils literal notranslate"><span class="pre">/usr/local/TensorRT-10.x.x</span></code> with your actual TensorRT installation path. Use <code class="docutils literal notranslate"><span class="pre">dpkg</span> <span class="pre">-l</span> <span class="pre">|</span> <span class="pre">grep</span> <span class="pre">tensorrt</span></code> to find it, or download from <a class="reference external" href="https://developer.nvidia.com/tensorrt">NVIDIA TensorRT downloads</a>. Replace <code class="docutils literal notranslate"><span class="pre">&lt;YOUR_CUDA_VERSION&gt;</span></code> with your actual CUDA version (e.g., <code class="docutils literal notranslate"><span class="pre">13.0</span></code>). Use <code class="docutils literal notranslate"><span class="pre">nvcc</span> <span class="pre">--version</span></code> to check your CUDA version.
+Replace <code class="docutils literal notranslate"><span class="pre">&lt;YOUR_SM&gt;</span></code> with the numeric compute capability, for example <code class="docutils literal notranslate"><span class="pre">80</span></code>,
+<code class="docutils literal notranslate"><span class="pre">100</span></code>, or <code class="docutils literal notranslate"><span class="pre">120</span></code>.</p>
+</div></blockquote>
+<p><a id="windows-x64-with-tensorrt-rtx"></a></p>
+<p><strong>Windows x64 with TensorRT-RTX</strong></p>
+<p>Run CMake from an x64 Native Tools Command Prompt for Visual Studio:</p>
+<div class="highlight-powershell notranslate"><div class="highlight"><pre><span></span><span class="n">py</span> <span class="n">-m</span> <span class="n">venv</span> <span class="p">.</span><span class="n">venv-cutedsl</span>
+<span class="p">.\.</span><span class="n">venv-cutedsl</span><span class="p">\</span><span class="n">Scripts</span><span class="p">\</span><span class="n">python</span><span class="p">.</span><span class="n">exe</span> <span class="n">-m</span> <span class="n">pip</span> <span class="n">install</span> <span class="p">`</span>
+    <span class="p">-</span><span class="n">-no-cache-dir</span> <span class="p">`</span>
+    <span class="p">-</span><span class="n">-only-binary</span><span class="p">=:</span><span class="n">all</span><span class="p">:</span> <span class="p">`</span>
+    <span class="p">-</span><span class="n">-index-url</span> <span class="n">https</span><span class="p">://</span><span class="n">pypi</span><span class="p">.</span><span class="n">org</span><span class="p">/</span><span class="n">simple</span> <span class="p">`</span>
+    <span class="s2">"nvidia-cutlass-dsl[cu13]==4.8.0"</span> <span class="p">`</span>
+    <span class="n">cupy-cuda13x</span><span class="p">==</span><span class="n">13</span><span class="p">.</span><span class="n">6</span><span class="p">.</span><span class="n">0</span>
+<span class="p">.\.</span><span class="n">venv-cutedsl</span><span class="p">\</span><span class="n">Scripts</span><span class="p">\</span><span class="n">python</span><span class="p">.</span><span class="n">exe</span> <span class="n">kernelSrcs</span><span class="p">\</span><span class="n">build_cutedsl</span><span class="p">.</span><span class="n">py</span> <span class="p">`</span>
+    <span class="p">-</span><span class="n">-kernels</span> <span class="n">ALL</span> <span class="p">`</span>
+    <span class="p">-</span><span class="n">-gpu_arch</span> <span class="n">sm_</span><span class="p">&lt;</span><span class="n">YOUR_SM</span><span class="p">&gt;</span> <span class="p">`</span>
+    <span class="p">-</span><span class="n">-cuda-version</span> <span class="p">&lt;</span><span class="n">YOUR_CUDA_VERSION</span><span class="p">&gt;</span> <span class="p">`</span>
+    <span class="p">-</span><span class="n">-clean</span>
+
+<span class="n">cmake</span> <span class="n">-S</span> <span class="p">.</span> <span class="n">-B</span> <span class="n">build</span> <span class="n">-G</span> <span class="n">Ninja</span> <span class="p">`</span>
+    <span class="n">-DCMAKE_BUILD_TYPE</span><span class="p">=</span><span class="n">Release</span> <span class="p">`</span>
+    <span class="n">-DTRT_PACKAGE_DIR</span><span class="p">=</span><span class="n">C</span><span class="p">:/</span><span class="n">path</span><span class="p">/</span><span class="n">to</span><span class="p">/</span><span class="n">tensorrt-rtx</span> <span class="p">`</span>
+    <span class="n">-DCUDA_CTK_VERSION</span><span class="p">=&lt;</span><span class="n">YOUR_CUDA_VERSION</span><span class="p">&gt;</span> <span class="p">`</span>
+    <span class="n">-DCMAKE_CUDA_ARCHITECTURES</span><span class="p">=&lt;</span><span class="n">YOUR_SM</span><span class="p">&gt;</span> <span class="p">`</span>
+    <span class="n">-DENABLE_CUTE_DSL</span><span class="p">=</span><span class="n">ALL</span> <span class="p">`</span>
+    <span class="n">-DCUTE_DSL_ARTIFACT_TAG</span><span class="p">=</span><span class="n">sm_</span><span class="p">&lt;</span><span class="n">YOUR_SM</span><span class="p">&gt;</span>
+<span class="n">cmake</span> <span class="p">-</span><span class="n">-build</span> <span class="n">build</span> <span class="p">-</span><span class="n">-parallel</span>
+</pre></div>
+</div>
+<p>Replace <code class="docutils literal notranslate"><span class="pre">&lt;YOUR_CUDA_VERSION&gt;</span></code> with the installed CUDA Toolkit version, for
+example <code class="docutils literal notranslate"><span class="pre">13.2</span></code>, and <code class="docutils literal notranslate"><span class="pre">&lt;YOUR_SM&gt;</span></code> with the numeric compute capability, for example
+<code class="docutils literal notranslate"><span class="pre">120</span></code>. <code class="docutils literal notranslate"><span class="pre">13.6.0</span></code> in the pip command is the CuPy release version; <code class="docutils literal notranslate"><span class="pre">cuda13x</span></code> selects
+its CUDA 13.x package. Generate the Windows CuTe DSL artifact with all kernel
+groups before running CMake. Windows artifacts contain COFF objects and are
+stored under <code class="docutils literal notranslate"><span class="pre">cpp/kernels/cuteDSLArtifact/windows/x86_64/&lt;tag&gt;</span></code>; Linux ELF
+artifacts remain under <code class="docutils literal notranslate"><span class="pre">cpp/kernels/cuteDSLArtifact/x86_64/&lt;tag&gt;</span></code>. The
+<code class="docutils literal notranslate"><span class="pre">llm_stream</span></code> example is not built on Windows.</p>
+<p>The TensorRT-RTX package must include its ONNX parser component. Add the
+TensorRT-RTX <code class="docutils literal notranslate"><span class="pre">bin</span></code> directory to <code class="docutils literal notranslate"><span class="pre">PATH</span></code> when running the examples so the runtime,
+ONNX parser, and Edge-LLM plugin DLLs can be loaded.</p>
+<p><strong>CMake Options:</strong></p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head text-left"><p>Option</p></th>
+<th class="head text-left"><p>Description</p></th>
+<th class="head text-left"><p>Default</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">TRT_PACKAGE_DIR</span></code></p></td>
+<td class="text-left"><p>Path to TensorRT installation. Auto-detected; manual hint to disambiguate multiple versions.</p></td>
+<td class="text-left"><p>N/A</p></td>
+</tr>
+<tr class="row-odd"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">CMAKE_TOOLCHAIN_FILE</span></code></p></td>
+<td class="text-left"><p><strong>Required for Edge devices</strong>: Use <code class="docutils literal notranslate"><span class="pre">cmake/aarch64_linux_toolchain.cmake</span></code> for Edge device builds. <strong>Not needed for GPU builds</strong></p></td>
+<td class="text-left"><p>N/A</p></td>
+</tr>
+<tr class="row-even"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">EMBEDDED_TARGET</span></code></p></td>
+<td class="text-left"><p><strong>Required for Edge devices</strong>: <code class="docutils literal notranslate"><span class="pre">jetson-thor</span></code> (Jetson Thor), <code class="docutils literal notranslate"><span class="pre">igx-thor</span></code> (IGX Thor plus RTX SM120), <code class="docutils literal notranslate"><span class="pre">auto-thor</span></code> (DRIVE Thor / DriveOS), <code class="docutils literal notranslate"><span class="pre">gb10</span></code> (DGX Spark), or <code class="docutils literal notranslate"><span class="pre">jetson-orin</span></code> (Jetson Orin). <strong>Not needed for GPU builds</strong></p></td>
+<td class="text-left"><p>N/A</p></td>
+</tr>
+<tr class="row-odd"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">CUDA_CTK_VERSION</span></code></p></td>
+<td class="text-left"><p>CUDA Toolkit version. Use the platform command above to select <code class="docutils literal notranslate"><span class="pre">13.3</span></code>, <code class="docutils literal notranslate"><span class="pre">13.2</span></code>, or <code class="docutils literal notranslate"><span class="pre">13.0</span></code>. Do not pass <code class="docutils literal notranslate"><span class="pre">-DCUDA_VERSION</span></code>; CMake reserves that name for CUDA headers and rejects it.</p></td>
+<td class="text-left"><p>target default</p></td>
+</tr>
+<tr class="row-even"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">BUILD_UNIT_TESTS</span></code></p></td>
+<td class="text-left"><p>Build unit tests</p></td>
+<td class="text-left"><p>OFF</p></td>
+</tr>
+<tr class="row-odd"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">ENABLE_COVERAGE</span></code></p></td>
+<td class="text-left"><p>Enable gcov code coverage instrumentation (see <a class="reference internal" href="../../developer_guide/testing/code-coverage.html"><span class="std std-doc">Code Coverage</span></a>)</p></td>
+<td class="text-left"><p>OFF</p></td>
+</tr>
+<tr class="row-even"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">ENABLE_CUTE_DSL</span></code></p></td>
+<td class="text-left"><p>Select generated CuTe DSL kernels: <code class="docutils literal notranslate"><span class="pre">fmha</span></code>, <code class="docutils literal notranslate"><span class="pre">ALL</span></code>, or a group list such as <code class="docutils literal notranslate"><span class="pre">gdn</span></code>, <code class="docutils literal notranslate"><span class="pre">gemm</span></code>, or <code class="docutils literal notranslate"><span class="pre">ssd</span></code>. Any selection also links <code class="docutils literal notranslate"><span class="pre">fmha</span></code>, which the attention plugins require. Use <code class="docutils literal notranslate"><span class="pre">ALL</span></code> for customer builds.</p></td>
+<td class="text-left"><p>fmha</p></td>
+</tr>
+<tr class="row-odd"><td class="text-left"><p><code class="docutils literal notranslate"><span class="pre">CUTE_DSL_ARTIFACT_TAG</span></code></p></td>
+<td class="text-left"><p>Artifact tag under <code class="docutils literal notranslate"><span class="pre">cpp/kernels/cuteDSLArtifact/&lt;arch&gt;/</span></code> (<code class="docutils literal notranslate"><span class="pre">cpp/kernels/cuteDSLArtifact/windows/&lt;arch&gt;/</span></code> on Windows), for example <code class="docutils literal notranslate"><span class="pre">sm_87</span></code>, <code class="docutils literal notranslate"><span class="pre">sm_110</span></code>, <code class="docutils literal notranslate"><span class="pre">sm_110_sm_120</span></code>, or <code class="docutils literal notranslate"><span class="pre">sm_121</span></code>. Edge targets infer it from <code class="docutils literal notranslate"><span class="pre">EMBEDDED_TARGET</span></code>; pass it explicitly for x86 prebuilt artifacts or when multiple local tags exist for one CPU architecture.</p></td>
+<td class="text-left"><p>auto</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>CuTe DSL Kernel Artifacts</strong></p>
+<p>CuTe DSL binaries are generated with <code class="docutils literal notranslate"><span class="pre">kernelSrcs/build_cutedsl.py</span></code> before
+configuring CMake. A normal build defaults to the canonical <code class="docutils literal notranslate"><span class="pre">fmha</span></code> family and
+therefore requires a matching artifact. This family provides Context/ViT
+attention on supported GPUs and adds the optimized Blackwell implementation
+on SM100/SM101/SM110 when available.</p>
+<p>The platform commands above pass <code class="docutils literal notranslate"><span class="pre">-DENABLE_CUTE_DSL=ALL</span></code> because Qwen3.5 and
+several other model paths require optional groups. Selecting a narrower group
+still includes the <code class="docutils literal notranslate"><span class="pre">fmha</span></code> baseline; for example, <code class="docutils literal notranslate"><span class="pre">-DENABLE_CUTE_DSL=gdn</span></code>
+enables both GDN and FMHA.</p>
+<p>If you have multiple local artifact tags for the same CPU architecture, also
+pass <code class="docutils literal notranslate"><span class="pre">-DCUTE_DSL_ARTIFACT_TAG=&lt;tag&gt;</span></code>.</p>
+<p>For B200 or other SM100 build hosts without a matching prebuilt artifact, install
+the CuTe DSL package expected by <code class="docutils literal notranslate"><span class="pre">kernelSrcs/build_cutedsl.py</span></code>, then generate the
+artifact before running CMake:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span><span class="s1">'nvidia-cutlass-dsl==4.8.0'</span>
+python<span class="w"> </span>kernelSrcs/build_cutedsl.py<span class="w"> </span>--gpu_arch<span class="w"> </span>sm_100
+</pre></div>
+</div>
+<p>For cross-compilation, pass <code class="docutils literal notranslate"><span class="pre">--arch</span> <span class="pre">aarch64</span></code> when the artifact must be consumed
+by an AArch64 target build.</p>
+<blockquote>
+<div><p><strong>For supported model families, precisions, and hardware notes</strong>, see <a class="reference internal" href="supported-models.html"><span class="std std-doc">Supported Models</span></a>.</p>
+</div></blockquote>
+<p><strong>5. Build Project</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>make<span class="w"> </span>-j<span class="k">$(</span>nproc<span class="k">)</span>
+</pre></div>
+</div>
+<p>Build time: ~1-2 minutes depending on hardware.</p>
+<p><strong>6. Verify Build</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Test C++ examples</span>
+./examples/llm/llm_build<span class="w"> </span>--help
+./examples/llm/llm_inference<span class="w"> </span>--help
+</pre></div>
+</div>
+<p><strong>You’re done with C++ runtime setup!</strong> You can now build engines and run inference on the Edge device.</p>
+</section>
+<section id="install-and-launch-the-python-server">
+<h4>Install and launch the Python server<a class="headerlink" href="#install-and-launch-the-python-server" title="Link to this heading">#</a></h4>
+<p>If you enabled the optional Python frontend, install Edge-LLM and the server
+dependencies after building the native bindings. Run the install and server
+from the source checkout because the native artifacts remain in its build
+directory. The editable install ensures that the server command resolves those
+artifacts from the checkout. The server accepts a model ID or local checkpoint
+and builds its engines on first use:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>/path/to/TensorRT-Edge-LLM
+<span class="nb">source</span><span class="w"> </span>.venv/bin/activate
+python<span class="w"> </span>-m<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span><span class="s2">".[server,server-tools]"</span>
+trtedge<span class="w"> </span>serve<span class="w"> </span>Qwen/Qwen3.5-0.8B
+</pre></div>
+</div>
+<p>See <a class="reference internal" href="../examples/experimental-server.html"><span class="std std-doc">Experimental Python API and Server</span></a>
+for server options, requests, and limitations.</p>
+</section>
+</section>
+</section>
+<hr class="docutils" />
+<section id="source-workflow-export-and-quantization">
+<h2>Source workflow: export and quantization<a class="headerlink" href="#source-workflow-export-and-quantization" title="Link to this heading">#</a></h2>
+<p>The Python frontend exports Hugging Face checkpoints and optionally quantizes
+FP16/BF16 checkpoints before export. Export runs on CPU. Quantization requires
+an NVIDIA GPU.</p>
+<section id="id1">
+<h3>System Requirements<a class="headerlink" href="#id1" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p><strong>Platform</strong>: x86-64 Linux system</p></li>
+<li><p><strong>Recommended OS</strong>: Ubuntu 22.04, 24.04</p></li>
+<li><p><strong>GPU for quantization</strong>: NVIDIA GPU with Compute Capability 8.0+ (Ampere or newer)</p></li>
+<li><p><strong>CUDA for quantization</strong>: 12.x or 13.x</p></li>
+<li><p><strong>TensorRT</strong>: matching Python package and runtime libraries</p></li>
+<li><p><strong>Python</strong>: 3.10+</p></li>
+</ul>
+<section id="memory-requirements">
+<h4>Memory Requirements<a class="headerlink" href="#memory-requirements" title="Link to this heading">#</a></h4>
+<ul class="simple">
+<li><p>Export: at least 1.5 times the checkpoint size in CPU memory. No GPU is
+required.</p></li>
+<li><p>Quantization: GPU memory at least equal to the FP16 checkpoint size.</p></li>
+</ul>
+<p><strong>Verify Your Prerequisites:</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Check CUDA installation when quantizing</span>
+nvcc<span class="w"> </span>--version
+<span class="c1"># Should show CUDA 12.x or 13.x</span>
+
+<span class="c1"># Check the GPU and available memory when quantizing</span>
+nvidia-smi
+<span class="c1"># Look for GPU memory (e.g., "24576MiB" for 24GB)</span>
+
+<span class="c1"># Check Python version</span>
+python3<span class="w"> </span>--version
+<span class="c1"># Should show Python 3.10 or higher</span>
+
+<span class="c1"># Check the preinstalled TensorRT Python package</span>
+python3<span class="w"> </span>-c<span class="w"> </span><span class="s2">"import tensorrt as trt; print(trt.__version__)"</span>
+</pre></div>
+</div>
+<p><strong>If CUDA is not installed:</strong></p>
+<p>Download and install CUDA Toolkit from <a class="reference external" href="https://developer.nvidia.com/cuda-downloads">NVIDIA CUDA Downloads</a>. Choose version 12.x or 13.x for your system.</p>
+<p>After installation, verify with <code class="docutils literal notranslate"><span class="pre">nvcc</span> <span class="pre">--version</span></code> and <code class="docutils literal notranslate"><span class="pre">nvidia-smi</span></code>.</p>
+</section>
+</section>
+<section id="installing">
+<h3>Installing<a class="headerlink" href="#installing" title="Link to this heading">#</a></h3>
+<p>For a containerized environment for clean installation, it is recommended to use the NVIDIA PyTorch Docker image:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Pull the recommended Docker image</span>
+docker<span class="w"> </span>pull<span class="w"> </span>nvcr.io/nvidia/pytorch:25.12-py3
+
+<span class="c1"># Run the container with GPU support</span>
+docker<span class="w"> </span>run<span class="w"> </span>--gpus<span class="w"> </span>all<span class="w"> </span>-it<span class="w"> </span>--rm<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-v<span class="w"> </span><span class="k">$(</span><span class="nb">pwd</span><span class="k">)</span>:/workspace<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-w<span class="w"> </span>/workspace<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>nvcr.io/nvidia/pytorch:25.12-py3<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>bash
+</pre></div>
+</div>
+<p><strong>1. Clone Repository</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/NVIDIA/TensorRT-Edge-LLM.git
+<span class="nb">cd</span><span class="w"> </span>TensorRT-Edge-LLM
+git<span class="w"> </span>submodule<span class="w"> </span>update<span class="w"> </span>--init<span class="w"> </span>--recursive
+</pre></div>
+</div>
+<p><strong>2. Install Python Dependencies</strong></p>
+<p>If you are not using container, it is recommended to use a virtual environment:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Create virtual environment (recommended)</span>
+python3<span class="w"> </span>-m<span class="w"> </span>venv<span class="w"> </span>venv
+<span class="nb">source</span><span class="w"> </span>venv/bin/activate
+</pre></div>
+</div>
+<p>Install the dependency set for the host-side ONNX workflow:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># PyTorch/ONNX checkpoint exporter</span>
+pip3<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span><span class="s2">".[export]"</span>
+
+<span class="c1"># Export plus quantization, LoRA, vocabulary, and audio tools</span>
+pip3<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span><span class="s2">".[tools]"</span>
+</pre></div>
+</div>
+<p>For other tasks, choose the extras listed in
+<a class="reference internal" href="#optional-python-dependencies">Optional Python dependencies</a>.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">tools</span></code> extra includes the export dependencies. Checkpoint-direct engine
+build and Python inference use the optional Python frontend above.</p>
+<blockquote>
+<div><p><strong>Note:</strong> Accuracy evaluation dependencies live under <code class="docutils literal notranslate"><span class="pre">examples/accuracy/requirements.txt</span></code>.</p>
+</div></blockquote>
+<p><strong>3. Verify the Checkpoint Export Workflow</strong></p>
+<p>Use the virtual environment created in Step 2 for this checkout. Do not mix
+packages from older release branches into the same environment.</p>
+<p>Export an unquantized or supported pre-quantized Hugging Face checkpoint with
+<code class="docutils literal notranslate"><span class="pre">trtedge</span> <span class="pre">export</span></code>. Run <code class="docutils literal notranslate"><span class="pre">trtedge</span> <span class="pre">quantize</span></code> first only when you
+need to create a quantized checkpoint from an FP16/BF16 source checkpoint.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Available after installing the export extra</span>
+trtedge<span class="w"> </span><span class="nb">export</span><span class="w"> </span>--help
+
+<span class="c1"># Available after installing the tools extra</span>
+trtedge<span class="w"> </span>quantize<span class="w"> </span>--help
+trtedge<span class="w"> </span>merge-lora<span class="w"> </span>--help
+trtedge<span class="w"> </span>reduce-vocab<span class="w"> </span>--help
+</pre></div>
+</div>
+<p><strong>4. Configure Hugging Face Access (Optional)</strong></p>
+<p>Some Hugging Face checkpoints require accepting the provider’s terms before
+download. After accepting those terms, authenticate with a read token:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>hf<span class="w"> </span>auth<span class="w"> </span>login
+</pre></div>
+</div>
+<blockquote>
+<div><p><strong>How to get a token:</strong> Visit <a class="reference external" href="https://huggingface.co/settings/tokens">Hugging Face Settings - Tokens</a> and create a read token.</p>
+</div></blockquote>
+<p>The environment is now ready to quantize or export a supported checkpoint.</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="build-a-local-wheel-from-source">
+<h2>Build a local wheel from source<a class="headerlink" href="#build-a-local-wheel-from-source" title="Link to this heading">#</a></h2>
+<p>Use this path to package the current checkout for one detected target. Unlike a
+published architecture wheel, <code class="docutils literal notranslate"><span class="pre">--local</span></code> includes only the exact platform,
+CUDA/TensorRT, and GPU payload detected during the build.</p>
+<p>Clone the repository with submodules and generate the matching CuTe DSL archive
+as described in the repository’s
+<a class="reference external" href="https://github.com/NVIDIA/TensorRT-Edge-LLM/blob/main/packaging/README.md">Wheel Tooling</a>
+guide. Then build and install the wheel:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python3<span class="w"> </span>-m<span class="w"> </span>venv<span class="w"> </span>--system-site-packages<span class="w"> </span>.venv-wheel
+<span class="nb">source</span><span class="w"> </span>.venv-wheel/bin/activate
+python<span class="w"> </span>-m<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>-r<span class="w"> </span>packaging/wheel-toolchain-requirements.txt
+
+<span class="nb">export</span><span class="w"> </span><span class="nv">TRT_PACKAGE_DIR</span><span class="o">=</span>/usr<span class="w">  </span><span class="c1"># Use the TensorRT SDK root on this target.</span>
+python<span class="w"> </span>packaging/wheel_cli.py<span class="w"> </span>build-wheel<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--local<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--trt-package-dir<span class="w"> </span><span class="s2">"</span><span class="nv">$TRT_PACKAGE_DIR</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--output-dir<span class="w"> </span>dist/local
+
+<span class="nv">WHEEL</span><span class="o">=</span><span class="k">$(</span>find<span class="w"> </span>dist/local<span class="w"> </span>-maxdepth<span class="w"> </span><span class="m">1</span><span class="w"> </span>-name<span class="w"> </span><span class="s1">'tensorrt_edgellm-*.whl'</span><span class="w"> </span>-print<span class="w"> </span>-quit<span class="k">)</span>
+python3<span class="w"> </span>-m<span class="w"> </span>venv<span class="w"> </span>--system-site-packages<span class="w"> </span>.venv-install
+.venv-install/bin/python<span class="w"> </span>-m<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">"</span><span class="nv">$WHEEL</span><span class="s2">"</span>
+.venv-install/bin/python<span class="w"> </span>-c<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span><span class="s2">"import tensorrt_edgellm; print(tensorrt_edgellm.__version__)"</span>
+.venv-install/bin/trtedge<span class="w"> </span>build<span class="w"> </span>--help
+</pre></div>
+</div>
+<p>The local wheel supports only the detected platform release, CPU architecture,
+CUDA/TensorRT ABI, GPU architecture, and Python ABI. Use a standalone TensorRT
+SDK root instead of <code class="docutils literal notranslate"><span class="pre">/usr</span></code> on an x86 workstation.</p>
+<hr class="docutils" />
+</section>
+<section id="optional-python-dependencies">
+<span id="install-additional-tools"></span><h2>Optional Python dependencies<a class="headerlink" href="#optional-python-dependencies" title="Link to this heading">#</a></h2>
+<p>Extras are optional groups of Python dependencies available with both wheel
+and source installations. They do not install CUDA or TensorRT.</p>
+<p>The recommended wheel installation already includes <code class="docutils literal notranslate"><span class="pre">[server]</span></code>. No other
+extras are needed for chat, model downloads, the high-level Python API, or
+HTTP serving.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Install selection</p></th>
+<th class="head"><p>When you need it</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">[server]</span></code></p></td>
+<td><p>Use <code class="docutils literal notranslate"><span class="pre">trtedge</span> <span class="pre">chat</span></code>, <code class="docutils literal notranslate"><span class="pre">trtedge</span> <span class="pre">serve</span></code>, model downloads, or the high-level <code class="docutils literal notranslate"><span class="pre">LLM</span></code> API.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">[export]</span></code></p></td>
+<td><p>Export checkpoints to ONNX.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">[tools]</span></code></p></td>
+<td><p>Export and quantize checkpoints, or use LoRA, vocabulary, and audio tools.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">[server-tools]</span></code></p></td>
+<td><p>Generate missing tokenizer artifacts or use Transformers-based tools.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">[native-build]</span></code></p></td>
+<td><p>Build Python bindings from source.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="#install-without-optional-dependencies">No extra</a></p></td>
+<td><p>Call the low-level runtime or build engines directly from complete local checkpoints.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The <code class="docutils literal notranslate"><span class="pre">[tools]</span></code> extra includes the export dependencies. The <code class="docutils literal notranslate"><span class="pre">[native-build]</span></code>
+extra is not needed for the automatic engine building performed by
+<code class="docutils literal notranslate"><span class="pre">trtedge</span> <span class="pre">chat</span></code> and <code class="docutils literal notranslate"><span class="pre">trtedge</span> <span class="pre">serve</span></code> with a published wheel.
+<code class="docutils literal notranslate"><span class="pre">[builder]</span></code> and <code class="docutils literal notranslate"><span class="pre">[dev]</span></code> are compatibility extras that add no dependencies.</p>
+<p>Combine extras in one install or add them later. To add quantization and ONNX
+export dependencies to the wheel installation above, run:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">"tensorrt-edgellm[server,tools]"</span>
+</pre></div>
+</div>
+<p>For a source installation, select extras after <code class="docutils literal notranslate"><span class="pre">.</span></code> instead of the package
+name. For example, from the source checkout:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span><span class="s2">".[tools]"</span>
+</pre></div>
+</div>
+<p>Installing <code class="docutils literal notranslate"><span class="pre">.</span></code> or using <code class="docutils literal notranslate"><span class="pre">-e</span> <span class="pre">.</span></code> switches to a source installation; use these
+commands only when following the source installation instructions.</p>
+<section id="install-without-optional-dependencies">
+<span id="use-the-native-runtime-directly"></span><span id="minimal-installation-advanced"></span><h3>Install without optional dependencies<a class="headerlink" href="#install-without-optional-dependencies" title="Link to this heading">#</a></h3>
+<p>Use this option for applications that call the C++ runtime through Python and
+use local model files. It omits the optional dependencies used by chat, model
+downloads, and HTTP serving. For those features, use the
+<a class="reference internal" href="#published-python-wheel">published wheel installation</a> with <code class="docutils literal notranslate"><span class="pre">[server]</span></code>.</p>
+<p>Keep the same CUDA and TensorRT prerequisites. Create a separate environment
+so packages from an earlier installation are not included:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python3<span class="w"> </span>-m<span class="w"> </span>venv<span class="w"> </span>.venv-edgellm-base
+<span class="nb">source</span><span class="w"> </span>.venv-edgellm-base/bin/activate
+python<span class="w"> </span>-m<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">"tensorrt-edgellm"</span>
+</pre></div>
+</div>
+<p>Install the matching TensorRT Python bindings in this environment. If TensorRT
+is in a local SDK directory, follow the
+<a class="reference internal" href="#using-tensorrt-from-a-local-sdk-directory">local SDK setup instructions</a>,
+including the library path setup if needed.</p>
+<p>To build an engine from local model files or use an existing engine, follow
+<a class="reference internal" href="../examples/python-runtime.html"><span class="std std-doc">Run inference with the Python runtime</span></a>.</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="next-steps">
+<h2>Next Steps<a class="headerlink" href="#next-steps" title="Link to this heading">#</a></h2>
+<p>Follow the <a class="reference internal" href="quick-start-guide.html"><span class="std std-doc">Quick Start Guide</span></a> to start a chat or launch
+an HTTP server. The guide also covers inference with the C++ runtime.
+For model-specific examples, see <a class="reference internal" href="../examples/index.html"><span class="std std-doc">Examples</span></a>.</p>
+</section>
+<hr class="docutils" />
+<section id="troubleshooting">
+<h2>Troubleshooting<a class="headerlink" href="#troubleshooting" title="Link to this heading">#</a></h2>
+<section id="wheel-installation-issues">
+<h3>Wheel installation issues<a class="headerlink" href="#wheel-installation-issues" title="Link to this heading">#</a></h3>
+<p><strong>Virtual environment creation fails because <code class="docutils literal notranslate"><span class="pre">ensurepip</span></code> is unavailable</strong></p>
+<p>On Debian or Ubuntu, install the venv package matching your Python interpreter.
+For Python 3.12, run:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>apt<span class="w"> </span>update
+sudo<span class="w"> </span>apt<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>python3.12-venv
+</pre></div>
+</div>
+<p>Then repeat the <a class="reference internal" href="#install">install commands</a>.</p>
+<p><strong><code class="docutils literal notranslate"><span class="pre">trtedge:</span> <span class="pre">command</span> <span class="pre">not</span> <span class="pre">found</span></code></strong></p>
+<p>Activate the environment where you installed the wheel. If you followed the
+install commands above, run this from the directory containing <code class="docutils literal notranslate"><span class="pre">.venv-edgellm</span></code>:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">source</span><span class="w"> </span>.venv-edgellm/bin/activate
+</pre></div>
+</div>
+<p>If the command is still unavailable, repeat the <a class="reference internal" href="#install">wheel installation</a>
+in that environment.</p>
+<p><strong><code class="docutils literal notranslate"><span class="pre">No</span> <span class="pre">module</span> <span class="pre">named</span> <span class="pre">tensorrt</span></code></strong></p>
+<p>Install TensorRT’s Python bindings for the Python version used by the active
+environment. To use system-installed bindings, create the environment with
+<code class="docutils literal notranslate"><span class="pre">--system-site-packages</span></code> using the matching interpreter. For bindings supplied
+with a local SDK, follow the <a class="reference internal" href="#using-tensorrt-from-a-local-sdk-directory">SDK setup instructions</a>.</p>
+<p><strong>No matching distribution for <code class="docutils literal notranslate"><span class="pre">tensorrt-edgellm</span></code></strong></p>
+<p>Check your Python version, CPU architecture, and operating system against the
+<a class="reference internal" href="support-matrix.html#wheel-packaging-matrix"><span class="std std-ref">wheel support matrix</span></a>. Use the
+<a class="reference internal" href="#install">install commands</a> to update pip and retry the installation.
+If your configuration is not supported by a published wheel, follow the
+<a class="reference internal" href="#source-workflow-c-runtime">source installation instructions</a>.</p>
+<p><strong>The runtime cannot find or load a compatible compiled component</strong></p>
+<p>Compare your GPU, platform or SDK release, CUDA, and TensorRT versions with the
+<a class="reference internal" href="support-matrix.html#wheel-packaging-matrix"><span class="std std-ref">wheel support matrix</span></a>. A wheel can
+install successfully even when its compiled components do not match your
+runtime environment. For missing TensorRT shared libraries from a local SDK,
+follow the <a class="reference internal" href="#using-tensorrt-from-a-local-sdk-directory">library path setup</a>.
+Use a supported configuration or <a class="reference internal" href="#source-workflow-c-runtime">build from source</a>.</p>
+</section>
+<section id="source-installation-issues">
+<span id="common-installation-issues"></span><h3>Source installation issues<a class="headerlink" href="#source-installation-issues" title="Link to this heading">#</a></h3>
+<p><strong>Issue: Python module import errors in a source installation</strong></p>
+<p>Solution: Activate the virtual environment and reinstall the package from the
+current checkout:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">source</span><span class="w"> </span>venv/bin/activate
+python<span class="w"> </span>-m<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span>.
+trtedge<span class="w"> </span><span class="nb">export</span><span class="w"> </span>--help
+</pre></div>
+</div>
+<p><strong>Issue: <code class="docutils literal notranslate"><span class="pre">nvcc:</span> <span class="pre">command</span> <span class="pre">not</span> <span class="pre">found</span></code></strong></p>
+<p>Solution: Ensure the target JetPack release, DriveOS SDK Docker image, or DGX
+Spark software stack is installed with CUDA support:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Verify CUDA installation</span>
+nvcc<span class="w"> </span>--version
+<span class="c1"># Should match the CUDA_CTK_VERSION used for CMake</span>
+</pre></div>
+</div>
+<p><strong>Issue: <code class="docutils literal notranslate"><span class="pre">TensorRT</span> <span class="pre">not</span> <span class="pre">found</span></code> during CMake</strong></p>
+<p>Solution: Specify TensorRT package directory. This directory should contain <code class="docutils literal notranslate"><span class="pre">lib</span></code> and <code class="docutils literal notranslate"><span class="pre">include</span></code> directories, and we are looking for the <code class="docutils literal notranslate"><span class="pre">nvinfer</span></code> library and header:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>cmake<span class="w"> </span>..<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DTRT_PACKAGE_DIR<span class="o">=</span>/usr/local/TensorRT-10.x.x<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DCMAKE_TOOLCHAIN_FILE<span class="o">=</span>cmake/aarch64_linux_toolchain.cmake<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DEMBEDDED_TARGET<span class="o">=</span>&lt;jetson-thor<span class="p">|</span>igx-thor<span class="p">|</span>auto-thor<span class="p">|</span>gb10<span class="p">|</span>jetson-orin&gt;<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DCUDA_CTK_VERSION<span class="o">=</span>&lt;target<span class="w"> </span>CUDA<span class="w"> </span>version&gt;<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-DENABLE_CUTE_DSL<span class="o">=</span>ALL
+</pre></div>
+</div>
+<p><strong>Issue: Thread issue during C++ build</strong></p>
+<p>Solution: Reduce parallel jobs or even use sequential build:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>make<span class="w"> </span>-j<span class="w">  </span><span class="c1"># Instead of make -j$(nproc)</span>
+</pre></div>
+</div>
+</section>
+<section id="getting-help">
+<h3>Getting Help<a class="headerlink" href="#getting-help" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p><strong>Documentation</strong>: Check the <code class="docutils literal notranslate"><span class="pre">docs/source/developer_guide</span></code> directory</p></li>
+<li><p><strong>Issues</strong>: Report bugs on <a class="reference external" href="https://github.com/NVIDIA/TensorRT-Edge-LLM/issues">GitHub Issues</a></p></li>
+<li><p><strong>Discussions</strong>: Ask questions on <a class="reference external" href="https://github.com/NVIDIA/TensorRT-Edge-LLM/discussions">GitHub Discussions</a></p></li>
+<li><p><strong>Community</strong>: Join the NVIDIA Developer Forums</p></li>
+</ul>
+</section>
+</section>
+<section id="uninstalling">
+<h2>Uninstalling<a class="headerlink" href="#uninstalling" title="Link to this heading">#</a></h2>
+<p><strong>Quantization and <code class="docutils literal notranslate"><span class="pre">tensorrt_edgellm</span></code> (x86 Host):</strong></p>
+<ul class="simple">
+<li><p>Deactivate and remove virtual environment: <code class="docutils literal notranslate"><span class="pre">deactivate</span> <span class="pre">&amp;&amp;</span> <span class="pre">rm</span> <span class="pre">-rf</span> <span class="pre">venv</span></code></p></li>
+<li><p>Remove repository (optional): <code class="docutils literal notranslate"><span class="pre">rm</span> <span class="pre">-rf</span> <span class="pre">TensorRT-Edge-LLM</span></code></p></li>
+</ul>
+<p><strong>C++ Runtime (Edge Device):</strong></p>
+<ul class="simple">
+<li><p>Remove build directory: <code class="docutils literal notranslate"><span class="pre">rm</span> <span class="pre">-rf</span> <span class="pre">build</span></code></p></li>
+<li><p>Remove repository (optional): <code class="docutils literal notranslate"><span class="pre">rm</span> <span class="pre">-rf</span> <span class="pre">TensorRT-Edge-LLM</span></code></p></li>
+</ul>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="supported-models.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Supported Models</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="quick-start-guide.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Quick Start</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+
+
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#choose-an-installation-method">Choose an installation method</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#published-python-wheel">Published Python wheel</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#install">Install</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#verify-your-installation">Verify your installation</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#using-tensorrt-from-a-local-sdk-directory">Using TensorRT from a local SDK directory</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#inference-prerequisite">Inference Prerequisite</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#source-workflow-c-runtime">Source workflow: C++ runtime</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#system-requirements">System Requirements</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#build-instructions">Build Instructions</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#optional-python-frontend">Optional Python frontend</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#install-and-launch-the-python-server">Install and launch the Python server</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#source-workflow-export-and-quantization">Source workflow: export and quantization</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id1">System Requirements</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#memory-requirements">Memory Requirements</a></li>
+</ul>
+</li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#installing">Installing</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#build-a-local-wheel-from-source">Build a local wheel from source</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#optional-python-dependencies">Optional Python dependencies</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#install-without-optional-dependencies">Install without optional dependencies</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#next-steps">Next Steps</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#troubleshooting">Troubleshooting</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#wheel-installation-issues">Wheel installation issues</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#source-installation-issues">Source installation issues</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#getting-help">Getting Help</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#uninstalling">Uninstalling</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../../_static/scripts/bootstrap.js?digest=18bd87630a240e9c25be"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=18bd87630a240e9c25be"></script>
+
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+<a class="footer-brand logo" href="https://www.nvidia.com">
+  <img src="../../_static/nvidia-logo-horiz-rgb-1c-blk-for-screen.svg" class="logo__image only-light" alt="NVIDIA"/>
+  <img src="../../_static/nvidia-logo-horiz-rgb-1c-wht-for-screen.svg" class="logo__image only-dark" alt="NVIDIA"/>
+</a></div>
+      
+        <div class="footer-item">
+
+<div class="footer-links">
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/about-nvidia/privacy-policy/">Privacy Policy</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/about-nvidia/privacy-center/">Your Privacy Choices</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/about-nvidia/terms-of-service/">Terms of Service</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/about-nvidia/accessibility/">Accessibility</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/about-nvidia/company-policies/">Corporate Policies</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/product-security/">Product Security</a>
+   | 
+  
+  
+  
+  <a class="external" href="https://www.nvidia.com/en-us/contact/">Contact</a>
+  
+  
+  
+</div>
+</div>
+      
+        <div class="footer-item">
+
+
+
+
+  <p class="copyright">
+    
+      Copyright © 2025, Nvidia.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+<div class="extra_footer">
+  
+  <p>Last updated on October 28, 2026.</p>
+  
+  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/1231d6415ce38d0b2f20b3308ac24e58ec4100a8">1231d64</a>.</p>
+  
+</div></div>
+      
+    </div>
+  
+  
+  
+</div>
+
+  </footer>
+  </body>
+</html>

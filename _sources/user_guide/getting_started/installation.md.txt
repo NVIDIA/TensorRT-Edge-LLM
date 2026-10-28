@@ -1,13 +1,94 @@
 # Installation
 
-## Choose a deployment workflow
+(choose-a-deployment-workflow)=
+## Choose an installation method
 
-| Workflow | Use it when | Data flow |
-|---|---|---|
-| [Published Python wheel](#published-python-wheel) | The target matches a qualified release-wheel configuration. | PyPI wheel → exact native payload selection → Python inference |
-| [C++ source deployment](#source-workflow-c-runtime) | The application uses the supported ONNX export, engine build, and C++ runtime workflow. | Hugging Face checkpoint → optional quantization → ONNX export → C++ engine build → C++ inference |
-| [Python from source](#optional-python-frontend) | The application uses the experimental checkpoint-direct builder or Python server from the same source and build tree. | Hugging Face checkpoint → checkpoint-direct builder → TensorRT engine → Python inference |
-| [Local wheel build](#build-a-local-wheel-from-source) | A source user needs a wheel from the current checkout or for a custom target subset. | Local source build → target-specific wheel → Python inference |
+| Installation method | Choose this when |
+|---|---|
+| [Python wheel (recommended)](#published-python-wheel) | You want to run chat, an HTTP server, or the Python API on a [supported system](support-matrix.md#wheel-packaging-matrix). |
+| [C++ from source](#source-workflow-c-runtime) | You want to build and run the C++ runtime, or modify its source code. |
+| [Python from source](#optional-python-frontend) | You want to develop or modify Edge-LLM and use its Python interface. |
+| [Build a wheel from source](#build-a-local-wheel-from-source) | You need to package a source build as an installable Python wheel. |
+
+## Published Python wheel
+
+Install a wheel to run Edge-LLM without downloading or compiling its source code.
+
+Use CPython 3.10–3.12 on a target listed in the
+[wheel support matrix](support-matrix.md#wheel-packaging-matrix). Install the
+required NVIDIA driver, CUDA, and TensorRT, including its Python bindings,
+before continuing. See the [TensorRT installation guide](https://docs.nvidia.com/deeplearning/tensorrt/latest/installing-tensorrt/installing.html)
+for your supported TensorRT version. On Jetson and DRIVE, use the TensorRT
+version supplied by the platform SDK.
+
+If you extracted TensorRT into a local directory, follow the
+[local SDK setup instructions](#using-tensorrt-from-a-local-sdk-directory)
+to make it available in your Python environment.
+
+(recommended-python-api-and-server)=
+(install-and-chat)=
+### Install
+
+The `[server]` extra installs Python dependencies for chat and HTTP serving.
+CUDA and TensorRT must already be installed.
+
+Run the commands below. Use a supported Python interpreter for `python3`.
+The TensorRT Python bindings must match that interpreter's Python version.
+`--system-site-packages` makes bindings installed for that interpreter available
+in the new environment; it does not provide bindings for a different Python version.
+
+```bash
+python3 -m venv --system-site-packages .venv-edgellm
+source .venv-edgellm/bin/activate
+python -m pip install --upgrade pip
+python -m pip install "tensorrt-edgellm[server]"
+```
+
+### Verify your installation
+
+If TensorRT is in a local SDK directory, complete the
+[local SDK setup](#using-tensorrt-from-a-local-sdk-directory) in the environment
+you just activated before running the check below.
+
+To check that the Edge-LLM runtime can load without downloading a model, run:
+
+```bash
+python -c "import tensorrt; from tensorrt_edgellm import runtime; runtime.load()"
+```
+
+Successful completion confirms that the Edge-LLM runtime can load. If the check
+reports no compatible payload, compare your platform, CUDA, TensorRT, and GPU
+with the [wheel support matrix](support-matrix.md#wheel-packaging-matrix).
+Use a listed configuration or [build from source](#source-workflow-c-runtime).
+For other installation errors, see [Wheel installation issues](#wheel-installation-issues).
+
+To download a model and run chat or inference, continue to
+[Quick Start](quick-start-guide.md).
+
+The installation above includes the Python dependencies needed for chat and
+HTTP serving. For quantization, ONNX export, or build tools, see
+[Optional Python dependencies](#optional-python-dependencies).
+
+(using-a-standalone-tensorrt-sdk)=
+### Using TensorRT from a local SDK directory
+
+If TensorRT comes from a standalone SDK, install its Python wheel in your
+activated environment. Choose the wheel matching your Python version and CPU
+architecture:
+
+```bash
+python -m pip install "/path/to/TensorRT/python/tensorrt-<version>-<python-abi>-none-linux_<arch>.whl"
+```
+
+If the SDK's shared libraries are not on the system library path, expose them
+before starting Python. Replace `/path/to/TensorRT` with the SDK directory:
+
+```bash
+export TRT_PACKAGE_DIR=/path/to/TensorRT
+export LD_LIBRARY_PATH="$TRT_PACKAGE_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+```
+
+---
 
 ## Inference Prerequisite
 
@@ -267,13 +348,56 @@ cmake .. \
     -DCMAKE_BUILD_TYPE=Release \
     -DTRT_PACKAGE_DIR=/usr/local/TensorRT-10.x.x \
     -DCUDA_CTK_VERSION=<YOUR_CUDA_VERSION> \
-    -DCUTE_DSL_ARTIFACT_TAG=<YOUR_SM> \
+    -DCUTE_DSL_ARTIFACT_TAG=sm_<YOUR_SM> \
     -DENABLE_CUTE_DSL=ALL
 ```
 
 > **Note:** Replace `/usr/local/TensorRT-10.x.x` with your actual TensorRT installation path. Use `dpkg -l | grep tensorrt` to find it, or download from [NVIDIA TensorRT downloads](https://developer.nvidia.com/tensorrt). Replace `<YOUR_CUDA_VERSION>` with your actual CUDA version (e.g., `13.0`). Use `nvcc --version` to check your CUDA version.
-> Replace `<YOUR_SM>` with the generated CuTe DSL artifact tag, for example
-> `sm_80`, `sm_100`, or `sm_120`.
+> Replace `<YOUR_SM>` with the numeric compute capability, for example `80`,
+> `100`, or `120`.
+
+<a id="windows-x64-with-tensorrt-rtx"></a>
+
+**Windows x64 with TensorRT-RTX**
+
+Run CMake from an x64 Native Tools Command Prompt for Visual Studio:
+
+```powershell
+py -m venv .venv-cutedsl
+.\.venv-cutedsl\Scripts\python.exe -m pip install `
+    --no-cache-dir `
+    --only-binary=:all: `
+    --index-url https://pypi.org/simple `
+    "nvidia-cutlass-dsl[cu13]==4.8.0" `
+    cupy-cuda13x==13.6.0
+.\.venv-cutedsl\Scripts\python.exe kernelSrcs\build_cutedsl.py `
+    --kernels ALL `
+    --gpu_arch sm_<YOUR_SM> `
+    --cuda-version <YOUR_CUDA_VERSION> `
+    --clean
+
+cmake -S . -B build -G Ninja `
+    -DCMAKE_BUILD_TYPE=Release `
+    -DTRT_PACKAGE_DIR=C:/path/to/tensorrt-rtx `
+    -DCUDA_CTK_VERSION=<YOUR_CUDA_VERSION> `
+    -DCMAKE_CUDA_ARCHITECTURES=<YOUR_SM> `
+    -DENABLE_CUTE_DSL=ALL `
+    -DCUTE_DSL_ARTIFACT_TAG=sm_<YOUR_SM>
+cmake --build build --parallel
+```
+
+Replace `<YOUR_CUDA_VERSION>` with the installed CUDA Toolkit version, for
+example `13.2`, and `<YOUR_SM>` with the numeric compute capability, for example
+`120`. `13.6.0` in the pip command is the CuPy release version; `cuda13x` selects
+its CUDA 13.x package. Generate the Windows CuTe DSL artifact with all kernel
+groups before running CMake. Windows artifacts contain COFF objects and are
+stored under `cpp/kernels/cuteDSLArtifact/windows/x86_64/<tag>`; Linux ELF
+artifacts remain under `cpp/kernels/cuteDSLArtifact/x86_64/<tag>`. The
+`llm_stream` example is not built on Windows.
+
+The TensorRT-RTX package must include its ONNX parser component. Add the
+TensorRT-RTX `bin` directory to `PATH` when running the examples so the runtime,
+ONNX parser, and Edge-LLM plugin DLLs can be loaded.
 
 **CMake Options:**
 
@@ -286,7 +410,7 @@ cmake .. \
 | `BUILD_UNIT_TESTS` | Build unit tests | OFF |
 | `ENABLE_COVERAGE` | Enable gcov code coverage instrumentation (see [Code Coverage](../../developer_guide/testing/code-coverage.md)) | OFF |
 | `ENABLE_CUTE_DSL` | Select generated CuTe DSL kernels: `fmha`, `ALL`, or a group list such as `gdn`, `gemm`, or `ssd`. Any selection also links `fmha`, which the attention plugins require. Use `ALL` for customer builds. | fmha |
-| `CUTE_DSL_ARTIFACT_TAG` | Artifact tag under `cpp/kernels/cuteDSLArtifact/<arch>/`, for example `sm_87`, `sm_110`, `sm_110_sm_120`, or `sm_121`. Edge targets infer it from `EMBEDDED_TARGET`; pass it explicitly for x86 prebuilt artifacts or when multiple local tags exist for one CPU architecture. | auto |
+| `CUTE_DSL_ARTIFACT_TAG` | Artifact tag under `cpp/kernels/cuteDSLArtifact/<arch>/` (`cpp/kernels/cuteDSLArtifact/windows/<arch>/` on Windows), for example `sm_87`, `sm_110`, `sm_110_sm_120`, or `sm_121`. Edge targets infer it from `EMBEDDED_TARGET`; pass it explicitly for x86 prebuilt artifacts or when multiple local tags exist for one CPU architecture. | auto |
 
 **CuTe DSL Kernel Artifacts**
 
@@ -309,7 +433,7 @@ the CuTe DSL package expected by `kernelSrcs/build_cutedsl.py`, then generate th
 artifact before running CMake:
 
 ```bash
-pip install 'nvidia-cutlass-dsl==4.7.0'
+pip install 'nvidia-cutlass-dsl==4.8.0'
 python kernelSrcs/build_cutedsl.py --gpu_arch sm_100
 ```
 
@@ -349,7 +473,7 @@ and builds its engines on first use:
 cd /path/to/TensorRT-Edge-LLM
 source .venv/bin/activate
 python -m pip install -e ".[server,server-tools]"
-tensorrt-edgellm-serve Qwen/Qwen3.5-0.8B
+trtedge serve Qwen/Qwen3.5-0.8B
 ```
 
 See [Experimental Python API and Server](../examples/experimental-server.md)
@@ -446,9 +570,11 @@ pip3 install -e ".[export]"
 pip3 install -e ".[tools]"
 ```
 
-The `tools` extra remains a superset of `export`. Checkpoint-direct engine build
-and Python inference use the optional Python frontend above and remain separate
-from this source-export procedure.
+For other tasks, choose the extras listed in
+[Optional Python dependencies](#optional-python-dependencies).
+
+The `tools` extra includes the export dependencies. Checkpoint-direct engine
+build and Python inference use the optional Python frontend above.
 
 > **Note:** Accuracy evaluation dependencies live under `examples/accuracy/requirements.txt`.
 
@@ -458,17 +584,17 @@ Use the virtual environment created in Step 2 for this checkout. Do not mix
 packages from older release branches into the same environment.
 
 Export an unquantized or supported pre-quantized Hugging Face checkpoint with
-`tensorrt-edgellm-export`. Run `tensorrt-edgellm-quantize` first only when you
+`trtedge export`. Run `trtedge quantize` first only when you
 need to create a quantized checkpoint from an FP16/BF16 source checkpoint.
 
 ```bash
-# Included in the base package
-tensorrt-edgellm-export --help
+# Available after installing the export extra
+trtedge export --help
 
 # Available after installing the tools extra
-tensorrt-edgellm-quantize --help
-tensorrt-edgellm-merge-lora --help
-tensorrt-edgellm-reduce-vocab --help
+trtedge quantize --help
+trtedge merge-lora --help
+trtedge reduce-vocab --help
 ```
 
 **4. Configure Hugging Face Access (Optional)**
@@ -485,147 +611,6 @@ hf auth login
 The environment is now ready to quantize or export a supported checkpoint.
 
 ---
-
-## Published Python wheel
-
-TensorRT Edge-LLM 0.11.0 publishes `tensorrt-edgellm` wheels for CPython 3.10,
-3.11, and 3.12 on both `x86_64` and `aarch64`. `pip` selects the wheel matching
-the interpreter ABI and CPU architecture. Each wheel contains every qualified
-native payload for that architecture; at runtime, Edge-LLM selects one exact
-match for the platform release, CUDA and TensorRT SONAMEs, and GPU SM listed in
-the [Wheel Packaging Matrix](support-matrix.md#wheel-packaging-matrix).
-
-Release wheels are published on PyPI and NVIDIA's Python package index. Install
-on the target machine; no Edge-LLM checkout, CMake build, or CuTe DSL download is
-needed. Install the CUDA and TensorRT stack supported by the target platform,
-including the TensorRT Python bindings.
-TensorRT is deliberately not a package extra: one Edge-LLM architecture wheel
-contains payloads for several platform and TensorRT releases, which Python
-package metadata cannot select from the GPU and platform release.
-
-For a standalone TensorRT SDK, install its Python wheel for your interpreter
-and expose its shared libraries before starting Python:
-
-```bash
-export TRT_PACKAGE_DIR=/path/to/TensorRT
-export LD_LIBRARY_PATH="$TRT_PACKAGE_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-```
-
-`LD_LIBRARY_PATH` is needed only when the libraries are not already on the
-system loader search path. `TRT_PACKAGE_DIR` is a convenience in this example
-and a source-build setting; setting it alone does not configure wheel loading.
-No TensorRT-specific `PATH` or `PYTHONPATH` change is needed when its Python
-bindings are installed in the active environment.
-
-On Debian or Ubuntu, install venv support before creating the environment. Use
-the package matching the selected interpreter; the stock JetPack 7.2 Python
-3.12 image, for example, requires:
-
-```bash
-sudo apt update
-sudo apt install -y python3.12-venv
-```
-
-### Recommended: Python API and server
-
-Use the `server` extra for the high-level Python API, model downloads, and HTTP
-serving. It does not install the PyTorch/ONNX export toolchain.
-Use CPython 3.10, 3.11, or 3.12 below. `--system-site-packages` exposes a
-platform-provided TensorRT Python package; it does not install TensorRT.
-
-```bash
-python3 -m venv --system-site-packages .venv-edgellm
-source .venv-edgellm/bin/activate
-python -m pip install --upgrade pip
-python -m pip install "tensorrt-edgellm[server]==0.11.0"
-python -c "import tensorrt; from tensorrt_edgellm import runtime; runtime.load()"
-```
-
-Run the check outside a source checkout so it imports the installed wheel.
-Unlike an import or `--help` alone, `runtime.load()` validates native payload
-selection. A matching wheel filename does not guarantee a matching runtime
-stack; if selection fails, use a listed configuration or build from source.
-
-To serve a model, run outside a source checkout:
-
-```bash
-tensorrt-edgellm-serve Qwen/Qwen3.5-0.8B
-```
-
-The first launch downloads the checkpoint and builds its engines. For gated
-models, accept the provider's terms and run `hf auth login` first.
-
-### Optional Python dependencies
-
-All extras use the same wheel and native payloads; they select additional pip
-dependencies, not separate builds. Commands may be present without their
-dependencies: installing the base package does not enable every workflow.
-
-| Install selection | Use case | Main additional dependencies |
-|---|---|---|
-| No extra | Low-level native runtime; direct builds from local Safetensors checkpoints | Base dependencies: NumPy and CUDA Python |
-| `[server]` (recommended for inference) | High-level `LLM` API, Hub downloads, and HTTP serving | Hugging Face Hub, FastAPI, Uvicorn, PyAV |
-| `[export]` | Checkpoint-to-ONNX export | PyTorch, Transformers, ONNX, ONNX Script, Safetensors |
-| `[tools]` | Export plus quantization, LoRA, vocabulary, and audio tools | Export dependencies plus ModelOpt, PEFT, datasets, and audio tooling |
-| `[server-tools]` | Optional Transformers-based reference/tooling environment | Transformers; combine with `[server]` for serving |
-| `[native-build]` | Building Python bindings from source, not using published wheels | pybind11 |
-
-`[tools]` includes the export dependencies, but not the complete server stack.
-For serving and all export/tools workflows, install
-`"tensorrt-edgellm[server,tools]==0.11.0"` using the pip command above. Extras can
-also be added later in the same environment. `[builder]` is an empty
-compatibility alias (the direct builder is in the base package); `[dev]`
-currently adds no dependencies. No extra installs the platform CUDA/TensorRT
-stack. Do not install `.` or use `-e .` over a published wheel unless switching
-to the source workflow.
-
-### Minimal installation (advanced)
-
-Use the base wheel for low-level native integration without the server/export
-dependencies. Keep the same CUDA/TensorRT prerequisites, but use a fresh venv
-without system site-packages for the base-only check. Replace the TensorRT
-wheel path below with the matching SDK wheel:
-
-```bash
-python3 -m venv .venv-edgellm-base
-source .venv-edgellm-base/bin/activate
-python -m pip install "/path/to/TensorRT/python/tensorrt-<version>-<python-abi>-none-linux_<arch>.whl"
-python -m pip install tensorrt-edgellm==0.11.0
-```
-
-For a concrete base-only workflow,
-{download}`save the build-and-infer example <../../../../examples/python/installed_wheel_build_and_infer.py>`
-as a standalone file outside the checkout. Provide a local, complete
-`Qwen2.5-0.5B-Instruct` Safetensors checkpoint and a disposable output directory:
-
-```bash
-python -I /path/to/installed_wheel_build_and_infer.py \
-  /path/to/Qwen2.5-0.5B-Instruct /tmp/edgellm-base-engines \
-  --workflow base --require-base-only
-```
-
-This builds a text engine directly, then runs a prompt through
-`tensorrt_edgellm.runtime.LLMRuntime` and checks for generated text and tokens.
-The output directory is replaced. `--require-base-only` rejects common optional
-workflow packages so they cannot hide missing base dependencies.
-The native inference portion also works with an existing compatible text
-engine directory (this example's output directory):
-
-Save the function below with `from pathlib import Path` and
-`from typing import Tuple`, then call
-`_infer_base(Path("/path/to/checkpoint"), Path("/path/to/engines"), "Hello", 32)`:
-
-```{literalinclude} ../../../../examples/python/installed_wheel_build_and_infer.py
-:language: python
-:pyobject: _infer_base
-```
-
-The base path does not download checkpoints. PyTorch `.bin` checkpoints need
-PyTorch from `[export]` or `[tools]`; high-level serving uses `[server]`.
-
-C++ example executables, including those under `experimental_models/`, remain
-part of the source workflow. See the [Python server quick start](quick-start-guide.md#option-2-one-line-python-server)
-or [direct builder guide](direct-engine-builder.md) for wheel-based inference.
 
 ## Build a local wheel from source
 
@@ -654,7 +639,7 @@ python3 -m venv --system-site-packages .venv-install
 .venv-install/bin/python -m pip install "$WHEEL"
 .venv-install/bin/python -c \
     "import tensorrt_edgellm; print(tensorrt_edgellm.__version__)"
-.venv-install/bin/tensorrt-edgellm-build --help
+.venv-install/bin/trtedge build --help
 ```
 
 The local wheel supports only the detected platform release, CPU architecture,
@@ -663,26 +648,146 @@ SDK root instead of `/usr` on an x86 workstation.
 
 ---
 
+(install-additional-tools)=
+## Optional Python dependencies
+
+Extras are optional groups of Python dependencies available with both wheel
+and source installations. They do not install CUDA or TensorRT.
+
+The recommended wheel installation already includes `[server]`. No other
+extras are needed for chat, model downloads, the high-level Python API, or
+HTTP serving.
+
+| Install selection | When you need it |
+|---|---|
+| `[server]` | Use `trtedge chat`, `trtedge serve`, model downloads, or the high-level `LLM` API. |
+| `[export]` | Export checkpoints to ONNX. |
+| `[tools]` | Export and quantize checkpoints, or use LoRA, vocabulary, and audio tools. |
+| `[server-tools]` | Generate missing tokenizer artifacts or use Transformers-based tools. |
+| `[native-build]` | Build Python bindings from source. |
+| [No extra](#install-without-optional-dependencies) | Call the low-level runtime or build engines directly from complete local checkpoints. |
+
+The `[tools]` extra includes the export dependencies. The `[native-build]`
+extra is not needed for the automatic engine building performed by
+`trtedge chat` and `trtedge serve` with a published wheel.
+`[builder]` and `[dev]` are compatibility extras that add no dependencies.
+
+Combine extras in one install or add them later. To add quantization and ONNX
+export dependencies to the wheel installation above, run:
+
+```bash
+python -m pip install "tensorrt-edgellm[server,tools]"
+```
+
+For a source installation, select extras after `.` instead of the package
+name. For example, from the source checkout:
+
+```bash
+python -m pip install -e ".[tools]"
+```
+
+Installing `.` or using `-e .` switches to a source installation; use these
+commands only when following the source installation instructions.
+
+(minimal-installation-advanced)=
+(use-the-native-runtime-directly)=
+### Install without optional dependencies
+
+Use this option for applications that call the C++ runtime through Python and
+use local model files. It omits the optional dependencies used by chat, model
+downloads, and HTTP serving. For those features, use the
+[published wheel installation](#published-python-wheel) with `[server]`.
+
+Keep the same CUDA and TensorRT prerequisites. Create a separate environment
+so packages from an earlier installation are not included:
+
+```bash
+python3 -m venv .venv-edgellm-base
+source .venv-edgellm-base/bin/activate
+python -m pip install "tensorrt-edgellm"
+```
+
+Install the matching TensorRT Python bindings in this environment. If TensorRT
+is in a local SDK directory, follow the
+[local SDK setup instructions](#using-tensorrt-from-a-local-sdk-directory),
+including the library path setup if needed.
+
+To build an engine from local model files or use an existing engine, follow
+[Run inference with the Python runtime](../examples/python-runtime.md).
+
+---
+
 ## Next Steps
 
-For the maintained ONNX and C++ workflow, proceed to the
-[Quick Start Guide](quick-start-guide.md). For model-specific input and output
-contracts, see [Examples](../examples/index.md).
+Follow the [Quick Start Guide](quick-start-guide.md) to start a chat or launch
+an HTTP server. The guide also covers inference with the C++ runtime.
+For model-specific examples, see [Examples](../examples/index.md).
 
 ---
 
 ## Troubleshooting
 
-### Common Installation Issues
+### Wheel installation issues
 
-**Issue: Python module import errors**
+**Virtual environment creation fails because `ensurepip` is unavailable**
+
+On Debian or Ubuntu, install the venv package matching your Python interpreter.
+For Python 3.12, run:
+
+```bash
+sudo apt update
+sudo apt install -y python3.12-venv
+```
+
+Then repeat the [install commands](#install).
+
+**`trtedge: command not found`**
+
+Activate the environment where you installed the wheel. If you followed the
+install commands above, run this from the directory containing `.venv-edgellm`:
+
+```bash
+source .venv-edgellm/bin/activate
+```
+
+If the command is still unavailable, repeat the [wheel installation](#install)
+in that environment.
+
+**`No module named tensorrt`**
+
+Install TensorRT's Python bindings for the Python version used by the active
+environment. To use system-installed bindings, create the environment with
+`--system-site-packages` using the matching interpreter. For bindings supplied
+with a local SDK, follow the [SDK setup instructions](#using-tensorrt-from-a-local-sdk-directory).
+
+**No matching distribution for `tensorrt-edgellm`**
+
+Check your Python version, CPU architecture, and operating system against the
+[wheel support matrix](support-matrix.md#wheel-packaging-matrix). Use the
+[install commands](#install) to update pip and retry the installation.
+If your configuration is not supported by a published wheel, follow the
+[source installation instructions](#source-workflow-c-runtime).
+
+**The runtime cannot find or load a compatible compiled component**
+
+Compare your GPU, platform or SDK release, CUDA, and TensorRT versions with the
+[wheel support matrix](support-matrix.md#wheel-packaging-matrix). A wheel can
+install successfully even when its compiled components do not match your
+runtime environment. For missing TensorRT shared libraries from a local SDK,
+follow the [library path setup](#using-tensorrt-from-a-local-sdk-directory).
+Use a supported configuration or [build from source](#source-workflow-c-runtime).
+
+(common-installation-issues)=
+### Source installation issues
+
+**Issue: Python module import errors in a source installation**
 
 Solution: Activate the virtual environment and reinstall the package from the
 current checkout:
 ```bash
 source venv/bin/activate
 python -m pip install -e .
-tensorrt-edgellm-export --help
+trtedge export --help
 ```
 
 **Issue: `nvcc: command not found`**

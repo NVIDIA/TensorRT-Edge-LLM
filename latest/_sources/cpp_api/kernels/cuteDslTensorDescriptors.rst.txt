@@ -6,7 +6,17 @@ Cute Dsl Tensor Descriptors
    :members:
    :undoc-members:
 
+.. doxygenstruct:: trt_edgellm::cutedsl::WrapperArg< I, Ret(&)(Args...)>
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
 .. doxygenstruct:: trt_edgellm::cutedsl::WrapperArity< Ret(*)(Args...)>
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::cutedsl::WrapperArity< Ret(&)(Args...)>
    :project: TensorRT Edge-LLM
    :members:
    :undoc-members:

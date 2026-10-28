@@ -1,0 +1,13 @@
+Eviction Planner
+================
+
+.. doxygenclass:: trt_edgellm::rt::EvictionPlanner
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::EvictionPlan
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

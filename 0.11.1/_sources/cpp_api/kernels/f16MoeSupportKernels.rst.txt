@@ -1,0 +1,30 @@
+F16 Moe Support Kernels
+=======================
+
+.. doxygenstruct:: trt_edgellm::kernel::F16MoeRoutingBuffers
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::kernel::F16MoeGemmMetadata
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::kernel::F16MoeGemmSetup
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::kernel::buildF16MoeRoutingAndGemmMetadata
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::gatherF16MoeHiddenRows
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::activateF16Moe
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::scatterF16MoeOutput
+   :project: TensorRT Edge-LLM
+

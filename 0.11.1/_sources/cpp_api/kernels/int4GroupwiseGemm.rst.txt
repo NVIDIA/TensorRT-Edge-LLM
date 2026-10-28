@@ -1,0 +1,9 @@
+Int4 Groupwise GEMM
+===================
+
+.. doxygenfunction:: trt_edgellm::kernel::gemv_forward_cuda_new
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::gemm_forward_cuda_new
+   :project: TensorRT Edge-LLM
+

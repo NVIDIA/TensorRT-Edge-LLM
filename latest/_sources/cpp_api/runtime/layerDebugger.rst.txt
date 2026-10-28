@@ -1,9 +1,8 @@
 Layer Debugger
 ==============
 
-.. doxygenfunction:: trt_edgellm::rt::originalRow
+.. doxygenclass:: trt_edgellm::rt::LayerDebugger
    :project: TensorRT Edge-LLM
-
-.. doxygenfunction:: trt_edgellm::rt::forcedRowBase
-   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
 

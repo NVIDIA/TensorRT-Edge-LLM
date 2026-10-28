@@ -1,0 +1,13 @@
+Gemma4 Audio Attention Plugin
+=============================
+
+.. doxygenclass:: trt_edgellm::plugins::Gemma4AudioAttentionPlugin
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::plugins::Gemma4AudioAttentionPluginCreator
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

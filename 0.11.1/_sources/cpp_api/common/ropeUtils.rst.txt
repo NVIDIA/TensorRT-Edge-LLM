@@ -1,0 +1,6 @@
+Rope Utils
+==========
+
+.. doxygenfile:: common/ropeUtils.h
+   :project: TensorRT Edge-LLM
+

@@ -76,6 +76,7 @@ API documentation for the runtime module.
    resourcePools
    reusePlan
    ropeCache
+   rtxRuntimeCache
    runtimeCoordinator
    runtimeStepper
    scheduledStep

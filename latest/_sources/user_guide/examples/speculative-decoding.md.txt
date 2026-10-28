@@ -49,7 +49,7 @@ export MODEL_ROOT=$WORKSPACE_DIR/Qwen3.5-4B-mtp
 export MODEL_DIR=$MODEL_ROOT/checkpoints/base
 
 hf download "$MODEL_ID" --local-dir "$MODEL_DIR"
-tensorrt-edgellm-export "$MODEL_DIR" "$MODEL_ROOT/onnx" --mtp
+trtedge export "$MODEL_DIR" "$MODEL_ROOT/onnx" --mtp
 ```
 
 If export and engine build run on different machines, copy
@@ -59,38 +59,38 @@ If export and engine build run on different machines, copy
 
 ```bash
 ./build/examples/llm/llm_build \
-  --onnxDir "$MODEL_ROOT/onnx/llm" \
-  --engineDir "$MODEL_ROOT/engines" \
-  --maxBatchSize 1 \
-  --maxInputLen 2048 \
-  --maxKVCacheCapacity 4096 \
-  --maxVerifyTreeSize 4 \
-  --specBase
+  --onnx-dir "$MODEL_ROOT/onnx/llm" \
+  --engine-dir "$MODEL_ROOT/engines" \
+  --max-batch-size 1 \
+  --max-input-len 2048 \
+  --max-kv-cache-capacity 4096 \
+  --max-verify-tree-size 4 \
+  --spec-base
 
 ./build/examples/llm/llm_build \
-  --onnxDir "$MODEL_ROOT/onnx/mtp_draft" \
-  --engineDir "$MODEL_ROOT/engines" \
-  --maxBatchSize 1 \
-  --maxInputLen 2048 \
-  --maxKVCacheCapacity 4096 \
-  --maxDraftTreeSize 4 \
-  --specDraft
+  --onnx-dir "$MODEL_ROOT/onnx/mtp_draft" \
+  --engine-dir "$MODEL_ROOT/engines" \
+  --max-batch-size 1 \
+  --max-input-len 2048 \
+  --max-kv-cache-capacity 4096 \
+  --max-draft-tree-size 4 \
+  --spec-draft
 ```
 
 ### Run
 
 ```bash
 ./build/examples/llm/llm_inference \
-  --engineDir "$MODEL_ROOT/engines" \
-  --inputFile "$INPUT_FILE" \
-  --outputFile "$MODEL_ROOT/output.json" \
-  --specDecode \
-  --specDraftTopK 1 \
-  --specDraftStep 3 \
-  --specVerifySize 4
+  --engine-dir "$MODEL_ROOT/engines" \
+  --input-file "$INPUT_FILE" \
+  --output-file "$MODEL_ROOT/output.json" \
+  --spec-decode \
+  --spec-draft-top-k 1 \
+  --spec-draft-step 3 \
+  --spec-verify-size 4
 ```
 
-MTP is linear: `--specDraftTopK 1` selects one token at each of three draft
+MTP is linear: `--spec-draft-top-k 1` selects one token at each of three draft
 steps, and the base verifies those tokens plus the current token.
 
 Gemma4 uses a matched assistant checkpoint instead of embedded draft layers.
@@ -101,7 +101,7 @@ export GEMMA_MODEL_ID=google/gemma-4-12B-it
 export GEMMA_ASSISTANT_ID=google/gemma-4-12B-it-assistant
 export GEMMA_ROOT=$WORKSPACE_DIR/gemma-4-12B-it-mtp
 
-tensorrt-edgellm-export \
+trtedge export \
   "$GEMMA_MODEL_ID" \
   "$GEMMA_ROOT/onnx" \
   --mtp \
@@ -131,8 +131,8 @@ export DRAFT_DIR=$MODEL_ROOT/checkpoints/draft
 
 hf download "$MODEL_ID" --local-dir "$MODEL_DIR"
 hf download "$DRAFT_ID" --local-dir "$DRAFT_DIR"
-tensorrt-edgellm-export "$MODEL_DIR" "$MODEL_ROOT/base-export" --eagle-base
-tensorrt-edgellm-export "$DRAFT_DIR" "$MODEL_ROOT/draft-export"
+trtedge export "$MODEL_DIR" "$MODEL_ROOT/base-export" --eagle-base
+trtedge export "$DRAFT_DIR" "$MODEL_ROOT/draft-export"
 ```
 
 Copy both export directories to the target when using separate machines.
@@ -141,35 +141,35 @@ Copy both export directories to the target when using separate machines.
 
 ```bash
 ./build/examples/llm/llm_build \
-  --onnxDir "$MODEL_ROOT/base-export/llm" \
-  --engineDir "$MODEL_ROOT/engines" \
-  --maxBatchSize 1 \
-  --maxInputLen 1024 \
-  --maxKVCacheCapacity 2048 \
-  --maxVerifyTreeSize 60 \
-  --specBase
+  --onnx-dir "$MODEL_ROOT/base-export/llm" \
+  --engine-dir "$MODEL_ROOT/engines" \
+  --max-batch-size 1 \
+  --max-input-len 1024 \
+  --max-kv-cache-capacity 2048 \
+  --max-verify-tree-size 60 \
+  --spec-base
 
 ./build/examples/llm/llm_build \
-  --onnxDir "$MODEL_ROOT/draft-export/llm" \
-  --engineDir "$MODEL_ROOT/engines" \
-  --maxBatchSize 1 \
-  --maxInputLen 1024 \
-  --maxKVCacheCapacity 2048 \
-  --maxDraftTreeSize 60 \
-  --specDraft
+  --onnx-dir "$MODEL_ROOT/draft-export/llm" \
+  --engine-dir "$MODEL_ROOT/engines" \
+  --max-batch-size 1 \
+  --max-input-len 1024 \
+  --max-kv-cache-capacity 2048 \
+  --max-draft-tree-size 60 \
+  --spec-draft
 ```
 
 ### Run
 
 ```bash
 ./build/examples/llm/llm_inference \
-  --engineDir "$MODEL_ROOT/engines" \
-  --inputFile "$INPUT_FILE" \
-  --outputFile "$MODEL_ROOT/output.json" \
-  --specDecode \
-  --specDraftTopK 10 \
-  --specDraftStep 6 \
-  --specVerifySize 60
+  --engine-dir "$MODEL_ROOT/engines" \
+  --input-file "$INPUT_FILE" \
+  --output-file "$MODEL_ROOT/output.json" \
+  --spec-decode \
+  --spec-draft-top-k 10 \
+  --spec-draft-step 6 \
+  --spec-verify-size 60
 ```
 
 EAGLE3 expands a tree: each of six draft steps retains ten candidates, and the
@@ -195,11 +195,11 @@ export DRAFT_DIR=$MODEL_ROOT/checkpoints/draft
 hf download "$MODEL_ID" --local-dir "$MODEL_DIR"
 hf download "$DRAFT_ID" --local-dir "$DRAFT_DIR"
 
-tensorrt-edgellm-export \
+trtedge export \
   "$MODEL_DIR" "$MODEL_ROOT/base-export" \
   --dflash-base --dflash-draft-dir "$DRAFT_DIR"
 
-tensorrt-edgellm-export \
+trtedge export \
   "$MODEL_DIR" "$MODEL_ROOT/draft-export" \
   --dflash-draft --dflash-draft-dir "$DRAFT_DIR"
 ```
@@ -210,35 +210,35 @@ The draft export writes `dflash_draft/`, not `llm/`.
 
 ```bash
 ./build/examples/llm/llm_build \
-  --onnxDir "$MODEL_ROOT/base-export/llm" \
-  --engineDir "$MODEL_ROOT/engines" \
-  --maxBatchSize 1 \
-  --maxInputLen 1024 \
-  --maxKVCacheCapacity 2048 \
-  --maxVerifyTreeSize 16 \
-  --specBase
+  --onnx-dir "$MODEL_ROOT/base-export/llm" \
+  --engine-dir "$MODEL_ROOT/engines" \
+  --max-batch-size 1 \
+  --max-input-len 1024 \
+  --max-kv-cache-capacity 2048 \
+  --max-verify-tree-size 16 \
+  --spec-base
 
 ./build/examples/llm/llm_build \
-  --onnxDir "$MODEL_ROOT/draft-export/dflash_draft" \
-  --engineDir "$MODEL_ROOT/engines" \
-  --maxBatchSize 1 \
-  --maxInputLen 1024 \
-  --maxKVCacheCapacity 2048 \
-  --maxDraftTreeSize 16 \
-  --specDraft
+  --onnx-dir "$MODEL_ROOT/draft-export/dflash_draft" \
+  --engine-dir "$MODEL_ROOT/engines" \
+  --max-batch-size 1 \
+  --max-input-len 1024 \
+  --max-kv-cache-capacity 2048 \
+  --max-draft-tree-size 16 \
+  --spec-draft
 ```
 
 ### Run
 
 ```bash
 ./build/examples/llm/llm_inference \
-  --engineDir "$MODEL_ROOT/engines" \
-  --inputFile "$INPUT_FILE" \
-  --outputFile "$MODEL_ROOT/output.json" \
-  --specDecode \
-  --specDraftTopK 1 \
-  --specDraftStep 1 \
-  --specVerifySize 16
+  --engine-dir "$MODEL_ROOT/engines" \
+  --input-file "$INPUT_FILE" \
+  --output-file "$MODEL_ROOT/output.json" \
+  --spec-decode \
+  --spec-draft-top-k 1 \
+  --spec-draft-step 1 \
+  --spec-verify-size 16
 ```
 
 Provider-parity validation for Qwen3.5 DFlash uses `"enable_thinking": true`
@@ -255,7 +255,7 @@ with either [`meta-models/Muse-Glimmer-30B`](https://huggingface.co/meta-models/
 or [`RadixArk/Muse-Glimmer-NVFP4`](https://huggingface.co/RadixArk/Muse-Glimmer-NVFP4).
 
 A branching Qwen3.5 DDTree requires `--dflash-tree-base` during export and a
-runtime `--specDraftTopK` greater than 1. Linear and DDTree base engines are
+runtime `--spec-draft-top-k` greater than 1. Linear and DDTree base engines are
 not interchangeable. See
 [Reduce Vocabulary](../features/reduce-vocab.md#dflash-speculative-decoding-support)
 for optional DFlash draft vocabulary reduction. Chain-MTP draft reduction is
@@ -277,31 +277,31 @@ export MODEL_DIR=/path/to/Qwen3.8-27B
 export DRAFT_DIR=/path/to/Qwen3.8-27B-DFlash2
 export MODEL_ROOT=$WORKSPACE_DIR/Qwen3.8-27B-dflash2
 
-tensorrt-edgellm-export \
+trtedge export \
   "$MODEL_DIR" "$MODEL_ROOT/base-export" \
   --dflash-base --dflash-draft-dir "$DRAFT_DIR"
 
-tensorrt-edgellm-export \
+trtedge export \
   "$MODEL_DIR" "$MODEL_ROOT/draft-export" \
   --dflash-draft --dflash-draft-dir "$DRAFT_DIR"
 
 ./build/examples/llm/llm_build \
-  --onnxDir "$MODEL_ROOT/base-export/llm" \
-  --engineDir "$MODEL_ROOT/engines" \
-  --maxBatchSize 8 \
-  --maxInputLen 4096 \
-  --maxKVCacheCapacity 8192 \
-  --maxVerifyTreeSize 16 \
-  --specBase
+  --onnx-dir "$MODEL_ROOT/base-export/llm" \
+  --engine-dir "$MODEL_ROOT/engines" \
+  --max-batch-size 8 \
+  --max-input-len 4096 \
+  --max-kv-cache-capacity 8192 \
+  --max-verify-tree-size 16 \
+  --spec-base
 
 ./build/examples/llm/llm_build \
-  --onnxDir "$MODEL_ROOT/draft-export/dflash_draft" \
-  --engineDir "$MODEL_ROOT/engines" \
-  --maxBatchSize 8 \
-  --maxInputLen 4096 \
-  --maxKVCacheCapacity 8192 \
-  --maxDraftTreeSize 16 \
-  --specDraft
+  --onnx-dir "$MODEL_ROOT/draft-export/dflash_draft" \
+  --engine-dir "$MODEL_ROOT/engines" \
+  --max-batch-size 8 \
+  --max-input-len 4096 \
+  --max-kv-cache-capacity 8192 \
+  --max-draft-tree-size 16 \
+  --spec-draft
 ```
 
 The engine profile supports DFlash2 blocks from 2 through 16. With no runtime
@@ -316,7 +316,7 @@ export MODEL_DIR=/path/to/Qwen3.8-27B
 export DRAFT_DIR=/path/to/Qwen3.8-27B-DFlash2
 export MODEL_ROOT=$WORKSPACE_DIR/Qwen3.8-27B-dflash2
 
-.venv/bin/tensorrt-edgellm-build \
+.venv/bin/trtedge build \
   --model-dir "$MODEL_DIR" \
   --draft-model-dir "$DRAFT_DIR" \
   --spec-type dflash \
@@ -333,26 +333,26 @@ Run the pair by providing both checkpoints:
 
 ```bash
 ./build/examples/llm/llm_inference \
-  --engineDir "$MODEL_ROOT/engines" \
-  --checkpointDir "$MODEL_DIR" \
-  --draftCheckpointDir "$DRAFT_DIR" \
-  --inputFile "$INPUT_FILE" \
-  --outputFile "$MODEL_ROOT/output.json" \
-  --profileOutputFile "$MODEL_ROOT/profile.json" \
-  --dumpProfile \
-  --specDecode
+  --engine-dir "$MODEL_ROOT/engines" \
+  --checkpoint-dir "$MODEL_DIR" \
+  --draft-checkpoint-dir "$DRAFT_DIR" \
+  --input-file "$INPUT_FILE" \
+  --output-file "$MODEL_ROOT/output.json" \
+  --profile-output-file "$MODEL_ROOT/profile.json" \
+  --dump-profile \
+  --spec-decode
 ```
 
 With profiling enabled, every response row records `generated_token_count`,
 `spec_verify_count`, and `spec_acceptance_length` (generated tokens per target
 verification). The profile JSON also contains aggregate speculative throughput
-and acceptance length. `--profileOutputFile` without `--dumpProfile` records
+and acceptance length. `--profile-output-file` without `--dump-profile` records
 wall-clock and memory only.
 
 The experimental server downloads, builds, and loads the pair in one command:
 
 ```bash
-tensorrt-edgellm-serve Qwen/Qwen3.8-27B \
+trtedge serve Qwen/Qwen3.8-27B \
   --cache-dir /data/edgellm-cache \
   --speculative-config \
   '{"method":"dflash","model":"z-lab/Qwen3.8-27B-DFlash2"}'
@@ -371,7 +371,7 @@ proposal-topology overrides are rejected.
 
 FP16, NVFP4, and INT4 checkpoints use the same command. Precision is detected
 from checkpoint quantization metadata. When the draft is distributed only in
-FP16, create a matched quantized draft with `tensorrt-edgellm-quantize draft`
+FP16, create a matched quantized draft with `trtedge quantize draft`
 before building the pair.
 
 ## DSpark
@@ -394,11 +394,11 @@ export DRAFT_DIR=$MODEL_ROOT/checkpoints/draft
 hf download "$MODEL_ID" --local-dir "$MODEL_DIR"
 hf download "$DRAFT_ID" --local-dir "$DRAFT_DIR"
 
-tensorrt-edgellm-export \
+trtedge export \
   "$MODEL_DIR" "$MODEL_ROOT/base-export" \
   --dspark-base --dspark-draft-dir "$DRAFT_DIR"
 
-tensorrt-edgellm-export \
+trtedge export \
   "$MODEL_DIR" "$MODEL_ROOT/draft-export" \
   --dspark-draft --dspark-draft-dir "$DRAFT_DIR"
 ```
@@ -409,50 +409,50 @@ The draft export writes `dspark_draft/` and its DSpark sidecar files.
 
 ```bash
 ./build/examples/llm/llm_build \
-  --onnxDir "$MODEL_ROOT/base-export/llm" \
-  --engineDir "$MODEL_ROOT/engines" \
-  --maxBatchSize 1 \
-  --maxInputLen 1024 \
-  --maxKVCacheCapacity 2048 \
-  --maxVerifyTreeSize 8 \
-  --specBase
+  --onnx-dir "$MODEL_ROOT/base-export/llm" \
+  --engine-dir "$MODEL_ROOT/engines" \
+  --max-batch-size 1 \
+  --max-input-len 1024 \
+  --max-kv-cache-capacity 2048 \
+  --max-verify-tree-size 8 \
+  --spec-base
 
 ./build/examples/llm/llm_build \
-  --onnxDir "$MODEL_ROOT/draft-export/dspark_draft" \
-  --engineDir "$MODEL_ROOT/engines" \
-  --maxBatchSize 1 \
-  --maxInputLen 1024 \
-  --maxKVCacheCapacity 2048 \
-  --maxDraftTreeSize 7 \
-  --specDraft
+  --onnx-dir "$MODEL_ROOT/draft-export/dspark_draft" \
+  --engine-dir "$MODEL_ROOT/engines" \
+  --max-batch-size 1 \
+  --max-input-len 1024 \
+  --max-kv-cache-capacity 2048 \
+  --max-draft-tree-size 7 \
+  --spec-draft
 ```
 
 ### Run
 
 ```bash
 ./build/examples/llm/llm_inference \
-  --engineDir "$MODEL_ROOT/engines" \
-  --inputFile "$INPUT_FILE" \
-  --outputFile "$MODEL_ROOT/output.json" \
-  --specDecode \
-  --specDraftTopK 1 \
-  --specDraftStep 1 \
-  --specVerifySize 8
+  --engine-dir "$MODEL_ROOT/engines" \
+  --input-file "$INPUT_FILE" \
+  --output-file "$MODEL_ROOT/output.json" \
+  --spec-decode \
+  --spec-draft-top-k 1 \
+  --spec-draft-step 1 \
+  --spec-verify-size 8
 ```
 
 The default chain mode reads the full seven-token proposal length from the
-draft artifacts and supports non-greedy sampling. `--dsparkScheduler threshold`
-and `--dsparkScheduler sps` enable adaptive chain lengths; use
-`--dsparkMinProposalLen` and `--dsparkMaxProposalLen` to bound them.
+draft artifacts and supports non-greedy sampling. `--dspark-scheduler threshold`
+and `--dspark-scheduler sps` enable adaptive chain lengths; use
+`--dspark-min-proposal-len` and `--dspark-max-proposal-len` to bound them.
 
 The ONNX export/build path also supports greedy DSpark DDTree. Export a
 tree-capable base with `--dspark-tree-base --dspark-draft-dir "$DRAFT_DIR"`,
 then build that ONNX with the intended verification budget, such as
-`--maxVerifyTreeSize 16`. Hybrid recurrent-state replay requires runtime
-`--specVerifySize` to equal this build-time budget. Use a greedy input
+`--max-verify-tree-size 16`. Hybrid recurrent-state replay requires runtime
+`--spec-verify-size` to equal this build-time budget. Use a greedy input
 (`"temperature": 0.0`, `"top_k": 1`) and run with
-`--specDraftTopK 4 --specVerifySize 16`. Tree mode accepts
-`--dsparkScheduler off` or `threshold`; `sps` applies only to chain mode.
+`--spec-draft-top-k 4 --spec-verify-size 16`. Tree mode accepts
+`--dspark-scheduler off` or `threshold`; `sps` applies only to chain mode.
 
 Setting the environment variable `EDGELLM_DSPARK_W2_FP8=1` converts the Markov
 correction weight (`markov_w2`) to FP8 E4M3 with per-row scales at load time,
@@ -473,8 +473,8 @@ draft checkpoint.
 
 JetSpec shares the cached-draft runtime contract with DFlash, but the draft uses
 causal proposal attention. Use `--jetspec-tree-base` for the base export,
-`--jetspec-draft` for the draft export, and run with `--specDraftTopK > 1`.
-`--jetspecBlockSize` is an alias of `--dflashBlockSize`; both flags configure
+`--jetspec-draft` for the draft export, and run with `--spec-draft-top-k > 1`.
+`--jetspec-block-size` is an alias of `--dflash-block-size`; both flags configure
 the proposal block size read from the same runtime field.
 
 Set `"enable_thinking": false` in the input JSON for Qwen3-8B JetSpec
@@ -499,14 +499,14 @@ git clone https://huggingface.co/JetSpec/jetspec-qwen3-8b
 cd jetspec-qwen3-8b && git lfs pull && cd ..
 
 # Export JetSpec tree base model
-tensorrt-edgellm-export \
+trtedge export \
   Qwen/Qwen3-8B \
   $MODEL_NAME/onnx/tree_base_export \
   --jetspec-tree-base \
   --jetspec-draft-dir jetspec-qwen3-8b
 
 # Export JetSpec draft model
-tensorrt-edgellm-export \
+trtedge export \
   Qwen/Qwen3-8B \
   $MODEL_NAME/onnx/draft_export \
   --jetspec-draft \
@@ -538,23 +538,23 @@ cd /path/to/TensorRT-Edge-LLM
 
 # Build JetSpec base engine
 ./build/examples/llm/llm_build \
-  --onnxDir $WORKSPACE_DIR/$MODEL_NAME/onnx/tree_base \
-  --engineDir $WORKSPACE_DIR/$MODEL_NAME/engines \
-  --maxBatchSize 1 \
-  --maxInputLen 2048 \
-  --maxKVCacheCapacity 4096 \
-  --maxVerifyTreeSize 128 \
-  --specBase
+  --onnx-dir $WORKSPACE_DIR/$MODEL_NAME/onnx/tree_base \
+  --engine-dir $WORKSPACE_DIR/$MODEL_NAME/engines \
+  --max-batch-size 1 \
+  --max-input-len 2048 \
+  --max-kv-cache-capacity 4096 \
+  --max-verify-tree-size 128 \
+  --spec-base
 
 # Build JetSpec draft engine
 ./build/examples/llm/llm_build \
-  --onnxDir $WORKSPACE_DIR/$MODEL_NAME/onnx/draft \
-  --engineDir $WORKSPACE_DIR/$MODEL_NAME/engines \
-  --maxBatchSize 1 \
-  --maxInputLen 2048 \
-  --maxKVCacheCapacity 4096 \
-  --maxDraftTreeSize 128 \
-  --specDraft
+  --onnx-dir $WORKSPACE_DIR/$MODEL_NAME/onnx/draft \
+  --engine-dir $WORKSPACE_DIR/$MODEL_NAME/engines \
+  --max-batch-size 1 \
+  --max-input-len 2048 \
+  --max-kv-cache-capacity 4096 \
+  --max-draft-tree-size 128 \
+  --spec-draft
 ```
 
 #### Step 4: Run Inference (Thor Device)
@@ -563,27 +563,27 @@ cd /path/to/TensorRT-Edge-LLM
 cd /path/to/TensorRT-Edge-LLM
 
 ./build/examples/llm/llm_inference \
-  --engineDir $WORKSPACE_DIR/$MODEL_NAME/engines \
-  --inputFile $WORKSPACE_DIR/input.json \
-  --outputFile $WORKSPACE_DIR/output_jetspec.json \
-  --specDecode \
-  --specDraftTopK 7 \
-  --specDraftStep 1 \
-  --specVerifySize 128 \
-  --jetspecBlockSize 16
+  --engine-dir $WORKSPACE_DIR/$MODEL_NAME/engines \
+  --input-file $WORKSPACE_DIR/input.json \
+  --output-file $WORKSPACE_DIR/output_jetspec.json \
+  --spec-decode \
+  --spec-draft-top-k 7 \
+  --spec-draft-step 1 \
+  --spec-verify-size 128 \
+  --jetspec-block-size 16
 ```
 
 **Key differences from EAGLE3 and DFlash:**
 - `--jetspec-tree-base` exports the base model for JetSpec tree verification
 - `--jetspec-draft` exports the dedicated JetSpec draft model into `jetspec_draft/`
-- `--specDraftTopK 7` matches the validated JetSpec Qwen3-8B tree configuration
-- `--specVerifySize 128` is the validated tree verification budget including the root token
-- `--jetspecBlockSize 16` controls the draft proposal horizon; `--dflashBlockSize 16` is equivalent
+- `--spec-draft-top-k 7` matches the validated JetSpec Qwen3-8B tree configuration
+- `--spec-verify-size 128` is the validated tree verification budget including the root token
+- `--jetspec-block-size 16` controls the draft proposal horizon; `--dflash-block-size 16` is equivalent
 - Qwen3-8B JetSpec validation uses thinking mode disabled
 
 ## ONNX-less Alternative
 
-The experimental `tensorrt-edgellm-build` frontend reads local checkpoints and
+The experimental `trtedge build` frontend reads local checkpoints and
 builds the base and draft engines in one command. It does not export or parse
 ONNX. Complete the
 [direct-builder prerequisites](../getting_started/direct-engine-builder.md#prerequisites)
@@ -592,7 +592,7 @@ before using this path.
 For embedded Qwen3.5 MTP:
 
 ```bash
-tensorrt-edgellm-build \
+trtedge build \
   --model-dir "$WORKSPACE_DIR/Qwen3.5-4B-mtp/checkpoints/base" \
   --engine-dir "$WORKSPACE_DIR/Qwen3.5-4B-mtp/direct-engines" \
   --spec-type mtp \
@@ -607,7 +607,7 @@ Paired methods add `--draft-model-dir` and select their method:
 
 ```bash
 # EAGLE3
-tensorrt-edgellm-build \
+trtedge build \
   --model-dir "$WORKSPACE_DIR/Qwen3-1.7B-eagle3/checkpoints/base" \
   --draft-model-dir "$WORKSPACE_DIR/Qwen3-1.7B-eagle3/checkpoints/draft" \
   --engine-dir "$WORKSPACE_DIR/Qwen3-1.7B-eagle3/direct-engines" \
@@ -623,6 +623,6 @@ For DFlash or DSpark, use that section's checkpoint paths, tree sizes, and
 `--spec-type`. Direct-built DSpark supports both chain mode and greedy tree
 mode; pass `--tree-base` when building a tree-verification base. Run
 direct-built engines with the same method-specific inference settings shown
-above. Change `--engineDir` to the direct engine directory and add
-`--checkpointDir <base_checkpoint>`. Paired methods also require
-`--draftCheckpointDir <draft_checkpoint>`.
+above. Change `--engine-dir` to the direct engine directory and add
+`--checkpoint-dir <base_checkpoint>`. Paired methods also require
+`--draft-checkpoint-dir <draft_checkpoint>`.

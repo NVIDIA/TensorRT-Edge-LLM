@@ -1,0 +1,12 @@
+EAGLE Accept Kernels
+====================
+
+.. doxygenfunction:: trt_edgellm::kernel::getEagleAcceptWorkspaceSize
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::sequentialAccept
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::eagleAccept
+   :project: TensorRT Edge-LLM
+

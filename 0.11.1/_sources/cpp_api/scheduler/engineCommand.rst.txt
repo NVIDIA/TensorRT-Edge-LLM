@@ -1,0 +1,8 @@
+Engine Command
+==============
+
+.. doxygenstruct:: trt_edgellm::rt::scheduler::EngineCommand
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

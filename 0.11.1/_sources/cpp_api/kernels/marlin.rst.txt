@@ -1,0 +1,8 @@
+Marlin
+======
+
+.. doxygenstruct:: MARLIN_NAMESPACE_NAME::Vec
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

@@ -1,0 +1,6 @@
+Nvfp4 Tensor
+============
+
+.. doxygenfile:: kernels/moe/moe_marlin/marlin/nvfp4_tensor.cuh
+   :project: TensorRT Edge-LLM
+

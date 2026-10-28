@@ -1,0 +1,13 @@
+Gated Delta Net Plugin
+======================
+
+.. doxygenclass:: trt_edgellm::plugins::GatedDeltaNetPlugin
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::plugins::GatedDeltaNetPluginCreator
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

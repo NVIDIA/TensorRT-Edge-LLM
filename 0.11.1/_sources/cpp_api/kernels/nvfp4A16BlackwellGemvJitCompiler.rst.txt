@@ -1,0 +1,33 @@
+Nvfp4 A16 Blackwell Gemv Jit Compiler
+=====================================
+
+.. doxygenstruct:: trt_edgellm::Nvfp4A16BlackwellGemvJitKey
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::Nvfp4A16BlackwellGemvJitDigest
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::Nvfp4A16BlackwellGemvJitKernel
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::canCompileNvfp4A16BlackwellGemvJitKernel
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::computeNvfp4A16BlackwellGemvJitDigest
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::compileNvfp4A16BlackwellGemvJitKernel
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::serializeNvfp4A16BlackwellGemvJitKernel
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::deserializeNvfp4A16BlackwellGemvJitKernel
+   :project: TensorRT Edge-LLM
+

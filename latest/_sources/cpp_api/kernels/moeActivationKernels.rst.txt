@@ -4,3 +4,6 @@ Moe Activation Kernels
 .. doxygenfunction:: trt_edgellm::kernel::moeActivation
    :project: TensorRT Edge-LLM
 
+.. doxygenfunction:: trt_edgellm::kernel::moeScaledGatedActivation
+   :project: TensorRT Edge-LLM
+

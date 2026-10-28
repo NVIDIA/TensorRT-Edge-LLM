@@ -1,0 +1,8 @@
+Plugin Jit Compile Cache
+========================
+
+.. doxygenclass:: trt_edgellm::PluginJitCompileCache
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

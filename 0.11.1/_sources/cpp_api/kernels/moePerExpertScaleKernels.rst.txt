@@ -1,0 +1,6 @@
+Moe Per Expert Scale Kernels
+============================
+
+.. doxygenfunction:: trt_edgellm::kernel::applyPerExpertScale
+   :project: TensorRT Edge-LLM
+

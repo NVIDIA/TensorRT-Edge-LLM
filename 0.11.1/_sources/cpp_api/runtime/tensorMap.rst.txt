@@ -1,0 +1,8 @@
+Tensor Map
+==========
+
+.. doxygenclass:: trt_edgellm::rt::TensorMap
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

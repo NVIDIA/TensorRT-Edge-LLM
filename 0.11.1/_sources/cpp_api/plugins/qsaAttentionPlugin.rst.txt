@@ -1,0 +1,13 @@
+Qsa Attention Plugin
+====================
+
+.. doxygenclass:: trt_edgellm::plugins::QsaAttentionPlugin
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::plugins::QsaAttentionPluginCreator
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

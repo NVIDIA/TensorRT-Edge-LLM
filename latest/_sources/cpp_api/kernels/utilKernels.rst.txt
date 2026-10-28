@@ -16,6 +16,9 @@ Util Kernels
 .. doxygenfunction:: trt_edgellm::kernel::launchBuildVisionBlockRanges
    :project: TensorRT Edge-LLM
 
+.. doxygenfunction:: trt_edgellm::kernel::launchBuildPaddingBlockRanges
+   :project: TensorRT Edge-LLM
+
 .. doxygenfunction:: trt_edgellm::kernel::launchScatterActiveRows
    :project: TensorRT Edge-LLM
 

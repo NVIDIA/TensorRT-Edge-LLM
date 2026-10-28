@@ -1,0 +1,8 @@
+Spec Common State Tracker
+=========================
+
+.. doxygenclass:: trt_edgellm::rt::SpecCommonStateTracker
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

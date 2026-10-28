@@ -54,26 +54,26 @@ salt key.
 
 ## Build Capacity
 
-`--maxKVPoolPages` controls the total page pool. Reserve pages beyond the
+`--max-kv-pool-pages` controls the total page pool. Reserve pages beyond the
 active-request minimum when retained contexts must remain resident:
 
 ```bash
 ./build/examples/llm/llm_build \
-  --onnxDir /path/to/onnx/llm \
-  --engineDir /path/to/engine \
-  --maxInputLen 1024 \
-  --maxKVCacheCapacity 4096 \
-  --maxKVPoolPages 64
+  --onnx-dir /path/to/onnx/llm \
+  --engine-dir /path/to/engine \
+  --max-input-len 1024 \
+  --max-kv-cache-capacity 4096 \
+  --max-kv-pool-pages 64
 ```
 
 ## Enable Reuse
 
 ```bash
 ./build/examples/llm/llm_inference \
-  --engineDir /path/to/engine \
-  --inputFile input.json \
-  --outputFile output.json \
-  --enableContextReuse
+  --engine-dir /path/to/engine \
+  --input-file input.json \
+  --output-file output.json \
+  --enable-context-reuse
 ```
 
 For a VLM, pass the visual engine and a request set containing repeated image
@@ -81,26 +81,26 @@ prefixes:
 
 ```bash
 ./build/examples/llm/llm_inference \
-  --engineDir /path/to/engine \
-  --multimodalEngineDir /path/to/visual/engine \
-  --inputFile tests/test_cases/vlm_context_reuse.json \
-  --outputFile output.json \
-  --enableContextReuse \
-  --profileOutputFile profile.json
+  --engine-dir /path/to/engine \
+  --multimodal-engine-dir /path/to/visual/engine \
+  --input-file tests/test_cases/vlm_context_reuse.json \
+  --output-file output.json \
+  --enable-context-reuse \
+  --profile-output-file profile.json
 ```
 
 Reuse remains page-aligned, and the runtime recomputes a media span when a page
 boundary would split it.
 
 The cache retains up to 1024 records by default. Use
-`--contextCacheMaxRecords` only when the deployment needs a different limit.
+`--context-cache-max-records` only when the deployment needs a different limit.
 
 For matrix rows that require snapshot storage, configure the corresponding
 budgets:
 
 ```bash
-  --contextCacheRecurrentSnapshotPoolBytes 67108864 \
-  --contextCachePartialKVSnapshotPoolBytes 67108864
+  --context-cache-recurrent-snapshot-pool-bytes 67108864 \
+  --context-cache-partial-kv-snapshot-pool-bytes 67108864
 ```
 
 The values above are example 64 MiB budgets. Required capacity depends on the
@@ -137,22 +137,22 @@ reusable state. Do not combine generalized context reuse with the legacy
 
 The encoder embedding cache is separate from KV cache reuse. A runtime with a
 ViT or audio runner allows cache entries to use up to 256 MiB of device memory
-by default even when `--enableContextReuse` is not set. It hashes decoded image
+by default even when `--enable-context-reuse` is not set. It hashes decoded image
 bytes or PCM audio samples and retains the corresponding encoder output on the
 GPU. A request for identical media can then skip ViT or audio encoder
 execution. The cache evicts least-recently-used entries when its budget is
 full; an individual entry larger than the budget runs uncached.
 
-Set the C++ runtime budget in bytes with `--encoderCacheBudgetBytes`; zero
+Set the C++ runtime budget in bytes with `--encoder-cache-budget-bytes`; zero
 disables the cache:
 
 ```bash
 ./build/examples/llm/llm_inference \
-  --engineDir /path/to/engine \
-  --multimodalEngineDir /path/to/encoder/engine \
-  --inputFile input.json \
-  --outputFile output.json \
-  --encoderCacheBudgetBytes 134217728
+  --engine-dir /path/to/engine \
+  --multimodal-engine-dir /path/to/encoder/engine \
+  --input-file input.json \
+  --output-file output.json \
+  --encoder-cache-budget-bytes 134217728
 ```
 
 The experimental Python API and server use the same default but do not expose a

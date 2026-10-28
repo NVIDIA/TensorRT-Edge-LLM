@@ -1,0 +1,6 @@
+Marlin Dtypes
+=============
+
+.. doxygenfile:: kernels/moe/moe_marlin/marlin/marlin_dtypes.cuh
+   :project: TensorRT Edge-LLM
+

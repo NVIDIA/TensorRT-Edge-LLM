@@ -1,0 +1,6 @@
+Spec Decode Config Utils
+========================
+
+.. doxygenfile:: common/specDecodeConfigUtils.h
+   :project: TensorRT Edge-LLM
+

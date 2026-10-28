@@ -1,0 +1,12 @@
+Speculative Sampling
+====================
+
+.. doxygenfunction:: trt_edgellm::kernel::speculativeSparseAccept
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::speculativeDenseTargetAccept
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::speculativeNormalizeTopKTopP
+   :project: TensorRT Edge-LLM
+

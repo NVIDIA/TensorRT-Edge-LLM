@@ -1,0 +1,33 @@
+Ragged Batch Builder
+====================
+
+.. doxygenclass:: trt_edgellm::rt::IdentitySetScratch
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::rt::RaggedBatchBuilder
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::RaggedEngineContract
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::RaggedStepShape
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::CompletionSequence
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::rt::RaggedExecutionBatch
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

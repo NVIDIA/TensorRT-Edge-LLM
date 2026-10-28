@@ -1,0 +1,6 @@
+Gptq Activation Permutation
+===========================
+
+.. doxygenfunction:: trt_edgellm::kernel::launchGptqActivationPermutation
+   :project: TensorRT Edge-LLM
+

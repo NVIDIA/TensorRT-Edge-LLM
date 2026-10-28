@@ -1,0 +1,8 @@
+External Weight Manager
+=======================
+
+.. doxygenclass:: trt_edgellm::rt::ExternalWeightManager
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

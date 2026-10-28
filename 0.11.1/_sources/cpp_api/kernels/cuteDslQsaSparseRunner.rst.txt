@@ -1,0 +1,23 @@
+Cute Dsl Qsa Sparse Runner
+==========================
+
+.. doxygenclass:: trt_edgellm::CuteDslQsaSparsePrefillRunner
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::CuteDslQsaSparseDecodeRunner
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::QsaSparsePrefillParams
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::QsaSparseDecodeParams
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

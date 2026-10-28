@@ -1,0 +1,41 @@
+Qsa Indexer Kernels
+===================
+
+.. doxygenstruct:: trt_edgellm::kernel::QsaIndexerPoolState
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::kernel::ensureQsaIndexerKernelsLoaded
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchQsaIndexQPrep
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchQsaIndexKCompress
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchQsaIndexScores
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchQsaIndexIdsFill
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchQsaIndexExpand
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchQsaIndexKCompressPaged
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchQsaRawKTailWritePrefill
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchQsaIndexerPreDecode
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchQsaIndexScoresDecode
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::launchQsaTopKExpandDecode
+   :project: TensorRT Edge-LLM
+

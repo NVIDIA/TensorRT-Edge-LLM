@@ -1,0 +1,6 @@
+Int4 Moe Scale Repack
+=====================
+
+.. doxygenfunction:: trt_edgellm::kernel::launchInt4MoeScaleRepackSourceBatch
+   :project: TensorRT Edge-LLM
+

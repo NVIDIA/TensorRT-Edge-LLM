@@ -31,6 +31,11 @@ Metrics
    :members:
    :undoc-members:
 
+.. doxygenstruct:: trt_edgellm::metrics::LLMRequestMetrics
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
 .. doxygenstruct:: trt_edgellm::metrics::OmniLatencyMetrics
    :project: TensorRT Edge-LLM
    :members:

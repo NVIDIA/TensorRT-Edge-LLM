@@ -1,0 +1,9 @@
+Dart Selector Kernels
+=====================
+
+.. doxygenfunction:: trt_edgellm::kernel::computeDartRowNorms
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::computeDartPivotDots
+   :project: TensorRT Edge-LLM
+

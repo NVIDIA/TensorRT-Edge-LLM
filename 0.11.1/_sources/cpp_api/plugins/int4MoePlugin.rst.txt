@@ -1,0 +1,13 @@
+Int4 Moe Plugin
+===============
+
+.. doxygenclass:: trt_edgellm::plugins::Int4MoePlugin
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::plugins::Int4MoePluginCreator
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

@@ -1,0 +1,13 @@
+Layer Norm Plugin
+=================
+
+.. doxygenclass:: trt_edgellm::plugins::LayerNormPlugin
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::plugins::LayerNormPluginCreator
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

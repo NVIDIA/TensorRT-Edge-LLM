@@ -1,0 +1,6 @@
+Dflash2 Candidate Selector
+==========================
+
+.. doxygenfunction:: trt_edgellm::kernel::launchDFlash2CandidateSelector
+   :project: TensorRT Edge-LLM
+

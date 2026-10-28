@@ -1,0 +1,13 @@
+Dflash2 Grouped Dynamic Conv Plugin
+===================================
+
+.. doxygenclass:: trt_edgellm::plugins::DFlash2GroupedDynamicConvPlugin
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: trt_edgellm::plugins::DFlash2GroupedDynamicConvPluginCreator
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

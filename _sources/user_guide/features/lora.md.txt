@@ -19,35 +19,35 @@ maximum adapter rank.
 cd /path/to/TensorRT-Edge-LLM
 
 # Step 1: Export the base model with tensorrt_edgellm
-tensorrt-edgellm-export \
+trtedge export \
   /path/to/base_model \
   /tmp/onnx_output
 
 # Step 2: Insert LoRA support into the exported LLM graph
-tensorrt-edgellm-insert-lora \
-  --onnx_dir /tmp/onnx_output/llm
+trtedge insert-lora \
+  --onnx-dir /tmp/onnx_output/llm
 
 # Step 3: Convert each adapter to the runtime sidecar format
-tensorrt-edgellm-process-lora \
-  --input_dir /path/to/adapter1 \
-  --output_dir /tmp/onnx_output/llm/lora_weights/adapter1
+trtedge process-lora \
+  --input-dir /path/to/adapter1 \
+  --output-dir /tmp/onnx_output/llm/lora_weights/adapter1
 
-tensorrt-edgellm-process-lora \
-  --input_dir /path/to/adapter2 \
-  --output_dir /tmp/onnx_output/llm/lora_weights/adapter2
+trtedge process-lora \
+  --input-dir /path/to/adapter2 \
+  --output-dir /tmp/onnx_output/llm/lora_weights/adapter2
 
 # Step 4: Build the engine with LoRA support
 ./build/examples/llm/llm_build \
-  --onnxDir /tmp/onnx_output/llm \
-  --engineDir engines \
-  --maxBatchSize 1 \
-  --maxLoraRank 64
+  --onnx-dir /tmp/onnx_output/llm \
+  --engine-dir engines \
+  --max-batch-size 1 \
+  --max-lora-rank 64
 
 # Step 5: Run inference with adapter selection in input.json
 ./build/examples/llm/llm_inference \
-  --engineDir engines \
-  --inputFile input.json \
-  --outputFile output.json
+  --engine-dir engines \
+  --input-file input.json \
+  --output-file output.json
 ```
 
 ## Static LoRA Merge
@@ -68,20 +68,20 @@ export HF_MODEL_DIR=$MODEL_DIR/hf
 # Assumes $HF_MODEL_DIR is a local HuggingFace clone with Git LFS files pulled.
 
 # Step 1: Merge LoRA into the base checkpoint
-tensorrt-edgellm-merge-lora \
-  --model_dir $HF_MODEL_DIR \
-  --lora_dir $HF_MODEL_DIR/vision-lora \
-  --output_dir $MODEL_DIR/merged
+trtedge merge-lora \
+  --model-dir $HF_MODEL_DIR \
+  --lora-dir $HF_MODEL_DIR/vision-lora \
+  --output-dir $MODEL_DIR/merged
 
 # Step 2: Optional quantization of the merged checkpoint
-tensorrt-edgellm-quantize llm \
-  --model_dir $MODEL_DIR/merged \
-  --output_dir $MODEL_DIR/quantized \
+trtedge quantize llm \
+  --model-dir $MODEL_DIR/merged \
+  --output-dir $MODEL_DIR/quantized \
   --quantization nvfp4 \
-  --lm_head_quantization nvfp4
+  --lm-head-quantization nvfp4
 
 # Step 3: Export the checkpoint with tensorrt_edgellm
-tensorrt-edgellm-export \
+trtedge export \
   $MODEL_DIR/quantized \
   $MODEL_DIR/onnx
 ```
@@ -120,35 +120,38 @@ omit `lora_name` or set it to an empty string.
 
 ## Script Reference
 
-### `tensorrt-edgellm-insert-lora`
+(tensorrt-edgellm-insert-lora)=
+### `trtedge insert-lora`
 
 Inserts LoRA patterns into an exported `tensorrt_edgellm` ONNX model and creates
 `lora_model.onnx` in the same directory.
 
 | Argument | Required | Description |
 |----------|----------|-------------|
-| `--onnx_dir` | Yes | Directory containing `model.onnx` and `config.json` |
+| `--onnx-dir` | Yes | Directory containing `model.onnx` and `config.json` |
 
-### `tensorrt-edgellm-process-lora`
+(tensorrt-edgellm-process-lora)=
+### `trtedge process-lora`
 
 Processes HuggingFace LoRA adapter weights for runtime use.
 
 | Argument | Required | Description |
 |----------|----------|-------------|
-| `--input_dir` | Yes | Directory with `adapter_config.json` and `adapter_model.safetensors` |
-| `--output_dir` | Yes | Output directory for processed weights |
+| `--input-dir` | Yes | Directory with `adapter_config.json` and `adapter_model.safetensors` |
+| `--output-dir` | Yes | Output directory for processed weights |
 
 The output contains `processed_adapter_model.safetensors` and `config.json`.
 
-### `tensorrt-edgellm-merge-lora`
+(tensorrt-edgellm-merge-lora)=
+### `trtedge merge-lora`
 
 Permanently merges LoRA weights into a base HuggingFace checkpoint.
 
 | Argument | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `--model_dir` | Yes | - | Base model directory |
-| `--lora_dir` | Yes | - | LoRA adapter directory |
-| `--output_dir` | Yes | - | Output directory for merged checkpoint |
+| `--model-dir` | Yes | - | Base model directory |
+| `--lora-dir` | Yes | - | LoRA adapter directory |
+| `--output-dir` | Yes | - | Output directory for merged checkpoint |
 | `--device` | No | `cuda` | Device used while merging |
 | `--torch-dtype` | No | `float16` | Model dtype used while merging |
 
@@ -156,10 +159,10 @@ Permanently merges LoRA weights into a base HuggingFace checkpoint.
 
 | Parameter | Description |
 |-----------|-------------|
-| `--maxLoraRank` | Maximum LoRA rank to support. Set to `0` to disable dynamic LoRA. |
+| `--max-lora-rank` | Maximum LoRA rank to support. Set to `0` to disable dynamic LoRA. |
 
 ## Notes
 
 - Static merge produces a single checkpoint and does not require runtime LoRA flags.
-- Dynamic LoRA enables adapter switching without rebuilding, but all adapters must have rank less than or equal to `--maxLoraRank`.
+- Dynamic LoRA enables adapter switching without rebuilding, but all adapters must have rank less than or equal to `--max-lora-rank`.
 - CUDA graphs are captured separately for each LoRA configuration.

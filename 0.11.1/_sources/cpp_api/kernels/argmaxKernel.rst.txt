@@ -1,0 +1,6 @@
+Argmax Kernel
+=============
+
+.. doxygenfunction:: trt_edgellm::kernel::invokeRowwiseArgmax
+   :project: TensorRT Edge-LLM
+

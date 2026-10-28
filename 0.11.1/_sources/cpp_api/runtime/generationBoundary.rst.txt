@@ -1,0 +1,8 @@
+Generation Boundary
+===================
+
+.. doxygenclass:: trt_edgellm::rt::GenerationBoundary
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

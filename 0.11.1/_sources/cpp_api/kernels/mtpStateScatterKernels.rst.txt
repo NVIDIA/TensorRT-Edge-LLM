@@ -1,0 +1,20 @@
+Mtp State Scatter Kernels
+=========================
+
+.. doxygenstruct:: trt_edgellm::kernel::MtpLayerInfo
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::kernel::mtpScatterRecurrentStates
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::mtpScatterConvStates
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::mtpScatterAcceptedTreeRecurrentStates
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::kernel::mtpScatterAcceptedTreeConvStates
+   :project: TensorRT Edge-LLM
+

@@ -1,0 +1,8 @@
+EAGLE Decoder
+=============
+
+.. doxygenclass:: trt_edgellm::rt::EagleDecoder
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+

@@ -1,0 +1,6 @@
+Speculative Sampling Kernels
+============================
+
+.. doxygenfile:: kernels/speculative/speculativeSamplingKernels.h
+   :project: TensorRT Edge-LLM
+

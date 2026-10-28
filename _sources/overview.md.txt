@@ -57,11 +57,11 @@ flowchart LR
 
 | Frontend | Command | Use it for |
 |---|---|---|
-| ONNX workflow | `tensorrt-edgellm-export`, then component C++ builders | Supported deployment path, portable intermediate artifacts, and explicit component control |
-| Direct frontend | `tensorrt-edgellm-build` | Experimental on-device compilation directly from a local checkpoint |
+| ONNX workflow | `trtedge export`, then component C++ builders | Supported deployment path, portable intermediate artifacts, and explicit component control |
+| Direct frontend | `trtedge build` | Experimental on-device compilation directly from a local checkpoint |
 
 Quantization is optional. Unquantized and supported pre-quantized checkpoints can
-be compiled directly; use `tensorrt-edgellm-quantize` only to create a new
+be compiled directly; use `trtedge quantize` only to create a new
 quantized checkpoint.
 
 ## Runtime Capabilities
@@ -77,9 +77,9 @@ Feature availability depends on the model and deployment.
 
 ## Start Here
 
-1. [Install the Python package and C++ runtime](user_guide/getting_started/installation.md).
-2. [Run the text-generation quick start](user_guide/getting_started/quick-start-guide.md).
-3. Select a modality-specific workflow from the [examples](user_guide/examples/index.md).
+1. [Install TensorRT Edge-LLM](user_guide/getting_started/installation.md) — start with the recommended Python wheel.
+2. [Follow Quick Start](user_guide/getting_started/quick-start-guide.md) — start a chat or launch an HTTP server with `trtedge`.
+3. [Explore examples](user_guide/examples/index.md) — find examples for your model and task.
 
 For implementation details, see the
 [checkpoint exporter](developer_guide/software-design/checkpoint-export.md),

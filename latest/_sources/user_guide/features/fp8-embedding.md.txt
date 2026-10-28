@@ -8,7 +8,7 @@ FP8 embedding reduces memory usage by quantizing the embedding table from FP16 t
 - Reduces embedding table memory by ~50% (FP8 vs FP16)
 - Uses NVIDIA FP8 E4M3 format with per-row block-wise quantization (block size 128)
 - Can be used independently or combined with other quantization methods (NVFP4, INT4, FP8 weights)
-- Automatically detected during engine build from safetensors metadata
+- Detected by the runtime from `embedding.safetensors`; no build or runtime flags needed
 - Output is always FP16 — dequantization happens on-the-fly during embedding lookup
 
 ---
@@ -22,7 +22,7 @@ export EDGE_LLM_PATH=/path/to/TensorRT-Edge-LLM
 cd $EDGE_LLM_PATH
 export PYTHONPATH=$EDGE_LLM_PATH:$PYTHONPATH
 
-tensorrt-edgellm-export \
+trtedge export \
   /path/to/Qwen3-8B \
   /tmp/qwen3_onnx_fp8emb \
   --fp8-embedding
@@ -32,16 +32,16 @@ This flag only changes `embedding.safetensors`; it does not change the ONNX grap
 
 ### Build Engine
 
-Build the TensorRT engine as usual. The build process automatically detects FP8 embedding from the safetensors metadata:
+Build the TensorRT engine as usual. The builder copies `embedding.safetensors` to the engine directory:
 
 ```bash
 ./build/examples/llm/llm_build \
-  --onnxDir /tmp/qwen3_onnx_fp8emb/llm \
-  --engineDir engines/qwen3-8b-fp8emb \
-  --maxBatchSize=1
+  --onnx-dir /tmp/qwen3_onnx_fp8emb/llm \
+  --engine-dir engines/qwen3-8b-fp8emb \
+  --max-batch-size=1
 ```
 
-No special build flags are required — FP8 embedding is automatically enabled based on the safetensors metadata.
+No build flags are needed.
 
 ### Run Inference
 
@@ -49,9 +49,9 @@ Run inference with the built engine. No special flags are needed:
 
 ```bash
 ./build/examples/llm/llm_inference \
-  --engineDir engines/qwen3-8b-fp8emb \
-  --inputFile tests/test_cases/llm_basic.json \
-  --outputFile output.json
+  --engine-dir engines/qwen3-8b-fp8emb \
+  --input-file tests/test_cases/llm_basic.json \
+  --output-file output.json
 ```
 
 ---
@@ -66,13 +66,13 @@ cd $EDGE_LLM_PATH
 export PYTHONPATH=$EDGE_LLM_PATH:$PYTHONPATH
 
 # Step 1: Quantize weights to a checkpoint
-tensorrt-edgellm-quantize llm \
-  --model_dir /path/to/Qwen3-8B \
-  --output_dir /tmp/qwen3_nvfp4 \
+trtedge quantize llm \
+  --model-dir /path/to/Qwen3-8B \
+  --output-dir /tmp/qwen3_nvfp4 \
   --quantization nvfp4
 
 # Step 2: Export with both NVFP4 weights and FP8 embedding
-tensorrt-edgellm-export \
+trtedge export \
   /tmp/qwen3_nvfp4 \
   /tmp/qwen3_nvfp4_fp8emb_onnx \
   --fp8-embedding
@@ -112,7 +112,7 @@ During inference:
 
 - **No Calibration Required**: Unlike FP8 KV cache, FP8 embedding uses direct min-max quantization and does not require calibration data.
 - **Independent of Weight Quantization**: FP8 embedding can be enabled independently of weight quantization. You can use FP16 weights with FP8 embedding, or combine with NVFP4/INT4/FP8 weight quantization.
-- **Automatic Detection**: Engine build and runtime automatically detect FP8 embedding from safetensors metadata — no special flags needed after export.
+- **Automatic Detection**: The runtime detects FP8 embedding from the table's data type; no flags are needed after export.
 - **Memory Benefits**: Most beneficial for models with large vocabularies (e.g., 150K+ tokens) where embedding tables can be 500MB+ in FP16.
 - **Accuracy**: Block-wise quantization with block size 128 preserves accuracy well in practice. The embedding lookup output is identical to FP16 within quantization tolerance.
 

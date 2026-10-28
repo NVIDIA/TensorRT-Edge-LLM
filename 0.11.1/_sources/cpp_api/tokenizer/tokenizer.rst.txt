@@ -1,0 +1,19 @@
+Tokenizer
+=========
+
+.. doxygenclass:: trt_edgellm::tokenizer::Tokenizer
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenstruct:: trt_edgellm::tokenizer::textPartition
+   :project: TensorRT Edge-LLM
+   :members:
+   :undoc-members:
+
+.. doxygenfunction:: trt_edgellm::tokenizer::emitDelta
+   :project: TensorRT Edge-LLM
+
+.. doxygenfunction:: trt_edgellm::tokenizer::emitDeltaFlush
+   :project: TensorRT Edge-LLM
+

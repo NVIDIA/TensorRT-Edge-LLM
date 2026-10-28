@@ -1,5 +1,4 @@
 
-
 <!DOCTYPE html>
 
 
@@ -28,8 +27,8 @@
   </noscript>
   
   <!-- Loaded before other Sphinx assets -->
-  <link href="../../_static/styles/theme.css?digest=0790524f97105ba85085" rel="stylesheet" />
-<link href="../../_static/styles/pydata-sphinx-theme.css?digest=0790524f97105ba85085" rel="stylesheet" />
+  <link href="../../_static/styles/theme.css?digest=18bd87630a240e9c25be" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=18bd87630a240e9c25be" rel="stylesheet" />
 
     <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=03e43079" />
     <link rel="stylesheet" type="text/css" href="../../_static/styles/nvidia-sphinx-theme.css?v=933278ad" />
@@ -39,10 +38,10 @@
     <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=e02be394" />
   
   <!-- So that users can add custom icons -->
-  <script defer src="../../_static/scripts/fontawesome.js?digest=0790524f97105ba85085"></script>
+  <script defer src="../../_static/scripts/fontawesome.js?digest=18bd87630a240e9c25be"></script>
   <!-- Pre-loaded scripts that we'll load fully later -->
-  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=0790524f97105ba85085" />
-<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=0790524f97105ba85085" />
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=18bd87630a240e9c25be" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=18bd87630a240e9c25be" />
 
 
 
@@ -58,9 +57,9 @@
     <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'cpp_api/profiling/metrics';</script>
     <script>
-        DOCUMENTATION_OPTIONS.theme_version = '0.18.0';
+        DOCUMENTATION_OPTIONS.theme_version = '0.23.0';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = './_static/switcher.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.11.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '0.11.1';
         DOCUMENTATION_OPTIONS.show_version_warning_banner =
             false;
         </script>
@@ -75,8 +74,9 @@
 
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="color-scheme" content="light dark"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.11.0" />
+  <meta name="docsearch:version" content="0.11.1" />
   
     
     <script src="../../_static/searchtools.js"></script>
@@ -129,7 +129,7 @@
   
     <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
 <div class="bd-header__inner bd-page-width">
-  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+  <button type="button" class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
     <span class="fa-solid fa-bars"></span>
   </button>
   
@@ -197,7 +197,7 @@
         <div class="navbar-item navbar-persistent--container">
           
 
-<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+<button type="button" class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
  <i class="fa-solid fa-magnifying-glass"></i>
  <span class="search-button__default-text">Search</span>
  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
@@ -208,15 +208,15 @@
         <div class="navbar-item">
 
 <div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
-  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+  <button type="button" class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
     <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
     <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
     <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
   </button>
   <ul class="dropdown-menu dropdown-menu-end">
-    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
-    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
-    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
   </ul>
 </div></div>
       
@@ -227,7 +227,7 @@
   
     <div class="navbar-persistent--mobile">
 
-<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+<button type="button" class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
  <i class="fa-solid fa-magnifying-glass"></i>
  <span class="search-button__default-text">Search</span>
  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
@@ -236,7 +236,7 @@
   
 
   
-    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+    <button type="button" class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
       <span class="fa-solid fa-outdent"></span>
     </button>
   
@@ -320,15 +320,15 @@
           <div class="navbar-item">
 
 <div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
-  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+  <button type="button" class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
     <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
     <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
     <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
   </button>
   <ul class="dropdown-menu dropdown-menu-end">
-    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
-    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
-    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
   </ul>
 </div></div>
         
@@ -351,12 +351,15 @@
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/supported-models.html">Supported Models</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/installation.html">Installation</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/quick-start-guide.html">Quick Start</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/cli.html">trtedge CLI</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/direct-engine-builder.html">Experimental ONNX-less Engine Build</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/getting_started/limitations.html">Limitations and Known Issues</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Examples</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/index.html">Examples</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/interactive-chat.html">Interactive Text Chat</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/python-runtime.html">Run inference with the Python runtime</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/speculative-decoding.html">Speculative Decoding</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/phi4.html">Phi-4-Multimodal</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/examples/asr.html">ASR (Automatic Speech Recognition)</a></li>
@@ -573,6 +576,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoeScaleTransform.html">Nvfp4 Moe Scale Transform</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoeTypes.html">Nvfp4 Moe Types</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4MoeWeightTransform.html">Nvfp4 Moe Weight Transform</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4W4A16MarlinRepack.html">Nvfp4 W4 A16 Marlin Repack</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4_dequant.html">Nvfp4 Dequant</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4_scale.html">Nvfp4 Scale</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../kernels/nvfp4_tensor.html">Nvfp4 Tensor</a></li>
@@ -655,8 +659,9 @@
 </details></li>
 <li class="toctree-l2 current active has-children"><a class="reference internal" href="index.html">Profiling Module</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
 <li class="toctree-l3"><a class="reference internal" href="layerProfiler.html">Layer Profiler</a></li>
-<li class="toctree-l3 current active"><a class="current reference internal" href="#">Metrics</a></li>
+<li class="toctree-l3 current active"><a aria-current="page" class="current reference internal" href="#">Metrics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="nvtx_wrapper.html">Nvtx Wrapper</a></li>
+<li class="toctree-l3"><a class="reference internal" href="requestProfiler.html">Request Profiler</a></li>
 <li class="toctree-l3"><a class="reference internal" href="timer.html">Timer</a></li>
 </ul>
 </details></li>
@@ -731,6 +736,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../runtime/resourcePools.html">Resource Pools</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/reusePlan.html">Reuse Plan</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/ropeCache.html">Rope Cache</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../runtime/rtxRuntimeCache.html">Rtx Runtime Cache</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/runtimeCoordinator.html">Runtime Coordinator</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/runtimeStepper.html">Runtime Stepper</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../runtime/scheduledStep.html">Scheduled Step</a></li>
@@ -870,7 +876,7 @@
 
 <dl class="cpp class">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7metrics17LLMPrefillMetricsE">
-<span id="_CPPv3N11trt_edgellm7metrics17LLMPrefillMetricsE"></span><span id="_CPPv2N11trt_edgellm7metrics17LLMPrefillMetricsE"></span><span id="trt_edgellm::metrics::LLMPrefillMetrics"></span><span class="target" id="classtrt__edgellm_1_1metrics_1_1LLMPrefillMetrics"></span><span class="k"><span class="pre">class</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">LLMPrefillMetrics</span></span></span><span class="w"> </span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="k"><span class="pre">public</span></span><span class="w"> </span><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">metrics</span></span><span class="p"><span class="pre">::</span></span><a class="reference internal" href="#_CPPv4N11trt_edgellm7metrics11BaseMetricsE" title="trt_edgellm::metrics::BaseMetrics"><span class="n"><span class="pre">BaseMetrics</span></span></a><a class="headerlink" href="#_CPPv4N11trt_edgellm7metrics17LLMPrefillMetricsE" title="Link to this definition">#</a><br /></dt>
+<span id="_CPPv3N11trt_edgellm7metrics17LLMPrefillMetricsE"></span><span id="_CPPv2N11trt_edgellm7metrics17LLMPrefillMetricsE"></span><span id="trt_edgellm::metrics::LLMPrefillMetrics"></span><span class="target" id="classtrt__edgellm_1_1metrics_1_1LLMPrefillMetrics"></span><span class="k"><span class="pre">class</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">LLMPrefillMetrics</span></span></span><span class="w"> </span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="k"><span class="pre">public</span></span><span class="w"> </span><span class="n"><span class="pre">trt_edgellm</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">metrics</span></span><span class="p"><span class="pre">::</span></span><a class="reference internal" href="#_CPPv4N11trt_edgellm7metrics11BaseMetricsE" title="trt_edgellm::metrics::BaseMetrics"><span class="n"><span class="pre">BaseMetrics</span></span></a><a class="headerlink" href="#_CPPv4N11trt_edgellm7metrics17LLMPrefillMetricsE" title="Link to this definition">#</a><br /></dt>
 <dd><p>LLM prefill stage metrics. </p>
 <p>Tracks reused and computed tokens during prefill. </p>
 <div class="breathe-sectiondef docutils container">
@@ -924,7 +930,7 @@
 
 <dl class="cpp class">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7metrics20LLMGenerationMetricsE">
-<span id="_CPPv3N11trt_edgellm7metrics20LLMGenerationMetricsE"></span><span id="_CPPv2N11trt_edgellm7metrics20LLMGenerationMetricsE"></span><span id="trt_edgellm::metrics::LLMGenerationMetrics"></span><span class="target" id="classtrt__edgellm_1_1metrics_1_1LLMGenerationMetrics"></span><span class="k"><span class="pre">class</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">LLMGenerationMetrics</span></span></span><span class="w"> </span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="k"><span class="pre">public</span></span><span class="w"> </span><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">metrics</span></span><span class="p"><span class="pre">::</span></span><a class="reference internal" href="#_CPPv4N11trt_edgellm7metrics11BaseMetricsE" title="trt_edgellm::metrics::BaseMetrics"><span class="n"><span class="pre">BaseMetrics</span></span></a><a class="headerlink" href="#_CPPv4N11trt_edgellm7metrics20LLMGenerationMetricsE" title="Link to this definition">#</a><br /></dt>
+<span id="_CPPv3N11trt_edgellm7metrics20LLMGenerationMetricsE"></span><span id="_CPPv2N11trt_edgellm7metrics20LLMGenerationMetricsE"></span><span id="trt_edgellm::metrics::LLMGenerationMetrics"></span><span class="target" id="classtrt__edgellm_1_1metrics_1_1LLMGenerationMetrics"></span><span class="k"><span class="pre">class</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">LLMGenerationMetrics</span></span></span><span class="w"> </span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="k"><span class="pre">public</span></span><span class="w"> </span><span class="n"><span class="pre">trt_edgellm</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">metrics</span></span><span class="p"><span class="pre">::</span></span><a class="reference internal" href="#_CPPv4N11trt_edgellm7metrics11BaseMetricsE" title="trt_edgellm::metrics::BaseMetrics"><span class="n"><span class="pre">BaseMetrics</span></span></a><a class="headerlink" href="#_CPPv4N11trt_edgellm7metrics20LLMGenerationMetricsE" title="Link to this definition">#</a><br /></dt>
 <dd><p>LLM generation stage metrics. </p>
 <p>Tracks generated tokens during decoding. </p>
 <div class="breathe-sectiondef docutils container">
@@ -954,7 +960,7 @@
 
 <dl class="cpp class">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7metrics17MultimodalMetricsE">
-<span id="_CPPv3N11trt_edgellm7metrics17MultimodalMetricsE"></span><span id="_CPPv2N11trt_edgellm7metrics17MultimodalMetricsE"></span><span id="trt_edgellm::metrics::MultimodalMetrics"></span><span class="target" id="classtrt__edgellm_1_1metrics_1_1MultimodalMetrics"></span><span class="k"><span class="pre">class</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">MultimodalMetrics</span></span></span><span class="w"> </span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="k"><span class="pre">public</span></span><span class="w"> </span><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">metrics</span></span><span class="p"><span class="pre">::</span></span><a class="reference internal" href="#_CPPv4N11trt_edgellm7metrics11BaseMetricsE" title="trt_edgellm::metrics::BaseMetrics"><span class="n"><span class="pre">BaseMetrics</span></span></a><a class="headerlink" href="#_CPPv4N11trt_edgellm7metrics17MultimodalMetricsE" title="Link to this definition">#</a><br /></dt>
+<span id="_CPPv3N11trt_edgellm7metrics17MultimodalMetricsE"></span><span id="_CPPv2N11trt_edgellm7metrics17MultimodalMetricsE"></span><span id="trt_edgellm::metrics::MultimodalMetrics"></span><span class="target" id="classtrt__edgellm_1_1metrics_1_1MultimodalMetrics"></span><span class="k"><span class="pre">class</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">MultimodalMetrics</span></span></span><span class="w"> </span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="k"><span class="pre">public</span></span><span class="w"> </span><span class="n"><span class="pre">trt_edgellm</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">metrics</span></span><span class="p"><span class="pre">::</span></span><a class="reference internal" href="#_CPPv4N11trt_edgellm7metrics11BaseMetricsE" title="trt_edgellm::metrics::BaseMetrics"><span class="n"><span class="pre">BaseMetrics</span></span></a><a class="headerlink" href="#_CPPv4N11trt_edgellm7metrics17MultimodalMetricsE" title="Link to this definition">#</a><br /></dt>
 <dd><p>Multimodal processing stage metrics. </p>
 <p>Tracks image and audio processing statistics. </p>
 <div class="breathe-sectiondef docutils container">
@@ -1016,7 +1022,7 @@
 
 <dl class="cpp class">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7metrics27SpecDecodeGenerationMetricsE">
-<span id="_CPPv3N11trt_edgellm7metrics27SpecDecodeGenerationMetricsE"></span><span id="_CPPv2N11trt_edgellm7metrics27SpecDecodeGenerationMetricsE"></span><span id="trt_edgellm::metrics::SpecDecodeGenerationMetrics"></span><span class="target" id="classtrt__edgellm_1_1metrics_1_1SpecDecodeGenerationMetrics"></span><span class="k"><span class="pre">class</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">SpecDecodeGenerationMetrics</span></span></span><span class="w"> </span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="k"><span class="pre">public</span></span><span class="w"> </span><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">metrics</span></span><span class="p"><span class="pre">::</span></span><a class="reference internal" href="#_CPPv4N11trt_edgellm7metrics11BaseMetricsE" title="trt_edgellm::metrics::BaseMetrics"><span class="n"><span class="pre">BaseMetrics</span></span></a><a class="headerlink" href="#_CPPv4N11trt_edgellm7metrics27SpecDecodeGenerationMetricsE" title="Link to this definition">#</a><br /></dt>
+<span id="_CPPv3N11trt_edgellm7metrics27SpecDecodeGenerationMetricsE"></span><span id="_CPPv2N11trt_edgellm7metrics27SpecDecodeGenerationMetricsE"></span><span id="trt_edgellm::metrics::SpecDecodeGenerationMetrics"></span><span class="target" id="classtrt__edgellm_1_1metrics_1_1SpecDecodeGenerationMetrics"></span><span class="k"><span class="pre">class</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">SpecDecodeGenerationMetrics</span></span></span><span class="w"> </span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="k"><span class="pre">public</span></span><span class="w"> </span><span class="n"><span class="pre">trt_edgellm</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">metrics</span></span><span class="p"><span class="pre">::</span></span><a class="reference internal" href="#_CPPv4N11trt_edgellm7metrics11BaseMetricsE" title="trt_edgellm::metrics::BaseMetrics"><span class="n"><span class="pre">BaseMetrics</span></span></a><a class="headerlink" href="#_CPPv4N11trt_edgellm7metrics27SpecDecodeGenerationMetricsE" title="Link to this definition">#</a><br /></dt>
 <dd><p>Speculative decoding generation metrics. </p>
 <p>Tracks iterations and tokens generated during speculative decoding. </p>
 <div class="breathe-sectiondef docutils container">
@@ -1078,7 +1084,7 @@
 
 <dl class="cpp class">
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7metrics17OmniTalkerMetricsE">
-<span id="_CPPv3N11trt_edgellm7metrics17OmniTalkerMetricsE"></span><span id="_CPPv2N11trt_edgellm7metrics17OmniTalkerMetricsE"></span><span id="trt_edgellm::metrics::OmniTalkerMetrics"></span><span class="target" id="classtrt__edgellm_1_1metrics_1_1OmniTalkerMetrics"></span><span class="k"><span class="pre">class</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">OmniTalkerMetrics</span></span></span><span class="w"> </span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="k"><span class="pre">public</span></span><span class="w"> </span><a class="reference internal" href="../action/actionModelTypes.html#_CPPv411trt_edgellm" title="trt_edgellm"><span class="n"><span class="pre">trt_edgellm</span></span></a><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">metrics</span></span><span class="p"><span class="pre">::</span></span><a class="reference internal" href="#_CPPv4N11trt_edgellm7metrics11BaseMetricsE" title="trt_edgellm::metrics::BaseMetrics"><span class="n"><span class="pre">BaseMetrics</span></span></a><a class="headerlink" href="#_CPPv4N11trt_edgellm7metrics17OmniTalkerMetricsE" title="Link to this definition">#</a><br /></dt>
+<span id="_CPPv3N11trt_edgellm7metrics17OmniTalkerMetricsE"></span><span id="_CPPv2N11trt_edgellm7metrics17OmniTalkerMetricsE"></span><span id="trt_edgellm::metrics::OmniTalkerMetrics"></span><span class="target" id="classtrt__edgellm_1_1metrics_1_1OmniTalkerMetrics"></span><span class="k"><span class="pre">class</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">OmniTalkerMetrics</span></span></span><span class="w"> </span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="k"><span class="pre">public</span></span><span class="w"> </span><span class="n"><span class="pre">trt_edgellm</span></span><span class="p"><span class="pre">::</span></span><span class="n"><span class="pre">metrics</span></span><span class="p"><span class="pre">::</span></span><a class="reference internal" href="#_CPPv4N11trt_edgellm7metrics11BaseMetricsE" title="trt_edgellm::metrics::BaseMetrics"><span class="n"><span class="pre">BaseMetrics</span></span></a><a class="headerlink" href="#_CPPv4N11trt_edgellm7metrics17OmniTalkerMetricsE" title="Link to this definition">#</a><br /></dt>
 <dd><p>Omni Talker pipeline metrics. </p>
 <p>Tracks audio frame generation, RVQ codes, prefill time, and exit reason. </p>
 <div class="breathe-sectiondef docutils container">
@@ -1136,6 +1142,45 @@
 <dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7metrics17OmniTalkerMetrics11isStreamingE">
 <span id="_CPPv3N11trt_edgellm7metrics17OmniTalkerMetrics11isStreamingE"></span><span id="_CPPv2N11trt_edgellm7metrics17OmniTalkerMetrics11isStreamingE"></span><span id="trt_edgellm::metrics::OmniTalkerMetrics::isStreaming__b"></span><span class="target" id="classtrt__edgellm_1_1metrics_1_1OmniTalkerMetrics_1ac722ef8e898c7acb39fbf4f5708011c5"></span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">isStreaming</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="k"><span class="pre">false</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm7metrics17OmniTalkerMetrics11isStreamingE" title="Link to this definition">#</a><br /></dt>
 <dd><p>Whether streaming mode was used. </p>
+</dd></dl>
+
+</div>
+</dd></dl>
+
+<dl class="cpp struct">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7metrics17LLMRequestMetricsE">
+<span id="_CPPv3N11trt_edgellm7metrics17LLMRequestMetricsE"></span><span id="_CPPv2N11trt_edgellm7metrics17LLMRequestMetricsE"></span><span id="trt_edgellm::metrics::LLMRequestMetrics"></span><span class="target" id="structtrt__edgellm_1_1metrics_1_1LLMRequestMetrics"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">LLMRequestMetrics</span></span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm7metrics17LLMRequestMetricsE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Cumulative metrics for one sequence, using the runtime’s existing token counts. </p>
+<div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-members">Public Members</p>
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7metrics17LLMRequestMetrics21processedPromptTokensE">
+<span id="_CPPv3N11trt_edgellm7metrics17LLMRequestMetrics21processedPromptTokensE"></span><span id="_CPPv2N11trt_edgellm7metrics17LLMRequestMetrics21processedPromptTokensE"></span><span id="trt_edgellm::metrics::LLMRequestMetrics::processedPromptTokens__int32_t"></span><span class="target" id="structtrt__edgellm_1_1metrics_1_1LLMRequestMetrics_1a4a90c92094dbf8bdc8c305cf26744dca"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">processedPromptTokens</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="o"><span class="pre">-</span></span><span class="m"><span class="pre">1</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm7metrics17LLMRequestMetrics21processedPromptTokensE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Executed prompt tokens, excluding cached prefixes; -1 if unavailable. </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7metrics17LLMRequestMetrics15generatedTokensE">
+<span id="_CPPv3N11trt_edgellm7metrics17LLMRequestMetrics15generatedTokensE"></span><span id="_CPPv2N11trt_edgellm7metrics17LLMRequestMetrics15generatedTokensE"></span><span id="trt_edgellm::metrics::LLMRequestMetrics::generatedTokens__int32_t"></span><span class="target" id="structtrt__edgellm_1_1metrics_1_1LLMRequestMetrics_1afbcbaded4847d09cb9ee1001dcc168fc"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">generatedTokens</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="m"><span class="pre">0</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm7metrics17LLMRequestMetrics15generatedTokensE" title="Link to this definition">#</a><br /></dt>
+<dd><p>All output tokens, including any sampled during prefill. </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7metrics17LLMRequestMetrics13decodedTokensE">
+<span id="_CPPv3N11trt_edgellm7metrics17LLMRequestMetrics13decodedTokensE"></span><span id="_CPPv2N11trt_edgellm7metrics17LLMRequestMetrics13decodedTokensE"></span><span id="trt_edgellm::metrics::LLMRequestMetrics::decodedTokens__int32_t"></span><span class="target" id="structtrt__edgellm_1_1metrics_1_1LLMRequestMetrics_1a0cfb510633a35f47dc850925bf61550b"></span><span class="n"><span class="pre">int32_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">decodedTokens</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="m"><span class="pre">0</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm7metrics17LLMRequestMetrics13decodedTokensE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Output tokens sampled after prefill. </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7metrics17LLMRequestMetrics13promptSecondsE">
+<span id="_CPPv3N11trt_edgellm7metrics17LLMRequestMetrics13promptSecondsE"></span><span id="_CPPv2N11trt_edgellm7metrics17LLMRequestMetrics13promptSecondsE"></span><span id="trt_edgellm::metrics::LLMRequestMetrics::promptSeconds__double"></span><span class="target" id="structtrt__edgellm_1_1metrics_1_1LLMRequestMetrics_1aabae4fb123d375371a479afb5326110b"></span><span class="kt"><span class="pre">double</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">promptSeconds</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="m"><span class="pre">0.0</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm7metrics17LLMRequestMetrics13promptSecondsE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Wall time through prefill and first-token sampling. </p>
+</dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N11trt_edgellm7metrics17LLMRequestMetrics17generationSecondsE">
+<span id="_CPPv3N11trt_edgellm7metrics17LLMRequestMetrics17generationSecondsE"></span><span id="_CPPv2N11trt_edgellm7metrics17LLMRequestMetrics17generationSecondsE"></span><span id="trt_edgellm::metrics::LLMRequestMetrics::generationSeconds__double"></span><span class="target" id="structtrt__edgellm_1_1metrics_1_1LLMRequestMetrics_1ab0e58c729d194fef224e95d25c41a68c"></span><span class="kt"><span class="pre">double</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">generationSeconds</span></span></span><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="p"><span class="pre">{</span></span><span class="m"><span class="pre">0.0</span></span><span class="p"><span class="pre">}</span></span><a class="headerlink" href="#_CPPv4N11trt_edgellm7metrics17LLMRequestMetrics17generationSecondsE" title="Link to this definition">#</a><br /></dt>
+<dd><p>Wall time from prefill completion through the last generated token. </p>
 </dd></dl>
 
 </div>
@@ -1287,6 +1332,14 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7metrics17OmniTalkerMetrics11isStreamingE"><code class="docutils literal notranslate"><span class="pre">isStreaming</span></code></a></li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7metrics17LLMRequestMetricsE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::metrics::LLMRequestMetrics</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7metrics17LLMRequestMetrics21processedPromptTokensE"><code class="docutils literal notranslate"><span class="pre">processedPromptTokens</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7metrics17LLMRequestMetrics15generatedTokensE"><code class="docutils literal notranslate"><span class="pre">generatedTokens</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7metrics17LLMRequestMetrics13decodedTokensE"><code class="docutils literal notranslate"><span class="pre">decodedTokens</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7metrics17LLMRequestMetrics13promptSecondsE"><code class="docutils literal notranslate"><span class="pre">promptSeconds</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7metrics17LLMRequestMetrics17generationSecondsE"><code class="docutils literal notranslate"><span class="pre">generationSeconds</span></code></a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7metrics18OmniLatencyMetricsE"><code class="docutils literal notranslate"><span class="pre">trt_edgellm::metrics::OmniLatencyMetrics</span></code></a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7metrics18OmniLatencyMetrics22timeToFirstAudioCodeMsE"><code class="docutils literal notranslate"><span class="pre">timeToFirstAudioCodeMs</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N11trt_edgellm7metrics18OmniLatencyMetrics26timeToFirstPlayableAudioMsE"><code class="docutils literal notranslate"><span class="pre">timeToFirstPlayableAudioMs</span></code></a></li>
@@ -1315,8 +1368,8 @@
   
 
   <!-- Scripts loaded after <body> so the DOM is not blocked -->
-  <script defer src="../../_static/scripts/bootstrap.js?digest=0790524f97105ba85085"></script>
-<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=0790524f97105ba85085"></script>
+  <script defer src="../../_static/scripts/bootstrap.js?digest=18bd87630a240e9c25be"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=18bd87630a240e9c25be"></script>
 
 
   <footer class="bd-footer">
@@ -1388,9 +1441,9 @@
         <div class="footer-item">
 <div class="extra_footer">
   
-  <p>Last updated on September 29, 2026.</p>
+  <p>Last updated on October 28, 2026.</p>
   
-  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/e649dadcbbf049fa4caf2f09f3a3275ca56751db">e649dad</a>.</p>
+  <p>This page is generated by TensorRT-Edge-LLM commit <a href="https://github.com/NVIDIA/TensorRT-Edge-LLM/tree/1231d6415ce38d0b2f20b3308ac24e58ec4100a8">1231d64</a>.</p>
   
 </div></div>
       

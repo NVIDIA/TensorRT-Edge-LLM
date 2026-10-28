@@ -6,11 +6,6 @@ Guided Decoder
    :members:
    :undoc-members:
 
-.. doxygenclass:: trt_edgellm::rt::Tokenizer
-   :project: TensorRT Edge-LLM
-   :members:
-   :undoc-members:
-
 .. doxygenfunction:: trt_edgellm::rt::hasGuidedDecoding
    :project: TensorRT Edge-LLM
 
