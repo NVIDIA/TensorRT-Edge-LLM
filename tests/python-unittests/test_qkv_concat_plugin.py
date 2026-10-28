@@ -64,12 +64,17 @@ def test_qkv_concat_preserves_token_major_rows(num_tokens):
 
 
 @pytest.mark.parametrize("batch_size,seq_len", [(1, 1), (1, 62), (3, 7)])
-def test_qkv_concat_preserves_every_token_row(batch_size, seq_len):
+@pytest.mark.parametrize("ragged", [False, True])
+def test_qkv_concat_preserves_every_token_row(batch_size, seq_len, ragged):
     widths = (64, 16, 16)
-    input_specs = [(name, trt.float16, (-1, -1, width))
+    leading_shape = (batch_size * seq_len, ) if ragged else (batch_size,
+                                                             seq_len)
+    dynamic_shape = (-1, ) if ragged else (-1, -1)
+    input_specs = [(name, trt.float16, (*dynamic_shape, width))
                    for name, width in zip(("q", "k", "v"), widths)]
     profiles = {
-        name: ((1, 1, width), (2, 8, width), (3, 64, width))
+        name: (((1, width), (16, width), (192, width)) if ragged else
+               ((1, 1, width), (2, 8, width), (3, 64, width)))
         for name, width in zip(("q", "k", "v"), widths)
     }
 
@@ -84,12 +89,12 @@ def test_qkv_concat_preserves_every_token_row(batch_size, seq_len):
     generator = torch.Generator().manual_seed(1701 + batch_size + seq_len)
     inputs = {
         name:
-        torch.randn((batch_size, seq_len, width),
+        torch.randn((*leading_shape, width),
                     generator=generator,
                     dtype=torch.float16).to("cuda")
         for name, width in zip(("q", "k", "v"), widths)
     }
-    output = torch.empty((batch_size, seq_len, sum(widths)),
+    output = torch.empty((*leading_shape, sum(widths)),
                          dtype=torch.float16,
                          device="cuda")
     runner.execute({**inputs, "qkv": output})

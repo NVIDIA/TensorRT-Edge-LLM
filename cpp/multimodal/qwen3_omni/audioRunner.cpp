@@ -200,6 +200,12 @@ bool Qwen3OmniAudioRunner::validateAndFillConfig(std::string const& engineDir)
     {
         mConfig.mropeTheta = jsonConfig["rope_theta"].get<float>();
     }
+    // Audio-only prompts rely on this runner to fill the MRoPE table; without theta it stays uninitialized.
+    if (mConfig.mropeTheta <= 0.0F)
+    {
+        LOG_ERROR("Audio encoder config.json has no text_config.rope_theta; re-export the audio encoder.");
+        return false;
+    }
 
     // Pick mel feature-extractor family from the audio engine's top-level
     // ``model_type`` (export.py writes ``qwen3_asr_thinker`` /

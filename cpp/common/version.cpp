@@ -92,15 +92,16 @@ bool checkVersion(std::string const& modelVersion) noexcept
         if (major == 0 && minor < 9)
         {
             LOG_ERROR(
-                "ONNX model version %s is no longer supported. Minimum supported version is 0.9.0 "
-                "Please re-export your model with the latest tensorrt-edgellm.",
-                modelVersion.c_str());
+                "ONNX model version %s is not supported. The model version must exactly match runtime version %s. "
+                "Re-export your model and rebuild the engine with the matching tensorrt-edgellm version.",
+                modelVersion.c_str(), kRUNTIME_VERSION);
             return false;
         }
 
         if (modelVersion != std::string(kRUNTIME_VERSION))
         {
-            LOG_WARNING("Model version %s does not match runtime version %s. Consider re-exporting or re-building.",
+            LOG_WARNING(
+                "Model version %s must exactly match runtime version %s. Re-export the model and rebuild the engine.",
                 modelVersion.c_str(), kRUNTIME_VERSION);
             return false;
         }

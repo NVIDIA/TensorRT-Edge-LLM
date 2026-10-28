@@ -21,17 +21,18 @@ as the original model.onnx. The LoRA model will share the same data as the
 original model.
 
 Usage:
-    tensorrt-edgellm-insert-lora --onnx_dir /path/to/onnx_model
+    tensorrt-edgellm-insert-lora --onnx-dir /path/to/onnx_model
 """
 
 import argparse
 import sys
 import traceback
 
-from tensorrt_edgellm.lora.lora import insert_lora_and_save
+from tensorrt_edgellm.scripts import _dependency_errors
 
 
-def main() -> None:
+@_dependency_errors.optional_dependencies("tools")
+def main(argv=None, *, prog="tensorrt-edgellm-insert-lora") -> None:
     """
     Main function that parses command line arguments and inserts LoRA patterns.
 
@@ -39,15 +40,18 @@ def main() -> None:
     the insert_lora_and_save function with the provided parameters.
     """
     parser = argparse.ArgumentParser(
-        description="Insert LoRA patterns into ONNX models")
+        prog=prog, description="Insert LoRA patterns into ONNX models")
     parser.add_argument(
+        "--onnx-dir",
         "--onnx_dir",
         type=str,
         required=True,
         help="Directory containing the ONNX model (model.onnx and config.json)"
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+
+    from tensorrt_edgellm.lora.lora import insert_lora_and_save
 
     try:
         # Insert LoRA patterns
@@ -55,6 +59,8 @@ def main() -> None:
 
         print("LoRA insertion completed successfully!")
 
+    except ModuleNotFoundError:
+        raise
     except Exception as e:
         print(f"Error during LoRA insertion: {e}")
         print("Traceback:")

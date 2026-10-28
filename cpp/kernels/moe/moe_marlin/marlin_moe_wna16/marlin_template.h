@@ -473,11 +473,6 @@ __global__ void Marlin(int4 const* __restrict__ A, // fp16 input matrix of shape
             {
                 idx = idx < prob_m_top_k ? idx : 0;
                 c_scalar_t2 topk_weight_val = Cdtype::num2num2(Cdtype::float2num(topk_weights_ptr[idx]));
-                IF_CONSTEXPR(
-                    b_type == trt_edgellm::marlin_dtypes::kFE2M1f && s_type == trt_edgellm::marlin_dtypes::kFE4M3fn)
-                {
-                    topk_weight_val = __hmul2(topk_weight_val, global_scale);
-                }
                 sh_block_topk_weights[threadIdx.x] = topk_weight_val;
             }
         }
@@ -1637,6 +1632,15 @@ __global__ void Marlin(int4 const* __restrict__ A, // fp16 input matrix of shape
         // We first reorder in shared memory to guarantee the most efficient final
         // global write patterns
         auto write = [&](int idx, float c0, float c1, FragS& s, FragS& b_bias) {
+            // FP4 accumulates against weights stripped of the global scale, so the raw sum is
+            // ~1/global_scale times the output and can exceed the fp16 range before scaling.
+            IF_CONSTEXPR(
+                b_type == trt_edgellm::marlin_dtypes::kFE2M1f && s_type == trt_edgellm::marlin_dtypes::kFE4M3fn)
+            {
+                float2 const globalScale = Cdtype::num22float2(global_scale);
+                c0 *= globalScale.x;
+                c1 *= globalScale.y;
+            }
             c_scalar_t2 res = Cdtype::nums2num2(Cdtype::float2num(c0), Cdtype::float2num(c1));
 
             // For per-column quantization we finally apply the scale here (only for
@@ -1653,14 +1657,6 @@ __global__ void Marlin(int4 const* __restrict__ A, // fp16 input matrix of shape
                 res = __hmul2(res, tmp_scale);
             }
 
-            IF_CONSTEXPR(
-                b_type == trt_edgellm::marlin_dtypes::kFE2M1f && s_type == trt_edgellm::marlin_dtypes::kFE4M3fn)
-            {
-                if (!mul_topk_weights)
-                {
-                    res = __hmul2(res, global_scale);
-                }
-            }
             if (has_bias && last)
             {
                 c_scalar_t2 tmp_bias = b_bias[0];

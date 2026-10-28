@@ -21,6 +21,24 @@ from ...core import contracts
 from ...core.artifacts.tokenizer import find_token_id
 
 
+def update_llm_config(config: dict, root: dict, cfg, args) -> None:
+    """Add Gemma4 multimodal PLE metadata to the runtime config."""
+    del args
+    if cfg.hidden_size_per_layer_input <= 0:
+        return
+    has_multimodal_token = any(
+        type(config.get(key)) is int or type(root.get(key)) is int
+        for key in ("image_token_id", "audio_token_id"))
+    if not has_multimodal_token:
+        return
+    text = root.get("text_config") or {}
+    pad_token_id = text.get("pad_token_id", root.get("pad_token_id"))
+    if type(pad_token_id) is not int:
+        raise ValueError(
+            "Gemma4 multimodal PLE requires text_config.pad_token_id")
+    config["pad_token_id"] = pad_token_id
+
+
 def component_runtime_config(bundle, component: contracts.Component, args):
     """Return Gemma4 component runtime config."""
     root = bundle.root

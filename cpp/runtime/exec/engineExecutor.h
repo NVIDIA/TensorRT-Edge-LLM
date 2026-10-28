@@ -30,6 +30,7 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -42,6 +43,7 @@ namespace rt
 //! Validate cross-binding relations that TensorRT optimization profiles cannot express.
 bool validateRaggedInferenceDims(
     InferenceDims const& dims, int32_t profileIndex, bool allowSelectBeyondPhysicalTokens = false) noexcept;
+class RtxRuntimeCache;
 
 /*!
  * @brief Engine execution interface with a prepare/execute split.
@@ -70,12 +72,13 @@ public:
     //! base engine. The factory builds the TensorRegistry internally via
     //! `buildRegistryForLLM(cfg)`.
     static std::unique_ptr<EngineExecutor> createForLLM(std::filesystem::path const& enginePath,
-        LLMEngineConfig const& cfg, std::optional<int32_t> specDecodeBaseOutputHiddenDim = std::nullopt);
+        LLMEngineConfig const& cfg, std::optional<int32_t> specDecodeBaseOutputHiddenDim = std::nullopt,
+        std::shared_ptr<RtxRuntimeCache> runtimeCache = nullptr);
 
     //! Build an EngineExecutor for a speculative decoding draft engine. The
     //! factory chooses the draft binding registry from `bundle.specDecodeMode()`.
-    static std::unique_ptr<EngineExecutor> createForDraft(
-        std::filesystem::path const& enginePath, DeploymentConfig const& bundle);
+    static std::unique_ptr<EngineExecutor> createForDraft(std::filesystem::path const& enginePath,
+        DeploymentConfig const& bundle, std::shared_ptr<RtxRuntimeCache> runtimeCache = nullptr);
 
     EngineExecutor(EngineExecutor const&) = delete;
     EngineExecutor& operator=(EngineExecutor const&) = delete;

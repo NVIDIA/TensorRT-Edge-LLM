@@ -303,6 +303,82 @@ class MambaRunner:
         return out.reshape(original_shape), state
 
 
+def _spec_replay_output_shapes(*, context_profile: bool):
+    h, dim, n, g = 2, 64, 64, 1
+    token_profile = ((1, h, dim), (8, h, dim), (16, h, dim))
+    group_profile = ((1, g, n), (8, g, n), (16, g, n))
+    head_profile = ((1, h), (8, h), (16, h))
+    batch_profile = ((1, ), (2, ), (4, ))
+    phase = 1 if context_profile else 5
+    carrier_profile = (batch_profile if context_profile else
+                       ((0, ), (0, ), (0, )))
+    profiles = {
+        "x": token_profile,
+        "A": ((h, ), (h, ), (h, )),
+        "B": group_profile,
+        "C": group_profile,
+        "D": ((h, ), (h, ), (h, )),
+        "dt": head_profile,
+        "dt_bias": ((h, ), (h, ), (h, )),
+        "state": ((1, h, dim, n), (2, h, dim, n), (4, h, dim, n)),
+        "query_lengths": batch_profile,
+        "query_start_offsets": ((2, ), (3, ), (5, )),
+        "state_indices": batch_profile,
+        "execution_phase_marker": ((phase, ), (phase, ), (phase, )),
+        "context_sequence_count_carrier": carrier_profile,
+    }
+    runner = PluginRunner().build(
+        input_specs=[
+            ("x", trt.float16, (-1, h, dim)),
+            ("A", trt.float32, (h, )),
+            ("B", trt.float16, (-1, g, n)),
+            ("C", trt.float16, (-1, g, n)),
+            ("D", trt.float16, (h, )),
+            ("dt", trt.float16, (-1, h)),
+            ("dt_bias", trt.float16, (h, )),
+            ("state", trt.float16, (-1, h, dim, n)),
+            ("query_lengths", trt.int32, (-1, )),
+            ("query_start_offsets", trt.int32, (-1, )),
+            ("state_indices", trt.int32, (-1, )),
+            ("execution_phase_marker", trt.int32, (-1, )),
+            ("context_sequence_count_carrier", trt.int32, (-1, )),
+        ],
+        output_names=[
+            "output", "state_out", "replay_da", "replay_u", "replay_b",
+            "replay_dt"
+        ],
+        plugin_name=PLUGIN_NAME,
+        plugin_version=PLUGIN_VERSION,
+        plugin_fields=[
+            pf_int32("dim", dim),
+            pf_int32("dstate", n),
+            pf_int32("nheads", h),
+            pf_int32("ngroups", g),
+            pf_int32("use_spec_verify_state", 1),
+        ],
+        profiles=profiles,
+    )
+    for name, (_, opt_shape, _) in profiles.items():
+        assert runner.context.set_input_shape(name, opt_shape)
+    return tuple(
+        tuple(runner.context.get_tensor_shape(name))
+        for name in ("replay_da", "replay_u", "replay_b", "replay_dt"))
+
+
+def test_spec_replay_outputs_are_empty_for_context_profile():
+    assert _spec_replay_output_shapes(context_profile=True) == ((0, 2), (0, 2,
+                                                                         64),
+                                                                (0, 1,
+                                                                 64), (0, 2))
+
+
+def test_spec_replay_outputs_keep_token_rows_for_verify_profile():
+    assert _spec_replay_output_shapes(context_profile=False) == ((8, 2), (8, 2,
+                                                                          64),
+                                                                 (8, 1,
+                                                                  64), (8, 2))
+
+
 def _rand_inputs(cfg: MambaConfig, b, s, gen, seq_dim=True):
     """Stable random Mamba inputs (A<0 so the recurrence decays)."""
     h, dim, n, g = cfg.nheads, cfg.head_dim, cfg.dstate, cfg.ngroups

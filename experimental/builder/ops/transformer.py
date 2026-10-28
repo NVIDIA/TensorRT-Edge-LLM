@@ -37,16 +37,16 @@ _INT4_PLUGIN_TYPES = frozenset((
 
 def pack_qkv(query: Tensor, key: Tensor, value: Tensor,
              value_projection: Linear) -> Tensor:
-    """Pack attention projections while preserving V2 INT4 value storage."""
+    """Pack attention projections while preserving plugin value storage."""
+    quant_type = value_projection.quant_type()
     needs_kv_boundary = (
         value_projection.ctx.backend == "edgellm"
-        and value_projection.ctx.options.int4_gemm_plugin_version == 2
-        and value_projection.quant_type() in _INT4_PLUGIN_TYPES)
+        and (quant_type == quantization.QUANT_NVFP4_A16 or
+             (value_projection.ctx.options.int4_gemm_plugin_version == 2
+              and quant_type in _INT4_PLUGIN_TYPES)))
     if needs_kv_boundary:
-        # A direct three-way concat can let the optimizer reuse the value
-        # plugin's transient storage before AttentionPlugin consumes every
-        # prefill row. Materializing K/V first preserves the dependency without
-        # changing the engine I/O contract.
+        # A direct three-way concat can let the optimizer reuse transient value
+        # storage before AttentionPlugin consumes every prefill row.
         return F.concatenate((query, F.concatenate((key, value), 1)), 1)
     return F.concatenate((query, key, value), 1)
 

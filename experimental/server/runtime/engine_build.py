@@ -25,7 +25,7 @@ import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass, fields, replace
 from pathlib import Path
-from typing import Iterator, List, Optional
+from typing import Callable, Iterator, List, Optional
 
 from . import engine_layout
 
@@ -409,14 +409,18 @@ def prune_engine_cache(cache_dir: str = "",
     return removed
 
 
-def prepare_model(model: str,
-                  cache_dir: str = "",
-                  options: Optional[BuildOptions] = None,
-                  *,
-                  max_cache_size_bytes: int = _DEFAULT_ENGINE_CACHE_MAX_BYTES,
-                  clear_cache: bool = False) -> PreparedModel:
+def prepare_model(
+        model: str,
+        cache_dir: str = "",
+        options: Optional[BuildOptions] = None,
+        *,
+        max_cache_size_bytes: int = _DEFAULT_ENGINE_CACHE_MAX_BYTES,
+        clear_cache: bool = False,
+        on_progress: Optional[Callable[[str], None]] = None) -> PreparedModel:
     """Resolve a model and build every component on a cache miss."""
     options = options or BuildOptions()
+    if on_progress is not None:
+        on_progress("Resolving checkpoint")
     model_dir = resolve_model_dir(model, cache_dir)
     draft_model_dir = ""
     if options.draft_model_dir:
@@ -427,10 +431,17 @@ def prepare_model(model: str,
         clear_engine_cache(cache_dir)
     bundle_dir = bundle_cache_path(model_dir, cache_dir, options)
     built = False
+    if on_progress is not None:
+        on_progress("Checking engine cache")
     with _bundle_lock(bundle_dir):
         if _is_ready(model_dir, bundle_dir, options):
             os.utime(bundle_dir)
+            if on_progress is not None:
+                on_progress("Reusing cached engine")
         else:
+            if on_progress is not None:
+                on_progress(
+                    "Building engine (first run can take several minutes)")
             parent = os.path.dirname(bundle_dir)
             os.makedirs(parent, exist_ok=True)
             staging_dir = tempfile.mkdtemp(prefix=".building-", dir=parent)
@@ -441,7 +452,8 @@ def prepare_model(model: str,
                 )
                 from experimental.builder.cli import main as builder_main
 
-                builder_main(build_options.to_argv(model_dir, staging_dir))
+                builder_main(build_options.to_argv(model_dir, staging_dir),
+                             on_progress=on_progress)
                 if not _is_ready(model_dir, staging_dir, build_options):
                     raise RuntimeError(
                         "the checkpoint-native builder did not produce a "
@@ -451,6 +463,8 @@ def prepare_model(model: str,
                 os.chmod(staging_dir, stat.S_IMODE(os.stat(parent).st_mode))
                 os.replace(staging_dir, bundle_dir)
                 built = True
+                if on_progress is not None:
+                    on_progress("Engine build complete; saved to cache")
             finally:
                 shutil.rmtree(staging_dir, ignore_errors=True)
     prune_engine_cache(cache_dir, max_cache_size_bytes, keep=bundle_dir)

@@ -23,27 +23,40 @@ else()
   set(_EDGELLM_PROJECT_LANGUAGES C CXX CUDA)
 endif()
 
+set(_EDGELLM_CUDA_ARCHITECTURES_PRESET FALSE)
+if(DEFINED CMAKE_CUDA_ARCHITECTURES)
+  set(_EDGELLM_CUDA_ARCHITECTURES_PRESET TRUE)
+endif()
+
 project(
   tensorrt_edgellm_sdk
-  VERSION 0.11.0
+  VERSION 0.11.1
   LANGUAGES ${_EDGELLM_PROJECT_LANGUAGES})
 
 if(EDGELLM_PYTHON_ONLY_WHEEL)
   return()
 endif()
 
-# Specify the C++ standard and flags
+# Specify the C++ standard and platform-specific warning flags.
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 set(CMAKE_CUDA_STANDARD 17)
 
-set(CMAKE_CXX_FLAGS
-    "${CMAKE_CXX_FLAGS} -Wno-deprecated-declarations -Wall -Werror -Wno-error=unused-parameter"
-)
-set(CMAKE_CUDA_FLAGS
-    "${CMAKE_CUDA_FLAGS} -Wno-deprecated-declarations -Xcompiler=-Werror,-Wno-error=unused-parameter"
-)
-set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--no-undefined")
+if(MSVC)
+  add_compile_definitions(NOMINMAX _CRT_SECURE_NO_WARNINGS)
+  add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/W4>)
+  add_compile_options($<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:preprocessor>)
+  add_compile_options($<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/W4>)
+else()
+  set(CMAKE_CXX_FLAGS
+      "${CMAKE_CXX_FLAGS} -Wno-deprecated-declarations -Wall -Werror -Wno-error=unused-parameter"
+  )
+  set(CMAKE_CUDA_FLAGS
+      "${CMAKE_CUDA_FLAGS} -Wno-deprecated-declarations -Xcompiler=-Werror,-Wno-error=unused-parameter"
+  )
+  set(CMAKE_SHARED_LINKER_FLAGS
+      "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--no-undefined")
+endif()
 
 function(edgellm_apply_qnx_warning_suppressions target)
   if(QNX_BUILD)
@@ -114,16 +127,34 @@ if(DEFINED CUDA_VERSION)
       "CUDA_VERSION can cause ambiguity with CUDA Macros. Please use -DCUDA_CTK_VERSION to specify the CUDA Toolkit version."
   )
 endif()
-set_ifndef(CUDA_CTK_VERSION 12.8)
-set_ifndef(CUDA_DIR /usr/local/cuda-${CUDA_CTK_VERSION})
+if(WIN32)
+  find_package(CUDAToolkit REQUIRED)
+  set_ifndef(CUDA_CTK_VERSION ${CUDAToolkit_VERSION})
+  get_filename_component(_cuda_root "${CUDAToolkit_BIN_DIR}" DIRECTORY)
+  file(TO_CMAKE_PATH "${_cuda_root}" _cuda_root)
+  set_ifndef(CUDA_DIR "${_cuda_root}")
+  unset(_cuda_root)
+else()
+  set_ifndef(CUDA_CTK_VERSION 12.8)
+  set_ifndef(CUDA_DIR /usr/local/cuda-${CUDA_CTK_VERSION})
+endif()
 
-# Wheel payloads are single-SM builds; preserve the caller's architecture.
-if(NOT DEFINED EDGELLM_WHEEL_PAYLOAD_DIR AND NOT AARCH64_BUILD)
+# Wheel payloads are single-SM builds. Windows builds may also select one
+# architecture explicitly; other x86 builds use the supported architecture set.
+if(NOT DEFINED EDGELLM_WHEEL_PAYLOAD_DIR
+   AND NOT AARCH64_BUILD
+   AND (NOT WIN32 OR NOT _EDGELLM_CUDA_ARCHITECTURES_PRESET))
   set(CMAKE_CUDA_ARCHITECTURES 80;86;89;90)
   if(CUDA_CTK_VERSION VERSION_GREATER_EQUAL 12.8)
     list(APPEND CMAKE_CUDA_ARCHITECTURES 100a 120)
   endif()
+  if(WIN32)
+    set(CMAKE_CUDA_ARCHITECTURES
+        "${CMAKE_CUDA_ARCHITECTURES}"
+        CACHE STRING "CUDA architectures" FORCE)
+  endif()
 endif()
+unset(_EDGELLM_CUDA_ARCHITECTURES_PRESET)
 
 # Orin/JetPack cuda.h may lack cudaLibrary_t; GDN runner uses compat typedef
 # when this is set.
@@ -131,33 +162,45 @@ if(DEFINED EMBEDDED_TARGET AND EMBEDDED_TARGET STREQUAL "jetson-orin")
   add_compile_definitions(TRT_EDGELLM_CUDA_LIBRARY_T_COMPAT)
 endif()
 
-find_path(
-  CUDA_RUNTIME_API_INCLUDE_DIR cuda_runtime_api.h
-  HINTS ${CUDA_DIR}
-  PATH_SUFFIXES include)
+if(WIN32)
+  list(GET CUDAToolkit_INCLUDE_DIRS 0 CUDA_RUNTIME_API_INCLUDE_DIR)
+  set(CUDART_LIB CUDA::cudart)
+else()
+  find_path(
+    CUDA_RUNTIME_API_INCLUDE_DIR cuda_runtime_api.h
+    HINTS ${CUDA_DIR}
+    PATH_SUFFIXES include)
 
-find_library(
-  CUDART_LIB cudart
-  HINTS ${CUDA_DIR} ${CUDA_TARGET_DIR}
-  PATH_SUFFIXES lib lib64)
-
-find_library(
-  CUDA_DRIVER_LIB cuda
-  HINTS ${CUDA_DIR} ${CUDA_TARGET_DIR}
-  PATH_SUFFIXES lib lib64 lib/stubs)
-set(CUDA_DRIVER_LINK_LIB "${CUDA_DRIVER_LIB}")
-if(AARCH64_BUILD)
-  # Cross builds link against the CUDA driver stub via -L.../lib/stubs -lcuda.
-  # Do not pass the absolute stub .so to target_link_libraries(), or CMake will
-  # bake the stub directory into build RUNPATH and target execution can load it.
-  set(CUDA_DRIVER_LINK_LIB cuda)
+  find_library(
+    CUDART_LIB cudart
+    HINTS ${CUDA_DIR} ${CUDA_TARGET_DIR}
+    PATH_SUFFIXES lib lib64)
 endif()
 
-find_path(
-  CURAND_KERNEL_INCLUDE_DIR
-  NAMES curand_kernel.h
-  HINTS ${CUDA_DIR} ${CUDA_TARGET_DIR}
-  PATH_SUFFIXES include)
+if(WIN32)
+  set(CURAND_KERNEL_INCLUDE_DIR "${CUDAToolkit_INCLUDE_DIRS}")
+  set(CUDA_DRIVER_LIB CUDA::cuda_driver)
+  set(CUDA_DRIVER_LINK_LIB CUDA::cuda_driver)
+else()
+  find_library(
+    CUDA_DRIVER_LIB cuda
+    HINTS ${CUDA_DIR} ${CUDA_TARGET_DIR}
+    PATH_SUFFIXES lib lib64 lib/stubs)
+  set(CUDA_DRIVER_LINK_LIB "${CUDA_DRIVER_LIB}")
+  if(AARCH64_BUILD)
+    # Cross builds link against the CUDA driver stub via -L.../lib/stubs -lcuda.
+    # Do not pass the absolute stub .so to target_link_libraries(), or CMake
+    # will bake the stub directory into build RUNPATH and target execution can
+    # load it.
+    set(CUDA_DRIVER_LINK_LIB cuda)
+  endif()
+
+  find_path(
+    CURAND_KERNEL_INCLUDE_DIR
+    NAMES curand_kernel.h
+    HINTS ${CUDA_DIR} ${CUDA_TARGET_DIR}
+    PATH_SUFFIXES include)
+endif()
 
 set(CUDA_INCLUDE_DIR ${CUDA_RUNTIME_API_INCLUDE_DIR}
                      ${CURAND_KERNEL_INCLUDE_DIR} ${CUDA_PLATFORM_INCLUDE_DIR})
@@ -215,8 +258,10 @@ target_link_libraries(
 # Workaround for aarch64 cross compilation where libvninfer.so links to
 # libnvdla_compilers. The libnvinfer dependencies shall be resolved at execution
 # time on an embedded board.
-target_link_options(commonLibraryExt INTERFACE
-                    "-Wl,--unresolved-symbols=ignore-in-shared-libs")
+if(NOT MSVC)
+  target_link_options(commonLibraryExt INTERFACE
+                      "-Wl,--unresolved-symbols=ignore-in-shared-libs")
+endif()
 
 # CuTe DSL unified kernel option — declare here so it is always defined before
 # any subdirectory or include references it.

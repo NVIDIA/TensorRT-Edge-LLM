@@ -21,7 +21,7 @@
 
 #include "gptqMarlinRepack.h"
 #include "kernels/weightsTransform/common/checkpointSourceBatch.h"
-#include "marlinRepackIndex.cuh"
+#include "kernels/weightsTransform/common/marlinRepackIndex.cuh"
 
 namespace trt_edgellm
 {

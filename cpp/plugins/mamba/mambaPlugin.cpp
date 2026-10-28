@@ -192,7 +192,7 @@ int32_t MambaPlugin::getOutputDataTypes(DataType* outputTypes, [[maybe_unused]] 
 
 int32_t MambaPlugin::getOutputShapes(DimsExprs const* inputs, [[maybe_unused]] int32_t nbInputs,
     DimsExprs const* /* shapeInputs */, int32_t /* nbShapeInputs */, DimsExprs* outputs,
-    [[maybe_unused]] int32_t nbOutputs, IExprBuilder& /* exprBuilder */) noexcept
+    [[maybe_unused]] int32_t nbOutputs, IExprBuilder& exprBuilder) noexcept
 {
     // Output: same shape as x [T_exec, nheads, dim].
     outputs[kOUT_OUTPUT_IDX].nbDims = inputs[kIN_X_IDX].nbDims;
@@ -209,22 +209,27 @@ int32_t MambaPlugin::getOutputShapes(DimsExprs const* inputs, [[maybe_unused]] i
     // Spec-verify replay stash follows the token-major activation extent.
     if (mUseSpecVerifyState)
     {
+        auto const* zero = exprBuilder.constant(0);
+        auto const* verifyProfile
+            = exprBuilder.operation(DimensionOperation::kEQUAL, *inputs[kIN_CONTEXT_SEQUENCE_COUNT_IDX].d[0], *zero);
+        auto const* replayRows
+            = exprBuilder.operation(DimensionOperation::kPROD, *inputs[kIN_X_IDX].d[0], *verifyProfile);
         outputs[kOUT_REPLAY_DA_IDX].nbDims = 2;
-        outputs[kOUT_REPLAY_DA_IDX].d[0] = inputs[kIN_X_IDX].d[0];
+        outputs[kOUT_REPLAY_DA_IDX].d[0] = replayRows;
         outputs[kOUT_REPLAY_DA_IDX].d[1] = inputs[kIN_STATE_IDX].d[1];
 
         outputs[kOUT_REPLAY_U_IDX].nbDims = 3;
-        outputs[kOUT_REPLAY_U_IDX].d[0] = inputs[kIN_X_IDX].d[0];
+        outputs[kOUT_REPLAY_U_IDX].d[0] = replayRows;
         outputs[kOUT_REPLAY_U_IDX].d[1] = inputs[kIN_STATE_IDX].d[1];
         outputs[kOUT_REPLAY_U_IDX].d[2] = inputs[kIN_STATE_IDX].d[2];
 
         outputs[kOUT_REPLAY_B_IDX].nbDims = 3;
-        outputs[kOUT_REPLAY_B_IDX].d[0] = inputs[kIN_X_IDX].d[0];
+        outputs[kOUT_REPLAY_B_IDX].d[0] = replayRows;
         outputs[kOUT_REPLAY_B_IDX].d[1] = inputs[kIN_B_IDX].d[1];
         outputs[kOUT_REPLAY_B_IDX].d[2] = inputs[kIN_STATE_IDX].d[3];
 
         outputs[kOUT_REPLAY_DT_IDX].nbDims = 2;
-        outputs[kOUT_REPLAY_DT_IDX].d[0] = inputs[kIN_X_IDX].d[0];
+        outputs[kOUT_REPLAY_DT_IDX].d[0] = replayRows;
         outputs[kOUT_REPLAY_DT_IDX].d[1] = inputs[kIN_STATE_IDX].d[1];
     }
     return 0;

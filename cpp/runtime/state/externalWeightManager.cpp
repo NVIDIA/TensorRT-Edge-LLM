@@ -30,15 +30,17 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
-#include <dlfcn.h>
 #include <fstream>
 #include <iterator>
 #include <limits>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#if !defined(_WIN32)
 #include <sys/stat.h>
+#endif
 #include <unordered_map>
 #include <utility>
 
@@ -82,7 +84,8 @@ bool isPluginResourceBinding(Json const& binding)
 bool registerPluginWeightResource(int32_t deviceId, int32_t resourceId, void const* weight, void const* scale,
     int32_t outFeatures, int32_t inFeatures, int32_t scaleCols)
 {
-    auto registerResource = reinterpret_cast<RegisterPluginWeightFn>(dlsym(RTLD_DEFAULT, kRegisterPluginWeightSymbol));
+    auto registerResource
+        = reinterpret_cast<RegisterPluginWeightFn>(getLoadedEdgellmPluginSymbol(kRegisterPluginWeightSymbol));
     ELLM_CHECK(registerResource != nullptr, std::string{kRegisterPluginWeightSymbol} + " was not found in the plugin");
     return registerResource(deviceId, resourceId, weight, scale, outFeatures, inFeatures, scaleCols);
 }
@@ -90,7 +93,7 @@ bool registerPluginWeightResource(int32_t deviceId, int32_t resourceId, void con
 bool unregisterPluginWeightResource(int32_t deviceId, int32_t resourceId) noexcept
 {
     auto unregisterResource
-        = reinterpret_cast<UnregisterPluginWeightFn>(dlsym(RTLD_DEFAULT, kUnregisterPluginWeightSymbol));
+        = reinterpret_cast<UnregisterPluginWeightFn>(getLoadedEdgellmPluginSymbol(kUnregisterPluginWeightSymbol));
     return unregisterResource != nullptr && unregisterResource(deviceId, resourceId);
 }
 
@@ -221,6 +224,49 @@ std::filesystem::path normalizedPath(std::filesystem::path const& path)
     return std::filesystem::absolute(path).lexically_normal();
 }
 
+struct FileIdentity
+{
+    uint64_t bytes;
+    uint64_t mtimeNs;
+};
+
+//! Return file metadata compatible with Python os.stat(), or nullopt when the path is not a regular file.
+std::optional<FileIdentity> getFileIdentity(std::filesystem::path const& path)
+{
+#if defined(_WIN32)
+    WIN32_FILE_ATTRIBUTE_DATA metadata{};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &metadata)
+        || (metadata.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0)
+    {
+        return std::nullopt;
+    }
+
+    ULARGE_INTEGER fileSize{};
+    fileSize.LowPart = metadata.nFileSizeLow;
+    fileSize.HighPart = metadata.nFileSizeHigh;
+
+    ULARGE_INTEGER modified{};
+    modified.LowPart = metadata.ftLastWriteTime.dwLowDateTime;
+    modified.HighPart = metadata.ftLastWriteTime.dwHighDateTime;
+    constexpr uint64_t kWINDOWS_TO_UNIX_EPOCH_TICKS = 116444736000000000ULL;
+    if (modified.QuadPart < kWINDOWS_TO_UNIX_EPOCH_TICKS
+        || modified.QuadPart - kWINDOWS_TO_UNIX_EPOCH_TICKS > std::numeric_limits<uint64_t>::max() / 100ULL)
+    {
+        return std::nullopt;
+    }
+    return FileIdentity{fileSize.QuadPart, (modified.QuadPart - kWINDOWS_TO_UNIX_EPOCH_TICKS) * 100ULL};
+#else
+    struct stat metadata{};
+    if (::stat(path.c_str(), &metadata) != 0 || !S_ISREG(metadata.st_mode))
+    {
+        return std::nullopt;
+    }
+    return FileIdentity{static_cast<uint64_t>(metadata.st_size),
+        static_cast<uint64_t>(metadata.st_mtim.tv_sec) * 1000000000ULL
+            + static_cast<uint64_t>(metadata.st_mtim.tv_nsec)};
+#endif
+}
+
 bool checkpointFilesUnchanged(std::filesystem::path const& directory, Json const& identity)
 {
     if (!identity.contains("build_source") || !identity["build_source"].is_string()
@@ -245,15 +291,9 @@ bool checkpointFilesUnchanged(std::filesystem::path const& directory, Json const
         ELLM_CHECK(expected.is_object() && expected.contains("bytes") && expected.contains("mtime_ns"),
             "Malformed checkpoint identity file: " + filename);
 
-        struct stat metadata{};
-        if (::stat((directory / relative).c_str(), &metadata) != 0 || !S_ISREG(metadata.st_mode))
-        {
-            return false;
-        }
-        uint64_t const bytes = static_cast<uint64_t>(metadata.st_size);
-        uint64_t const mtimeNs = static_cast<uint64_t>(metadata.st_mtim.tv_sec) * 1000000000ULL
-            + static_cast<uint64_t>(metadata.st_mtim.tv_nsec);
-        if (bytes != expected["bytes"].get<uint64_t>() || mtimeNs != expected["mtime_ns"].get<uint64_t>())
+        std::optional<FileIdentity> const actual = getFileIdentity(directory / relative);
+        if (!actual || actual->bytes != expected["bytes"].get<uint64_t>()
+            || actual->mtimeNs != expected["mtime_ns"].get<uint64_t>())
         {
             return false;
         }
@@ -468,8 +508,13 @@ void ExternalWeightManager::releasePluginResources() noexcept
 
 void ExternalWeightManager::load(std::filesystem::path const& engineDir, std::filesystem::path const& configPath,
     cudaStream_t stream, std::filesystem::path const& componentCheckpointDir,
-    std::filesystem::path const& targetCheckpointDir, std::optional<int32_t> tpRank, std::optional<int32_t> tpSize)
+    std::filesystem::path const& targetCheckpointDir, std::optional<int32_t> tpRank, std::optional<int32_t> tpSize,
+    std::function<void()> const& checkCancelled)
 {
+    if (checkCancelled)
+    {
+        checkCancelled();
+    }
     NVTX_SCOPED_RANGE(nvtx_model_weight_preparation, "MODEL_WEIGHT_PREPARATION", nvtx_colors::YELLOW);
     ELLM_CHECK(!mLoaded, "ExternalWeightManager::load called more than once");
     Json const config = readConfig(configPath);
@@ -691,6 +736,10 @@ void ExternalWeightManager::load(std::filesystem::path const& engineDir, std::fi
         size_t const arenaAlignmentPadding = hasPackedNvfp4Weights ? kPackedNvfp4ArenaAlignment - 1 : 0;
         ELLM_CHECK(arenaAlignmentPadding <= std::numeric_limits<size_t>::max() - storageBytes,
             "Aligned weight arena size overflow");
+        if (checkCancelled)
+        {
+            checkCancelled();
+        }
         size_t const allocationBytes = storageBytes + arenaAlignmentPadding;
         mWeightStorage = Tensor(Coords{static_cast<int64_t>(allocationBytes)}, DeviceType::kGPU,
             nvinfer1::DataType::kUINT8, "ExternalWeightManager::weightArena");
@@ -722,6 +771,11 @@ void ExternalWeightManager::load(std::filesystem::path const& engineDir, std::fi
                 if (!layouts[bindingIndex].materialize || checkpointWeightPhase(binding) != phase)
                 {
                     continue;
+                }
+                // The previous binding has released its checkpoint source registrations.
+                if (checkCancelled)
+                {
+                    checkCancelled();
                 }
                 CheckpointReader& checkpoint = checkpointFor(binding);
                 std::vector<std::string> keys;
@@ -867,6 +921,11 @@ void ExternalWeightManager::load(std::filesystem::path const& engineDir, std::fi
                 mWeights.push_back(std::move(tensor));
             }
         }
+    }
+
+    if (checkCancelled)
+    {
+        checkCancelled();
     }
 
     // This is the startup/inference boundary. Source-layout tensors and

@@ -49,7 +49,7 @@ from the engine's `config.json`.
 The experimental builder emits the complete runtime bundle in one command:
 
 ```bash
-tensorrt-edgellm-build \
+trtedge build \
     --model-dir "$CHECKPOINT_DIR" \
     --engine-dir "$ENGINE_DIR" \
     --max-time-steps 8192
@@ -75,7 +75,7 @@ python -m experimental.nemotron3_5_asr.server "$ENGINE_DIR" \
 Export on an x86 host; model execution is not required during export:
 
 ```bash
-tensorrt-edgellm-export "nvidia/nemotron-3.5-asr-streaming-0.6b" "$ONNX_DIR"
+trtedge export "nvidia/nemotron-3.5-asr-streaming-0.6b" "$ONNX_DIR"
 ```
 
 Produces `$ONNX_DIR/audio/` (encoder ONNX + `config.json` + tokenizer) and
@@ -88,9 +88,9 @@ Produces `$ONNX_DIR/audio/` (encoder ONNX + `config.json` + tokenizer) and
 ```bash
 export EDGELLM_PLUGIN_PATH="$BUILD_DIR/libNvInfer_edgellm_plugin.so"
 "$BUILD_DIR/examples/multimodal/audio_build" \
-    --onnxDir "$ONNX_DIR/audio"        --engineDir "$ENGINE_DIR" --maxTimeSteps 8192
+    --onnx-dir "$ONNX_DIR/audio"        --engine-dir "$ENGINE_DIR" --max-time-steps 8192
 "$BUILD_DIR/examples/multimodal/audio_build" \
-    --onnxDir "$ONNX_DIR/rnnt_decoder" --engineDir "$ENGINE_DIR"
+    --onnx-dir "$ONNX_DIR/rnnt_decoder" --engine-dir "$ENGINE_DIR"
 ```
 
 Then assemble one self-contained runtime dir:
@@ -135,8 +135,8 @@ bundle:
 
 ```bash
 "$BUILD_DIR/experimental_models/nemotron3_5_asr/examples/nemotron_asr_inference" \
-    --engineDir "$ASR_BUNDLE" --audioFile "$AUDIO"  # wav / mp3 / flac, mono
-# --promptId <N> overrides the language prompt (default = automatic detection).
+    --engine-dir "$ASR_BUNDLE" --audio-file "$AUDIO"  # wav / mp3 / flac, mono
+# --prompt-id <N> overrides the language prompt (default = automatic detection).
 # --benchmark reports the mel / encoder / decode phase breakdown and RTF.
 ```
 

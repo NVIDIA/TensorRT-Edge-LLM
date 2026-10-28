@@ -593,7 +593,7 @@ def test_diffusion_gemma_nvfp4_excludes_decoder_attention_from_quant(tmp_path):
     assert module_quant_type("self_conditioning.gate_proj", cfg) == "fp16"
     assert module_quant_type("self_conditioning.up_proj", cfg) == "fp16"
     assert module_quant_type("self_conditioning.down_proj", cfg) == "fp16"
-    assert module_quant_type("layers.0.moe_block.experts._experts.0.gate_proj",
+    assert module_quant_type("layers.0.moe_block.experts.0.gate_proj",
                              cfg) == "nvfp4"
     assert module_quant_type("", cfg) == "nvfp4"
 

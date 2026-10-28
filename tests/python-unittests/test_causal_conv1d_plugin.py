@@ -235,6 +235,60 @@ class ConvRunner:
                 else intermediate.reshape(batch, seq, dim, self.cfg.width))
 
 
+def _spec_state_output_shape(*, context_profile: bool):
+    dim, width = 16, 4
+    batch_profile = ((1, ), (2, ), (4, ))
+    phase = 1 if context_profile else 5
+    carrier_profile = (batch_profile if context_profile else
+                       ((0, ), (0, ), (0, )))
+    profiles = {
+        "x": ((1, dim), (8, dim), (16, dim)),
+        "weight": ((dim, 1, width), (dim, 1, width), (dim, 1, width)),
+        "bias": ((dim, ), (dim, ), (dim, )),
+        "conv_state": ((1, dim, width), (2, dim, width), (4, dim, width)),
+        "query_lengths": batch_profile,
+        "query_start_offsets": ((2, ), (3, ), (5, )),
+        "state_indices": batch_profile,
+        "execution_phase_marker": ((phase, ), (phase, ), (phase, )),
+        "context_sequence_count_carrier": carrier_profile,
+    }
+    runner = PluginRunner().build(
+        input_specs=[
+            ("x", trt.float16, (-1, dim)),
+            ("weight", trt.float16, (dim, 1, width)),
+            ("bias", trt.float16, (dim, )),
+            ("conv_state", trt.float16, (-1, dim, width)),
+            ("query_lengths", trt.int32, (-1, )),
+            ("query_start_offsets", trt.int32, (-1, )),
+            ("state_indices", trt.int32, (-1, )),
+            ("execution_phase_marker", trt.int32, (-1, )),
+            ("context_sequence_count_carrier", trt.int32, (-1, )),
+        ],
+        output_names=["output", "conv_state_out", "intermediate_states"],
+        plugin_name="causal_conv1d",
+        plugin_version="1",
+        plugin_fields=[
+            pf_int32("stride", 1),
+            pf_int32("padding", width - 1),
+            pf_int32("dilation", 1),
+            pf_int32("groups", dim),
+            pf_int32("use_mtp", 1),
+        ],
+        profiles=profiles,
+    )
+    for name, (_, opt_shape, _) in profiles.items():
+        assert runner.context.set_input_shape(name, opt_shape)
+    return tuple(runner.context.get_tensor_shape("intermediate_states"))
+
+
+def test_spec_state_output_is_empty_for_context_profile():
+    assert _spec_state_output_shape(context_profile=True) == (0, 16, 4)
+
+
+def test_spec_state_output_keeps_token_rows_for_verify_profile():
+    assert _spec_state_output_shape(context_profile=False) == (8, 16, 4)
+
+
 def _rand(cfg, b, s, gen):
     """Create entry-padded data; the runner flattens it to token-major ABI."""
     dim, w = cfg.dim, cfg.width

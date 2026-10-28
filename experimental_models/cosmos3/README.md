@@ -35,7 +35,7 @@ tensorrt-edgellm-export "$HF_CHECKPOINT" "$ONNX_DIR" --dtype float16 --task poli
 #    engine directory is self-contained (like llm_build). Pass --component to
 #    build a single one.
 "$BUILD_DIR/experimental_models/cosmos3/examples/cosmos3_policy_build" \
-    --onnxDir "$ONNX_DIR" --engineDir "$ENGINE_DIR"
+    --onnx-dir "$ONNX_DIR" --engine-dir "$ENGINE_DIR"
 
 # 3. Run policy inference.
 export EDGELLM_PLUGIN_PATH="$BUILD_DIR/libNvInfer_edgellm_plugin.so"

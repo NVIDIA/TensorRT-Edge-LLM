@@ -55,35 +55,44 @@ struct ViTBuildArgs
 
 void printUsage(char const* programName)
 {
-    std::cerr << "Usage: " << programName
-              << " [--help] <--onnxDir str> <--engineDir str> [--debug]"
-                 "[--minImageTokens int] [--maxImageTokens int] [--maxImageTokensPerImage int] [--profilingDetailed]"
-              << std::endl;
-    std::cerr << "Options:" << std::endl;
-    std::cerr << "  --help               Display this help message" << std::endl;
     std::cerr
-        << "  --onnxDir            Provide the directory containing the input onnx file for visual encoder. Required. "
+        << "Usage: " << programName
+        << " [--help] <--onnx-dir str> <--engine-dir str> [--debug]"
+           "[--min-image-tokens int] [--max-image-tokens int] [--max-image-tokens-per-image int] [--profiling-detailed]"
         << std::endl;
-    std::cerr << "  --engineDir          Base output directory for multimodal engines. Required." << std::endl;
-    std::cerr << "                       Note: Visual engine will be saved to <engineDir>/visual/" << std::endl;
-    std::cerr << "  --debug              Use debug mode, which outputs tensors." << std::endl;
-    std::cerr << "  --minImageTokens     Minimum image tokens. Default = 4" << std::endl;
-    std::cerr << "  --maxImageTokens     Maximum image tokens. Default = 1024" << std::endl;
-    std::cerr << "  --maxImageTokensPerImage     Maximum image tokens per image. Default = 512" << std::endl;
-    std::cerr << "  --profilingDetailed  Enable detailed profiling verbosity to include ONNX op names. "
+    std::cerr << "Options:" << std::endl;
+    std::cerr << "  --help                        Display this help message" << std::endl;
+    std::cerr << "  --onnx-dir                    Provide the directory containing the input onnx file for visual "
+                 "encoder. Required. "
+              << std::endl;
+    std::cerr << "  --engine-dir                  Base output directory for multimodal engines. Required." << std::endl;
+    std::cerr << "                                Note: Visual engine will be saved to <engineDir>/visual/"
+              << std::endl;
+    std::cerr << "  --debug                       Use debug mode, which outputs tensors." << std::endl;
+    std::cerr << "  --min-image-tokens            Minimum image tokens. Default = 4" << std::endl;
+    std::cerr << "  --max-image-tokens            Maximum image tokens. Default = 1024" << std::endl;
+    std::cerr << "  --max-image-tokens-per-image  Maximum image tokens per image. Default = 512" << std::endl;
+    std::cerr << "  --profiling-detailed          Enable detailed profiling verbosity to include ONNX op names. "
                  "Use for DLSim analysis."
               << std::endl;
+    std::cerr << "Legacy camelCase option spellings remain accepted.\n";
 }
 
 bool parseViTBuildArgs(ViTBuildArgs& args, int argc, char* argv[])
 {
     static struct option vitOptions[] = {{"help", no_argument, 0, VLMBuildOptionId::HELP},
+        {"onnx-dir", required_argument, 0, VLMBuildOptionId::ONNX_DIR},
         {"onnxDir", required_argument, 0, VLMBuildOptionId::ONNX_DIR},
+        {"engine-dir", required_argument, 0, VLMBuildOptionId::ENGINE_DIR},
         {"engineDir", required_argument, 0, VLMBuildOptionId::ENGINE_DIR},
         {"debug", no_argument, 0, VLMBuildOptionId::DEBUG},
+        {"min-image-tokens", required_argument, 0, VLMBuildOptionId::MIN_IMAGE_TOKENS},
         {"minImageTokens", required_argument, 0, VLMBuildOptionId::MIN_IMAGE_TOKENS},
+        {"max-image-tokens", required_argument, 0, VLMBuildOptionId::MAX_IMAGE_TOKENS},
         {"maxImageTokens", required_argument, 0, VLMBuildOptionId::MAX_IMAGE_TOKENS},
+        {"max-image-tokens-per-image", required_argument, 0, VLMBuildOptionId::MAX_IMAGE_TOKENS_PER_IMAGE},
         {"maxImageTokensPerImage", required_argument, 0, VLMBuildOptionId::MAX_IMAGE_TOKENS_PER_IMAGE},
+        {"profiling-detailed", no_argument, 0, VLMBuildOptionId::PROFILING_DETAILED},
         {"profilingDetailed", no_argument, 0, VLMBuildOptionId::PROFILING_DETAILED}, {0, 0, 0, 0}};
 
     int opt;
@@ -99,7 +108,7 @@ bool parseViTBuildArgs(ViTBuildArgs& args, int argc, char* argv[])
             }
             else
             {
-                LOG_ERROR("--onnxDir requires option argument.");
+                LOG_ERROR("--onnx-dir requires option argument.");
                 return false;
             }
             break;
@@ -110,7 +119,7 @@ bool parseViTBuildArgs(ViTBuildArgs& args, int argc, char* argv[])
             }
             else
             {
-                LOG_ERROR("--engineDir requires option argument.");
+                LOG_ERROR("--engine-dir requires option argument.");
                 return false;
             }
             break;

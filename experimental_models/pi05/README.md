@@ -42,11 +42,11 @@ curl --fail --location --output "$ONNX_DIR/assets/norm_stats.json" \
 
 # 3. Build every component engine and stage the runtime sidecars.
 "$BUILD_DIR/experimental_models/pi05/examples/pi05_policy_build" \
-    --onnxDir "$ONNX_DIR" --engineDir "$ENGINE_DIR"
+    --onnx-dir "$ONNX_DIR" --engine-dir "$ENGINE_DIR"
 
 # 4. Run policy inference. See the example doc for the observation.json format.
 "$BUILD_DIR/experimental_models/pi05/examples/pi05_policy_inference" \
-    --engineDir "$ENGINE_DIR" --inputFile observation.json --output action.json
+    --engine-dir "$ENGINE_DIR" --input-file observation.json --output action.json
 ```
 
 The export writes four components: `visual/`, `prefix/`, `action/` and `cond/`. `cond/` precomputes

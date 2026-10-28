@@ -22,6 +22,7 @@
 
 #include <cuda_runtime.h>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <string_view>
 #include <vector>
@@ -60,9 +61,11 @@ public:
     //!
     //! The stream is synchronized before this method returns, leaving only
     //! engine-input tensors and plugin resources in their final layouts.
+    //! checkCancelled runs synchronously between completed weight operations and may throw to abort loading.
     void load(std::filesystem::path const& engineDir, std::filesystem::path const& configPath, cudaStream_t stream,
         std::filesystem::path const& componentCheckpointDir = {}, std::filesystem::path const& targetCheckpointDir = {},
-        std::optional<int32_t> tpRank = std::nullopt, std::optional<int32_t> tpSize = std::nullopt);
+        std::optional<int32_t> tpRank = std::nullopt, std::optional<int32_t> tpSize = std::nullopt,
+        std::function<void()> const& checkCancelled = {});
 
     void validateAgainstEngine(EngineExecutor const& executor, std::string_view engineLabel);
 

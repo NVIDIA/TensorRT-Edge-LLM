@@ -24,9 +24,9 @@ from .runtime.engine import load_model
 from .runtime.engine_client import EngineClient
 
 
-def main() -> None:
+def main(argv=None, *, prog="tensorrt-edgellm-serve") -> None:
     try:
-        config = parse_server_config()
+        config = parse_server_config(argv, prog=prog)
     except ServerConfigError as exc:
         raise SystemExit(f"invalid server configuration: {exc}") from exc
 

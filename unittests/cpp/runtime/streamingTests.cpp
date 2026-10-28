@@ -673,6 +673,80 @@ TEST(StreamChunkTest, IsMovable)
 // Token callback emission
 // ─────────────────────────────────────────────────────────────────────────────
 
+TEST(StreamMetricsTest, PublishesRequestedMetricsOnCompletionCancellationAndAbort)
+{
+    // Given opt-in metrics, when a stream terminates, then its final chunk carries the snapshot.
+    for (bool const collectMetrics : {false, true})
+    {
+        for (auto const reason : {FinishReason::kLength, FinishReason::kCancelled, FinishReason::kError})
+        {
+            rt::DecodingInferenceContext context;
+            context.activeBatchSize = 1;
+            context.slotStreams.resize(1);
+            context.rawBatchedInputIds = {{10, 11, 12, 13, 14}};
+            context.effectivePrefillLengths = {2};
+            context.tokenIds = {{20, 21, 22}};
+            context.finishedStates = {1};
+            auto& slot = context.slotStreams[0];
+            slot.channel = StreamChannel::create(collectMetrics);
+            slot.profiler.beginPrefill(slot.channel->getCollectMetrics());
+            slot.profiler.finishPrefill(1);
+            slot.profiler.recordGeneration(3);
+            slot.sentTokenCount = 3;
+            slot.pendingEmitText = "answer";
+            slot.terminalReason = reason;
+            auto const expected = slot.profiler.snapshot(2);
+            tokenizer::Tokenizer tokenizer;
+            if (reason == FinishReason::kError)
+            {
+                rt::StreamChannelFinalizer finalizer(context, tokenizer);
+            }
+            else
+            {
+                rt::emitChunks(context, tokenizer);
+            }
+            auto chunk = slot.channel->tryPop();
+            ASSERT_TRUE(chunk.has_value());
+            EXPECT_TRUE(chunk->finished);
+            EXPECT_EQ(chunk->reason, reason);
+            EXPECT_EQ(chunk->metrics.generatedTokens, collectMetrics ? 3 : 0);
+            EXPECT_EQ(chunk->metrics.decodedTokens, collectMetrics ? 2 : 0);
+            EXPECT_EQ(chunk->metrics.processedPromptTokens, collectMetrics ? 2 : -1);
+            EXPECT_DOUBLE_EQ(chunk->metrics.promptSeconds, expected.promptSeconds);
+            EXPECT_DOUBLE_EQ(chunk->metrics.generationSeconds, expected.generationSeconds);
+            EXPECT_EQ(chunk->promptTokenCount, 5);
+        }
+    }
+}
+
+TEST_F(StreamChannelTest, FlushesStopHoldbackWhenEosOrLengthBecomesFinal)
+{
+    for (auto const reason :
+        {FinishReason::kEndId, FinishReason::kLength, FinishReason::kCancelled, FinishReason::kError})
+    {
+        rt::DecodingInferenceContext context;
+        context.activeBatchSize = 1;
+        context.slotStreams.resize(1);
+        context.rawBatchedInputIds = {{10}};
+        context.tokenIds = {{1, 2, 3}};
+        context.finishedStates = {1};
+        auto& slot = context.slotStreams[0];
+        slot.channel = StreamChannel::create();
+        slot.sentTokenCount = 3;
+        slot.stopMatchBuffer = "123";
+        slot.terminalReason = reason;
+        tokenizer::Tokenizer tokenizer;
+        rt::emitChunks(context, tokenizer);
+        auto chunk = slot.channel->tryPop();
+        ASSERT_TRUE(chunk.has_value());
+        EXPECT_TRUE(chunk->finished);
+        EXPECT_EQ(chunk->reason, reason);
+        bool const flush = reason == FinishReason::kEndId || reason == FinishReason::kLength;
+        EXPECT_EQ(chunk->text, flush ? "123" : "");
+        EXPECT_EQ(slot.stopMatchBuffer, flush ? "" : "123");
+    }
+}
+
 TEST(TokenCallbackTest, EmitsAllNewTokensAndMarksOnlyLastFinished)
 {
     rt::DecodingInferenceContext context;

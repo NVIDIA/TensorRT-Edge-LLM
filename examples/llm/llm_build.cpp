@@ -90,74 +90,91 @@ std::string getInputConfigFileName(int tpSize, int tpRank)
 void printUsage(char const* programName)
 {
     std::cerr << "Usage: " << programName
-              << " [--help] --onnxDir <dir> --engineDir <dir> [--maxInputLen <int>] "
-                 "[--maxKVCacheCapacity <int>] [--maxBatchSize <int>] [--debug] [--maxLoraRank <int>]"
-                 " [--maxKVPoolPages <int>]"
-                 " [--specDraft] [--specBase] [--maxVerifyTreeSize <int>] "
-                 "[--maxDraftTreeSize <int>] [--profilingDetailed] [--tpSize <int> --tpRank <int>] "
-                 "[--localDevice <int>]"
+              << " [--help] --onnx-dir <dir> --engine-dir <dir> [--max-input-len <int>] "
+                 "[--max-kv-cache-capacity <int>] [--max-batch-size <int>] [--debug] [--max-lora-rank <int>]"
+                 " [--max-kv-pool-pages <int>]"
+                 " [--spec-draft] [--spec-base] [--max-verify-tree-size <int>] "
+                 "[--max-draft-tree-size <int>] [--profiling-detailed] [--tp-size <int> --tp-rank <int>] "
+                 "[--local-device <int>]"
               << std::endl;
     std::cerr << "Options:" << std::endl;
-    std::cerr << "  --help                    Display this help message" << std::endl;
-    std::cerr << "  --onnxDir                 Provide the input ONNX directory path. Required. " << std::endl;
-    std::cerr << "  --engineDir               Provide the output TensorRT engine directory path. Required. "
+    std::cerr << "  --help                   Display this help message" << std::endl;
+    std::cerr << "  --onnx-dir               Provide the input ONNX directory path. Required. " << std::endl;
+    std::cerr << "  --engine-dir             Provide the output TensorRT engine directory path. Required. "
               << std::endl;
-    std::cerr << "  --maxInputLen             Provide the maximum input length for the model. Default = 1024"
+    std::cerr << "  --max-input-len          Provide the maximum input length for the model. Default = 1024"
               << std::endl;
-    std::cerr << "  --maxKVCacheCapacity      Provide the maximum KV cache capacity (sequence length). "
+    std::cerr << "  --max-kv-cache-capacity  Provide the maximum KV cache capacity (sequence length). "
                  "Default = 4096"
               << std::endl;
-    std::cerr << "  --maxKVPoolPages          Exact physical K-page count for the KV pool. Default = 0 "
+    std::cerr << "  --max-kv-pool-pages      Exact physical K-page count for the KV pool. Default = 0 "
                  "(minimum active pages)"
               << std::endl;
-    std::cerr << "  --maxBatchSize            Provide the maximum batch_size for builder. Default = 4" << std::endl;
-    std::cerr << "  --debug                   Use debug mode, which outputs more logs." << std::endl;
-    std::cerr << "  --maxLoraRank             Maximum LoRA rank for dynamic LoRA adaptation. Default = 0 (no LoRA)"
+    std::cerr << "  --max-batch-size         Provide the maximum batch_size for builder. Default = 4" << std::endl;
+    std::cerr << "  --debug                  Use debug mode, which outputs more logs." << std::endl;
+    std::cerr << "  --max-lora-rank          Maximum LoRA rank for dynamic LoRA adaptation. Default = 0 (no LoRA)"
               << std::endl;
     std::cerr
-        << "  --specDraft               Build as speculative decoding draft model (EAGLE/MTP/DFlash/JetSpec/DSpark)"
+        << "  --spec-draft             Build as speculative decoding draft model (EAGLE/MTP/DFlash/JetSpec/DSpark)"
         << std::endl;
-    std::cerr
-        << "  --specBase                Build as speculative decoding base model (EAGLE/MTP/DFlash/JetSpec/DSpark)"
-        << std::endl;
-    std::cerr << "  --maxVerifyTreeSize       Maximum input_ids tokens for base model verification. Default = 60"
+    std::cerr << "  --spec-base              Build as speculative decoding base model (EAGLE/MTP/DFlash/JetSpec/DSpark)"
               << std::endl;
-    std::cerr << "  --maxDraftTreeSize        Maximum input_ids tokens for draft model generation. Default = 60"
+    std::cerr << "  --max-verify-tree-size   Maximum input_ids tokens for base model verification. Default = 60"
               << std::endl;
-    std::cerr << "  --profilingDetailed       Enable detailed profiling verbosity to include ONNX op names "
+    std::cerr << "  --max-draft-tree-size    Maximum input_ids tokens for draft model generation. Default = 60"
+              << std::endl;
+    std::cerr << "  --profiling-detailed     Enable detailed profiling verbosity to include ONNX op names "
                  "in layer info. Use for DLSim analysis."
               << std::endl
-              << "  --tpSize                  Tensor parallel world size for per-rank engine builds. "
-                 "Must be paired with --tpRank."
+              << "  --tp-size                Tensor parallel world size for per-rank engine builds. "
+                 "Must be paired with --tp-rank."
               << std::endl
-              << "  --tpRank                  Tensor parallel rank for per-rank engine builds. Must be in [0, tpSize)."
+              << "  --tp-rank                Tensor parallel rank for per-rank engine builds. Must be in [0, tpSize)."
               << std::endl
-              << "  --localDevice             Node-local CUDA device ordinal for an explicit TP build. Defaults to "
+              << "  --local-device           Node-local CUDA device ordinal for an explicit TP build. Defaults to "
                  "tpRank."
               << std::endl
               << std::endl;
+    std::cerr << "Legacy camelCase option spellings remain accepted.\n";
 }
 
 bool parseLLMBuildArgs(LLMBuildArgs& args, int argc, char* argv[])
 {
     static struct option buildOptions[] = {{"help", no_argument, 0, LLMBuildOptionId::HELP},
+        {"onnx-dir", required_argument, 0, LLMBuildOptionId::ONNX_DIR},
         {"onnxDir", required_argument, 0, LLMBuildOptionId::ONNX_DIR},
+        {"engine-dir", required_argument, 0, LLMBuildOptionId::ENGINE_DIR},
         {"engineDir", required_argument, 0, LLMBuildOptionId::ENGINE_DIR},
+        {"max-input-len", required_argument, 0, LLMBuildOptionId::MAX_INPUT_LEN},
         {"maxInputLen", required_argument, 0, LLMBuildOptionId::MAX_INPUT_LEN},
+        {"max-kv-cache-capacity", required_argument, 0, LLMBuildOptionId::MAX_KV_CACHE_CAPACITY},
         {"maxKVCacheCapacity", required_argument, 0, LLMBuildOptionId::MAX_KV_CACHE_CAPACITY},
+        {"max-kv-pool-pages", required_argument, 0, LLMBuildOptionId::MAX_KV_POOL_PAGES},
         {"maxKVPoolPages", required_argument, 0, LLMBuildOptionId::MAX_KV_POOL_PAGES},
         {"debug", no_argument, 0, LLMBuildOptionId::DEBUG},
+        {"max-batch-size", required_argument, 0, LLMBuildOptionId::MAX_BATCH_SIZE},
         {"maxBatchSize", required_argument, 0, LLMBuildOptionId::MAX_BATCH_SIZE},
+        {"max-lora-rank", required_argument, 0, LLMBuildOptionId::MAX_LORA_RANK},
         {"maxLoraRank", required_argument, 0, LLMBuildOptionId::MAX_LORA_RANK},
+        {"spec-draft", no_argument, 0, LLMBuildOptionId::SPEC_DRAFT},
         {"specDraft", no_argument, 0, LLMBuildOptionId::SPEC_DRAFT},
+        {"eagle-draft", no_argument, 0, LLMBuildOptionId::SPEC_DRAFT},
         {"eagleDraft", no_argument, 0, LLMBuildOptionId::SPEC_DRAFT}, // deprecated alias
+        {"spec-base", no_argument, 0, LLMBuildOptionId::SPEC_BASE},
         {"specBase", no_argument, 0, LLMBuildOptionId::SPEC_BASE},
+        {"eagle-base", no_argument, 0, LLMBuildOptionId::SPEC_BASE},
         {"eagleBase", no_argument, 0, LLMBuildOptionId::SPEC_BASE}, // deprecated alias
+        {"max-verify-tree-size", required_argument, 0, LLMBuildOptionId::MAX_VERIFY_TREE_SIZE},
         {"maxVerifyTreeSize", required_argument, 0, LLMBuildOptionId::MAX_VERIFY_TREE_SIZE},
+        {"max-draft-tree-size", required_argument, 0, LLMBuildOptionId::MAX_DRAFT_TREE_SIZE},
         {"maxDraftTreeSize", required_argument, 0, LLMBuildOptionId::MAX_DRAFT_TREE_SIZE},
+        {"profiling-detailed", no_argument, 0, LLMBuildOptionId::PROFILING_DETAILED},
         {"profilingDetailed", no_argument, 0, LLMBuildOptionId::PROFILING_DETAILED},
+        {"tp-size", required_argument, 0, LLMBuildOptionId::TP_SIZE},
         {"tpSize", required_argument, 0, LLMBuildOptionId::TP_SIZE},
+        {"tp-rank", required_argument, 0, LLMBuildOptionId::TP_RANK},
         {"tpRank", required_argument, 0, LLMBuildOptionId::TP_RANK},
+        {"local-device", required_argument, 0, LLMBuildOptionId::LOCAL_DEVICE},
         {"localDevice", required_argument, 0, LLMBuildOptionId::LOCAL_DEVICE}, {0, 0, 0, 0}};
 
     int opt;
@@ -173,7 +190,7 @@ bool parseLLMBuildArgs(LLMBuildArgs& args, int argc, char* argv[])
             }
             else
             {
-                LOG_ERROR("--onnxDir requires option argument.");
+                LOG_ERROR("--onnx-dir requires option argument.");
                 return false;
             }
             break;
@@ -184,7 +201,7 @@ bool parseLLMBuildArgs(LLMBuildArgs& args, int argc, char* argv[])
             }
             else
             {
-                LOG_ERROR("--engineDir requires option argument.");
+                LOG_ERROR("--engine-dir requires option argument.");
                 return false;
             }
             break;
@@ -291,19 +308,19 @@ int main(int argc, char** argv)
 
     if (args.tpSizeSet != args.tpRankSet)
     {
-        LOG_ERROR("--tpSize and --tpRank must be specified together.");
+        LOG_ERROR("--tp-size and --tp-rank must be specified together.");
         return EXIT_FAILURE;
     }
     if (useExplicitTpConfig)
     {
         if (args.tpSize < 1)
         {
-            LOG_ERROR("--tpSize must be >= 1, got %d.", args.tpSize);
+            LOG_ERROR("--tp-size must be >= 1, got %d.", args.tpSize);
             return EXIT_FAILURE;
         }
         if (args.tpRank < 0 || args.tpRank >= args.tpSize)
         {
-            LOG_ERROR("--tpRank must be in [0, tpSize), got tpRank=%d tpSize=%d.", args.tpRank, args.tpSize);
+            LOG_ERROR("--tp-rank must be in [0, tpSize), got tpRank=%d tpSize=%d.", args.tpRank, args.tpSize);
             return EXIT_FAILURE;
         }
 
@@ -313,18 +330,18 @@ int main(int argc, char** argv)
 
     if (args.localDeviceSet && !useExplicitTpConfig)
     {
-        LOG_ERROR("--localDevice requires --tpSize and --tpRank.");
+        LOG_ERROR("--local-device requires --tp-size and --tp-rank.");
         return EXIT_FAILURE;
     }
     if (args.localDeviceSet && args.localDevice < 0)
     {
-        LOG_ERROR("--localDevice must be >= 0, got %d.", args.localDevice);
+        LOG_ERROR("--local-device must be >= 0, got %d.", args.localDevice);
         return EXIT_FAILURE;
     }
 
     if (tpSize > 1 && (args.specDraft || args.specBase))
     {
-        LOG_ERROR("Tensor-parallel speculative decoding engine builds are not supported; build with --tpSize 1.");
+        LOG_ERROR("Tensor-parallel speculative decoding engine builds are not supported; build with --tp-size 1.");
         return EXIT_FAILURE;
     }
 

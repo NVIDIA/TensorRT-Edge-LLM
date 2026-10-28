@@ -49,7 +49,7 @@ loaded as pre-quantized checkpoints; this package does not create GPTQ models.
 3. Register the `model_type` in `tensorrt_edgellm/__init__.py`.
 4. Add any required config promotion, tensor-key remapping, or quantized-weight
    handling in `tensorrt_edgellm/config.py` and `checkpoint/`.
-5. Export with `tensorrt-edgellm-export <checkpoint> <output_dir>`
+5. Export with `trtedge export <checkpoint> <output_dir>`
    and verify `llm_build` plus `llm_inference`.
 
 ## Adding A Multimodal Or Action Component
@@ -66,8 +66,8 @@ that the C++ builder can consume.
 | TTS code predictor | `code_predictor/` | `examples/llm/llm_build` |
 | Omni Code2Wav | `code2wav/` or model-specific audio layout | `examples/multimodal/audio_build` |
 | Alpamayo action expert | `action/` | `examples/multimodal/action_build` |
-| MTP draft | `mtp_draft/` | `examples/llm/llm_build --specDraft` |
-| DFlash draft | `dflash_draft/` | `examples/llm/llm_build --specDraft` |
+| MTP draft | `mtp_draft/` | `examples/llm/llm_build --spec-draft` |
+| DFlash draft | `dflash_draft/` | `examples/llm/llm_build --spec-draft` |
 
 Keep preprocessing and runtime sidecars explicit. For example, Alpamayo adds
 trajectory tokens during runtime artifact writing and requires the action

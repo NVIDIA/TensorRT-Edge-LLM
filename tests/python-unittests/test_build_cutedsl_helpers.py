@@ -107,30 +107,72 @@ def _write_fake_elf(path: Path, machine: int) -> None:
     path.write_bytes(header)
 
 
+def _archive_machine(arch: str) -> int:
+    machines = (build_cutedsl._COFF_MACHINE
+                if build_cutedsl._is_windows() else build_cutedsl._ELF_MACHINE)
+    return machines[arch]
+
+
 def _write_fake_archive(path: Path, machine: int) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if build_cutedsl._is_windows():
+        payload = machine.to_bytes(2, "little") + bytes(18)
+        header = (b"runtime.obj/".ljust(16) + b"0".ljust(12) + b"0".ljust(6) +
+                  b"0".ljust(6) + b"100644".ljust(8) +
+                  str(len(payload)).encode("ascii").ljust(10) + b"`\n")
+        path.write_bytes(b"!<arch>\n" + header + payload)
+        return path
+
     obj = path.with_suffix(".o")
     _write_fake_elf(obj, machine)
     subprocess.run(["ar", "rcs", str(path), str(obj)], check=True)
     return path
 
 
-def test_cutlass_dsl_version_accepts_pinned_dev_and_local_versions():
-    assert build_cutedsl._cutlass_dsl_version_matches("4.7.0")
-    assert build_cutedsl._cutlass_dsl_version_matches("4.7.0+local")
-    assert build_cutedsl._cutlass_dsl_version_matches("4.7.0.dev0")
+@pytest.mark.parametrize(("module_spec", "expected"), [(object(), True),
+                                                       (None, False)])
+def test_cuda_driver_bindings_available(monkeypatch, module_spec, expected):
+
+    def find_spec(module_name):
+        assert module_name == "cuda.bindings.driver"
+        return module_spec
+
+    monkeypatch.setattr(build_cutedsl.importlib.util, "find_spec", find_spec)
+
+    assert build_cutedsl._cuda_driver_bindings_available() is expected
+
+
+def test_cuda_driver_bindings_available_handles_missing_parent(monkeypatch):
+
+    def find_spec(_module_name):
+        raise ModuleNotFoundError
+
+    monkeypatch.setattr(build_cutedsl.importlib.util, "find_spec", find_spec)
+
+    assert not build_cutedsl._cuda_driver_bindings_available()
+
+
+def test_cutlass_dsl_version_accepts_pinned_release_and_local_versions():
+    pinned_version = build_cutedsl._CUTLASS_DSL_VERSION
+
+    assert build_cutedsl._cutlass_dsl_version_matches(pinned_version)
     assert build_cutedsl._cutlass_dsl_version_matches(
-        "4.7.0.dev20260630+local")
+        f"{pinned_version}+local")
 
     assert not build_cutedsl._cutlass_dsl_version_matches("4.5.2")
     assert not build_cutedsl._cutlass_dsl_version_matches("4.6.1")
-    assert not build_cutedsl._cutlass_dsl_version_matches("4.7.0rc1")
+    assert not build_cutedsl._cutlass_dsl_version_matches(
+        f"{pinned_version}.dev1")
+    assert not build_cutedsl._cutlass_dsl_version_matches(
+        f"{pinned_version}.dev20260630+local")
 
 
 def test_find_static_runtime_archive_prefers_cuda_variant_layout(tmp_path):
     pkg_dir = tmp_path / "nvidia_cutlass_dsl"
+    runtime_name = build_cutedsl._runtime_static_archive_name()
     archive = _write_fake_archive(
-        pkg_dir / "cu13" / "lib" / "libcuda_dialect_runtime_static.a",
-        build_cutedsl._ELF_MACHINE["aarch64"],
+        pkg_dir / "cu13" / "lib" / runtime_name,
+        _archive_machine("aarch64"),
     )
 
     assert build_cutedsl._find_static_runtime_archive(pkg_dir,
@@ -139,8 +181,8 @@ def test_find_static_runtime_archive_prefers_cuda_variant_layout(tmp_path):
 
 def test_validate_static_runtime_archive_rejects_arch_mismatch(tmp_path):
     archive = _write_fake_archive(
-        tmp_path / "libcuda_dialect_runtime_static.a",
-        build_cutedsl._ELF_MACHINE["x86_64"],
+        tmp_path / build_cutedsl._runtime_static_archive_name(),
+        _archive_machine("x86_64"),
     )
 
     with pytest.raises(RuntimeError, match="architecture mismatch"):
@@ -150,9 +192,10 @@ def test_validate_static_runtime_archive_rejects_arch_mismatch(tmp_path):
 def test_resolve_static_runtime_archive_uses_installed_matching_archive(
         tmp_path, monkeypatch):
     pkg_dir = tmp_path / "nvidia_cutlass_dsl"
+    runtime_name = build_cutedsl._runtime_static_archive_name()
     archive = _write_fake_archive(
-        pkg_dir / "cu13" / "lib" / "libcuda_dialect_runtime_static.a",
-        build_cutedsl._ELF_MACHINE["x86_64"],
+        pkg_dir / "cu13" / "lib" / runtime_name,
+        _archive_machine("x86_64"),
     )
 
     def fail_download(*_args, **_kwargs):
@@ -167,7 +210,7 @@ def test_resolve_static_runtime_archive_uses_installed_matching_archive(
         "x86_64",
         pkg_dir,
         "13.0",
-        "4.7.0",
+        "4.8.0",
         tmp_path / "staging",
     )
     assert resolved == archive
@@ -176,19 +219,21 @@ def test_resolve_static_runtime_archive_uses_installed_matching_archive(
 def test_resolve_static_runtime_archive_cross_downloads_target_wheel(
         tmp_path, monkeypatch):
     pkg_dir = tmp_path / "nvidia_cutlass_dsl"
+    runtime_name = build_cutedsl._runtime_static_archive_name()
     _write_fake_archive(
-        pkg_dir / "cu13" / "lib" / "libcuda_dialect_runtime_static.a",
-        build_cutedsl._ELF_MACHINE["x86_64"],
+        pkg_dir / "cu13" / "lib" / runtime_name,
+        _archive_machine("x86_64"),
     )
 
-    wheel = tmp_path / "nvidia_cutlass_dsl_libs_cu13-4.7.0-cp312-cp312-manylinux_2_28_aarch64.whl"
-    archive_in_wheel = tmp_path / "wheel_src" / "nvidia_cutlass_dsl" / "cu13" / "lib" / "libcuda_dialect_runtime_static.a"
-    _write_fake_archive(archive_in_wheel,
-                        build_cutedsl._ELF_MACHINE["aarch64"])
+    wheel = tmp_path / ("nvidia_cutlass_dsl_libs_cu13-4.8.0-cp312-cp312-"
+                        "manylinux_2_28_aarch64.whl")
+    archive_in_wheel = (tmp_path / "wheel_src" / "nvidia_cutlass_dsl" /
+                        "cu13" / "lib" / runtime_name)
+    _write_fake_archive(archive_in_wheel, _archive_machine("aarch64"))
     with zipfile.ZipFile(wheel, "w") as zf:
         zf.write(
             archive_in_wheel,
-            "nvidia_cutlass_dsl/cu13/lib/libcuda_dialect_runtime_static.a",
+            f"nvidia_cutlass_dsl/cu13/lib/{runtime_name}",
         )
 
     monkeypatch.setattr(build_cutedsl, "_download_runtime_libs_wheel",
@@ -199,12 +244,12 @@ def test_resolve_static_runtime_archive_cross_downloads_target_wheel(
         "x86_64",
         pkg_dir,
         "13.0",
-        "4.7.0",
+        "4.8.0",
         tmp_path / "staging",
     )
-    assert resolved.name == "libcuda_dialect_runtime_static.a"
+    assert resolved.name == runtime_name
     assert build_cutedsl._archive_first_member_machine(
-        resolved) == build_cutedsl._ELF_MACHINE["aarch64"]
+        resolved) == _archive_machine("aarch64")
 
 
 def test_download_runtime_libs_wheel_uses_configured_wheelhouse(
@@ -220,7 +265,7 @@ def test_download_runtime_libs_wheel_uses_configured_wheelhouse(
         destination = Path(cmd[cmd.index("-d") + 1])
         destination.mkdir(parents=True, exist_ok=True)
         wheel = destination / (
-            "nvidia_cutlass_dsl_libs_cu12-4.7.0-cp312-cp312-"
+            "nvidia_cutlass_dsl_libs_cu12-4.8.0-cp312-cp312-"
             "manylinux_2_28_aarch64.whl")
         wheel.write_bytes(b"wheel")
         return subprocess.CompletedProcess(cmd, 0, "", "")
@@ -228,10 +273,12 @@ def test_download_runtime_libs_wheel_uses_configured_wheelhouse(
     monkeypatch.setattr(build_cutedsl.subprocess, "run", fake_run)
 
     wheel = build_cutedsl._download_runtime_libs_wheel("aarch64", "12",
-                                                       "4.7.0", download_dir)
-    assert wheel.name.startswith("nvidia_cutlass_dsl_libs_cu12-4.7.0")
+                                                       "4.8.0", download_dir)
+    assert wheel.name.startswith("nvidia_cutlass_dsl_libs_cu12-4.8.0")
 
 
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="requires POSIX shell tools")
 def test_tarball_builder_lists_mixed_cuda_matrix():
     script = _REPO_ROOT / "kernelSrcs" / "build_cutedsl_tarballs.sh"
     matrix = ("x86_64:sm_100:13,x86_64:sm_100:12,"
@@ -253,6 +300,8 @@ def test_tarball_builder_lists_mixed_cuda_matrix():
     ]
 
 
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="requires POSIX shell tools")
 @pytest.mark.parametrize("cuda_major", ["12", "13"])
 def test_tarball_builder_default_matrix_includes_expected_targets(cuda_major):
     script = _REPO_ROOT / "kernelSrcs" / "build_cutedsl_tarballs.sh"
@@ -310,6 +359,39 @@ def test_default_compile_gpu_arch_is_derived_from_target_sm(sm, expected):
 def test_parse_sms_preserves_order_and_removes_duplicates():
     assert build_cutedsl._parse_sms("sm_110,120,sm_110") == [110, 120]
     assert build_cutedsl._multi_sm_artifact_tag([110, 120]) == "sm_110_sm_120"
+
+
+@pytest.mark.parametrize(
+    ("is_windows", "expected"),
+    [
+        (True, Path("root/windows/x86_64/sm_110_sm_120")),
+        (False, Path("root/x86_64/sm_110_sm_120")),
+    ],
+)
+def test_artifact_output_dir_is_platform_aware(monkeypatch, is_windows,
+                                               expected):
+    monkeypatch.setattr(build_cutedsl, "_is_windows", lambda: is_windows)
+
+    assert build_cutedsl._artifact_output_dir(Path("root"), "x86_64",
+                                              "sm_110_sm_120") == expected
+
+
+def test_multi_sm_uses_artifact_output_dir(tmp_path, monkeypatch):
+    calls = []
+
+    def artifact_output_dir(output_dir, arch, artifact_tag):
+        calls.append((output_dir, arch, artifact_tag))
+        raise RuntimeError("artifact output selected")
+
+    monkeypatch.setattr(build_cutedsl, "detect_arch", lambda *_args: "x86_64")
+    monkeypatch.setattr(build_cutedsl, "_artifact_output_dir",
+                        artifact_output_dir)
+    args = argparse.Namespace(arch="x86_64", output_dir=str(tmp_path))
+
+    with pytest.raises(RuntimeError, match="artifact output selected"):
+        build_cutedsl._build_multi_sm(args, [110, 120])
+
+    assert calls == [(tmp_path, "x86_64", "sm_110_sm_120")]
 
 
 def test_multi_sm_headers_generate_canonical_dispatch(tmp_path):
@@ -791,12 +873,14 @@ def test_build_allows_f16_moe_for_foreign_target_sm(tmp_path, monkeypatch):
 
 _BASE_METADATA = {
     "arch": "x86_64",
+    "host_platform": build_cutedsl._host_platform(),
+    "object_format": "coff" if build_cutedsl._is_windows() else "elf",
     "artifact_tag": "sm_100",
     "gpu_arch": "sm_100",
     "compile_gpu_arch": "sm_100a",
     "host_target": "",
     "cuda_package_variant": "cu12",
-    "cutlass_dsl_version": "4.7.0",
+    "cutlass_dsl_version": build_cutedsl._CUTLASS_DSL_VERSION,
     "groups": ["gdn"],
     "variants": ["gdn_decode", "gdn_prefill"],
 }

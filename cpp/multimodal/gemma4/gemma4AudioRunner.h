@@ -99,11 +99,11 @@ private:
     void textPreprocess(rt::LLMGenerationRequest const& request, std::vector<std::vector<int32_t>>& batchInputIds,
         std::vector<int64_t> const& audioTokenLengths, tokenizer::Tokenizer const* tokenizer);
 
-    Gemma4AudioConfig mConfig{};  //!< Audio encoder configuration
-    rt::Tensor mInputFeatures{};  //!< [1, paddedSeqLen, mel_bins] encoder input
-    rt::Tensor mValidMask{};      //!< [1, paddedSeqLen/4] valid mask after downsample
-    rt::Tensor mAudioEmbedding{}; //!< [totalEncodedRows, hidden_dim] flat output
-    int64_t mMaxSeqLen{0};        //!< Max mel-spectrogram time steps from engine profile
+    Gemma4AudioConfig mConfig{};     //!< Audio encoder configuration
+    rt::Tensor mInputFeatures{};     //!< [1, paddedSeqLen, mel_bins] encoder input
+    rt::Tensor mInputFeaturesMask{}; //!< [1, paddedSeqLen] valid mel-frame mask
+    rt::Tensor mAudioEmbedding{};    //!< [totalEncodedRows, hidden_dim] flat output
+    int64_t mMaxSeqLen{0};           //!< Max mel-spectrogram time steps from engine profile
 
     //! Mel extractor for PCM→mel fallback (Whisper-style, 16kHz, 128 bins).
     rt::audio::MelExtractor mMelExtractor;

@@ -39,6 +39,23 @@ class RMSNorm(nn.Module):
         return self.weight * x.to(self.weight.dtype)
 
 
+class Gemma4RMSNorm(nn.Module):
+    """Gemma4 RMSNorm computed in FP32; ``with_scale=False`` is weightless."""
+
+    def __init__(self, hidden_size, eps=1e-6, with_scale=True):
+        super().__init__()
+        self.weight = (nn.Parameter(torch.ones(hidden_size))
+                       if with_scale else None)
+        self.eps = eps
+
+    def forward(self, x):
+        y = x.to(torch.float32)
+        y = y * torch.rsqrt(y.pow(2).mean(-1, keepdim=True) + self.eps)
+        if self.weight is not None:
+            y = y * self.weight.to(torch.float32)
+        return y.to(x.dtype)
+
+
 class SwiGLUMLP(nn.Module):
     """SwiGLU MLP: down_proj(silu(gate_proj(x)) * up_proj(x))."""
 
@@ -56,10 +73,24 @@ class SwiGLUMLP(nn.Module):
 class RotaryEmbedding(nn.Module):
     """Rotary position embedding."""
 
-    def __init__(self, dim, max_position=2048, base=10000.0):
+    def __init__(self,
+                 dim,
+                 max_position=2048,
+                 base=10000.0,
+                 proportional_rotary_factor=None):
         super().__init__()
-        inv_freq = 1.0 / (base**(torch.arange(0, dim, 2, dtype=torch.float32) /
-                                 dim))
+        if proportional_rotary_factor is None:
+            inv_freq = 1.0 / (base**(
+                torch.arange(0, dim, 2, dtype=torch.float32) / dim))
+        else:
+            # Gemma4 proportional RoPE rotates only the leading frequencies
+            # (still normalized by the full dim); the rest stay unrotated.
+            rope_angles = int(proportional_rotary_factor * dim // 2)
+            rotated = 1.0 / (base**(torch.arange(
+                0, 2 * rope_angles, 2, dtype=torch.float32) / dim))
+            inv_freq = torch.cat((rotated,
+                                  torch.zeros(dim // 2 - rope_angles,
+                                              dtype=torch.float32)))
         self.register_buffer("inv_freq", inv_freq, persistent=False)
         self.max_position = max_position
 

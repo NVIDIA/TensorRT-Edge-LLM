@@ -772,6 +772,38 @@ def _is_image_blind_calibration(model, quant_cfg: dict) -> bool:
     return quant_cfg.get("algorithm") not in (None, "max")
 
 
+def _is_qat_rtn_checkpoint(model_dir: str) -> bool:
+    """Return True for a QAT-Q4_0 "unquantized" checkpoint that must be
+    INT4-quantized with symmetric RTN (identity ``pre_quant_scale``), never AWQ.
+
+    These checkpoints (e.g. ``gemma-4-E2B-it-qat-q4_0-unquantized``) ship as
+    half-precision weights extracted from a Quantization-Aware-Training pipeline
+    targeting the Q4_0 scheme (symmetric per-block round-to-nearest). The weights
+    are pre-conditioned so symmetric RTN is near-lossless; AWQ's calibrated
+    per-channel ``pre_quant_scale`` smoothing moves them off that manifold and
+    inflates INT4 error. A genuinely pre-quantized checkpoint carries
+    ``hf_quant_config.json`` and is excluded here.
+
+    Detection is provenance-based: a ``qat`` + ``q4_0`` marker in the resolved
+    path or the model-card README, with no ``hf_quant_config.json`` present.
+    """
+    if os.path.isfile(os.path.join(model_dir, "hf_quant_config.json")):
+        return False
+    hay = os.path.basename(os.path.normpath(model_dir)).lower()
+    if "qat" in hay and "q4_0" in hay:
+        return True
+    readme = os.path.join(model_dir, "README.md")
+    if os.path.isfile(readme):
+        try:
+            with open(readme, "r", encoding="utf-8", errors="ignore") as f:
+                text = f.read().lower()
+        except OSError:
+            return False
+        if "quantization-aware training" in text and "q4_0" in text:
+            return True
+    return False
+
+
 def _is_gemma4_unified_model(model_dir: str) -> bool:
     from ..chat_template import _get_model_type
     return _get_model_type(model_dir) in ("gemma4_unified", )
@@ -1090,6 +1122,20 @@ def quantize_and_export(
             cp_quantization=cp_quantization,
             fuse_gdn_qkvzba_scales=fuse_gdn_qkvzba_scales,
         )
+        # QAT-Q4_0 checkpoints are pre-conditioned for symmetric per-block RTN;
+        # AWQ's calibrated pre_quant_scale smoothing inflates INT4 error on them.
+        # Force the range-only algorithm so pre_quant_scale stays identity (RTN),
+        # matching the Q4_0 training recipe. Dense only: MoE expert stacking at
+        # export relies on the shared resmoothed AWQ scales.
+        if (quantization == "int4_awq" and not _is_moe_model(model)
+                and _is_qat_rtn_checkpoint(model_dir)):
+            quant_cfg["algorithm"] = "max"
+            print(
+                "Detected a QAT-Q4_0 checkpoint. Using range-based "
+                "round-to-nearest quantization with an identity pre_quant_scale "
+                "instead of AWQ activation smoothing, because smoothing lowers "
+                "INT4 accuracy on weights that were already trained for "
+                "per-block round-to-nearest.")
         # When INT4 is exported to the cuteDSL GEMM kernel's fragment layout, repack
         # requires N%64==0 && K%64==0. Small hybrid/GDN projections (e.g. Qwen3.5
         # in_proj_a / in_proj_b with out_features=16/32) cannot be repacked, so
@@ -1240,9 +1286,11 @@ def quantize_and_export(
             print(f"Image calibration dataset: {dataset_name(image_ds)}")
             # Multimodal calibration: feed (image, text) pairs through the
             # whole VLM so visual + LLM quantizers both see real activations.
+            _gemma4_patch_applied = False
             if visual_quantization is None:
                 from .gemma4_patch import apply as _apply_gemma4_patch
-                _apply_gemma4_patch(model, _get_model_type(model_dir))
+                _gemma4_patch_applied = _apply_gemma4_patch(
+                    model, _get_model_type(model_dir))
             processor = AutoProcessor.from_pretrained(model_dir,
                                                       trust_remote_code=True)
             mm_samples = min(num_samples, 128)
@@ -1266,6 +1314,9 @@ def quantize_and_export(
                 quant_cfg,
                 forward_loop=lambda m: _calibrate_multimodal(m, batches),
             )
+            if _gemma4_patch_applied:
+                from .gemma4_patch import restore as _restore_gemma4_patch
+                _restore_gemma4_patch(model)
         else:
             text_ds = resolve_dataset(text_dataset, "text")
             print(f"Text calibration dataset: {dataset_name(text_ds)}")

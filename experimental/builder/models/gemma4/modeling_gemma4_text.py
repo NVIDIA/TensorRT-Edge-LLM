@@ -20,9 +20,10 @@ from typing import Dict, List
 import numpy as np
 import tensorrt as trt
 
+from ...core import quantization
 from ...ops import Module, NetworkModule
 from ...ops import functional as F
-from ...ops import pack_qkv
+from ...ops import pack_qkv, prepare_gated_nvfp4_a16_weights
 from ...ops.ragged import RaggedDecoderInputs, add_ragged_decoder_inputs
 from . import modeling_gemma4_layers as layers
 from . import weights as weight_conversion
@@ -143,9 +144,13 @@ class Gemma4TextExperts(Module):
         return self.weights.is_nvfp4(self.key("0.up_proj"))
 
     def plugin_intermediate_size(self) -> int:
-        alignment = 128 if self.ctx.options.sm12x else 64
+        alignment = (128 if self.quant_type() == quantization.QUANT_NVFP4_A16
+                     or self.ctx.options.sm12x else 64)
         size = self.cfg.moe_intermediate_size
         return ((size + alignment - 1) // alignment) * alignment
+
+    def quant_type(self) -> str:
+        return self.weights.module_quant_type(self.key("0.up_proj"))
 
     def load_expert_dense(self, expert_index: int) -> dict:
         gate_up_key = self.key("gate_up_proj")
@@ -180,6 +185,13 @@ class Gemma4TextExperts(Module):
 
     def parameters(self, correction_key: str):
         cfg = self.cfg
+        correction = (self.weights.f32(correction_key)
+                      if self.weights.has(correction_key) else np.ones(
+                          cfg.num_experts, dtype=np.float32))
+        if self.quant_type() == quantization.QUANT_NVFP4_A16:
+            return prepare_gated_nvfp4_a16_weights(self.ctx, self, correction,
+                                                   correction_key)
+
         layout = "concat" if self.ctx.options.sm12x else "interleave"
         plugin_intermediate_size = self.plugin_intermediate_size()
 
@@ -197,9 +209,11 @@ class Gemma4TextExperts(Module):
                 cfg.group_size,
                 fc1_layout=layout,
                 plugin_intermediate_size=plugin_intermediate_size)
-            correction = (self.weights.f32(correction_key)
-                          if self.weights.has(correction_key) else np.ones(
-                              cfg.num_experts, dtype=np.float32))
+            if self._has_packed_nvfp4():
+                input_global_scale, down_input_scale = self.input_scales()
+            else:
+                input_global_scale = np.ones(cfg.num_experts, np.float32)
+                down_input_scale = input_global_scale.copy()
             return {
                 "fc1_qweights":
                 fc1,
@@ -214,9 +228,9 @@ class Gemma4TextExperts(Module):
                 "fc2_alpha":
                 fc2_alpha,
                 "input_global_scale":
-                np.ones(cfg.num_experts, np.float32),
+                input_global_scale,
                 "down_input_scale":
-                np.ones(cfg.num_experts, np.float32),
+                down_input_scale,
                 "e_score_correction_bias":
                 np.ascontiguousarray(correction, np.float32),
             }
@@ -271,6 +285,22 @@ class Gemma4TextMoE(Module):
         router_logits = self.router(router_input)
         packed_weights, bindings = self.experts.parameters(
             self.key("router.per_expert_scale"))
+        if self.experts.quant_type() == quantization.QUANT_NVFP4_A16:
+            return F.nvfp4_a16_moe(router_logits,
+                                   expert_input,
+                                   packed_weights,
+                                   cfg.num_experts,
+                                   cfg.num_experts_per_tok,
+                                   cfg.hidden_size,
+                                   packed_weights["padded_intermediate"],
+                                   F.MoeActivation.GEGLU,
+                                   1,
+                                   1,
+                                   1,
+                                   1.0,
+                                   F.MoeRouting.SOFTMAX_TOPK_POST_SCALE,
+                                   weight_prefix=self.experts.prefix,
+                                   weight_bindings=bindings)
         return F.nvfp4_moe(router_logits,
                            expert_input,
                            packed_weights,

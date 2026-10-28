@@ -77,6 +77,22 @@ _NVFP4_MOE_IO_DTYPE_FP16 = 1
 _NVFP4_MOE_MAX_ROUTED_ROWS_AUTO = 0
 
 
+def _stack_nvfp4_moe_input_scales(
+        experts: nn.ModuleList) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Collect calibrated non-gated FC1 and FC2 activation scales."""
+    fc1_scales = []
+    fc2_scales = []
+    for expert_idx, expert in enumerate(experts):
+        up_scale = expert.up_proj.input_scale.detach().float().reshape(-1)
+        down_scale = expert.down_proj.input_scale.detach().float().reshape(-1)
+        if up_scale.numel() != 1 or down_scale.numel() != 1:
+            raise ValueError("Nvfp4MoePlugin requires scalar input scales; "
+                             f"expert {expert_idx} has non-scalar values")
+        fc1_scales.append(up_scale[0])
+        fc2_scales.append(down_scale[0])
+    return torch.stack(fc1_scales), torch.stack(fc2_scales)
+
+
 class RMSNorm(nn.Module):
     """RMSNorm for hybrid Mamba models — primitive decomposed ops.
 
@@ -777,6 +793,9 @@ class NemotronHMoEMLP(nn.Module):
         # when ``hidden_size_alignment=1``).
         hidden_size_alignment = 256 if use_geforce_nvfp4_moe() else 1
 
+        input_global_scale, down_input_scale = \
+            _stack_nvfp4_moe_input_scales(self.experts)
+
         (fc1_qweights, fc1_blocks_scale, fc1_alpha, fc2_qweights,
          fc2_blocks_scale, fc2_alpha, padded_inter_size,
          padded_hidden_size) = (repack_nvfp4_moe_experts(
@@ -800,16 +819,10 @@ class NemotronHMoEMLP(nn.Module):
                              fc2_blocks_scale.to(device).contiguous())
         self.register_buffer("fc1_alpha", fc1_alpha.to(device).contiguous())
         self.register_buffer("fc2_alpha", fc2_alpha.to(device).contiguous())
-        self.register_buffer(
-            "input_global_scale",
-            torch.ones(self.n_routed_experts,
-                       dtype=torch.float32,
-                       device=device))
-        self.register_buffer(
-            "down_input_scale",
-            torch.ones(self.n_routed_experts,
-                       dtype=torch.float32,
-                       device=device))
+        self.register_buffer("input_global_scale",
+                             input_global_scale.to(device).contiguous())
+        self.register_buffer("down_input_scale",
+                             down_input_scale.to(device).contiguous())
         self.register_buffer(
             "_e_score_correction_bias_fp32",
             self.gate.e_score_correction_bias.data.clone().to(

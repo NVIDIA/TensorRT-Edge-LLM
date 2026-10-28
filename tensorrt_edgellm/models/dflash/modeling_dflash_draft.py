@@ -98,6 +98,17 @@ class MLP(nn.Module):
             F.silu(self.gate_proj(hidden_states)) *
             self.up_proj(hidden_states))
 
+    def forward_fp32(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        if not all(
+                isinstance(module, FP16Linear)
+                for module in (self.gate_proj, self.up_proj, self.down_proj)):
+            return self.forward(hidden_states)
+        gate = F.silu(self.gate_proj(hidden_states).float())
+        up = self.up_proj(hidden_states).float()
+        bias = (self.down_proj.bias.float()
+                if self.down_proj.bias is not None else None)
+        return F.linear(gate * up, self.down_proj.weight.float(), bias)
+
 
 # ---------------------------------------------------------------------------
 # DFlash Cached Attention Layer
@@ -115,6 +126,8 @@ class DFlashCachedAttention(nn.Module):
     def __init__(self, config: ModelConfig, layer_idx: int) -> None:
         super().__init__()
         self.layer_idx = layer_idx
+        self.fp32_output = (config.dflash_overflow_fp32
+                            and layer_idx == config.num_hidden_layers - 1)
         self.is_gemma4 = _is_gemma4_model_type(config.model_type)
         if self.is_gemma4:
             self.attention_type = _attention_type_for_layer(config, layer_idx)
@@ -133,7 +146,7 @@ class DFlashCachedAttention(nn.Module):
             self.num_heads = config.num_attention_heads
             self.num_kv_heads = config.num_key_value_heads
             self.head_dim = config.head_dim
-            self.sliding_window_size = -1
+            self.sliding_window_size = config.sliding_window_size
         self.attention_scale = config.attention_scaling
         self.hidden_size = config.hidden_size
 
@@ -169,6 +182,16 @@ class DFlashCachedAttention(nn.Module):
         self.k_norm = norm_cls(self.head_dim, eps=config.rms_norm_eps)
         self.v_norm = (Gemma4ValueRMSNorm(self.head_dim, config.rms_norm_eps)
                        if self.is_gemma4 and config.has_value_norm else None)
+
+    def _project_output(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        if self.fp32_output and isinstance(
+                self.o_proj,
+                FP16Linear) and hidden_states.dtype == torch.float16:
+            bias = (self.o_proj.bias.float()
+                    if self.o_proj.bias is not None else None)
+            return F.linear(hidden_states.float(), self.o_proj.weight.float(),
+                            bias)
+        return self.o_proj(hidden_states)
 
     def forward(
             self,
@@ -251,7 +274,7 @@ class DFlashCachedAttention(nn.Module):
 
         # attn_4d: [B, BS, Hq, D] -> [B, BS, Hq*D]
         attn_output = attn_4d.reshape(B, BS, self.num_heads * self.head_dim)
-        attn_output = self.o_proj(attn_output)
+        attn_output = self._project_output(attn_output)
 
         return attn_output, present_kv
 
@@ -332,7 +355,7 @@ class DFlashCachedAttention(nn.Module):
             context_sequence_count_carrier=metadata[
                 "context_sequence_count_carrier"],
             **self._ragged_attention_kwargs())
-        return self.o_proj(
+        return self._project_output(
             attn_output.reshape(physical_tokens,
                                 self.num_heads * self.head_dim)), present_kv
 
@@ -349,6 +372,9 @@ class DFlashCachedDecoderLayer(nn.Module):
         super().__init__()
         self.layer_idx = layer_idx
         self.is_gemma4 = _is_gemma4_model_type(config.model_type)
+        self.overflow_guard = config.dflash_overflow_fp32
+        self.fp32_mlp = (self.overflow_guard
+                         and layer_idx == config.num_hidden_layers - 1)
         self.self_attn = DFlashCachedAttention(config, layer_idx=layer_idx)
         self.mlp = (Gemma4MLP(config, layer_idx=layer_idx)
                     if self.is_gemma4 else MLP(config, layer_idx=layer_idx))
@@ -397,21 +423,30 @@ class DFlashCachedDecoderLayer(nn.Module):
             hidden_states = hidden_states * self.layer_scalar.to(
                 dtype=hidden_states.dtype)
         else:
-            hidden_states = residual + attn_output
-
-            residual = hidden_states
-            hidden_states = residual + self.mlp(
-                self.post_attention_layernorm(hidden_states))
+            if self.overflow_guard:
+                hidden_states = residual.float() + attn_output.float()
+                mlp_input = self.post_attention_layernorm(hidden_states).to(
+                    h_delta.dtype)
+                mlp_output = (self.mlp.forward_fp32(mlp_input)
+                              if self.fp32_mlp else self.mlp(mlp_input))
+                hidden_states = hidden_states + mlp_output
+            else:
+                hidden_states = residual + attn_output
+                hidden_states = hidden_states + self.mlp(
+                    self.post_attention_layernorm(hidden_states))
 
         return hidden_states, present_kv
 
     def forward_ragged(self, hidden_states: torch.Tensor,
                        h_delta: torch.Tensor, past_key_value: torch.Tensor,
                        rope_cos_sin: torch.Tensor, **metadata):
-        residual = hidden_states
+        residual = (hidden_states.float()
+                    if self.overflow_guard else hidden_states)
+        normed = self.input_layernorm(hidden_states)
+        if self.overflow_guard:
+            normed = normed.to(h_delta.dtype)
         attn_output, present_kv = self.self_attn.forward_ragged(
-            self.input_layernorm(hidden_states), h_delta, past_key_value,
-            rope_cos_sin, **metadata)
+            normed, h_delta, past_key_value, rope_cos_sin, **metadata)
         if self.is_gemma4:
             hidden_states = residual + self.post_attention_layernorm(
                 attn_output)
@@ -421,9 +456,17 @@ class DFlashCachedDecoderLayer(nn.Module):
             hidden_states = hidden_states * self.layer_scalar.to(
                 dtype=hidden_states.dtype)
         else:
-            hidden_states = residual + attn_output
-            hidden_states = hidden_states + self.mlp(
-                self.post_attention_layernorm(hidden_states))
+            if self.overflow_guard:
+                hidden_states = residual + attn_output.float()
+                mlp_input = self.post_attention_layernorm(hidden_states).to(
+                    h_delta.dtype)
+                mlp_output = (self.mlp.forward_fp32(mlp_input)
+                              if self.fp32_mlp else self.mlp(mlp_input))
+                hidden_states = hidden_states + mlp_output
+            else:
+                hidden_states = residual + attn_output
+                hidden_states = hidden_states + self.mlp(
+                    self.post_attention_layernorm(hidden_states))
         return hidden_states, present_kv
 
 
@@ -574,6 +617,9 @@ class DFlashDraftModel(nn.Module):
             present_key_values.append(present_kv)
 
         # Final norm + lm_head
+        if self.config.dflash_shift_label:
+            hidden_states = torch.cat(
+                [hidden_states[:, :1], hidden_states[:, :-1]], dim=1)
         hidden_states = self.norm(hidden_states)
         logits = self.lm_head(hidden_states).to(torch.float32)
         final_logit_softcapping = getattr(self.config,
@@ -602,7 +648,13 @@ class DFlashDraftModel(nn.Module):
                 hidden_states, h_delta, past_key_values[layer_idx],
                 metadata["rope_rotary_cos_sin"], **metadata)
             present.append(present_kv)
-        logits = self.lm_head(self.norm(hidden_states)).to(torch.float32)
+        if self.config.dflash_shift_label:
+            # Row i of each block then predicts token i, matching the runtime
+            # contract; the shifted-in row lands on the ignored anchor row 0.
+            hidden_states = torch.cat([hidden_states[:1], hidden_states[:-1]],
+                                      dim=0)
+        logits = self.lm_head(
+            self.norm(hidden_states).to(inputs_embeds.dtype)).to(torch.float32)
         cap = getattr(self.config, "final_logit_softcapping", None)
         if cap is not None:
             logits = torch.tanh(logits / cap) * cap

@@ -19,10 +19,42 @@ from ...ops import functional as F
 
 __all__ = [
     "BuildContext",
+    "Gemma4ClippableLinear",
     "Linear",
     "Gemma4RMSNormBase",
     "Module",
 ]
+
+
+class Gemma4ClippableLinear(Module):
+    """Gemma4 linear with checkpoint-provided clipping bounds."""
+
+    def __init__(self, ctx: BuildContext, prefix: str, rank: int = 3) -> None:
+        super().__init__(ctx, prefix)
+        linear_prefix = (prefix + ".linear"
+                         if ctx.weights.has(prefix +
+                                            ".linear.weight") else prefix)
+        self.linear = Linear(ctx,
+                             linear_prefix,
+                             rank=rank,
+                             tensor_parallel=False)
+        self.rank = rank
+
+    def forward(self, hidden: Tensor, compute_fp32: bool = False) -> Tensor:
+        if self.weights.has(self.key("input_min")):
+            hidden = hidden.maximum(self.weights.f16(self.key("input_min")))
+            hidden = hidden.minimum(self.weights.f16(self.key("input_max")))
+        if compute_fp32:
+            hidden = F.linear_f32_from_weights(hidden,
+                                               self.linear.weight_descriptor(),
+                                               self.linear.prefix,
+                                               rank=self.rank)
+        else:
+            hidden = self.linear(hidden)
+        if self.weights.has(self.key("output_min")):
+            hidden = hidden.maximum(self.weights.f16(self.key("output_min")))
+            hidden = hidden.minimum(self.weights.f16(self.key("output_max")))
+        return hidden
 
 
 class Gemma4RMSNormBase(Module):

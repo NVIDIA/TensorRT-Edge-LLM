@@ -15,6 +15,7 @@
 
 import asyncio
 import json
+import queue
 import threading
 import time
 from types import SimpleNamespace
@@ -24,6 +25,7 @@ import pytest
 from experimental.server.api.errors import (ServerOverloadedError,
                                             ServerUnavailableError)
 from experimental.server.config import ContextCacheConfig
+from experimental.server.runtime import engine
 from experimental.server.runtime.engine import (
     LLM, SamplingParams, _convert_messages_to_cpp,
     _native_context_cache_config, _resolve_spec_decode_runtime_options,
@@ -463,6 +465,9 @@ def test_stream_close_cancels_and_joins_native_worker():
         def wait_pop(self, timeout_ms=0):
             return None if self.cancelled else Chunk()
 
+        def try_pop(self):
+            return None
+
         def is_finished(self):
             return False
 
@@ -479,7 +484,7 @@ def test_stream_close_cancels_and_joins_native_worker():
         class StreamChannel:
 
             @staticmethod
-            def create():
+            def create(*, collect_metrics=False):
                 return channel
 
     llm = _bare_llm(object())
@@ -521,6 +526,9 @@ def test_async_disconnect_cancels_before_first_stream_chunk():
             self.cancelled.wait(timeout_ms / 1000)
             return None
 
+        def try_pop(self):
+            return None
+
         def is_finished(self):
             return False
 
@@ -537,7 +545,7 @@ def test_async_disconnect_cancels_before_first_stream_chunk():
         class StreamChannel:
 
             @staticmethod
-            def create():
+            def create(*, collect_metrics=False):
                 return channel
 
     llm = _bare_llm(object())
@@ -836,6 +844,9 @@ class _IFBChannel:
     def wait_pop(self, timeout_ms=0):
         return self.chunks.pop(0) if self.chunks else None
 
+    def try_pop(self):
+        return self.wait_pop()
+
     def is_finished(self):
         return not self.silent and not self.chunks
 
@@ -856,7 +867,7 @@ def _ifb_llm(engine, channel=None):
             class StreamChannel:
 
                 @staticmethod
-                def create():
+                def create(*, collect_metrics=False):
                     return channel
 
         llm._rt = RuntimeModule()
@@ -905,6 +916,62 @@ def test_ifb_stream_close_cancels_the_engine_request():
     assert engine.handle.cancelled
     assert channel.cancelled
     assert not engine.handle.got
+
+
+@pytest.mark.parametrize("outcome", ["completed", "cancelled", "failed"])
+def test_ifb_final_metrics_wait_for_outcome_without_emitting_more_text(
+        outcome):
+    # Given an in-flight request, when its outcome arrives, then final metrics precede completion or failure.
+    request_engine = _FakeEngine()
+    channel = _IFBChannel()
+    llm = _ifb_llm(request_engine, channel)
+    results, collected = [], []
+    native = SimpleNamespace(processed_prompt_tokens=2,
+                             generated_tokens=3,
+                             decoded_tokens=2,
+                             prompt_seconds=0.5,
+                             generation_seconds=0.25)
+
+    def ready():
+        assert not results
+        if not request_engine.handle.is_ready:
+            request_engine.handle.is_ready = True
+            return False
+        channel.chunks.append(
+            SimpleNamespace(token_ids=[], prompt_token_count=3,
+                            metrics=native))
+        return True
+
+    def get():
+        assert channel.chunks[-1].metrics is native
+        collected.append(True)
+        if outcome != "completed":
+            raise RuntimeError(outcome)
+
+    request_engine.handle.ready = ready
+    request_engine.handle.get = get
+    stream = llm.generate_stream([],
+                                 prebuilt_request=SimpleNamespace(),
+                                 on_metrics=results.append)
+    assert next(stream).text == "partial"
+    if outcome == "cancelled":
+        stream.close()
+        assert request_engine.handle.cancelled
+    elif outcome == "failed":
+        with pytest.raises(RuntimeError, match="failed"):
+            list(stream)
+    else:
+        assert list(stream) == []
+    assert collected == [True]
+    metrics, = results
+    assert metrics.prompt_tokens == 3
+    assert metrics.processed_prompt_tokens == 2
+    assert metrics.generated_tokens == 3
+    assert metrics.prompt_time == 0.5
+    assert metrics.generation_time == 0.25
+    assert metrics.decoded_tokens == 2
+    assert metrics.decode_tokens_per_second == 8.0
+    assert not channel.chunks
 
 
 def test_ifb_stream_raises_an_outcome_error_after_a_clean_finish():
@@ -1338,3 +1405,221 @@ def test_engine_refusal_maps_to_overload():
             await client.generate([], SamplingParams())
 
     asyncio.run(exercise())
+
+
+def test_context_validation_reserves_output_tokens():
+    llm = _bare_llm(object())
+    llm._max_input_len, llm._max_kv_cache_capacity = 10, 12
+    llm._make_generation_request = lambda messages, params: messages
+    llm._count_prepared_prompt_tokens = lambda _: 8
+    assert llm.validate_context([], engine.SamplingParams(max_tokens=4)) == 8
+    with pytest.raises(ValueError, match="output tokens reserved"):
+        llm.validate_context([], engine.SamplingParams(max_tokens=5))
+    llm._max_input_len = 7
+    with pytest.raises(ValueError):
+        llm.validate_context([], engine.SamplingParams(max_tokens=1))
+
+
+def test_stream_without_metrics_skips_collection(monkeypatch):
+    # Given no metrics callback, when a stream runs, then native collection and Python clock reads stay off.
+    request_engine = _FakeEngine()
+    channel = _IFBChannel()
+    llm = _ifb_llm(request_engine, channel)
+    requested = []
+
+    def create_channel(*, collect_metrics=False):
+        requested.append(collect_metrics)
+        return channel
+
+    def unexpected_clock():
+        pytest.fail("Metrics clock read without a callback")
+
+    llm._rt.StreamChannel.create = create_channel
+    monkeypatch.setattr(engine.time, "perf_counter", unexpected_clock)
+    assert "".join(delta.text for delta in llm.generate_stream(
+        [], prebuilt_request=SimpleNamespace())) == "partial"
+    assert requested == [False]
+    assert request_engine.handle.got
+
+
+@pytest.mark.parametrize("received_at,native_timings", [
+    pytest.param([11., 13., 14.], True, id="steady-delivery"),
+    pytest.param([100., 100.001, 100.002], True, id="bursty-delivery"),
+    pytest.param([11., 13., 14.], False, id="incomplete-native-timings"),
+])
+def test_stream_metrics_use_native_timings(monkeypatch, received_at,
+                                           native_timings):
+    # Given delayed chunks, when metrics are requested, then native timing determines throughput.
+    native = SimpleNamespace(processed_prompt_tokens=2,
+                             generated_tokens=3 if native_timings else 0,
+                             decoded_tokens=2 if native_timings else 0,
+                             prompt_seconds=0.5 if native_timings else 0.,
+                             generation_seconds=0.25 if native_timings else 0.)
+    chunks = iter([
+        SimpleNamespace(text="first",
+                        token_ids=[1, 2],
+                        metrics=native,
+                        prompt_token_count=3,
+                        finished=False,
+                        logprobs=[]),
+        SimpleNamespace(text="second",
+                        token_ids=[3],
+                        prompt_token_count=-1,
+                        finished=False,
+                        logprobs=[]),
+        SimpleNamespace(text="",
+                        token_ids=[],
+                        prompt_token_count=-1,
+                        finished=True,
+                        reason=None,
+                        metrics=native,
+                        logprobs=[]),
+    ])
+    started_at = 10.
+    clock = SimpleNamespace(now=started_at)
+    deliveries = iter(received_at)
+
+    def wait_pop(**_kwargs):
+        chunk = next(chunks)
+        clock.now = next(deliveries)
+        return chunk
+
+    channel = SimpleNamespace(
+        set_skip_special_tokens=lambda _: None,
+        wait_pop=wait_pop,
+        try_pop=lambda: next(chunks, None),
+        is_finished=lambda: True,
+        is_cancelled=lambda: False,
+        cancel=lambda: None,
+    )
+    llm = _bare_llm(object())
+
+    def create_channel(*, collect_metrics=False):
+        assert collect_metrics
+        return channel
+
+    llm._rt = SimpleNamespace(StreamChannel=SimpleNamespace(
+        create=create_channel))
+    llm._handle_request = lambda _: None
+    monkeypatch.setattr(engine.time, "perf_counter", lambda: clock.now)
+    monkeypatch.setattr(engine, "finish_reason_name", lambda *_: "stop")
+    results = []
+    stream = llm.generate_stream([],
+                                 prebuilt_request=SimpleNamespace(),
+                                 on_metrics=results.append)
+    assert "".join(delta.text for delta in stream) == "firstsecond"
+    metrics, = results
+    assert metrics.generated_tokens == 3
+    assert metrics.time_to_first_token == received_at[0] - started_at
+    assert metrics.generation_time == (0.25 if native_timings else 0.)
+    assert metrics.decoded_tokens == (2 if native_timings else 0)
+    assert metrics.decode_tokens_per_second == (8.0 if native_timings else 0.)
+    assert metrics.total_time == received_at[-1] - started_at
+    assert metrics.processed_prompt_tokens == 2
+    assert metrics.prompt_time == (0.5 if native_timings else 0.)
+
+
+@pytest.mark.parametrize("generated,decoded", [(1, 0), (3, 2)])
+def test_decode_throughput_is_zero_without_decode_timing(generated, decoded):
+    # Given no decode timing, when throughput is read, then it is zero and output counts remain available.
+    metrics = engine.GenerationMetrics(generated_tokens=generated,
+                                       decoded_tokens=decoded)
+    assert metrics.decode_tokens_per_second == 0.0
+    assert metrics.generated_tokens == generated
+
+
+@pytest.mark.parametrize("operation", ["cancel", "close"])
+def test_unstarted_stream_reports_final_metrics_once(operation):
+    # Given an unstarted stream, when cancelled or closed, then empty metrics are reported once.
+    llm = _bare_llm(object())
+    results = []
+
+    def on_metrics(metrics):
+        results.append(metrics)
+        if operation == "close":
+            stream.close()
+
+    stream = llm.generate_stream([], on_metrics=on_metrics)
+    if operation == "cancel":
+        stream.cancel()
+    else:
+        stream.close()
+    assert results == [engine.GenerationMetrics()]
+    assert list(stream) == []
+    stream.cancel()
+    stream.close()
+    assert len(results) == 1
+
+
+@pytest.mark.parametrize("partial", [False, True],
+                         ids=["before-first-chunk", "after-partial-response"])
+def test_cancellation_collects_final_worker_metrics_without_more_text(partial):
+    # Given a running producer, when cancelled, then final metrics survive without emitting more text.
+    pending = queue.Queue()
+    cancelled = threading.Event()
+    stopped = threading.Event()
+
+    def chunk(text, tokens, native=None):
+        return SimpleNamespace(text=text,
+                               token_ids=tokens,
+                               prompt_token_count=3,
+                               finished=False,
+                               logprobs=[],
+                               metrics=native)
+
+    def handle(_request):
+        try:
+            if partial:
+                pending.put(chunk("visible", [1]))
+            assert cancelled.wait(5)
+            pending.put(chunk("hidden", [2]))
+            pending.put(
+                chunk(
+                    "", [],
+                    SimpleNamespace(processed_prompt_tokens=2,
+                                    generated_tokens=3,
+                                    decoded_tokens=2,
+                                    prompt_seconds=0.5,
+                                    generation_seconds=0.25)))
+        finally:
+            stopped.set()
+
+    def wait_pop(**_kwargs):
+        if not partial:
+            stream.cancel()
+        return pending.get(timeout=5)
+
+    def try_pop():
+        assert stopped.is_set(), "metrics drained before worker stopped"
+        return pending.get_nowait() if not pending.empty() else None
+
+    channel = SimpleNamespace(set_skip_special_tokens=lambda _: None,
+                              wait_pop=wait_pop,
+                              try_pop=try_pop,
+                              is_finished=stopped.is_set,
+                              is_cancelled=cancelled.is_set,
+                              cancel=cancelled.set)
+    llm = _bare_llm(object())
+    llm._rt = SimpleNamespace(StreamChannel=SimpleNamespace(
+        create=lambda **_: channel))
+    llm._handle_request = handle
+    results = []
+    stream = llm.generate_stream([],
+                                 prebuilt_request=SimpleNamespace(),
+                                 on_metrics=results.append)
+    if partial:
+        assert next(stream).text == "visible"
+        stream.cancel()
+        stream.close()
+    assert list(stream) == []
+    assert stopped.is_set() and pending.empty()
+    metrics, = results
+    assert metrics.prompt_tokens == 3
+    assert metrics.processed_prompt_tokens == 2
+    assert metrics.generated_tokens == 3
+    assert metrics.prompt_time == 0.5
+    assert metrics.generation_time == 0.25
+    assert metrics.decoded_tokens == 2
+    assert metrics.decode_tokens_per_second == 8.0
+    assert metrics.total_time > 0
+    assert (metrics.time_to_first_token is not None) == partial

@@ -14,15 +14,42 @@
 # limitations under the License.
 """Resolve test checkpoints from local storage or Hugging Face."""
 
-import fcntl
+import os
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional, Sequence
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CHECKPOINT_FILES = ("*.safetensors", "*.bin")
 CHECKPOINTS_BY_ID = {}
 PRIVATE_CHECKPOINT_IDS = frozenset()
 
+
+
+@contextmanager
+def _exclusive_file_lock(lock_file):
+    if os.name == "nt":
+        lock_file.seek(0)
+        lock_file.write("\0")
+        lock_file.flush()
+        os.lseek(lock_file.fileno(), 0, os.SEEK_SET)
+        msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+        try:
+            yield
+        finally:
+            os.lseek(lock_file.fileno(), 0, os.SEEK_SET)
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
 def _build_alias_index(*, quantized: bool) -> dict[str, str]:
@@ -157,12 +184,12 @@ def _download_from_hf(hf_id: str, download_root: str) -> str:
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     with lock_path.open("w") as lock_file:
-        fcntl.flock(lock_file, fcntl.LOCK_EX)
-        if is_checkpoint_dir(local_dir):
-            return str(local_dir)
-        snapshot_download(repo_id=hf_id,
-                          local_dir=local_dir,
-                          cache_dir=cache_dir)
+        with _exclusive_file_lock(lock_file):
+            if is_checkpoint_dir(local_dir):
+                return str(local_dir)
+            snapshot_download(repo_id=hf_id,
+                              local_dir=local_dir,
+                              cache_dir=cache_dir)
 
     if not is_checkpoint_dir(local_dir):
         raise RuntimeError(

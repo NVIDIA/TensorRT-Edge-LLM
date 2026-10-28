@@ -36,10 +36,10 @@ ARG CUTE_DSL_BUILDER_VERSION=dev
 LABEL org.opencontainers.image.title="TensorRT Edge-LLM CuTe DSL Kernel Builder" \
       org.opencontainers.image.version="${CUTE_DSL_BUILDER_VERSION}"
 
-ARG CUTE_DSL_VERSION=4.7.0
-ARG CUTE_DSL_RUNTIME_LIBS_VERSION=4.7.0
-ARG CUTE_DSL_CU12_REQUIREMENT=nvidia-cutlass-dsl[cu12]==4.7.0
-ARG CUTE_DSL_CU13_REQUIREMENT=nvidia-cutlass-dsl[cu13]==4.7.0
+ARG CUTE_DSL_VERSION=4.8.0
+ARG CUTE_DSL_RUNTIME_LIBS_VERSION=4.8.0
+ARG CUTE_DSL_CU12_REQUIREMENT=nvidia-cutlass-dsl[cu12]==4.8.0
+ARG CUTE_DSL_CU13_REQUIREMENT=nvidia-cutlass-dsl[cu13]==4.8.0
 ARG CUTE_DSL_CUPY_REQUIREMENT=cupy-cuda13x==13.6.0
 
 ENV DEBIAN_FRONTEND=noninteractive \

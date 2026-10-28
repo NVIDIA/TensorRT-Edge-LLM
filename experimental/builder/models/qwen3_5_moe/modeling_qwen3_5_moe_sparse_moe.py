@@ -26,7 +26,9 @@ from ...core import quantization
 from ...ops import (BuildContext, GatedExperts, GatedMLP, Linear, Module,
                     Tensor, TopKRouter)
 from ...ops import functional as F
-from ...ops import prepare_gated_int4_weights, prepare_gated_nvfp4_weights
+from ...ops import (prepare_gated_int4_weights,
+                    prepare_gated_nvfp4_a16_weights,
+                    prepare_gated_nvfp4_weights)
 from . import weights as weight_conversion
 
 __all__ = [
@@ -116,6 +118,24 @@ class Qwen3_5MoeSparseMoeBlock(Module):
                                  self.ctx.options.sm12x,
                                  weight_prefix=self.experts.prefix,
                                  weight_bindings=bindings)
+        elif expert_quant_type == quantization.QUANT_NVFP4_A16:
+            moe_weights, weight_bindings = prepare_gated_nvfp4_a16_weights(
+                self.ctx, self.experts)
+            routed = F.nvfp4_a16_moe(router_logits,
+                                     hidden_states,
+                                     moe_weights,
+                                     cfg.num_experts,
+                                     cfg.num_experts_per_tok,
+                                     cfg.hidden_size,
+                                     moe_weights["padded_intermediate"],
+                                     self.activation_type,
+                                     self.n_group,
+                                     self.topk_group,
+                                     self.norm_topk_prob,
+                                     self.routed_scaling_factor,
+                                     self.routing_mode,
+                                     weight_prefix=self.experts.prefix,
+                                     weight_bindings=weight_bindings)
         elif expert_quant_type == quantization.QUANT_INT4_GPTQ:
 
             def materialize_int4():

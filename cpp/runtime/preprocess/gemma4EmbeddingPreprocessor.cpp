@@ -59,6 +59,11 @@ Gemma4EmbeddingPreprocessor::Gemma4EmbeddingPreprocessor(std::filesystem::path c
     ELLM_CHECK(pleShape.getNumDims() == 2, "PLE table must be 2D [vocab, num_layers * hidden]");
     ELLM_CHECK(pleShape[1] == static_cast<int64_t>(mConfig.numPleInputs) * mConfig.pleHiddenSize,
         "PLE table second dimension must equal num_ple_inputs * ple_hidden_size");
+    if (mConfig.imageTokenId >= 0 || mConfig.audioTokenId >= 0)
+    {
+        ELLM_CHECK(mConfig.padTokenId >= 0 && mConfig.padTokenId < pleShape[0],
+            "Gemma4 multimodal PLE pad_token_id is outside the PLE table vocabulary");
+    }
     ELLM_CHECK(
         mPleTable.getDataType() == nvinfer1::DataType::kHALF || mPleTable.getDataType() == nvinfer1::DataType::kBF16,
         "PLE table must be FP16 or BF16");
@@ -107,7 +112,7 @@ void Gemma4EmbeddingPreprocessor::embed(Tensor const& tokenIds, cudaStream_t str
     auto const tokenShape = tokenIds.getShape();
     ELLM_CHECK(tokenShape.getNumDims() == 2, "Gemma4 PLE token IDs must be [batch, seq_len]");
     kernel::gemma4PleGather(tokenIds, mPleTable, mPleOutputBuffer, mConfig.numPleInputs, mConfig.pleHiddenSize,
-        mConfig.imageTokenId, mConfig.audioTokenId, stream);
+        mConfig.imageTokenId, mConfig.audioTokenId, mConfig.padTokenId, stream);
     reshapeOutputsTokenMajor(tokenShape[0] * tokenShape[1]);
 }
 

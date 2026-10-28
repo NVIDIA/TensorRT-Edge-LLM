@@ -100,6 +100,14 @@ Json makeHybridConfig()
     return json;
 }
 
+void addPlePool(Json& json, int32_t hiddenSize = 64)
+{
+    int64_t const numLayers = json["num_hidden_layers"].get<int64_t>();
+    json["ple_enabled"] = true;
+    json["num_ple_inputs"] = numLayers;
+    json["ple_hidden_size"] = hiddenSize;
+}
+
 } // namespace
 
 class LLMEngineConfigTest : public ::testing::Test
@@ -636,6 +644,7 @@ TEST_F(LLMEngineConfigTest, MissingOptionalFieldsGetDefaults)
     EXPECT_EQ(cfg.convDim, 0);
     EXPECT_EQ(cfg.convKernel, 0);
     EXPECT_EQ(cfg.numDeepstackFeatures, 0);
+    EXPECT_EQ(cfg.padTokenId, 0);
     EXPECT_EQ(cfg.imageTokenId, -1);
     EXPECT_EQ(cfg.audioTokenId, -1);
     EXPECT_NE(cfg.ropeConfig.type, RopeType::kMRope);
@@ -782,6 +791,42 @@ TEST_F(LLMEngineConfigTest, DeepstackAndMultimodal)
     EXPECT_EQ(cfg.numDeepstackFeatures, 4);
     EXPECT_EQ(cfg.imageTokenId, 151655);
     EXPECT_EQ(cfg.audioTokenId, 151656);
+}
+
+TEST_F(LLMEngineConfigTest, MultimodalPleRequiresPadToken)
+{
+    Json json = makeMinimalConfig();
+    addPlePool(json);
+    json["audio_token_id"] = 151656;
+    auto const path = writeJsonToTempFile(json);
+
+    // Given a multimodal PLE config without a pad token, when it is parsed, then validation rejects it.
+    EXPECT_THROW(parseEngineConfig(path), std::runtime_error);
+}
+
+TEST_F(LLMEngineConfigTest, MultimodalPleParsesPadToken)
+{
+    Json json = makeMinimalConfig();
+    addPlePool(json);
+    json["audio_token_id"] = 151656;
+    json["pad_token_id"] = 0;
+    auto const path = writeJsonToTempFile(json);
+
+    // Given a valid multimodal PLE pad token, when the config is parsed, then its token ID is retained.
+    LLMEngineConfig cfg = parseEngineConfig(path);
+    EXPECT_EQ(cfg.padTokenId, 0);
+}
+
+TEST_F(LLMEngineConfigTest, MultimodalPleRejectsOutOfRangePadToken)
+{
+    Json json = makeMinimalConfig();
+    addPlePool(json);
+    json["image_token_id"] = 151655;
+    json["pad_token_id"] = json["vocab_size"];
+    auto const path = writeJsonToTempFile(json);
+
+    // Given a pad token beyond the PLE table, when the config is parsed, then validation rejects it.
+    EXPECT_THROW(parseEngineConfig(path), std::runtime_error);
 }
 
 TEST_F(LLMEngineConfigTest, DiffusionGemmaSamplerConfig)

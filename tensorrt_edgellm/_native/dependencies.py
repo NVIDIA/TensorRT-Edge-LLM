@@ -32,7 +32,7 @@ _TENSORRT_HANDLE: Optional[ctypes.CDLL] = None
 
 _INSTALL_GUIDANCE = (
     "Install the TensorRT Python package that matches the selected wheel "
-    "payload, then retry. Qualified 0.11.0 packages are "
+    "payload, then retry. Qualified packages are "
     "tensorrt==10.16.0.72 for TensorRT 10 payloads other than DGX Spark, "
     "tensorrt==10.16.1.11 for DGX Spark, and tensorrt==11.0.0.114 for "
     "TensorRT 11 x86 payloads. Install from PyPI with NVIDIA's package index; "

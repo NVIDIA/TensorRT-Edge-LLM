@@ -322,6 +322,9 @@ class DSparkCachedAttention(nn.Module):
 
         return attn_output, present_kv
 
+    def _project_output(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        return self.o_proj(hidden_states)
+
     forward_ragged = DFlashCachedAttention.forward_ragged
 
 
@@ -337,6 +340,7 @@ class DSparkCachedDecoderLayer(nn.Module):
         super().__init__()
         self.layer_idx = layer_idx
         self.is_gemma4 = _is_gemma4_model_type(config.model_type)
+        self.overflow_guard = False
         self.self_attn = DSparkCachedAttention(config, layer_idx=layer_idx)
         self.mlp = (Gemma4MLP(config, layer_idx=layer_idx)
                     if self.is_gemma4 else MLP(config, layer_idx=layer_idx))

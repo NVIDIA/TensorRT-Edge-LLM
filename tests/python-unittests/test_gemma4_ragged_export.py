@@ -19,12 +19,14 @@ import onnx
 import pytest
 import torch
 
+from tensorrt_edgellm.checkpoint.loader import _set_tensor
 from tensorrt_edgellm.config import ModelConfig
 from tensorrt_edgellm.models.gemma4.modeling_gemma4_assistant import \
     Gemma4AssistantForCausalLM
 from tensorrt_edgellm.models.gemma4.modeling_gemma4_text import \
     Gemma4ForCausalLM
-from tensorrt_edgellm.onnx.export import _export_model
+from tensorrt_edgellm.onnx.export import (_export_model,
+                                          setup_fp8_qkv_scales_for_export)
 
 
 def _config() -> ModelConfig:
@@ -132,6 +134,35 @@ def test_gemma4_assistant_uses_token_major_shared_kv_contract():
     logits, hidden_states = spec.wrapped(*spec.args)
     assert logits.shape == (1, config.vocab_size)
     assert hidden_states.shape == (1, config.backbone_hidden_size)
+
+
+def test_gemma4_k_eq_v_fp8_kv_uses_calibrated_v_scale():
+    config = _config()
+    config.attention_k_eq_v = True
+    config.quant.kv_cache_quant = "fp8"
+    model = Gemma4ForCausalLM(config)
+    attn = model.model.layers[1].self_attn
+    assert attn.attention_k_eq_v
+
+    prefix = "model.layers.1.self_attn."
+    assert _set_tensor(model, prefix + "k_proj.k_scale", torch.tensor([0.003]))
+    assert _set_tensor(model, prefix + "v_proj.v_scale", torch.tensor([0.05]))
+    setup_fp8_qkv_scales_for_export(model)
+
+    assert attn._qkv_scales_float[1:] == pytest.approx([0.003, 0.05])
+
+
+def test_gemma4_assistant_reads_target_fp8_kv_scales():
+    config = _config()
+    config.backbone_hidden_size = config.hidden_size
+    config.quant.kv_cache_quant = "fp8"
+    model = Gemma4AssistantForCausalLM(config)
+    model.set_target_kv_scales([[0.002, 0.03], [0.004, 0.05]])
+
+    scales = [layer.self_attn.target_kv_scales for layer in model.model.layers]
+    assert scales == [[0.002, 0.03], [0.004, 0.05]]
+    with pytest.raises(ValueError):
+        model.set_target_kv_scales([[1.0, 1.0]])
 
 
 def test_gemma4_mtp_ragged_base_emits_final_norm_hidden(monkeypatch):

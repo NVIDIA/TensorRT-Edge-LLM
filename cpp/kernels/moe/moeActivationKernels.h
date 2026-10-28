@@ -56,5 +56,10 @@ enum MoeActivationType : int32_t
 void moeActivation(rt::Tensor const& input, rt::Tensor& output, int64_t numTokens, int64_t intermediateDim,
     int32_t activationType, cudaStream_t stream);
 
+//! Apply SwiGLU/GeGLU when gate and up projections use independent per-expert global scales.
+void moeScaledGatedActivation(rt::Tensor const& input, rt::Tensor& output, rt::Tensor const& projectionGlobalScales,
+    rt::Tensor const& expertIndices, int64_t numTokens, int64_t intermediateDim, int32_t activationType,
+    cudaStream_t stream);
+
 } // namespace kernel
 } // namespace trt_edgellm

@@ -1153,7 +1153,7 @@ def _export_model(
             optimize=optimize,
         )
     prog.save(output_path, external_data=True)
-    with open(output_path, "rb") as _f:
+    with open(output_path, "rb+") as _f:
         os.fsync(_f.fileno())
     del prog
     gc.collect()

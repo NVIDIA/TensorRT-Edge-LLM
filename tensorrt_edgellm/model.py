@@ -558,6 +558,11 @@ class AutoModel:
                 dflash_draft_dir,
                 _default_attention_scale_for_model_dir(dflash_draft_dir),
                 target_vocab_size=base_config.vocab_size)
+            # Some Gemma4 targets use a Qwen3 DFlash draft whose final
+            # attention output can overflow FP16 before the residual add.
+            config.dflash_overflow_fp32 = (
+                base_config.model_type.startswith("gemma4")
+                and config.model_type == "qwen3")
             if base_config.model_type == "nemotron_h":
                 # Nemotron-3.5 target-hidden stays far inside FP16; run fc at the
                 # checkpoint's native NVFP4 rather than the dense-FP16 + FP32

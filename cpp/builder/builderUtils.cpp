@@ -76,12 +76,18 @@ std::string applyCompileWorkarounds()
     appendLunowudFlag(lunowudFlags, "-mlir:collective:fp4=off");
     appendLunowudFlag(lunowudFlags, "-cask_fusion:async_policy=1");
 #endif
-#if NV_TENSORRT_MAJOR >= 11 || (NV_TENSORRT_MAJOR == 10 && NV_TENSORRT_MINOR >= 13)
+    // Turning FP8 fc-h-fusion off, otherwise TRT would emit empty text
+    // for per-channel-scaled FP8 GEMMs on Blackwell.
+#if IS_TRT_RTX || NV_TENSORRT_MAJOR >= 11 || (NV_TENSORRT_MAJOR == 10 && NV_TENSORRT_MINOR >= 13)
     appendLunowudFlag(lunowudFlags, "-peep:fc_h_fusion=off");
 #endif
     if (existingLunowud || !lunowudFlags.empty())
     {
+#if defined(_WIN32)
+        _putenv_s("__LUNOWUD", lunowudFlags.c_str());
+#else
         setenv("__LUNOWUD", lunowudFlags.c_str(), 1);
+#endif
     }
     return lunowudFlags;
 }

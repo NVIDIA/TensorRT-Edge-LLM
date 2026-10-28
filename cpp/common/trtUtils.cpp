@@ -25,13 +25,18 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#if defined(_WIN32)
+#include <fstream>
+#else
 #include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <sys/stat.h>
-#include <unistd.h>
 #include <utility>
 
 namespace trt_edgellm
@@ -160,9 +165,27 @@ class FileStreamReaderV2 : public nvinfer1::IStreamReaderV2
 public:
     explicit FileStreamReaderV2(std::filesystem::path const& filePath)
         : mPath(filePath.string())
+#if defined(_WIN32)
+        , mFile(filePath, std::ios::binary)
+#endif
         , mDeviceTransferBuffers{
               PinnedHostBuffer{kEngineDeviceTransferChunkSize}, PinnedHostBuffer{kEngineDeviceTransferChunkSize}}
     {
+#if defined(_WIN32)
+        if (!mFile)
+        {
+            throw std::runtime_error("Failed to open engine file: " + mPath);
+        }
+
+        mFile.seekg(0, std::ios::end);
+        std::streampos const end = mFile.tellg();
+        if (end <= 0)
+        {
+            throw std::runtime_error("Engine file is empty: " + mPath);
+        }
+        mSize = static_cast<int64_t>(end);
+        mFile.seekg(0, std::ios::beg);
+#else
         mFd = open(mPath.c_str(), O_RDONLY);
         if (mFd < 0)
         {
@@ -183,21 +206,24 @@ public:
             throw std::runtime_error("Engine file is empty: " + mPath);
         }
         mSize = static_cast<int64_t>(status.st_size);
+#endif
     }
-
     FileStreamReaderV2(FileStreamReaderV2 const&) = delete;
     FileStreamReaderV2& operator=(FileStreamReaderV2 const&) = delete;
 
     ~FileStreamReaderV2() override
     {
+#if !defined(_WIN32)
         if (mFd >= 0)
         {
             close(mFd);
         }
+#endif
     }
 
     int64_t read(void* destination, int64_t nbBytes, cudaStream_t stream) noexcept override
     {
+        std::lock_guard<std::mutex> const lock(mMutex);
         if (destination == nullptr || nbBytes < 0)
         {
             return -1;
@@ -217,6 +243,7 @@ public:
 
     bool seek(int64_t offset, nvinfer1::SeekPosition where) noexcept override
     {
+        std::lock_guard<std::mutex> const lock(mMutex);
         int64_t base = 0;
         switch (where)
         {
@@ -238,6 +265,23 @@ public:
 private:
     int64_t readToHost(void* destination, int64_t bytesToRead) noexcept
     {
+#if defined(_WIN32)
+        mFile.clear();
+        mFile.seekg(mOffset, std::ios::beg);
+        if (!mFile)
+        {
+            return -1;
+        }
+
+        mFile.read(static_cast<char*>(destination), static_cast<std::streamsize>(bytesToRead));
+        std::streamsize const count = mFile.gcount();
+        if (count == 0 && mFile.bad())
+        {
+            return -1;
+        }
+        mOffset += static_cast<int64_t>(count);
+        return static_cast<int64_t>(count);
+#else
         auto* output = static_cast<std::byte*>(destination);
         int64_t totalRead = 0;
         while (totalRead < bytesToRead)
@@ -260,8 +304,8 @@ private:
         }
         mOffset += totalRead;
         return totalRead;
+#endif
     }
-
     int64_t readToDevice(void* destination, int64_t bytesToRead, cudaStream_t stream) noexcept
     {
         auto* output = static_cast<std::byte*>(destination);
@@ -301,10 +345,15 @@ private:
     }
 
     std::string mPath;
+#if defined(_WIN32)
+    std::ifstream mFile;
+#else
     int mFd{-1};
+#endif
     int64_t mSize{0};
     int64_t mOffset{0};
     std::array<PinnedHostBuffer, kEngineDeviceTransferBufferCount> mDeviceTransferBuffers;
+    std::mutex mMutex;
 };
 
 #endif // IStreamReaderV2

@@ -14,10 +14,10 @@
 # limitations under the License.
 """Experimental-builder policy for checkpoint-backed runtime weights.
 
-Supported INT4 FFN, INT4 MoE, NVFP4 MoE, TP NVFP4 plugin, and FP16 layouts
-become runtime-owned engine inputs or plugin resources when the model family
-provides a reproducible checkpoint transform recipe. FP8 and MXFP8 weights
-remain folded into the engine by design.
+Supported INT4 FFN, INT4 MoE, NVFP4 MoE, W4A16, TP NVFP4 plugin, and FP16
+layouts become runtime-owned engine inputs or plugin resources when the model
+family provides a reproducible checkpoint transform recipe. FP8 and MXFP8
+weights remain folded into the engine by design.
 """
 
 from dataclasses import dataclass, replace
@@ -26,6 +26,7 @@ from typing import Iterable, Optional, Sequence, Union
 EXTERNAL_WEIGHT_INT4_FFN = "int4_ffn"
 EXTERNAL_WEIGHT_INT4_MOE = "int4_moe"
 EXTERNAL_WEIGHT_NVFP4_MOE = "nvfp4_moe"
+EXTERNAL_WEIGHT_NVFP4_A16 = "nvfp4_a16"
 EXTERNAL_WEIGHT_NVFP4_TP = "nvfp4_tp"
 EXTERNAL_WEIGHT_LM_HEAD = "lm_head"
 EXTERNAL_WEIGHT_FP16 = "fp16"
@@ -36,6 +37,7 @@ EXTERNAL_WEIGHT_KINDS = (
     EXTERNAL_WEIGHT_INT4_FFN,
     EXTERNAL_WEIGHT_INT4_MOE,
     EXTERNAL_WEIGHT_NVFP4_MOE,
+    EXTERNAL_WEIGHT_NVFP4_A16,
     EXTERNAL_WEIGHT_NVFP4_TP,
     EXTERNAL_WEIGHT_LM_HEAD,
     EXTERNAL_WEIGHT_FP16,

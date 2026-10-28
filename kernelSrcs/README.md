@@ -40,10 +40,12 @@ for installation commands and CUDA 12/13 host-runtime guidance.
 
 | Dependency | Version | Notes |
 |---|---|---|
-| `nvidia-cutlass-dsl` | `4.7.0` | Pinned; isolate cu12 and cu13 compiler backends by environment |
+| `nvidia-cutlass-dsl` | `4.8.0` | Pinned public release; isolate cu12 and cu13 compiler backends by environment |
 | `cupy-cuda12x` | `12.3.0` | CUDA 12 build host |
 | `cupy-cuda13x` | `13.6.0` | CUDA 13 build host |
-| `cuda-python` | matches the build host | Required by every group's AOT export |
+
+`nvidia-cutlass-dsl` installs its CUDA driver bindings; do not install those
+bindings separately.
 
 ## Common Commands
 
@@ -72,7 +74,7 @@ with storage-free tensor descriptors, so no GPU needs to be mounted:
 ```bash
 # Context = kernelSrcs/ (small, self-contained); the repo root would drag
 # local build trees into the docker context.
-CUTE_DSL_BUILDER_VERSION=4.7.0
+CUTE_DSL_BUILDER_VERSION=4.8.0
 docker build \
   -f kernelSrcs/Dockerfile.cutedsl \
   --build-arg "CUTE_DSL_BUILDER_VERSION=${CUTE_DSL_BUILDER_VERSION}" \
@@ -155,7 +157,7 @@ require rebuilding the image, and bind-mount the expanded artifact directory so
 the generated objects and headers update the tree consumed by CMake:
 
 ```bash
-CUTE_DSL_BUILDER_VERSION=4.7.0
+CUTE_DSL_BUILDER_VERSION=4.8.0
 docker build \
   -f kernelSrcs/Dockerfile.cutedsl \
   --build-arg "CUTE_DSL_BUILDER_VERSION=${CUTE_DSL_BUILDER_VERSION}" \
@@ -194,11 +196,10 @@ python3 -m venv .venv-cutedsl-cu13
 source .venv-cutedsl-cu13/bin/activate
 python -m pip install --upgrade pip wheel
 
-export CUTE_DSL_VERSION=4.7.0
+export CUTE_DSL_VERSION=4.8.0
 python -m pip install \
   "nvidia-cutlass-dsl[cu13]==${CUTE_DSL_VERSION}" \
-  cupy-cuda13x==13.6.0 \
-  cuda-python
+  cupy-cuda13x==13.6.0
 
 python kernelSrcs/build_cutedsl.py \
   --kernels fmha \

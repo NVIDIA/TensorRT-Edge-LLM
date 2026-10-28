@@ -32,9 +32,9 @@
 // original termios on every exit path (normal, signal, exception).
 //
 // Usage:
-//   llm_stream --engineDir DIR --inputFile PATH
-//     [--multimodalEngineDir DIR] [--specDecode [--specDraftTopK K ...]]
-//     [--maxGenerateLength N] [--streamInterval N]
+//   llm_stream --engine-dir DIR --input-file PATH
+//     [--multimodal-engine-dir DIR] [--spec-decode [--spec-draft-top-k K ...]]
+//     [--max-generate-length N] [--stream-interval N]
 
 #include "common/checkMacros.h"
 #include "common/trtUtils.h"
@@ -246,21 +246,22 @@ bool applyEngineSpecDecodeDefaults(Args& args)
 void printUsage(char const* argv0)
 {
     std::cout << "Usage: " << argv0
-              << " --engineDir DIR --inputFile PATH\n"
-                 "           [--multimodalEngineDir DIR] [--maxGenerateLength N]\n"
-                 "           [--streamInterval N] [--specDecode [--specDraftTopK K]\n"
-                 "                                             [--specDraftStep S]\n"
-                 "                                             [--specVerifySize V]\n"
-                 "                                             [--dflashBlockSize B|--jetspecBlockSize B]]\n\n"
+              << " --engine-dir DIR --input-file PATH\n"
+                 "           [--multimodal-engine-dir DIR] [--max-generate-length N]\n"
+                 "           [--stream-interval N] [--spec-decode [--spec-draft-top-k K]\n"
+                 "                                             [--spec-draft-step S]\n"
+                 "                                             [--spec-verify-size V]\n"
+                 "                                             [--dflash-block-size B|--jetspec-block-size B]]\n\n"
                  "Spec decode:\n"
-                 "   --specDraftTopK K     Default: 8; DFlash/JetSpec/DSpark default to 1 when omitted\n"
-                 "   --specDraftStep S     Default: 4; DFlash/JetSpec/DSpark default to 1 when omitted\n"
-                 "   --specVerifySize V    Default: 24; DFlash/JetSpec linear default to block size\n"
-                 "   --dflashBlockSize B   DFlash/JetSpec proposal block size; 0 means infer from engine config\n\n"
+                 "   --spec-draft-top-k K   Default: 8; DFlash/JetSpec/DSpark default to 1 when omitted\n"
+                 "   --spec-draft-step S    Default: 4; DFlash/JetSpec/DSpark default to 1 when omitted\n"
+                 "   --spec-verify-size V   Default: 24; DFlash/JetSpec linear default to block size\n"
+                 "   --dflash-block-size B  DFlash/JetSpec proposal block size; 0 means infer from engine config\n\n"
                  "Hotkeys while streaming:\n"
                  "   s         skip the current request\n"
                  "   q         quit (cancel current + stop)\n"
                  "   Ctrl-C    same as q\n";
+    std::cout << "Legacy camelCase option spellings remain accepted.\n";
 }
 
 bool parseArgs(int argc, char** argv, Args& args)
@@ -295,50 +296,51 @@ bool parseArgs(int argc, char** argv, Args& args)
     for (int i = 1; i < argc; ++i)
     {
         std::string const a = argv[i];
-        if (a == "--engineDir")
+        if (a == "--engine-dir" || a == "--engineDir")
         {
             if (!takeStr(i, a, args.engineDir))
             {
                 return false;
             }
         }
-        else if (a == "--multimodalEngineDir")
+        else if (a == "--multimodal-engine-dir" || a == "--multimodalEngineDir")
         {
             if (!takeStr(i, a, args.multimodalEngineDir))
             {
                 return false;
             }
         }
-        else if (a == "--inputFile")
+        else if (a == "--input-file" || a == "--inputFile")
         {
             if (!takeStr(i, a, args.inputFile))
             {
                 return false;
             }
         }
-        else if (a == "--maxGenerateLength")
+        else if (a == "--max-generate-length" || a == "--maxGenerateLength")
         {
             if (!takeInt(i, a, args.maxGenerateLength))
             {
                 return false;
             }
         }
-        else if (a == "--streamInterval")
+        else if (a == "--stream-interval" || a == "--streamInterval")
         {
             if (!takeInt(i, a, args.streamInterval))
             {
                 return false;
             }
         }
-        else if (a == "--showSpecialTokens")
+        else if (a == "--show-special-tokens" || a == "--showSpecialTokens")
         {
             args.showSpecialTokens = true;
         }
-        else if (a == "--specDecode" || a == "--eagle")
+        else if (a == "--spec-decode" || a == "--specDecode" || a == "--eagle")
         {
             args.specDecode = true;
         }
-        else if (a == "--specDraftTopK" || a == "--eagleDraftTopK")
+        else if (a == "--spec-draft-top-k" || a == "--specDraftTopK" || a == "--eagle-draft-top-k"
+            || a == "--eagleDraftTopK")
         {
             if (!takeInt(i, a, args.specDraftTopK))
             {
@@ -346,7 +348,8 @@ bool parseArgs(int argc, char** argv, Args& args)
             }
             args.specDraftTopKSet = true;
         }
-        else if (a == "--specDraftStep" || a == "--eagleDraftStep")
+        else if (a == "--spec-draft-step" || a == "--specDraftStep" || a == "--eagle-draft-step"
+            || a == "--eagleDraftStep")
         {
             if (!takeInt(i, a, args.specDraftStep))
             {
@@ -354,7 +357,8 @@ bool parseArgs(int argc, char** argv, Args& args)
             }
             args.specDraftStepSet = true;
         }
-        else if (a == "--specVerifySize" || a == "--specVerifyTreeSize" || a == "--eagleVerifyTreeSize")
+        else if (a == "--spec-verify-size" || a == "--specVerifySize" || a == "--spec-verify-tree-size"
+            || a == "--specVerifyTreeSize" || a == "--eagle-verify-tree-size" || a == "--eagleVerifyTreeSize")
         {
             if (!takeInt(i, a, args.specVerifySize))
             {
@@ -363,11 +367,12 @@ bool parseArgs(int argc, char** argv, Args& args)
             args.specVerifySizeSet = true;
             if (args.specVerifySize < 0)
             {
-                std::cerr << "--specVerifySize must be non-negative\n";
+                std::cerr << "--spec-verify-size must be non-negative\n";
                 return false;
             }
         }
-        else if (a == "--dflashBlockSize" || a == "--jetspecBlockSize")
+        else if (a == "--dflash-block-size" || a == "--dflashBlockSize" || a == "--jetspec-block-size"
+            || a == "--jetspecBlockSize")
         {
             if (!takeInt(i, a, args.dflashBlockSize))
             {
@@ -375,7 +380,7 @@ bool parseArgs(int argc, char** argv, Args& args)
             }
             if (args.dflashBlockSize < 0)
             {
-                std::cerr << "--dflashBlockSize/--jetspecBlockSize must be non-negative\n";
+                std::cerr << "--dflash-block-size/--jetspec-block-size must be non-negative\n";
                 return false;
             }
         }
@@ -392,7 +397,7 @@ bool parseArgs(int argc, char** argv, Args& args)
     }
     if (args.engineDir.empty() || args.inputFile.empty())
     {
-        std::cerr << "Both --engineDir and --inputFile are required.\n";
+        std::cerr << "Both --engine-dir and --input-file are required.\n";
         return false;
     }
     return true;

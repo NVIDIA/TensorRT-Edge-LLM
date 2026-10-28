@@ -44,6 +44,9 @@ def component_runtime_config(bundle, component: contracts.Component, args):
         elif key in root:
             result[key] = root[key]
     text = thinker.get("text_config") or root.get("text_config") or {}
-    if text.get("rope_theta") is not None:
-        result["text_config"] = {"rope_theta": text["rope_theta"]}
+    rope_theta = text.get("rope_theta")
+    if rope_theta is None:
+        rope_theta = (text.get("rope_parameters") or {}).get("rope_theta")
+    if rope_theta is not None:
+        result["text_config"] = {"rope_theta": rope_theta}
     return result

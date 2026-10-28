@@ -153,6 +153,7 @@ class BuildArgs:
     plugin_path: Optional[str] = None
     profiling_detailed: bool = False
     dense_quant: str = "auto"  # auto | nvfp4-qdq | fp16
+    quantize_activations: bool = True
     int4_gemm_plugin_version: int = 2
     externalize_weights: Tuple[str, ...] = ()
     #: Build only the first N decoder layers (few-layer numeric validation).
@@ -404,7 +405,8 @@ def _build_engine(args: BuildArgs, cfg: Optional[DeviceConfig],
         args.dflash_version)
     component_quant = (cfg.quant if cfg else quantization.parse_quantization(
         args.model_dir, bundle.root,
-        bundle.component_dict(args.resolved_component), weight_conversion))
+        bundle.component_dict(args.resolved_component), weight_conversion,
+        args.quantize_activations))
     vocab_dir = (args.draft_reduced_vocab_dir if args.resolved_spec_role
                  == contracts.SpecRole.DRAFT else args.reduced_vocab_dir)
     vocab_map = None
@@ -430,14 +432,6 @@ def _build_engine(args: BuildArgs, cfg: Optional[DeviceConfig],
                                       None)
     if component_weight_policy is not None:
         policy = component_weight_policy(args, policy)
-    quant_types = {
-        component_quant.quant_type, *component_quant.layer_overrides.values()
-    }
-    if quantization.QUANT_NVFP4_A16 in quant_types:
-        policy = policy.without((weight_policy.EXTERNAL_WEIGHT_NVFP4_MOE,
-                                 weight_policy.EXTERNAL_WEIGHT_NVFP4_TP,
-                                 weight_policy.EXTERNAL_WEIGHT_LM_HEAD),
-                                strict=bool(args.externalize_weights))
     requested_policy = WeightPolicy.from_request(args.externalize_weights)
     kept = tuple(kind for kind in requested_policy.kinds
                  if kind not in policy.kinds)
@@ -521,13 +515,16 @@ def load_device_config(args: BuildArgs) -> DeviceConfig:
         args.resolved_component,
         args.tp_size,
         args.tp_rank,
-        num_decoder_layers=args.num_decoder_layers or None)
+        num_decoder_layers=args.num_decoder_layers or None,
+        quantize_activations=args.quantize_activations)
     paired_target = None
     if args.target_model_dir:
-        paired_target = DeviceConfig.from_pretrained(args.target_model_dir,
-                                                     contracts.Component.LLM,
-                                                     args.tp_size,
-                                                     args.tp_rank)
+        paired_target = DeviceConfig.from_pretrained(
+            args.target_model_dir,
+            contracts.Component.LLM,
+            args.tp_size,
+            args.tp_rank,
+            quantize_activations=args.quantize_activations)
     return model_registry.configure_for_build(
         cfg,
         args.resolved_spec_role,
@@ -947,6 +944,10 @@ def _setup_component_profile(builder, config, network,
                     patches_per_token,
                     args.max_image_tokens * patches_per_token)
         if component == contracts.Component.AUDIO:
+
+            def align(value, alignment):
+                return ((value + alignment - 1) // alignment * alignment)
+
             if name == "padded_feature":
                 window = int(input_shapes[name][-1])
                 minimum = max(1, (args.min_time_steps + window - 1) // window)
@@ -974,19 +975,23 @@ def _setup_component_profile(builder, config, network,
                 minimum = (args.min_time_steps + 3) // 4
                 maximum = (args.max_time_steps + 3) // 4
                 return minimum, (minimum + maximum) // 2, maximum
+            if name == "input_features_mask":
+                minimum = align(args.min_time_steps, 4)
+                maximum = align(args.max_time_steps, 4)
+                return minimum, align((minimum + maximum) // 2, 4), maximum
             if name == "input_features" and axis == 1:
                 if input_shapes[name][-1] == 640:
                     return (args.min_time_steps,
                             (args.min_time_steps + args.max_time_steps) // 2,
                             args.max_time_steps)
-                alignment = 4 if "valid" in input_shapes else 8
+                gemma4_mask = ("valid" in input_shapes
+                               or "input_features_mask" in input_shapes)
+                alignment = 4 if gemma4_mask else 8
 
-                def align(value):
-                    return ((value + alignment - 1) // alignment * alignment)
-
-                minimum = align(args.min_time_steps)
-                maximum = align(args.max_time_steps)
-                return minimum, align((minimum + maximum) // 2), maximum
+                minimum = align(args.min_time_steps, alignment)
+                maximum = align(args.max_time_steps, alignment)
+                return minimum, align((minimum + maximum) // 2,
+                                      alignment), maximum
             return (args.min_time_steps,
                     (args.min_time_steps + args.max_time_steps) // 2,
                     args.max_time_steps)

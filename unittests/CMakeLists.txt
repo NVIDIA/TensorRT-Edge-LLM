@@ -46,6 +46,11 @@ function(edgellm_add_unit_test)
     list(APPEND _srcs ${_dir_srcs})
   endforeach()
 
+  # Tests that exercise TRT-RTX-only code compile only on TRT-RTX builds.
+  if(NOT IS_TRT_RTX)
+    list(FILTER _srcs EXCLUDE REGEX "rtxRuntimeCacheTest\\.cpp$")
+  endif()
+
   if(NOT _srcs)
     message(FATAL_ERROR "edgellm_add_unit_test(${ARG_NAME}): no sources found "
                         "under ${ARG_DIRS}")
@@ -94,15 +99,23 @@ function(edgellm_add_unit_test)
   # pulled are exactly the ones left with an unresolved
   # `__cudaRegisterLinkedBinary_*`. Forcing every member in makes the two sets
   # the same.
+  if(MSVC)
+    set_target_properties(${ARG_NAME} PROPERTIES CXX_STANDARD 20)
+    target_compile_definitions(${ARG_NAME} PRIVATE _USE_MATH_DEFINES NOMINMAX)
+    target_link_options(${ARG_NAME} PRIVATE
+                        "$<HOST_LINK:/WHOLEARCHIVE:$<TARGET_FILE:edgellmCore>>")
+    set(_edgellm_core_link edgellmCore)
+  else()
+    set(_edgellm_core_link -Wl,--whole-archive edgellmCore
+                           -Wl,--no-whole-archive)
+  endif()
   target_link_libraries(
     ${ARG_NAME}
     PRIVATE gtest
             gtest_main
             gmock
             unitTestSupport
-            -Wl,--whole-archive
-            edgellmCore
-            -Wl,--no-whole-archive
+            ${_edgellm_core_link}
             edgellmPluginJit
             commonLibraryExt
             exampleUtils

@@ -1812,7 +1812,7 @@ def nvfp4_a16_moe_plugin(
     hidden_states: torch.Tensor,  # [T, hidden_size] float16
     fc1_qweights: torch.Tensor,  # [E, hidden/16, 8*fc1_out] int8
     fc1_block_scales: torch.Tensor,  # [E, hidden/16, fc1_out] int8
-    fc1_global_scales: torch.Tensor,  # [E] float16
+    fc1_global_scales: torch.Tensor,  # [E] or [2, E] float16
     fc2_qweights: torch.Tensor,  # [E, moe_inter/16, 8*hidden] int8
     fc2_block_scales: torch.Tensor,  # [E, moe_inter/16, hidden] int8
     fc2_global_scales: torch.Tensor,  # [E] float16

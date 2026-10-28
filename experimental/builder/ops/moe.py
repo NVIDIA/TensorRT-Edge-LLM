@@ -14,12 +14,12 @@
 # limitations under the License.
 """Reusable MoE modules whose checkpoint and routing semantics are identical."""
 
-from typing import Callable, Dict, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 import numpy as np
 import tensorrt as trt
 
-from ..core import quantization
+from ..core import quantization, weight_policy
 from ..core.weights import ParameterSpec
 from ..weight_packing import int4 as int4_pack
 from ..weight_packing import nvfp4 as nvfp4_pack
@@ -45,6 +45,7 @@ def prepare_gated_nvfp4_weights(
     )
     (fc1_qweights, fc1_blocks_scale, fc1_alpha, fc2_qweights, fc2_blocks_scale,
      fc2_alpha) = packed
+    input_global_scale, down_input_scale = experts.input_scales()
     return {
         "fc1_qweights": fc1_qweights,
         "fc1_blocks_scale": fc1_blocks_scale,
@@ -52,10 +53,158 @@ def prepare_gated_nvfp4_weights(
         "fc2_qweights": fc2_qweights,
         "fc2_blocks_scale": fc2_blocks_scale,
         "fc2_alpha": fc2_alpha,
-        "input_global_scale": np.ones(cfg.num_experts, np.float32),
-        "down_input_scale": np.ones(cfg.num_experts, np.float32),
+        "input_global_scale": input_global_scale,
+        "down_input_scale": down_input_scale,
         "e_score_correction_bias": np.zeros(cfg.num_experts, np.float32),
     }
+
+
+def _nvfp4_a16_expert_parameters(ctx: BuildContext,
+                                 prefix: str,
+                                 fc1_projections: Tuple[str, ...],
+                                 hidden_size: int,
+                                 materialize: Callable,
+                                 correction: np.ndarray,
+                                 correction_key: str = ""):
+    cfg = ctx.cfg
+    experts = cfg.num_experts
+    intermediate = cfg.moe_intermediate_size
+    padded_intermediate = (intermediate + 127) // 128 * 128
+    fc1_out = len(fc1_projections) * padded_intermediate
+
+    def specs():
+        return {
+            "fc1_qweights":
+            ParameterSpec((experts, hidden_size // 16, 8 * fc1_out), np.int8),
+            "fc1_block_scales":
+            ParameterSpec((experts, hidden_size // 16, fc1_out), np.int8),
+            "fc1_global_scales":
+            ParameterSpec(((2, experts) if len(fc1_projections) == 2 else
+                           (experts, )), np.float16),
+            "fc2_qweights":
+            ParameterSpec(
+                (experts, padded_intermediate // 16, 8 * hidden_size),
+                np.int8),
+            "fc2_block_scales":
+            ParameterSpec((experts, padded_intermediate // 16, hidden_size),
+                          np.int8),
+            "fc2_global_scales":
+            ParameterSpec((experts, ), np.float16),
+            "e_score_correction_bias":
+            ParameterSpec((experts, ), np.float32),
+            "padded_intermediate":
+            padded_intermediate,
+        }
+
+    records = {}
+    for expert in range(experts):
+        expert_prefix = f"{prefix}.{expert}"
+        for projection in (*fc1_projections, "down"):
+            records[expert, projection] = ctx.weights.nvfp4_checkpoint_names(
+                f"{expert_prefix}.{projection}_proj")
+
+    def fields(projections, field):
+        return [
+            records[expert, projection][field] for expert in range(experts)
+            for projection in projections
+        ]
+
+    def reciprocal(projections):
+        values = {
+            records[expert, projection][3]
+            for expert in range(experts)
+            for projection in projections
+        }
+        if len(values) != 1:
+            raise ValueError("NVFP4 experts use inconsistent alpha formats")
+        return values.pop()
+
+    fc1_common = {
+        "num_experts": experts,
+        "keys_per_expert": len(fc1_projections),
+        "source_n": intermediate,
+        "source_k": hidden_size,
+        "output_n": padded_intermediate,
+        "output_k": hidden_size,
+    }
+    fc2_common = {
+        "num_experts": experts,
+        "keys_per_expert": 1,
+        "source_n": hidden_size,
+        "source_k": intermediate,
+        "output_n": hidden_size,
+        "output_k": padded_intermediate,
+    }
+    if correction_key and ctx.weights.has(correction_key):
+        correction_binding = ctx.weights.checkpoint_binding(
+            [correction_key], assemble="cast_to_fp32")
+    else:
+        if not np.all(correction == correction[0]):
+            raise ValueError("generated expert correction must be uniform")
+        correction_binding = ctx.weights.checkpoint_binding([],
+                                                            "generated",
+                                                            "fill",
+                                                            fill_value=float(
+                                                                correction[0]))
+    bindings = {
+        "fc1_qweights":
+        ctx.weights.checkpoint_binding(fields(fc1_projections,
+                                              0), "nvfp4_packed",
+                                       "nvfp4_a16_qweight", **fc1_common),
+        "fc1_block_scales":
+        ctx.weights.checkpoint_binding(fields(fc1_projections,
+                                              1), "nvfp4_scale",
+                                       "nvfp4_a16_scale", **fc1_common),
+        "fc1_global_scales":
+        ctx.weights.checkpoint_binding(
+            fields(fc1_projections, 2),
+            "plugin",
+            "nvfp4_a16_alpha",
+            num_experts=experts,
+            keys_per_expert=len(fc1_projections),
+            reciprocal_alpha=reciprocal(fc1_projections),
+            alpha_multiplier=128.0),
+        "fc2_qweights":
+        ctx.weights.checkpoint_binding(fields(("down", ), 0), "nvfp4_packed",
+                                       "nvfp4_a16_qweight", **fc2_common),
+        "fc2_block_scales":
+        ctx.weights.checkpoint_binding(fields(("down", ), 1), "nvfp4_scale",
+                                       "nvfp4_a16_scale", **fc2_common),
+        "fc2_global_scales":
+        ctx.weights.checkpoint_binding(fields(("down", ), 2),
+                                       "plugin",
+                                       "nvfp4_a16_alpha",
+                                       num_experts=experts,
+                                       keys_per_expert=1,
+                                       reciprocal_alpha=reciprocal(("down", )),
+                                       alpha_multiplier=128.0),
+        "e_score_correction_bias":
+        correction_binding,
+    }
+    parameters = ctx.weights.parameter_value(
+        weight_policy.EXTERNAL_WEIGHT_NVFP4_A16, prefix, specs, materialize)
+    return parameters, bindings
+
+
+def prepare_gated_nvfp4_a16_weights(ctx: BuildContext,
+                                    experts: "GatedExperts",
+                                    correction: Optional[np.ndarray] = None,
+                                    correction_key: str = ""):
+    """Prepare checkpoint-backed gated experts for the W4A16 MoE plugin."""
+    if correction is None:
+        correction = np.zeros(ctx.cfg.num_experts, np.float32)
+
+    def materialize():
+        parameters = nvfp4_pack.pack_nvfp4_a16_gated_experts(
+            experts.load_expert_raw_nvfp4, ctx.cfg.num_experts,
+            ctx.cfg.hidden_size, ctx.cfg.moe_intermediate_size)
+        parameters["e_score_correction_bias"] = np.ascontiguousarray(
+            correction, np.float32)
+        return parameters
+
+    return _nvfp4_a16_expert_parameters(ctx, experts.prefix, ("gate", "up"),
+                                        ctx.cfg.hidden_size, materialize,
+                                        correction, correction_key)
 
 
 def prepare_gated_int4_weights(
@@ -144,6 +293,23 @@ class GatedExperts(Module):
             for projection in ("gate", "up", "down")
         }
 
+    def input_scales(self) -> Tuple[np.ndarray, np.ndarray]:
+        """Collect calibrated gated-FC1 and FC2 activation scales."""
+        fc1 = []
+        fc2 = []
+        for expert_index in range(self.cfg.num_experts):
+            prefix = self.key(str(expert_index))
+            gate_scale = self.weights.nvfp4_input_scale(prefix + ".gate_proj")
+            up_scale = self.weights.nvfp4_input_scale(prefix + ".up_proj")
+            if gate_scale != up_scale:
+                raise ValueError(
+                    f"expert {expert_index} gate/up input scales differ")
+            fc1.append(gate_scale)
+            fc2.append(self.weights.nvfp4_input_scale(prefix + ".down_proj"))
+        return (np.asarray(fc1,
+                           dtype=np.float32), np.asarray(fc2,
+                                                         dtype=np.float32))
+
 
 class GroupedSigmoidRouter(Module):
     """Float32 router used by grouped sigmoid top-k models."""
@@ -187,9 +353,11 @@ class NonGatedNvfp4Experts(Module):
             "up_packed": up["packed"],
             "up_sf": up["sf"],
             "up_alpha": up["alpha"],
+            "up_input_scale": up["input_scale"],
             "down_packed": down["packed"],
             "down_sf": down["sf"],
             "down_alpha": down["alpha"],
+            "down_input_scale": down["input_scale"],
         }
 
     def _pack_stacked_experts(self, hidden_size: int, hidden_alignment: int):
@@ -329,15 +497,13 @@ class NonGatedNvfp4Experts(Module):
                 num_experts=num_experts,
                 reciprocal_alpha=reciprocal("down")),
             "input_global_scale":
-            self.weights.checkpoint_binding([],
-                                            "generated",
-                                            "fill",
-                                            fill_value=1.0),
+            self.weights.nvfp4_moe_input_scale_binding(self.prefix,
+                                                       num_experts,
+                                                       ("up_proj", )),
             "down_input_scale":
-            self.weights.checkpoint_binding([],
-                                            "generated",
-                                            "fill",
-                                            fill_value=1.0),
+            self.weights.nvfp4_moe_input_scale_binding(self.prefix,
+                                                       num_experts,
+                                                       ("down_proj", )),
             "e_score_correction_bias":
             correction,
         }
@@ -350,10 +516,18 @@ class NonGatedNvfp4Experts(Module):
             if self._has_stacked_experts():
                 raise NotImplementedError(
                     "stacked dense A16 expert checkpoints are not supported")
-            weights = nvfp4_pack.pack_nvfp4_a16_nongated_experts(
-                self._load_expert, cfg.num_experts, hidden_size,
-                cfg.moe_intermediate_size)
-            weights["e_score_correction_bias"] = correction.astype(np.float32)
+
+            def materialize_a16():
+                parameters = nvfp4_pack.pack_nvfp4_a16_nongated_experts(
+                    self._load_expert, cfg.num_experts, hidden_size,
+                    cfg.moe_intermediate_size)
+                parameters["e_score_correction_bias"] = correction.astype(
+                    np.float32)
+                return parameters
+
+            weights, bindings = _nvfp4_a16_expert_parameters(
+                self.ctx, self.prefix, ("up", ), hidden_size, materialize_a16,
+                correction, correction_key)
             return F.nvfp4_a16_moe(router_logits,
                                    hidden_states,
                                    weights,
@@ -367,7 +541,8 @@ class NonGatedNvfp4Experts(Module):
                                    int(cfg.norm_topk_prob),
                                    cfg.routed_scaling_factor,
                                    F.MoeRouting.SIGMOID_GROUP_TOPK,
-                                   weight_prefix=self.prefix)
+                                   weight_prefix=self.prefix,
+                                   weight_bindings=bindings)
 
         hidden_alignment = 256 if self.ctx.options.sm12x else 1
         padded_intermediate = ((cfg.moe_intermediate_size + 127) // 128) * 128
@@ -385,6 +560,20 @@ class NonGatedNvfp4Experts(Module):
                                              cfg.group_size, hidden_alignment)
             (fc1_weight, fc1_scale, fc1_alpha, fc2_weight, fc2_scale,
              fc2_alpha, _, _) = packed
+            if self._has_stacked_experts():
+                input_global_scale = np.ones(cfg.num_experts, np.float32)
+                down_input_scale = input_global_scale.copy()
+            else:
+                input_global_scale = np.asarray([
+                    self.weights.nvfp4_input_scale(self.key(f"{i}.up_proj"))
+                    for i in range(cfg.num_experts)
+                ],
+                                                dtype=np.float32)
+                down_input_scale = np.asarray([
+                    self.weights.nvfp4_input_scale(self.key(f"{i}.down_proj"))
+                    for i in range(cfg.num_experts)
+                ],
+                                              dtype=np.float32)
             return {
                 "fc1_qweights": fc1_weight,
                 "fc1_blocks_scale": fc1_scale,
@@ -392,8 +581,8 @@ class NonGatedNvfp4Experts(Module):
                 "fc2_qweights": fc2_weight,
                 "fc2_blocks_scale": fc2_scale,
                 "fc2_alpha": fc2_alpha,
-                "input_global_scale": np.ones(cfg.num_experts, np.float32),
-                "down_input_scale": np.ones(cfg.num_experts, np.float32),
+                "input_global_scale": input_global_scale,
+                "down_input_scale": down_input_scale,
                 "e_score_correction_bias": correction.astype(np.float32),
             }
 

@@ -579,7 +579,7 @@ TEST(ContextAttentionTest, fmhaV2CapabilityContract)
             EXPECT_FALSE(CuteDslFMHAV2Runner::canImplementPaged(
                 8, 2, visionHeadDim, smVersion, DataType::kHALF, CuteDslFMHAV2MaskType::kVISION_BLOCK));
         }
-        EXPECT_FALSE(
+        EXPECT_TRUE(
             CuteDslFMHAV2Runner::canImplement(8, 2, 512, smVersion, DataType::kHALF, CuteDslFMHAV2MaskType::kPADDING));
         EXPECT_FALSE(CuteDslFMHAV2Runner::canImplementPaged(
             8, 2, 256, smVersion, DataType::kHALF, CuteDslFMHAV2MaskType::kPADDING));
@@ -875,12 +875,12 @@ void fillNonCausalVarlenReference(std::vector<half> const& qInput, std::vector<h
     }
 }
 
-void TestContextAttentionDenoisePaddingVarlen(std::vector<int32_t> const& qLens, std::vector<int32_t> const& kvLens)
+void TestContextAttentionDenoisePaddingVarlen(
+    std::vector<int32_t> const& qLens, std::vector<int32_t> const& kvLens, int32_t headSize = 256)
 {
     int32_t smVersion = getSMVersion();
     applyThorSMRenumberWAR(smVersion);
 
-    int32_t constexpr headSize = 256;
     int32_t constexpr numQHeads = 16;
     int32_t constexpr numKVHeads = 8;
     int32_t const batchSize = static_cast<int32_t>(qLens.size());
@@ -927,10 +927,16 @@ void TestContextAttentionDenoisePaddingVarlen(std::vector<int32_t> const& qLens,
     CUDA_CHECK(cudaMemcpy(cuKVTensor.rawPointer(), cuKV.data(), static_cast<size_t>(batchSize + 1) * sizeof(int32_t),
         cudaMemcpyHostToDevice));
 
+    rt::Tensor blockBeginTensor({batchSize, seqLenQ}, rt::DeviceType::kGPU, DataType::kINT32);
+    rt::Tensor blockEndTensor({batchSize, seqLenQ}, rt::DeviceType::kGPU, DataType::kINT32);
+    kernel::launchBuildPaddingBlockRanges(cuKVTensor.dataPointer<int32_t>(), blockBeginTensor.dataPointer<int32_t>(),
+        blockEndTensor.dataPointer<int32_t>(), batchSize, seqLenQ, nullptr);
+
     CuteDslFMHAV2Runner runner(numQHeads, numKVHeads, headSize, batchSize, seqLenQ, seqLenK);
     ASSERT_TRUE(runner.runPadding(qTensor.rawPointer(), kTensor.rawPointer(), vTensor.rawPointer(),
         oTensor.rawPointer(), cuQTensor.dataPointer<int32_t>(), cuKVTensor.dataPointer<int32_t>(), nullptr,
-        1.0F / std::sqrt(static_cast<float>(headSize))));
+        1.0F / std::sqrt(static_cast<float>(headSize)), blockBeginTensor.dataPointer<int32_t>(),
+        blockEndTensor.dataPointer<int32_t>()));
     CUDA_CHECK(cudaDeviceSynchronize());
     CUDA_CHECK(cudaGetLastError());
 
@@ -965,4 +971,7 @@ TEST(ContextAttentionTest, diffusionGemmaDenoisePaddingVarlen)
 {
     TestContextAttentionDenoisePaddingVarlen({4}, {24});
     TestContextAttentionDenoisePaddingVarlen({4, 3}, {24, 11});
+    TestContextAttentionDenoisePaddingVarlen({4}, {24}, 512);
+    TestContextAttentionDenoisePaddingVarlen({4, 3}, {24, 11}, 512);
+    TestContextAttentionDenoisePaddingVarlen({70, 33}, {135, 33}, 512);
 }

@@ -29,7 +29,11 @@
 
 //! Export marker for the plugin library's C-ABI entry points. The libraries are
 //! built with -fvisibility=hidden, so symbols dlsym'd by the host must stay visible.
+#if defined(_WIN32)
+#define EDGELLM_PLUGIN_EXPORT __declspec(dllexport)
+#else
 #define EDGELLM_PLUGIN_EXPORT __attribute__((visibility("default")))
+#endif
 
 //! @brief Plugin library initialization entry point (dlsym'd by the host after
 //! dlopen). Follows the TRT initLibNvInferPlugins(void*, char const*) convention;

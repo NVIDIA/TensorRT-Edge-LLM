@@ -18,7 +18,7 @@ export ENGINE_DIR=$HOME/tensorrt-edgellm-workspace/Cosmos3-Edge/engines
 ### 1. Export the Policy on CPU
 
 ```bash
-tensorrt-edgellm-export \
+trtedge export \
   "$POLICY_CHECKPOINT" \
   "$ONNX_DIR" \
   --task policy
@@ -28,11 +28,11 @@ tensorrt-edgellm-export \
 
 ```bash
 ./build/experimental_models/cosmos3/examples/cosmos3_policy_build \
-  --onnxDir "$ONNX_DIR" \
-  --engineDir "$ENGINE_DIR"
+  --onnx-dir "$ONNX_DIR" \
+  --engine-dir "$ENGINE_DIR"
 ```
 
-Use `--maxBatchSize N` when the runtime must accept more than one prompt.
+Use `--max-batch-size N` when the runtime must accept more than one prompt.
 
 ### 3. Run the Policy
 
@@ -40,7 +40,7 @@ For one observation image:
 
 ```bash
 ./build/experimental_models/cosmos3/examples/cosmos3_policy_inference \
-  --engineDir "$ENGINE_DIR" \
+  --engine-dir "$ENGINE_DIR" \
   --image observation.png \
   --prompt "Pick up the banana and place it in the bowl." \
   --output action.json
@@ -62,7 +62,7 @@ denoise-step count and `--seed` controls deterministic initial noise.
 ### 1. Export the Reasoner on CPU
 
 ```bash
-tensorrt-edgellm-export \
+trtedge export \
   "$REASONING_CHECKPOINT" \
   "$ONNX_DIR/reasoning" \
   --task reasoning
@@ -72,14 +72,14 @@ tensorrt-edgellm-export \
 
 ```bash
 ./build/examples/llm/llm_build \
-  --onnxDir "$ONNX_DIR/reasoning/llm" \
-  --engineDir "$ENGINE_DIR/reasoning" \
-  --maxInputLen 2048 \
-  --maxKVCacheCapacity 4096
+  --onnx-dir "$ONNX_DIR/reasoning/llm" \
+  --engine-dir "$ENGINE_DIR/reasoning" \
+  --max-input-len 2048 \
+  --max-kv-cache-capacity 4096
 
 ./build/examples/multimodal/visual_build \
-  --onnxDir "$ONNX_DIR/reasoning/visual" \
-  --engineDir "$ENGINE_DIR/reasoning"
+  --onnx-dir "$ONNX_DIR/reasoning/visual" \
+  --engine-dir "$ENGINE_DIR/reasoning"
 ```
 
 ### 3. Run Reasoning
@@ -89,16 +89,16 @@ For image reasoning, create an input file using the standard
 
 ```bash
 ./build/examples/llm/llm_inference \
-  --engineDir "$ENGINE_DIR/reasoning" \
-  --multimodalEngineDir "$ENGINE_DIR/reasoning" \
-  --inputFile input.json \
-  --outputFile output.json
+  --engine-dir "$ENGINE_DIR/reasoning" \
+  --multimodal-engine-dir "$ENGINE_DIR/reasoning" \
+  --input-file input.json \
+  --output-file output.json
 ```
 
 For native video-file input, launch the OpenAI-compatible server:
 
 ```bash
-tensorrt-edgellm-serve "$REASONING_CHECKPOINT" \
+trtedge serve "$REASONING_CHECKPOINT" \
   --cache-dir "$HOME/tensorrt-edgellm-workspace/cache" \
   --max-image-tokens 4096 \
   --max-image-tokens-per-image 4096 \

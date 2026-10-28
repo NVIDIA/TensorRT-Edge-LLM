@@ -38,6 +38,7 @@
 #include "runtime/decoding/decoderRegistry.h"
 #include "runtime/decoding/decoderUtils.h"
 #include "runtime/decoding/requestStableRng.h"
+#include "runtime/exec/rtxRuntimeCache.h"
 #include "runtime/llmRuntimeUtils.h"
 #include "runtime/managedKVCacheRequest.h"
 #include "runtime/state/boundedSwaKVPageManager.h"
@@ -160,10 +161,10 @@ LLMRankRuntime::LLMRankRuntime(std::string const& engineDir, std::string const& 
     std::optional<SpecDecodeDraftingConfig> const& draftingConfig, cudaStream_t stream, ParallelMapping const& mapping,
     tokenizer::Tokenizer& tokenizer, chat_template::ChatTemplate const& chatTemplate,
     ContextCacheConfig const& contextCacheConfig, std::string const& checkpointDir,
-    std::string const& draftCheckpointDir)
+    std::string const& draftCheckpointDir, std::optional<std::filesystem::path> const& runtimeCachePath)
 {
     initializeFromEngineDir(engineDir, multimodalEngineDir, loraWeightsMap, draftingConfig, stream, mapping, tokenizer,
-        chatTemplate, contextCacheConfig, checkpointDir, draftCheckpointDir);
+        chatTemplate, contextCacheConfig, checkpointDir, draftCheckpointDir, runtimeCachePath);
 }
 
 LLMRankRuntime::LLMRankRuntime(ModelArtifacts&& artifacts, std::string const& engineDir,
@@ -195,7 +196,7 @@ void LLMRankRuntime::initializeFromEngineDir(std::string const& engineDir, std::
     std::optional<SpecDecodeDraftingConfig> const& draftingConfig, cudaStream_t stream, ParallelMapping const& mapping,
     tokenizer::Tokenizer& tokenizer, chat_template::ChatTemplate const& chatTemplate,
     ContextCacheConfig const& contextCacheConfig, std::string const& checkpointDir,
-    std::string const& draftCheckpointDir)
+    std::string const& draftCheckpointDir, std::optional<std::filesystem::path> const& runtimeCachePath)
 {
     int32_t const tensorParallelSize = mapping.tensorParallelSize;
     int32_t const tensorParallelRank = mapping.tensorParallelRank;
@@ -243,6 +244,7 @@ void LLMRankRuntime::initializeFromEngineDir(std::string const& engineDir, std::
     // EngineExecutor captures the active KV-pool geometry in its tensor registry.
     // Select the immutable runtime policy before constructing that registry.
     artifacts.deployment.selectSwaKVCacheMode(contextCacheConfig.enabled);
+    artifacts.deployment.runtimeCachePath = runtimeCachePath;
     if (draftingConfig.has_value() && artifacts.deployment.specDecodeMode() == SpecDecodeMode::kMTP)
     {
         ELLM_CHECK(artifacts.draftCheckpointDir.empty(),
@@ -256,13 +258,18 @@ void LLMRankRuntime::initializeFromEngineDir(std::string const& engineDir, std::
                                      : engineRoot / parallel_artifacts::engineFileName(artifactContext);
     ELLM_CHECK(std::filesystem::exists(baseEnginePath), "Engine file not found: " + baseEnginePath.string());
 
+    std::shared_ptr<RtxRuntimeCache> runtimeCache;
+#if IS_TRT_RTX
+    runtimeCache = RtxRuntimeCache::create(baseEnginePath, artifacts.deployment.runtimeCachePath);
+#endif
+
     try
     {
         std::optional<int32_t> const specDecodeBaseOutputHiddenDim = artifacts.deployment.specConfig.has_value()
             ? std::optional<int32_t>{artifacts.deployment.specConfig->baseOutputHiddenDim}
             : std::nullopt;
-        artifacts.baseExecutor
-            = EngineExecutor::createForLLM(baseEnginePath, artifacts.deployment.base, specDecodeBaseOutputHiddenDim);
+        artifacts.baseExecutor = EngineExecutor::createForLLM(
+            baseEnginePath, artifacts.deployment.base, specDecodeBaseOutputHiddenDim, runtimeCache);
     }
     catch (std::exception const& e)
     {
@@ -280,7 +287,7 @@ void LLMRankRuntime::initializeFromEngineDir(std::string const& engineDir, std::
     // physical cache resources. Ownership is transferred to the selected decoder.
     if (draftingConfig.has_value())
     {
-        artifacts.draftExecutor = decoder_utils::loadDraftEngine(engineRoot, artifacts.deployment);
+        artifacts.draftExecutor = decoder_utils::loadDraftEngine(engineRoot, artifacts.deployment, runtimeCache);
         std::filesystem::path const draftConfig = engineRoot / "draft_config.json";
         if (artifacts.deployment.specDecodeMode() == SpecDecodeMode::kMTP)
         {
@@ -602,7 +609,7 @@ void LLMRankRuntime::initializeCommon(ModelArtifacts&& artifacts, std::string co
             }
             LOG_DEBUG("Attempting to load %s runner from %s", name.c_str(), dir.c_str());
             auto runner = MultimodalRunner::create(dir, mDeployment.base.maxSupportedBatchSize,
-                mDeployment.base.maxKVCacheCapacity, stream, mCheckpointDir);
+                mDeployment.base.maxKVCacheCapacity, stream, mCheckpointDir.string());
             LOG_INFO("%s runner successfully initialized", name.c_str());
             return runner;
         };
@@ -622,8 +629,8 @@ void LLMRankRuntime::initializeCommon(ModelArtifacts&& artifacts, std::string co
         {
             std::string actionDir = multimodalEngineDir + "/action";
             LOG_INFO("Attempting to load Action runner from %s", actionDir.c_str());
-            auto actionRunner = std::make_unique<Alpamayo1ActionRunner>(
-                actionDir, mCheckpointDir, stream, mSharedResources->cacheManagers[0]->getKVCacheManager().getConfig());
+            auto actionRunner = std::make_unique<Alpamayo1ActionRunner>(actionDir, mCheckpointDir.string(), stream,
+                mSharedResources->cacheManagers[0]->getKVCacheManager().getConfig());
             auto const& basePageTable = *mSharedResources->kvPageTables[0];
             auto actionKvBatchCollector = std::make_unique<ActionKvBatchCollector>(
                 mMaxRuntimeBatchSize, basePageTable.maxPagesPerSeq(), basePageTable.numPages());
@@ -1025,6 +1032,7 @@ void LLMRankRuntime::GenerationSession::updateFinishStates()
 {
     for (int32_t i = 0; i < mContext.activeBatchSize; ++i)
     {
+        mContext.slotStreams[i].profiler.recordGeneration(mContext.currentGenerateLengths[i]);
         if (mContext.finishedStates[i])
         {
             continue; // Respect first-writer-wins (cancel may have fired).
@@ -3046,6 +3054,8 @@ bool LLMRankRuntime::runBaseModelPrefill(
     context.scheduledStep.sequences.resize(static_cast<size_t>(activeBatchSize));
     for (int32_t i = 0; i < activeBatchSize; ++i)
     {
+        auto& slot = context.slotStreams[i];
+        slot.profiler.beginPrefill(slot.channel && slot.channel->getCollectMetrics());
         std::vector<int32_t> const& tokens = context.tokenIds[static_cast<size_t>(i)];
         context.scheduledStep.sequences[static_cast<size_t>(i)] = ScheduledSequence{
             SequenceIdentity{context.requestIds[static_cast<size_t>(i)], context.residentRefs[static_cast<size_t>(i)]},
@@ -3508,6 +3518,10 @@ bool LLMRankRuntime::runBaseModelPrefill(
     }
 
     decoder_utils::appendSampledTokens(context, hostSelectedTokenIdsData, activeBatchSize);
+    for (int32_t i = 0; i < activeBatchSize; ++i)
+    {
+        context.slotStreams[i].profiler.finishPrefill(context.currentGenerateLengths[i]);
+    }
 
     if (context.hasGuidedDecoding)
     {
@@ -3711,11 +3725,11 @@ bool LLMRankRuntime::setUpForPrefillExecution(DecodingInferenceContext& context,
     {
         LOG_ERROR(
             "Prefill length after context reuse (%d) exceeds engine max input length (%d). "
-            "Rebuild the engine with a larger --maxInputLen.",
+            "Rebuild the engine with a larger --max-input-len.",
             maxInputLength, mDeployment.base.maxSupportedInputLength);
         throw std::runtime_error("EDGELLM_INPUT_TOO_LONG: prefill length " + std::to_string(maxInputLength)
             + " exceeds engine max_input_len " + std::to_string(mDeployment.base.maxSupportedInputLength)
-            + " (rebuild engine with a larger --maxInputLen)");
+            + " (rebuild engine with a larger --max-input-len)");
     }
 
     if (contextCachePrefillStarts == nullptr)

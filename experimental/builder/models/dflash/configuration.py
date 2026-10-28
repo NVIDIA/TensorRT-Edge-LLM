@@ -79,4 +79,21 @@ def configure_draft(config, *, paired_target=None, **kwargs) -> None:
     if paired_target is None:
         raise ValueError("DFlash draft requires a target config")
     _validate_dimensions(config, paired_target)
+    # DeepSpec checkpoints publish the DFlash contract at the top level.
+    raw = config.raw_component
+    if (raw.get("dflash_config") is None
+            and raw.get("target_layer_ids") is not None):
+        config.dflash_target_layer_ids = [
+            int(index) for index in raw["target_layer_ids"]
+        ]
+        config.dflash_block_size = int(
+            raw.get("block_size", config.dflash_block_size))
+        config.dflash_mask_token_id = int(
+            raw.get("mask_token_id", config.dflash_mask_token_id))
+    if not config.dflash_target_layer_ids:
+        raise ValueError("DFlash draft requires target-layer IDs")
+    config.dflash_block_size = int(
+        (config.raw_component.get("dflash_config") or {}).get(
+            "block_size",
+            config.raw_component.get("block_size", config.dflash_block_size)))
     normalize_block_draft_config(config)

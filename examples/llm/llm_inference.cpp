@@ -105,7 +105,8 @@ enum LLMInferenceOptionId : int
     DART_PIVOT_TEXT_TOKENS = 938,
     VISUAL_PRUNE_ALGO = 939,
     ENCODER_CACHE_BUDGET_BYTES = 940,
-    CP_SPEC_VERIFY_SIZE = 941
+    CP_SPEC_VERIFY_SIZE = 941,
+    RTX_RUNTIME_CACHE_PATH = 942
 };
 
 // Struct to hold speculative decoding arguments (used by both EAGLE and MTP)
@@ -144,6 +145,7 @@ struct LLMInferenceArgs
     std::string multimodalEngineDir{""};
     std::string checkpointDir{""};
     std::string draftCheckpointDir{""};
+    std::string rtxRuntimeCachePath{""}; //! TRT-RTX runtime cache file path
     std::string inputFile;
     std::string outputFile{""};
     std::string profileOutputFile{""};
@@ -345,95 +347,108 @@ bool applyEngineSpecDecodeDefaults(LLMInferenceArgs& args)
 
 void printUsage(char const* programName)
 {
-    std::cerr << "Usage: " << programName
-              << " [--help] [--engineDir=<path to engine directory>] [--multimodalEngineDir=<path to multimodal engine "
-                 "directory>] [--inputFile=<path to input file>] [--outputFile=<path to output file>] "
-                 "[--dumpProfile] [--profileOutputFile=<path to profile output file>] [--warmup=<number>] [--debug] "
-                 "[--dumpOutput] [--batchSize=<number>] [--maxGenerateLength=<number>] "
-                 "[--tpSize=<number>]";
-    std::cerr << " [--specDecode] [--specDraftTopK=<number>] [--specDraftStep=<number>] "
-                 "[--specVerifySize=<number>] [--dflashBlockSize=<number>|--jetspecBlockSize=<number>] "
-                 "[--dsparkScheduler=off|threshold|sps] "
-                 "[--dsparkConfidenceThreshold=<float>] "
-                 "[--dsparkMinProposalLen=<number>] [--dsparkMaxProposalLen=<number>] "
-                 "[--visualPrune] [--visualPruneAlgo=<name>] [--dartReductionRatio=<float>] "
-                 "[--dartPivotImageTokens=<number>] [--dartPivotTextTokens=<number>]"
+    std::cerr
+        << "Usage: " << programName
+        << " [--help] [--engine-dir=<path to engine directory>] [--multimodal-engine-dir=<path to multimodal engine "
+           "directory>] [--input-file=<path to input file>] [--output-file=<path to output file>] "
+           "[--dump-profile] [--profile-output-file=<path to profile output file>] [--warmup=<number>] [--debug] "
+           "[--dump-output] [--batch-size=<number>] [--max-generate-length=<number>] "
+           "[--tp-size=<number>]";
+    std::cerr << " [--spec-decode] [--spec-draft-top-k=<number>] [--spec-draft-step=<number>] "
+                 "[--spec-verify-size=<number>] [--dflash-block-size=<number>|--jetspec-block-size=<number>] "
+                 "[--dspark-scheduler=off|threshold|sps] "
+                 "[--dspark-confidence-threshold=<float>] "
+                 "[--dspark-min-proposal-len=<number>] [--dspark-max-proposal-len=<number>] "
+                 "[--visual-prune] [--visual-prune-algo=<name>] [--dart-reduction-ratio=<float>] "
+                 "[--dart-pivot-image-tokens=<number>] [--dart-pivot-text-tokens=<number>]"
               << std::endl;
     std::cerr << "Options:" << std::endl;
-    std::cerr << "  --help                    Display this help message" << std::endl;
-    std::cerr << "  --inputFile               Path to input JSON file with requests" << std::endl;
-    std::cerr << "  --engineDir               Path to engine directory" << std::endl;
-    std::cerr << "  --multimodalEngineDir     Path to multimodal engine directory (optional)" << std::endl;
-    std::cerr << "  --checkpointDir           HF/ModelOpt checkpoint dir (required for runtime weight loading)"
+    std::cerr << "  --help                         Display this help message" << std::endl;
+    std::cerr << "  --input-file                   Path to input JSON file with requests" << std::endl;
+    std::cerr << "  --engine-dir                   Path to engine directory" << std::endl;
+    std::cerr << "  --multimodal-engine-dir        Path to multimodal engine directory (optional)" << std::endl;
+    std::cerr << "  --checkpoint-dir               HF/ModelOpt checkpoint dir (required for runtime weight loading)"
               << std::endl;
-    std::cerr << "  --draftCheckpointDir      Separate checkpoint for paired speculative drafts" << std::endl;
-    std::cerr << "  --outputFile              Path to output JSON file (optional)" << std::endl;
-    std::cerr << "  --dumpProfile             Dump profiling summary to console" << std::endl;
-    std::cerr << "  --profileOutputFile       Path to profile JSON output file (optional)" << std::endl;
-    std::cerr << "  --warmup                  Number of warmup runs using the first request (default: 0)" << std::endl;
-    std::cerr << "  --debug                   Enable debug logging" << std::endl;
-    std::cerr << "  --dumpOutput              Dump inference output to console" << std::endl;
-    std::cerr << "  --batchSize               Override batch size from input file" << std::endl;
-    std::cerr << "  --maxGenerateLength       Override max generate length from input file" << std::endl;
-    std::cerr << "                            NOTE: For sampling parameters (temperature, top_p, top_k)," << std::endl;
-    std::cerr << "                            please specify them in the input JSON file instead of CLI" << std::endl;
+    std::cerr << "  --draft-checkpoint-dir         Separate checkpoint for paired speculative drafts" << std::endl;
+    std::cerr << "  --output-file                  Path to output JSON file (optional)" << std::endl;
+    std::cerr << "  --dump-profile                 Dump profiling summary to console" << std::endl;
+    std::cerr << "  --profile-output-file          Path to profile JSON output file (optional)" << std::endl;
+    std::cerr << "  --warmup                       Number of warmup runs using the first request (default: 0)"
+              << std::endl;
+    std::cerr << "  --debug                        Enable debug logging" << std::endl;
+    std::cerr << "  --dump-output                  Dump inference output to console" << std::endl;
+    std::cerr << "  --batch-size                   Override batch size from input file" << std::endl;
+    std::cerr << "  --max-generate-length          Override max generate length from input file" << std::endl;
+    std::cerr << "                                 NOTE: For sampling parameters (temperature, top_p, top_k),"
+              << std::endl;
+    std::cerr << "                                 please specify them in the input JSON file instead of CLI"
+              << std::endl;
+#if IS_TRT_RTX
+    std::cerr << "  --rtx-runtime-cache-path       TRT-RTX runtime (JIT-kernel) cache file path (RTX only)."
+              << std::endl;
+    std::cerr << "                                 Defaults to <engineDir>/runtime.rtxcache." << std::endl;
+#endif
     std::cerr
-        << "  --numLogprobs             Number of top log-probabilities to return per token (0 = disabled, max 50)"
+        << "  --num-logprobs                 Number of top log-probabilities to return per token (0 = disabled, max 50)"
         << std::endl;
-    std::cerr
-        << "  --specDecode              Enable speculative decoding (EAGLE, MTP, DFlash, DFlash2, JetSpec, or DSpark)"
-        << std::endl;
-    std::cerr << "  --specDraftTopK           Number of tokens selected per drafting step (default: 10)" << std::endl;
-    std::cerr << "                            DFlash/JetSpec/DSpark default to 1 when omitted" << std::endl;
-    std::cerr
-        << "                            For DFlash/JetSpec: candidateTopK; 1 is linear, >1 enables branching DDTree"
-        << std::endl;
-    std::cerr << "  --specDraftStep           Number of drafting steps to perform (default: 6)" << std::endl;
-    std::cerr << "                            Each step extends the current draft proposal; DFlash/JetSpec/DSpark "
+    std::cerr << "  --spec-decode                  Enable speculative decoding (EAGLE, MTP, DFlash, DFlash2, JetSpec, "
+                 "or DSpark)"
+              << std::endl;
+    std::cerr << "  --spec-draft-top-k             Number of tokens selected per drafting step (default: 10)"
+              << std::endl;
+    std::cerr << "                                 DFlash/JetSpec/DSpark default to 1 when omitted" << std::endl;
+    std::cerr << "                                 For DFlash/JetSpec: candidateTopK; 1 is linear, >1 enables "
+                 "branching DDTree"
+              << std::endl;
+    std::cerr << "  --spec-draft-step              Number of drafting steps to perform (default: 6)" << std::endl;
+    std::cerr << "                                 Each step extends the current draft proposal; DFlash/JetSpec/DSpark "
                  "require this to be 1"
               << std::endl;
-    std::cerr << "  --specVerifySize          Number of tokens in the base verification input (default: 60)"
+    std::cerr << "  --spec-verify-size             Number of tokens in the base verification input (default: 60)"
               << std::endl;
-    std::cerr
-        << "                            DFlash/JetSpec linear default to block size; DDTree defaults to base budget"
-        << std::endl;
-    std::cerr << "  --dsparkScheduler         DSpark scheduler mode: off, threshold, or sps (default: off)"
+    std::cerr << "                                 DFlash/JetSpec linear default to block size; DDTree defaults to "
+                 "base budget"
               << std::endl;
-    std::cerr << "  --dsparkConfidenceThreshold  DSpark threshold scheduler survival threshold in [0,1]" << std::endl;
-    std::cerr << "  --dsparkMinProposalLen    DSpark scheduler minimum proposal length (default: 1)" << std::endl;
-    std::cerr << "  --dsparkMaxProposalLen    DSpark scheduler maximum proposal length (default: full block)"
+    std::cerr << "  --dspark-scheduler             DSpark scheduler mode: off, threshold, or sps (default: off)"
               << std::endl;
-    std::cerr << "  --dflashBlockSize         DFlash/JetSpec proposal block size; 0 means infer from engine config"
+    std::cerr << "  --dspark-confidence-threshold  DSpark threshold scheduler survival threshold in [0,1]" << std::endl;
+    std::cerr << "  --dspark-min-proposal-len      DSpark scheduler minimum proposal length (default: 1)" << std::endl;
+    std::cerr << "  --dspark-max-proposal-len      DSpark scheduler maximum proposal length (default: full block)"
+              << std::endl;
+    std::cerr << "  --dflash-block-size            DFlash/JetSpec proposal block size; 0 means infer from engine config"
               << std::endl;
     std::cerr << "\nContext Reuse Options:" << std::endl;
-    std::cerr << "  --enableContextReuse      Enable process-local content-addressed context reuse" << std::endl;
-    std::cerr << "  --contextCacheMaxRecords  Maximum retained context records (default: 1024)" << std::endl;
-    std::cerr << "  --contextCacheRecurrentSnapshotPoolBytes" << std::endl;
-    std::cerr << "                            Device byte budget for recurrent/conv snapshots (default: 0;"
+    std::cerr << "  --enable-context-reuse         Enable process-local content-addressed context reuse" << std::endl;
+    std::cerr << "  --context-cache-max-records    Maximum retained context records (default: 1024)" << std::endl;
+    std::cerr << "  --context-cache-recurrent-snapshot-pool-bytes" << std::endl;
+    std::cerr << "                                 Device byte budget for recurrent/conv snapshots (default: 0;"
               << " required for hybrid reuse)" << std::endl;
-    std::cerr << "  --contextCachePartialKVSnapshotPoolBytes" << std::endl;
-    std::cerr << "                            Device byte budget for partial-KV snapshots (default: 0;"
+    std::cerr << "  --context-cache-partial-kv-snapshot-pool-bytes" << std::endl;
+    std::cerr << "                                 Device byte budget for partial-KV snapshots (default: 0;"
               << " required for hybrid attention reuse)" << std::endl;
-    std::cerr << "                            KV retention capacity is configured at build time with"
-              << " --maxKVPoolPages" << std::endl;
-    std::cerr << "  --encoderCacheBudgetBytes  Device byte budget for encoder embedding cache (default: 256 MiB;"
+    std::cerr << "                                 KV retention capacity is configured at build time with"
+              << " --max-kv-pool-pages" << std::endl;
+    std::cerr << "  --encoder-cache-budget-bytes   Device byte budget for encoder embedding cache (default: 256 MiB;"
               << " 0 disables)" << std::endl;
     std::cerr << "\nVisual-Token Pruning Options:" << std::endl;
-    std::cerr << "  --visualPrune             Enable visual-token pruning (mRoPE VLM prefill)" << std::endl;
-    std::cerr << "  --visualPruneAlgo         Prune selection algorithm (default: dart)" << std::endl;
-    std::cerr << "  --dartReductionRatio      Fraction of visual tokens to remove, in (0, 1) (default: 0.25)"
+    std::cerr << "  --visual-prune                 Enable visual-token pruning (mRoPE VLM prefill)" << std::endl;
+    std::cerr << "  --visual-prune-algo            Prune selection algorithm (default: dart)" << std::endl;
+    std::cerr << "  --dart-reduction-ratio         Fraction of visual tokens to remove, in (0, 1) (default: 0.25)"
               << std::endl;
-    std::cerr << "  --dartPivotImageTokens    Number of image pivot tokens for DART selection (default: 4)"
+    std::cerr << "  --dart-pivot-image-tokens      Number of image pivot tokens for DART selection (default: 4)"
               << std::endl;
-    std::cerr << "  --dartPivotTextTokens     Number of text pivot tokens for DART selection (default: 4)" << std::endl;
+    std::cerr << "  --dart-pivot-text-tokens       Number of text pivot tokens for DART selection (default: 4)"
+              << std::endl;
     std::cerr << "\nQwen3-Omni Audio Output Options:" << std::endl;
-    std::cerr << "  --enableAudioOutput       Enable audio output from Thinker hidden states" << std::endl;
-    std::cerr << "  --talkerEngineDir         Path to Talker engine directory" << std::endl;
-    std::cerr << "  --code2wavEngineDir       Path to Code2Wav engine directory (optional)" << std::endl;
-    std::cerr << "  --outputAudioDir          Directory to save generated audio (.wav) files" << std::endl;
-    std::cerr << "  --cpSpecVerifySize        CodePredictor speculative decoding verify window: 1 committed"
+    std::cerr << "  --enable-audio-output          Enable audio output from Thinker hidden states" << std::endl;
+    std::cerr << "  --talker-engine-dir            Path to Talker engine directory" << std::endl;
+    std::cerr << "  --code2wav-engine-dir          Path to Code2Wav engine directory (optional)" << std::endl;
+    std::cerr << "  --output-audio-dir             Directory to save generated audio (.wav) files" << std::endl;
+    std::cerr << "  --cp-spec-verify-size          CodePredictor speculative decoding verify window: 1 committed"
               << std::endl;
-    std::cerr << "                            position plus N-1 drafted RVQ depths. 0 disables (default)." << std::endl;
+    std::cerr << "                                 position plus N-1 drafted RVQ depths. 0 disables (default)."
+              << std::endl;
+    std::cerr << "Legacy camelCase option spellings remain accepted.\n";
 }
 
 namespace
@@ -460,53 +475,102 @@ bool parseNonNegativeIntegerOption(char const* optionName, char const* value, In
 bool parseLLMInferenceArgs(LLMInferenceArgs& args, int argc, char* argv[])
 {
     static struct option inferenceOptions[] = {{"help", no_argument, 0, LLMInferenceOptionId::HELP},
+        {"input-file", required_argument, 0, LLMInferenceOptionId::INPUT_FILE},
         {"inputFile", required_argument, 0, LLMInferenceOptionId::INPUT_FILE},
+        {"engine-dir", required_argument, 0, LLMInferenceOptionId::ENGINE_DIR},
         {"engineDir", required_argument, 0, LLMInferenceOptionId::ENGINE_DIR},
+        {"multimodal-engine-dir", required_argument, 0, LLMInferenceOptionId::MULTIMODAL_ENGINE_DIR},
         {"multimodalEngineDir", required_argument, 0, LLMInferenceOptionId::MULTIMODAL_ENGINE_DIR},
+        {"checkpoint-dir", required_argument, 0, LLMInferenceOptionId::CHECKPOINT_DIR},
         {"checkpointDir", required_argument, 0, LLMInferenceOptionId::CHECKPOINT_DIR},
+        {"draft-checkpoint-dir", required_argument, 0, LLMInferenceOptionId::DRAFT_CHECKPOINT_DIR},
         {"draftCheckpointDir", required_argument, 0, LLMInferenceOptionId::DRAFT_CHECKPOINT_DIR},
+        {"output-file", required_argument, 0, LLMInferenceOptionId::OUTPUT_FILE},
+#if IS_TRT_RTX
+        {"rtx-runtime-cache-path", required_argument, 0, LLMInferenceOptionId::RTX_RUNTIME_CACHE_PATH},
+        {"rtxRuntimeCachePath", required_argument, 0, LLMInferenceOptionId::RTX_RUNTIME_CACHE_PATH},
+#endif
         {"outputFile", required_argument, 0, LLMInferenceOptionId::OUTPUT_FILE},
         {"debug", no_argument, 0, LLMInferenceOptionId::DEBUG},
+        {"dump-profile", no_argument, 0, LLMInferenceOptionId::DUMP_PROFILE},
         {"dumpProfile", no_argument, 0, LLMInferenceOptionId::DUMP_PROFILE},
+        {"profile-output-file", required_argument, 0, LLMInferenceOptionId::PROFILE_OUTPUT_FILE},
         {"profileOutputFile", required_argument, 0, LLMInferenceOptionId::PROFILE_OUTPUT_FILE},
         {"warmup", required_argument, 0, LLMInferenceOptionId::WARMUP},
+        {"dump-output", no_argument, 0, LLMInferenceOptionId::DUMP_OUTPUT},
         {"dumpOutput", no_argument, 0, LLMInferenceOptionId::DUMP_OUTPUT},
+        {"cp-spec-verify-size", required_argument, 0, LLMInferenceOptionId::CP_SPEC_VERIFY_SIZE},
         {"cpSpecVerifySize", required_argument, 0, LLMInferenceOptionId::CP_SPEC_VERIFY_SIZE},
+        {"spec-decode", no_argument, 0, LLMInferenceOptionId::SPEC_DECODE},
         {"specDecode", no_argument, 0, LLMInferenceOptionId::SPEC_DECODE},
         {"eagle", no_argument, 0, LLMInferenceOptionId::SPEC_DECODE}, // deprecated alias
+        {"spec-draft-top-k", required_argument, 0, LLMInferenceOptionId::SPEC_DRAFT_TOP_K},
         {"specDraftTopK", required_argument, 0, LLMInferenceOptionId::SPEC_DRAFT_TOP_K},
+        {"eagle-draft-top-k", required_argument, 0, LLMInferenceOptionId::SPEC_DRAFT_TOP_K},
         {"eagleDraftTopK", required_argument, 0, LLMInferenceOptionId::SPEC_DRAFT_TOP_K}, // deprecated alias
+        {"spec-draft-step", required_argument, 0, LLMInferenceOptionId::SPEC_DRAFT_STEP},
         {"specDraftStep", required_argument, 0, LLMInferenceOptionId::SPEC_DRAFT_STEP},
+        {"eagle-draft-step", required_argument, 0, LLMInferenceOptionId::SPEC_DRAFT_STEP},
         {"eagleDraftStep", required_argument, 0, LLMInferenceOptionId::SPEC_DRAFT_STEP}, // deprecated alias
+        {"spec-verify-size", required_argument, 0, LLMInferenceOptionId::SPEC_VERIFY_SIZE},
         {"specVerifySize", required_argument, 0, LLMInferenceOptionId::SPEC_VERIFY_SIZE},
+        {"spec-verify-tree-size", required_argument, 0, LLMInferenceOptionId::SPEC_VERIFY_SIZE},
         {"specVerifyTreeSize", required_argument, 0, LLMInferenceOptionId::SPEC_VERIFY_SIZE},
+        {"eagle-verify-tree-size", required_argument, 0, LLMInferenceOptionId::SPEC_VERIFY_SIZE},
         {"eagleVerifyTreeSize", required_argument, 0, LLMInferenceOptionId::SPEC_VERIFY_SIZE}, // deprecated alias
+        {"dflash-block-size", required_argument, 0, LLMInferenceOptionId::DFLASH_BLOCK_SIZE},
         {"dflashBlockSize", required_argument, 0, LLMInferenceOptionId::DFLASH_BLOCK_SIZE},
+        {"jetspec-block-size", required_argument, 0, LLMInferenceOptionId::DFLASH_BLOCK_SIZE},
         {"jetspecBlockSize", required_argument, 0, LLMInferenceOptionId::DFLASH_BLOCK_SIZE},
+        {"batch-size", required_argument, 0, LLMInferenceOptionId::BATCH_SIZE},
         {"batchSize", required_argument, 0, LLMInferenceOptionId::BATCH_SIZE},
+        {"max-generate-length", required_argument, 0, LLMInferenceOptionId::MAX_GENERATE_LENGTH},
         {"maxGenerateLength", required_argument, 0, LLMInferenceOptionId::MAX_GENERATE_LENGTH},
+        {"num-logprobs", required_argument, 0, LLMInferenceOptionId::NUM_LOGPROBS},
         {"numLogprobs", required_argument, 0, LLMInferenceOptionId::NUM_LOGPROBS},
+        {"enable-audio-output", no_argument, 0, LLMInferenceOptionId::ENABLE_AUDIO_OUTPUT},
         {"enableAudioOutput", no_argument, 0, LLMInferenceOptionId::ENABLE_AUDIO_OUTPUT},
+        {"talker-engine-dir", required_argument, 0, LLMInferenceOptionId::TALKER_ENGINE_DIR},
         {"talkerEngineDir", required_argument, 0, LLMInferenceOptionId::TALKER_ENGINE_DIR},
+        {"code2wav-engine-dir", required_argument, 0, LLMInferenceOptionId::CODE2WAV_ENGINE_DIR},
         {"code2wavEngineDir", required_argument, 0, LLMInferenceOptionId::CODE2WAV_ENGINE_DIR},
+        {"output-audio-dir", required_argument, 0, LLMInferenceOptionId::OUTPUT_AUDIO_DIR},
         {"outputAudioDir", required_argument, 0, LLMInferenceOptionId::OUTPUT_AUDIO_DIR},
+        {"enable-thinker-talker-streaming", no_argument, 0, LLMInferenceOptionId::ENABLE_THINKER_TALKER_STREAMING},
         {"enableThinkerTalkerStreaming", no_argument, 0, LLMInferenceOptionId::ENABLE_THINKER_TALKER_STREAMING},
+        {"tp-size", required_argument, 0, LLMInferenceOptionId::TP_SIZE},
         {"tpSize", required_argument, 0, LLMInferenceOptionId::TP_SIZE},
+        {"dspark-scheduler", required_argument, 0, LLMInferenceOptionId::DSPARK_SCHEDULER},
         {"dsparkScheduler", required_argument, 0, LLMInferenceOptionId::DSPARK_SCHEDULER},
+        {"dspark-confidence-threshold", required_argument, 0, LLMInferenceOptionId::DSPARK_CONFIDENCE_THRESHOLD},
         {"dsparkConfidenceThreshold", required_argument, 0, LLMInferenceOptionId::DSPARK_CONFIDENCE_THRESHOLD},
+        {"dspark-min-proposal-len", required_argument, 0, LLMInferenceOptionId::DSPARK_MIN_PROPOSAL_LEN},
         {"dsparkMinProposalLen", required_argument, 0, LLMInferenceOptionId::DSPARK_MIN_PROPOSAL_LEN},
+        {"dspark-max-proposal-len", required_argument, 0, LLMInferenceOptionId::DSPARK_MAX_PROPOSAL_LEN},
         {"dsparkMaxProposalLen", required_argument, 0, LLMInferenceOptionId::DSPARK_MAX_PROPOSAL_LEN},
+        {"enable-context-reuse", no_argument, 0, LLMInferenceOptionId::ENABLE_CONTEXT_REUSE},
         {"enableContextReuse", no_argument, 0, LLMInferenceOptionId::ENABLE_CONTEXT_REUSE},
+        {"context-cache-max-records", required_argument, 0, LLMInferenceOptionId::CONTEXT_CACHE_MAX_RECORDS},
         {"contextCacheMaxRecords", required_argument, 0, LLMInferenceOptionId::CONTEXT_CACHE_MAX_RECORDS},
+        {"context-cache-recurrent-snapshot-pool-bytes", required_argument, 0,
+            LLMInferenceOptionId::CONTEXT_CACHE_RECURRENT_SNAPSHOT_POOL_BYTES},
         {"contextCacheRecurrentSnapshotPoolBytes", required_argument, 0,
             LLMInferenceOptionId::CONTEXT_CACHE_RECURRENT_SNAPSHOT_POOL_BYTES},
+        {"context-cache-partial-kv-snapshot-pool-bytes", required_argument, 0,
+            LLMInferenceOptionId::CONTEXT_CACHE_PARTIAL_KV_SNAPSHOT_POOL_BYTES},
         {"contextCachePartialKVSnapshotPoolBytes", required_argument, 0,
             LLMInferenceOptionId::CONTEXT_CACHE_PARTIAL_KV_SNAPSHOT_POOL_BYTES},
+        {"visual-prune", no_argument, 0, LLMInferenceOptionId::VISUAL_PRUNE},
         {"visualPrune", no_argument, 0, LLMInferenceOptionId::VISUAL_PRUNE},
+        {"visual-prune-algo", required_argument, 0, LLMInferenceOptionId::VISUAL_PRUNE_ALGO},
         {"visualPruneAlgo", required_argument, 0, LLMInferenceOptionId::VISUAL_PRUNE_ALGO},
+        {"dart-reduction-ratio", required_argument, 0, LLMInferenceOptionId::DART_REDUCTION_RATIO},
         {"dartReductionRatio", required_argument, 0, LLMInferenceOptionId::DART_REDUCTION_RATIO},
+        {"dart-pivot-image-tokens", required_argument, 0, LLMInferenceOptionId::DART_PIVOT_IMAGE_TOKENS},
         {"dartPivotImageTokens", required_argument, 0, LLMInferenceOptionId::DART_PIVOT_IMAGE_TOKENS},
+        {"dart-pivot-text-tokens", required_argument, 0, LLMInferenceOptionId::DART_PIVOT_TEXT_TOKENS},
         {"dartPivotTextTokens", required_argument, 0, LLMInferenceOptionId::DART_PIVOT_TEXT_TOKENS},
+        {"encoder-cache-budget-bytes", required_argument, 0, LLMInferenceOptionId::ENCODER_CACHE_BUDGET_BYTES},
         {"encoderCacheBudgetBytes", required_argument, 0, LLMInferenceOptionId::ENCODER_CACHE_BUDGET_BYTES},
         {0, 0, 0, 0}};
 
@@ -520,6 +584,9 @@ bool parseLLMInferenceArgs(LLMInferenceArgs& args, int argc, char* argv[])
         case LLMInferenceOptionId::ENGINE_DIR: args.engineDir = optarg; break;
         case LLMInferenceOptionId::MULTIMODAL_ENGINE_DIR: args.multimodalEngineDir = optarg; break;
         case LLMInferenceOptionId::CHECKPOINT_DIR: args.checkpointDir = optarg; break;
+#if IS_TRT_RTX
+        case LLMInferenceOptionId::RTX_RUNTIME_CACHE_PATH: args.rtxRuntimeCachePath = optarg; break;
+#endif
         case LLMInferenceOptionId::DRAFT_CHECKPOINT_DIR: args.draftCheckpointDir = optarg; break;
         case LLMInferenceOptionId::OUTPUT_FILE: args.outputFile = optarg; break;
         case LLMInferenceOptionId::DEBUG: args.debug = true; break;
@@ -836,13 +903,13 @@ bool parseLLMInferenceArgs(LLMInferenceArgs& args, int argc, char* argv[])
     LOG_INFO("args.inputFile: %s", args.inputFile.c_str());
     if (args.inputFile.empty())
     {
-        LOG_ERROR("ERROR: --inputFile is required");
+        LOG_ERROR("ERROR: --input-file is required");
         return false;
     }
     LOG_INFO("args.engineDir: %s", args.engineDir.c_str());
     if (args.engineDir.empty())
     {
-        LOG_ERROR("ERROR: --engineDir is required");
+        LOG_ERROR("ERROR: --engine-dir is required");
         return false;
     }
     if (!args.multimodalEngineDir.empty())
@@ -852,7 +919,7 @@ bool parseLLMInferenceArgs(LLMInferenceArgs& args, int argc, char* argv[])
 
     if (args.outputFile.empty())
     {
-        LOG_ERROR("ERROR: --outputFile is required");
+        LOG_ERROR("ERROR: --output-file is required");
         return false;
     }
     LOG_INFO("args.outputFile: %s", args.outputFile.c_str());
@@ -890,7 +957,7 @@ bool parseLLMInferenceArgs(LLMInferenceArgs& args, int argc, char* argv[])
     }
     else if (!args.draftCheckpointDir.empty())
     {
-        LOG_ERROR("--draftCheckpointDir requires --specDecode");
+        LOG_ERROR("--draft-checkpoint-dir requires --spec-decode");
         return false;
     }
 
@@ -907,7 +974,7 @@ bool parseLLMInferenceArgs(LLMInferenceArgs& args, int argc, char* argv[])
     {
         if (args.talkerEngineDir.empty())
         {
-            LOG_ERROR("--talkerEngineDir is required when --enableAudioOutput is set");
+            LOG_ERROR("--talker-engine-dir is required when --enable-audio-output is set");
             return false;
         }
         LOG_INFO("Audio output enabled");
@@ -927,7 +994,7 @@ bool parseLLMInferenceArgs(LLMInferenceArgs& args, int argc, char* argv[])
         args.enableAudioOutput = true;
         if (args.talkerEngineDir.empty())
         {
-            LOG_ERROR("--enableThinkerTalkerStreaming requires --talkerEngineDir");
+            LOG_ERROR("--enable-thinker-talker-streaming requires --talker-engine-dir");
             return false;
         }
         LOG_INFO("Thinker-Talker streaming enabled (single CUDA stream)");
@@ -967,7 +1034,7 @@ std::pair<std::unordered_map<std::string, std::string>, std::vector<rt::LLMGener
                 argsOut->talkerTemperature, argsOut->talkerTopK, argsOut->talkerTopP, argsOut->talkerRepetitionPenalty);
 
             // Thinker-Talker streaming config: top-level "streaming": {...} block.
-            // CLI --enableThinkerTalkerStreaming takes precedence when set; JSON fills the rest.
+            // CLI --enable-thinker-talker-streaming takes precedence when set; JSON fills the rest.
             if (inputData.contains("streaming") && inputData["streaming"].is_object())
             {
                 auto const& streamingCfg = inputData["streaming"];
@@ -1128,13 +1195,13 @@ int runParallelInference(LLMInferenceArgs const& args,
     }
     if (args.specDecodeArgs.enabled)
     {
-        LOG_ERROR("Tensor-parallel speculative decoding is not supported; omit --specDecode or run with --tpSize 1.");
+        LOG_ERROR("Tensor-parallel speculative decoding is not supported; omit --spec-decode or run with --tp-size 1.");
         return EXIT_FAILURE;
     }
     if (args.contextCacheConfig.enabled)
     {
         LOG_ERROR(
-            "Tensor-parallel context reuse is not supported yet; omit --enableContextReuse or run with --tpSize 1.");
+            "Tensor-parallel context reuse is not supported yet; omit --enable-context-reuse or run with --tp-size 1.");
         return EXIT_FAILURE;
     }
 
@@ -1155,6 +1222,10 @@ int runParallelInference(LLMInferenceArgs const& args,
         runtimeConfig.parallelConfig = parallelConfig;
         runtimeConfig.checkpointDir = args.checkpointDir;
         runtimeConfig.draftCheckpointDir = args.draftCheckpointDir;
+        if (!args.rtxRuntimeCachePath.empty())
+        {
+            runtimeConfig.runtimeCachePath = args.rtxRuntimeCachePath;
+        }
         if (launchMode == rt::ParallelLaunchMode::kMpi)
         {
             runtimeConfig.localRanks = {processRank};
@@ -1461,7 +1532,7 @@ int main(int argc, char* argv[])
     }
     else
     {
-        LOG_INFO("MPI initialized with one process; threaded launch remains available for --tpSize > 1.");
+        LOG_INFO("MPI initialized with one process; threaded launch remains available for --tp-size > 1.");
     }
 #endif
 
@@ -1503,7 +1574,7 @@ int main(int argc, char* argv[])
     {
         if (args.tpSize > 1 && args.tpSize != tpSize)
         {
-            abortMpiWorld(tpRank, tpSize, "parallel configuration", "--tpSize does not match the MPI world size");
+            abortMpiWorld(tpRank, tpSize, "parallel configuration", "--tp-size does not match the MPI world size");
         }
         args.tpSize = tpSize;
     }
@@ -1545,7 +1616,13 @@ int main(int argc, char* argv[])
         return EXIT_FAILURE;
     }
 
-#if defined(EDGELLM_ENABLE_MULTI_DEVICE)
+#if defined(_WIN32)
+    if (args.tpSize > 1)
+    {
+        LOG_ERROR("Multi-device inference is not supported on Windows.");
+        return EXIT_FAILURE;
+    }
+#elif defined(EDGELLM_ENABLE_MULTI_DEVICE)
     if (args.tpSize > 1)
     {
         rt::ParallelLaunchMode launchMode = rt::ParallelLaunchMode::kThread;
@@ -1566,10 +1643,10 @@ int main(int argc, char* argv[])
 #endif
         return result;
     }
-#elif !defined(EDGELLM_ENABLE_MULTI_DEVICE)
+#else
     if (args.tpSize > 1)
     {
-        LOG_ERROR("--tpSize > 1 requires building llm_inference with ENABLE_MULTI_DEVICE=ON.");
+        LOG_ERROR("--tp-size > 1 requires building llm_inference with ENABLE_MULTI_DEVICE=ON.");
         return EXIT_FAILURE;
     }
 #endif
@@ -1609,7 +1686,9 @@ int main(int argc, char* argv[])
         {
             runtime
                 = std::make_unique<rt::LLMInferenceRuntime>(args.engineDir, args.multimodalEngineDir, loraWeightsMap,
-                    draftingConfig, stream, args.contextCacheConfig, args.checkpointDir, args.draftCheckpointDir);
+                    draftingConfig, stream, args.contextCacheConfig, args.checkpointDir, args.draftCheckpointDir,
+                    args.rtxRuntimeCachePath.empty() ? std::nullopt
+                                                     : std::optional<std::filesystem::path>{args.rtxRuntimeCachePath});
         }
         catch (std::exception const& e)
         {
@@ -1624,7 +1703,9 @@ int main(int argc, char* argv[])
         try
         {
             runtime = std::make_unique<rt::LLMInferenceRuntime>(args.engineDir, args.multimodalEngineDir,
-                loraWeightsMap, stream, args.contextCacheConfig, args.checkpointDir);
+                loraWeightsMap, stream, args.contextCacheConfig, args.checkpointDir,
+                args.rtxRuntimeCachePath.empty() ? std::nullopt
+                                                 : std::optional<std::filesystem::path>{args.rtxRuntimeCachePath});
         }
         catch (std::exception const& e)
         {

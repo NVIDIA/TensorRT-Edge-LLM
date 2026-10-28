@@ -383,6 +383,10 @@ def _load_adapter_config(config_path: str) -> Tuple[float, int]:
     return config['lora_alpha'], config['r']
 
 
+_VLM_TEXT_PREFIXES = ("model.language_model.", "language_model.model.",
+                      "language_model.")
+
+
 def _process_tensor_name(key: str) -> str:
     """
     Process tensor name by removing 'base_model.model' prefix and ensuring it starts with 'model'.
@@ -395,6 +399,12 @@ def _process_tensor_name(key: str) -> str:
     """
     if key.startswith('base_model.model.'):
         key = key[len('base_model.model.'):]
+    # VLM adapters address the text decoder through a wrapper prefix; the
+    # exported LLM names it ``model.layers.*`` (same remap as the loader).
+    for prefix in _VLM_TEXT_PREFIXES:
+        if key.startswith(prefix):
+            key = 'model.' + key[len(prefix):]
+            break
     if not key.startswith('model.'):
         key = 'model.' + key
     return key

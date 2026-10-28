@@ -33,11 +33,11 @@ tarball_path="${prebuilt_dir}/${tarball_name}"
 
 case "${cuda_major}" in
     13)
-        : "${CUTE_DSL_PACKAGE:=nvidia-cutlass-dsl[cu13]==4.7.0}"
+        : "${CUTE_DSL_PACKAGE:=nvidia-cutlass-dsl[cu13]==4.8.0}"
         : "${CUTE_DSL_CUPY_PACKAGE:=cupy-cuda13x==13.6.0}"
         ;;
     12)
-        : "${CUTE_DSL_PACKAGE:=nvidia-cutlass-dsl[cu12]==4.7.0}"
+        : "${CUTE_DSL_PACKAGE:=nvidia-cutlass-dsl[cu12]==4.8.0}"
         : "${CUTE_DSL_CUPY_PACKAGE:=cupy-cuda12x==12.3.0}"
         ;;
     *)

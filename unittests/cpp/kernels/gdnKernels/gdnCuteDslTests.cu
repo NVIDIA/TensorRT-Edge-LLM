@@ -1908,7 +1908,7 @@ GdnL2NormResult runGdnL2NormPartialCtaCase(GdnL2NormLaunchMode mode)
 
 void expectGdnL2NormGuardsIntact(GdnL2NormResult const& result)
 {
-    constexpr uint16_t guardBits = 0xA55Au;
+    static constexpr uint16_t guardBits = 0xA55Au;
     auto expectGuard = [](std::vector<uint16_t> const& guard, char const* label) {
         EXPECT_TRUE(std::all_of(guard.begin(), guard.end(), [](uint16_t bits) { return bits == guardBits; })) << label;
     };

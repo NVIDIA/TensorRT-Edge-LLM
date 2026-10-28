@@ -13,6 +13,10 @@
                         {
                             "type": "audio",
                             "audio": "examples/multimodal/audio/6930-75918-0000.flac"
+                        },
+                        {
+                            "type": "text",
+                            "text": "Please transcribe the following audio."
                         }
                     ]
                 }

@@ -111,6 +111,8 @@ class Gemma4SharedKVAttention(nn.Module):
 
         self.num_kv_heads = self._num_kv_heads_for_layer(config, layer_idx)
         self.attention_scale = config.attention_scaling
+        # FP8 K/V dequant scales of the donor target layer, set at export.
+        self.target_kv_scales = [1.0, 1.0]
 
     @staticmethod
     def _layer_type_for_layer(config: ModelConfig, layer_idx: int) -> str:
@@ -185,7 +187,7 @@ class Gemma4SharedKVAttention(nn.Module):
             skip_softmax_scale_factor=0.0,
             attention_mask=attention_mask,
             attention_pos_id=attention_pos_id,
-            qkv_scales=[1.0, 1.0, 1.0],
+            qkv_scales=[1.0, *self.target_kv_scales],
             enable_kv_shared=1,
         )
         return self.o_proj(
@@ -219,7 +221,7 @@ class Gemma4SharedKVAttention(nn.Module):
             enable_context_mask_selector=False,
             enable_vision_block_attention=False,
             skip_softmax_scale_factor=0.0,
-            qkv_scales=[1.0, 1.0, 1.0],
+            qkv_scales=[1.0, *self.target_kv_scales],
             enable_kv_shared=1,
             query_start_offsets=metadata["query_start_offsets"],
             attention_sequence_lengths=metadata["attention_sequence_lengths"],
@@ -428,6 +430,15 @@ class Gemma4AssistantForCausalLM(nn.Module):
                 hidden_states,
                 self.model.embed_tokens.weight.to(hidden_states.dtype))
         return logits.to(torch.float32), self.post_projection(hidden_states)
+
+    def set_target_kv_scales(self, scales: List[List[float]]) -> None:
+        """Set per-layer ``[k_scale, v_scale]`` of the donated target KV."""
+        if len(scales) != len(self.model.layers):
+            raise ValueError(
+                "Gemma4 assistant target KV scales must have one entry per "
+                f"layer; got {len(scales)} for {len(self.model.layers)}.")
+        for layer, (k_scale, v_scale) in zip(self.model.layers, scales):
+            layer.self_attn.target_kv_scales = [float(k_scale), float(v_scale)]
 
     def onnx_export_spec(self) -> OnnxSpec:
         """Return the Gemma4 assistant ONNX I/O contract."""

@@ -19,23 +19,33 @@ The experimental C++ runtime remains under ``experimental_models/pi05`` and
 consumes the component artifacts emitted by this package.
 """
 
-from .modeling_pi05_action import Pi05ActionConfig, build_pi05_action
-from .modeling_pi05_prefix import Pi05PrefixConfig, build_pi05_prefix
-from .modeling_pi05_visual import Pi05VisualConfig, build_pi05_visual
-from .weights import (is_pi05_checkpoint, is_pi05_weights,
-                      load_checkpoint_weights, load_pi05_config,
-                      split_pi05_weights)
+_EXPORT_MODULES = {
+    "Pi05ActionConfig": ".modeling_pi05_action",
+    "Pi05PrefixConfig": ".modeling_pi05_prefix",
+    "Pi05VisualConfig": ".modeling_pi05_visual",
+    "build_pi05_action": ".modeling_pi05_action",
+    "build_pi05_prefix": ".modeling_pi05_prefix",
+    "build_pi05_visual": ".modeling_pi05_visual",
+    "is_pi05_checkpoint": ".weights",
+    "is_pi05_weights": ".weights",
+    "load_checkpoint_weights": ".weights",
+    "load_pi05_config": ".weights",
+    "split_pi05_weights": ".weights",
+}
 
-__all__ = [
-    "Pi05ActionConfig",
-    "Pi05PrefixConfig",
-    "Pi05VisualConfig",
-    "build_pi05_action",
-    "build_pi05_prefix",
-    "build_pi05_visual",
-    "is_pi05_checkpoint",
-    "is_pi05_weights",
-    "load_checkpoint_weights",
-    "load_pi05_config",
-    "split_pi05_weights",
-]
+__all__ = list(_EXPORT_MODULES)
+
+
+def __getattr__(name):
+    import importlib
+
+    if name not in _EXPORT_MODULES:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(importlib.import_module(_EXPORT_MODULES[name], __name__),
+                    name)
+    globals()[name] = value
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))

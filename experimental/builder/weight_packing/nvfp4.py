@@ -27,6 +27,7 @@ __all__ = [
     "pack_nvfp4_moe_weight",
     "pack_nvfp4_a16_linear",
     "pack_nvfp4_a16_blackwell_linear",
+    "pack_nvfp4_a16_gated_experts",
     "pack_nvfp4_a16_nongated_experts",
     "pack_gated_nvfp4_experts",
 ]
@@ -167,6 +168,66 @@ def pack_nvfp4_a16_nongated_experts(load_expert, num_experts: int,
         "fc2_block_scales": np.stack(fc2_scales),
         "fc2_global_scales": np.asarray(fc2_global, dtype=np.float16),
         "padded_intermediate": padded_intermediate,
+    }
+
+
+def pack_nvfp4_a16_gated_experts(load_expert, num_experts: int,
+                                 hidden_size: int, intermediate_size: int):
+    """Stack gated ModelOpt W4A16 experts for Nvfp4A16MoePlugin."""
+    padded_intermediate = ((intermediate_size + 127) // 128) * 128
+    fc1_qweights, fc1_scales = [], []
+    fc1_gate_global, fc1_up_global = [], []
+    fc2_qweights, fc2_scales, fc2_global = [], [], []
+    for expert_index in range(num_experts):
+        expert = load_expert(expert_index)
+        gate_raw = expert["gate"]
+        up_raw = expert["up"]
+        down_raw = expert["down"]
+        gate = pack_nvfp4_a16_linear(gate_raw["packed"], gate_raw["sf"],
+                                     gate_raw["alpha"])
+        up = pack_nvfp4_a16_linear(up_raw["packed"], up_raw["sf"],
+                                   up_raw["alpha"])
+        if gate[4] != padded_intermediate or up[4] != padded_intermediate:
+            raise ValueError(
+                "FC1 projections do not match padded intermediate "
+                f"size {padded_intermediate}")
+        fc1_qweights.append(np.concatenate((gate[0][0], up[0][0]), axis=-1))
+        fc1_scales.append(np.concatenate((gate[1][0], up[1][0]), axis=-1))
+        fc1_gate_global.append(gate[2][0])
+        fc1_up_global.append(up[2][0])
+
+        down_packed = np.ascontiguousarray(down_raw["packed"], dtype=np.uint8)
+        down_scales = np.ascontiguousarray(down_raw["sf"], dtype=np.uint8)
+        if padded_intermediate != intermediate_size:
+            down_packed = np.pad(
+                down_packed,
+                ((0, 0), (0, (padded_intermediate - intermediate_size) // 2)))
+            down_scales = np.pad(
+                down_scales,
+                ((0, 0), (0, (padded_intermediate - intermediate_size) // 16)))
+        down = pack_nvfp4_a16_linear(down_packed, down_scales,
+                                     down_raw["alpha"])
+        if down[3] != hidden_size or down[4] != hidden_size:
+            raise ValueError("FC2 hidden size must already be 128-aligned")
+        fc2_qweights.append(down[0][0])
+        fc2_scales.append(down[1][0])
+        fc2_global.append(down[2][0])
+
+    return {
+        "fc1_qweights":
+        np.stack(fc1_qweights),
+        "fc1_block_scales":
+        np.stack(fc1_scales),
+        "fc1_global_scales":
+        np.asarray((fc1_gate_global, fc1_up_global), dtype=np.float16),
+        "fc2_qweights":
+        np.stack(fc2_qweights),
+        "fc2_block_scales":
+        np.stack(fc2_scales),
+        "fc2_global_scales":
+        np.asarray(fc2_global, dtype=np.float16),
+        "padded_intermediate":
+        padded_intermediate,
     }
 
 

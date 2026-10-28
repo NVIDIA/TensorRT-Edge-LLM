@@ -806,7 +806,7 @@ bool DFlashDecoder::executeBaseVerification(DecodingInferenceContext& context, i
 {
     int32_t const activeBatchSize = context.activeBatchSize;
     reshapeBaseVerificationInputsOutputs(activeBatchSize, verifySize);
-    runBaseVerificationEmbeddingLookup(activeBatchSize, verifySize, context.stream, /*reshapeGemmaPleOutputs=*/false);
+    runBaseVerificationEmbeddingLookup(activeBatchSize, verifySize, context.stream);
     Tensor const* validCounts = useTreeVerification() ? &mValidCounts : nullptr;
     decoder_utils::prepareSpecRaggedBindings(mRuntime, mRuntime.deployment.base, 0,
         mRuntime.base.pipelineIO.specDecodePositionIds, mRuntime.base.cacheManager.getKVCacheLengths(), validCounts,
@@ -1006,17 +1006,16 @@ void DFlashDecoder::prepareLinearTreeBaseVerificationMetadata(
         mRuntime.base.pipelineIO.specTreeDepths.dataPointer<int32_t>(), batchSize, verifySize, stream);
 }
 
-void DFlashDecoder::runBaseVerificationEmbeddingLookup(
-    int32_t batchSize, int32_t verifySize, cudaStream_t stream, bool reshapeGemmaPleOutputs)
+void DFlashDecoder::runBaseVerificationEmbeddingLookup(int32_t batchSize, int32_t verifySize, cudaStream_t stream)
 {
     check::check(
         mRuntime.base.pipelineIO.inputsEmbeds.reshape({batchSize, verifySize, mRuntime.deployment.base.hiddenSize}),
         "Tensor reshape failed");
     kernel::embeddingLookup(mRuntime.preprocess.idsInput, mRuntime.preprocess.embedding.table,
         mRuntime.preprocess.embedding.scalesAsOptional(), mRuntime.base.pipelineIO.inputsEmbeds, stream);
-    if (reshapeGemmaPleOutputs && mRuntime.preprocess.gemma4Ple)
+    if (mRuntime.preprocess.gemma4Ple)
     {
-        mRuntime.preprocess.gemma4Ple->reshapeOutputsTokenMajor(batchSize * verifySize);
+        mRuntime.preprocess.gemma4Ple->embed(mRuntime.preprocess.idsInput, stream);
     }
 }
 
@@ -1254,7 +1253,7 @@ bool DFlashDecoder::captureCudaGraphs(cudaStream_t stream)
                 cudaMemcpyAsync(mRuntime.base.pipelineIO.packedAttentionMask.rawPointer(), packedAncestorMask.data(),
                     packedAncestorMask.size() * sizeof(int32_t), cudaMemcpyHostToDevice, stream));
 
-            runBaseVerificationEmbeddingLookup(batchSize, verifySize, stream, /*reshapeGemmaPleOutputs=*/true);
+            runBaseVerificationEmbeddingLookup(batchSize, verifySize, stream);
             baseVerificationCaptureStatus &= capturePreparedBaseVerification(batchSize, verifySize, stream);
         }
     }
@@ -1400,6 +1399,10 @@ void DFlashDecoder::saveSystemPromptKVCache(SystemPromptCacheKey const& key, std
 void DFlashDecoder::resetForNewSequences(Tensor& reuseLengths, cudaStream_t stream)
 {
     mDraftCacheManager.resetForNewSequences(reuseLengths, stream);
+    CUDA_CHECK(cudaMemsetAsync(mRuntime.base.pipelineIO.packedAttentionMask.rawPointer(), 0,
+        mRuntime.base.pipelineIO.packedAttentionMask.getMemoryCapacity(), stream));
+    CUDA_CHECK(cudaMemsetAsync(mRuntime.base.pipelineIO.specDecodePositionIds.rawPointer(), 0,
+        mRuntime.base.pipelineIO.specDecodePositionIds.getMemoryCapacity(), stream));
     mCommonStateTracker.reset();
 }
 

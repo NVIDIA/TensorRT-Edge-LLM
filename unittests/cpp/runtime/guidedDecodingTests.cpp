@@ -955,8 +955,8 @@ TEST_F(GuidedDecoderTest, ChoiceEscapesQuotesInsideAnAlternative)
     initDecoder(decoder, 1);
 
     std::string failReason;
-    ASSERT_TRUE(decoder.prepareSlot(0, makeGuide(rt::GuideType::kChoice, R"(["\"a\"","b"])"), failReason))
-        << failReason;
+    std::string const choiceGuide = R"(["\"a\"","b"])";
+    ASSERT_TRUE(decoder.prepareSlot(0, makeGuide(rt::GuideType::kChoice, choiceGuide), failReason)) << failReason;
 
     std::vector<int8_t> const suppressed{0};
     std::vector<int32_t> unsatisfiable;

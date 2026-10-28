@@ -109,11 +109,13 @@ void generateVisionBlockIds(
 //! \param[in,out] outputBuffer Backing tensor for all per-layer outputs; shape [numLayers, maxBatch, maxSeq, hidden]
 //! \param[in] numLayers Number of PLE layer outputs
 //! \param[in] pleHiddenSize Hidden size of each PLE output
-//! \param[in] imageTokenId Optional image token ID to zero-fill (-1 = unused)
-//! \param[in] audioTokenId Optional audio token ID to zero-fill (-1 = unused)
+//! \param[in] imageTokenId Optional image token ID gathered as padTokenId (-1 = unused)
+//! \param[in] audioTokenId Optional audio token ID gathered as padTokenId (-1 = unused)
+//! \param[in] padTokenId Row gathered for media placeholders; out-of-range IDs are zero-filled
 //! \param[in] stream CUDA stream for execution
 void gemma4PleGather(rt::Tensor const& inputIds, rt::Tensor const& pleTable, rt::Tensor& outputBuffer,
-    int32_t numLayers, int32_t pleHiddenSize, int32_t imageTokenId, int32_t audioTokenId, cudaStream_t stream);
+    int32_t numLayers, int32_t pleHiddenSize, int32_t imageTokenId, int32_t audioTokenId, int32_t padTokenId,
+    cudaStream_t stream);
 
 } // namespace kernel
 } // namespace trt_edgellm

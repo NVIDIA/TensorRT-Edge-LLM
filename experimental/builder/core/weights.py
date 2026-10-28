@@ -72,7 +72,7 @@ class LinearWeights:
     weight: ParameterValue
     bias: Optional[ParameterValue] = None
     weight_scale: Optional[ParameterValue] = None
-    weight_scale_2: Optional[float] = None
+    weight_scale_2: Optional[ParameterValue] = None
     input_scale: Optional[float] = None
     pre_quant_scale: Optional[ParameterValue] = None
     activation_permutation: Optional[ParameterValue] = None
@@ -88,6 +88,7 @@ class LinearWeights:
     activation_permutation_recipe: Optional[dict] = None
     logical_out_features: Optional[int] = None
     logical_in_features: Optional[int] = None
+    weight_scale_2_recipe: Optional[dict] = None
 
     @property
     def out_features(self) -> int:
@@ -378,12 +379,56 @@ class Weights:
         return (prefix + ".weight", prefix + ".weight_scale",
                 prefix + ".weight_scale_2", prefix + ".input_scale", False)
 
-    def nvfp4_checkpoint_names(self,
-                               prefix: str) -> Tuple[str, str, str, bool]:
-        """Return packed-weight, block-scale, and alpha checkpoint keys."""
-        weight, scale, alpha, _, reciprocal = self._nvfp4_names(prefix)
+    def nvfp4_checkpoint_names(
+            self, prefix: str) -> Tuple[str, str, str, bool, Optional[str]]:
+        """Return NVFP4 weight, scale, alpha, convention, and input-scale keys."""
+        weight, scale, alpha, input_scale, reciprocal = self._nvfp4_names(
+            prefix)
         return (self.checkpoint_key(weight), self.checkpoint_key(scale),
-                self.checkpoint_key(alpha), reciprocal)
+                self.checkpoint_key(alpha), reciprocal,
+                self.checkpoint_key(input_scale)
+                if self.has(input_scale) else None)
+
+    def nvfp4_moe_input_scale_binding(self, experts_prefix: str,
+                                      num_experts: int,
+                                      projections: Sequence[str]):
+        """Bind calibrated per-expert activation scales for one MoE stage."""
+        keys = []
+        conventions = set()
+        missing = 0
+        for expert in range(num_experts):
+            for projection in projections:
+                record = self.nvfp4_checkpoint_names(
+                    f"{experts_prefix}.{expert}.{projection}")
+                conventions.add(record[3])
+                if record[4] is None:
+                    missing += 1
+                else:
+                    keys.append(record[4])
+        expected = num_experts * len(projections)
+        if missing == expected:
+            return self.checkpoint_binding([],
+                                           "generated",
+                                           "fill",
+                                           fill_value=1.0)
+        if missing or len(conventions) != 1:
+            raise ValueError(
+                f"{experts_prefix}: inconsistent NVFP4 input-scale metadata")
+        return self.checkpoint_binding(keys,
+                                       "plugin",
+                                       "nvfp4_moe_input_scale",
+                                       num_experts=num_experts,
+                                       keys_per_expert=len(projections),
+                                       reciprocal_alpha=conventions.pop(),
+                                       require_equal=len(projections) > 1)
+
+    def nvfp4_input_scale(self, prefix: str) -> float:
+        """Return the effective calibrated activation scale for one linear."""
+        _, _, _, input_scale, reciprocal = self._nvfp4_names(prefix)
+        if not self.has(input_scale):
+            return 1.0
+        return self._nvfp4_global_scale(
+            self.store.get_scalar_f32(self._resolve(input_scale)), reciprocal)
 
     @staticmethod
     def _nvfp4_global_scale(value: float, reciprocal: bool) -> float:
@@ -825,7 +870,7 @@ class Weights:
         """
         if self._reduce_lm_head(prefix):
             return None
-        (weight_name, scale_name, global_scale_name, input_scale_name,
+        (weight_name, scale_name, global_scale_name, _,
          reciprocal) = self._nvfp4_names(prefix)
         weight_key = self._resolve(weight_name)
         scale_key = self._resolve(scale_name)
@@ -853,9 +898,7 @@ class Weights:
         weight_scale_2 = self._nvfp4_global_scale(
             self.store.get_scalar_f32(self._resolve(global_scale_name)),
             reciprocal)
-        input_scale = (self._nvfp4_global_scale(
-            self.store.get_scalar_f32(self._resolve(input_scale_name)),
-            reciprocal) if self.has(input_scale_name) else 1.0)
+        input_scale = self.nvfp4_input_scale(prefix)
         bias_name = prefix + ".bias"
         bias = self.f16(bias_name) if self.has(bias_name) else None
         # Keep the checkpoint's byte-addressable packed shape. Logical FP4
@@ -871,6 +914,73 @@ class Weights:
             weight_recipe=self.checkpoint_binding([weight_name],
                                                   "nvfp4_packed"),
             scale_recipe=self.checkpoint_binding([scale_name], "nvfp4_scale"),
+            logical_out_features=out_features,
+            logical_in_features=in_features,
+        )
+
+    def linear_nvfp4_a16_metadata(self,
+                                  prefix: str) -> Optional[LinearWeights]:
+        """Describe the Marlin W4A16 plugin tensors from checkpoint headers."""
+        if self._reduce_lm_head(prefix):
+            return None
+        (weight_name, scale_name, global_scale_name, _, reciprocal) = \
+            self._nvfp4_names(prefix)
+        weight_key = self._resolve(weight_name)
+        scale_key = self._resolve(scale_name)
+        weight_shape = self.store.shape(weight_key)
+        scale_shape = self.store.shape(scale_key)
+        if len(weight_shape) != 2 or len(scale_shape) != 2:
+            raise ValueError(
+                f"{prefix}: NVFP4 weight and scale must be rank-2")
+        out_features = int(weight_shape[0])
+        in_features = int(
+            scale_shape[1]) * self.module_quant_group_size(prefix)
+        if int(scale_shape[0]) != out_features:
+            raise ValueError(
+                f"{prefix}: NVFP4 weight and scale rows do not match")
+        packed_bytes = int(self.store.tensor_identity(weight_key, 0)["bytes"])
+        if packed_bytes != out_features * in_features // 2:
+            raise ValueError(
+                f"{prefix}: NVFP4 packed weight byte count is inconsistent")
+        padded_out = (out_features + 127) // 128 * 128
+        common = {
+            "num_experts": 1,
+            "keys_per_expert": 1,
+            "source_n": out_features,
+            "source_k": in_features,
+            "output_n": padded_out,
+            "output_k": in_features,
+        }
+        bias_name = prefix + ".bias"
+        bias = None
+        bias_recipe = None
+        if self.has(bias_name):
+            bias = self.parameter_value("fp16", bias_name,
+                                        lambda: self.parameter_spec(bias_name),
+                                        lambda: self.f16(bias_name))
+            bias_recipe = self.checkpoint_binding([bias_name], "fp16")
+        return LinearWeights(
+            quantization.QUANT_NVFP4_A16,
+            ParameterSpec((1, in_features // 16, 8 * padded_out), np.int8),
+            bias,
+            weight_scale=ParameterSpec((1, in_features // 16, padded_out),
+                                       np.int8),
+            weight_scale_2=ParameterSpec((1, ), np.float16),
+            weight_recipe=self.checkpoint_binding([weight_name],
+                                                  "nvfp4_packed",
+                                                  "nvfp4_a16_qweight",
+                                                  **common),
+            bias_recipe=bias_recipe,
+            scale_recipe=self.checkpoint_binding([scale_name], "nvfp4_scale",
+                                                 "nvfp4_a16_scale", **common),
+            weight_scale_2_recipe=self.checkpoint_binding(
+                [global_scale_name],
+                "plugin",
+                "nvfp4_a16_alpha",
+                num_experts=1,
+                keys_per_expert=1,
+                reciprocal_alpha=reciprocal,
+                alpha_multiplier=128.0),
             logical_out_features=out_features,
             logical_in_features=in_features,
         )
@@ -891,6 +1001,12 @@ class Weights:
                 and external_kind and self._policy.externalizes_parameter(
                     external_kind, prefix)):
             descriptor = self.linear_nvfp4_tp_metadata(prefix)
+            if descriptor is not None:
+                return descriptor
+        if (quant_type == quantization.QUANT_NVFP4_A16
+                and external_kind and self._policy.externalizes_parameter(
+                    external_kind, prefix)):
+            descriptor = self.linear_nvfp4_a16_metadata(prefix)
             if descriptor is not None:
                 return descriptor
         kind = ("fp16" if quant_type == quantization.QUANT_FP16 else
@@ -1204,8 +1320,10 @@ class Weights:
         alpha = self._nvfp4_global_scale(
             self.store.get_scalar_f32(self._resolve(global_scale_name)),
             reciprocal)
+        input_scale = self.nvfp4_input_scale(prefix)
         return {
             "packed": self.store.get_packed_fp4(self._resolve(weight_name)),
             "sf": self.store.get_fp8_bytes(self._resolve(scale_name)),
             "alpha": alpha,
+            "input_scale": input_scale,
         }

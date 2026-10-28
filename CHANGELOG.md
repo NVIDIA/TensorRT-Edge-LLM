@@ -1,5 +1,31 @@
 # Release Notes
 
+## 0.11.1
+
+### Frontend and models
+
+- Added [Nemotron 3.5 Bolt E4B](https://huggingface.co/nvidia/Nemotron-3.5-Bolt-E4B-BF16) with its [DFlash draft](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-DFlash)
+- Added the unified [`trtedge` CLI](docs/source/user_guide/getting_started/cli.md) for interactive chat, HTTP serving, direct engine builds, ONNX export, quantization, and model preparation
+- Added [interactive text chat](docs/source/user_guide/examples/interactive-chat.md) with streaming, conversation history, saved settings, and per-response timing metrics
+- Expanded DFlash2 checkpoint support for Qwen3.8 and Muse-Glimmer drafts
+- Added Gemma 4 12B DFlash draft export and quantization for [`deepseek-ai/dflash_gemma4_12b_block7`](https://huggingface.co/deepseek-ai/dflash_gemma4_12b_block7) and [`z-lab/gemma4-12B-it-DFlash`](https://huggingface.co/z-lab/gemma4-12B-it-DFlash)
+
+### Runtime and builds
+
+- Added Windows x64 source-build support with TensorRT RTX, including C++ engine building, inference, and unit tests
+- Added checkpoint-backed NVFP4-A16 MoE weight preparation and optional externalization of NVFP4-A16 LM-head weights
+- Added TensorRT RTX JIT-kernel caching to reduce repeated runtime initialization work
+- Improved CLI diagnostics, cancellation during checkpoint loading, and handling of read-only tokenizer caches and missing optional dependencies
+- Fixed CUDA 11.4 and Windows C++ unit-test compilation
+
+### Correctness fixes
+
+- Fixed Gemma 4 raw-prompt BOS handling, multimodal placeholder embeddings, audio prompts, FP8 KV-cache scaling, and INT4 AWQ calibration
+- Fixed DFlash version selection for paired engine builds and Muse-Glimmer chat-template handling of disabled thinking
+- Fixed DiffusionGemma padded prefill on FMHA-v2 targets, Qwen3-Omni audio configuration, and VLM LoRA decoder selection
+- Allowed Cosmos3 reasoning to start when optional policy-generation engines cannot be built
+- Fixed a TensorRT RTX FP8 fully connected fusion issue
+
 ## 0.11.0
 
 ### New features and models

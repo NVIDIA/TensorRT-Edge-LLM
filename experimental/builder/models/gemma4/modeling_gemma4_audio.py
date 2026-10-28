@@ -18,8 +18,9 @@ import numpy as np
 import tensorrt as trt
 
 from ...core import contracts
-from ...ops import Linear, Module, NetworkModule
+from ...ops import Module, NetworkModule
 from ...ops import functional as F
+from . import modeling_gemma4_layers
 
 
 def _clamp(hidden_states, limit: np.float16):
@@ -30,35 +31,6 @@ def _fp16_clamp_limit(config: dict) -> np.float16:
     limit = min(float(config.get("gradient_clipping", 1e10)),
                 float(np.finfo(np.float16).max))
     return np.float16(limit)
-
-
-class Gemma4ClippableLinear(Module):
-    """Gemma audio projection with optional nested ``.linear`` checkpoint key."""
-
-    def __init__(self, ctx, prefix: str, rank: int = 3) -> None:
-        super().__init__(ctx, prefix)
-        self.module_prefix = prefix
-        linear_prefix = (prefix + ".linear"
-                         if ctx.weights.has(prefix +
-                                            ".linear.weight") else prefix)
-        self.linear = Linear(ctx,
-                             linear_prefix,
-                             rank=rank,
-                             tensor_parallel=False)
-
-    def forward(self, hidden):
-        if self.weights.has(self.module_prefix + ".input_min"):
-            hidden = hidden.maximum(
-                self.weights.f16(self.module_prefix + ".input_min"))
-            hidden = hidden.minimum(
-                self.weights.f16(self.module_prefix + ".input_max"))
-        hidden = self.linear(hidden)
-        if self.weights.has(self.module_prefix + ".output_min"):
-            hidden = hidden.maximum(
-                self.weights.f16(self.module_prefix + ".output_min"))
-            hidden = hidden.minimum(
-                self.weights.f16(self.module_prefix + ".output_max"))
-        return hidden
 
 
 class Gemma4AudioRMSNorm(Module):
@@ -131,8 +103,10 @@ class Gemma4AudioFeedForward(Module):
         self.eps = float(config.get("rms_norm_eps", 1e-6))
         self.activation = str(config.get("hidden_act", "silu"))
         self.clamp_limit = _fp16_clamp_limit(config)
-        self.ffw_layer_1 = Gemma4ClippableLinear(ctx, self.key("ffw_layer_1"))
-        self.ffw_layer_2 = Gemma4ClippableLinear(ctx, self.key("ffw_layer_2"))
+        self.ffw_layer_1 = modeling_gemma4_layers.Gemma4ClippableLinear(
+            ctx, self.key("ffw_layer_1"))
+        self.ffw_layer_2 = modeling_gemma4_layers.Gemma4ClippableLinear(
+            ctx, self.key("ffw_layer_2"))
         self.pre_layer_norm = Gemma4AudioRMSNorm(ctx,
                                                  self.key("pre_layer_norm"),
                                                  self.eps)
@@ -159,9 +133,10 @@ class Gemma4AudioLightConv1d(Module):
         self.eps = float(config.get("rms_norm_eps", 1e-6))
         self.activation = str(config.get("hidden_act", "silu"))
         self.clamp_limit = _fp16_clamp_limit(config)
-        self.linear_start = Gemma4ClippableLinear(ctx,
-                                                  self.key("linear_start"))
-        self.linear_end = Gemma4ClippableLinear(ctx, self.key("linear_end"))
+        self.linear_start = modeling_gemma4_layers.Gemma4ClippableLinear(
+            ctx, self.key("linear_start"))
+        self.linear_end = modeling_gemma4_layers.Gemma4ClippableLinear(
+            ctx, self.key("linear_end"))
         self.pre_layer_norm = Gemma4AudioRMSNorm(ctx,
                                                  self.key("pre_layer_norm"),
                                                  self.eps)
@@ -205,10 +180,14 @@ class Gemma4AudioAttention(Module):
         self.context_size = (self.chunk_size + self.context_left - 1 +
                              self.context_right)
         self.logit_cap = float(config.get("attention_logit_cap", 50.0))
-        self.q_proj = Gemma4ClippableLinear(ctx, self.key("q_proj"))
-        self.k_proj = Gemma4ClippableLinear(ctx, self.key("k_proj"))
-        self.v_proj = Gemma4ClippableLinear(ctx, self.key("v_proj"))
-        self.post = Gemma4ClippableLinear(ctx, self.key("post"))
+        self.q_proj = modeling_gemma4_layers.Gemma4ClippableLinear(
+            ctx, self.key("q_proj"))
+        self.k_proj = modeling_gemma4_layers.Gemma4ClippableLinear(
+            ctx, self.key("k_proj"))
+        self.v_proj = modeling_gemma4_layers.Gemma4ClippableLinear(
+            ctx, self.key("v_proj"))
+        self.post = modeling_gemma4_layers.Gemma4ClippableLinear(
+            ctx, self.key("post"))
 
     def _relative_position(self, hidden_size: int, head_dim: int):
         positions = np.arange(self.context_size // 2, -1, -1,
@@ -269,15 +248,26 @@ class Gemma4AudioSubSampleConvProjection(Module):
             Gemma4AudioSubSampleLayer(ctx, self.root + f"layer{index}",
                                       self.eps) for index in range(2)
         ]
-        self.input_projection = Gemma4ClippableLinear(
+        self.input_projection = modeling_gemma4_layers.Gemma4ClippableLinear(
             ctx, self.root + "input_proj_linear")
 
-    def forward(self, features):
+    @staticmethod
+    def _downsample_mask(mask):
+        shape = F.shape_of(mask)
+        output_length = (shape[1:2] + np.int32(1)) / np.int32(2)
+        output_shape = F.concatenate((shape[0:1], output_length), 0)
+        return F.dynamic_slice(mask, (0, 0), output_shape, stride=(1, 2))
+
+    def forward(self, features, input_features_mask):
         hidden = features.unsqueeze(1, 3)
         for layer in self.layers:
+            mask = input_features_mask.cast(trt.float16)
+            mask = mask.unsqueeze(1, 2).unsqueeze(3, 3)
+            hidden = hidden * mask
             hidden = layer(hidden)
+            input_features_mask = self._downsample_mask(input_features_mask)
         hidden = hidden.transpose((0, 2, 3, 1)).reshape((0, 0, -1))
-        return self.input_projection(hidden)
+        return self.input_projection(hidden), input_features_mask
 
 
 class Gemma4AudioLayer(Module):
@@ -324,8 +314,9 @@ class Gemma4AudioOutputProjection(Module):
     def __init__(self, ctx, output_prefix: str, embedding_prefix: str,
                  eps: float) -> None:
         super().__init__(ctx, "audio_tower.output")
-        self.output_projection = Gemma4ClippableLinear(ctx, output_prefix)
-        self.embedding_projection = Gemma4ClippableLinear(
+        self.output_projection = modeling_gemma4_layers.Gemma4ClippableLinear(
+            ctx, output_prefix)
+        self.embedding_projection = modeling_gemma4_layers.Gemma4ClippableLinear(
             ctx, embedding_prefix)
         self.norm = Gemma4AudioUnitRMSNorm(ctx, eps)
 
@@ -369,12 +360,13 @@ class Gemma4AudioModel(NetworkModule):
             "features":
             self.add_input("input_features", trt.float16,
                            (1, -1, self.mel_bins)),
-            "valid":
-            self.add_input("valid", trt.bool, (1, -1)),
+            "input_features_mask":
+            self.add_input("input_features_mask", trt.bool, (1, -1)),
         }
 
-    def forward(self, features, valid):
-        hidden = self.subsample_conv_projection(features)
+    def forward(self, features, input_features_mask):
+        hidden, valid = self.subsample_conv_projection(features,
+                                                       input_features_mask)
         for layer in self.layers:
             hidden = layer(hidden, valid)
         return {"last_hidden_state": self.output_projection(hidden)}

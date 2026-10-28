@@ -32,7 +32,7 @@ from .mlp import FP32GatedMLP, GatedMLP
 from .module import BuildContext, BuildOptions, Module, NetworkModule
 from .moe import (GatedExperts, GroupedSigmoidRouter, NonGatedNvfp4Experts,
                   TopKRouter, prepare_gated_int4_weights,
-                  prepare_gated_nvfp4_weights)
+                  prepare_gated_nvfp4_a16_weights, prepare_gated_nvfp4_weights)
 from .normalization import LayerNorm, RMSNorm
 from .ragged import RaggedDecoderInputs, add_ragged_decoder_inputs
 from .tensor import Tensor
@@ -88,6 +88,7 @@ __all__ = [
     "PatchEmbedding",
     "pack_qkv",
     "prepare_gated_int4_weights",
+    "prepare_gated_nvfp4_a16_weights",
     "prepare_gated_nvfp4_weights",
     "RMSNorm",
     "RaggedDecoderInputs",

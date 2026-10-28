@@ -9,22 +9,25 @@
 # license agreement from NVIDIA CORPORATION or its affiliates is strictly
 # prohibited.
 
-set(CMAKE_CXX_FLAGS
-    "${CMAKE_CXX_FLAGS} -Wfatal-errors -Wall -Wextra -Wno-unknown-pragmas -Wno-deprecated -fPIC"
-)
-
-# Define additional CUDA flags for kernel compilation.
-set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --expt-relaxed-constexpr -t 0 -fPIC")
-set(CUDA_PTXAS_FLAGS "-warn-lmem-usage -warn-double-usage -warn-spills")
-set(CMAKE_CUDA_FLAGS_RELEASE
-    "${CMAKE_CUDA_FLAGS_RELEASE} -res-usage -Xptxas='${CUDA_PTXAS_FLAGS}'")
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+if(MSVC)
+  set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --expt-relaxed-constexpr")
+  set(CMAKE_CUDA_FLAGS_DEBUG "${CMAKE_CUDA_FLAGS_DEBUG} -G")
+else()
+  set(CMAKE_CXX_FLAGS
+      "${CMAKE_CXX_FLAGS} -Wfatal-errors -Wall -Wextra -Wno-unknown-pragmas -Wno-deprecated"
+  )
+  set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --expt-relaxed-constexpr -t 0")
+  set(CUDA_PTXAS_FLAGS "-warn-lmem-usage -warn-double-usage -warn-spills")
+  set(CMAKE_CUDA_FLAGS_RELEASE
+      "${CMAKE_CUDA_FLAGS_RELEASE} -res-usage -Xptxas='${CUDA_PTXAS_FLAGS}'")
+  set(CMAKE_CUDA_FLAGS_DEBUG "${CMAKE_CUDA_FLAGS_DEBUG} -g")
+endif()
 
 # Device line tables expose build paths that host prefix maps cannot rewrite.
 if(NOT DEFINED EDGELLM_WHEEL_PAYLOAD_DIR)
   set(CMAKE_CUDA_FLAGS_RELEASE "${CMAKE_CUDA_FLAGS_RELEASE} -lineinfo")
 endif()
-
-set(CMAKE_CUDA_FLAGS_DEBUG "-g")
 
 # Hide internal C++ symbols; only EDGELLM_PLUGIN_EXPORT entry points stay
 # visible. Prevents duplicate-symbol collisions when our libraries are loaded
@@ -162,6 +165,7 @@ file(GLOB_RECURSE KERNELS_CU_SRCS "kernels/*.cu")
 # target in CuteDsl.cmake and must not be swept into every kernel archive by the
 # recursive source glob above.
 list(FILTER KERNELS_CPP_SRCS EXCLUDE REGEX "/cuteDSLArtifact/")
+
 # Exclude MoE Marlin ops/instantiations - compiled only via include from
 # moeMarlin.cu.
 list(
@@ -209,6 +213,12 @@ file(GLOB_RECURSE MULTIMODAL_CPP_SRCS "multimodal/*.cpp")
 file(GLOB_RECURSE ACTION_CPP_SRCS "action/*.cpp")
 file(GLOB_RECURSE RUNTIME_CPP_SRCS "runtime/*.cpp")
 file(GLOB_RECURSE SCHEDULER_CPP_SRCS "scheduler/*.cpp")
+# The TRT-RTX runtime cache uses APIs that only exist in the TRT-RTX runtime;
+# compile it there only.
+if(NOT IS_TRT_RTX)
+  list(FILTER RUNTIME_CPP_SRCS EXCLUDE REGEX
+       "runtime/exec/rtxRuntimeCache\\.cpp$")
+endif()
 file(GLOB_RECURSE PROFILER_CPP_SRCS "profiling/*.cpp")
 
 # Enable relocatable device code for MoE Marlin kernels
@@ -303,8 +313,11 @@ edgellm_set_hidden_visibility(edgellmBuilder)
 file(GLOB_RECURSE PLUGIN_CPP_SRCS "plugins/*.cpp")
 add_library(NvInfer_edgellm_plugin SHARED ${PLUGIN_CPP_SRCS})
 set_target_properties(NvInfer_edgellm_plugin PROPERTIES VERSION 1.0 SOVERSION 1)
-set_target_properties(NvInfer_edgellm_plugin PROPERTIES LIBRARY_OUTPUT_DIRECTORY
-                                                        ${CMAKE_BINARY_DIR})
+set_target_properties(
+  NvInfer_edgellm_plugin
+  PROPERTIES ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+             LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+             RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 target_include_directories(NvInfer_edgellm_plugin
                            PRIVATE ${COMMON_INCLUDE_DIRS})
 # edgellmPluginJit precedes edgellmKernels: the Thor W4A16 MoE runner in the JIT
@@ -317,7 +330,9 @@ add_cross_build_link_options(NvInfer_edgellm_plugin)
 edgellm_apply_qnx_warning_suppressions(NvInfer_edgellm_plugin)
 edgellm_set_hidden_visibility(NvInfer_edgellm_plugin)
 # Also drop symbols pulled in from static archives (edgellmKernels, CuTe DSL).
-target_link_options(NvInfer_edgellm_plugin PRIVATE "-Wl,--exclude-libs,ALL")
+if(NOT MSVC)
+  target_link_options(NvInfer_edgellm_plugin PRIVATE "-Wl,--exclude-libs,ALL")
+endif()
 
 # cmake-format: off
 # CuTe DSL unified kernels: link locally generated static library. Artifacts are

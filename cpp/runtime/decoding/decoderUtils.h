@@ -37,8 +37,8 @@ namespace decoder_utils
 {
 
 //! @brief Load the draft engine from disk and return an EngineExecutor.
-std::unique_ptr<EngineExecutor> loadDraftEngine(
-    std::filesystem::path const& engineDir, DeploymentConfig const& deployment);
+std::unique_ptr<EngineExecutor> loadDraftEngine(std::filesystem::path const& engineDir,
+    DeploymentConfig const& deployment, std::shared_ptr<RtxRuntimeCache> runtimeCache = nullptr);
 
 //! @brief Validate a DIRECT reduced-to-full vocabulary map and convert it in place to OFFSETS.
 void directVocabMapToOffsets(std::vector<int32_t>& vocabMap, int32_t baseVocabSize);

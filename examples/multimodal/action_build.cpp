@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -47,24 +47,28 @@ struct ActionBuildArgs
 static void printUsage(char const* programName)
 {
     std::cerr << "Usage: " << programName
-              << " [--help] <--onnxDir str> <--engineDir str> [--debug] [--maxBatchSize int] " << std::endl;
+              << " [--help] <--onnx-dir str> <--engine-dir str> [--debug] [--max-batch-size int] " << std::endl;
     std::cerr << "Options:" << std::endl;
-    std::cerr << "  --help                 Display this help message" << std::endl;
-    std::cerr << "  --onnxDir              Directory containing the action expert ONNX (model.onnx and config.json). "
+    std::cerr << "  --help            Display this help message" << std::endl;
+    std::cerr << "  --onnx-dir        Directory containing the action expert ONNX (model.onnx and config.json). "
                  "Required."
               << std::endl;
-    std::cerr << "  --engineDir            Output directory. Engine will be saved to <engineDir>/action/action.engine"
+    std::cerr << "  --engine-dir      Output directory. Engine will be saved to <engineDir>/action/action.engine"
               << std::endl;
-    std::cerr << "  --debug                Enable verbose logging" << std::endl;
-    std::cerr << "  --maxBatchSize         Maximum batch size for optimization profiles (default: 4)" << std::endl;
+    std::cerr << "  --debug           Enable verbose logging" << std::endl;
+    std::cerr << "  --max-batch-size  Maximum batch size for optimization profiles (default: 4)" << std::endl;
+    std::cerr << "Legacy camelCase option spellings remain accepted.\n";
 }
 
 static bool parseActionBuildArgs(ActionBuildArgs& args, int argc, char* argv[])
 {
     static struct option options[] = {{"help", no_argument, 0, ActionBuildOptionId::HELP},
+        {"onnx-dir", required_argument, 0, ActionBuildOptionId::ONNX_DIR},
         {"onnxDir", required_argument, 0, ActionBuildOptionId::ONNX_DIR},
+        {"engine-dir", required_argument, 0, ActionBuildOptionId::ENGINE_DIR},
         {"engineDir", required_argument, 0, ActionBuildOptionId::ENGINE_DIR},
         {"debug", no_argument, 0, ActionBuildOptionId::DEBUG},
+        {"max-batch-size", required_argument, 0, ActionBuildOptionId::MAX_BATCH_SIZE},
         {"maxBatchSize", required_argument, 0, ActionBuildOptionId::MAX_BATCH_SIZE}, {0, 0, 0, 0}};
 
     int opt;
@@ -78,7 +82,7 @@ static bool parseActionBuildArgs(ActionBuildArgs& args, int argc, char* argv[])
                 args.onnxDir = optarg;
             else
             {
-                LOG_ERROR("--onnxDir requires an argument.");
+                LOG_ERROR("--onnx-dir requires an argument.");
                 return false;
             }
             break;
@@ -87,7 +91,7 @@ static bool parseActionBuildArgs(ActionBuildArgs& args, int argc, char* argv[])
                 args.engineDir = optarg;
             else
             {
-                LOG_ERROR("--engineDir requires an argument.");
+                LOG_ERROR("--engine-dir requires an argument.");
                 return false;
             }
             break;

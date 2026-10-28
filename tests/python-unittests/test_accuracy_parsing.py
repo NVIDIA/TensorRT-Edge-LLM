@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from defs.utils.command_execution import _strip_trailing_special_tokens
+
 from examples.accuracy.scripts.calculate_correctness import (
     clean_text, parse_multi_choice_response)
 
@@ -90,6 +92,12 @@ def test_parse_answer_marker_with_interposed_question_reference():
         "The answer to the final question is:\n\n**C. Bitcoin**") == "C"
     assert _parse("The correct answer for the final question is: **A**") == "A"
     assert _parse("The answer to the last question is B") == "B"
+
+
+def test_strip_guided_decoding_trailing_special_tokens():
+    assert _strip_trailing_special_tokens(
+        '{"name":"Alice"}<|im_end|>') == '{"name":"Alice"}'
+    assert _strip_trailing_special_tokens("yes<turn|>") == "yes"
 
 
 def test_parse_qualifier_does_not_swallow_unrelated_clauses():

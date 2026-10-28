@@ -17,6 +17,7 @@
 
 #pragma once
 
+#include "profiling/requestProfiler.h"
 #include "runtime/llmRuntimeUtils.h"
 #include <atomic>
 #include <chrono>
@@ -73,6 +74,8 @@ enum class FinishReason : uint8_t
  */
 char const* finishReasonName(FinishReason r) noexcept;
 
+using StreamMetrics = metrics::LLMRequestMetrics;
+
 /*!
  * @brief Single delta chunk on a streaming channel.
  *
@@ -82,10 +85,11 @@ char const* finishReasonName(FinishReason r) noexcept;
  */
 struct StreamChunk
 {
-    std::vector<int32_t> tokenIds;                   //!< Delta tokens since last chunk (may be >1 under spec-decode).
-    std::string text;                                //!< Delta text; always well-formed UTF-8.
-    int32_t promptTokenCount{-1};                    //!< Exact input-token count, or -1 when unavailable.
-    bool finished{false};                            //!< True for the final chunk on this channel.
+    std::vector<int32_t> tokenIds; //!< Delta tokens since last chunk (may be >1 under spec-decode).
+    std::string text;              //!< Delta text; always well-formed UTF-8.
+    int32_t promptTokenCount{-1};  //!< Exact input-token count, or -1 when unavailable.
+    StreamMetrics metrics;         //!< Producer-side cumulative snapshot, independent of emission interval.
+    bool finished{false};          //!< True for the final chunk on this channel.
     FinishReason reason{FinishReason::kNotFinished}; //!< Terminal reason (only meaningful when `finished==true`).
     //! Per-token top-K logprobs: logprobs[i] = [LogprobEntry, ...] for tokenIds[i].
     //! Empty when numLogprobs == 0.
@@ -158,7 +162,13 @@ class StreamChannel
 {
 public:
     //! Factory — only way to construct. Enforces shared_ptr ownership.
-    static std::shared_ptr<StreamChannel> create();
+    static std::shared_ptr<StreamChannel> create(bool collectMetrics = false);
+
+    //! Collect per-request wall timings without enabling aggregate GPU profiling.
+    bool getCollectMetrics() const noexcept
+    {
+        return mCollectMetrics;
+    }
 
     StreamChannel(StreamChannel const&) = delete;
     StreamChannel& operator=(StreamChannel const&) = delete;
@@ -213,7 +223,12 @@ public:
     bool getSkipSpecialTokens() const noexcept;
 
 private:
-    StreamChannel() = default;
+    explicit StreamChannel(bool collectMetrics)
+        : mCollectMetrics(collectMetrics)
+    {
+    }
+
+    bool const mCollectMetrics;
     friend class StreamChannelFinalizer;
     friend void attachStreamChannel(std::shared_ptr<StreamChannel> const&, int32_t);
     friend bool validateStreamingSubmission(LLMGenerationRequest const&);
@@ -353,6 +368,8 @@ struct SlotStreamState
 
     //! Non-streaming detokenization policy. Streaming slots read this from their channel.
     bool skipSpecialTokens{true};
+
+    metrics::LLMRequestProfiler<> profiler;
 
     //! Count of tokens whose piece bytes have been fed through emitDelta.
     size_t sentTokenCount{0};

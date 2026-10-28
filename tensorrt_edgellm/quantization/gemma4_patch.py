@@ -57,3 +57,20 @@ def apply(model, model_type: str) -> bool:
     print("[WAR] Running the Gemma4 Unified vision embedder in FP32 for "
           f"calibration (model dtype {model_dtype})")
     return True
+
+
+def restore(model) -> None:
+    """Undo :func:`apply`: cast the embedder weights back to model dtype.
+
+    `apply()` leaves `embed_vision`'s own parameters in FP32 (the forward
+    hook only casts the *output*, not the stored weights). Call this once
+    calibration is done and before the checkpoint is exported, or the
+    exported `model.embed_vision.*` tensors stay FP32 and fail
+    `ckpt_layout_validator`'s fp16 expectation for the visual bucket.
+    """
+    embedder = getattr(getattr(model, "model", model), "embed_vision", None)
+    if embedder is None:
+        return
+    model_dtype = next(p.dtype for n, p in model.named_parameters()
+                       if "embed_vision" not in n)
+    embedder.to(model_dtype)

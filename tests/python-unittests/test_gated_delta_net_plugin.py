@@ -230,6 +230,70 @@ class GDNRunner:
         return o.reshape(batch, seq, self.cfg.heads, self.cfg.v_dim), h0
 
 
+def _spec_state_output_shape(*, context_profile: bool):
+    cfg = GDNConfig(heads=2, max_batch=4, max_seq=4)
+    h, kd, vd = cfg.heads, cfg.k_dim, cfg.v_dim
+    token_profile = ((1, h, kd), (8, h, kd), (16, h, kd))
+    value_profile = ((1, h, vd), (8, h, vd), (16, h, vd))
+    gate_profile = ((1, h), (8, h), (16, h))
+    batch_profile = ((1, ), (2, ), (4, ))
+    phase = 1 if context_profile else 5
+    carrier_profile = (batch_profile if context_profile else
+                       ((0, ), (0, ), (0, )))
+    profiles = {
+        "q": token_profile,
+        "k": token_profile,
+        "v": value_profile,
+        "a": gate_profile,
+        "b": gate_profile,
+        "A_log": ((h, ), (h, ), (h, )),
+        "dt_bias": ((h, ), (h, ), (h, )),
+        "h0": ((1, h, kd, vd), (2, h, kd, vd), (4, h, kd, vd)),
+        "context_lengths": batch_profile,
+        "query_start_offsets": ((2, ), (3, ), (5, )),
+        "state_indices": batch_profile,
+        "execution_phase_marker": ((phase, ), (phase, ), (phase, )),
+        "context_sequence_count_carrier": carrier_profile,
+    }
+    runner = PluginRunner().build(
+        input_specs=[
+            ("q", trt.float16, (-1, h, kd)),
+            ("k", trt.float16, (-1, h, kd)),
+            ("v", trt.float16, (-1, h, vd)),
+            ("a", trt.float16, (-1, h)),
+            ("b", trt.float16, (-1, h)),
+            ("A_log", trt.float32, (h, )),
+            ("dt_bias", trt.float16, (h, )),
+            ("h0", trt.float32, (-1, h, kd, vd)),
+            ("context_lengths", trt.int32, (-1, )),
+            ("query_start_offsets", trt.int32, (-1, )),
+            ("state_indices", trt.int32, (-1, )),
+            ("execution_phase_marker", trt.int32, (-1, )),
+            ("context_sequence_count_carrier", trt.int32, (-1, )),
+        ],
+        output_names=["o", "h0_out", "intermediate_states"],
+        plugin_name="gated_delta_net",
+        plugin_version="1",
+        plugin_fields=[
+            pf_int32("k_dim", kd),
+            pf_int32("v_dim", vd),
+            pf_int32("use_mtp", 1),
+        ],
+        profiles=profiles,
+    )
+    for name, (_, opt_shape, _) in profiles.items():
+        assert runner.context.set_input_shape(name, opt_shape)
+    return tuple(runner.context.get_tensor_shape("intermediate_states"))
+
+
+def test_spec_state_output_is_empty_for_context_profile():
+    assert _spec_state_output_shape(context_profile=True) == (0, 2, 128, 128)
+
+
+def test_spec_state_output_keeps_token_rows_for_verify_profile():
+    assert _spec_state_output_shape(context_profile=False) == (8, 2, 128, 128)
+
+
 def _rand(cfg, n, s, gen):
     h, kd, vd = cfg.heads, cfg.k_dim, cfg.v_dim
 

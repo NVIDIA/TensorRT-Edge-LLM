@@ -123,6 +123,9 @@ struct DeploymentConfig
     std::optional<LLMEngineConfig> draft;       //!< Parsed draft engine configuration
     std::optional<SpecDecodeConfig> specConfig; //!< Consolidated speculative decoding settings
 
+    //! File path for the TRT-RTX runtime cache. No effect on non-RTX builds.
+    std::optional<std::filesystem::path> runtimeCachePath;
+
     //! Maximum runtime batch size across the bundle. Returns the base engine's
     //! `maxSupportedBatchSize` when there is no draft; otherwise returns the
     //! `min` of base and draft. Logs a warning if base and draft disagree.

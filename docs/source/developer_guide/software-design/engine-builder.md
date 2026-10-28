@@ -221,13 +221,11 @@ The LLMBuilder creates two optimization profiles for efficient inference:
 
 **Context Profile** (Prefill Phase):
 - **Purpose**: Optimized for processing input prompts and initial context
-- **Characteristics**: Large sequence lengths, parallel processing, memory-intensive
-- **Batch Sizes**: Typically smaller batches due to memory constraints
+- **Shape Limits**: Up to `maxBatchSize` sequences and `maxBatchSize` × `maxInputLen` tokens
 
 **Generation Profile** (Decode Phase):
 - **Purpose**: Optimized for autoregressive token generation
-- **Characteristics**: Single token generation, sequential processing, compute-intensive
-- **Batch Sizes**: Larger batches possible due to smaller memory footprint
+- **Shape Limits**: Up to `maxBatchSize` sequences, one new token each (more with speculative decoding)
 
 ### Output Generation
 
@@ -239,21 +237,18 @@ Based on model type, the LLMBuilder produces different output configurations:
 - Tokenizer files: `tokenizer.json`, `tokenizer_config.json`
 
 **EAGLE Base Models**:
-- `eagle_base.engine`: Base model TensorRT engine
+- `spec_base.engine`: Base model TensorRT engine
 - `base_config.json`: Base model runtime configuration
 - Tokenizer files: Shared tokenizer configuration
 
 **EAGLE Draft Models**:
-- `eagle_draft.engine`: Draft model TensorRT engine
+- `spec_draft.engine`: Draft model TensorRT engine
 - `draft_config.json`: Draft model runtime configuration
 - `d2t.safetensors`: Draft-to-target vocabulary mapping
 
 ### Hardware Optimization
 
-The LLMBuilder automatically applies platform-specific optimizations for maximum performance on edge hardware:
-- **Precision Selection**: FP16, FP8, INT4, NVFP4 based on hardware capabilities
-- **Memory Layout**: Optimized tensor layouts for target GPU architecture
-- **Kernel Selection**: Hardware-specific kernel implementations for maximum performance
+The builder creates a strongly typed network, so each layer keeps the precision set in the ONNX model. Precision comes from the checkpoint and export options (see [Quantization](../../user_guide/features/quantization.md)); the builder has no precision options. TensorRT and the custom plugins pick kernels and memory layouts for the GPU that builds the engine. Build the engine on the target device.
 
 ---
 
@@ -273,13 +268,13 @@ The Visual Encoder Builder supports multiple vision architectures with architect
 
 **InternVL Models** (`setupInternPhi4ViTProfile`):
 - **Architecture**: InternVL3 vision encoder with 0.5 downsampling ratio(downsampling by a factor of 2 in each dimension, resulting in a 4× reduction in tokens).
-- **Constraints**: Image tokens must be multiples of 256 for optimal processing
+- **Constraints**: Image token limits must be multiples of the tokens per tile (256 for InternVL3); otherwise the build fails
 - **Configuration**: Configurable input channels (typically 3 for RGB)
 - **Resolution**: Fixed image size processing with dynamic token output
 
 **Phi-4-multimodal Models** (`setupInternPhi4ViTProfile`):
 - **Architecture**: Phi-4-multimodal vision encoder with 0.5 downsampling ratio(downsampling by a factor of 2 in each dimension, resulting in a 4× reduction in tokens).
-- **Constraints**: Image tokens must be multiples of 256 for optimal processing
+- **Constraints**: Image token limits must be multiples of 256; otherwise the build fails
 - **Configuration**: Configurable input channels (typically 3 for RGB)
 - **Resolution**: Fixed image size processing with dynamic token output
 
@@ -289,7 +284,7 @@ Unlike LLM models, visual encoders use a single optimization profile optimized f
 - **Purpose**: Image encoding and feature extraction
 - **Dynamic Dimensions**: Variable image resolutions and patch counts
 - **Memory Pattern**: Batch-oriented processing for multiple images
-- **Token Output**: Dynamic image token generation based on input complexity
+- **Token Output**: Dynamic image token generation based on input resolution
 
 ### Output Generation
 
@@ -301,11 +296,7 @@ The Visual Encoder Builder produces engines specifically designed for multimodal
 
 ### Hardware Optimization
 
-Visual processing benefits from specific GPU optimizations tailored for vision transformer workloads:
-- **Tensor Cores**: Leverages mixed-precision operations for vision transformers
-- **Memory Bandwidth**: Optimized for high-resolution image processing
-- **Batch Processing**: Efficient handling of multiple images simultaneously
-- **Precision Selection**: Automatic FP16/FP8 selection based on hardware capabilities
+Same as the LLM Builder: each layer keeps the precision set in the ONNX model. For FP8 visual weights, quantize the checkpoint with `--visual-quantization fp8` before export.
 
 ---
 
@@ -315,42 +306,42 @@ Visual processing benefits from specific GPU optimizations tailored for vision t
 
 ```bash
 ./build/examples/llm/llm_build \
-  --onnxDir=onnx_models/qwen2.5-0.5b \
-  --engineDir=engines/qwen2.5-0.5b \
-  --maxBatchSize=1 \
-  --maxInputLen=1024 \
-  --maxKVCacheCapacity=4096
+  --onnx-dir=onnx_models/qwen2.5-0.5b \
+  --engine-dir=engines/qwen2.5-0.5b \
+  --max-batch-size=1 \
+  --max-input-len=1024 \
+  --max-kv-cache-capacity=4096
 ```
 
 ### Speculative Decoding Build
 
-Base and draft engine directories should be the same. This example uses EAGLE3; MTP and DFlash use the same `--specBase` and `--specDraft` build roles with their own ONNX directories.
+Base and draft engine directories should be the same. This example uses EAGLE3; MTP and DFlash use the same `--spec-base` and `--spec-draft` build roles with their own ONNX directories.
 ```bash
 # Build base model
 ./build/examples/llm/llm_build \
-  --onnxDir=onnx_models/qwen2.5-vl-7b_eagle3_base \
-  --engineDir=engines/qwen2.5-vl-7b_eagle3 \
-  --maxBatchSize=1 \
-  --maxInputLen=1024 \
-  --maxKVCacheCapacity=4096 \
-  --specBase
+  --onnx-dir=onnx_models/qwen2.5-vl-7b_eagle3_base \
+  --engine-dir=engines/qwen2.5-vl-7b_eagle3 \
+  --max-batch-size=1 \
+  --max-input-len=1024 \
+  --max-kv-cache-capacity=4096 \
+  --spec-base
 
 # Build draft model
 ./build/examples/llm/llm_build \
-  --onnxDir=onnx_models/qwen2.5-vl-7b_eagle3_draft \
-  --engineDir=engines/qwen2.5-vl-7b_eagle3 \
-  --maxBatchSize=1 \
-  --maxInputLen=1024 \
-  --maxKVCacheCapacity=4096 \
-  --specDraft
+  --onnx-dir=onnx_models/qwen2.5-vl-7b_eagle3_draft \
+  --engine-dir=engines/qwen2.5-vl-7b_eagle3 \
+  --max-batch-size=1 \
+  --max-input-len=1024 \
+  --max-kv-cache-capacity=4096 \
+  --spec-draft
 
 # Build visual encoder (required for VLM)
 ./build/examples/multimodal/visual_build \
-  --onnxDir=onnx_models/qwen2.5-vl-7b/visual_enc_onnx \
-  --engineDir=visual_engines/qwen2.5-vl-7b_eagle3 \
-  --minImageTokens=128 \
-  --maxImageTokens=512 \
-  --maxImageTokensPerImage=512
+  --onnx-dir=onnx_models/qwen2.5-vl-7b/visual_enc_onnx \
+  --engine-dir=visual_engines/qwen2.5-vl-7b_eagle3 \
+  --min-image-tokens=128 \
+  --max-image-tokens=512 \
+  --max-image-tokens-per-image=512
 ```
 
 ### Multimodal VLM Build
@@ -358,29 +349,29 @@ Base and draft engine directories should be the same. This example uses EAGLE3; 
 ```bash
 # Build LLM engine
 ./build/examples/llm/llm_build \
-  --onnxDir=onnx_models/qwen2.5-vl-3b \
-  --engineDir=engines/qwen2.5-vl-3b \
-  --maxBatchSize=1 \
-  --maxInputLen=1024 \
-  --maxKVCacheCapacity=4096
+  --onnx-dir=onnx_models/qwen2.5-vl-3b \
+  --engine-dir=engines/qwen2.5-vl-3b \
+  --max-batch-size=1 \
+  --max-input-len=1024 \
+  --max-kv-cache-capacity=4096
 
 # Build visual encoder
 ./build/examples/multimodal/visual_build \
-  --onnxDir=onnx_models/qwen2.5-vl-3b/visual_enc_onnx \
-  --engineDir=visual_engines/qwen2.5-vl-3b \
-  --minImageTokens=128 \
-  --maxImageTokens=512 \
-  --maxImageTokensPerImage=512
+  --onnx-dir=onnx_models/qwen2.5-vl-3b/visual_enc_onnx \
+  --engine-dir=visual_engines/qwen2.5-vl-3b \
+  --min-image-tokens=128 \
+  --max-image-tokens=512 \
+  --max-image-tokens-per-image=512
 ```
 
 ### LoRA-Enabled Build
 
 ```bash
 ./build/examples/llm/llm_build \
-  --onnxDir=onnx_models/qwen2.5-0.5b \
-  --engineDir=engines/qwen2.5-0.5b-lora \
-  --maxBatchSize=1 \
-  --maxLoraRank=64
+  --onnx-dir=onnx_models/qwen2.5-0.5b \
+  --engine-dir=engines/qwen2.5-0.5b-lora \
+  --max-batch-size=1 \
+  --max-lora-rank=64
 ```
 
 ---
@@ -399,8 +390,8 @@ Base and draft engine directories should be the same. This example uses EAGLE3; 
    - KV-Cache capacity: `maxKVCacheCapacity` = `maxInputLen` + expected output length
 
 3. **Set Image Token Ranges for VLMs**: Configure appropriate token ranges for multimodal models
-   - Use `--minImageTokens` and `--maxImageTokens` to set the range
-   - Set `--maxImageTokensPerImage` for batch processing limits
+   - Use `--min-image-tokens` and `--max-image-tokens` to set the range
+   - Set `--max-image-tokens-per-image` for batch processing limits
 
 4. **Enable Debug Logging**: Use `--debug` for debugging build issues
 
@@ -414,7 +405,6 @@ Base and draft engine directories should be the same. This example uses EAGLE3; 
 
 **Build Takes Too Long**:
 - Expected: 1-20 minutes depending on model size
-- Use faster GPU for building
 - Consider reducing optimization profile complexity
 
 **Engine Not Loading**:

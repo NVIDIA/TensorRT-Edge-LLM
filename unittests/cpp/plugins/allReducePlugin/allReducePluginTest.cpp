@@ -22,7 +22,6 @@
 #include "runtime/multiDevice/ncclCollectiveBackend.h"
 
 #include <cstdint>
-#include <dlfcn.h>
 #include <exception>
 #include <gtest/gtest.h>
 #include <string>
@@ -49,7 +48,8 @@ RegisterNcclPathFn registerNcclPathSymbol() noexcept
     {
         return nullptr;
     }
-    return reinterpret_cast<RegisterNcclPathFn>(dlsym(RTLD_DEFAULT, "edgellmRegisterNcclCommForAllReducePlugin"));
+    return reinterpret_cast<RegisterNcclPathFn>(
+        getLoadedEdgellmPluginSymbol("edgellmRegisterNcclCommForAllReducePlugin"));
 }
 
 UnregisterNcclPathFn unregisterNcclPathSymbol() noexcept
@@ -58,7 +58,8 @@ UnregisterNcclPathFn unregisterNcclPathSymbol() noexcept
     {
         return nullptr;
     }
-    return reinterpret_cast<UnregisterNcclPathFn>(dlsym(RTLD_DEFAULT, "edgellmUnregisterNcclCommForAllReducePlugin"));
+    return reinterpret_cast<UnregisterNcclPathFn>(
+        getLoadedEdgellmPluginSymbol("edgellmUnregisterNcclCommForAllReducePlugin"));
 }
 
 nvinfer1::DynamicPluginTensorDesc makeDynamicDesc(nvinfer1::DataType dataType, nvinfer1::TensorFormat format) noexcept
@@ -298,7 +299,7 @@ TEST(AllReducePluginTest, NcclPathSumsAcrossTwoRanks)
                      << detectCudaDeviceCount();
     }
 
-    ASSERT_NE(loadPluginLibrary(), nullptr) << "Failed to load " << pluginLibraryPath() << ": " << dlerror();
+    ASSERT_NE(loadPluginLibrary(), nullptr) << "Failed to load " << pluginLibraryPath() << ": " << pluginLoadError();
 
     try
     {

@@ -232,8 +232,12 @@ int32_t CausalConv1dPlugin::getOutputShapes(DimsExprs const* inputs, [[maybe_unu
         outputs[kOUT_CONV_STATE_IDX] = inputs[kIN_CONV_STATE_IDX];
         if (mUseSpecVerifyState)
         {
+            auto const* zero = exprBuilder.constant(0);
+            auto const* verifyProfile = exprBuilder.operation(
+                DimensionOperation::kEQUAL, *inputs[kIN_CONTEXT_SEQUENCE_COUNT_IDX].d[0], *zero);
             outputs[kOUT_INTERMEDIATE_CONV_STATES].nbDims = 3;
-            outputs[kOUT_INTERMEDIATE_CONV_STATES].d[0] = inputs[kIN_X_IDX].d[0];
+            outputs[kOUT_INTERMEDIATE_CONV_STATES].d[0]
+                = exprBuilder.operation(DimensionOperation::kPROD, *inputs[kIN_X_IDX].d[0], *verifyProfile);
             outputs[kOUT_INTERMEDIATE_CONV_STATES].d[1] = inputs[kIN_CONV_STATE_IDX].d[1];
             outputs[kOUT_INTERMEDIATE_CONV_STATES].d[2] = inputs[kIN_CONV_STATE_IDX].d[2];
         }

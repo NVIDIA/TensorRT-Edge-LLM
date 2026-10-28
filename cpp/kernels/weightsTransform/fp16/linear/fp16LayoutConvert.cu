@@ -198,6 +198,15 @@ __global__ void writeFp32Kernel(Fp32ValueBatch values, float* output, int32_t co
     }
 }
 
+__global__ void writeFp16Kernel(Fp32ValueBatch values, __half* output, int32_t count, float scale)
+{
+    int32_t const index = static_cast<int32_t>(threadIdx.x);
+    if (index < count)
+    {
+        output[index] = __float2half(values.values[index] * scale);
+    }
+}
+
 } // namespace
 
 cudaError_t launchCopyBytes(void const* source, void* destination, size_t bytes, cudaStream_t stream)
@@ -415,6 +424,21 @@ cudaError_t launchWriteFp32(float const* values, int32_t count, void* dFp32, cud
         batch.values[index] = values[index];
     }
     writeFp32Kernel<<<1, 512, 0, stream>>>(batch, static_cast<float*>(dFp32), count);
+    return cudaGetLastError();
+}
+
+cudaError_t launchWriteFp16(float const* values, int32_t count, float scale, void* dFp16, cudaStream_t stream)
+{
+    if (values == nullptr || dFp16 == nullptr || count <= 0 || count > 512)
+    {
+        return cudaErrorInvalidValue;
+    }
+    Fp32ValueBatch batch{};
+    for (int32_t index = 0; index < count; ++index)
+    {
+        batch.values[index] = values[index];
+    }
+    writeFp16Kernel<<<1, 512, 0, stream>>>(batch, static_cast<__half*>(dFp16), count, scale);
     return cudaGetLastError();
 }
 

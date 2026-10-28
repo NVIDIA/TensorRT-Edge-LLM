@@ -24,6 +24,7 @@
 #include "kernels/moe/moeActivationKernels.h"
 #include "kernels/moe/moeAlignSumKernels.h"
 #include "kernels/moe/moeMarlinIndicesKernels.h"
+#include "kernels/moe/moePerExpertScaleKernels.h"
 #include "kernels/moe/moeSigmoidGroupTopkKernels.h"
 #include "kernels/moe/moeTopkSoftmaxKernels.h"
 #include "kernels/moe/moe_marlin/moeMarlin.h"
@@ -71,8 +72,10 @@ constexpr char const* kPluginVersion{"1"};
 
 constexpr int32_t kActivationSwiGlu{2};
 constexpr int32_t kActivationRelu2{4};
+constexpr int32_t kActivationGeGlu{5};
 constexpr int32_t kRoutingSoftmaxTopk{0};
 constexpr int32_t kRoutingSigmoidGroupTopk{1};
+constexpr int32_t kRoutingSoftmaxTopkPostScale{2};
 constexpr int32_t kNvfp4GroupSize{16};
 constexpr int32_t kSupportedNumExperts[]{128, 256, 512};
 constexpr int32_t kMaxTopK{32};
@@ -95,7 +98,12 @@ constexpr int32_t kNbPluginFields{11};
 
 int32_t getFc1OutDim(int32_t moeInterSize, int32_t activationType)
 {
-    return activationType == kActivationSwiGlu ? 2 * moeInterSize : moeInterSize;
+    return activationType == kActivationSwiGlu || activationType == kActivationGeGlu ? 2 * moeInterSize : moeInterSize;
+}
+
+int32_t getFc1ProjectionCount(int32_t activationType)
+{
+    return activationType == kActivationSwiGlu || activationType == kActivationGeGlu ? 2 : 1;
 }
 
 bool getTokenCount(Dims const& hidden, int32_t hiddenSize, int64_t& tokenCount) noexcept
@@ -184,8 +192,9 @@ size_t computeWorkspaceSize(int32_t maxTokens, int32_t maxRoutedRows, int32_t nu
         int32_t const fc1OutDim = getFc1OutDim(moeInterSize, activationType);
         // The smallest tile needs the largest expert-id array for a fixed row cap.
         int64_t const maxPaddedBlocks = divUp(maxRoutedRows, kSmallTokenBlockSize);
-        size_t const softmaxWorkspaceBytes
-            = routingMode == kRoutingSoftmaxTopk ? kernel::getMoeTopkSoftmaxWorkspaceSize(maxTokens, numExperts) : 0;
+        size_t const softmaxWorkspaceBytes = routingMode != kRoutingSigmoidGroupTopk
+            ? kernel::getMoeTopkSoftmaxWorkspaceSize(maxTokens, numExperts)
+            : 0;
 
         int64_t marlinWorkspaceElements = 0;
         // Retain the largest workspace across both tuned tile sizes and both projections.
@@ -373,12 +382,12 @@ void Nvfp4A16MoePlugin::validateAttributes() const
     {
         throw std::invalid_argument("Nvfp4A16MoePlugin: moe_inter_size must be positive");
     }
-    if (mActivationType == kActivationSwiGlu)
+    if (mActivationType == kActivationSwiGlu || mActivationType == kActivationGeGlu)
     {
         if (mMoeInterSize % 64 != 0 || mMoeInterSize > std::numeric_limits<int32_t>::max() / 2)
         {
             throw std::invalid_argument(
-                "Nvfp4A16MoePlugin: SwiGLU moe_inter_size must be divisible by 64 and fit the fused FC1 width");
+                "Nvfp4A16MoePlugin: gated moe_inter_size must be divisible by 64 and fit the fused FC1 width");
         }
     }
     else if (mActivationType == kActivationRelu2)
@@ -390,12 +399,14 @@ void Nvfp4A16MoePlugin::validateAttributes() const
     }
     else
     {
-        throw std::invalid_argument("Nvfp4A16MoePlugin: activation_type must be 2 (SwiGLU) or 4 (ReLU2)");
+        throw std::invalid_argument("Nvfp4A16MoePlugin: activation_type must be 2 (SwiGLU), 4 (ReLU2), or 5 (GeGLU)");
     }
-    if (mRoutingMode != kRoutingSoftmaxTopk && mRoutingMode != kRoutingSigmoidGroupTopk)
+    if (mRoutingMode != kRoutingSoftmaxTopk && mRoutingMode != kRoutingSigmoidGroupTopk
+        && mRoutingMode != kRoutingSoftmaxTopkPostScale)
     {
         throw std::invalid_argument(
-            "Nvfp4A16MoePlugin: routing_mode must be 0 (softmax top-k) or 1 (sigmoid group top-k)");
+            "Nvfp4A16MoePlugin: routing_mode must be 0 (softmax top-k), 1 (sigmoid group "
+            "top-k), or 2 (softmax top-k post-scale)");
     }
     if (mNormTopkProb != 0 && mNormTopkProb != 1)
     {
@@ -550,7 +561,12 @@ bool Nvfp4A16MoePlugin::validateTensorDesc(int32_t pos, PluginTensorDesc const& 
         return desc.type == DataType::kINT8 && desc.dims.nbDims == 3 && desc.dims.d[0] == mNumExperts
             && desc.dims.d[1] == mHiddenSize / kNvfp4GroupSize && desc.dims.d[2] == fc1OutDim;
     case kInFc1GlobalScales:
-        return isActivationDataType(desc.type) && desc.dims.nbDims == 1 && desc.dims.d[0] == mNumExperts;
+        if (getFc1ProjectionCount(mActivationType) == 1)
+        {
+            return isActivationDataType(desc.type) && desc.dims.nbDims == 1 && desc.dims.d[0] == mNumExperts;
+        }
+        return isActivationDataType(desc.type) && desc.dims.nbDims == 2 && desc.dims.d[0] == 2
+            && desc.dims.d[1] == mNumExperts;
     case kInFc2QWeights:
         return desc.type == DataType::kINT8 && desc.dims.nbDims == 3 && desc.dims.d[0] == mNumExperts
             && desc.dims.d[1] == mMoeInterSize / kNvfp4GroupSize && desc.dims.d[2] == 8LL * mHiddenSize;
@@ -823,7 +839,7 @@ int32_t Nvfp4A16MoePlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTens
         int32_t* topkIndices = static_cast<int32_t*>(
             assignTensorFromWorkspace(workspacePtr, {numTokens, mTopK}, DataType::kINT32).rawPointer());
         size_t const softmaxWorkspaceBytes
-            = mRoutingMode == kRoutingSoftmaxTopk ? getMoeTopkSoftmaxWorkspaceSize(numTokens, mNumExperts) : 0;
+            = mRoutingMode != kRoutingSigmoidGroupTopk ? getMoeTopkSoftmaxWorkspaceSize(numTokens, mNumExperts) : 0;
         void* softmaxWorkspace = nullptr;
         if (softmaxWorkspaceBytes > 0)
         {
@@ -878,10 +894,18 @@ int32_t Nvfp4A16MoePlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTens
                 moeSigmoidGroupTopk(routerLogits, topkWeightsTensor, topkIndicesTensor, mTopK, mNGroup, mTopkGroup,
                     mNormTopkProb != 0, mRoutedScalingFactor, stream, expertScoreBiasOpt);
             }
-            else
+            else if (mRoutingMode == kRoutingSoftmaxTopk)
             {
                 moeTopkSoftmax(routerLogits, topkWeightsTensor, topkIndicesTensor, mTopK, softmaxWorkspace,
                     softmaxWorkspaceBytes, stream, mNormTopkProb != 0, 0.0F, expertScoreBiasOpt);
+            }
+            else
+            {
+                OptionalInputTensor noBias;
+                moeTopkSoftmax(routerLogits, topkWeightsTensor, topkIndicesTensor, mTopK, softmaxWorkspace,
+                    softmaxWorkspaceBytes, stream, mNormTopkProb != 0, 0.0F, noBias);
+                applyPerExpertScale(topkWeights, topkIndices, static_cast<float const*>(inputs[kInExpertScoreBias]),
+                    numTokens, mTopK, stream);
             }
             CUDA_CHECK(cudaGetLastError());
 
@@ -908,6 +932,8 @@ int32_t Nvfp4A16MoePlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTens
             {mNumExperts, mHiddenSize / kNvfp4GroupSize, fc1OutDim}, DeviceType::kGPU, DataType::kINT8);
         Tensor fc1GlobalScales(
             const_cast<void*>(inputs[kInFc1GlobalScales]), {mNumExperts}, DeviceType::kGPU, activationDataType);
+        Tensor fc1ProjectionGlobalScales(const_cast<void*>(inputs[kInFc1GlobalScales]),
+            {getFc1ProjectionCount(mActivationType), mNumExperts}, DeviceType::kGPU, activationDataType);
         Tensor sortedTokenIdsTensor(sortedTokenIds, {mMaxRoutedRows}, DeviceType::kGPU, DataType::kINT32);
         Tensor expertIdsTensor(expertIds, {maxPaddedBlocks}, DeviceType::kGPU, DataType::kINT32);
         Tensor numTokensPostPaddedTensor(numTokensPostPadded, {1}, DeviceType::kGPU, DataType::kINT32);
@@ -929,7 +955,17 @@ int32_t Nvfp4A16MoePlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTens
             activationOutput, {totalSlots, mMoeInterSize}, DeviceType::kGPU, activationDataType);
         {
             NVTX_SCOPED_RANGE(nvtx_activation, "Nvfp4A16MoePlugin::activation", nvtx_colors::GREEN);
-            moeActivation(fc1OutputTensor, activationOutputTensor, totalSlots, mMoeInterSize, mActivationType, stream);
+            if (getFc1ProjectionCount(mActivationType) == 2)
+            {
+                Tensor expertIndicesFlat(topkIndices, {totalSlots}, DeviceType::kGPU, nvinfer1::DataType::kINT32);
+                moeScaledGatedActivation(fc1OutputTensor, activationOutputTensor, fc1ProjectionGlobalScales,
+                    expertIndicesFlat, totalSlots, mMoeInterSize, mActivationType, stream);
+            }
+            else
+            {
+                moeActivation(
+                    fc1OutputTensor, activationOutputTensor, totalSlots, mMoeInterSize, mActivationType, stream);
+            }
             CUDA_CHECK(cudaGetLastError());
         }
 

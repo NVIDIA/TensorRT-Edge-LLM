@@ -109,6 +109,19 @@ function(_cute_dsl_normalize_artifact_tag OUT_VAR INPUT_TAG)
       PARENT_SCOPE)
 endfunction()
 
+function(_cute_dsl_artifact_root OUT_VAR ARCH)
+  # COFF and ELF artifacts with the same architecture/tag are incompatible. Keep
+  # them separate so Windows and Linux builds can share one checkout.
+  if(WIN32)
+    set(_root "${CMAKE_SOURCE_DIR}/cpp/kernels/cuteDSLArtifact/windows/${ARCH}")
+  else()
+    set(_root "${CMAKE_SOURCE_DIR}/cpp/kernels/cuteDSLArtifact/${ARCH}")
+  endif()
+  set(${OUT_VAR}
+      "${_root}"
+      PARENT_SCOPE)
+endfunction()
+
 function(_cute_dsl_infer_artifact_tag OUT_VAR ARCH)
   _cute_dsl_normalize_artifact_tag(_explicit_tag "${CUTE_DSL_ARTIFACT_TAG}")
   if(NOT _explicit_tag STREQUAL "")
@@ -148,7 +161,7 @@ function(_cute_dsl_infer_artifact_tag OUT_VAR ARCH)
     return()
   endif()
 
-  set(_artifact_root "${CMAKE_SOURCE_DIR}/cpp/kernels/cuteDSLArtifact/${ARCH}")
+  _cute_dsl_artifact_root(_artifact_root "${ARCH}")
   set(_candidate_tags)
   if(EXISTS "${_artifact_root}")
     file(
@@ -224,7 +237,7 @@ function(cute_dsl_setup)
 
   # Tagged artifact directory (preferred) with compatibility fallback to the
   # previous flat layout at cuteDSLArtifact/<arch>/.
-  set(_artifact_root "${CMAKE_SOURCE_DIR}/cpp/kernels/cuteDSLArtifact/${_arch}")
+  _cute_dsl_artifact_root(_artifact_root "${_arch}")
   set(_artifact_dir "${_artifact_root}")
   if(NOT _artifact_tag STREQUAL "")
     set(_tagged_artifact_dir "${_artifact_root}/${_artifact_tag}")
@@ -241,10 +254,19 @@ function(cute_dsl_setup)
     endif()
   endif()
 
-  set(_static_lib "${_artifact_dir}/libcutedsl_${_arch}.a")
+  if(WIN32)
+    set(_static_lib "${_artifact_dir}/cutedsl_${_arch}.lib")
+  else()
+    set(_static_lib "${_artifact_dir}/libcutedsl_${_arch}.a")
+  endif()
   set(_inc_dir "${_artifact_dir}/include")
   set(_metadata "${_artifact_dir}/metadata.json")
   set(_prebuilt_dir "${CMAKE_SOURCE_DIR}/kernelSrcs/cuteDSLPrebuilt")
+  if(WIN32)
+    set(_prebuilt_platform "windows_")
+  else()
+    set(_prebuilt_platform "")
+  endif()
   string(REGEX MATCH "^[0-9]+" _cute_dsl_cuda_major "${CUDA_CTK_VERSION}")
 
   # Auto-extract a CUDA-major-matched prebuilt tarball if artifacts are not
@@ -252,7 +274,7 @@ function(cute_dsl_setup)
   # cutedsl_{arch}_{artifact_tag}_cuda{MAJOR}.tar.gz
   if(NOT EXISTS "${_metadata}" AND NOT _artifact_tag STREQUAL "")
     set(_tarball
-        "${_prebuilt_dir}/cutedsl_${_arch}_${_artifact_tag}_cuda${_cute_dsl_cuda_major}.tar.gz"
+        "${_prebuilt_dir}/cutedsl_${_prebuilt_platform}${_arch}_${_artifact_tag}_cuda${_cute_dsl_cuda_major}.tar.gz"
     )
     if(EXISTS "${_tarball}")
       message(STATUS "CuTe DSL: extracting prebuilt from ${_tarball}")
@@ -280,7 +302,7 @@ function(cute_dsl_setup)
         "Prebuilt CuTe DSL library not found:\n"
         "  ${_static_lib}\n"
         "Expected prebuilt tarball:\n"
-        "  ${_prebuilt_dir}/cutedsl_${_arch}_${_artifact_tag}_cuda${_cute_dsl_cuda_major}.tar.gz\n"
+        "  ${_prebuilt_dir}/cutedsl_${_prebuilt_platform}${_arch}_${_artifact_tag}_cuda${_cute_dsl_cuda_major}.tar.gz\n"
         "Generate it with:\n"
         "  python kernelSrcs/build_cutedsl.py --gpu_arch ${_artifact_gpu_arch_arg} --arch ${_arch}\n"
         "Artifacts are generated locally under:\n"
@@ -395,6 +417,12 @@ function(cute_dsl_setup)
         "Use -DENABLE_CUTE_DSL=OFF or set -DCUDA_CTK_VERSION to a supported toolkit."
     )
   endif()
+  if(MSVC AND _cute_dsl_cuda_ver VERSION_LESS 12.8)
+    message(
+      FATAL_ERROR
+        "Windows CuTe DSL artifacts require CUDA Toolkit 12.8 or newer (detected ${_cute_dsl_cuda_ver})."
+    )
+  endif()
 
   # Shim: cudaLibrary* → cu* when libcudart omits exports (e.g. some 12.0–12.6
   # embedded). From CUDA 12.8 onward, cuda_runtime_api.h declares these APIs
@@ -407,8 +435,9 @@ function(cute_dsl_setup)
       "${CMAKE_SOURCE_DIR}/cpp/kernels/gdnKernels/cutedsl_cuda_runtime_library_shim.c"
   )
   if(NOT TARGET trt_edgellm_cutedsl_cudart_shim)
-    if(_cute_dsl_cuda_ver VERSION_LESS 12.0 OR _cute_dsl_cuda_ver
-                                               VERSION_GREATER_EQUAL 12.8)
+    if(MSVC
+       OR _cute_dsl_cuda_ver VERSION_LESS 12.0
+       OR _cute_dsl_cuda_ver VERSION_GREATER_EQUAL 12.8)
       add_library(trt_edgellm_cutedsl_cudart_shim INTERFACE)
     else()
       if(NOT EXISTS "${_cutedsl_cudart_shim_src}")
@@ -1215,8 +1244,9 @@ function(cute_dsl_setup)
   # The libcudart shim only exists for CUDA 12.0–12.6; outside that range the
   # target is an empty INTERFACE library.
   set(_cudart_shim_lib)
-  if(_cute_dsl_cuda_ver VERSION_GREATER_EQUAL 12.0 AND _cute_dsl_cuda_ver
-                                                       VERSION_LESS 12.8)
+  if(NOT MSVC
+     AND _cute_dsl_cuda_ver VERSION_GREATER_EQUAL 12.0
+     AND _cute_dsl_cuda_ver VERSION_LESS 12.8)
     set(_cudart_shim_lib trt_edgellm_cutedsl_cudart_shim)
   endif()
   foreach(_tgt ${ARG_LINK_TARGETS})
@@ -1236,8 +1266,9 @@ function(cute_dsl_setup)
     # CUDA 12.0–12.6: wrap _cudaLaunchKernelEx (cudaKernel_t → CUfunction, e.g.
     # JetPack 6). cudaLaunchKernelEx is 11.8+, so there is nothing to wrap at
     # 11.4.
-    if(_cute_dsl_cuda_ver VERSION_GREATER_EQUAL 12.0 AND _cute_dsl_cuda_ver
-                                                         VERSION_LESS 12.8)
+    if(NOT MSVC
+       AND _cute_dsl_cuda_ver VERSION_GREATER_EQUAL 12.0
+       AND _cute_dsl_cuda_ver VERSION_LESS 12.8)
       target_link_options(${_tgt} PRIVATE "-Wl,--wrap=_cudaLaunchKernelEx")
     endif()
   endforeach()

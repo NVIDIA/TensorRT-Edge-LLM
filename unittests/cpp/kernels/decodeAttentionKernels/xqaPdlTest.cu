@@ -161,8 +161,8 @@ void expectPdlMatchesReference(std::string const& label, PdlGraphResult const& p
                     << label << " PDL-off replay=" << replay << " output=" << output << " index=" << i;
                 EXPECT_TRUE(isclose(pdlOn.outputs[output][resultIndex], references[output][i], 1e-2F, 1e-2F))
                     << label << " PDL-on replay=" << replay << " output=" << output << " index=" << i;
-                EXPECT_EQ(__half_as_ushort(pdlOff.outputs[output][resultIndex]),
-                    __half_as_ushort(pdlOn.outputs[output][resultIndex]))
+                EXPECT_EQ(
+                    __half_raw(pdlOff.outputs[output][resultIndex]).x, __half_raw(pdlOn.outputs[output][resultIndex]).x)
                     << label << " PDL on/off mismatch at replay=" << replay << " output=" << output << " index=" << i;
             }
         }

@@ -45,6 +45,15 @@ from .command_generation import (generate_build_commands,
                                  generate_vlmevalkit_commands)
 
 _ALPAMAYO_DATASET_PLACEHOLDER = "$ALPAMAYO_DATASET_DIR"
+_TRAILING_SPECIAL_TOKEN_RE = re.compile(
+    r"(?:<\|[^<>]*\|>|<[a-z_]+\|>|<(?:eos|bos|pad|unk|mask|start_of_turn|end_of_turn)>)+\s*$"
+)
+
+
+def _strip_trailing_special_tokens(text: str) -> str:
+    """Remove tokenizer stop markers appended to otherwise constrained text."""
+    return _TRAILING_SPECIAL_TOKEN_RE.sub("", text).rstrip()
+
 
 _SPEC_DECODE_COMMON_PERF_COLUMNS = frozenset({
     'spec_decode_avg_accept_length',
@@ -254,6 +263,8 @@ def _check_guided_decoding_conformance(config: TestConfig) -> None:
         # document, so only a run that reached EOS can be parsed as a whole.
         if finish_reason == 'max-length':
             continue
+
+        text = _strip_trailing_special_tokens(text)
 
         if 'json_schema' in guide or 'json_object' in guide:
             try:

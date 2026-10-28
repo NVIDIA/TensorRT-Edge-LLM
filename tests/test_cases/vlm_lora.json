@@ -43,7 +43,7 @@
                 }
             ],
             "lora_name": "diagrams2sql",
-            "reference": "```json\n{\n  \"relationship\": {\n    \"type\": \"Enrolled in\",\n    \"subject\": \"Student\",\n    \"object\": \"Course\"\n  }\n}\n```"
+            "reference": "{\"domain\": \"education\", \"source\": \"student\", \"target\": \"course\", \"relationship\": \"enrolled_in\"}"
         }
     ]
 }

@@ -71,6 +71,39 @@ def _set(*components: Component) -> FrozenSet[Component]:
 
 FAMILIES: Tuple[ModelFamily, ...] = (
     ModelFamily(
+        "eagle3",
+        {"eagle3": _set(Component.LLM)},
+        {
+            Component.LLM:
+            _component("eagle3.modeling_eagle3_draft", "Eagle3DraftModel")
+        },
+    ),
+    ModelFamily(
+        "dflash",
+        {"dflash": _set(Component.LLM)},
+        {
+            Component.LLM:
+            _component("dflash.modeling_dflash_draft", "DFlashDraftModel")
+        },
+    ),
+    ModelFamily(
+        "dflash2",
+        {"dflash2": _set(Component.LLM)},
+        {
+            Component.LLM:
+            _component("dflash2.modeling_dflash2_draft", "DFlash2DraftModel")
+        },
+        configuration="dflash2.configuration",
+    ),
+    ModelFamily(
+        "dspark",
+        {"dspark": _set(Component.LLM)},
+        {
+            Component.LLM:
+            _component("dspark.modeling_dspark_draft", "DSparkDraftModel")
+        },
+    ),
+    ModelFamily(
         "llama",
         {"llama": _set(Component.LLM)},
         {

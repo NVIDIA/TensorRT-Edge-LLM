@@ -279,8 +279,12 @@ int32_t GatedDeltaNetPlugin::getOutputShapes(DimsExprs const* inputs, [[maybe_un
         outputs[kOUT_H0_SOURCE_IDX] = inputs[kIN_H0_SOURCE_IDX];
         if (mUseSpecVerifyState)
         {
+            auto const* zero = exprBuilder.constant(0);
+            auto const* verifyProfile = exprBuilder.operation(
+                DimensionOperation::kEQUAL, *inputs[kIN_CONTEXT_SEQUENCE_COUNT_IDX].d[0], *zero);
             outputs[kOUT_INTERMEDIATE_STATES_IDX].nbDims = 4;
-            outputs[kOUT_INTERMEDIATE_STATES_IDX].d[0] = inputs[kIN_Q_IDX].d[0];
+            outputs[kOUT_INTERMEDIATE_STATES_IDX].d[0]
+                = exprBuilder.operation(DimensionOperation::kPROD, *inputs[kIN_Q_IDX].d[0], *verifyProfile);
             outputs[kOUT_INTERMEDIATE_STATES_IDX].d[1] = inputs[kIN_V_IDX].d[1];
             outputs[kOUT_INTERMEDIATE_STATES_IDX].d[2] = inputs[kIN_Q_IDX].d[2];
             outputs[kOUT_INTERMEDIATE_STATES_IDX].d[3] = inputs[kIN_V_IDX].d[2];

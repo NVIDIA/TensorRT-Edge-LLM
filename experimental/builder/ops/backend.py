@@ -1490,7 +1490,8 @@ class Net:
                          x: "trt.ITensor",
                          linear_weights,
                          rank: int = 3,
-                         sm110: bool = False) -> "trt.ITensor":
+                         sm110: bool = False,
+                         name: str = "") -> "trt.ITensor":
         """Run a weight-only NVFP4 linear with FP16 activations."""
         if rank not in (2, 3):
             raise NotImplementedError(
@@ -1498,7 +1499,19 @@ class Net:
         from ..weight_packing import nvfp4 as nvfp4_pack
 
         raw = linear_weights
-        if sm110:
+        if isinstance(raw.weight, ParameterSpec):
+            qweight_tensor = self.parameter(name + ".a16_qweight", raw.weight,
+                                            "nvfp4_a16", raw.weight_recipe)
+            scale_tensor = self.parameter(name + ".a16_block_scales",
+                                          raw.weight_scale, "nvfp4_a16",
+                                          raw.scale_recipe)
+            global_tensor = self.parameter(name + ".a16_global_scale",
+                                           raw.weight_scale_2, "nvfp4_a16",
+                                           raw.weight_scale_2_recipe)
+            logical_n = raw.out_features
+            padded_n = int(raw.weight.shape[-1]) // 8
+            operation_name = "nvfp4_a16_gemm"
+        elif sm110:
             packed = nvfp4_pack.pack_nvfp4_a16_blackwell_linear(
                 raw.weight, raw.weight_scale, raw.weight_scale_2)
             operation_name = "nvfp4_a16_blackwell_gemm"
@@ -1507,10 +1520,11 @@ class Net:
                                                       raw.weight_scale,
                                                       raw.weight_scale_2)
             operation_name = "nvfp4_a16_gemm"
-        qweights, block_scales, global_scale, logical_n, padded_n = packed
-        qweight_tensor = self.const(qweights, "a16_qweight")
-        scale_tensor = self.const(block_scales, "a16_block_scales")
-        global_tensor = self.const(global_scale, "a16_global_scale")
+        if not isinstance(raw.weight, ParameterSpec):
+            qweights, block_scales, global_scale, logical_n, padded_n = packed
+            qweight_tensor = self.const(qweights, "a16_qweight")
+            scale_tensor = self.const(block_scales, "a16_block_scales")
+            global_tensor = self.const(global_scale, "a16_global_scale")
         attributes = {
             "gemm_n": padded_n,
             "gemm_k": raw.in_features,
@@ -1524,6 +1538,12 @@ class Net:
         output = layer.get_output(0)
         if logical_n != padded_n:
             output = self.slice_last_dim(output, 0, logical_n, rank)
+        if isinstance(raw.bias, ParameterSpec):
+            return self._add_bias(output,
+                                  raw.bias,
+                                  rank,
+                                  name=name,
+                                  recipe=raw.bias_recipe)
         return self._add_bias(output, raw.bias, rank)
 
     def fused_nvfp4_gemm_all_reduce(self,

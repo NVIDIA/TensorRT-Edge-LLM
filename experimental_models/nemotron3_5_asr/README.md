@@ -38,11 +38,11 @@ tensorrt-edgellm-build \
     --engine-dir "$ENGINE_DIR" \
     --max-time-steps 8192
 
-# 2. Transcribe. --promptId selects the language prompt (default = config
+# 2. Transcribe. --prompt-id selects the language prompt (default = config
 #    default_prompt_id = automatic language detection; the model emits an
 #    <xx-XX> language tag).
 "$BUILD_DIR/experimental_models/nemotron3_5_asr/examples/nemotron_asr_inference" \
-    --engineDir "$ENGINE_DIR" --audioFile "$AUDIO"     # wav / mp3 / flac
+    --engine-dir "$ENGINE_DIR" --audio-file "$AUDIO"     # wav / mp3 / flac
 
 # 3. Or serve the complete model bundle through the isolated experimental API.
 #    This source module is not installed as a console command. Server startup

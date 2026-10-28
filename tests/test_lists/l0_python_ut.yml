@@ -13,6 +13,14 @@ tests:
   # Package import and introspection contracts
   - tests/python-unittests/test_package_api.py
 
+  # Combined CLI and interactive text frontend
+  - tests/python-unittests/frontend/test_cli.py
+  - tests/python-unittests/frontend/test_dispatch.py
+  - tests/python-unittests/frontend/test_config.py
+  - tests/python-unittests/frontend/test_backend.py
+  - tests/python-unittests/frontend/test_session.py
+  - tests/python-unittests/frontend/test_terminal.py
+
   # Benchmark tools
   - tests/python-unittests/test_online_benchmark.py
 
@@ -139,6 +147,7 @@ tests:
 
   # Marlin MoE plugin tests
   - tests/python-unittests/test_nvfp4_a16_moe_plugin.py::test_qwen_softmax_swiglu_token_count_boundary_dynamic_engine
+  - tests/python-unittests/test_nvfp4_a16_moe_plugin.py::test_gemma_softmax_post_scale_geglu_dynamic_engine
   - tests/python-unittests/test_nvfp4_a16_moe_plugin.py::test_nemotron_sigmoid_group_relu2_token_count_boundary_dynamic_engine
   - tests/python-unittests/test_nvfp4_a16_moe_plugin.py::test_w4a16_rejects_rank3_hidden_states
   - tests/python-unittests/test_nvfp4_a16_moe_plugin.py::test_int4_rejects_rank3_hidden_states
@@ -175,6 +184,9 @@ tests:
   - tests/python-unittests/test_nvfp4_a16_gemm_plugin.py::test_dense_nvfp4_a16_gemm_auto_max_m
   - tests/python-unittests/test_nvfp4_a16_gemm_plugin.py::test_build_rejects_misaligned_dimensions
   - tests/python-unittests/test_nvfp4_a16_official_lm_head.py::test_mixed_precision_w4a16_dispatch_is_model_specific
+  - tests/python-unittests/test_nvfp4_a16_official_lm_head.py::test_no_activation_quantization_selects_nvfp4_a16
+  - tests/python-unittests/test_nvfp4_a16_official_lm_head.py::test_no_activation_quantization_only_changes_nvfp4_layers
+  - tests/python-unittests/test_nvfp4_a16_official_lm_head.py::test_muse_glimmer_keeps_packed_embedding_for_w4a16
   - tests/python-unittests/test_nvfp4_a16_official_lm_head.py::test_parse_quant_keeps_excluded_fp16_lm_head
   - tests/python-unittests/test_nvfp4_a16_official_lm_head.py::test_parse_quant_does_not_invent_lm_head_override
   - tests/python-unittests/test_nvfp4_a16_official_lm_head.py::test_repack_nvfp4_a16_gated_moe_shapes

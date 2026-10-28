@@ -65,22 +65,17 @@ import os
 import sys
 from typing import TYPE_CHECKING, Optional
 
-import torch
+from tensorrt_edgellm.scripts import _dependency_errors
 
 if TYPE_CHECKING:
     from ..config import ModelConfig
 
-# Importing the CLI module no longer eagerly loads the package export API.
-# Register model-family implementations before AutoModel dispatch below.
-from .. import _export_api as _registered_export_api  # noqa: F401
 from ..checkpoint.checkpoint_utils import normalize_rope_scaling_for_runtime
 from ..config import (_is_diffusion_gemma_model_type,
                       set_default_quantize_activations)
 from ..external_weights import (EXTERNAL_WEIGHT_CHOICES,
                                 EXTERNAL_WEIGHT_NVFP4_MOE,
                                 resolve_externalize_weights)
-from ..models.ops import (set_int4_gemm_plugin_version,
-                          set_nvfp4_a16_export_target_sm)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -195,6 +190,15 @@ def _has_rnnt_decoder(model_type: str) -> bool:
     """Whether ``model_type`` has an RNN-T (transducer) decoder-step engine
     exported alongside its encoder — currently only Nemotron-3.5-ASR."""
     return model_type == "nemotron3_5_asr"
+
+
+def _text_rope_theta(text_cfg: dict):
+    """Return ``rope_theta``; checkpoints re-saved by newer transformers (e.g.
+    quantized ones) keep it under ``rope_parameters``."""
+    rope_theta = text_cfg.get("rope_theta")
+    if rope_theta is None:
+        rope_theta = (text_cfg.get("rope_parameters") or {}).get("rope_theta")
+    return rope_theta
 
 
 def _checkpoint_audio_config(config: dict) -> "dict | None":
@@ -768,11 +772,11 @@ def _collect_gemma4_tokenizer_fallback(model_dir: str,
                                        model_type: str = "") -> dict:
     """Gemma4 fallback for multimodal placeholders.
 
-    Gemma4's PLE preprocessor uses image/audio token IDs to zero-fill the token
-    identity component at multimodal positions. Prefer structured config fields
-    when present, but resolve the standard placeholder tokens from tokenizer
-    assets when the source config is flat or incomplete.  Gemma4 Unified
-    checkpoints name the placeholders ``<|image|>`` / ``<|audio|>``.
+    Gemma4's PLE preprocessor uses image/audio token IDs to select the pad-token
+    PLE row at multimodal positions. Prefer structured config fields when
+    present, but resolve the standard placeholder tokens from tokenizer assets
+    when the source config is flat or incomplete. Gemma4 Unified checkpoints
+    name the placeholders ``<|image|>`` / ``<|audio|>``.
     """
     unified = str(model_type).startswith("gemma4_unified")
     image_tokens = ("<|image|>",
@@ -826,6 +830,8 @@ def _patch_multimodal_token_ids(model_dir: str,
         return
 
     root = _load_config(model_dir)
+    with open(cfg_path) as f:
+        cfg = json.load(f)
     collected: dict = {}
 
     # Primary collectors keyed by model family.
@@ -855,8 +861,8 @@ def _patch_multimodal_token_ids(model_dir: str,
         if image_id is not None:
             collected["image_token_id"] = image_id
 
-    # Gemma4 PLE needs multimodal placeholder IDs for zero-filling PLE token
-    # identity at image/audio positions.
+    # Gemma4 PLE uses the language model's pad-token row for image/audio
+    # placeholder positions.
     if model_type in _GEMMA4_MODEL_TYPES:
         fallback = _collect_gemma4_tokenizer_fallback(llm_out_dir, model_type)
         fallback.update(
@@ -864,6 +870,18 @@ def _patch_multimodal_token_ids(model_dir: str,
         for key in ("image_token_id", "audio_token_id"):
             if key not in collected and key in fallback:
                 collected[key] = fallback[key]
+        has_multimodal_token = any(key in collected
+                                   for key in ("image_token_id",
+                                               "audio_token_id"))
+        if cfg.get("ple_enabled", False) and has_multimodal_token:
+            text_config = root.get("text_config") or {}
+            pad_token_id = text_config.get("pad_token_id",
+                                           root.get("pad_token_id"))
+            if type(pad_token_id) is not int:
+                raise ValueError(
+                    "Gemma4 multimodal PLE export requires text_config.pad_token_id"
+                )
+            collected["pad_token_id"] = pad_token_id
 
     # Qwen3-ASR / Qwen3-Omni metadata: ``user_token_id`` (with a BPE vocab
     # fallback) plus the ``model: "qwen3asrthinker"`` tag.
@@ -875,8 +893,6 @@ def _patch_multimodal_token_ids(model_dir: str,
     if not collected:
         return
 
-    with open(cfg_path) as f:
-        cfg = json.load(f)
     cfg.update(collected)
     with open(cfg_path, "w") as f:
         json.dump(cfg, f, indent=2)
@@ -1380,6 +1396,8 @@ def _write_draft_vocab_sidecar(model, draft_out_dir: str, full_size: int,
     cpp/common/bindingNames.h for the consumers and their semantics — so the
     writer must not fork per draft family.
     """
+    import torch
+
     from tensorrt_edgellm._safetensors_io import save_file as _save_safetensors
 
     from ..vocab_reduction.constants import (DRAFT_VOCAB_INFO_NAME,
@@ -1458,6 +1476,40 @@ def _export_mtp_draft(model_dir: str,
     logger.info("[MTP Draft] Done: %s", output_path)
 
 
+def _read_gemma4_target_kv_scales(target_dir: str,
+                                  kv_sharing_map: list[dict]) -> list[list]:
+    """Return ``[k_scale, v_scale]`` of each assistant layer's donor layer."""
+    from safetensors import safe_open
+
+    from ..checkpoint.loader import _build_shard_map
+
+    shard_map = _build_shard_map(target_dir)
+
+    def _read(suffix: str) -> float:
+        keys = [
+            k for k in shard_map if k == suffix or k.endswith("." + suffix)
+        ]
+        if len(keys) > 1:
+            keys = [k for k in keys if "language_model." in k]
+        if len(keys) > 1:
+            raise ValueError(
+                f"Ambiguous Gemma4 target KV scale {suffix}: {keys}")
+        if not keys:
+            # Same 1.0 default the target export uses for a missing scale.
+            return 1.0
+        with safe_open(shard_map[keys[0]], framework="pt") as f:
+            return float(f.get_tensor(keys[0]).float().item())
+
+    scales = []
+    for entry in sorted(kv_sharing_map, key=lambda e: e["assistant_layer"]):
+        prefix = f"layers.{int(entry['target_layer'])}.self_attn."
+        scales.append([
+            _read(prefix + "k_proj.k_scale"),
+            _read(prefix + "v_proj.v_scale")
+        ])
+    return scales
+
+
 def _export_gemma4_mtp_draft(target_dir: str, draft_out_dir: str,
                              assistant_dir: str,
                              kv_sharing_map: list[dict]) -> None:
@@ -1479,6 +1531,9 @@ def _export_gemma4_mtp_draft(target_dir: str, draft_out_dir: str,
             gemma4_target_kv_cache_quant=target_model_config.quant.
             kv_cache_quant,
         )
+        if target_model_config.quant.kv_cache_quant == "fp8":
+            model.set_target_kv_scales(
+                _read_gemma4_target_kv_scales(target_dir, kv_sharing_map))
         write_runtime_artifacts(model, assistant_dir, draft_out_dir)
     except (OSError, ValueError, RuntimeError, ImportError) as exc:
         logger.exception("[Gemma4 MTP Draft] Failed to load assistant")
@@ -1497,6 +1552,8 @@ def _export_gemma4_mtp_draft(target_dir: str, draft_out_dir: str,
 
 
 def _export_dflash2_selector_sidecar(model, draft_out_dir: str) -> None:
+    import torch
+
     from tensorrt_edgellm._safetensors_io import save_file
 
     selector = model.candidate_selector
@@ -1659,6 +1716,7 @@ def _patch_dflash_mask_embedding(llm_out_dir: str,
     """
     import glob
 
+    import torch
     from safetensors import safe_open
 
     from tensorrt_edgellm._safetensors_io import save_file
@@ -2446,7 +2504,7 @@ def _export_audio(model_dir: str,
         # Qwen3-ASR/Omni this lives under ``thinker_config.text_config``.
         text_cfg = (thinker_cfg.get("text_config") or config.get("text_config")
                     or {})
-        rope_theta = text_cfg.get("rope_theta")
+        rope_theta = _text_rope_theta(text_cfg)
         if rope_theta is not None:
             audio_cfg_out["text_config"] = {"rope_theta": rope_theta}
     if os.environ.get("USE_TRT_NATIVE_ATTN") == "1":
@@ -3937,7 +3995,8 @@ def _save_alpamayo_visual_processor(config: dict, visual_out_dir: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def main() -> None:
+@_dependency_errors.optional_dependencies("export")
+def main(argv=None, *, prog="tensorrt-edgellm-export") -> None:
     # Some onnx-library code paths create the `model.onnx.data` external-data
     # file via `open(path, 'wb')`, which applies the process umask to the
     # file mode. Container images that ship with a restrictive umask (0o077)
@@ -3947,7 +4006,7 @@ def main() -> None:
     os.umask(0o022)
 
     p = argparse.ArgumentParser(
-        prog="tensorrt-edgellm-export",
+        prog=prog,
         description=(
             "Export ALL components of a multimodal checkpoint to ONNX "
             "(LLM + optional visual/audio encoder) in one command."),
@@ -4400,16 +4459,19 @@ def main() -> None:
         dest="quantize_activations",
         action="store_false",
         help=(
-            "Export quantized dense Linears without the activation Q-DQ pair, "
-            "leaving MatMul(fp16 activation, DQ(quantized weight)) -- W4A16 / "
-            "W8A16 instead of the checkpoint's W4A4 / W8A8. This does not "
-            "select a weight-only GEMM: TensorRT dequantizes the weights on "
-            "every step, so the engine is substantially slower. Intended for "
-            "isolating activation quantization as an accuracy error source. "
-            "Rejected by FusedNvfp4GemmAllReduce (row-parallel TP), which "
-            "quantizes activations inside the plugin."),
+            "Keep activations in FP16. For packed NVFP4 checkpoints this "
+            "selects the NVFP4-A16 GEMM/MoE path instead of W4A4. Other "
+            "activation-quantized formats drop their activation Q-DQ pair for "
+            "accuracy debugging."),
     )
-    args = p.parse_args()
+    args = p.parse_args(argv)
+
+    import tensorrt_edgellm
+
+    from ..models.ops import (set_int4_gemm_plugin_version,
+                              set_nvfp4_a16_export_target_sm)
+
+    tensorrt_edgellm._load_export_api()
 
     # Select the INT4 GEMM plugin backend before any weight repack / op emission.
     set_int4_gemm_plugin_version(args.int4_gemm_plugin_version)

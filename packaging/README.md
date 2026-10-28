@@ -19,13 +19,12 @@ the [installation guide](../docs/source/user_guide/getting_started/installation.
 to prepare CUDA, TensorRT, and a compatible Python environment, then install:
 
 ```bash
-python -m pip install --only-binary=tensorrt-edgellm \
-  --extra-index-url https://pypi.nvidia.com "tensorrt-edgellm[server]==0.11.0"
+python -m pip install "tensorrt-edgellm[server]"
 ```
 
 `[server]` is recommended for high-level inference. See the
-[extras guide](../docs/source/user_guide/getting_started/installation.md#optional-python-dependencies)
-for export/tools workflows, or the [minimal base example](../docs/source/user_guide/getting_started/installation.md#minimal-installation-advanced)
+[Optional Python dependencies](../docs/source/user_guide/getting_started/installation.md#optional-python-dependencies)
+for export/tools workflows, or the [Python runtime example](../docs/source/user_guide/examples/python-runtime.md)
 for low-level runtime use without extras. Do not install the repository package
 over the published wheel.
 
@@ -141,7 +140,7 @@ python3 -m venv --system-site-packages .venv-install
 .venv-install/bin/python -m pip install "$WHEEL"
 .venv-install/bin/python -c \
     "import tensorrt_edgellm; print(tensorrt_edgellm.__version__)"
-.venv-install/bin/tensorrt-edgellm-build --help
+.venv-install/bin/trtedge build --help
 ```
 
 Build and install with the same CPython minor version. The runtime rejects a

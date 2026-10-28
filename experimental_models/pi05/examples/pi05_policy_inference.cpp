@@ -16,9 +16,9 @@
  */
 
 // One binary for every pi0.5 engine bundle; configurations differ only by which
-// bundle --engineDir names, each carrying its own policy.json. Policy mode
-// (--inputFile) calls Pi05Policy::infer(); canonical tensor mode
-// (--pixelValues/--tokens/--noise) calls Pi05Policy::inferTensors(), which is
+// bundle --engine-dir names, each carrying its own policy.json. Policy mode
+// (--input-file) calls Pi05Policy::infer(); canonical tensor mode
+// (--pixel-values/--tokens/--noise) calls Pi05Policy::inferTensors(), which is
 // configuration-independent and is what the accuracy and profiling harnesses use.
 // --iters times exactly those calls, so a timed run is a deployed run.
 
@@ -81,33 +81,34 @@ struct Args
     bool debug{false};
 };
 
-//! \param contract The loaded contract when --engineDir named one, so the camera names
+//! \param contract The loaded contract when --engine-dir named one, so the camera names
 //!        a request keys by are shown rather than described.
 void printUsage(char const* programName, pi05::Pi05Contract const* contract)
 {
-    std::cerr << "Usage: " << programName << " [--help] --engineDir <dir> [options]\n"
-              << "  --engineDir  Engine bundle: visual/, prefix/, action/, cond/, policy.json,\n"
-                 "               text_tokenizer/, assets/, embed_tokens.safetensors. Required.\n"
+    std::cerr << "Usage: " << programName << " [--help] --engine-dir <dir> [options]\n"
+              << "  --engine-dir    Engine bundle: visual/, prefix/, action/, cond/, policy.json,\n"
+                 "                  text_tokenizer/, assets/, embed_tokens.safetensors. Required.\n"
                  "\n  Raw policy mode -- a real observation in, robot actions out:\n"
-                 "  --inputFile  JSON request: task, state, and cameras keyed by contract name.\n";
+                 "  --input-file    JSON request: task, state, and cameras keyed by contract name.\n";
     std::cerr << (contract != nullptr
-            ? "               Cameras: " + pi05::cameraOrderSummary(contract->cameras) + "\n"
-            : std::string("               Pass --engineDir with --help to list the camera names.\n"));
+            ? "                  Cameras: " + pi05::cameraOrderSummary(contract->cameras) + "\n"
+            : std::string("                  Pass --engine-dir with --help to list the camera names.\n"));
     std::cerr << "\n  Canonical tensor mode -- preprocessed tensors in, normalized [B, H, 32] out:\n"
-                 "  --pixelValues  fp16 [views, 3, S, S] views, as a raw dump of the tensor's bytes.\n"
-                 "  --tokens       Comma-separated token ids.\n"
-                 "  --numViews     Views to synthesize when no --inputFile or --pixelValues is given.\n"
-                 "\n  --output     .safetensors writes the raw normalized tensor, any other suffix the\n"
-                 "               JSON response (stdout when omitted).\n"
-                 "  --batch      Replicate the request (engines must be built for it); needs a\n"
-                 "               .safetensors --output. Default = 1\n"
-                 "  --seed       Seed the x_0 draw. Default = 0\n"
-                 "  --noise      fp32 [B, horizon, action_dim] x_0, a raw dump. Overrides --seed.\n"
-                 "  --steps      Override the denoise step count from the contract.\n"
-                 "  --cudaGraph  Capture the denoise loop into a CUDA graph.\n"
-                 "  --warmup     Warmup iterations before timing. Default = 0\n"
-                 "  --iters      Timed iterations; reports per-stage and end-to-end latency.\n"
-                 "  --debug      Verbose logging.\n";
+                 "  --pixel-values  fp16 [views, 3, S, S] views, as a raw dump of the tensor's bytes.\n"
+                 "  --tokens        Comma-separated token ids.\n"
+                 "  --num-views     Views to synthesize when no --input-file or --pixel-values is given.\n"
+                 "\n  --output        .safetensors writes the raw normalized tensor, any other suffix the\n"
+                 "                  JSON response (stdout when omitted).\n"
+                 "  --batch         Replicate the request (engines must be built for it); needs a\n"
+                 "                  .safetensors --output. Default = 1\n"
+                 "  --seed          Seed the x_0 draw. Default = 0\n"
+                 "  --noise         fp32 [B, horizon, action_dim] x_0, a raw dump. Overrides --seed.\n"
+                 "  --steps         Override the denoise step count from the contract.\n"
+                 "  --cuda-graph    Capture the denoise loop into a CUDA graph.\n"
+                 "  --warmup        Warmup iterations before timing. Default = 0\n"
+                 "  --iters         Timed iterations; reports per-stage and end-to-end latency.\n"
+                 "  --debug         Verbose logging.\n";
+    std::cerr << "Legacy camelCase option spellings remain accepted.\n";
 }
 
 //! A numeric option, or false. Reported through the usage path rather than thrown:
@@ -134,13 +135,16 @@ bool parseInt(char const* text, int32_t& out)
 bool parseArgs(Args& args, int argc, char** argv)
 {
     static struct option options[]
-        = {{"help", no_argument, nullptr, HELP}, {"engineDir", required_argument, nullptr, ENGINE_DIR},
+        = {{"help", no_argument, nullptr, HELP}, {"engine-dir", required_argument, nullptr, ENGINE_DIR},
+            {"engineDir", required_argument, nullptr, ENGINE_DIR}, {"num-views", required_argument, nullptr, NUM_VIEWS},
             {"numViews", required_argument, nullptr, NUM_VIEWS}, {"tokens", required_argument, nullptr, TOKENS},
             {"seed", required_argument, nullptr, SEED}, {"steps", required_argument, nullptr, STEPS},
             {"output", required_argument, nullptr, OUTPUT}, {"debug", no_argument, nullptr, DEBUG},
-            {"noise", required_argument, nullptr, NOISE}, {"pixelValues", required_argument, nullptr, PIXEL_VALUES},
-            {"warmup", required_argument, nullptr, WARMUP}, {"iters", required_argument, nullptr, ITERS},
+            {"noise", required_argument, nullptr, NOISE}, {"pixel-values", required_argument, nullptr, PIXEL_VALUES},
+            {"pixelValues", required_argument, nullptr, PIXEL_VALUES}, {"warmup", required_argument, nullptr, WARMUP},
+            {"iters", required_argument, nullptr, ITERS}, {"cuda-graph", no_argument, nullptr, CUDA_GRAPH},
             {"cudaGraph", no_argument, nullptr, CUDA_GRAPH}, {"batch", required_argument, nullptr, BATCH},
+            {"input-file", required_argument, nullptr, INPUT_FILE},
             {"inputFile", required_argument, nullptr, INPUT_FILE}, {nullptr, 0, nullptr, 0}};
     int opt;
     while ((opt = getopt_long(argc, argv, "", options, nullptr)) != -1)
@@ -173,7 +177,7 @@ bool parseArgs(Args& args, int argc, char** argv)
     }
     if (args.help)
     {
-        // Parsed to the end rather than returned at --help, so --engineDir is known and
+        // Parsed to the end rather than returned at --help, so --engine-dir is known and
         // the usage text can list that bundle's camera order.
         return true;
     }
@@ -187,7 +191,7 @@ bool parseArgs(Args& args, int argc, char** argv)
     // A JSON request carries only the observation; --noise/--seed select x_0 in either mode.
     if (!args.inputFile.empty() && (!args.pixelValuesFile.empty() || !args.tokens.empty() || args.numViews > 0))
     {
-        std::cerr << "The two modes are alternatives: pass --inputFile, or --pixelValues/--tokens/--numViews."
+        std::cerr << "The two modes are alternatives: pass --input-file, or --pixel-values/--tokens/--num-views."
                   << std::endl;
         return false;
     }

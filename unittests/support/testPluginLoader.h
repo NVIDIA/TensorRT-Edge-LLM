@@ -17,12 +17,14 @@
 
 #pragma once
 
+#include "common/trtUtils.h"
 #include <array>
 #include <cstddef>
-#include <dlfcn.h>
-#include <limits.h>
 #include <string>
+#if !defined(_WIN32)
+#include <limits.h>
 #include <unistd.h>
+#endif
 
 namespace trt_edgellm
 {
@@ -37,8 +39,10 @@ namespace test
 inline std::string const& pluginLibraryPath()
 {
     static std::string const path = [] {
-#ifdef EDGELLM_PLUGIN_PATH
+#if defined(EDGELLM_PLUGIN_PATH)
         return std::string{EDGELLM_PLUGIN_PATH};
+#elif defined(_WIN32)
+        return std::string{kDEFAULT_EDGELLM_PLUGIN_PATH};
 #else
         std::array<char, PATH_MAX> executablePath{};
         ssize_t const size = readlink("/proc/self/exe", executablePath.data(), executablePath.size() - 1);
@@ -59,14 +63,48 @@ inline std::string const& pluginLibraryPath()
     return path;
 }
 
+//! Platform text for the most recent failed load, captured at load time because the thread's error state does not
+//! survive later calls.
+inline std::string& pluginLoadErrorStorage()
+{
+    static std::string error;
+    return error;
+}
+
 //! TensorRT retains registered plugin creators for the process lifetime, and the
 //! plugin owns the AllReduce path registry, so the library must stay mapped after
 //! the first test that opens it. RTLD_GLOBAL lets dlsym(RTLD_DEFAULT, ...) in the
-//! runtime resolve the plugin's C-ABI registration symbols.
+//! runtime resolve the plugin's C-ABI registration symbols; Windows records the
+//! module handle for the same lookup.
 inline void* loadPluginLibrary() noexcept
 {
-    static void* const handle = dlopen(pluginLibraryPath().c_str(), RTLD_NOW | RTLD_GLOBAL);
+    static void* const handle = [] {
+#if defined(_WIN32)
+        void* const module = openDynamicLibrary(pluginLibraryPath().c_str());
+        if (module == nullptr)
+        {
+            pluginLoadErrorStorage() = "Windows error " + std::to_string(GetLastError());
+            return module;
+        }
+        loadedEdgellmPluginHandle() = module;
+        return module;
+#else
+        void* const module = dlopen(pluginLibraryPath().c_str(), RTLD_NOW | RTLD_GLOBAL);
+        if (module == nullptr)
+        {
+            char const* const error = dlerror();
+            pluginLoadErrorStorage() = error != nullptr ? error : "";
+        }
+        return module;
+#endif
+    }();
     return handle;
+}
+
+inline std::string const& pluginLoadError()
+{
+    loadPluginLibrary();
+    return pluginLoadErrorStorage();
 }
 
 } // namespace test

@@ -49,9 +49,12 @@ namespace
 // ---------------------------------------------------------------------------
 constexpr int32_t kSfVecSize = 16;
 constexpr int32_t kRowTile = 128;
+constexpr int32_t kFc2ReductionTile = 128;
 constexpr int32_t kNumExperts = 128;
 constexpr int32_t kTopK = 8;
 constexpr size_t kRunnerRepeats = 2;
+// Keep each FP4 input block well-conditioned without pushing gated activations into saturation.
+constexpr float kHiddenMagnitude = 1.0f;
 
 constexpr std::array<float, 16> kFp4Levels{
     0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f, -0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f};
@@ -70,6 +73,11 @@ inline uint8_t floatToFp8Byte(float value)
 {
     __nv_fp8_e4m3 fp8(value);
     return fp8.__x;
+}
+
+inline float fp16Roundtrip(float value)
+{
+    return __half2float(__float2half_rn(value));
 }
 
 // ---------------------------------------------------------------------------
@@ -337,7 +345,7 @@ CaseData buildCase(MoeCase const& cfg)
 
     c.hiddenFp16.resize(static_cast<size_t>(cfg.numTokens) * cfg.hiddenSize);
     {
-        std::normal_distribution<float> dist(0.0f, 0.05f);
+        std::uniform_real_distribution<float> dist(-kHiddenMagnitude, kHiddenMagnitude);
         for (size_t i = 0; i < c.hiddenFp16.size(); ++i)
         {
             c.hiddenFp16[i] = __float2half_rn(dist(rng));
@@ -445,20 +453,32 @@ std::vector<float> computeReference(CaseData const& c)
             }
 
             std::vector<float> activated = applyFc1Activation(projection.data(), I, c.config.activationType);
+            for (float& value : activated)
+            {
+                value = fp16Roundtrip(value);
+            }
 
             std::vector<float> activatedRaw = fp4RoundtripLinearSfRaw(activated.data(), 1, I, downScale);
             std::vector<float> fc2W
                 = dequantWeight(c.fc2QWeights.data(), c.fc2Scale.data(), expert, H, I, c.fc2Alpha[expert]);
             float* outRow = output.data() + static_cast<size_t>(t) * H;
-            for (int32_t row = 0; row < H; ++row)
+            // Prefill emits one FP16 atomic scatter-add per 128-wide FC2 reduction tile. Mirror the operand
+            // rounding, then use an order-insensitive FP32 ideal instead of one arbitrary FP16 atomic order.
+            for (int32_t begin = 0; begin < I; begin += kFc2ReductionTile)
             {
-                float acc = 0.0f;
-                float const* wRow = fc2W.data() + static_cast<size_t>(row) * I;
-                for (int32_t k = 0; k < I; ++k)
+                int32_t const end = std::min(begin + kFc2ReductionTile, I);
+                for (int32_t row = 0; row < H; ++row)
                 {
-                    acc += wRow[k] * activatedRaw[k];
+                    float partial = 0.0f;
+                    float const* wRow = fc2W.data() + static_cast<size_t>(row) * I;
+                    for (int32_t k = begin; k < end; ++k)
+                    {
+                        partial += wRow[k] * activatedRaw[k];
+                    }
+                    float const partialFp16 = fp16Roundtrip(downScale * partial);
+                    float const weightedFp16 = fp16Roundtrip(routerWeight * partialFp16);
+                    outRow[row] += weightedFp16;
                 }
-                outRow[row] += routerWeight * downScale * acc;
             }
         }
     }
@@ -613,6 +633,7 @@ Summary summarize(std::vector<float> const& got, std::vector<float> const& ref, 
 {
     std::vector<double> cosines;
     cosines.reserve(static_cast<size_t>(T));
+    bool hasUndefinedCosine = false;
     double gotNorm2 = 0.0;
     double refNorm2 = 0.0;
     double maxAbs = 0.0;
@@ -633,11 +654,20 @@ Summary summarize(std::vector<float> const& got, std::vector<float> const& ref, 
         gotNorm2 += gn;
         refNorm2 += rn;
         double const denom = std::sqrt(gn) * std::sqrt(rn);
-        cosines.push_back(denom > 0.0 ? dot / std::max(denom, 1e-30) : 1.0);
+        // An undefined zero-norm cosine must not let a degenerate fixture pass.
+        if (denom <= 0.0)
+        {
+            hasUndefinedCosine = true;
+            cosines.push_back(0.0);
+        }
+        else
+        {
+            cosines.push_back(dot / denom);
+        }
     }
     std::sort(cosines.begin(), cosines.end());
-    double const median = cosines.empty()
-        ? 1.0
+    double const median = hasUndefinedCosine || cosines.empty()
+        ? 0.0
         : (cosines.size() % 2 == 0 ? 0.5 * (cosines[cosines.size() / 2 - 1] + cosines[cosines.size() / 2])
                                    : cosines[cosines.size() / 2]);
     double const mag = std::sqrt(refNorm2) > 0.0 ? std::sqrt(gotNorm2) / std::max(std::sqrt(refNorm2), 1e-30) : 0.0;
@@ -667,9 +697,8 @@ bool checkRequirements()
 
 std::vector<MoeCase> defaultCases()
 {
-    // Scope: prefill backend with gated activations. SwiGLU was validated on real GB10 (SM121) at
-    // cosine == 1.0 against this true-MoE numpy reference. GeGLU is covered by
-    // the regression case below. Two backends and ReLU2 are intentionally NOT covered here yet:
+    // Scope: prefill backend with gated activations. SwiGLU and GeGLU are checked against the
+    // true-MoE reference below. Two backends and ReLU2 are intentionally NOT covered here yet:
     //   * the decode backend (kAuto/kDecode at small token counts) emitted an
     //     all-zero output in this standalone runner harness -- its resident-grid
     //     route/pack -> compute barrier appears to need launch conditions the
@@ -746,14 +775,9 @@ TEST(CuteDslNvfp4MoeSm12xTest, accuracy)
         GTEST_SKIP() << "SM12x NVFP4 fused MoE CuTeDSL canImplement returned false";
     }
 
-    // Median cosine is the correctness gate (validated == 1.0 on real GB10):
-    // it catches sign / routing / activation / weight-scale regressions. The
-    // magnitude ratio is recorded for visibility but NOT asserted as a tight
-    // band: at unit global scales the fused kernel and this true-MoE reference
-    // agree in direction (cosine 1.0), but small-signal tokens whose reference
-    // norm collapses under FP4 rounding make the global norm ratio swing widely
-    // (observed ~0.4 at T=8, ~6.5 at T=16) without indicating an error. A loose
-    // sanity floor still catches a wholesale magnitude collapse.
+    // Median cosine catches sign, routing, activation, and weight-scale regressions while tolerating
+    // reduction-order differences. The magnitude ratio is diagnostic; its loose floor only guards
+    // against wholesale collapse.
     constexpr double kMinCosine = 0.94;
     constexpr double kMinMagRatio = 0.02;
 

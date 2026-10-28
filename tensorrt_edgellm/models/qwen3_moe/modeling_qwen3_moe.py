@@ -63,7 +63,8 @@ from typing import List, Tuple
 import torch
 import torch.nn as nn
 
-from ...config import QUANT_FP16, QUANT_NVFP4, QUANT_NVFP4_A16, ModelConfig
+from ...config import (QUANT_FP16, QUANT_NVFP4, QUANT_NVFP4_A16, ModelConfig,
+                       module_quant_group_size, module_quant_type)
 from ..default.modeling_default import (MLP, Attention, CausalLM, OnnxSpec,
                                         RMSNorm)
 from ..linear import FP16Linear, make_linear
@@ -162,16 +163,25 @@ class Qwen3MoEExperts(nn.Module):
     remapping in the checkpoint loader, not here.
     """
 
-    def __init__(self, config: ModelConfig) -> None:
+    def __init__(self, config: ModelConfig, module_name: str) -> None:
         super().__init__()
         hidden = config.hidden_size
         inter = config.moe_intermediate_size
         experts = []
         for _ in range(config.num_experts):
             expert = nn.Module()
-            expert.gate_proj = make_linear(config, hidden, inter)
-            expert.up_proj = make_linear(config, hidden, inter)
-            expert.down_proj = make_linear(config, inter, hidden)
+            expert.gate_proj = make_linear(config,
+                                           hidden,
+                                           inter,
+                                           module_name=module_name)
+            expert.up_proj = make_linear(config,
+                                         hidden,
+                                         inter,
+                                         module_name=module_name)
+            expert.down_proj = make_linear(config,
+                                           inter,
+                                           hidden,
+                                           module_name=module_name)
             experts.append(expert)
         self._experts = nn.ModuleList(experts)
 
@@ -183,6 +193,27 @@ class Qwen3MoEExperts(nn.Module):
 
     def __iter__(self):
         return iter(self._experts)
+
+
+def _stack_nvfp4_moe_input_scales(
+        experts: Qwen3MoEExperts) -> "tuple[torch.Tensor, torch.Tensor]":
+    """Collect the calibrated FC1 and FC2 activation scales."""
+    fc1_scales = []
+    fc2_scales = []
+    for expert_idx, expert in enumerate(experts):
+        gate_scale = expert.gate_proj.input_scale.detach().float().reshape(-1)
+        up_scale = expert.up_proj.input_scale.detach().float().reshape(-1)
+        down_scale = expert.down_proj.input_scale.detach().float().reshape(-1)
+        if any(scale.numel() != 1
+               for scale in (gate_scale, up_scale, down_scale)):
+            raise ValueError("Nvfp4MoePlugin requires scalar input scales; "
+                             f"expert {expert_idx} has non-scalar values")
+        if not torch.equal(gate_scale, up_scale):
+            raise ValueError("Nvfp4MoePlugin requires matching gate/up input "
+                             f"scales for expert {expert_idx}")
+        fc1_scales.append(gate_scale[0])
+        fc2_scales.append(down_scale[0])
+    return torch.stack(fc1_scales), torch.stack(fc2_scales)
 
 
 # ---------------------------------------------------------------------------
@@ -214,11 +245,14 @@ class Qwen3SparseMoeBlock(nn.Module):
         self.top_k = config.num_experts_per_tok
         self.moe_intermediate_size = config.moe_intermediate_size
         self.hidden_size = config.hidden_size
-        self.group_size = config.quant.group_size
         self.zero_point_offset = config.quant.gptq_zero_point_offset
-        self._use_nvfp4_moe = config.quant.quant_type == QUANT_NVFP4
-        self._use_nvfp4_a16_moe = config.quant.quant_type == QUANT_NVFP4_A16
-        self._use_fp16_moe = config.quant.quant_type == QUANT_FP16
+        experts_module_name = (f"{module_prefix}.experts"
+                               if module_prefix else "experts")
+        self.group_size = module_quant_group_size(experts_module_name, config)
+        expert_quant_type = module_quant_type(experts_module_name, config)
+        self._use_nvfp4_moe = expert_quant_type == QUANT_NVFP4
+        self._use_nvfp4_a16_moe = expert_quant_type == QUANT_NVFP4_A16
+        self._use_fp16_moe = expert_quant_type == QUANT_FP16
         # All paths compute the same SwiGLU expert FFN; the integer is just
         # each plugin's own enum for it. Int4MoePlugin names the elementwise
         # activation ("SiLU"=0), Nvfp4MoePlugin/Fp16MoePlugin/Nvfp4A16MoePlugin
@@ -235,7 +269,7 @@ class Qwen3SparseMoeBlock(nn.Module):
         self.io_dtype = _NVFP4_MOE_IO_DTYPE_FP16
         self.max_routed_rows = _NVFP4_MOE_MAX_ROUTED_ROWS_AUTO
         self.gate = Qwen3MoERouter(config)
-        self.experts = Qwen3MoEExperts(config)
+        self.experts = Qwen3MoEExperts(config, experts_module_name)
         if self._use_nvfp4_a16_moe:
             # Routed experts are stacked into Nvfp4A16MoePlugin; keep the
             # dense Marlin repack from consuming their raw buffers.
@@ -449,6 +483,9 @@ class Qwen3SparseMoeBlock(nn.Module):
                                      dtype=torch.float16)
         self.gate_linear.weight.data = self.gate.weight.data
 
+        input_global_scale, down_input_scale = \
+            _stack_nvfp4_moe_input_scales(self.experts)
+
         use_geforce_plugin = use_geforce_nvfp4_moe()
         fc1_layout = "concat" if use_geforce_plugin else "interleave"
         moe_inter_size_alignment = (NVFP4_MOE_INTERMEDIATE_SIZE_ALIGNMENT
@@ -475,15 +512,13 @@ class Qwen3SparseMoeBlock(nn.Module):
                              fc2_blocks_scale.to(device).contiguous())
         # Per-expert FP32 weight_scale_2, applied as alpha in the kernel
         # epilogue; the FP4 weights and FP8 block scales above are the
-        # checkpoint bytes. Activation scales stay 1.0 (no calibration).
+        # checkpoint bytes. Activation scales come from checkpoint calibration.
         self.register_buffer("fc1_alpha", fc1_alpha.to(device).contiguous())
         self.register_buffer("fc2_alpha", fc2_alpha.to(device).contiguous())
-        self.register_buffer(
-            "input_global_scale",
-            torch.ones(self.num_experts, dtype=torch.float32, device=device))
-        self.register_buffer(
-            "down_input_scale",
-            torch.ones(self.num_experts, dtype=torch.float32, device=device))
+        self.register_buffer("input_global_scale",
+                             input_global_scale.to(device).contiguous())
+        self.register_buffer("down_input_scale",
+                             down_input_scale.to(device).contiguous())
         self.register_buffer(
             "e_score_correction_bias",
             torch.zeros(self.num_experts, dtype=torch.float32, device=device))

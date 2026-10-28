@@ -363,7 +363,7 @@ TEST_F(LoggerTest, FormattingEdgeCases)
     LOG_INFO("");
 
     // Test message with special characters
-    LOG_INFO("Special chars: !@#$%^&*()");
+    LOG_INFO("%s", "Special chars: !@#$%^&*()");
 
     // Test message with newlines
     LOG_INFO("Line 1\nLine 2");

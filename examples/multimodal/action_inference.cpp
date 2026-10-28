@@ -81,50 +81,62 @@ struct ActionInferenceArgs
 void printUsage(char const* programName)
 {
     std::cerr << "Usage: " << programName
-              << " [--help] [--engineDir=<path>] [--multimodalEngineDir=<path>] [--inputFile=<path>] "
-                 "[--checkpointDir=<path>] "
-                 "[--outputFile=<path>] [--dumpProfile] [--profileOutputFile=<path>] [--warmup=<number>] [--debug] "
-                 "[--dumpOutput] [--batchSize=<number>] [--maxGenerateLength=<number>] [--noiseSeed=<number>]"
+              << " [--help] [--engine-dir=<path>] [--multimodal-engine-dir=<path>] [--input-file=<path>] "
+                 "[--checkpoint-dir=<path>] "
+                 "[--output-file=<path>] [--dump-profile] [--profile-output-file=<path>] [--warmup=<number>] [--debug] "
+                 "[--dump-output] [--batch-size=<number>] [--max-generate-length=<number>] [--noise-seed=<number>]"
               << std::endl;
     std::cerr << "Alpamayo VLM + action expert inference (no Eagle speculative decoding)." << std::endl;
     std::cerr << "Options:" << std::endl;
-    std::cerr << "  --help                    Display this help message" << std::endl;
-    std::cerr << "  --inputFile               Path to input JSON file with requests" << std::endl;
-    std::cerr << "  --engineDir               Path to LLM engine directory" << std::endl;
-    std::cerr << "  --multimodalEngineDir     Path to multimodal engine directory (required): visual/, action/, etc."
+    std::cerr << "  --help                   Display this help message" << std::endl;
+    std::cerr << "  --input-file             Path to input JSON file with requests" << std::endl;
+    std::cerr << "  --engine-dir             Path to LLM engine directory" << std::endl;
+    std::cerr << "  --multimodal-engine-dir  Path to multimodal engine directory (required): visual/, action/, etc."
               << std::endl;
-    std::cerr << "  --checkpointDir           HF/ModelOpt checkpoint dir (required for runtime weight loading)"
+    std::cerr << "  --checkpoint-dir         HF/ModelOpt checkpoint dir (required for runtime weight loading)"
               << std::endl;
-    std::cerr << "  --outputFile              Path to output JSON file (required)" << std::endl;
-    std::cerr << "  --dumpProfile             Dump profiling summary to console" << std::endl;
-    std::cerr << "  --profileOutputFile       Path to profile JSON output file (optional)" << std::endl;
-    std::cerr << "  --warmup                  Number of warmup runs using the first request (default: 0)" << std::endl;
-    std::cerr << "  --debug                   Enable debug logging" << std::endl;
-    std::cerr << "  --dumpOutput              Dump inference output to console" << std::endl;
-    std::cerr << "  --batchSize               Override batch size from input file" << std::endl;
-    std::cerr << "  --maxGenerateLength       Override max generate length from input file" << std::endl;
-    std::cerr << "                            NOTE: For sampling parameters (temperature, top_p, top_k)," << std::endl;
-    std::cerr << "                            please specify them in the input JSON file instead of CLI" << std::endl;
-    std::cerr << "  --noiseSeed               Random seed for action diffusion initial noise trajectory (default: 5)"
+    std::cerr << "  --output-file            Path to output JSON file (required)" << std::endl;
+    std::cerr << "  --dump-profile           Dump profiling summary to console" << std::endl;
+    std::cerr << "  --profile-output-file    Path to profile JSON output file (optional)" << std::endl;
+    std::cerr << "  --warmup                 Number of warmup runs using the first request (default: 0)" << std::endl;
+    std::cerr << "  --debug                  Enable debug logging" << std::endl;
+    std::cerr << "  --dump-output            Dump inference output to console" << std::endl;
+    std::cerr << "  --batch-size             Override batch size from input file" << std::endl;
+    std::cerr << "  --max-generate-length    Override max generate length from input file" << std::endl;
+    std::cerr << "                           NOTE: For sampling parameters (temperature, top_p, top_k)," << std::endl;
+    std::cerr << "                           please specify them in the input JSON file instead of CLI" << std::endl;
+    std::cerr << "  --noise-seed             Random seed for action diffusion initial noise trajectory (default: 5)"
               << std::endl;
+    std::cerr << "Legacy camelCase option spellings remain accepted.\n";
 }
 
 bool parseActionInferenceArgs(
     ActionInferenceArgs& args, int argc, char* argv[]) // NOLINT(readability-function-cognitive-complexity)
 {
     static struct option inferenceOptions[] = {{"help", no_argument, 0, ActionInferenceOptionId::HELP},
+        {"input-file", required_argument, 0, ActionInferenceOptionId::INPUT_FILE},
         {"inputFile", required_argument, 0, ActionInferenceOptionId::INPUT_FILE},
+        {"engine-dir", required_argument, 0, ActionInferenceOptionId::ENGINE_DIR},
         {"engineDir", required_argument, 0, ActionInferenceOptionId::ENGINE_DIR},
+        {"multimodal-engine-dir", required_argument, 0, ActionInferenceOptionId::MULTIMODAL_ENGINE_DIR},
         {"multimodalEngineDir", required_argument, 0, ActionInferenceOptionId::MULTIMODAL_ENGINE_DIR},
+        {"checkpoint-dir", required_argument, 0, ActionInferenceOptionId::CHECKPOINT_DIR},
         {"checkpointDir", required_argument, 0, ActionInferenceOptionId::CHECKPOINT_DIR},
+        {"output-file", required_argument, 0, ActionInferenceOptionId::OUTPUT_FILE},
         {"outputFile", required_argument, 0, ActionInferenceOptionId::OUTPUT_FILE},
         {"debug", no_argument, 0, ActionInferenceOptionId::DEBUG},
+        {"dump-profile", no_argument, 0, ActionInferenceOptionId::DUMP_PROFILE},
         {"dumpProfile", no_argument, 0, ActionInferenceOptionId::DUMP_PROFILE},
+        {"profile-output-file", required_argument, 0, ActionInferenceOptionId::PROFILE_OUTPUT_FILE},
         {"profileOutputFile", required_argument, 0, ActionInferenceOptionId::PROFILE_OUTPUT_FILE},
         {"warmup", required_argument, 0, ActionInferenceOptionId::WARMUP},
+        {"dump-output", no_argument, 0, ActionInferenceOptionId::DUMP_OUTPUT},
         {"dumpOutput", no_argument, 0, ActionInferenceOptionId::DUMP_OUTPUT},
+        {"batch-size", required_argument, 0, ActionInferenceOptionId::BATCH_SIZE},
         {"batchSize", required_argument, 0, ActionInferenceOptionId::BATCH_SIZE},
+        {"max-generate-length", required_argument, 0, ActionInferenceOptionId::MAX_GENERATE_LENGTH},
         {"maxGenerateLength", required_argument, 0, ActionInferenceOptionId::MAX_GENERATE_LENGTH},
+        {"noise-seed", required_argument, 0, ActionInferenceOptionId::NOISE_SEED},
         {"noiseSeed", required_argument, 0, ActionInferenceOptionId::NOISE_SEED}, {0, 0, 0, 0}};
 
     int opt;
@@ -208,25 +220,25 @@ bool parseActionInferenceArgs(
     LOG_INFO("args.inputFile: %s", args.inputFile.c_str());
     if (args.inputFile.empty())
     {
-        LOG_ERROR("ERROR: --inputFile is required");
+        LOG_ERROR("ERROR: --input-file is required");
         return false;
     }
     LOG_INFO("args.engineDir: %s", args.engineDir.c_str());
     if (args.engineDir.empty())
     {
-        LOG_ERROR("ERROR: --engineDir is required");
+        LOG_ERROR("ERROR: --engine-dir is required");
         return false;
     }
     if (args.multimodalEngineDir.empty())
     {
-        LOG_ERROR("ERROR: --multimodalEngineDir is required");
+        LOG_ERROR("ERROR: --multimodal-engine-dir is required");
         return false;
     }
     LOG_INFO("args.multimodalEngineDir: %s", args.multimodalEngineDir.c_str());
 
     if (args.outputFile.empty())
     {
-        LOG_ERROR("ERROR: --outputFile is required");
+        LOG_ERROR("ERROR: --output-file is required");
         return false;
     }
     LOG_INFO("args.outputFile: %s", args.outputFile.c_str());
@@ -669,7 +681,7 @@ int main(int argc, char* argv[])
 
         if (requestStatus)
         {
-            // Display inference output to console if --dumpOutput is enabled
+            // Display inference output to console if --dump-output is enabled
             if (args.dumpOutput)
             {
                 for (size_t batchIdx = 0; batchIdx < response.outputTexts.size(); ++batchIdx)

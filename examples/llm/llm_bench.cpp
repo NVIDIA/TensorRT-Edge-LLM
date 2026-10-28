@@ -34,6 +34,7 @@
 #include "runtime/config/llmEngineConfig.h"
 #include "runtime/exec/engineExecutor.h"
 #include "runtime/exec/raggedBatchBuilder.h"
+#include "runtime/exec/rtxRuntimeCache.h"
 #include "runtime/exec/tensorMap.h"
 #include "runtime/features/deepstackBinding.h"
 #include "runtime/preprocess/stepPreparer.h"
@@ -91,6 +92,7 @@ enum ProfileBenchOptionId : int
     CANDIDATE_TOPK = 837,
     CHECKPOINT_DIR = 838,
     ACCEPT_LEN = 839,
+    RTX_RUNTIME_CACHE_PATH = 840,
 };
 
 struct ProfileBenchArgs
@@ -98,6 +100,7 @@ struct ProfileBenchArgs
     bool help{false};
     std::string engineDir;
     std::string checkpointDir;
+    std::string rtxRuntimeCachePath; //! TRT-RTX runtime cache file path
     bool debug{false};
     int32_t batchSize{1};
     int32_t inputLen{-1}; // Input sequence length per batch (required for prefill modes)
@@ -136,7 +139,7 @@ struct ProfileBenchArgs
     bool noCudaGraph{false};
 
     // Metadata extraction flags - disabled by default for performance.
-    // Set via --extractLayerInfo <comma-separated list>.
+    // Set via --extract-layer-info <comma-separated list>.
     ExtractLayerInfo extractLayerInfo;
 
     BenchOutputParams toOutputParams() const
@@ -168,120 +171,135 @@ struct ProfileBenchArgs
 
 void printUsage(char const* programName)
 {
-    std::cerr << "Usage: " << programName << " --engineDir <dir> --mode <mode> [options]" << std::endl;
+    std::cerr << "Usage: " << programName << " --engine-dir <dir> --mode <mode> [options]" << std::endl;
     std::cerr << std::endl;
     std::cerr << "Required Options:" << std::endl;
-    std::cerr << "  --engineDir               TensorRT engine directory path. Required." << std::endl;
-    std::cerr << "  --mode                    Benchmarking mode. Required. One of:" << std::endl;
-    std::cerr << "                              prefill           - LLM prefill phase" << std::endl;
-    std::cerr << "                              decode            - LLM decode phase" << std::endl;
-    std::cerr
-        << "                              spec_verify       - Speculative decoding base model verification (EAGLE/MTP)"
-        << std::endl;
-    std::cerr << "                              spec_draft_accept - Speculative decoding draft accept-token"
+    std::cerr << "  --engine-dir                 TensorRT engine directory path. Required." << std::endl;
+    std::cerr << "  --mode                       Benchmarking mode. Required. One of:" << std::endl;
+    std::cerr << "                                 prefill           - LLM prefill phase" << std::endl;
+    std::cerr << "                                 decode            - LLM decode phase" << std::endl;
+    std::cerr << "                                 spec_verify       - Speculative decoding base model verification "
+                 "(EAGLE/MTP)"
+              << std::endl;
+    std::cerr << "                                 spec_draft_accept - Speculative decoding draft accept-token"
               << " catch-up pass (EAGLE/MTP)" << std::endl;
-    std::cerr << "                              spec_draft_proposal - Speculative decoding draft proposal (EAGLE/MTP)"
+    std::cerr
+        << "                                 spec_draft_proposal - Speculative decoding draft proposal (EAGLE/MTP)"
+        << std::endl;
+    std::cerr << "                                 spec_draft_prefill - Speculative decoding draft prefill (EAGLE/MTP)"
               << std::endl;
-    std::cerr << "                              spec_draft_prefill - Speculative decoding draft prefill (EAGLE/MTP)"
-              << std::endl;
-    std::cerr << "                              visual            - Visual encoder" << std::endl;
-    std::cerr << "                              dflash_draft_proposal    - DFlash draft engine, decode round"
-              << std::endl;
-    std::cerr << "                              dflash_draft_first_round - DFlash draft engine, first round after base "
-                 "prefill"
-              << std::endl;
-    std::cerr << "                              dflash_verify            - DFlash target verify pass (linear or DDTree)"
+    std::cerr << "                                 visual            - Visual encoder" << std::endl;
+    std::cerr << "                                 dflash_draft_proposal    - DFlash draft engine, decode round"
               << std::endl;
     std::cerr
-        << "                              dflash_ddtree_build      - DDTree build kernel in isolation (no executor)"
+        << "                                 dflash_draft_first_round - DFlash draft engine, first round after base "
+           "prefill"
+        << std::endl;
+    std::cerr
+        << "                                 dflash_verify            - DFlash target verify pass (linear or DDTree)"
+        << std::endl;
+    std::cerr
+        << "                                 dflash_ddtree_build      - DDTree build kernel in isolation (no executor)"
         << std::endl;
     std::cerr << std::endl;
     std::cerr << "Mode-Specific Required Options:" << std::endl;
     std::cerr << "  For prefill mode:" << std::endl;
-    std::cerr << "    --inputLen              Input sequence length. Required." << std::endl;
-    std::cerr << "    --reuseKVLen            Reused KV cache length. Optional, default=0." << std::endl;
+    std::cerr << "    --input-len                Input sequence length. Required." << std::endl;
+    std::cerr << "    --reuse-kv-len             Reused KV cache length. Optional, default=0." << std::endl;
     std::cerr << "  For decode mode:" << std::endl;
-    std::cerr << "    --pastKVLen             Past KV cache length. Required." << std::endl;
+    std::cerr << "    --past-kv-len              Past KV cache length. Required." << std::endl;
     std::cerr << "  For spec_verify mode:" << std::endl;
-    std::cerr << "    --verifyTreeSize        Verify tree size. Required." << std::endl;
-    std::cerr << "    --pastKVLen             Past KV cache length. Required." << std::endl;
+    std::cerr << "    --verify-tree-size         Verify tree size. Required." << std::endl;
+    std::cerr << "    --past-kv-len              Past KV cache length. Required." << std::endl;
     std::cerr << "  For spec_draft_proposal mode:" << std::endl;
-    std::cerr << "    --draftTreeSize         Draft proposal size for EAGLE/tree-MTP. Required." << std::endl;
-    std::cerr << "                            Chain-MTP instead uses the production proposal geometry"
+    std::cerr << "    --draft-tree-size          Draft proposal size for EAGLE/tree-MTP. Required." << std::endl;
+    std::cerr << "                               Chain-MTP instead uses the production proposal geometry"
               << " draftStep*draftingTopK (with draftingTopK=1)." << std::endl;
-    std::cerr << "    --pastKVLen             Past KV cache length. Required." << std::endl;
+    std::cerr << "    --past-kv-len              Past KV cache length. Required." << std::endl;
     std::cerr << "  For spec_draft_accept mode:" << std::endl;
-    std::cerr << "    --acceptLen             Tokens caught up per accept pass (default: draftStep+1; pass"
-              << " --draftStep matching your deployment's drafting_step)." << std::endl;
-    std::cerr << "                            With osl>1, acceptRate must not exceed acceptLen." << std::endl;
-    std::cerr << "    --pastKVLen             Past KV cache length per batch. Required." << std::endl;
-    std::cerr << "    --verifyTreeSize        Optional; defaults to draftStep+1 (chain-MTP engines"
+    std::cerr << "    --accept-len               Tokens caught up per accept pass (default: draftStep+1; pass"
+              << " --draft-step matching your deployment's drafting_step)." << std::endl;
+    std::cerr << "                               With osl>1, acceptRate must not exceed acceptLen." << std::endl;
+    std::cerr << "    --past-kv-len              Past KV cache length per batch. Required." << std::endl;
+    std::cerr << "    --verify-tree-size         Optional; defaults to draftStep+1 (chain-MTP engines"
               << " require verifySize == draftStep+1)." << std::endl;
     std::cerr << "  For spec_draft_prefill mode:" << std::endl;
-    std::cerr << "    --inputLen              Input sequence length. Required." << std::endl;
-    std::cerr << "    --reuseKVLen            Reused KV cache length. Optional, default=0." << std::endl;
+    std::cerr << "    --input-len                Input sequence length. Required." << std::endl;
+    std::cerr << "    --reuse-kv-len             Reused KV cache length. Optional, default=0." << std::endl;
     std::cerr << "  For visual mode:" << std::endl;
-    std::cerr << "    --engineDir             Visual encoder engine directory. Required." << std::endl;
-    std::cerr << "    --imageSize             Image dimensions as HxW (e.g., 896x448). Required." << std::endl;
+    std::cerr << "    --engine-dir               Visual encoder engine directory. Required." << std::endl;
+    std::cerr << "    --image-size               Image dimensions as HxW (e.g., 896x448). Required." << std::endl;
     std::cerr << std::endl;
     std::cerr << "Common Options:" << std::endl;
-    std::cerr << "  --help                    Display this help message" << std::endl;
-    std::cerr << "  --checkpointDir           HF/ModelOpt checkpoint directory for runtime weight loading" << std::endl;
-    std::cerr << "  --debug                   Use debug mode (verbose logging)" << std::endl;
-    std::cerr << "  --batchSize               Batch size. Default = 1" << std::endl;
-    std::cerr << "  --iterations              Number of profiling iterations (after warmup). Default = 10" << std::endl;
-    std::cerr << "  --warmup                  Number of warmup iterations. Default = 3" << std::endl;
-    std::cerr << "  --osl                     Output sequence length for decode E2E timing. Default = 1." << std::endl;
-    std::cerr << "                            osl=1: E2E runs --iterations times." << std::endl;
-    std::cerr << "                            osl>1: E2E runs full sequence decode once." << std::endl;
-    std::cerr << "  --profile                 Enable per-layer profiling. Disabled by default." << std::endl;
-    std::cerr << "  --outputDir               Directory to dump output CSV files (layer profiling and E2E timing)"
+    std::cerr << "  --help                       Display this help message" << std::endl;
+    std::cerr << "  --checkpoint-dir             HF/ModelOpt checkpoint directory for runtime weight loading"
               << std::endl;
-    std::cerr << "  --seed                    Random seed for reproducible data. Default = 0" << std::endl;
-    std::cerr << "  --noCudaGraph             Disable CUDA graph capture for decode/EAGLE E2E timing." << std::endl;
-    std::cerr << "                            Capture is enabled by default and falls back to non-graph on failure."
+#if IS_TRT_RTX
+    std::cerr << "  --rtx-runtime-cache-path     TRT-RTX runtime (JIT-kernel) cache file path (RTX only)." << std::endl;
+    std::cerr << "                               Defaults to <engineDir>/runtime.rtxcache." << std::endl;
+#endif
+    std::cerr << "  --debug                      Use debug mode (verbose logging)" << std::endl;
+    std::cerr << "  --batch-size                 Batch size. Default = 1" << std::endl;
+    std::cerr << "  --iterations                 Number of profiling iterations (after warmup). Default = 10"
               << std::endl;
-    std::cerr << "  --extractLayerInfo <opts>  Comma-separated list of layer info to extract:" << std::endl;
-    std::cerr << "                              all, shapes, onnx_ops, tactics, data_types" << std::endl;
-    std::cerr << "                            Implies --profile." << std::endl;
+    std::cerr << "  --warmup                     Number of warmup iterations. Default = 3" << std::endl;
+    std::cerr << "  --osl                        Output sequence length for decode E2E timing. Default = 1."
+              << std::endl;
+    std::cerr << "                               osl=1: E2E runs --iterations times." << std::endl;
+    std::cerr << "                               osl>1: E2E runs full sequence decode once." << std::endl;
+    std::cerr << "  --profile                    Enable per-layer profiling. Disabled by default." << std::endl;
+    std::cerr << "  --output-dir                 Directory to dump output CSV files (layer profiling and E2E timing)"
+              << std::endl;
+    std::cerr << "  --seed                       Random seed for reproducible data. Default = 0" << std::endl;
+    std::cerr << "  --no-cuda-graph              Disable CUDA graph capture for decode/EAGLE E2E timing." << std::endl;
+    std::cerr << "                               Capture is enabled by default and falls back to non-graph on failure."
+              << std::endl;
+    std::cerr << "  --extract-layer-info <opts>  Comma-separated list of layer info to extract:" << std::endl;
+    std::cerr << "                                 all, shapes, onnx_ops, tactics, data_types" << std::endl;
+    std::cerr << "                               Implies --profile." << std::endl;
     std::cerr << std::endl;
     std::cerr << "Speculative Decoding Options:" << std::endl;
-    std::cerr << "  --acceptRate              Avg accepted tokens per spec-decode iteration (default: 5)." << std::endl;
-    std::cerr << "                            verify_steps = ceil((osl-1) / acceptRate)." << std::endl;
-    std::cerr << "                            Also feeds DFlash draft proposal deltaLen "
+    std::cerr << "  --accept-rate                Avg accepted tokens per spec-decode iteration (default: 5)."
+              << std::endl;
+    std::cerr << "                               verify_steps = ceil((osl-1) / acceptRate)." << std::endl;
+    std::cerr << "                               Also feeds DFlash draft proposal deltaLen "
                  "(capped at blockSize)."
               << std::endl;
-    std::cerr << "  --draftStep               Number of drafting steps per spec-decode iteration (default: 6)."
+    std::cerr << "  --draft-step                 Number of drafting steps per spec-decode iteration (default: 6)."
               << std::endl;
-    std::cerr << "                            draft_calls = verify_steps * (draftStep-1)." << std::endl;
+    std::cerr << "                               draft_calls = verify_steps * (draftStep-1)." << std::endl;
     std::cerr << std::endl;
     std::cerr << "DFlash Options:" << std::endl;
-    std::cerr << "  --blockSize             DFlash draft block size. Default = engine's dflash_block_size."
+    std::cerr << "  --block-size                 DFlash draft block size. Default = engine's dflash_block_size."
               << std::endl;
-    std::cerr << "  --candidateTopK         DDTree branching factor (for kDFLASH_DDTREE_BUILD). Required and must "
+    std::cerr << "  --candidate-top-k            DDTree branching factor (for kDFLASH_DDTREE_BUILD). Required and must "
                  "be > 1."
               << std::endl;
     std::cerr << std::endl;
     std::cerr << "Examples:" << std::endl;
     std::cerr << "  # Prefill mode" << std::endl;
-    std::cerr << "  " << programName << " --engineDir ./engines --mode prefill --inputLen 128" << std::endl;
+    std::cerr << "  " << programName << " --engine-dir ./engines --mode prefill --input-len 128" << std::endl;
     std::cerr << std::endl;
     std::cerr << "  # Decode mode" << std::endl;
-    std::cerr << "  " << programName << " --engineDir ./engines --mode decode --pastKVLen 128" << std::endl;
+    std::cerr << "  " << programName << " --engine-dir ./engines --mode decode --past-kv-len 128" << std::endl;
     std::cerr << std::endl;
     std::cerr << "  # Spec-decode verify mode" << std::endl;
-    std::cerr << "  " << programName << " --engineDir ./engines --mode spec_verify --verifyTreeSize 60 --pastKVLen 128"
-              << std::endl;
+    std::cerr << "  " << programName
+              << " --engine-dir ./engines --mode spec_verify --verify-tree-size 60 --past-kv-len 128" << std::endl;
     std::cerr << std::endl;
     std::cerr << "  # Spec-decode draft accept-token catch-up mode" << std::endl;
-    std::cerr << "  " << programName << " --engineDir ./engines --mode spec_draft_accept --pastKVLen 128" << std::endl;
+    std::cerr << "  " << programName << " --engine-dir ./engines --mode spec_draft_accept --past-kv-len 128"
+              << std::endl;
     std::cerr << std::endl;
     std::cerr << "  # Spec-decode draft proposal mode" << std::endl;
     std::cerr << "  " << programName
-              << " --engineDir ./engines --mode spec_draft_proposal --draftTreeSize 60 --pastKVLen 128" << std::endl;
+              << " --engine-dir ./engines --mode spec_draft_proposal --draft-tree-size 60 --past-kv-len 128"
+              << std::endl;
     std::cerr << std::endl;
     std::cerr << "  # Visual encoder mode" << std::endl;
-    std::cerr << "  " << programName << " --engineDir ./visual_engines --mode visual --imageSize 896x448" << std::endl;
+    std::cerr << "  " << programName << " --engine-dir ./visual_engines --mode visual --image-size 896x448"
+              << std::endl;
+    std::cerr << "Legacy camelCase option spellings remain accepted.\n";
 }
 
 // ==================== parseArgs + validateArgs ====================
@@ -289,30 +307,52 @@ void printUsage(char const* programName)
 bool parseArgs(ProfileBenchArgs& args, int argc, char* argv[])
 {
     static struct option options[] = {{"help", no_argument, 0, ProfileBenchOptionId::HELP},
+        {"engine-dir", required_argument, 0, ProfileBenchOptionId::ENGINE_DIR},
         {"engineDir", required_argument, 0, ProfileBenchOptionId::ENGINE_DIR},
+        {"checkpoint-dir", required_argument, 0, ProfileBenchOptionId::CHECKPOINT_DIR},
         {"checkpointDir", required_argument, 0, ProfileBenchOptionId::CHECKPOINT_DIR},
         {"debug", no_argument, 0, ProfileBenchOptionId::DEBUG},
+        {"batch-size", required_argument, 0, ProfileBenchOptionId::BATCH_SIZE},
         {"batchSize", required_argument, 0, ProfileBenchOptionId::BATCH_SIZE},
+        {"input-len", required_argument, 0, ProfileBenchOptionId::INPUT_LEN},
         {"inputLen", required_argument, 0, ProfileBenchOptionId::INPUT_LEN},
         {"iterations", required_argument, 0, ProfileBenchOptionId::ITERATIONS},
         {"warmup", required_argument, 0, ProfileBenchOptionId::WARMUP},
         {"mode", required_argument, 0, ProfileBenchOptionId::MODE},
+        {"reuse-kv-len", required_argument, 0, ProfileBenchOptionId::REUSE_KV_LEN},
         {"reuseKVLen", required_argument, 0, ProfileBenchOptionId::REUSE_KV_LEN},
+        {"past-kv-len", required_argument, 0, ProfileBenchOptionId::PAST_KV_LEN},
         {"pastKVLen", required_argument, 0, ProfileBenchOptionId::PAST_KV_LEN},
+        {"verify-tree-size", required_argument, 0, ProfileBenchOptionId::VERIFY_TREE_SIZE},
         {"verifyTreeSize", required_argument, 0, ProfileBenchOptionId::VERIFY_TREE_SIZE},
+        {"draft-tree-size", required_argument, 0, ProfileBenchOptionId::DRAFT_TREE_SIZE},
         {"draftTreeSize", required_argument, 0, ProfileBenchOptionId::DRAFT_TREE_SIZE},
+        {"accept-len", required_argument, 0, ProfileBenchOptionId::ACCEPT_LEN},
         {"acceptLen", required_argument, 0, ProfileBenchOptionId::ACCEPT_LEN},
         {"profile", no_argument, 0, ProfileBenchOptionId::PROFILE},
+        {"output-dir", required_argument, 0, ProfileBenchOptionId::OUTPUT_DIR},
         {"outputDir", required_argument, 0, ProfileBenchOptionId::OUTPUT_DIR},
         {"osl", required_argument, 0, ProfileBenchOptionId::OSL},
         {"seed", required_argument, 0, ProfileBenchOptionId::SEED},
+        {"image-size", required_argument, 0, ProfileBenchOptionId::IMAGE_SIZE},
         {"imageSize", required_argument, 0, ProfileBenchOptionId::IMAGE_SIZE},
+        {"no-cuda-graph", no_argument, 0, ProfileBenchOptionId::NO_CUDA_GRAPH},
         {"noCudaGraph", no_argument, 0, ProfileBenchOptionId::NO_CUDA_GRAPH},
+        {"extract-layer-info", required_argument, 0, ProfileBenchOptionId::EXTRACT_LAYER_INFO},
         {"extractLayerInfo", required_argument, 0, ProfileBenchOptionId::EXTRACT_LAYER_INFO},
+        {"accept-rate", required_argument, 0, ProfileBenchOptionId::ACCEPT_RATE},
         {"acceptRate", required_argument, 0, ProfileBenchOptionId::ACCEPT_RATE},
+        {"draft-step", required_argument, 0, ProfileBenchOptionId::DRAFT_STEP},
         {"draftStep", required_argument, 0, ProfileBenchOptionId::DRAFT_STEP},
+        {"block-size", required_argument, nullptr, ProfileBenchOptionId::BLOCK_SIZE},
         {"blockSize", required_argument, nullptr, ProfileBenchOptionId::BLOCK_SIZE},
-        {"candidateTopK", required_argument, nullptr, ProfileBenchOptionId::CANDIDATE_TOPK}, {0, 0, 0, 0}};
+        {"candidate-top-k", required_argument, nullptr, ProfileBenchOptionId::CANDIDATE_TOPK},
+        {"candidateTopK", required_argument, nullptr, ProfileBenchOptionId::CANDIDATE_TOPK},
+#if IS_TRT_RTX
+        {"rtx-runtime-cache-path", required_argument, nullptr, ProfileBenchOptionId::RTX_RUNTIME_CACHE_PATH},
+        {"rtxRuntimeCachePath", required_argument, nullptr, ProfileBenchOptionId::RTX_RUNTIME_CACHE_PATH},
+#endif
+        {0, 0, 0, 0}};
 
     int opt;
     while ((opt = getopt_long(argc, argv, "", options, nullptr)) != -1)
@@ -323,6 +363,9 @@ bool parseArgs(ProfileBenchArgs& args, int argc, char* argv[])
             {
             case ProfileBenchOptionId::HELP: args.help = true; return true;
             case ProfileBenchOptionId::ENGINE_DIR: args.engineDir = optarg; break;
+#if IS_TRT_RTX
+            case ProfileBenchOptionId::RTX_RUNTIME_CACHE_PATH: args.rtxRuntimeCachePath = optarg; break;
+#endif
             case ProfileBenchOptionId::CHECKPOINT_DIR: args.checkpointDir = optarg; break;
             case ProfileBenchOptionId::DEBUG: args.debug = true; break;
             case ProfileBenchOptionId::BATCH_SIZE:
@@ -511,7 +554,7 @@ bool parseArgs(ProfileBenchArgs& args, int argc, char* argv[])
                     else
                     {
                         LOG_ERROR(
-                            "Unknown --extractLayerInfo value: '%s'. Valid: all,shapes,onnx_ops,tactics,data_types",
+                            "Unknown --extract-layer-info value: '%s'. Valid: all,shapes,onnx_ops,tactics,data_types",
                             token.c_str());
                         return false;
                     }
@@ -522,11 +565,11 @@ bool parseArgs(ProfileBenchArgs& args, int argc, char* argv[])
             case ProfileBenchOptionId::DRAFT_STEP: args.draftStep = std::stoi(optarg); break;
             case ProfileBenchOptionId::BLOCK_SIZE:
                 args.blockSize = std::stoi(optarg);
-                ELLM_CHECK(args.blockSize > 0, "--blockSize must be positive");
+                ELLM_CHECK(args.blockSize > 0, "--block-size must be positive");
                 break;
             case ProfileBenchOptionId::CANDIDATE_TOPK:
                 args.candidateTopK = std::stoi(optarg);
-                ELLM_CHECK(args.candidateTopK > 0, "--candidateTopK must be positive");
+                ELLM_CHECK(args.candidateTopK > 0, "--candidate-top-k must be positive");
                 break;
             default: return false;
             }
@@ -553,7 +596,7 @@ bool validateArgs(ProfileBenchArgs const& args)
 {
     if (args.engineDir.empty())
     {
-        LOG_ERROR("--engineDir is required");
+        LOG_ERROR("--engine-dir is required");
         return false;
     }
 
@@ -566,19 +609,19 @@ bool validateArgs(ProfileBenchArgs const& args)
     bool const isSpecMode = isSpecDecodeMode(args.mode);
     if (isSpecMode && args.acceptRate <= 0)
     {
-        LOG_ERROR("--acceptRate must be positive for speculative decoding modes");
+        LOG_ERROR("--accept-rate must be positive for speculative decoding modes");
         return false;
     }
     if (isSpecMode && args.draftStep < 1)
     {
-        LOG_ERROR("--draftStep must be at least 1 for speculative decoding modes");
+        LOG_ERROR("--draft-step must be at least 1 for speculative decoding modes");
         return false;
     }
     if (args.mode == BenchMode::kEAGLE_DRAFT_ACCEPT && args.osl > 1 && args.acceptRate > args.acceptLen)
     {
         LOG_ERROR(
-            "--acceptRate (%d) cannot exceed --acceptLen (%d) for spec_draft_accept with --osl > 1; "
-            "increase --acceptLen or reduce --acceptRate",
+            "--accept-rate (%d) cannot exceed --accept-len (%d) for spec_draft_accept with --osl > 1; "
+            "increase --accept-len or reduce --accept-rate",
             args.acceptRate, args.acceptLen);
         return false;
     }
@@ -586,7 +629,7 @@ bool validateArgs(ProfileBenchArgs const& args)
     if (args.mode == BenchMode::kDFLASH_DDTREE_BUILD && !args.noProfile)
     {
         LOG_ERROR(
-            "--profile and --extractLayerInfo are not supported for dflash_ddtree_build because it does not "
+            "--profile and --extract-layer-info are not supported for dflash_ddtree_build because it does not "
             "execute a TensorRT engine");
         return false;
     }
@@ -596,85 +639,85 @@ bool validateArgs(ProfileBenchArgs const& args)
     case BenchMode::kPREFILL:
         if (args.inputLen < 0)
         {
-            LOG_ERROR("--inputLen is required for prefill mode");
+            LOG_ERROR("--input-len is required for prefill mode");
             return false;
         }
         break;
     case BenchMode::kDECODE:
         if (args.pastKVLen < 0)
         {
-            LOG_ERROR("--pastKVLen is required for decode mode");
+            LOG_ERROR("--past-kv-len is required for decode mode");
             return false;
         }
         break;
     case BenchMode::kEAGLE_VERIFY:
         if (args.verifyTreeSize < 0)
         {
-            LOG_ERROR("--verifyTreeSize is required for spec_verify mode");
+            LOG_ERROR("--verify-tree-size is required for spec_verify mode");
             return false;
         }
         if (args.pastKVLen < 0)
         {
-            LOG_ERROR("--pastKVLen is required for spec_verify mode");
+            LOG_ERROR("--past-kv-len is required for spec_verify mode");
             return false;
         }
         break;
     case BenchMode::kEAGLE_DRAFT_PROPOSAL:
         if (args.draftTreeSize < 0)
         {
-            LOG_ERROR("--draftTreeSize is required for spec_draft_proposal mode");
+            LOG_ERROR("--draft-tree-size is required for spec_draft_proposal mode");
             return false;
         }
         if (args.pastKVLen < 0)
         {
-            LOG_ERROR("--pastKVLen is required for spec_draft_proposal mode");
+            LOG_ERROR("--past-kv-len is required for spec_draft_proposal mode");
             return false;
         }
         break;
     case BenchMode::kEAGLE_DRAFT_PREFILL:
         if (args.inputLen < 0)
         {
-            LOG_ERROR("--inputLen is required for spec_draft_prefill mode");
+            LOG_ERROR("--input-len is required for spec_draft_prefill mode");
             return false;
         }
         break;
     case BenchMode::kEAGLE_DRAFT_ACCEPT:
         if (args.pastKVLen < 0)
         {
-            LOG_ERROR("--pastKVLen is required for spec_draft_accept mode");
+            LOG_ERROR("--past-kv-len is required for spec_draft_accept mode");
             return false;
         }
         break;
     case BenchMode::kVISUAL:
         if (args.imageHeight <= 0 || args.imageWidth <= 0)
         {
-            LOG_ERROR("--imageSize is required for visual mode (e.g., --imageSize 896x448)");
+            LOG_ERROR("--image-size is required for visual mode (e.g., --image-size 896x448)");
             return false;
         }
         break;
     case BenchMode::kDFLASH_DRAFT_FIRST_ROUND:
         if (args.inputLen <= 0)
         {
-            LOG_ERROR("--inputLen is required for dflash_draft_first_round mode");
+            LOG_ERROR("--input-len is required for dflash_draft_first_round mode");
             return false;
         }
         break;
     case BenchMode::kDFLASH_DRAFT_PROPOSAL:
         if (args.pastKVLen < 0)
         {
-            LOG_ERROR("--pastKVLen is required for dflash modes");
+            LOG_ERROR("--past-kv-len is required for dflash modes");
             return false;
         }
         break;
     case BenchMode::kDFLASH_DDTREE_BUILD:
         if (args.candidateTopK <= 1)
         {
-            LOG_ERROR("--candidateTopK is required for dflash_ddtree_build mode and must be > 1");
+            LOG_ERROR("--candidate-top-k is required for dflash_ddtree_build mode and must be > 1");
             return false;
         }
         if (args.verifyTreeSize <= 0)
         {
-            LOG_ERROR("--verifyTreeSize is required for dflash_ddtree_build mode");
+            LOG_ERROR("--verify-tree-size is required for dflash_ddtree_build mode");
             return false;
         }
         if (args.verifyTreeSize > kernel::kDDTreeMaxVerifySize)
@@ -685,14 +728,14 @@ bool validateArgs(ProfileBenchArgs const& args)
         }
         if (args.pastKVLen < 0)
         {
-            LOG_ERROR("--pastKVLen is required for dflash_ddtree_build mode");
+            LOG_ERROR("--past-kv-len is required for dflash_ddtree_build mode");
             return false;
         }
         break;
     case BenchMode::kDFLASH_VERIFY:
         if (args.verifyTreeSize <= 0)
         {
-            LOG_ERROR("--verifyTreeSize is required for dflash_verify mode");
+            LOG_ERROR("--verify-tree-size is required for dflash_verify mode");
             return false;
         }
         if (args.verifyTreeSize > kDFlashPrepareBaseVerifyMaxSize)
@@ -703,7 +746,7 @@ bool validateArgs(ProfileBenchArgs const& args)
         }
         if (args.pastKVLen < 0)
         {
-            LOG_ERROR("--pastKVLen is required for dflash_verify mode");
+            LOG_ERROR("--past-kv-len is required for dflash_verify mode");
             return false;
         }
         break;
@@ -765,7 +808,7 @@ int main(int argc, char** argv)
         if ((args.acceptLen <= 0 || args.verifyTreeSize <= 0) && chainVerifySize > std::numeric_limits<int32_t>::max())
         {
             LOG_ERROR(
-                "--draftStep is too large to derive the default acceptLen/verifyTreeSize; pass a value no "
+                "--draft-step is too large to derive the default acceptLen/verifyTreeSize; pass a value no "
                 "greater than %d",
                 std::numeric_limits<int32_t>::max() - 1);
             return EXIT_FAILURE;
@@ -841,6 +884,9 @@ int main(int argc, char** argv)
     OrderedLayerTimings layerTimings;
 
     // ===== Phase 1: Initialize Engine =====
+    // Declared before the executor so it outlives every execution context created from its configs;
+    // on destruction it serializes the TRT-RTX runtime cache back to disk.
+    std::shared_ptr<rt::RtxRuntimeCache> rtxRuntimeCache;
     std::unique_ptr<rt::EngineExecutor> executor;
     std::unique_ptr<rt::SharedResources> resources;
     std::unique_ptr<rt::PipelineIO> io;
@@ -921,7 +967,7 @@ int main(int argc, char** argv)
         LOG_INFO("Image Size: %dx%d -> %ld image tokens (batch=%d)", args.imageHeight, args.imageWidth, imageTokens,
             args.batchSize);
 
-        // Only needed by the --extractLayerInfo path (used at Phase 4 below).
+        // Only needed by the --extract-layer-info path (used at Phase 4 below).
         if (args.extractLayerInfo.any())
         {
             standaloneEngine = loadStandaloneEngine(std::filesystem::path(args.engineDir) / "visual.engine");
@@ -979,7 +1025,7 @@ int main(int argc, char** argv)
                         bool const explicitTree = args.verifyTreeSize > 0 && args.draftTreeSize > 1;
                         int64_t const chainVerifySize = static_cast<int64_t>(args.draftStep) + 1;
                         ELLM_CHECK(explicitTree || chainVerifySize <= std::numeric_limits<int32_t>::max(),
-                            "--draftStep is too large to derive MTP chain verifySize; pass a value no greater than "
+                            "--draft-step is too large to derive MTP chain verifySize; pass a value no greater than "
                                 + std::to_string(std::numeric_limits<int32_t>::max() - 1));
                         dc.draftingTopK = explicitTree ? args.draftTreeSize : 1;
                         dc.draftingStep = args.draftStep;
@@ -1051,7 +1097,7 @@ int main(int argc, char** argv)
             // draftDeltaLen models accepted tokens per round (excluding the first): it comes from
             // acceptRate in production. Cap at blockSize because DFlash draft proposal cannot consume
             // more than one block per round.
-            ELLM_CHECK(args.acceptRate > 0, "--acceptRate must be positive for DFlash modes");
+            ELLM_CHECK(args.acceptRate > 0, "--accept-rate must be positive for DFlash modes");
             args.draftDeltaLen = std::min(args.acceptRate, args.blockSize);
             if (args.candidateTopK <= 0)
                 args.candidateTopK = deployment.specConfig->draftingTopK; // whatever the factory resolved
@@ -1125,11 +1171,17 @@ int main(int argc, char** argv)
                 }
             }
 
+#if IS_TRT_RTX
+            rtxRuntimeCache = rt::RtxRuntimeCache::create(enginePath,
+                args.rtxRuntimeCachePath.empty() ? std::nullopt
+                                                 : std::optional<std::filesystem::path>{args.rtxRuntimeCachePath});
+#endif
+
             try
             {
                 if (useDraftEngine)
                 {
-                    executor = rt::EngineExecutor::createForDraft(enginePath, deployment);
+                    executor = rt::EngineExecutor::createForDraft(enginePath, deployment, rtxRuntimeCache);
                 }
                 else
                 {
@@ -1138,8 +1190,8 @@ int main(int argc, char** argv)
                     {
                         specDecodeBaseOutputHiddenDim = deployment.specConfig->baseOutputHiddenDim;
                     }
-                    executor
-                        = rt::EngineExecutor::createForLLM(enginePath, deployment.base, specDecodeBaseOutputHiddenDim);
+                    executor = rt::EngineExecutor::createForLLM(
+                        enginePath, deployment.base, specDecodeBaseOutputHiddenDim, rtxRuntimeCache);
                 }
             }
             catch (std::exception const& e)
@@ -1262,7 +1314,7 @@ int main(int argc, char** argv)
             LOG_INFO("Engine config:\n%s", rt::formatEngineConfig(activeCfg).c_str());
 
             // --- Standalone engine for layer metadata extraction ---
-            // Only needed by the --extractLayerInfo path (used at Phase 4 below).
+            // Only needed by the --extract-layer-info path (used at Phase 4 below).
             // Skip the load otherwise: a second engine deserialization holds an
             // additional copy of the engine weights for the process lifetime and
             // can double peak GPU memory (~15 GB for Qwen3-8B), OOM'ing on
@@ -1759,7 +1811,7 @@ int main(int argc, char** argv)
         pastKVLenVec.assign(B, 0);
 
         ELLM_CHECK(args.inputLen <= deployment.draft->maxSupportedInputLength,
-            "DFlash draft first round --inputLen (" + std::to_string(args.inputLen)
+            "DFlash draft first round --input-len (" + std::to_string(args.inputLen)
                 + ") exceeds the draft engine maximum supported input length ("
                 + std::to_string(deployment.draft->maxSupportedInputLength) + ")");
         auto const& draftCacheConfig = resources->cacheManagers[kvCacheIndex]->getKVCacheManager().getConfig();

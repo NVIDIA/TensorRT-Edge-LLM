@@ -77,7 +77,7 @@ class MoeCase:
     @property
     def fc1_out_dim(self) -> int:
         return (2 * self.moe_inter_size
-                if self.activation_type == 2 else self.moe_inter_size)
+                if self.activation_type in (2, 5) else self.moe_inter_size)
 
     @property
     def routed_row_capacity(self) -> int:
@@ -99,6 +99,11 @@ _QWEN_CASE = MoeCase(
     norm_topk_prob=1,
     # Softmax routing does not consume this attribute.
     routed_scaling_factor=0.0)
+
+_GEMMA_CASE = replace(_QWEN_CASE,
+                      name="gemma_geglu_softmax_post_scale",
+                      activation_type=5,
+                      routing_mode=2)
 
 _NEMOTRON_CASE = MoeCase(name="nemotron_relu2_sigmoid_group",
                          top_k=6,
@@ -167,20 +172,19 @@ def _make_tile_constant_projection(num_experts: int, size_n: int, size_k: int,
             original_codes, original_scales)
 
 
-def _make_qwen_fixture(activation_dtype: "torch.dtype") -> MoeFixture:
-    case = _QWEN_CASE
+def _make_gated_fixture(case: MoeCase,
+                        activation_dtype: "torch.dtype") -> MoeFixture:
     generator = torch.Generator().manual_seed(14122)
     e, h, i = case.num_experts, case.hidden_size, case.moe_inter_size
     expert_ids = torch.arange(e)
     small_global = torch.full((e, ), 2.0**-3, dtype=torch.float32)
     large_global = torch.full((e, ), 2.0**-2, dtype=torch.float32)
-    # The plugin accepts one FC1 global scale, so use the same exact power of
-    # two for gate and up in these prepacked standalone fixtures.
-    fc1_global = torch.where(expert_ids % 2 == 0, small_global, large_global)
+    gate_global = torch.where(expert_ids % 2 == 0, small_global, large_global)
+    up_global = torch.where(expert_ids % 2 == 0, large_global, small_global)
     down_global = torch.full((e, ), 2.0**-3, dtype=torch.float32)
-    gate = _make_tile_constant_projection(e, i, h, fc1_global,
+    gate = _make_tile_constant_projection(e, i, h, gate_global,
                                           activation_dtype, generator)
-    up = _make_tile_constant_projection(e, i, h, fc1_global, activation_dtype,
+    up = _make_tile_constant_projection(e, i, h, up_global, activation_dtype,
                                         generator)
     down = _make_tile_constant_projection(e, h, i, down_global,
                                           activation_dtype, generator)
@@ -191,7 +195,7 @@ def _make_qwen_fixture(activation_dtype: "torch.dtype") -> MoeFixture:
         packed_inputs={
             "fc1_qweights": torch.cat([gate[0], up[0]], dim=2),
             "fc1_block_scales": torch.cat([gate[1], up[1]], dim=2),
-            "fc1_global_scales": gate[2],
+            "fc1_global_scales": torch.stack((gate[2], up[2])),
             "fc2_qweights": down[0],
             "fc2_block_scales": down[1],
             "fc2_global_scales": down[2],
@@ -207,8 +211,8 @@ def _make_qwen_fixture(activation_dtype: "torch.dtype") -> MoeFixture:
             "fc2": down[4]
         },
         original_global_scales={
-            "gate": fc1_global,
-            "up": fc1_global,
+            "gate": gate_global,
+            "up": up_global,
             "fc2": down_global
         },
     )
@@ -278,6 +282,11 @@ def _routing_reference(case: MoeCase, router_logits: "torch.Tensor",
         weights, indices = torch.topk(scores, case.top_k, dim=-1)
         weights = weights / weights.sum(dim=-1, keepdim=True)
         return weights, indices
+    if case.routing_mode == 2:
+        scores = torch.softmax(router_logits, dim=-1)
+        weights, indices = torch.topk(scores, case.top_k, dim=-1)
+        weights = weights / weights.sum(dim=-1, keepdim=True)
+        return weights * expert_score_bias[indices], indices
 
     scores = torch.sigmoid(router_logits)
     biased = scores + expert_score_bias
@@ -318,13 +327,15 @@ def _moe_reference(fixture: MoeFixture, hidden_states: "torch.Tensor",
         token_ids = token_slot[:, 0]
         slot_ids = token_slot[:, 1]
         expert_input = hidden_2d[token_ids].to(torch.float32)
-        if case.activation_type == 2:
+        if case.activation_type in (2, 5):
             gate = (expert_input @ dense_weights["gate"][expert_id].T
                     ).to(activation_dtype).to(torch.float32)
             up = (expert_input @ dense_weights["up"][expert_id].T
                   ).to(activation_dtype).to(torch.float32)
-            activated_gate = torch.nn.functional.silu(gate)
-            if activation_dtype == torch.float16:
+            activated_gate = (
+                torch.nn.functional.silu(gate) if case.activation_type == 2
+                else torch.nn.functional.gelu(gate, approximate="tanh"))
+            if activation_dtype == torch.float16 and case.activation_type == 2:
                 # The shared FP16 activation preserves legacy rounding: SiLU
                 # rounds to FP16 before the multiplication by up.
                 activated_gate = activated_gate.to(activation_dtype).to(
@@ -387,7 +398,9 @@ def _io_specs(case: MoeCase,
                                     8 * case.fc1_out_dim)),
         ("fc1_block_scales", trt.int8,
          (case.num_experts, case.hidden_size // 16, case.fc1_out_dim)),
-        ("fc1_global_scales", fc1_global_dtype, (case.num_experts, )),
+        ("fc1_global_scales", fc1_global_dtype,
+         ((2, case.num_experts) if case.activation_type in (2, 5) else
+          (case.num_experts, ))),
         ("fc2_qweights", trt.int8,
          (case.num_experts, case.moe_inter_size // 16, 8 * case.hidden_size)),
         ("fc2_block_scales", trt.int8,
@@ -513,7 +526,12 @@ def _execute_token_count_boundaries(fixture: MoeFixture) -> None:
 def test_qwen_softmax_swiglu_token_count_boundary_dynamic_engine(
         activation_dtype_name):
     _execute_token_count_boundaries(
-        _make_qwen_fixture(getattr(torch, activation_dtype_name)))
+        _make_gated_fixture(_QWEN_CASE, getattr(torch, activation_dtype_name)))
+
+
+def test_gemma_softmax_post_scale_geglu_dynamic_engine():
+    _execute_token_count_boundaries(
+        _make_gated_fixture(_GEMMA_CASE, torch.float16))
 
 
 @pytest.mark.parametrize("activation_dtype_name", ["bfloat16", "float16"],
@@ -781,7 +799,7 @@ def test_build_rejects_insufficient_max_routed_rows():
 
 @pytest.mark.parametrize("case", [
     replace(_QWEN_CASE, activation_type=3),
-    replace(_QWEN_CASE, routing_mode=2),
+    replace(_QWEN_CASE, routing_mode=3),
 ],
                          ids=["activation", "routing"])
 def test_build_rejects_unsupported_activation_or_routing(case):

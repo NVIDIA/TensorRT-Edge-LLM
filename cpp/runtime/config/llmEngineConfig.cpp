@@ -873,6 +873,9 @@ LLMEngineConfig parseEngineConfig(
     cfg.pleHiddenSize = configJson.value("ple_hidden_size", 0);
     cfg.audioTokenId = configJson.value("audio_token_id", -1);
     cfg.imageTokenId = configJson.value("image_token_id", -1);
+    bool const usesMultimodalPle = cfg.pleEnabled && (cfg.audioTokenId >= 0 || cfg.imageTokenId >= 0);
+    cfg.padTokenId
+        = usesMultimodalPle ? getRequired<int32_t>(configJson, "pad_token_id") : configJson.value("pad_token_id", 0);
     cfg.useVisionBidirectionalAttention = configJson.value("use_vision_bidirectional_attention", false);
     ELLM_CHECK(!cfg.useVisionBidirectionalAttention || cfg.imageTokenId >= 0,
         "use_vision_bidirectional_attention requires image_token_id in the LLM config.");
@@ -938,6 +941,11 @@ LLMEngineConfig parseEngineConfig(
     {
         ELLM_CHECK(cfg.numPleInputs == 0 && cfg.pleHiddenSize == 0,
             "parseEngineConfig: ple_enabled is false but num_ple_inputs or ple_hidden_size is non-zero");
+    }
+    if (usesMultimodalPle)
+    {
+        ELLM_CHECK(cfg.padTokenId >= 0 && cfg.padTokenId < cfg.vocabSize,
+            "parseEngineConfig: pad_token_id must be within the PLE vocabulary for multimodal Gemma4");
     }
     ELLM_CHECK(cfg.maxSupportedLoraRank >= 0,
         "parseEngineConfig: invalid max_lora_rank: " + std::to_string(cfg.maxSupportedLoraRank)
@@ -1140,8 +1148,8 @@ std::string formatEngineConfig(LLMEngineConfig const& cfg)
        << " kvPoolPages=" << cfg.kvPoolPages << " numSwaPages=" << cfg.numSwaPages
        << " swaKVCacheMode=" << (cfg.usesBoundedSwaKVCache() ? "bounded" : "full") << " pleEnabled=" << cfg.pleEnabled
        << " numPleInputs=" << cfg.numPleInputs << " pleHiddenSize=" << cfg.pleHiddenSize
-       << " isSpecDecodeBase=" << cfg.isSpecDecodeBase << " specDecodeType=" << static_cast<int>(cfg.specDecodeType)
-       << " loraRank=" << cfg.maxSupportedLoraRank;
+       << " padTokenId=" << cfg.padTokenId << " isSpecDecodeBase=" << cfg.isSpecDecodeBase
+       << " specDecodeType=" << static_cast<int>(cfg.specDecodeType) << " loraRank=" << cfg.maxSupportedLoraRank;
     if (cfg.useDualRope)
     {
         ss << " useDualRope=true" << " slidingRotaryDim=" << cfg.slidingRotaryDim
