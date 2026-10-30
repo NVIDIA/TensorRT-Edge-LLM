@@ -13,7 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: Security scans
+# Fixed entry point for security checks and internal-CI integration.
+# Changes to this file require coordination with internal-CI validation to
+# avoid rejection. Make routine CI changes through ci.yml instead.
+
+name: CI
 
 on:
   push:
@@ -25,7 +29,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: security-suite-${{ github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -47,11 +51,67 @@ jobs:
       sast-runs-on: ubuntu-latest
       sast-build-mode: none
 
-  noop:
-    name: Verify CPU runner access
+  ci:
+    name: CI
     needs: security-suite
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
+  internal-ci:
+    name: Trigger internal CI
+    needs: security-suite
+    if: >-
+      vars.EDGE_LLM_INTERNAL_CI_ENABLED == 'true' &&
+      github.repository == 'NVIDIA/TensorRT-Edge-LLM' &&
+      startsWith(github.ref, 'refs/heads/pull-request/')
+    permissions:
+      statuses: read
     runs-on: linux-amd64-cpu4
-    timeout-minutes: 5
+    timeout-minutes: 120
     steps:
-      - name: Verify CPU runner access
-        run: echo "CPU runner access verified."
+      - name: Wait for internal CI
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const trustedCreatorId = 10716935;
+            const statusContext = 'edgellm/internal-ci';
+            let pipelineId;
+            while (true) {
+              const statuses = await github.paginate(github.rest.repos.listCommitStatusesForRef, {
+                ...context.repo,
+                ref: context.sha,
+                per_page: 100,
+              });
+              const status = statuses.find(item =>
+                item.context === statusContext && item.creator?.id === trustedCreatorId
+              );
+              const match = /^gitlab-pipeline:([1-9][0-9]*);github-actions:([1-9][0-9]*):([1-9][0-9]*)$/.exec(
+                status?.description || ''
+              );
+              if (
+                match &&
+                match[2] === String(context.runId) &&
+                match[3] === process.env.GITHUB_RUN_ATTEMPT
+              ) {
+                if (pipelineId && pipelineId !== match[1]) {
+                  throw new Error('Internal pipeline identity changed');
+                }
+                pipelineId = match[1];
+                core.info(`Internal GitLab pipeline ${pipelineId}: ${status.state}`);
+                if (status.state === 'success') {
+                  await core.summary
+                    .addRaw(`Internal GitLab pipeline: \`${pipelineId}\` (success)\n`)
+                    .write();
+                  return;
+                }
+                if (status.state === 'failure' || status.state === 'error') {
+                  await core.summary
+                    .addRaw(`Internal GitLab pipeline: \`${pipelineId}\` (${status.state})\n`)
+                    .write();
+                  throw new Error(`Internal GitLab pipeline ${pipelineId} ${status.state}`);
+                }
+              }
+              await new Promise(resolve => setTimeout(resolve, 15000));
+            }

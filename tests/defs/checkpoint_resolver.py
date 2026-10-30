@@ -30,7 +30,6 @@ CHECKPOINTS_BY_ID = {}
 PRIVATE_CHECKPOINT_IDS = frozenset()
 
 
-
 @contextmanager
 def _exclusive_file_lock(lock_file):
     if os.name == "nt":
