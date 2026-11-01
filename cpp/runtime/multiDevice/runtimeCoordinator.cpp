@@ -46,7 +46,6 @@ namespace trt_edgellm
 namespace rt
 {
 
-
 RuntimeCoordinator::RuntimeCoordinator(Config config)
     : mConfig(std::move(config))
     , mParallelConfig(mConfig.parallelConfig)
@@ -122,6 +121,9 @@ void RuntimeCoordinator::validateParallelPlan()
             || mParallelConfig.launchMode == ParallelLaunchMode::kMpi,
         "RuntimeCoordinator currently supports thread and MPI launch modes only.");
     ELLM_CHECK(mWorldSize >= 1, "RuntimeCoordinator requires a positive world size.");
+#if defined(_WIN32)
+    ELLM_CHECK(mWorldSize == 1, "Multi-device execution is not supported on Windows.");
+#endif
     ELLM_CHECK(!mLocalRanks.empty(), "RuntimeCoordinator requires at least one local rank.");
     ELLM_CHECK(mConfig.modelArtifacts == nullptr || (mWorldSize == 1 && mLocalRanks.size() == 1 && mLocalRanks[0] == 0),
         "Injected model artifacts require inline single-rank execution.");
@@ -995,7 +997,7 @@ std::unique_ptr<LLMRankRuntime> RuntimeCoordinator::createRankRuntime(int32_t gl
     }
     return std::make_unique<LLMRankRuntime>(mConfig.engineDir, mConfig.multimodalEngineDir, mConfig.loraWeightsMap,
         mConfig.draftingConfig, mStreams[globalRank], mapping, *mTokenizer, *mChatTemplate, mConfig.contextCacheConfig,
-        mConfig.checkpointDir, mConfig.draftCheckpointDir);
+        mConfig.checkpointDir, mConfig.draftCheckpointDir, mConfig.runtimeCachePath);
 }
 
 LLMGenerationRequest RuntimeCoordinator::prepareRequestState(LLMGenerationRequest const& request) const

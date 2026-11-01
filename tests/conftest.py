@@ -197,17 +197,22 @@ def setup_environment(env_config):
 def executable_files(env_config):
     """Paths to build executables"""
     build_dir = env_config.build_dir
+    executable_suffix = ".exe" if os.name == "nt" else ""
     return {
-        'llm_build': f"{build_dir}/examples/llm/llm_build",
-        'llm_inference': f"{build_dir}/examples/llm/llm_inference",
-        'llm_bench': f"{build_dir}/examples/llm/llm_bench",
-        'visual_build': f"{build_dir}/examples/multimodal/visual_build",
-        'audio_build': f"{build_dir}/examples/multimodal/audio_build",
-        'action_build': f"{build_dir}/examples/multimodal/action_build",
+        'llm_build': f"{build_dir}/examples/llm/llm_build{executable_suffix}",
+        'llm_inference':
+        f"{build_dir}/examples/llm/llm_inference{executable_suffix}",
+        'llm_bench': f"{build_dir}/examples/llm/llm_bench{executable_suffix}",
+        'visual_build':
+        f"{build_dir}/examples/multimodal/visual_build{executable_suffix}",
+        'audio_build':
+        f"{build_dir}/examples/multimodal/audio_build{executable_suffix}",
+        'action_build':
+        f"{build_dir}/examples/multimodal/action_build{executable_suffix}",
         'action_inference':
-        f"{build_dir}/examples/multimodal/action_inference",
+        f"{build_dir}/examples/multimodal/action_inference{executable_suffix}",
         'qwen3_tts_inference':
-        f"{build_dir}/examples/omni/qwen3_tts_inference",
+        f"{build_dir}/examples/omni/qwen3_tts_inference{executable_suffix}",
         # The unit tests are several ctest-registered executables; this points
         # at the directory ctest is invoked from, not a single binary.
         'unit_test': f"{build_dir}"

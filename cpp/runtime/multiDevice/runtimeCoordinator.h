@@ -29,6 +29,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <cuda_runtime.h>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -81,6 +82,7 @@ public:
         bool ownsLocalStreams{true};
         std::vector<ParallelBackendHandles> backendHandles;
         std::unique_ptr<ModelArtifacts> modelArtifacts;
+        std::optional<std::filesystem::path> runtimeCachePath; //! TRT-RTX runtime cache file path.
     };
 
     explicit RuntimeCoordinator(Config config);

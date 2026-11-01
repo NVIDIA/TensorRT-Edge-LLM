@@ -12,7 +12,7 @@ prompt contract from `tts_model_type` in the engine configuration.
 | Component | Precision | Notes |
 |---|---|---|
 | Talker | FP16 | Quantized Talker checkpoints are not supported for Qwen3-TTS yet |
-| CodePredictor | FP16, **FP8**, **NVFP4** | Quantize with `tensorrt-edgellm-quantize ... --cp_quantization {fp8,nvfp4}`; `down_proj`, LM heads, codec embeddings, and KV-cache BMM remain FP16. NVFP4 only pays off on bandwidth-limited parts |
+| CodePredictor | FP16, **FP8**, **NVFP4** | Quantize with `trtedge quantize ... --cp-quantization {fp8,nvfp4}`; `down_proj`, LM heads, codec embeddings, and KV-cache BMM remain FP16. NVFP4 only pays off on bandwidth-limited parts |
 | Code2Wav | FP16 | |
 | Clone encoders (Base) | FP16 build from FP32 ONNX | x-vector cosine 1.0 / codes 100% vs reference at FP16 |
 
@@ -24,10 +24,10 @@ prompt contract from `tts_model_type` in the engine configuration.
 > ```bash
 > export QUANT_ROOT=$MODEL_ROOT/cp_fp8
 >
-> tensorrt-edgellm-quantize llm --model_dir "$MODEL_ID" \
->     --output_dir "$QUANT_ROOT" --cp_quantization fp8
-> tensorrt-edgellm-export "$MODEL_ID" "$MODEL_ROOT/onnx"
-> tensorrt-edgellm-export "$QUANT_ROOT" "$MODEL_ROOT/onnx" --components code_predictor
+> trtedge quantize llm --model-dir "$MODEL_ID" \
+>     --output-dir "$QUANT_ROOT" --cp-quantization fp8
+> trtedge export "$MODEL_ID" "$MODEL_ROOT/onnx"
+> trtedge export "$QUANT_ROOT" "$MODEL_ROOT/onnx" --components code_predictor
 > ```
 
 > **Prerequisites:** Complete the [Installation Guide](../getting_started/installation.md) before proceeding.
@@ -36,14 +36,14 @@ prompt contract from `tts_model_type` in the engine configuration.
 
 ## Part 1: Export on x86 Host
 
-Qwen3-TTS has three components: Talker, CodePredictor, and Code2Wav. Export all of them with `tensorrt-edgellm-export`.
+Qwen3-TTS has three components: Talker, CodePredictor, and Code2Wav. Export all of them with `trtedge export`.
 
 ```bash
 export WORKSPACE_DIR=$HOME/tensorrt-edgellm-workspace
 export MODEL_ID=Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
 export MODEL_ROOT=$WORKSPACE_DIR/Qwen3-TTS-12Hz-1.7B-CustomVoice
 
-tensorrt-edgellm-export \
+trtedge export \
     "$MODEL_ID" \
     "$MODEL_ROOT/onnx"
 ```
@@ -94,29 +94,29 @@ export ENG=$MODEL_ROOT/engines
 
 # 1. Build Talker LLM engine
 ./build/examples/llm/llm_build \
-    --onnxDir $ONNX/llm \
-    --engineDir $ENG/talker \
-    --maxInputLen 4096 \
-    --maxKVCacheCapacity 4096 \
-    --maxBatchSize 1
+    --onnx-dir $ONNX/llm \
+    --engine-dir $ENG/talker \
+    --max-input-len 4096 \
+    --max-kv-cache-capacity 4096 \
+    --max-batch-size 1
 
 # 2. Build CodePredictor LLM engine
 ./build/examples/llm/llm_build \
-    --onnxDir $ONNX/code_predictor \
-    --engineDir $ENG/code_predictor \
-    --maxInputLen 4096 \
-    --maxKVCacheCapacity 4096 \
-    --maxBatchSize 1
+    --onnx-dir $ONNX/code_predictor \
+    --engine-dir $ENG/code_predictor \
+    --max-input-len 4096 \
+    --max-kv-cache-capacity 4096 \
+    --max-batch-size 1
 
 # 3. Build Code2Wav engine
 ./build/examples/multimodal/audio_build \
-    --onnxDir $ONNX/code2wav \
-    --engineDir $ENG
+    --onnx-dir $ONNX/code2wav \
+    --engine-dir $ENG
 ```
 
-`audio_build` writes the Code2Wav engine to `$ENG/code2wav`. Use `--engineDir $ENG`; passing `$ENG/code2wav` would create an extra nested directory.
+`audio_build` writes the Code2Wav engine to `$ENG/code2wav`. Use `--engine-dir $ENG`; passing `$ENG/code2wav` would create an extra nested directory.
 
-> **Note:** Use `--maxBatchSize 1` for the current Qwen3-TTS runtime.
+> **Note:** Use `--max-batch-size 1` for the current Qwen3-TTS runtime.
 
 Build time: < 5 minutes
 
@@ -241,7 +241,7 @@ trtexec --onnx=$ONNX/clone_encoders/speech_tokenizer_encoder.onnx --fp16 \
     --saveEngine=$ENG/clone_encoders/speech_tokenizer_encoder.engine
 ```
 
-Pass `--cloneEncoderDir=$ENG/clone_encoders` to `qwen3_tts_inference` and reference audio
+Pass `--clone-encoder-dir=$ENG/clone_encoders` to `qwen3_tts_inference` and reference audio
 directly in requests (`ref_audio` / `ref_text`, top-level default and/or per-request):
 
 ```json
@@ -277,12 +277,12 @@ export MODEL_ROOT=$WORKSPACE_DIR/Qwen3-TTS-12Hz-1.7B-CustomVoice
 export ENG=$MODEL_ROOT/engines
 
 ./build/examples/omni/qwen3_tts_inference \
-    --talkerEngineDir   $ENG/talker \
-    --code2wavEngineDir $ENG/code2wav \
-    --tokenizerDir      $ENG/talker \
-    --inputFile         input.json \
-    --outputFile        output.json \
-    --outputAudioDir    ./audio_output
+    --talker-engine-dir   $ENG/talker \
+    --code2wav-engine-dir $ENG/code2wav \
+    --tokenizer-dir      $ENG/talker \
+    --input-file         input.json \
+    --output-file        output.json \
+    --output-audio-dir    ./audio_output
 ```
 
 Generated `.wav` files are named `audio_req{N}.wav` (one per request). The output JSON records per-request metadata: audio file path, sample count, duration, and RVQ code file path.
@@ -307,7 +307,7 @@ Generated `.wav` files are named `audio_req{N}.wav` (one per request). The outpu
 
 ### Streaming Mode (audio output)
 
-Pass `--streaming --chunkFrames=<N>` to vocode RVQ codes inline as the Talker generates
+Pass `--streaming --chunk-frames=<N>` to vocode RVQ codes inline as the Talker generates
 them, rather than waiting for the full sequence. Each request receives its own
 `onChunkReady` callback inside the runtime (`bs >= 1` supported, per-batch independent);
 the CLI synchronously vocodes each chunk via Code2Wav and appends the PCM to a
@@ -327,12 +327,12 @@ Streaming behavior:
 
 ```bash
 ./build/examples/omni/qwen3_tts_inference \
-    --talkerEngineDir   $ENG/talker \
-    --code2wavEngineDir $ENG/code2wav \
-    --tokenizerDir      $ENG/talker \
-    --inputFile         input.json \
-    --outputAudioDir    out/ \
-    --streaming --chunkFrames=25
+    --talker-engine-dir   $ENG/talker \
+    --code2wav-engine-dir $ENG/code2wav \
+    --tokenizer-dir      $ENG/talker \
+    --input-file         input.json \
+    --output-audio-dir    out/ \
+    --streaming --chunk-frames=25
 ```
 
 Works with every checkpoint family and voice-control feature above (speaker / language /
@@ -346,26 +346,26 @@ instruct / VoiceDesign / clone). Text input is consumed whole per request; strea
 > | | Qwen3-TTS (`qwen3_tts_inference`) | Qwen3-Omni (`llm_inference`) |
 > |---|---|---|
 > | What streams | audio output only (chunked vocoding of a fixed text) | the full Thinker→Talker pipeline (speech synthesis starts while the Thinker is still generating text) |
-> | Enabled via | CLI: `--streaming --chunkFrames=<N>` | input JSON: `"streaming": {"enable": true, "codec_chunk_frames": <N>, "talker_prefill_threshold": <M>}` |
-> | Chunk knob | `--chunkFrames` | `codec_chunk_frames` |
+> | Enabled via | CLI: `--streaming --chunk-frames=<N>` | input JSON: `"streaming": {"enable": true, "codec_chunk_frames": <N>, "talker_prefill_threshold": <M>}` |
+> | Chunk knob | `--chunk-frames` | `codec_chunk_frames` |
 >
 > Unifying the two surfaces (same JSON block / flag names) is tracked as a follow-up.
 ## CodePredictor speculative decoding
 
 The CodePredictor loop dominates audio decode time and can speculate with no draft model and no
 retraining, reusing the `lm_head` the checkpoint already carries for each RVQ depth. It is off by
-default; add `--cpSpecVerifySize N` (one committed RVQ depth plus `N-1` drafted depths, valid
+default; add `--cp-spec-verify-size N` (one committed RVQ depth plus `N-1` drafted depths, valid
 range 2-8) to the command above:
 
 ```bash
 ./build/examples/omni/qwen3_tts_inference \
-    --talkerEngineDir $ENG/talker \
-    --code2wavEngineDir $ENG/code2wav \
-    --tokenizerDir $ENG/talker \
-    --inputFile $WORKSPACE_DIR/input.json \
-    --outputFile $WORKSPACE_DIR/output.json \
-    --outputAudioDir $WORKSPACE_DIR/audio \
-    --cpSpecVerifySize 3
+    --talker-engine-dir $ENG/talker \
+    --code2wav-engine-dir $ENG/code2wav \
+    --tokenizer-dir $ENG/talker \
+    --input-file $WORKSPACE_DIR/input.json \
+    --output-file $WORKSPACE_DIR/output.json \
+    --output-audio-dir $WORKSPACE_DIR/audio \
+    --cp-spec-verify-size 3
 ```
 
 Engines need no special build step, and the sampled output distribution is unchanged. See

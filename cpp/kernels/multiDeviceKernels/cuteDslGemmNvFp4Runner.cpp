@@ -25,7 +25,7 @@
 #include <stdexcept>
 #include <string>
 
-#define NVFP4_LOG(fmt, ...) LOG_ERROR("CuteDslGemmNvFp4Runner: " fmt, ##__VA_ARGS__)
+#define NVFP4_LOG(...) LOG_ERROR("CuteDslGemmNvFp4Runner: " __VA_ARGS__)
 
 namespace trt_edgellm
 {

@@ -187,3 +187,19 @@ TEST(TokenizerSpecialTokenTest, UnknownIdPreservesExistingSkipBehavior)
 
     std::filesystem::remove_all(dir);
 }
+
+TEST(TokenEncoderTest, ReconsidersPairToLeftOfMerge)
+{
+    tokenizer::TokenToRanks const vocab{{"x", 0}, {"a", 1}, {"b", 2}, {"c", 3}, {"bc", 4}, {"abc", 5}};
+    tokenizer::TokenEncoder encoder(tokenizer::TokenEncoder::BPE);
+    ASSERT_TRUE(encoder.initialize(vocab, {}));
+
+    std::unordered_map<std::string, tokenizer::Rank> priorities;
+    priorities.emplace(std::string("b\0c", 3), 0);
+    priorities.emplace(std::string("a\0bc", 4), 1);
+    encoder.setMergePriorities(std::move(priorities));
+
+    std::vector<tokenizer::Rank> encoded;
+    ASSERT_TRUE(encoder.encode("xabc", encoded));
+    EXPECT_EQ(encoded, (std::vector<tokenizer::Rank>{0, 5}));
+}

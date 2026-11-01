@@ -20,6 +20,7 @@ import onnx_graphsurgeon as gs
 import pytest
 
 from tensorrt_edgellm.lora.lora import (_match_fp8_gemm, _match_fp16_gemm,
+                                        _process_tensor_name,
                                         insert_lora_and_save)
 
 
@@ -157,3 +158,13 @@ def test_insert_lora_rejects_when_every_gemm_is_skipped(tmp_path, graph):
 
     with pytest.raises(ValueError, match="no eligible linear layers"):
         insert_lora_and_save(str(tmp_path))
+
+
+@pytest.mark.parametrize("key", [
+    "base_model.model.model.language_model.layers.0.self_attn.q_proj.lora_A.weight",
+    "base_model.model.language_model.model.layers.0.self_attn.q_proj.lora_A.weight",
+    "base_model.model.model.layers.0.self_attn.q_proj.lora_A.weight",
+])
+def test_adapter_names_match_exported_llm_bindings(key):
+    assert (_process_tensor_name(key) ==
+            "model.layers.0.self_attn.q_proj.lora_A.weight")

@@ -132,7 +132,7 @@ rather than silently producing unrelated output. `llm_inference` reads those
 weights once at load time and performs layout conversion on the GPU:
 
 ```bash
-llm_inference --engineDir /path/to/engines --checkpointDir /path/to/checkpoint ...
+llm_inference --engine-dir /path/to/engines --checkpoint-dir /path/to/checkpoint ...
 ```
 
 The runtime loads the original checkpoint during initialization. All checkpoint
@@ -157,7 +157,7 @@ For PyTorch ZIP `.bin` checkpoints, the builder loads tensors on the `meta`
 device and records their archive byte ranges without materializing payloads.
 The C++ runtime maps those ranges directly from the original checkpoint.
 
-**Serving an engine built this way requires `--checkpointDir`.** The
+**Serving an engine built this way requires `--checkpoint-dir`.** The
 experimental builder always records original-checkpoint recipes; it does not
 publish a second, transformed copy of externalized weights.
 
@@ -178,12 +178,12 @@ Visual, audio, action, and Code2Wav components participate too. Their FP16
 projections and the audio encoders' supported convolution kernels become
 engine inputs owned and bound by the corresponding component runner.
 Code2Wav keeps convolution kernels in its engine and loads its linear weights
-from the checkpoint. One `--checkpointDir` serves all components built from
+from the checkpoint. One `--checkpoint-dir` serves all components built from
 the same checkpoint.
 
 `--externalize-weights` narrows the default to specific kinds (`int4_ffn`,
-`int4_moe`, `nvfp4_moe`, `nvfp4_tp`, `lm_head`, `fp16`, `embedding`, `all`)
-and is repeatable. `nvfp4_tp` covers row-parallel packed weights and block
+`int4_moe`, `nvfp4_moe`, `nvfp4_a16`, `nvfp4_tp`, `lm_head`, `fp16`,
+`embedding`, `all`) and is repeatable. `nvfp4_tp` covers row-parallel packed weights and block
 scales consumed by the fused NVFP4 GEMM/all-reduce plugin; the runtime slices
 each rank's persistent plugin resource directly from the checkpoint. Requesting
 a kind the build cannot support is an error, while the default silently keeps
@@ -216,18 +216,18 @@ tensorrt-edgellm-build \
 Do not pass `--draft-model-dir` for native Qwen MTP. The draft engine prefers
 the checkpoint's `mtp.lm_head` when present and otherwise uses its compatible
 tied/base projection. Add `--tree-base` when the runtime will use
-`--specDraftTopK > 1`; hybrid Qwen tree and linear base engines are distinct
+`--spec-draft-top-k > 1`; hybrid Qwen tree and linear base engines are distinct
 contracts.
 
 At runtime, native Qwen MTP uses the same checkpoint for both engines:
 
 ```bash
 llm_inference \
-  --engineDir=/path/to/engines \
-  --checkpointDir=/path/to/qwen3.5-checkpoint \
-  --inputFile=/path/to/input.json \
-  --outputFile=/path/to/output.json \
-  --specDecode
+  --engine-dir=/path/to/engines \
+  --checkpoint-dir=/path/to/qwen3.5-checkpoint \
+  --input-file=/path/to/input.json \
+  --output-file=/path/to/output.json \
+  --spec-decode
 ```
 
 DFlash uses its paired draft checkpoint and model-owned DFlash cache contract:
@@ -288,17 +288,17 @@ Pass both provider checkpoints when running a relocated engine bundle:
 
 ```bash
 llm_inference \
-  --engineDir=/path/to/engines \
-  --checkpointDir=/path/to/gemma4-target \
-  --draftCheckpointDir=/path/to/gemma4-assistant \
-  --inputFile=/path/to/input.json \
-  --outputFile=/path/to/output.json \
-  --specDecode
+  --engine-dir=/path/to/engines \
+  --checkpoint-dir=/path/to/gemma4-target \
+  --draft-checkpoint-dir=/path/to/gemma4-assistant \
+  --input-file=/path/to/input.json \
+  --output-file=/path/to/output.json \
+  --spec-decode
 ```
 
-The same `--draftCheckpointDir` contract applies to paired EAGLE3, DFlash, and
+The same `--draft-checkpoint-dir` contract applies to paired EAGLE3, DFlash, and
 dSpark drafts. It is rejected for native Qwen MTP because those draft layers
-belong to `--checkpointDir`.
+belong to `--checkpoint-dir`.
 
 ## Loader And Modeling Contract
 

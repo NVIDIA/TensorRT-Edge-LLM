@@ -22,6 +22,7 @@ server can import the package without installing the legacy export toolchain.
 from importlib import import_module
 from typing import Any
 
+from . import _dependencies
 from ._version import __version__
 
 _EXPORT_API_NAMES = (
@@ -35,14 +36,6 @@ _EXPORT_API_NAMES = (
     "register_model",
 )
 _EXPORT_API_NAME_SET = frozenset(_EXPORT_API_NAMES)
-_EXPORT_DEPENDENCIES = frozenset({
-    "onnx",
-    "onnx_graphsurgeon",
-    "onnxscript",
-    "safetensors",
-    "torch",
-    "transformers",
-})
 
 
 def _load_export_api():
@@ -50,10 +43,11 @@ def _load_export_api():
         module = import_module("._export_api", __name__)
     except ModuleNotFoundError as exc:
         missing = (exc.name or "").split(".", 1)[0]
-        if missing in _EXPORT_DEPENDENCIES:
+        if missing in _dependencies.EXPORT_DEPENDENCIES:
             raise ModuleNotFoundError(
                 f"{exc}. Install TensorRT Edge-LLM with the 'export' extra "
-                "to use the PyTorch/ONNX exporter.") from exc
+                "to use the PyTorch/ONNX exporter.",
+                name=exc.name) from exc
         raise
     for name in _EXPORT_API_NAMES:
         globals()[name] = getattr(module, name)

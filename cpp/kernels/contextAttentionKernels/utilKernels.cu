@@ -314,6 +314,22 @@ void assemblePagedSWAChunkedPrefillFMHAKV(rt::Tensor const& swaPool, rt::Tensor 
 
 namespace
 {
+//! One thread per (batch, position): full logical-KV interval for D512 padding prefill.
+__global__ void buildPaddingBlockRangesKernel(
+    int32_t const* cuKVSeqLens, int32_t* blockBegin, int32_t* blockEnd, int32_t seqLen)
+{
+    int32_t const pos
+        = static_cast<int32_t>(blockIdx.x) * static_cast<int32_t>(blockDim.x) + static_cast<int32_t>(threadIdx.x);
+    int32_t const batch = static_cast<int32_t>(blockIdx.y);
+    if (pos >= seqLen)
+    {
+        return;
+    }
+    int64_t const idx = static_cast<int64_t>(batch) * seqLen + pos;
+    blockBegin[idx] = 0;
+    blockEnd[idx] = cuKVSeqLens[batch + 1] - cuKVSeqLens[batch] - 1;
+}
+
 //! One thread per (batch, position): expand vision-block IDs into per-position
 //! [blockBegin, blockEnd] intervals for the vision-block overlay prefill.
 __global__ void buildVisionBlockRangesKernel(int32_t const* visionBlockIds, int32_t const* contextLengths,
@@ -435,6 +451,20 @@ void launchBuildVisionBlockRanges(int32_t const* visionBlockIds, int32_t const* 
         static_cast<uint32_t>((seqLen + kRANGE_THREADS - 1) / kRANGE_THREADS), static_cast<uint32_t>(batchSize));
     buildVisionBlockRangesKernel<<<grid, kRANGE_THREADS, 0, stream>>>(
         visionBlockIds, contextLengths, blockBegin, blockEnd, seqLen);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+void launchBuildPaddingBlockRanges(int32_t const* cuKVSeqLens, int32_t* blockBegin, int32_t* blockEnd,
+    int32_t batchSize, int32_t seqLen, cudaStream_t stream)
+{
+    check::check(cuKVSeqLens != nullptr && blockBegin != nullptr && blockEnd != nullptr,
+        "Padding block range expansion received a null pointer");
+    check::check(batchSize > 0 && seqLen > 0, "Padding block range expansion received invalid dimensions");
+
+    constexpr int32_t kRANGE_THREADS = 256;
+    dim3 const grid(
+        static_cast<uint32_t>((seqLen + kRANGE_THREADS - 1) / kRANGE_THREADS), static_cast<uint32_t>(batchSize));
+    buildPaddingBlockRangesKernel<<<grid, kRANGE_THREADS, 0, stream>>>(cuKVSeqLens, blockBegin, blockEnd, seqLen);
     CUDA_CHECK(cudaGetLastError());
 }
 

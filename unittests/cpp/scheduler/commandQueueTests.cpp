@@ -157,7 +157,7 @@ TEST(CommandQueueTests, CarriesEveryCommandType)
 TEST(CommandQueueTests, ManyProducersLoseNoCommandAndDuplicateNone)
 {
     constexpr int32_t kProducers = 8;
-    constexpr int32_t kPerProducer = 4000;
+    static constexpr int32_t kPerProducer = 4000;
     constexpr int32_t kTotal = kProducers * kPerProducer;
 
     // Deliberately smaller than the total so producers hit the full path and retry.

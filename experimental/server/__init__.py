@@ -27,12 +27,13 @@ Public API::
 """
 
 from .config import ContextCacheConfig
-from .runtime.engine import (LLM, TTS, AudioParams, CompletionOutput,
+from .runtime.engine import (LLM, TTS, AudioParams, CancellableIterator,
+                             CompletionOutput, GenerationMetrics,
                              SamplingParams, StreamDelta, load_model)
 from .runtime.engine_build import clear_engine_cache, prune_engine_cache
 
 __all__ = [
     "LLM", "TTS", "SamplingParams", "CompletionOutput", "StreamDelta",
-    "AudioParams", "load_model", "ContextCacheConfig", "clear_engine_cache",
-    "prune_engine_cache"
+    "AudioParams", "CancellableIterator", "GenerationMetrics", "load_model",
+    "ContextCacheConfig", "clear_engine_cache", "prune_engine_cache"
 ]

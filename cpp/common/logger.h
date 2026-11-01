@@ -20,12 +20,14 @@
 #include "stringUtils.h"
 #include <NvInferRuntime.h>
 #include <chrono>
+#include <cstdlib>
 #include <ctime>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <string_view>
 
 namespace trt_edgellm
 {
@@ -223,7 +225,22 @@ public:
 private:
     // Construction is private: the only instance is created and owned by instance().
     // The destructor is never invoked (immortal singleton); see instance() for rationale.
-    EdgeLLMLogger() noexcept = default;
+    EdgeLLMLogger() noexcept
+    {
+        char const* level = std::getenv("EDGELLM_LOG_LEVEL");
+        if (level != nullptr)
+        {
+            std::string_view const value{level};
+            if (value == "WARNING")
+            {
+                mMinLevel = nvinfer1::ILogger::Severity::kWARNING;
+            }
+            else if (value == "DEBUG")
+            {
+                mMinLevel = nvinfer1::ILogger::Severity::kVERBOSE;
+            }
+        }
+    }
     ~EdgeLLMLogger() noexcept override = default;
 
     nvinfer1::ILogger::Severity mMinLevel = nvinfer1::ILogger::Severity::kINFO;
@@ -251,7 +268,11 @@ private:
             // Use the reentrant localtime_r with a stack-local tm: std::localtime returns a pointer
             // to a shared process-global buffer, which would race under concurrent logging.
             std::tm tmBuf{};
+#if defined(_WIN32)
+            localtime_s(&tmBuf, &time_t);
+#else
             localtime_r(&time_t, &tmBuf);
+#endif
             oss << "[" << std::put_time(&tmBuf, "%H:%M:%S") << "." << std::setfill('0') << std::setw(3) << ms.count()
                 << "] ";
         }

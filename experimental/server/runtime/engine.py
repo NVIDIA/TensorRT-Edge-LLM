@@ -41,10 +41,11 @@ import math
 import os
 import sys
 import threading
+import time
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
-from typing import (TYPE_CHECKING, Any, Dict, Iterator, List, Mapping,
-                    Optional, Sequence, Tuple, Union)
+from typing import (TYPE_CHECKING, Any, Callable, Dict, Iterator, List,
+                    Mapping, Optional, Sequence, Tuple, Union)
 
 from ..config import DEFAULT_MAX_QUEUED_REQUESTS, ContextCacheConfig
 from ..parsing.tool_calling import (ToolConfig, parse_assistant_output,
@@ -136,6 +137,35 @@ class CompletionOutput:
 
 
 @dataclass
+class GenerationMetrics:
+    """Native throughput timings and client-observed latency in seconds.
+
+    Native counts and phase times are independent of stream consumption.
+    Incomplete native snapshots fall back to received token counts; unavailable
+    phase times remain zero.
+    TTFT and total_time include admission, rendering, and consumer overhead.
+    generated_tokens includes prefill output; decoded_tokens and generation_time
+    cover only work after prefill. Use decode_tokens_per_second for throughput.
+    """
+
+    prompt_tokens: Optional[int] = None
+    processed_prompt_tokens: Optional[int] = None
+    prompt_time: float = 0.0
+    generated_tokens: int = 0
+    time_to_first_token: Optional[float] = None
+    generation_time: float = 0.0
+    total_time: float = 0.0
+    decoded_tokens: int = 0
+
+    @property
+    def decode_tokens_per_second(self) -> float:
+        """Native decode throughput, or zero when decode timing is unavailable."""
+        if self.generation_time <= 0:
+            return 0.0
+        return self.decoded_tokens / self.generation_time
+
+
+@dataclass
 class StreamDelta:
     """Single delta from a streaming generation.
 
@@ -181,8 +211,19 @@ def _native_audio_params(rt, audio: "AudioParams"):
     return omni_params
 
 
-class _CancellableIterator:
-    """Iterator whose thread-safe close signal can interrupt native waits."""
+class CancellableIterator:
+    """Wrap a generator with cancellation that can interrupt native waits.
+
+    Args:
+        iterator: Generator to consume and close.
+        cancel: Callable that requests producer cancellation without waiting for
+            iteration to finish. It must tolerate repeated calls.
+
+    ``cancel()`` signals the producer without closing an executing generator.
+    ``close()`` signals cancellation once and closes the generator when it is
+    not executing in another thread. The caller must wait for active iteration
+    to finish before releasing resources owned by that generator.
+    """
 
     def __init__(self, iterator, cancel) -> None:
         self._iterator = iterator
@@ -196,11 +237,17 @@ class _CancellableIterator:
     def __next__(self):
         return next(self._iterator)
 
+    def cancel(self) -> None:
+        """Request cancellation without closing an executing iterator."""
+        self._cancel()
+
     def close(self) -> None:
         with self._cancel_lock:
-            if not self._cancelled:
-                self._cancelled = True
-                self._cancel()
+            cancel = not self._cancelled
+            self._cancelled = True
+        if cancel:
+            # Cancellation can invoke a user callback that closes this stream.
+            self._cancel()
         try:
             self._iterator.close()
         except (RuntimeError, ValueError):
@@ -289,7 +336,7 @@ def _pump_channels(rt, run, text_channel, audio_channel, sem=None):
         if error_holder[0] is not None:
             raise error_holder[0]
 
-    return _CancellableIterator(_iterate(), _cancel)
+    return CancellableIterator(_iterate(), _cancel)
 
 
 def _stream_tts(rt,
@@ -336,7 +383,7 @@ def _stream_tts(rt,
         state["stream"] = stream
         yield from stream
 
-    return _CancellableIterator(_iterate(), _cancel)
+    return CancellableIterator(_iterate(), _cancel)
 
 
 # ---------------------------------------------------------------------------
@@ -867,6 +914,7 @@ class LLM:
         context_cache_config: Optional[Union[ContextCacheConfig,
                                              Mapping[str, Any]]] = None,
         enable_in_flight_batching: bool = False,
+        on_progress: Optional[Callable[[str], None]] = None,
     ):
         if not model:
             raise ValueError("'model' must be provided")
@@ -961,6 +1009,7 @@ class LLM:
             options,
             max_cache_size_bytes=int(engine_cache_max_size_gb * (1 << 30)),
             clear_cache=clear_engine_cache,
+            on_progress=on_progress,
         )
         self._cache_dir = cache_root(cache_dir)
         self._model_dir = prepared.model_dir
@@ -979,7 +1028,11 @@ class LLM:
         self._dflash_block_size = runtime_options.dflash_block_size
         self._init_from_bundle(prepared.bundle_dir)
 
+        if on_progress is not None:
+            on_progress("Loading runtime and capturing CUDA graphs")
         self._load_runtime()
+        if on_progress is not None:
+            on_progress("Ready")
 
     # ------------------------------------------------------------------
     # Initialization
@@ -1634,6 +1687,7 @@ class LLM:
         tools: Optional[Sequence[Dict[str, Any]]] = None,
         tool_choice: Optional[Union[str, Dict[str, Any]]] = None,
         prebuilt_request: Optional[Any] = None,
+        on_metrics: Optional[Callable[[GenerationMetrics], None]] = None,
     ) -> Iterator[StreamDelta]:
         """Stream generation deltas for a single message list.
 
@@ -1641,9 +1695,24 @@ class LLM:
         in-flight batching the request is submitted to the engine and this
         thread reads the attached ``StreamChannel`` directly; on the blocking
         path ``handleRequest`` runs in a background thread instead.
+        ``on_metrics`` receives final native throughput and wall-clock timings
+        after the producer stops, including when the stream is closed.
+        Collection is disabled when ``on_metrics`` is omitted. Per-request
+        metrics do not enable aggregate counters or CUDA event profiling.
+        Cancellation or closure before iteration reports empty metrics once,
+        without starting a request.
+        ``cancel()`` requests cancellation; ``close()`` waits for the blocking
+        worker, or the request engine outcome when metrics are requested.
         """
         params = sampling_params or SamplingParams()
-        state = {}
+        metrics = GenerationMetrics()
+        state = {"on_metrics": on_metrics}
+
+        def report_metrics():
+            # Claim the callback before invoking it; cancellation can race iteration.
+            callback = state.pop("on_metrics", None)
+            if callback is not None:
+                callback(metrics)
 
         def _cancel():
             # close() after a clean EOF must stay a no-op: a founder's outcome
@@ -1658,10 +1727,46 @@ class LLM:
             channel = state.get("channel")
             if channel is not None:
                 channel.cancel()
+            if not state.get("started"):
+                report_metrics()
 
         def _iterate():
+            state["started"] = True
+            if state.get("cancelled_by_caller"):
+                report_metrics()
+                return
+            started = time.perf_counter() if on_metrics is not None else None
+            received_tokens = 0
+
+            def collect_metrics(chunk, observed_at=None):
+                nonlocal received_tokens
+                if on_metrics is None:
+                    return
+                if chunk.prompt_token_count >= 0:
+                    metrics.prompt_tokens = chunk.prompt_token_count
+                if chunk.token_ids:
+                    if (metrics.time_to_first_token is None
+                            and observed_at is not None):
+                        metrics.time_to_first_token = observed_at - started
+                    received_tokens += len(chunk.token_ids)
+                metrics.generated_tokens = max(metrics.generated_tokens,
+                                               received_tokens)
+                native_metrics = getattr(chunk, "metrics", None)
+                if (native_metrics is not None
+                        and native_metrics.processed_prompt_tokens >= 0):
+                    metrics.processed_prompt_tokens = native_metrics.processed_prompt_tokens
+                    metrics.prompt_time = native_metrics.prompt_seconds
+                    # Some runtimes do not sample during prefill and leave
+                    # their native generation snapshot uninitialized.
+                    metrics.generated_tokens = max(
+                        metrics.generated_tokens,
+                        native_metrics.generated_tokens)
+                    metrics.generation_time = native_metrics.generation_seconds
+                    metrics.decoded_tokens = native_metrics.decoded_tokens
+
             self._ensure_open()
-            channel = self._rt.StreamChannel.create()
+            channel = self._rt.StreamChannel.create(
+                collect_metrics=on_metrics is not None)
             state["channel"] = channel
             channel.set_skip_special_tokens(params.skip_special_tokens)
 
@@ -1697,6 +1802,8 @@ class LLM:
 
             if engine is not None:
                 state["handle"] = engine.submit(request)
+                if state.get("cancelled_by_caller"):
+                    state["handle"].cancel()
             else:
 
                 def _run():
@@ -1716,24 +1823,23 @@ class LLM:
             try:
                 while True:
                     chunk = channel.wait_pop(timeout_ms=200)
+                    if state.get("cancelled_by_caller"):
+                        if chunk is not None:
+                            collect_metrics(chunk)
+                        break
                     if chunk is None:
-                        if channel.is_finished() or channel.is_cancelled():
+                        if channel.is_cancelled():
                             break
-                        # A terminal outcome with a silent channel means the
-                        # request retired without ever reaching the runtime
-                        # (rejected, or a founder that failed before decoding);
-                        # nothing will touch this channel again. Without this,
-                        # the consumer waits out its transport timeout. Drain
-                        # once more before breaking: push/finish/publish can
-                        # all land between the checks above, leaving the
-                        # terminal chunk in the channel.
                         handle = state.get("handle")
-                        if handle is not None and handle.ready():
-                            chunk = channel.wait_pop(timeout_ms=0)
+                        if channel.is_finished() or (handle is not None
+                                                     and handle.ready()):
+                            chunk = channel.try_pop()
                             if chunk is None:
                                 break
                         else:
                             continue
+                    if on_metrics is not None:
+                        collect_metrics(chunk, time.perf_counter())
                     reason = finish_reason_name(
                         self._rt, chunk.reason) if chunk.finished else None
                     if chunk.finished:
@@ -1765,11 +1871,29 @@ class LLM:
                     channel.cancel()
                 if worker is not None:
                     worker.join()
-                elif sem is not None:
-                    # Engine path: the stream is over (or abandoned) and the
-                    # request's decoded media may be released; the blocking
-                    # path releases from its worker instead.
-                    sem.release()
+                else:
+                    handle = state.get("handle")
+                    if handle is not None and on_metrics is not None:
+                        # Cancellation wakes get() before the actor publishes final metrics.
+                        while not handle.ready():
+                            time.sleep(0.01)
+                        try:
+                            handle.get()
+                        except Exception as exc:
+                            if not state.get("cancelled_by_caller"):
+                                error_holder[0] = exc
+                    if sem is not None:
+                        sem.release()
+                # Final snapshots may arrive after cancellation; collect them
+                # without yielding text or inventing an observed first token.
+                while True:
+                    chunk = channel.try_pop()
+                    if chunk is None:
+                        break
+                    collect_metrics(chunk)
+                if on_metrics is not None:
+                    metrics.total_time = time.perf_counter() - started
+                report_metrics()
 
             if error_holder[0] is not None:
                 raise error_holder[0]
@@ -1782,10 +1906,40 @@ class LLM:
             # promptly otherwise, since a resident's outcome is published at
             # the tick that evicts it, not when the whole batch drains.
             handle = state.get("handle")
-            if handle is not None and not state.get("cancelled_by_caller"):
+            if (handle is not None and on_metrics is None
+                    and not state.get("cancelled_by_caller")):
                 handle.get()
 
-        return _CancellableIterator(_iterate(), _cancel)
+        return CancellableIterator(_iterate(), _cancel)
+
+    def validate_context(
+            self,
+            messages: List[Dict[str, Any]],
+            sampling_params: Optional[SamplingParams] = None) -> int:
+        """Count a text conversation and reject turns outside the engine limits.
+
+        Reserve the requested output budget without truncating the prompt.
+        This check does not generate tokens or change the context cache.
+        """
+        params = sampling_params or SamplingParams()
+        with self._admission(), self._infer_guard():
+            self._ensure_open()
+            request = self._make_generation_request(messages, params)
+            count = self._count_prepared_prompt_tokens(request)
+            if count is None:
+                raise ValueError(
+                    "Exact context validation requires text input")
+            if (count > self._max_input_len or count + params.max_tokens
+                    > self._max_kv_cache_capacity):
+                raise ValueError(
+                    f"Conversation has {count} prompt tokens with "
+                    f"{params.max_tokens} output tokens reserved. Engine limits "
+                    f"are {self._max_input_len} input and "
+                    f"{self._max_kv_cache_capacity} total. Shorten the "
+                    "conversation or rebuild with larger limits: "
+                    "--max-input-len for prompt tokens, "
+                    "--max-kv-cache-capacity for prompt plus output.")
+            return count
 
     def generate_stream_with_audio(
         self,
@@ -1864,7 +2018,7 @@ class LLM:
             state["stream"] = stream
             yield from stream
 
-        return _CancellableIterator(_iterate(), _cancel)
+        return CancellableIterator(_iterate(), _cancel)
 
     # ------------------------------------------------------------------
     # Server API
@@ -1962,6 +2116,11 @@ class LLM:
     def max_batch_size(self) -> int:
         """Maximum batch size supported by the loaded engine."""
         return self._max_batch_size
+
+    @property
+    def max_kv_cache_capacity(self) -> int:
+        """Total token capacity supported by the loaded engine."""
+        return self._max_kv_cache_capacity
 
     @property
     def video_capable(self) -> bool:

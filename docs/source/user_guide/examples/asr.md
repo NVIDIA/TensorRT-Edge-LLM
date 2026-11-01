@@ -17,7 +17,7 @@ mkdir -p $WORKSPACE_DIR
 cd $WORKSPACE_DIR
 
 # Export language model and audio encoder
-tensorrt-edgellm-export \
+trtedge export \
   Qwen/Qwen3-ASR-0.6B \
   $MODEL_NAME/onnx
 ```
@@ -40,18 +40,18 @@ cd /path/to/TensorRT-Edge-LLM
 
 # Build language model engine
 ./build/examples/llm/llm_build \
-  --onnxDir $WORKSPACE_DIR/$MODEL_NAME/onnx/llm \
-  --engineDir $WORKSPACE_DIR/$MODEL_NAME/engines/llm \
-  --maxBatchSize 1 \
-  --maxInputLen 1024 \
-  --maxKVCacheCapacity 4096
+  --onnx-dir $WORKSPACE_DIR/$MODEL_NAME/onnx/llm \
+  --engine-dir $WORKSPACE_DIR/$MODEL_NAME/engines/llm \
+  --max-batch-size 1 \
+  --max-input-len 1024 \
+  --max-kv-cache-capacity 4096
 
 # Build audio encoder engine
 ./build/examples/multimodal/audio_build \
-  --onnxDir $WORKSPACE_DIR/$MODEL_NAME/onnx/audio \
-  --engineDir $WORKSPACE_DIR/$MODEL_NAME/engines/audio \
-  --minTimeSteps 100 \
-  --maxTimeSteps 3000
+  --onnx-dir $WORKSPACE_DIR/$MODEL_NAME/onnx/audio \
+  --engine-dir $WORKSPACE_DIR/$MODEL_NAME/engines/audio \
+  --min-time-steps 100 \
+  --max-time-steps 3000
 ```
 
 ## Step 4: Run Inference (Thor Device)
@@ -95,10 +95,10 @@ Run inference:
 cd /path/to/TensorRT-Edge-LLM
 
 ./build/examples/llm/llm_inference \
-  --engineDir $WORKSPACE_DIR/$MODEL_NAME/engines/llm \
-  --multimodalEngineDir $WORKSPACE_DIR/$MODEL_NAME/engines/audio \
-  --inputFile $WORKSPACE_DIR/input_asr.json \
-  --outputFile $WORKSPACE_DIR/output_asr.json
+  --engine-dir $WORKSPACE_DIR/$MODEL_NAME/engines/llm \
+  --multimodal-engine-dir $WORKSPACE_DIR/$MODEL_NAME/engines/audio \
+  --input-file $WORKSPACE_DIR/input_asr.json \
+  --output-file $WORKSPACE_DIR/output_asr.json
 ```
 
 Check `output_asr.json` for the speech recognition transcription.
@@ -124,12 +124,12 @@ Qwen3-ASR-0.6B; 1.7B is noted where it diverges.
 
 > **Mixed-precision rules** (`tensorrt_edgellm/scripts/quantize.py`):
 > - `--quantization` quantizes the LLM backbone only.
-> - `--audio_quantization fp8` opts the audio tower in. **Omit it to
+> - `--audio-quantization fp8` opts the audio tower in. **Omit it to
 >   keep the audio tower at FP16** regardless of `--quantization` --
 >   audio encoders are quantization-sensitive, so the default is
->   conservative (mirrors the `--visual_quantization` behaviour for
+>   conservative (mirrors the `--visual-quantization` behaviour for
 >   VLMs).
-> - `--lm_head_quantization` is similarly opt-in.
+> - `--lm-head-quantization` is similarly opt-in.
 
 ### Three featured recipes
 
@@ -137,20 +137,20 @@ Insert a quantization step before [Step 1: Export](#step-1-export-x86-host),
 then point the export at the quantized output instead of the Hugging
 Face checkpoint. Joint multimodal calibration streams audio-transcript pairs
 through the model using the default `librispeech` audio dataset. Pick another
-registered audio dataset with `--audio_dataset <name>`; to add your own, see
+registered audio dataset with `--audio-dataset <name>`; to add your own, see
 [Calibration Dataset Customization](../../developer_guide/customization/calibration-datasets.md).
 
 **Recipe A: 0.6B NVFP4 LLM + FP16 audio**
 
 ```bash
-tensorrt-edgellm-quantize llm \
-  --model_dir Qwen/Qwen3-ASR-0.6B \
-  --output_dir $WORKSPACE_DIR/$MODEL_NAME-nvfp4-lh.nvfp4 \
+trtedge quantize llm \
+  --model-dir Qwen/Qwen3-ASR-0.6B \
+  --output-dir $WORKSPACE_DIR/$MODEL_NAME-nvfp4-lh.nvfp4 \
   --quantization nvfp4 \
-  --lm_head_quantization nvfp4
+  --lm-head-quantization nvfp4
 
 # Then in Step 1, replace ``Qwen/Qwen3-ASR-0.6B`` with the quantized dir:
-tensorrt-edgellm-export \
+trtedge export \
   $WORKSPACE_DIR/$MODEL_NAME-nvfp4-lh.nvfp4 \
   $MODEL_NAME/onnx
 ```
@@ -158,14 +158,14 @@ tensorrt-edgellm-export \
 **Recipe B: 0.6B FP8 LLM + FP8 audio**
 
 ```bash
-tensorrt-edgellm-quantize llm \
-  --model_dir Qwen/Qwen3-ASR-0.6B \
-  --output_dir $WORKSPACE_DIR/$MODEL_NAME-fp8-a.fp8 \
+trtedge quantize llm \
+  --model-dir Qwen/Qwen3-ASR-0.6B \
+  --output-dir $WORKSPACE_DIR/$MODEL_NAME-fp8-a.fp8 \
   --quantization fp8 \
-  --audio_quantization fp8
+  --audio-quantization fp8
 
 # Then in Step 1, replace ``Qwen/Qwen3-ASR-0.6B`` with the quantized dir:
-tensorrt-edgellm-export \
+trtedge export \
   $WORKSPACE_DIR/$MODEL_NAME-fp8-a.fp8 \
   $MODEL_NAME/onnx
 ```
@@ -175,14 +175,14 @@ tensorrt-edgellm-export \
 ```bash
 export MODEL_NAME=Qwen3-ASR-1.7B
 
-tensorrt-edgellm-quantize llm \
-  --model_dir Qwen/Qwen3-ASR-1.7B \
-  --output_dir $WORKSPACE_DIR/$MODEL_NAME-nvfp4-a.fp8 \
+trtedge quantize llm \
+  --model-dir Qwen/Qwen3-ASR-1.7B \
+  --output-dir $WORKSPACE_DIR/$MODEL_NAME-nvfp4-a.fp8 \
   --quantization nvfp4 \
-  --audio_quantization fp8
+  --audio-quantization fp8
 
 # Then in Step 1, replace ``Qwen/Qwen3-ASR-1.7B`` with the quantized dir:
-tensorrt-edgellm-export \
+trtedge export \
   $WORKSPACE_DIR/$MODEL_NAME-nvfp4-a.fp8 \
   $MODEL_NAME/onnx
 ```

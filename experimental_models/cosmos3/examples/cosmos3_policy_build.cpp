@@ -52,22 +52,24 @@ struct Args
 void printUsage(char const* programName)
 {
     std::cerr << "Usage: " << programName
-              << " [--help] --onnxDir <dir> --engineDir <dir> [--component <all|und_prefill|gen|vae_encoder>] "
-                 "[--maxBatchSize <int>] [--debug]"
+              << " [--help] --onnx-dir <dir> --engine-dir <dir> [--component <all|und_prefill|gen|vae_encoder>] "
+                 "[--max-batch-size <int>] [--debug]"
               << std::endl;
     std::cerr << "Options:" << std::endl;
-    std::cerr << "  --help          Display this help message" << std::endl;
-    std::cerr << "  --onnxDir       Exporter output root (holds und_prefill/, gen/, vae_encoder/, "
+    std::cerr << "  --help            Display this help message" << std::endl;
+    std::cerr << "  --onnx-dir        Exporter output root (holds und_prefill/, gen/, vae_encoder/, "
                  "text_tokenizer/). Required."
               << std::endl;
-    std::cerr << "  --engineDir     Output TensorRT engine root; each component lands in <engineDir>/<component>, "
+    std::cerr << "  --engine-dir      Output TensorRT engine root; each component lands in <engineDir>/<component>, "
                  "and the tokenizer + token-embedding table are staged alongside. Required."
               << std::endl;
-    std::cerr << "  --component     Component to build: all (default), und_prefill, gen, or vae_encoder." << std::endl;
-    std::cerr << "  --maxBatchSize  Maximum request batch the engine serves (widens the profile batch "
+    std::cerr << "  --component       Component to build: all (default), und_prefill, gen, or vae_encoder."
+              << std::endl;
+    std::cerr << "  --max-batch-size  Maximum request batch the engine serves (widens the profile batch "
                  "axis). Default = 1"
               << std::endl;
-    std::cerr << "  --debug         Use debug mode, which outputs more logs." << std::endl;
+    std::cerr << "  --debug           Use debug mode, which outputs more logs." << std::endl;
+    std::cerr << "Legacy camelCase option spellings remain accepted.\n";
 }
 
 bool isSupportedComponent(std::string const& component)
@@ -78,8 +80,10 @@ bool isSupportedComponent(std::string const& component)
 bool parseArgs(Args& args, int argc, char** argv)
 {
     static struct option options[]
-        = {{"help", no_argument, nullptr, HELP}, {"onnxDir", required_argument, nullptr, ONNX_DIR},
+        = {{"help", no_argument, nullptr, HELP}, {"onnx-dir", required_argument, nullptr, ONNX_DIR},
+            {"onnxDir", required_argument, nullptr, ONNX_DIR}, {"engine-dir", required_argument, nullptr, ENGINE_DIR},
             {"engineDir", required_argument, nullptr, ENGINE_DIR}, {"component", required_argument, nullptr, COMPONENT},
+            {"max-batch-size", required_argument, nullptr, MAX_BATCH_SIZE},
             {"maxBatchSize", required_argument, nullptr, MAX_BATCH_SIZE}, {"debug", no_argument, nullptr, DEBUG},
             {nullptr, 0, nullptr, 0}};
     int opt;

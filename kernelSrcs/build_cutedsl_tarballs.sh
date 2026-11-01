@@ -20,7 +20,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/.." && pwd)"
 
 : "${CUDA_CTK_VERSION:=13.0}"
-: "${CUTE_DSL_VERSION:=4.7.0}"
+: "${CUTE_DSL_VERSION:=4.8.0}"
 : "${CUTE_DSL_RUNTIME_LIBS_VERSION:=${CUTE_DSL_VERSION}}"
 : "${CUTE_DSL_KERNELS:=ALL}"
 : "${CUTE_DSL_JOBS:=$(nproc)}"

@@ -576,7 +576,7 @@ def _estimate_qwen3d_video_tokens(nframes: int,
                 f"no resized visual shape fits the engine profile "
                 f"(frames={nframes}, {height}x{width}); reduce the frame "
                 "count/resolution or rebuild the visual engine with wider "
-                "--minImageTokens/--maxImageTokens bounds")
+                "--min-image-tokens/--max-image-tokens bounds")
         if pq_max >= 1 and pq_min <= pq_max:
             target = height / width
             pq_target = pq_min if t_bar * h_bar * w_bar < min_px else pq_max
@@ -721,7 +721,7 @@ def clamp_nframes_to_profile(
             "video frames need "
             f"{frame_tokens} visual tokens each but only {cap} remain in "
             "the engine budget; reduce other media in the request or "
-            "rebuild the visual engine with a larger --maxImageTokens")
+            "rebuild the visual engine with a larger --max-image-tokens")
     n = min(nframes, max_groups * tps)
     groups = (n + tps - 1) // tps
     return n, groups * frame_tokens
@@ -873,7 +873,7 @@ def sample_video(source: str,
                 raise ValueError(
                     f"nframes={nframes} needs more visual tokens than the "
                     "engine profile allows; lower nframes or rebuild the "
-                    "visual engine with a larger --maxImageTokens")
+                    "visual engine with a larger --max-image-tokens")
         else:
             est_tokens = _raw_video_tokens(n, stream.width or 0, stream.height
                                            or 0)

@@ -29,6 +29,7 @@ from experimental.builder.core.safetensors_np import (SafetensorsStore,
                                                       _ShardFile)
 from experimental.builder.core.weights import (LinearWeights, ParameterSpec,
                                                Weights)
+from experimental.builder.weight_packing import nvfp4 as nvfp4_pack
 
 
 def _checkpoint(path, values):
@@ -263,6 +264,75 @@ def test_nvfp4_weight_layout_takes_precedence_over_activation_precision():
             quantization.QUANT_NVFP4)
 
 
+def test_direct_builder_selects_nvfp4_a16_for_fp16_activations(tmp_path):
+    embedded = {
+        "quantization_config": {
+            "quant_algo": "NVFP4",
+            "group_size": 16,
+        }
+    }
+
+    w4a4 = quantization.parse_quantization(str(tmp_path), embedded, {})
+    w4a16 = quantization.parse_quantization(str(tmp_path),
+                                            embedded, {},
+                                            quantize_activations=False)
+
+    assert w4a4.quant_type == quantization.QUANT_NVFP4
+    assert w4a16.quant_type == quantization.QUANT_NVFP4_A16
+
+
+def test_direct_builder_packs_gated_nvfp4_a16_experts():
+    hidden = 128
+    intermediate = 128
+
+    def raw(out_features, in_features, alpha=1.0):
+        return {
+            "packed": np.zeros((out_features, in_features // 2), np.uint8),
+            "sf": np.ones((out_features, in_features // 16), np.uint8),
+            "alpha": alpha,
+        }
+
+    def load_expert(_):
+        return {
+            "gate": raw(intermediate, hidden),
+            "up": raw(intermediate, hidden),
+            "down": raw(hidden, intermediate),
+        }
+
+    packed = nvfp4_pack.pack_nvfp4_a16_gated_experts(load_expert, 2, hidden,
+                                                     intermediate)
+
+    assert packed["fc1_qweights"].shape == (2, hidden // 16,
+                                            8 * 2 * intermediate)
+    assert packed["fc1_block_scales"].shape == (2, hidden // 16,
+                                                2 * intermediate)
+    assert packed["fc2_qweights"].shape == (2, intermediate // 16, 8 * hidden)
+    assert packed["fc2_block_scales"].shape == (2, intermediate // 16, hidden)
+
+
+def test_direct_builder_binds_calibrated_moe_input_scales():
+    weights = object.__new__(Weights)
+    weights.nvfp4_checkpoint_names = lambda prefix: (
+        prefix + ".weight", prefix + ".weight_scale", prefix +
+        ".weight_scale_2", False, prefix + ".input_scale")
+    weights.checkpoint_binding = lambda keys, *layout, **extra: {
+        "keys": keys,
+        "layout": layout,
+        "extra": extra,
+    }
+
+    binding = weights.nvfp4_moe_input_scale_binding("layers.0.mlp.experts", 2,
+                                                    ("up_proj", "gate_proj"))
+
+    assert binding["keys"] == [
+        f"layers.0.mlp.experts.{expert}.{projection}.input_scale"
+        for expert in range(2) for projection in ("up_proj", "gate_proj")
+    ]
+    assert binding["layout"] == ("plugin", "nvfp4_moe_input_scale")
+    assert binding["extra"]["keys_per_expert"] == 2
+    assert binding["extra"]["require_equal"] is True
+
+
 def test_mixed_precision_preserves_module_group_sizes():
     dominant, group_size, overrides, group_sizes = (
         quantization._parse_mixed_precision(
@@ -390,6 +460,106 @@ def test_tp_runtime_kv_metadata_uses_rank_local_head_counts():
         },
     ]
     assert global_config["kv_layer_configs"][0]["num_kv_heads"] == 4
+
+
+def test_gemma4_multimodal_ple_runtime_config_includes_pad_token():
+    from experimental.builder.models.gemma4 import runtime_config
+
+    config = {}
+    root = {
+        "audio_token_id": 258881,
+        "text_config": {
+            "pad_token_id": 0,
+        },
+    }
+    cfg = SimpleNamespace(hidden_size_per_layer_input=256)
+
+    runtime_config.update_llm_config(config, root, cfg, SimpleNamespace())
+
+    assert config["pad_token_id"] == 0
+
+
+def test_gemma4_multimodal_ple_runtime_config_with_thinker_token_id():
+    from experimental.builder.models.gemma4 import runtime_config
+
+    config = {"audio_token_id": 258881}
+    root = {
+        "thinker_config": {
+            "audio_token_id": 258881
+        },
+        "text_config": {
+            "pad_token_id": 0
+        },
+    }
+    cfg = SimpleNamespace(hidden_size_per_layer_input=256)
+
+    runtime_config.update_llm_config(config, root, cfg, SimpleNamespace())
+
+    assert config["pad_token_id"] == 0
+
+
+def test_gemma4_multimodal_ple_runtime_config_requires_pad_token():
+    from experimental.builder.models.gemma4 import runtime_config
+
+    config = {}
+    root = {"image_token_id": 258880, "text_config": {}}
+    cfg = SimpleNamespace(hidden_size_per_layer_input=256)
+
+    with pytest.raises(ValueError, match="requires text_config.pad_token_id"):
+        runtime_config.update_llm_config(config, root, cfg, SimpleNamespace())
+
+
+def test_gemma4_vision_linear_applies_checkpoint_clipping(monkeypatch):
+    from experimental.builder.models.gemma4 import modeling_gemma4_layers
+
+    prefix = "vision_tower.encoder.layers.0.self_attn.q_proj"
+    events = []
+
+    class FakeWeights:
+
+        @staticmethod
+        def has(name):
+            return name in {
+                prefix + ".linear.weight",
+                prefix + ".input_min",
+                prefix + ".output_min",
+            }
+
+        @staticmethod
+        def f16(name):
+            return name
+
+    class FakeLinear:
+
+        def __init__(self, _ctx, linear_prefix, **_kwargs):
+            self.prefix = linear_prefix
+
+        def __call__(self, hidden):
+            events.append(("linear", self.prefix))
+            return hidden
+
+    class FakeTensor:
+
+        def maximum(self, value):
+            events.append(("maximum", value))
+            return self
+
+        def minimum(self, value):
+            events.append(("minimum", value))
+            return self
+
+    monkeypatch.setattr(modeling_gemma4_layers, "Linear", FakeLinear)
+    projection = modeling_gemma4_layers.Gemma4ClippableLinear(
+        SimpleNamespace(weights=FakeWeights()), prefix, rank=2)
+
+    assert projection(FakeTensor()) is not None
+    assert events == [
+        ("maximum", prefix + ".input_min"),
+        ("minimum", prefix + ".input_max"),
+        ("linear", prefix + ".linear"),
+        ("maximum", prefix + ".output_min"),
+        ("minimum", prefix + ".output_max"),
+    ]
 
 
 def test_tp_segmented_column_shard_preserves_qkv_layout():

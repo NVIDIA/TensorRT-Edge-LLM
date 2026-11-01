@@ -114,16 +114,20 @@ std::vector<T> makeFilledOutput(int32_t numLayers, int32_t maxBatchSize, int32_t
         static_cast<size_t>(numLayers) * maxBatchSize * maxSeqLen * pleHiddenSize, makeScalar<T>(kSentinelValue));
 }
 
-bool shouldZeroFill(int32_t tokenId, int32_t vocabSize, int32_t imageTokenId, int32_t audioTokenId)
+// Media placeholders gather the PAD row; out-of-range IDs are zero-filled (-1).
+int32_t expectedRow(int32_t tokenId, int32_t vocabSize, int32_t imageTokenId, int32_t audioTokenId, int32_t padTokenId)
 {
-    return tokenId < 0 || tokenId >= vocabSize || (imageTokenId >= 0 && tokenId == imageTokenId)
-        || (audioTokenId >= 0 && tokenId == audioTokenId);
+    if ((imageTokenId >= 0 && tokenId == imageTokenId) || (audioTokenId >= 0 && tokenId == audioTokenId))
+    {
+        tokenId = padTokenId;
+    }
+    return (tokenId < 0 || tokenId >= vocabSize) ? -1 : tokenId;
 }
 
 template <typename T>
 void verifyOutput(std::vector<T> const& output, std::vector<int32_t> const& inputIds, int32_t batchSize, int32_t seqLen,
     int32_t maxBatchSize, int32_t maxSeqLen, int32_t vocabSize, int32_t numLayers, int32_t pleHiddenSize,
-    int32_t imageTokenId, int32_t audioTokenId)
+    int32_t imageTokenId, int32_t audioTokenId, int32_t padTokenId)
 {
     int64_t const layerCapacity = static_cast<int64_t>(maxBatchSize) * maxSeqLen * pleHiddenSize;
     std::vector<bool> written(output.size(), false);
@@ -135,15 +139,15 @@ void verifyOutput(std::vector<T> const& output, std::vector<int32_t> const& inpu
             for (int32_t seqIdx = 0; seqIdx < seqLen; ++seqIdx)
             {
                 size_t const tokenOffset = static_cast<size_t>(batchIdx) * seqLen + seqIdx;
-                int32_t const tokenId = inputIds[tokenOffset];
+                int32_t const row
+                    = expectedRow(inputIds[tokenOffset], vocabSize, imageTokenId, audioTokenId, padTokenId);
                 for (int32_t hiddenIdx = 0; hiddenIdx < pleHiddenSize; ++hiddenIdx)
                 {
                     size_t const outputOffset
                         = static_cast<size_t>(layerIdx * layerCapacity) + (tokenOffset * pleHiddenSize) + hiddenIdx;
                     written[outputOffset] = true;
-                    float const expected = shouldZeroFill(tokenId, vocabSize, imageTokenId, audioTokenId)
-                        ? 0.0F
-                        : scalarToFloat(makeScalar<T>(tableValue(tokenId, layerIdx, hiddenIdx)));
+                    float const expected
+                        = row < 0 ? 0.0F : scalarToFloat(makeScalar<T>(tableValue(row, layerIdx, hiddenIdx)));
                     EXPECT_NEAR(scalarToFloat(output[outputOffset]), expected, kATol + kRTol * std::abs(expected))
                         << "layer=" << layerIdx << " batch=" << batchIdx << " seq=" << seqIdx
                         << " hidden=" << hiddenIdx;
@@ -164,7 +168,7 @@ void verifyOutput(std::vector<T> const& output, std::vector<int32_t> const& inpu
 template <typename T>
 void runGatherTest(std::vector<int32_t> const& inputIds, int32_t batchSize, int32_t seqLen, int32_t maxBatchSize,
     int32_t maxSeqLen, int32_t vocabSize, int32_t numLayers, int32_t pleHiddenSize, int32_t imageTokenId,
-    int32_t audioTokenId)
+    int32_t audioTokenId, int32_t padTokenId = 0)
 {
     rt::Tensor inputIdsDevice({batchSize, seqLen}, rt::DeviceType::kGPU, DataType::kINT32);
     rt::Tensor pleTableDevice(
@@ -179,13 +183,13 @@ void runGatherTest(std::vector<int32_t> const& inputIds, int32_t batchSize, int3
     copyHostToDevice(pleTableDevice, table);
     copyHostToDevice(outputDevice, initialOutput);
 
-    kernel::gemma4PleGather(
-        inputIdsDevice, pleTableDevice, outputDevice, numLayers, pleHiddenSize, imageTokenId, audioTokenId, nullptr);
+    kernel::gemma4PleGather(inputIdsDevice, pleTableDevice, outputDevice, numLayers, pleHiddenSize, imageTokenId,
+        audioTokenId, padTokenId, nullptr);
     CUDA_CHECK(cudaDeviceSynchronize());
 
     std::vector<T> const output = copyDeviceToHost<T>(outputDevice);
     verifyOutput(output, inputIds, batchSize, seqLen, maxBatchSize, maxSeqLen, vocabSize, numLayers, pleHiddenSize,
-        imageTokenId, audioTokenId);
+        imageTokenId, audioTokenId, padTokenId);
 }
 
 } // namespace
@@ -205,7 +209,7 @@ TEST(Gemma4PleGatherKernelTest, GathersFp16LayerOutputsWithCompactRuntimeShape)
         kPleHiddenSize, /* imageTokenId = */ -1, /* audioTokenId = */ -1);
 }
 
-TEST(Gemma4PleGatherKernelTest, ZeroFillsInvalidAndMultimodalTokensFp16)
+TEST(Gemma4PleGatherKernelTest, ZeroFillsInvalidAndPadsMultimodalTokensFp16)
 {
     constexpr int32_t kBatchSize = 1;
     constexpr int32_t kSeqLen = 5;
@@ -219,7 +223,7 @@ TEST(Gemma4PleGatherKernelTest, ZeroFillsInvalidAndMultimodalTokensFp16)
     std::vector<int32_t> const inputIds{0, -1, kVocabSize, kImageTokenId, kAudioTokenId};
 
     runGatherTest<half>(inputIds, kBatchSize, kSeqLen, kMaxBatchSize, kMaxSeqLen, kVocabSize, kNumLayers,
-        kPleHiddenSize, kImageTokenId, kAudioTokenId);
+        kPleHiddenSize, kImageTokenId, kAudioTokenId, /* padTokenId = */ 1);
 }
 
 TEST(Gemma4PleGatherKernelTest, GathersBfloat16LayerOutputs)

@@ -31,6 +31,7 @@
 #include "kernels/weightsTransform/nvfp4/moe/common/nvfp4MoeWeightTransform.h"
 #include "kernels/weightsTransform/nvfp4/moe/sm110/nvfp4MoePluginTransform.h"
 #include "kernels/weightsTransform/nvfp4/moe/sm120/nvfp4MoePluginGeforceTransform.h"
+#include "kernels/weightsTransform/nvfp4/w4a16/nvfp4W4A16MarlinRepack.h"
 
 #include <algorithm>
 #include <array>
@@ -960,31 +961,171 @@ void assembleNormalizedNvfp4Scales(CheckpointReader const& checkpoint, Json cons
     });
 }
 
-void assembleNvfp4Alpha(CheckpointReader const& checkpoint, Json const& binding, Tensor& output, cudaStream_t stream)
+void assembleNvfp4PerExpertScalars(
+    CheckpointReader const& checkpoint, Json const& binding, Tensor& output, cudaStream_t stream)
 {
     Json const& keys = checkpointKeys(binding);
     int32_t const numExperts = binding.value("num_experts", 0);
     int32_t const keysPerExpert = binding.value("keys_per_expert", 1);
     ELLM_CHECK(numExperts > 0 && numExperts <= 512 && keysPerExpert > 0
             && static_cast<int32_t>(keys.size()) == numExperts * keysPerExpert,
-        "NVFP4 alpha key count does not match the expert layout");
-    validateOutput(output, Coords{numExperts}, nvinfer1::DataType::kFLOAT, "NVFP4 alpha output");
+        "NVFP4 scalar key count does not match the expert layout");
+    validateOutput(output, Coords{numExperts}, nvinfer1::DataType::kFLOAT, "NVFP4 per-expert scalar output");
 
     bool const reciprocal = binding.value("reciprocal_alpha", false);
+    bool const requireEqual = binding.value("require_equal", false);
     std::array<float, 512> values{};
     for (int32_t expert = 0; expert < numExperts; ++expert)
     {
         size_t const base = static_cast<size_t>(expert * keysPerExpert);
-        float value = 0.0F;
+        float value = effectiveNvfp4Alpha(checkpoint, keyName(keys, base), reciprocal);
         for (int32_t field = 1; field < keysPerExpert; ++field)
         {
-            value = std::max(
-                value, effectiveNvfp4Alpha(checkpoint, keyName(keys, base + static_cast<size_t>(field)), reciprocal));
+            float const candidate
+                = effectiveNvfp4Alpha(checkpoint, keyName(keys, base + static_cast<size_t>(field)), reciprocal);
+            ELLM_CHECK(!requireEqual || candidate == value, "NVFP4 expert scalar values must match");
+            value = std::max(value, candidate);
         }
-        value = std::max(value, effectiveNvfp4Alpha(checkpoint, keyName(keys, base), reciprocal));
         values[static_cast<size_t>(expert)] = value;
     }
     CUDA_CHECK(kernel::launchWriteFp32(values.data(), numExperts, output.rawPointer(), stream));
+}
+
+struct Nvfp4A16Geometry
+{
+    int32_t experts;
+    int32_t projections;
+    int32_t sourceN;
+    int32_t sourceK;
+    int32_t outputN;
+    int32_t outputK;
+};
+
+Nvfp4A16Geometry nvfp4A16Geometry(Json const& binding)
+{
+    Nvfp4A16Geometry const shape{binding.value("num_experts", 0), binding.value("keys_per_expert", 0),
+        binding.value("source_n", 0), binding.value("source_k", 0), binding.value("output_n", 0),
+        binding.value("output_k", 0)};
+    ELLM_CHECK(shape.experts > 0 && shape.experts <= 512 && (shape.projections == 1 || shape.projections == 2)
+            && shape.sourceN > 0 && shape.sourceK > 0 && shape.outputN >= shape.sourceN
+            && shape.outputK >= shape.sourceK && shape.sourceK % 16 == 0 && shape.outputK % 16 == 0
+            && shape.outputN % 64 == 0,
+        "invalid W4A16 checkpoint geometry");
+    return shape;
+}
+
+void assembleNvfp4A16Qweight(
+    CheckpointReader const& checkpoint, Json const& binding, Tensor& output, cudaStream_t stream)
+{
+    Json const& keys = checkpointKeys(binding);
+    Nvfp4A16Geometry const shape = nvfp4A16Geometry(binding);
+    ELLM_CHECK(static_cast<int32_t>(keys.size()) == shape.experts * shape.projections,
+        "W4A16 qweight key count does not match the expert layout");
+    validateOutput(output, Coords{shape.experts, shape.outputK / 16, 8 * shape.projections * shape.outputN},
+        nvinfer1::DataType::kINT8, "W4A16 qweight output");
+
+    size_t const sourceBytes = static_cast<size_t>(shape.sourceN) * shape.sourceK / 2;
+    size_t const outputBytes = static_cast<size_t>(output.getShape().volume() / shape.experts);
+    auto* destination = static_cast<uint8_t*>(output.rawPointer());
+    forCheckpointSourceBatches(shape.experts, [&](int32_t begin, int32_t count) {
+        std::array<uint8_t const*, kernel::kCheckpointSourcesPerLaunch> first{};
+        std::array<uint8_t const*, kernel::kCheckpointSourcesPerLaunch> second{};
+        for (int32_t local = 0; local < count; ++local)
+        {
+            size_t const base = static_cast<size_t>((begin + local) * shape.projections);
+            View const firstView = requireView(checkpoint, keyName(keys, base), "W4A16 packed weight");
+            ELLM_CHECK(firstView.shape.getNumDims() == 2 && firstView.shape[0] == shape.sourceN
+                    && firstView.bytes == sourceBytes,
+                "W4A16 packed weight shape does not match its binding");
+            first[static_cast<size_t>(local)] = firstView.deviceData;
+            if (shape.projections == 2)
+            {
+                View const secondView = requireView(checkpoint, keyName(keys, base + 1), "W4A16 packed weight");
+                ELLM_CHECK(secondView.shape.getNumDims() == 2 && secondView.shape[0] == shape.sourceN
+                        && secondView.bytes == sourceBytes,
+                    "W4A16 packed weight shape does not match its binding");
+                second[static_cast<size_t>(local)] = secondView.deviceData;
+            }
+        }
+        CUDA_CHECK(kernel::launchNvfp4W4A16MarlinRepackSourceBatch(first.data(),
+            shape.projections == 2 ? second.data() : nullptr,
+            reinterpret_cast<int32_t*>(destination + static_cast<size_t>(begin) * outputBytes), count, shape.sourceN,
+            shape.sourceK, shape.outputN, shape.outputK, stream));
+    });
+}
+
+void assembleNvfp4A16Scale(CheckpointReader const& checkpoint, Json const& binding, Tensor& output, cudaStream_t stream)
+{
+    Json const& keys = checkpointKeys(binding);
+    Nvfp4A16Geometry const shape = nvfp4A16Geometry(binding);
+    ELLM_CHECK(static_cast<int32_t>(keys.size()) == shape.experts * shape.projections,
+        "W4A16 scale key count does not match the expert layout");
+    int32_t const sourceGroups = shape.sourceK / 16;
+    int32_t const outputGroups = shape.outputK / 16;
+    validateOutput(output, Coords{shape.experts, outputGroups, shape.projections * shape.outputN},
+        nvinfer1::DataType::kINT8, "W4A16 scale output");
+
+    size_t const sourceBytes = static_cast<size_t>(shape.sourceN) * sourceGroups;
+    size_t const outputBytes = static_cast<size_t>(output.getShape().volume() / shape.experts);
+    auto* destination = static_cast<int8_t*>(output.rawPointer());
+    forCheckpointSourceBatches(shape.experts, [&](int32_t begin, int32_t count) {
+        std::array<uint8_t const*, kernel::kCheckpointSourcesPerLaunch> first{};
+        std::array<uint8_t const*, kernel::kCheckpointSourcesPerLaunch> second{};
+        for (int32_t local = 0; local < count; ++local)
+        {
+            size_t const base = static_cast<size_t>((begin + local) * shape.projections);
+            View const firstView = requireView(checkpoint, keyName(keys, base), "W4A16 block scale");
+            ELLM_CHECK(firstView.shape.getNumDims() == 2 && firstView.shape[0] == shape.sourceN
+                    && firstView.bytes == sourceBytes
+                    && (firstView.dtype == nvinfer1::DataType::kFP8 || firstView.dtype == nvinfer1::DataType::kINT8),
+                "W4A16 block scale shape does not match its binding");
+            first[static_cast<size_t>(local)] = firstView.deviceData;
+            if (shape.projections == 2)
+            {
+                View const secondView = requireView(checkpoint, keyName(keys, base + 1), "W4A16 block scale");
+                ELLM_CHECK(secondView.shape == firstView.shape && secondView.dtype == firstView.dtype
+                        && secondView.bytes == sourceBytes,
+                    "W4A16 block scale shape does not match its binding");
+                second[static_cast<size_t>(local)] = secondView.deviceData;
+            }
+        }
+        CUDA_CHECK(kernel::launchNvfp4W4A16ScaleRepack(first.data(), shape.projections == 2 ? second.data() : nullptr,
+            destination + static_cast<size_t>(begin) * outputBytes, count, shape.sourceN, sourceGroups, shape.outputN,
+            outputGroups, stream));
+    });
+}
+
+void assembleNvfp4A16Alpha(CheckpointReader const& checkpoint, Json const& binding, Tensor& output, cudaStream_t stream)
+{
+    Json const& keys = checkpointKeys(binding);
+    int32_t const experts = binding.value("num_experts", 0);
+    int32_t const projections = binding.value("keys_per_expert", 0);
+    ELLM_CHECK(experts > 0 && experts <= 512 && (projections == 1 || projections == 2)
+            && static_cast<int32_t>(keys.size()) == experts * projections,
+        "W4A16 alpha key count does not match the expert layout");
+    Coords const outputShape = projections == 1 ? Coords{experts} : Coords{projections, experts};
+    validateOutput(output, outputShape, nvinfer1::DataType::kHALF, "W4A16 alpha output");
+
+    bool const reciprocal = binding.value("reciprocal_alpha", false);
+    std::array<float, 1024> values{};
+    for (int32_t expert = 0; expert < experts; ++expert)
+    {
+        size_t const base = static_cast<size_t>(expert * projections);
+        for (int32_t projection = 0; projection < projections; ++projection)
+        {
+            values[static_cast<size_t>(projection * experts + expert)]
+                = effectiveNvfp4Alpha(checkpoint, keyName(keys, base + projection), reciprocal);
+        }
+    }
+    int32_t constexpr valuesPerLaunch = 512;
+    int32_t const count = experts * projections;
+    auto* destination = static_cast<half*>(output.rawPointer());
+    for (int32_t begin = 0; begin < count; begin += valuesPerLaunch)
+    {
+        int32_t const batch = std::min(valuesPerLaunch, count - begin);
+        CUDA_CHECK(kernel::launchWriteFp16(
+            values.data() + begin, batch, binding.value("alpha_multiplier", 128.0F), destination + begin, stream));
+    }
 }
 
 void assembleInt4MoeQweights(CheckpointReader const& checkpoint, Json const& binding, int32_t projectionsPerExpert,
@@ -1331,9 +1472,21 @@ void loadCheckpointWeight(CheckpointReader& checkpoint, Json const& binding, std
             experts > 0 && static_cast<int32_t>(keys.size()) == experts, "NVFP4 expert scale key count mismatch");
         assembleNvfp4Scales(checkpoint, keys, experts, 1, 0, -1, true, output, stream);
     }
-    else if (assemble == "nvfp4_fc1_alpha" || assemble == "nvfp4_fc2_alpha")
+    else if (assemble == "nvfp4_fc1_alpha" || assemble == "nvfp4_fc2_alpha" || assemble == "nvfp4_moe_input_scale")
     {
-        assembleNvfp4Alpha(checkpoint, binding, output, stream);
+        assembleNvfp4PerExpertScalars(checkpoint, binding, output, stream);
+    }
+    else if (assemble == "nvfp4_a16_qweight")
+    {
+        assembleNvfp4A16Qweight(checkpoint, binding, output, stream);
+    }
+    else if (assemble == "nvfp4_a16_scale")
+    {
+        assembleNvfp4A16Scale(checkpoint, binding, output, stream);
+    }
+    else if (assemble == "nvfp4_a16_alpha")
+    {
+        assembleNvfp4A16Alpha(checkpoint, binding, output, stream);
     }
     else if (assemble == "int4_moe_gate_up")
     {

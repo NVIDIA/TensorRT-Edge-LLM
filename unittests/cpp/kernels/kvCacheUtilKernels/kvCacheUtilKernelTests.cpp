@@ -22,7 +22,6 @@
 #include "testUtils.h"
 #include <algorithm>
 #include <cstdint>
-#include <cuda_fp8.h>
 #include <gtest/gtest.h>
 
 using namespace trt_edgellm;
@@ -118,8 +117,8 @@ TEST(GatherPagedKVToSplitTest, IdentityMatchesHostReference)
     ASSERT_EQ(kOutHost.size(), refK.size());
     for (size_t i = 0; i < kOutHost.size(); ++i)
     {
-        ASSERT_EQ(__half_as_ushort(kOutHost[i]), __half_as_ushort(refK[i])) << "K byte mismatch at flat idx " << i;
-        ASSERT_EQ(__half_as_ushort(vOutHost[i]), __half_as_ushort(refV[i])) << "V byte mismatch at flat idx " << i;
+        ASSERT_EQ(__half_raw(kOutHost[i]).x, __half_raw(refK[i]).x) << "K byte mismatch at flat idx " << i;
+        ASSERT_EQ(__half_raw(vOutHost[i]).x, __half_raw(refV[i]).x) << "V byte mismatch at flat idx " << i;
     }
 }
 
@@ -233,8 +232,8 @@ TEST(GatherPagedKVToSplitTest, ScrambledTableMatchesHostGather)
 
     for (size_t i = 0; i < kOutHost.size(); ++i)
     {
-        ASSERT_EQ(__half_as_ushort(kOutHost[i]), __half_as_ushort(expectedK[i])) << "K mismatch at flat idx " << i;
-        ASSERT_EQ(__half_as_ushort(vOutHost[i]), __half_as_ushort(expectedV[i])) << "V mismatch at flat idx " << i;
+        ASSERT_EQ(__half_raw(kOutHost[i]).x, __half_raw(expectedK[i]).x) << "K mismatch at flat idx " << i;
+        ASSERT_EQ(__half_raw(vOutHost[i]).x, __half_raw(expectedV[i]).x) << "V mismatch at flat idx " << i;
     }
 }
 
@@ -270,11 +269,12 @@ TEST(GatherPagedKVToSplitTest, AllPagesUnallocatedZeroFills)
 
     for (size_t i = 0; i < kOutHost.size(); ++i)
     {
-        ASSERT_EQ(__half_as_ushort(kOutHost[i]), 0u) << "K not zero-filled at flat idx " << i;
-        ASSERT_EQ(__half_as_ushort(vOutHost[i]), 0u) << "V not zero-filled at flat idx " << i;
+        ASSERT_EQ(__half_raw(kOutHost[i]).x, 0u) << "K not zero-filled at flat idx " << i;
+        ASSERT_EQ(__half_raw(vOutHost[i]).x, 0u) << "V not zero-filled at flat idx " << i;
     }
 }
 
+#if SUPPORTS_FP8
 // FP8 pool -> FP16 dequant gather: the destination must equal a host-computed dequant reference
 // (fp8_value * scale), NOT the raw FP8 bytes. Identity table, distinct K vs V scales.
 TEST(GatherPagedKVToSplitTest, Fp8DequantMatchesHostReference)
@@ -316,10 +316,11 @@ TEST(GatherPagedKVToSplitTest, Fp8DequantMatchesHostReference)
     {
         half const expK = __float2half(static_cast<float>(refK[i]) * kScale);
         half const expV = __float2half(static_cast<float>(refV[i]) * vScale);
-        ASSERT_EQ(__half_as_ushort(kOutHost[i]), __half_as_ushort(expK)) << "K dequant mismatch at flat idx " << i;
-        ASSERT_EQ(__half_as_ushort(vOutHost[i]), __half_as_ushort(expV)) << "V dequant mismatch at flat idx " << i;
+        ASSERT_EQ(__half_raw(kOutHost[i]).x, __half_raw(expK).x) << "K dequant mismatch at flat idx " << i;
+        ASSERT_EQ(__half_raw(vOutHost[i]).x, __half_raw(expV).x) << "V dequant mismatch at flat idx " << i;
     }
 }
+#endif // SUPPORTS_FP8
 
 // An unmapped page INSIDE the live range (a hole, not a trailing tail) cannot occur by construction
 // (the runtime guarantees mapped coverage for live positions); if it ever does, the kernel must fail
@@ -446,9 +447,9 @@ TEST(GatherPagedKVToHeadMajorTest, NonIdentityRowsPreserveTokensAtPageBoundaries
                         expectedK = poolHost[src];
                         expectedV = poolHost[src + static_cast<size_t>(numPages) * pageElems];
                     }
-                    ASSERT_EQ(__half_as_ushort(kOut[dst]), __half_as_ushort(expectedK))
+                    ASSERT_EQ(__half_raw(kOut[dst]).x, __half_raw(expectedK).x)
                         << "K mismatch at slot/head/token/dim " << slot << "/" << head << "/" << token << "/" << dim;
-                    ASSERT_EQ(__half_as_ushort(vOut[dst]), __half_as_ushort(expectedV))
+                    ASSERT_EQ(__half_raw(vOut[dst]).x, __half_raw(expectedV).x)
                         << "V mismatch at slot/head/token/dim " << slot << "/" << head << "/" << token << "/" << dim;
                 }
             }

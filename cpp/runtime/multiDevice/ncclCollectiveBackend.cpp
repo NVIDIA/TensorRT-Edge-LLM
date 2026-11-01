@@ -22,7 +22,9 @@
 #include "runtime/multiDevice/collectiveGroup.h"
 
 #include <cstdlib>
+#if !defined(_WIN32)
 #include <dlfcn.h>
+#endif
 #include <mutex>
 #include <stdexcept>
 
@@ -62,6 +64,7 @@ NcclBroadcastFn gNcclBroadcast = nullptr;
 NcclGetErrorStringFn gNcclGetErrorString = nullptr;
 std::mutex gNcclLoadMutex;
 
+#if !defined(_WIN32)
 // Caller must hold gNcclLoadMutex.
 void resetNcclSymbols() noexcept
 {
@@ -85,9 +88,15 @@ void* loadSymbol(char const* name)
     }
     return symbol;
 }
+#endif
 
 bool loadNcclLibrary() noexcept
 {
+#if defined(_WIN32)
+    // NVIDIA NCCL does not provide a Windows backend. Multi-device execution is
+    // unavailable, but the single-device runtime still links this interface.
+    return false;
+#else
     std::lock_guard<std::mutex> lock(gNcclLoadMutex);
 
     if (gNcclLibHandle != nullptr)
@@ -95,11 +104,7 @@ bool loadNcclLibrary() noexcept
         return true;
     }
 
-    char const* const ncclPaths[] = {
-        "libnccl.so.2",
-        "libnccl.so",
-        nullptr,
-    };
+    char const* const ncclPaths[] = {"libnccl.so.2", "libnccl.so", nullptr};
 
     char const* envPath = std::getenv("EDGELLM_NCCL_SO_PATH");
     if (envPath != nullptr && envPath[0] != '\0')
@@ -157,6 +162,7 @@ bool loadNcclLibrary() noexcept
     }
 
     return true;
+#endif
 }
 
 void checkNcclResult(int32_t result, char const* operation)

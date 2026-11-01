@@ -103,6 +103,12 @@ struct BatchResult
 //! is ever built.
 struct SlotSeed
 {
+    SlotSeed() = default;
+    SlotSeed(SlotSeed const&) = default;
+    SlotSeed& operator=(SlotSeed const&) = default;
+    SlotSeed(SlotSeed&&) noexcept = default;
+    SlotSeed& operator=(SlotSeed&&) noexcept = default;
+
     std::string systemPrompt;
 
     //! The prompt, already tokenized. Also seeds the slot's running token history, mirroring how a

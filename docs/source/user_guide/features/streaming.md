@@ -175,20 +175,20 @@ export LD_LIBRARY_PATH=$TRT_PACKAGE_DIR/lib:$LD_LIBRARY_PATH
 export EDGELLM_PLUGIN_PATH=$(pwd)/libNvInfer_edgellm_plugin.so
 
 ./examples/llm/llm_stream \
-    --engineDir /path/to/Qwen3-4B-Engine-bs4 \
-    --inputFile /path/to/input.json \
-    --maxGenerateLength 128
+    --engine-dir /path/to/Qwen3-4B-Engine-bs4 \
+    --input-file /path/to/input.json \
+    --max-generate-length 128
 
 # VLM mode
 ./examples/llm/llm_stream \
-    --engineDir /path/to/Qwen3-VL-4B-Engine-bs4 \
-    --multimodalEngineDir /path/to/Qwen3-VL-4B-Visual-Engine \
-    --inputFile /path/to/vlm_input.json
+    --engine-dir /path/to/Qwen3-VL-4B-Engine-bs4 \
+    --multimodal-engine-dir /path/to/Qwen3-VL-4B-Visual-Engine \
+    --input-file /path/to/vlm_input.json
 
 # Eagle spec-decode
 ./examples/llm/llm_stream \
-    --engineDir /path/to/Qwen3-4B-Eagle-Engine-bs4 \
-    --inputFile /path/to/input.json --specDecode
+    --engine-dir /path/to/Qwen3-4B-Eagle-Engine-bs4 \
+    --input-file /path/to/input.json --spec-decode
 ```
 
 Hotkeys while streaming:

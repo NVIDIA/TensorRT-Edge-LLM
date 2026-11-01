@@ -53,6 +53,12 @@ class Component(str, Enum):
     VAE_ENCODER = "vae-encoder"
 
 
+# Policy-generation engines; built only when requested by name, since the
+# server and C++ runtime never load them.
+POLICY_COMPONENTS = frozenset(
+    (Component.UND_PREFILL, Component.GEN, Component.VAE_ENCODER))
+
+
 class SpecRole(str, Enum):
     """Speculative-decoding role for an LLM component."""
 
@@ -317,7 +323,7 @@ def resolve_components(
     available = frozenset(available if available is not None else
                           available_components(root_model_type))
     if not tokens or tokens == ("all", ):
-        selected = available
+        selected = available - POLICY_COMPONENTS
     elif "all" in tokens:
         raise ValueError("'all' cannot be combined with named components")
     else:

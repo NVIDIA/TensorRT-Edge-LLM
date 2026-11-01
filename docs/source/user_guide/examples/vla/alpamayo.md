@@ -37,7 +37,7 @@ hf auth login
 hf download nvidia/Alpamayo-R1-10B --local-dir $MODEL_NAME
 
 # Export language model backbone, visual encoder, and action expert
-tensorrt-edgellm-export \
+trtedge export \
   $MODEL_NAME \
   $MODEL_NAME/onnx \
   --max-kv-cache-capacity 4096
@@ -45,7 +45,7 @@ tensorrt-edgellm-export \
 
 This creates `onnx/llm`, `onnx/visual`, and `onnx/action`.
 
-> **Note:** Only FP16 is supported for Alpamayo export. The `--max-kv-cache-capacity` value must match the `--maxKVCacheCapacity` used when building the LLM engine in Step 3.
+> **Note:** Only FP16 is supported for Alpamayo export. The `--max-kv-cache-capacity` value must match the `--max-kv-cache-capacity` used when building the LLM engine in Step 3.
 
 ## Step 2: Transfer to Device
 
@@ -63,30 +63,30 @@ cd /path/to/TensorRT-Edge-LLM
 
 # Build language model engine
 ./build/examples/llm/llm_build \
-  --onnxDir $WORKSPACE_DIR/$MODEL_NAME/onnx/llm \
-  --engineDir $WORKSPACE_DIR/$MODEL_NAME/engines/llm \
-  --maxInputLen 3424 \
-  --maxKVCacheCapacity 4096 \
-  --maxBatchSize 6
+  --onnx-dir $WORKSPACE_DIR/$MODEL_NAME/onnx/llm \
+  --engine-dir $WORKSPACE_DIR/$MODEL_NAME/engines/llm \
+  --max-input-len 3424 \
+  --max-kv-cache-capacity 4096 \
+  --max-batch-size 6
 
 # Build visual encoder engine
 ./build/examples/multimodal/visual_build \
-  --onnxDir $WORKSPACE_DIR/$MODEL_NAME/onnx/visual \
-  --engineDir $WORKSPACE_DIR/$MODEL_NAME/engines \
-  --minImageTokens 160 \
-  --maxImageTokens 18432 \
-  --maxImageTokensPerImage 192
+  --onnx-dir $WORKSPACE_DIR/$MODEL_NAME/onnx/visual \
+  --engine-dir $WORKSPACE_DIR/$MODEL_NAME/engines \
+  --min-image-tokens 160 \
+  --max-image-tokens 18432 \
+  --max-image-tokens-per-image 192
 
 # Build action expert engine
 ./build/examples/multimodal/action_build \
-  --onnxDir $WORKSPACE_DIR/$MODEL_NAME/onnx/action \
-  --engineDir $WORKSPACE_DIR/$MODEL_NAME/engines \
-  --maxBatchSize 6
+  --onnx-dir $WORKSPACE_DIR/$MODEL_NAME/onnx/action \
+  --engine-dir $WORKSPACE_DIR/$MODEL_NAME/engines \
+  --max-batch-size 6
 ```
 
 `visual_build` writes `$WORKSPACE_DIR/$MODEL_NAME/engines/visual/`, and
 `action_build` writes `$WORKSPACE_DIR/$MODEL_NAME/engines/action/`. Both
-subdirectories are loaded through `--multimodalEngineDir` during inference.
+subdirectories are loaded through `--multimodal-engine-dir` during inference.
 
 ## Step 4: Run Inference (Thor Device)
 
@@ -173,10 +173,10 @@ Run inference:
 cd /path/to/TensorRT-Edge-LLM
 
 ./build/examples/multimodal/action_inference \
-  --engineDir $WORKSPACE_DIR/$MODEL_NAME/engines/llm \
-  --multimodalEngineDir $WORKSPACE_DIR/$MODEL_NAME/engines \
-  --inputFile $WORKSPACE_DIR/input_action.json \
-  --outputFile $WORKSPACE_DIR/output_action.json
+  --engine-dir $WORKSPACE_DIR/$MODEL_NAME/engines/llm \
+  --multimodal-engine-dir $WORKSPACE_DIR/$MODEL_NAME/engines \
+  --input-file $WORKSPACE_DIR/input_action.json \
+  --output-file $WORKSPACE_DIR/output_action.json
 ```
 
 Check `output_action.json` for the response. Each entry includes `output_text` (VLM language output) and `output_trajectory` (predicted (accel, kappa) acceleration and curvature pairs).

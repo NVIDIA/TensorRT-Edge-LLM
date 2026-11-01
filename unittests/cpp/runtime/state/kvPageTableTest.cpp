@@ -356,7 +356,7 @@ TEST(KVPageTableTest, UploadCopiesOnlyDirtyRows)
     constexpr int32_t maxBatch = 2;
     constexpr int32_t maxPagesPerSeq = 2;
     constexpr int32_t numPages = maxBatch * maxPagesPerSeq;
-    constexpr int32_t marker = -99;
+    static constexpr int32_t marker = -99;
     KVPageTable table(maxBatch, maxPagesPerSeq, numPages);
     table.setIdentity();
     ASSERT_TRUE(table.upload(/*stream=*/nullptr));

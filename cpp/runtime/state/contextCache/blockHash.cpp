@@ -30,18 +30,20 @@ namespace rt
 namespace
 {
 
-using FnvValue = __uint128_t;
+struct FnvValue
+{
+    uint64_t hi;
+    uint64_t lo;
+};
 
 // 128-bit Fowler-Noll-Vo (FNV-1a) starts from the standard offset basis and consumes one byte at a time:
 //     state = (state XOR byte) * FNV_prime modulo 2^128.
-// Unsigned 128-bit overflow supplies the modulo operation. Integers below are serialized least-significant byte first,
-// and field tags plus presence markers make the byte stream unambiguous. FNV-1a is deterministic and inexpensive but
-// is not collision-resistant; BlockHash equality has no secondary token comparison in this layer.
+// The two-word unsigned arithmetic below supplies the modulo operation. Integers are serialized least-significant byte
+// first, and field tags plus presence markers make the byte stream unambiguous. FNV-1a is deterministic and inexpensive
+// but is not collision-resistant; BlockHash equality has no secondary token comparison in this layer.
 constexpr uint64_t kFNV_OFFSET_HI = 0x6C62272E07BB0142ULL;
 constexpr uint64_t kFNV_OFFSET_LO = 0x62B821756295C58DULL;
-constexpr FnvValue kFNV_OFFSET = (static_cast<FnvValue>(kFNV_OFFSET_HI) << 64U) | static_cast<FnvValue>(kFNV_OFFSET_LO);
-constexpr FnvValue kFNV_PRIME
-    = (static_cast<FnvValue>(1) << 88U) | (static_cast<FnvValue>(1) << 8U) | static_cast<FnvValue>(0x3B);
+constexpr FnvValue kFNV_OFFSET{kFNV_OFFSET_HI, kFNV_OFFSET_LO};
 
 enum class Tag : uint8_t
 {
@@ -68,8 +70,16 @@ enum class Tag : uint8_t
 
 void fnvByte(FnvValue& state, uint8_t value) noexcept
 {
-    state ^= static_cast<FnvValue>(value);
-    state *= kFNV_PRIME;
+    state.lo ^= static_cast<uint64_t>(value);
+
+    // FNV_prime is 2^88 + 0x13B. Split the low word into 32-bit limbs to compute the carry portably.
+    constexpr uint64_t kFNV_LOW_FACTOR = 0x13B;
+    uint64_t const lowLow = static_cast<uint32_t>(state.lo) * kFNV_LOW_FACTOR;
+    uint64_t const lowHigh = (state.lo >> 32U) * kFNV_LOW_FACTOR;
+    uint64_t const productLow = lowLow + (lowHigh << 32U);
+    uint64_t const carry = (lowHigh >> 32U) + static_cast<uint64_t>(productLow < lowLow);
+    state.hi = state.hi * kFNV_LOW_FACTOR + carry + (state.lo << 24U);
+    state.lo = productLow;
 }
 
 void fnvTag(FnvValue& state, Tag tag) noexcept
@@ -126,8 +136,7 @@ void fnvOptionalHash(FnvValue& state, Tag tag, std::optional<Hash128> const& has
 
 BlockHash finishHash(FnvValue state) noexcept
 {
-    constexpr size_t kHALF_WIDTH = 64U;
-    return BlockHash{static_cast<uint64_t>(state >> kHALF_WIDTH), static_cast<uint64_t>(state)};
+    return BlockHash{state.hi, state.lo};
 }
 
 } // namespace
@@ -158,8 +167,8 @@ Hash128 hashOpaqueIdentityCpu(std::string_view bytes)
     fnvU64(state, static_cast<uint64_t>(totalSize));
     for (int32_t c = 0; c < numChunks; ++c)
     {
-        fnvU64(state, static_cast<uint64_t>(partials[c] >> 64U));
-        fnvU64(state, static_cast<uint64_t>(partials[c]));
+        fnvU64(state, partials[c].hi);
+        fnvU64(state, partials[c].lo);
     }
     return finishHash(state);
 }

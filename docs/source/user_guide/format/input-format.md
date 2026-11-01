@@ -66,7 +66,7 @@ This guide describes the input JSON format for the LLM inference tool. The forma
 - **`enable_thinking`** (default: false): Enable thinking mode (Qwen3+)
 - **`context_cache_lookup_policy`** (default: `"use_cache"`): Use
   `"bypass"` to skip lookup and publication for this invocation when the
-  runtime was started with `--enableContextReuse`.
+  runtime was started with `--enable-context-reuse`.
 - **`context_cache_commit_policy`** (default: `"including_generated_tokens"`):
   Select `"prefill_state_only"` to publish only the input prefix. See
   [KV Cache Reuse](../features/kv-cache-reuse.md).

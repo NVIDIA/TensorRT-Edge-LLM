@@ -55,16 +55,16 @@ struct AudioBuildArgs
 
 void printUsage(char const* programName)
 {
-    std::cerr << "Usage: " << programName << " [--help] <--onnxDir str> <--engineDir str> [--debug]" << std::endl;
-    std::cerr << "       Audio encoder profile: [--minTimeSteps int] [--maxTimeSteps int]" << std::endl;
-    std::cerr << "       Code2Wav profile: [--minCodeLen int] [--optCodeLen int] [--maxCodeLen int]" << std::endl;
+    std::cerr << "Usage: " << programName << " [--help] <--onnx-dir str> <--engine-dir str> [--debug]" << std::endl;
+    std::cerr << "       Audio encoder profile: [--min-time-steps int] [--max-time-steps int]" << std::endl;
+    std::cerr << "       Code2Wav profile: [--min-code-len int] [--opt-code-len int] [--max-code-len int]" << std::endl;
     std::cerr << std::endl;
     std::cerr << "General Options:" << std::endl;
-    std::cerr << "  --help               Display this help message" << std::endl;
-    std::cerr << "  --onnxDir            Directory containing ONNX model (model.onnx) and config.json. Required."
+    std::cerr << "  --help            Display this help message" << std::endl;
+    std::cerr << "  --onnx-dir        Directory containing ONNX model (model.onnx) and config.json. Required."
               << std::endl;
-    std::cerr << "  --engineDir          Output directory for the engine. Required." << std::endl;
-    std::cerr << "  --debug              Use debug mode with verbose output" << std::endl;
+    std::cerr << "  --engine-dir      Output directory for the engine. Required." << std::endl;
+    std::cerr << "  --debug           Use debug mode with verbose output" << std::endl;
     std::cerr << std::endl;
     std::cerr << "Build Type Auto-Detection (from config.json):" << std::endl;
     std::cerr << "  - If 'audio_config'/'sound_config'/'encoder_config' exists: builds audio_encoder.engine"
@@ -73,16 +73,17 @@ void printUsage(char const* programName)
     std::cerr << "  - If 'rnnt_decoder_config' exists: builds rnnt_step.engine (Nemotron-3.5-ASR)" << std::endl;
     std::cerr << std::endl;
     std::cerr << "Audio Encoder Profile Options (when audio_config detected):" << std::endl;
-    std::cerr << "  --minTimeSteps       Minimum audio time steps. Default = 100 (~0.64s audio)" << std::endl;
-    std::cerr << "  --maxTimeSteps       Maximum audio time steps. Default = 6000 (~38.4s audio)" << std::endl;
+    std::cerr << "  --min-time-steps  Minimum audio time steps. Default = 100 (~0.64s audio)" << std::endl;
+    std::cerr << "  --max-time-steps  Maximum audio time steps. Default = 6000 (~38.4s audio)" << std::endl;
     std::cerr << "  Time steps formula: duration_seconds = (time_steps * 160) / 16000" << std::endl;
     std::cerr << std::endl;
     std::cerr << "Code2Wav Profile Options (when code2wav_config detected):" << std::endl;
-    std::cerr << "  --minCodeLen         Minimum code sequence length (frames). Default = 1" << std::endl;
-    std::cerr << "  --optCodeLen         Optimal code sequence length (frames). Default = 300" << std::endl;
-    std::cerr << "  --maxCodeLen         Maximum code sequence length (frames). Default = 2000" << std::endl;
+    std::cerr << "  --min-code-len    Minimum code sequence length (frames). Default = 1" << std::endl;
+    std::cerr << "  --opt-code-len    Optimal code sequence length (frames). Default = 300" << std::endl;
+    std::cerr << "  --max-code-len    Maximum code sequence length (frames). Default = 2000" << std::endl;
     std::cerr << "  Duration formula: duration_seconds = code_len * 0.08 (at 24kHz, 1920 upsample)" << std::endl;
     std::cerr << "  Example: 300 frames = 24s, 1000 frames = 80s, 2000 frames = 160s" << std::endl;
+    std::cerr << "Legacy camelCase option spellings remain accepted.\n";
 }
 
 bool parseAudioBuildArgs(AudioBuildArgs& args, int argc, char* argv[])
@@ -96,13 +97,18 @@ bool parseAudioBuildArgs(AudioBuildArgs& args, int argc, char* argv[])
     };
 
     static struct option longOptions[]
-        = {{"help", no_argument, nullptr, 'h'}, {"onnxDir", required_argument, nullptr, 'o'},
+        = {{"help", no_argument, nullptr, 'h'}, {"onnx-dir", required_argument, nullptr, 'o'},
+            {"onnxDir", required_argument, nullptr, 'o'}, {"engine-dir", required_argument, nullptr, 'e'},
             {"engineDir", required_argument, nullptr, 'e'}, {"debug", no_argument, nullptr, 'd'},
             // Audio encoder profile options
-            {"minTimeSteps", required_argument, nullptr, 'm'}, {"maxTimeSteps", required_argument, nullptr, 'M'},
+            {"min-time-steps", required_argument, nullptr, 'm'}, {"minTimeSteps", required_argument, nullptr, 'm'},
+            {"max-time-steps", required_argument, nullptr, 'M'}, {"maxTimeSteps", required_argument, nullptr, 'M'},
             // Code2Wav profile options
+            {"min-code-len", required_argument, nullptr, OPT_MIN_CODE_LEN},
             {"minCodeLen", required_argument, nullptr, OPT_MIN_CODE_LEN},
+            {"opt-code-len", required_argument, nullptr, OPT_OPT_CODE_LEN},
             {"optCodeLen", required_argument, nullptr, OPT_OPT_CODE_LEN},
+            {"max-code-len", required_argument, nullptr, OPT_MAX_CODE_LEN},
             {"maxCodeLen", required_argument, nullptr, OPT_MAX_CODE_LEN}, {nullptr, 0, nullptr, 0}};
 
     int optionIndex = 0;
@@ -131,7 +137,7 @@ bool parseAudioBuildArgs(AudioBuildArgs& args, int argc, char* argv[])
 
     if (args.onnxDir.empty() || args.engineDir.empty())
     {
-        std::cerr << "Error: --onnxDir and --engineDir are required" << std::endl;
+        std::cerr << "Error: --onnx-dir and --engine-dir are required" << std::endl;
         printUsage(argv[0]);
         return false;
     }

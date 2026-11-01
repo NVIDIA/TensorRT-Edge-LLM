@@ -39,6 +39,10 @@ class DFlashContract:
     conv_group_size: int = 0
     selector_rank: int = 0
     selector_top_k: int = 0
+    # shift_label=False (DFlash convention): block position i predicts the
+    # masked token i, position 0 only carries the anchor. shift_label=True
+    # (DeepSpec ``*DSparkModel`` checkpoints): position i predicts token i + 1.
+    shift_label: bool = False
 
     @property
     def supports_probabilistic_sampling(self) -> bool:
@@ -75,6 +79,9 @@ def resolve_dflash_contract(root: Mapping[str, Any],
     is_causal = bool(
         fields.get("is_causal",
                    llm.get("is_causal", root.get("is_causal", True))))
+    is_deepspec = any(arch.endswith("DSparkModel") for arch in architectures)
+    shift_label = (version == DFlashVersion.V1
+                   and bool(fields.get("shift_label", is_deepspec)))
 
     if version == DFlashVersion.V2:
         for name in ("block_size", "mask_token_id"):
@@ -120,4 +127,5 @@ def resolve_dflash_contract(root: Mapping[str, Any],
         conv_group_size=int(fields.get("conv_group_size", 0)),
         selector_rank=int(fields.get("selector_rank", 0)),
         selector_top_k=int(fields.get("selector_top_k", 0)),
+        shift_label=shift_label,
     )

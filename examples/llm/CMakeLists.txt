@@ -13,31 +13,42 @@
 add_executable(llm_build llm_build.cpp)
 target_link_libraries(llm_build PRIVATE ${NV_ONNX_PARSER_LIB} commonLibraryExt
                                         edgellmBuilder)
-target_include_directories(llm_build PRIVATE ${ONNX_PARSER_INCLUDE_DIR}
-                                             ${COMMON_INCLUDE_DIRS})
+target_include_directories(
+  llm_build
+  PRIVATE ${ONNX_PARSER_INCLUDE_DIR} ${COMMON_INCLUDE_DIRS}
+          ${CMAKE_SOURCE_DIR}/examples/utils
+          $<$<PLATFORM_ID:Windows>:${CMAKE_SOURCE_DIR}/examples/utils/windows>)
 add_cross_build_link_options(llm_build)
 
 add_executable(llm_inference llm_inference.cpp)
 target_link_libraries(llm_inference PRIVATE edgellmCore exampleUtils
                                             commonLibraryExt)
 target_include_directories(
-  llm_inference PRIVATE ${COMMON_INCLUDE_DIRS}
-                        ${CMAKE_SOURCE_DIR}/examples/utils)
+  llm_inference
+  PRIVATE ${COMMON_INCLUDE_DIRS} ${CMAKE_SOURCE_DIR}/examples/utils
+          $<$<PLATFORM_ID:Windows>:${CMAKE_SOURCE_DIR}/examples/utils/windows>)
 add_cross_build_link_options(llm_inference)
 
-add_executable(llm_stream llm_stream.cpp)
-target_link_libraries(llm_stream PRIVATE edgellmCore exampleUtils
-                                         commonLibraryExt)
-target_include_directories(
-  llm_stream PRIVATE ${COMMON_INCLUDE_DIRS} ${CMAKE_SOURCE_DIR}/examples/utils)
-add_cross_build_link_options(llm_stream)
+if(NOT WIN32)
+  add_executable(llm_stream llm_stream.cpp)
+  target_link_libraries(llm_stream PRIVATE edgellmCore exampleUtils
+                                           commonLibraryExt)
+  target_include_directories(
+    llm_stream PRIVATE ${COMMON_INCLUDE_DIRS}
+                       ${CMAKE_SOURCE_DIR}/examples/utils)
+  add_cross_build_link_options(llm_stream)
+endif()
 
 add_executable(llm_bench llm_bench.cpp)
 target_link_libraries(llm_bench PRIVATE commonLibraryExt edgellmCore
                                         exampleUtils)
-target_include_directories(llm_bench PRIVATE ${COMMON_INCLUDE_DIRS}
-                                             ${CMAKE_SOURCE_DIR}/examples/utils)
-target_compile_options(llm_bench PRIVATE -Wno-psabi)
+target_include_directories(
+  llm_bench
+  PRIVATE ${COMMON_INCLUDE_DIRS} ${CMAKE_SOURCE_DIR}/examples/utils
+          $<$<PLATFORM_ID:Windows>:${CMAKE_SOURCE_DIR}/examples/utils/windows>)
+if(NOT MSVC)
+  target_compile_options(llm_bench PRIVATE -Wno-psabi)
+endif()
 add_cross_build_link_options(llm_bench)
 
 # All-reduce communication is registered through symbols resolved from the
@@ -53,6 +64,10 @@ option(ENABLE_MULTI_DEVICE
        "Enable multi-device inference using runtime-loaded NCCL" OFF)
 option(ENABLE_MULTI_DEVICE_MPI
        "Enable MPI rank-launch support for multi-device inference" OFF)
+
+if(WIN32 AND ENABLE_MULTI_DEVICE)
+  message(FATAL_ERROR "Multi-device inference is not supported on Windows.")
+endif()
 
 if(ENABLE_MULTI_DEVICE)
   target_compile_definitions(llm_inference PRIVATE EDGELLM_ENABLE_MULTI_DEVICE)

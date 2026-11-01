@@ -4,13 +4,13 @@ Quantization calibration data is selected **by name**, per modality. The
 quantization CLI passes only a dataset name:
 
 ```bash
-tensorrt-edgellm-quantize llm \
-  --model_dir /path/to/model \
-  --output_dir /path/to/output \
+trtedge quantize llm \
+  --model-dir /path/to/model \
+  --output-dir /path/to/output \
   --quantization nvfp4 \
-  --text_dataset cnn_dailymail        # text
-  # --image_dataset mmmu              # when --visual_quantization is set
-  # --audio_dataset librispeech       # for Qwen3-ASR / audio quantization
+  --text-dataset cnn_dailymail        # text
+  # --image-dataset mmmu              # when --visual-quantization is set
+  # --audio-dataset librispeech       # for Qwen3-ASR / audio quantization
 ```
 
 A name maps to a registered dataset. If the name is not registered,
@@ -34,7 +34,7 @@ there are no base classes or dataset objects. The datasets live in
 
 Text datasets are used for LLM weights, LM head, KV cache, CodePredictor, MTP,
 EAGLE3, and DFlash calibration. Image datasets are used when
-`--visual_quantization` is set. Audio datasets are used for Qwen3-ASR /
+`--visual-quantization` is set. Audio datasets are used for Qwen3-ASR /
 audio-tower calibration.
 
 ## The modality contracts
@@ -69,7 +69,7 @@ After that, `--<modality>_dataset <name>` works.
 from . import load_hf_split, register
 
 
-@register("text", "my_text")          # users pass: --text_dataset my_text
+@register("text", "my_text")          # users pass: --text-dataset my_text
 def my_text():
     ds = load_hf_split("your-org/your-ds", name="my_text", split="train")
     for example in ds:
@@ -93,7 +93,7 @@ name:
 
 ```bash
 export EDGELLM_QUANT_DATASET_CNN_DAILYMAIL=/data/cache/cnn_dailymail
-tensorrt-edgellm-quantize llm ... --text_dataset cnn_dailymail
+trtedge quantize llm ... --text-dataset cnn_dailymail
 ```
 
 The override accepts a JSON/JSONL file, a `datasets.save_to_disk` directory,

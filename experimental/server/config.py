@@ -70,7 +70,9 @@ class SpeculativeConfig:
                                     ", ".join(unsupported))
 
         method = raw.get("method")
-        if method not in {"eagle3", "mtp", "dflash", "jetspec", "dspark"}:
+        if not isinstance(method, str) or method not in {
+                "eagle3", "mtp", "dflash", "jetspec", "dspark"
+        }:
             raise ServerConfigError(
                 "--speculative-config.method must be one of eagle3, mtp, "
                 "dflash, jetspec, or dspark")
@@ -276,9 +278,10 @@ def _bounded_port(value: str) -> int:
     return parsed
 
 
-def create_argument_parser() -> argparse.ArgumentParser:
+def create_argument_parser(
+        prog="tensorrt-edgellm-serve") -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="tensorrt-edgellm-serve",
+        prog=prog,
         description="TensorRT Edge-LLM OpenAI-compatible server",
     )
     parser.add_argument(
@@ -287,94 +290,171 @@ def create_argument_parser() -> argparse.ArgumentParser:
     )
 
     api = parser.add_argument_group("HTTP server")
-    api.add_argument("--host", default="0.0.0.0")
-    api.add_argument("--port", type=_bounded_port, default=8000)
-    api.add_argument("--served-model-name", default="")
-    api.add_argument("--api-key", default="")
+    api.add_argument("--host",
+                     default="0.0.0.0",
+                     help="Address to bind (default: %(default)s)")
+    api.add_argument("--port",
+                     type=_bounded_port,
+                     default=8000,
+                     help="TCP port to listen on (default: %(default)s)")
     api.add_argument(
-        "--reasoning-parser",
-        choices=("auto", "none", "qwen3", "deepseek_r1", "muse_glimmer",
-                 "nemotron"),
-        default="auto",
-    )
+        "--served-model-name",
+        default="",
+        help=("API model name. Defaults to the Hugging Face model ID or local "
+              "checkpoint directory name"))
+    api.add_argument(
+        "--api-key",
+        default="",
+        help=("Key required for /v1/ routes via Bearer authorization or "
+              "x-api-key. Unset disables authentication"))
+    api.add_argument("--reasoning-parser",
+                     choices=("auto", "none", "qwen3", "deepseek_r1",
+                              "muse_glimmer", "nemotron"),
+                     default="auto",
+                     help="Parser for reasoning output (default: %(default)s)")
     api.add_argument(
         "--tool-call-parser",
         choices=("auto", "generic", "hermes", "qwen3_xml", "nemotron",
                  "openai"),
         default="auto",
-    )
-    api.add_argument("--enable-auto-tool-choice", action="store_true")
-    api.add_argument("--max-queued-requests", type=int, default=16)
-    api.add_argument("--queue-timeout", type=float, default=600.0)
-    api.add_argument("--allowed-local-media-path", default="")
+        help="Parser for model-generated tool calls (default: %(default)s)")
+    api.add_argument("--enable-auto-tool-choice",
+                     action="store_true",
+                     help="Allow the model to select tools automatically")
     api.add_argument(
-        "--log-level",
-        choices=("debug", "info", "warning", "error"),
-        default="info",
-    )
+        "--max-queued-requests",
+        type=int,
+        default=16,
+        help="Maximum number of waiting requests (default: %(default)s)")
+    api.add_argument(
+        "--queue-timeout",
+        type=float,
+        default=600.0,
+        help="Maximum queue wait in seconds (default: %(default)s)")
+    api.add_argument(
+        "--allowed-local-media-path",
+        default="",
+        help=("Root directory allowed for local media files. Unset disables "
+              "local files"))
+    api.add_argument("--log-level",
+                     choices=("debug", "info", "warning", "error"),
+                     default="info",
+                     help="Server logging level (default: %(default)s)")
 
     model = parser.add_argument_group("Model build and runtime")
     model.add_argument(
         "--cache-dir",
         default="",
-        help="Root for downloaded checkpoints and complete engine bundles. "
-        "A matching bundle is reused; a cache miss builds all components.",
+        help=(
+            "Root for downloaded checkpoints and complete engine bundles. A "
+            "matching bundle is reused. A cache miss builds all components."),
     )
     model.add_argument(
         "--engine-cache-max-size-gb",
         type=_positive_float,
         default=50.0,
-        help="Maximum disk space for compiled engine bundles. Older inactive "
-        "profiles are evicted least-recently-used.",
+        help=
+        ("Maximum disk space in GiB for compiled engine bundles. Older inactive "
+         "profiles are evicted least-recently-used."),
     )
     model.add_argument(
         "--clear-engine-cache",
         action="store_true",
-        help="Remove compiled engine bundles before preparing this model. "
-        "Downloaded checkpoints are preserved.",
+        help=("Remove compiled engine bundles before preparing this model. "
+              "Downloaded checkpoints are preserved."),
     )
-    model.add_argument("--max-input-len", type=_positive_int, default=4096)
-    model.add_argument("--max-batch-size", type=_positive_int, default=1)
-    model.add_argument("--max-kv-cache-capacity",
-                       type=_positive_int,
-                       default=8192)
-    model.add_argument("--max-image-tokens", type=_positive_int)
-    model.add_argument("--max-image-tokens-per-image", type=_positive_int)
-    model.add_argument("--draft-top-k", type=_positive_int)
-    model.add_argument("--draft-step", type=_positive_int)
-    model.add_argument("--verify-tree-size", type=_positive_int)
-    model.add_argument("--max-verify-tree-size", type=_positive_int)
-    model.add_argument("--max-draft-tree-size", type=_positive_int)
-    model.add_argument("--speculative-config", default="")
+    model.add_argument(
+        "--max-input-len",
+        type=_positive_int,
+        default=4096,
+        help=("Maximum prompt tokens, including conversation history "
+              "(default: %(default)s)"))
+    model.add_argument(
+        "--max-batch-size",
+        type=_positive_int,
+        default=1,
+        help=("Maximum number of sequences in an engine batch (default: "
+              "%(default)s)"))
+    model.add_argument(
+        "--max-kv-cache-capacity",
+        type=_positive_int,
+        default=8192,
+        help=("Maximum total tokens per sequence, including prompt and "
+              "generated tokens (default: %(default)s)"))
+    model.add_argument(
+        "--max-image-tokens",
+        type=_positive_int,
+        help="Maximum total visual tokens in the visual engine profile")
+    model.add_argument(
+        "--max-image-tokens-per-image",
+        type=_positive_int,
+        help="Maximum visual tokens per image in the visual engine profile")
+    model.add_argument(
+        "--draft-top-k",
+        type=_positive_int,
+        help=("Candidate tokens retained per draft step. Defaults depend on "
+              "the speculative method"))
+    model.add_argument(
+        "--draft-step",
+        type=_positive_int,
+        help="Number of draft steps. DFlash, JetSpec, and dSpark require 1")
+    model.add_argument(
+        "--verify-tree-size",
+        type=_positive_int,
+        help=("Number of tokens in the runtime verification tree. Must fit "
+              "the engine profile"))
+    model.add_argument(
+        "--max-verify-tree-size",
+        type=_positive_int,
+        help="Maximum verification tree size compiled into the base engine")
+    model.add_argument(
+        "--max-draft-tree-size",
+        type=_positive_int,
+        help="Maximum draft proposal capacity compiled into the draft engine")
+    model.add_argument(
+        "--speculative-config",
+        default="",
+        help=(
+            "Speculative decoding JSON, e.g. "
+            "{\"method\":\"mtp\",\"num_speculative_tokens\":3}. Paired drafts "
+            "also use \"model\""))
     model.add_argument(
         "--enable-context-reuse",
         action="store_true",
-        help="Reuse matching text prefixes across requests in this trusted "
-        "server instance.",
+        help=("Reuse matching text prefixes across requests in this trusted "
+              "server instance."),
     )
     model.add_argument(
         "--enable-in-flight-batching",
         action="store_true",
-        help="Admit queued requests into the running batch at generation "
-        "boundaries instead of serving one request at a time. Text and "
-        "multimodal-input deployments only: a speculative-decoding or "
-        "standalone TTS deployment refuses the flag at startup, and a "
-        "Qwen3-Omni bundle serves text only (its speech endpoints refuse).",
+        help=("Enable in-flight batching for text and multimodal input. "
+              "Unsupported with speculative decoding or standalone TTS. "
+              "Qwen3-Omni speech output is disabled."),
     )
-    model.add_argument("--context-cache-max-records",
-                       type=_non_negative_int,
-                       default=1024)
-    model.add_argument("--context-cache-recurrent-snapshot-pool-bytes",
-                       type=_non_negative_int,
-                       default=0)
-    model.add_argument("--context-cache-partial-kv-snapshot-pool-bytes",
-                       type=_non_negative_int,
-                       default=0)
+    model.add_argument(
+        "--context-cache-max-records",
+        type=_non_negative_int,
+        default=1024,
+        help="Maximum retained context-cache records (default: %(default)s)")
+    model.add_argument(
+        "--context-cache-recurrent-snapshot-pool-bytes",
+        type=_non_negative_int,
+        default=0,
+        help=("Byte budget for recurrent-state snapshots used by context "
+              "reuse (default: %(default)s)"))
+    model.add_argument(
+        "--context-cache-partial-kv-snapshot-pool-bytes",
+        type=_non_negative_int,
+        default=0,
+        help=("Byte budget for partial KV snapshots used by context reuse "
+              "(default: %(default)s)"))
     return parser
 
 
-def parse_server_config(argv: Optional[Sequence[str]] = None) -> ServerConfig:
-    parser = create_argument_parser()
+def parse_server_config(argv: Optional[Sequence[str]] = None,
+                        *,
+                        prog="tensorrt-edgellm-serve") -> ServerConfig:
+    parser = create_argument_parser(prog=prog)
     args = parser.parse_args(argv)
 
     if args.max_queued_requests < 0:

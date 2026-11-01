@@ -41,6 +41,11 @@ namespace kernel
 void launchBuildVisionBlockRanges(int32_t const* visionBlockIds, int32_t const* contextLengths, int32_t* blockBegin,
     int32_t* blockEnd, int32_t batchSize, int32_t seqLen, cudaStream_t stream);
 
+//! Fill [B, S] intervals that let every query row attend all logical KV
+//! positions [0, cuKVSeqLens[b+1] - cuKVSeqLens[b]) through the vision-block overlay.
+void launchBuildPaddingBlockRanges(int32_t const* cuKVSeqLens, int32_t* blockBegin, int32_t* blockEnd,
+    int32_t batchSize, int32_t seqLen, cudaStream_t stream);
+
 //! Gather token-aligned RoPE rows from a shared cache or a resident-slot cache.
 //!
 //! `sourceRows == 1` broadcasts the standard RoPE cache. Otherwise sequence

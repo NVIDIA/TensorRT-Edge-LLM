@@ -24,19 +24,18 @@
 
 #ifdef CUTE_DSL_INT4_FP16_GEMM_ENABLED
 
-// The AOT-generated headers use cudaLibrary_t, which only exists in the CUDA
-// 12.8+ runtime. On CUDA < 12.8 the build defines TRT_EDGELLM_CUDA_LIBRARY_T_COMPAT
-// (manually on x86, auto for jetson-orin); route it to the driver CUlibrary type.
+// CUDA 12.0-12.7 AOT headers use cudaLibrary_t, which the runtime does not
+// declare until 12.8. CUDA 11.4 headers use CUmodule, and CUlibrary does not exist.
 #include <cuda.h>
 #if defined(TRT_EDGELLM_CUDA_LIBRARY_T_COMPAT)
 #include <cuda_runtime.h>
-#if CUDA_VERSION < 12800
+#if CUDA_VERSION >= 12000 && CUDA_VERSION < 12080
 typedef CUlibrary cudaLibrary_t;
 static inline cudaError_t cudaLibraryUnload(cudaLibrary_t lib)
 {
     return static_cast<cudaError_t>(cuLibraryUnload(lib));
 }
-#endif // CUDA_VERSION < 12800
+#endif // CUDA_VERSION >= 12000 && CUDA_VERSION < 12080
 #endif // TRT_EDGELLM_CUDA_LIBRARY_T_COMPAT
 
 #include "cutedsl_all.h"

@@ -19,7 +19,7 @@ The model class names were checked against the upstream [Transformers model sour
 - For INT4 engine builds on Jetson Orin devices with less system memory, such as Jetson Orin Nano, pass `--externalize-weights int4_ffn` for dense checkpoints or `--externalize-weights int4_ffn int4_moe` for MoE checkpoints to reduce engine build memory.
 - For FP16/BF16 source checkpoints, use the [Quantization](../features/quantization.md) script to create a unified quantized checkpoint for `tensorrt_edgellm`, then export the generated checkpoint.
 - FP8 KV cache is detected automatically from checkpoint metadata by `tensorrt_edgellm`.
-- `tensorrt-edgellm-export` exports visual encoders. Use `tensorrt-edgellm-quantize llm --visual_quantization fp8` before export when FP8 visual weights are required.
+- `trtedge export` exports visual encoders. Use `trtedge quantize llm --visual-quantization fp8` before export when FP8 visual weights are required.
 - MXFP8 and FP4/NVFP4 require Blackwell-class hardware for runtime execution.
 - For platform-specific NVFP4 MoE layouts, follow [Export NVFP4 MoE for SM12x](../features/quantization.md#export-nvfp4-moe-for-sm12x) before building the engine.
 
@@ -223,6 +223,7 @@ checkpoint and all variants produce text. Paired `gemma4_assistant` or
 
 - [google/gemma-4-E2B-it](https://huggingface.co/google/gemma-4-E2B-it), [google/gemma-4-E4B-it](https://huggingface.co/google/gemma-4-E4B-it)
 - [google/gemma-4-12B-it](https://huggingface.co/google/gemma-4-12B-it)
+- [nvidia/Nemotron-3.5-Bolt-E4B-BF16](https://huggingface.co/nvidia/Nemotron-3.5-Bolt-E4B-BF16)
 
 **Text and image input:**
 
@@ -326,6 +327,7 @@ are listed under [Speculative Draft Checkpoints](#speculative-draft-checkpoints)
 | [z-lab/gemma-4-26B-A4B-it-DFlash](https://huggingface.co/z-lab/gemma-4-26B-A4B-it-DFlash) | [google/gemma-4-26B-A4B-it](https://huggingface.co/google/gemma-4-26B-A4B-it) |
 | [z-lab/gemma-4-31B-it-DFlash](https://huggingface.co/z-lab/gemma-4-31B-it-DFlash) | [google/gemma-4-31B-it](https://huggingface.co/google/gemma-4-31B-it) |
 | [nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4-DFlash](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4-DFlash) | [nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4) |
+| [nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-DFlash](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-DFlash) | [nvidia/Nemotron-3.5-Bolt-E4B-BF16](https://huggingface.co/nvidia/Nemotron-3.5-Bolt-E4B-BF16) |
 | [meta-models/Muse-Glimmer-30B-assistant](https://huggingface.co/meta-models/Muse-Glimmer-30B-assistant) | [meta-models/Muse-Glimmer-30B](https://huggingface.co/meta-models/Muse-Glimmer-30B) or [RadixArk/Muse-Glimmer-NVFP4](https://huggingface.co/RadixArk/Muse-Glimmer-NVFP4) |
 
 ### DFlash2 Draft Models
@@ -357,7 +359,7 @@ draft supports both chain decoding and greedy DSpark DDTree; tree mode
 reconstructs path-dependent recurrent state. The published checkpoint uses
 `sample_from_anchor=false`: slot 0 is anchor-only and proposals start at slot 1.
 The runtime also supports the older anchor-sampled layout. Tree mode uses
-`--specDraftTopK > 1` with a tree-capable base.
+`--spec-draft-top-k > 1` with a tree-capable base.
 
 ### JetSpec Draft Models
 
@@ -366,7 +368,7 @@ exported with `DFlashDraftModel` using causal proposal attention. The validated
 runtime path is branching tree verification: export the base with
 `--jetspec-tree-base --jetspec-draft-dir <draft_checkpoint>`, export the draft
 with `--jetspec-draft --jetspec-draft-dir <draft_checkpoint>`, and run with
-`--specDraftTopK > 1`. `--jetspecBlockSize` and `--dflashBlockSize` configure
+`--spec-draft-top-k > 1`. `--jetspec-block-size` and `--dflash-block-size` configure
 the same cached-draft proposal block size; the JetSpec spelling is provided for
 clarity in JetSpec command lines.
 

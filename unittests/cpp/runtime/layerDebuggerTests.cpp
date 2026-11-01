@@ -17,6 +17,7 @@
 
 #include "common/cudaUtils.h"
 #include "common/safetensorsUtils.h"
+#include "platformCompat.h"
 #include "runtime/debug/layerDebugger.h"
 #include "runtime/state/kvPageTable.h"
 #include "runtime/state/residentSlotPool.h"
@@ -52,16 +53,16 @@ protected:
         // Row r generates tokens 10*r + step, so a row mix-up is unmistakable.
         std::ofstream(tokensPath) << "0 1 2\n10 11 12\n20 21 22\n";
 
-        setenv("EDGELLM_DUMP_LOGITS_KVCACHE_LAYERS", "1", 1);
-        setenv("EDGELLM_DUMP_LOGITS_KVCACHE_DIR", mDir.c_str(), 1);
-        setenv("EDGELLM_FORCE_TOKENS_FILE", tokensPath.c_str(), 1);
+        trt_edgellm::test::setEnv("EDGELLM_DUMP_LOGITS_KVCACHE_LAYERS", "1");
+        trt_edgellm::test::setEnv("EDGELLM_DUMP_LOGITS_KVCACHE_DIR", mDir.string().c_str());
+        trt_edgellm::test::setEnv("EDGELLM_FORCE_TOKENS_FILE", tokensPath.string().c_str());
     }
 
     void TearDown() override
     {
-        unsetenv("EDGELLM_DUMP_LOGITS_KVCACHE_LAYERS");
-        unsetenv("EDGELLM_DUMP_LOGITS_KVCACHE_DIR");
-        unsetenv("EDGELLM_FORCE_TOKENS_FILE");
+        trt_edgellm::test::unsetEnv("EDGELLM_DUMP_LOGITS_KVCACHE_LAYERS");
+        trt_edgellm::test::unsetEnv("EDGELLM_DUMP_LOGITS_KVCACHE_DIR");
+        trt_edgellm::test::unsetEnv("EDGELLM_FORCE_TOKENS_FILE");
         std::filesystem::remove_all(mDir);
     }
 
@@ -119,7 +120,7 @@ TEST_F(LayerDebuggerForcedRows, SurvivesBatchCompaction)
 
 TEST_F(LayerDebuggerForcedRows, DumpsNonContiguousResidentRowsInExecutionOrder)
 {
-    setenv("EDGELLM_DUMP_LOGITS_KVCACHE_LAYERS", "2", 1);
+    trt_edgellm::test::setEnv("EDGELLM_DUMP_LOGITS_KVCACHE_LAYERS", "2");
     cudaStream_t stream{};
     ASSERT_EQ(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), cudaSuccess);
 
@@ -225,7 +226,7 @@ TEST_F(LayerDebuggerForcedRows, DumpsNonContiguousResidentRowsInExecutionOrder)
 
 TEST_F(LayerDebuggerForcedRows, DumpsFullAndReducedKvLayersThroughTheirOwnNonIdentityPageTables)
 {
-    setenv("EDGELLM_DUMP_LOGITS_KVCACHE_LAYERS", "2", 1);
+    trt_edgellm::test::setEnv("EDGELLM_DUMP_LOGITS_KVCACHE_LAYERS", "2");
     cudaStream_t stream{};
     ASSERT_EQ(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), cudaSuccess);
 

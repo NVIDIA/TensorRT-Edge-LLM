@@ -118,8 +118,10 @@ public:
         int32_t slidingWindowSize = INT_MAX);
 
     //! Runs dense non-causal padded context attention with independent logical Q/KV lengths.
+    //! D512 additionally needs [B, S_q] full-KV intervals from launchBuildPaddingBlockRanges().
     bool runPadding(void const* qPtr, void const* kPtr, void const* vPtr, void* oPtr, int32_t const* cuQSeqLens,
-        int32_t const* cuKVSeqLens, cudaStream_t stream, float attentionScale);
+        int32_t const* cuKVSeqLens, cudaStream_t stream, float attentionScale, int32_t const* blockBegin = nullptr,
+        int32_t const* blockEnd = nullptr);
 
     //! Runs Gemma4 vision-block attention: sliding-causal OR same-image-block.
     bool runVisionBlock(void const* qPtr, void const* kPtr, void const* vPtr, void* oPtr, int32_t const* cuKVSeqLens,

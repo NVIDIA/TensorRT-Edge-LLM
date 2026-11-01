@@ -530,7 +530,11 @@ void registerInjaCallbacks(inja::Environment& environment)
         auto const format = arguments[0]->get<std::string>();
         auto const now = std::time(nullptr);
         std::tm local{};
+#if defined(_WIN32)
+        localtime_s(&local, &now);
+#else
         localtime_r(&now, &local);
+#endif
         std::vector<char> output(256);
         while (std::strftime(output.data(), output.size(), format.c_str(), &local) == 0)
         {

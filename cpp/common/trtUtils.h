@@ -21,7 +21,12 @@
 #include "stringUtils.h"
 #include <NvInfer.h>
 #include <NvInferVersion.h>
+#include <cstdlib>
+#if defined(_WIN32)
+#include <windows.h>
+#else
 #include <dlfcn.h>
+#endif
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -36,31 +41,106 @@
 namespace trt_edgellm
 {
 
+#if defined(_WIN32)
+inline constexpr char kDEFAULT_EDGELLM_PLUGIN_PATH[] = "NvInfer_edgellm_plugin.dll";
+
+//! @brief Open a dynamic library and return its native handle.
+inline void* openDynamicLibrary(char const* path) noexcept
+{
+    return static_cast<void*>(LoadLibraryA(path));
+}
+
+//! @brief Close a dynamic library handle.
+inline void closeDynamicLibrary(void* handle) noexcept
+{
+    FreeLibrary(static_cast<HMODULE>(handle));
+}
+
+//! @brief Log the platform error from a failed dynamic library load.
+inline void logDynamicLibraryOpenError(char const* path) noexcept
+{
+    LOG_ERROR("Cannot open plugin library %s (Windows error %lu)", path, static_cast<unsigned long>(GetLastError()));
+}
+
+//! @brief Resolve a symbol from a loaded dynamic library.
+inline void* getDynamicLibrarySymbol(void* handle, char const* name) noexcept
+{
+    return reinterpret_cast<void*>(GetProcAddress(static_cast<HMODULE>(handle), name));
+}
+
+//! @brief Return storage for the non-owning Edge-LLM plugin module handle.
+inline void*& loadedEdgellmPluginHandle() noexcept
+{
+    static void* sHandle = nullptr;
+    return sHandle;
+}
+
+//! @brief Resolve a symbol from the loaded TensorRT Edge-LLM plugin library.
+inline void* getLoadedEdgellmPluginSymbol(char const* name) noexcept
+{
+    void* const handle = loadedEdgellmPluginHandle();
+    return handle == nullptr ? nullptr : getDynamicLibrarySymbol(handle, name);
+}
+#else
+inline constexpr char kDEFAULT_EDGELLM_PLUGIN_PATH[] = "build/libNvInfer_edgellm_plugin.so";
+
+//! @brief Open a dynamic library and return its native handle.
+inline void* openDynamicLibrary(char const* path) noexcept
+{
+    // RTLD_GLOBAL exposes plugin registration entry points to runtime resource
+    // registration through dlsym(RTLD_DEFAULT, ...), avoiding build-time plugin
+    // linkage and duplicate CUDA device code. RTLD_NODELETE keeps TensorRT plugin
+    // code mapped through engine teardown.
+    return dlopen(path, RTLD_LAZY | RTLD_GLOBAL | RTLD_NODELETE);
+}
+
+//! @brief Close a dynamic library handle.
+inline void closeDynamicLibrary(void* handle) noexcept
+{
+    dlclose(handle);
+}
+
+//! @brief Log the platform error from a failed dynamic library load.
+inline void logDynamicLibraryOpenError(char const* path) noexcept
+{
+    LOG_ERROR("Cannot open plugin library %s: %s", path, dlerror());
+}
+
+//! @brief Resolve a symbol from a loaded dynamic library.
+inline void* getDynamicLibrarySymbol(void* handle, char const* name) noexcept
+{
+    return dlsym(handle, name);
+}
+
+//! @brief Resolve a symbol from the loaded TensorRT Edge-LLM plugin library.
+inline void* getLoadedEdgellmPluginSymbol(char const* name) noexcept
+{
+    return dlsym(RTLD_DEFAULT, name);
+}
+#endif
+
 /*!
- * @brief Custom deleter for dynamic library handles
- *
- * Handles proper cleanup of dynamically loaded libraries using dlclose.
+ * @brief Custom deleter for dynamic library handles.
  */
 struct DlDeleter
 {
-    //! @brief Delete operator for library handles
-    //! @param handle Library handle to close
+    //! @brief Delete operator for library handles.
     void operator()(void* handle) const noexcept
     {
         if (handle)
         {
-            dlclose(handle);
+            closeDynamicLibrary(handle);
         }
     }
 };
 
 /*!
- * @brief Load TensorRT Edge-LLM plugin library
+ * @brief Load TensorRT Edge-LLM plugin library.
  *
- * Loads the plugin library from the path specified by EDGELLM_PLUGIN_PATH
- * environment variable. If not set, defaults to build/libNvInfer_edgellm_plugin.so.
+ * Loads the plugin library from EDGELLM_PLUGIN_PATH. If unset, uses the
+ * platform-native plugin filename from the current working directory.
  *
- * @return Unique pointer to library handle, or nullptr on failure
+ * @return Unique pointer to library handle, or nullptr on failure.
  */
 inline std::unique_ptr<void, DlDeleter> loadEdgellmPluginLib(void) noexcept
 {
@@ -72,24 +152,22 @@ inline std::unique_ptr<void, DlDeleter> loadEdgellmPluginLib(void) noexcept
     }
     else
     {
-        LOG_INFO("EDGELLM_PLUGIN_PATH variable is not set. Default to build/libNvInfer_edgellm_plugin.so");
-        pluginPath = "build/libNvInfer_edgellm_plugin.so";
+        pluginPath = kDEFAULT_EDGELLM_PLUGIN_PATH;
+        LOG_INFO("EDGELLM_PLUGIN_PATH is not set. Defaulting to %s", pluginPath);
     }
 
-    // RTLD_GLOBAL exposes plugin registration entry points to runtime resource
-    // registration through dlsym(RTLD_DEFAULT, ...), avoiding build-time plugin
-    // linkage and duplicate CUDA device code. RTLD_NODELETE keeps TensorRT plugin
-    // code mapped through engine teardown.
-    auto handle = std::unique_ptr<void, DlDeleter>(dlopen(pluginPath, RTLD_LAZY | RTLD_GLOBAL | RTLD_NODELETE));
+    auto handle = std::unique_ptr<void, DlDeleter>(openDynamicLibrary(pluginPath));
     if (!handle)
     {
-        LOG_ERROR("Cannot open plugin library: %s", dlerror());
+        logDynamicLibraryOpenError(pluginPath);
         return std::unique_ptr<void, DlDeleter>(nullptr);
     }
+#if defined(_WIN32)
+    loadedEdgellmPluginHandle() = handle.get();
+#endif
 
-    // Sync log level with the plugin (follows the TRT initLibNvInferPlugins pattern).
     using InitPluginsFn = bool (*)(void*, char const*);
-    auto initPlugins = reinterpret_cast<InitPluginsFn>(dlsym(handle.get(), "initEdgellmPlugins"));
+    auto initPlugins = reinterpret_cast<InitPluginsFn>(getDynamicLibrarySymbol(handle.get(), "initEdgellmPlugins"));
     if (initPlugins)
     {
         initPlugins(static_cast<nvinfer1::ILogger*>(&gLogger), "");
@@ -97,7 +175,6 @@ inline std::unique_ptr<void, DlDeleter> loadEdgellmPluginLib(void) noexcept
 
     return handle;
 }
-
 //! Capture a TensorRT CUDA graph from an execution context and stream.
 //! @return Pair of graph and graph exec on success, std::nullopt on failure
 std::optional<std::pair<cudaGraph_t, cudaGraphExec_t>> captureTRTCudaGraph(

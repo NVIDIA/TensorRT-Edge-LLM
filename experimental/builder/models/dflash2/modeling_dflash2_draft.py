@@ -104,8 +104,8 @@ class DFlash2GroupedConv(Module):
 class DFlash2DecoderLayer(DFlashDecoderLayer):
     """DFlash layer with dynamic conv around attention and MLP only."""
 
-    def __init__(self, ctx, prefix: str) -> None:
-        super().__init__(ctx, prefix)
+    def __init__(self, ctx, prefix: str, layer_index: int) -> None:
+        super().__init__(ctx, prefix, layer_index)
         self.attention_conv = DFlash2GroupedConv(ctx,
                                                  self.key("attention_conv"))
         self.mlp_conv = DFlash2GroupedConv(ctx, self.key("mlp_conv"))
@@ -145,7 +145,7 @@ class DFlash2DraftModel(DFlashDraftModel):
         self.fc = DFlashTargetProjection(ctx, "fc")
         self.hidden_norm = RMSNorm(ctx, "hidden_norm", ctx.cfg.rms_norm_eps)
         self.layers = [
-            DFlash2DecoderLayer(ctx, f"layers.{index}")
+            DFlash2DecoderLayer(ctx, f"layers.{index}", index)
             for index in range(ctx.cfg.num_hidden_layers)
         ]
         self.norm = RMSNorm(ctx, "norm", ctx.cfg.rms_norm_eps)

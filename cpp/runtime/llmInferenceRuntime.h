@@ -28,6 +28,7 @@
 #include "runtime/state/contextCache/contextCacheConfig.h"
 #include "runtime/state/contextCache/contextCacheMetrics.h"
 
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -70,17 +71,21 @@ public:
         std::vector<cudaStream_t> localStreams{};
         bool ownsLocalStreams{true};
         std::vector<ParallelBackendHandles> backendHandles{};
+        //! TRT-RTX runtime cache file path.
+        std::optional<std::filesystem::path> runtimeCachePath{};
     };
 
     LLMInferenceRuntime(std::string const& engineDir, std::string const& multimodalEngineDir,
         std::unordered_map<std::string, std::string> const& loraWeightsMap,
         SpecDecodeDraftingConfig const& draftingConfig, cudaStream_t stream,
         ContextCacheConfig const& contextCacheConfig = {}, std::string const& checkpointDir = "",
-        std::string const& draftCheckpointDir = "");
+        std::string const& draftCheckpointDir = "",
+        std::optional<std::filesystem::path> const& runtimeCachePath = std::nullopt);
 
     LLMInferenceRuntime(std::string const& engineDir, std::string const& multimodalEngineDir,
         std::unordered_map<std::string, std::string> const& loraWeightsMap, cudaStream_t stream,
-        ContextCacheConfig const& contextCacheConfig = {}, std::string const& checkpointDir = "");
+        ContextCacheConfig const& contextCacheConfig = {}, std::string const& checkpointDir = "",
+        std::optional<std::filesystem::path> const& runtimeCachePath = std::nullopt);
 
     LLMInferenceRuntime(std::string const& engineDir, std::string const& multimodalEngineDir,
         std::unordered_map<std::string, std::string> const& loraWeightsMap, ParallelExecutionConfig config);

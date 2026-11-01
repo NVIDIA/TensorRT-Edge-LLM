@@ -454,13 +454,9 @@ class QuantConfig:
     layer_group_sizes: dict = field(default_factory=dict)
     # True when quant_algo is MIXED_PRECISION: unlisted modules are FP16.
     is_mixed_precision: bool = False
-    # False exports quantized dense Linears without the activation Q-DQ pair,
-    # leaving ``MatMul(fp16_activation, DQ(quantized_weight))``. Not a choice of
-    # kernel: the weights stay in the checkpoint's format and TensorRT is left
-    # to dequantize them, so this trades a large amount of decode throughput for
-    # the accuracy of an unquantized activation. The default reproduces the
-    # checkpoint's own recipe (W4A4 / W8A8); see
-    # :func:`set_default_quantize_activations`.
+    # False selects the NVFP4-A16 kernel for packed NVFP4 weights. Other
+    # activation-quantized formats omit their activation Q-DQ pair for accuracy
+    # debugging. The default reproduces the checkpoint's W4A4/W8A8 recipe.
     quantize_activations: bool = field(
         default_factory=lambda: _DEFAULT_QUANTIZE_ACTIVATIONS)
 
@@ -471,9 +467,10 @@ class QuantConfig:
     @property
     def uses_nvfp4_weights(self) -> bool:
         """True if any linear uses NVFP4 weights (dominant quant or layer override)."""
-        if self.quant_type == QUANT_NVFP4:
+        nvfp4_types = (QUANT_NVFP4, QUANT_NVFP4_A16)
+        if self.quant_type in nvfp4_types:
             return True
-        return any(v == QUANT_NVFP4 for v in self.layer_overrides.values())
+        return any(v in nvfp4_types for v in self.layer_overrides.values())
 
     @property
     def uses_mxfp8_weights(self) -> bool:
@@ -801,6 +798,9 @@ class ModelConfig:
     dflash_block_size: int = 16
     dflash_mask_token_id: int = 248070
     dflash_version: DFlashVersion = DFlashVersion.V1
+    # DFlash V1 draft whose block position i predicts token i + 1 (DeepSpec).
+    dflash_shift_label: bool = False
+    dflash_overflow_fp32: bool = False
     # Run the fc feature projector at the checkpoint's native precision (e.g.
     # NVFP4) instead of the default dense-FP16 + FP32 projection. Enabled only
     # for targets measured to keep target-hidden well inside FP16 range
@@ -1690,7 +1690,8 @@ def make_dflash_draft_config(
     the quant config is parsed so ``make_linear`` will produce the correct
     Linear class (``NVFP4Linear`` etc.) during ONNX export.
     """
-    _, llm_dict = load_checkpoint_config_dicts(draft_dir)
+    root_dict, llm_dict = load_checkpoint_config_dicts(draft_dir)
+    shift_label = resolve_dflash_contract(root_dict, llm_dict).shift_label
     dflash_config = llm_dict.get("dflash_config", {}) or {}
 
     # Parse quantization config from the draft checkpoint directory.
@@ -1782,6 +1783,7 @@ def make_dflash_draft_config(
             dflash_config.get(
                 "mask_token_id",
                 llm_dict.get("mask_token_id", default_mask_token_id))),
+        dflash_shift_label=shift_label,
         quant=quant,
     )
 
@@ -2512,7 +2514,8 @@ def _parse_quant(model_dir: str,
                 layer_group_sizes=layer_group_sizes,
                 is_mixed_precision=True,
             )
-        qt = _algo_to_quant_type(algo)
+        qt = _select_nvfp4_quant_type(_algo_to_quant_type(algo), algo,
+                                      config.get("model_type") or "")
         gs = int(q.get("group_size", 1))
         if qt == QUANT_MXFP8 and gs == 1:
             gs = 32  # MXFP8 default block_size
@@ -2573,12 +2576,13 @@ def _parse_quant(model_dir: str,
                 first_group.get("weights", {}).get("group_size", 1))
         elif qc.get("group_size") is not None:
             group_size = int(qc.get("group_size"))
-        quant_type = _algo_to_quant_type(algo)
+        quant_type = _select_nvfp4_quant_type(_algo_to_quant_type(algo), algo,
+                                              config.get("model_type") or "")
         # NVFP4 uses a fixed FP8-block group size of 16. Minimal ModelOpt
         # ``quantization_config`` blocks (``quant_algo`` only, no
         # ``config_groups`` / ``group_size`` — e.g. Qwen3-Omni Next NVFP4)
         # omit it, so default it here rather than leaving the per-tensor 1.
-        if quant_type == QUANT_NVFP4 and group_size == 1:
+        if quant_type in (QUANT_NVFP4, QUANT_NVFP4_A16) and group_size == 1:
             group_size = 16
         kv = qc.get("kv_cache_scheme")
         kv_str = "fp8" if kv else None
@@ -2684,6 +2688,19 @@ def _algo_to_quant_type(algo: str) -> str:
     return QUANT_FP16
 
 
+def _select_nvfp4_quant_type(quant_type: str, algo: str,
+                             model_type: str) -> str:
+    """Resolve packed NVFP4 weights to the requested activation precision."""
+    if quant_type != QUANT_NVFP4:
+        return quant_type
+    if not _DEFAULT_QUANTIZE_ACTIVATIONS:
+        return QUANT_NVFP4_A16
+    if ("W4A16" in algo.upper()
+            and model_type.lower().startswith("nemotron_h")):
+        return QUANT_NVFP4_A16
+    return QUANT_NVFP4
+
+
 def _parse_mixed_precision(
         quantized_layers: dict,
         model_type: str = "") -> "tuple[str, int, dict, dict]":
@@ -2699,11 +2716,8 @@ def _parse_mixed_precision(
     from collections import Counter
 
     def _mixed_quant_type(algo: str) -> str:
-        qt = _algo_to_quant_type(algo)
-        if (qt == QUANT_NVFP4 and "W4A16" in algo.upper()
-                and model_type.lower().startswith("nemotron_h")):
-            return QUANT_NVFP4_A16
-        return qt
+        return _select_nvfp4_quant_type(_algo_to_quant_type(algo), algo,
+                                        model_type)
 
     def _group_size(layer_config: dict, quant_type: str) -> int:
         configured = int(layer_config.get("group_size", 1))

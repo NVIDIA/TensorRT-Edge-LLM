@@ -199,6 +199,9 @@ def check_file_exists(filepath: str,
                       remote_config: Optional[RemoteConfig],
                       logger=None) -> bool:
     """Simple file existence check"""
+    if remote_config is None:
+        return os.path.isfile(filepath)
+
     result = run_command(['test', '-f', filepath], remote_config, 10, logger)
     return result['success']
 

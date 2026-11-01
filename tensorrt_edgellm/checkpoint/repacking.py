@@ -1174,12 +1174,13 @@ def repack_nvfp4_a16_marlin_gated_moe_experts(
     """Stack + repack SwiGLU NVFP4 (W4A16) experts for ``Nvfp4A16MoePlugin``.
 
     FC1 is two independently Marlin-packed projections concatenated on N
-    (``[gate | up]``, each padded to ``moe_inter_padded``). The plugin takes
-    one FC1 global scale; gate/up must share ``weight_scale_2`` (ModelOpt
-    official Qwen3.6 NVFP4 does). FC2 matches the non-gated helper.
+    (``[gate | up]``, each padded to ``moe_inter_padded``). Their independent
+    global scales are returned as ``[gate, up]`` rows. FC2 matches the
+    non-gated helper.
     """
     num_experts = len(gate_packed)
-    fc1_q, fc1_bs, fc1_g = [], [], []
+    fc1_q, fc1_bs = [], []
+    fc1_gate_g, fc1_up_g = [], []
     fc2_q, fc2_bs, fc2_g = [], [], []
     for e in range(num_experts):
         q_gate, s_gate, g_gate, _, n_gate = repack_nvfp4_a16_marlin_linear(
@@ -1189,13 +1190,10 @@ def repack_nvfp4_a16_marlin_gated_moe_experts(
         if n_gate != moe_inter_padded or n_up != moe_inter_padded:
             raise ValueError(f"SwiGLU FC1 padded N gate={n_gate} up={n_up} != "
                              f"moe_inter_padded {moe_inter_padded}")
-        if not torch.equal(g_gate.reshape(-1), g_up.reshape(-1)):
-            raise ValueError(
-                "Nvfp4A16MoePlugin SwiGLU needs one FC1 global scale; "
-                f"expert {e} gate/up weight_scale_2 differ")
         fc1_q.append(torch.cat([q_gate, q_up], dim=-1))
         fc1_bs.append(torch.cat([s_gate, s_up], dim=-1))
-        fc1_g.append(g_gate)
+        fc1_gate_g.append(g_gate)
+        fc1_up_g.append(g_up)
         wp2, ws2 = _pad_nvfp4_linear_k(down_packed[e], down_scale[e],
                                        moe_inter_padded)
         q2, s2, g2, _, _ = repack_nvfp4_a16_marlin_linear(wp2,
@@ -1208,7 +1206,8 @@ def repack_nvfp4_a16_marlin_gated_moe_experts(
     return (
         torch.cat(fc1_q, dim=0),
         torch.cat(fc1_bs, dim=0),
-        torch.cat(fc1_g, dim=0),
+        torch.stack((torch.cat(fc1_gate_g, dim=0), torch.cat(fc1_up_g,
+                                                             dim=0))),
         torch.cat(fc2_q, dim=0),
         torch.cat(fc2_bs, dim=0),
         torch.cat(fc2_g, dim=0),

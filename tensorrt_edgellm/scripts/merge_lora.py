@@ -18,23 +18,27 @@ import argparse
 import logging
 import sys
 
-from tensorrt_edgellm.lora.lora import merge_lora_and_save
+from tensorrt_edgellm.scripts import _dependency_errors
 
 logger = logging.getLogger(__name__)
 
 
-def main() -> None:
+@_dependency_errors.optional_dependencies("tools")
+def main(argv=None, *, prog="tensorrt-edgellm-merge-lora") -> None:
     logging.basicConfig(level=logging.INFO,
                         format="%(levelname)s:%(name)s:%(message)s")
     parser = argparse.ArgumentParser(
-        description="Merge LoRA weights into a base HF model")
-    parser.add_argument("--model_dir",
+        prog=prog, description="Merge LoRA weights into a base HF model")
+    parser.add_argument("--model-dir",
+                        "--model_dir",
                         required=True,
                         help="Base model checkpoint directory")
-    parser.add_argument("--lora_dir",
+    parser.add_argument("--lora-dir",
+                        "--lora_dir",
                         required=True,
                         help="PEFT LoRA adapter directory")
-    parser.add_argument("--output_dir",
+    parser.add_argument("--output-dir",
+                        "--output_dir",
                         required=True,
                         help="Directory for the merged checkpoint")
     parser.add_argument("--device",
@@ -45,7 +49,9 @@ def main() -> None:
                         dest="torch_dtype",
                         default="float16",
                         help="Model dtype used while merging")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+
+    from tensorrt_edgellm.lora.lora import merge_lora_and_save
 
     try:
         merge_lora_and_save(model_dir=args.model_dir,
@@ -54,6 +60,8 @@ def main() -> None:
                             device=args.device,
                             torch_dtype=args.torch_dtype)
         logger.info("LoRA merge completed successfully")
+    except ModuleNotFoundError:
+        raise
     except Exception:
         logger.exception("Error during LoRA merge")
         sys.exit(1)

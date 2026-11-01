@@ -22,12 +22,19 @@
 #include <chrono>
 #include <climits>
 #include <cuda_runtime.h>
-#include <dlfcn.h>
 #include <optional>
 #include <string>
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
+#include <psapi.h>
+#else
+#include <dlfcn.h>
 #include <sys/resource.h>
-#include <thread>
 #include <unistd.h>
+#endif
+#include <thread>
 #include <vector>
 
 using namespace trt_edgellm;
@@ -43,6 +50,7 @@ public:
 
 namespace
 {
+#if !defined(_WIN32)
 class NvmlBackend final : public MemoryBackend
 {
 public:
@@ -186,6 +194,7 @@ private:
     Device mDevice{};
     std::vector<ProcessInfo> mProcesses;
 };
+#endif
 
 class CudaMemoryBackend final : public MemoryBackend
 {
@@ -228,6 +237,7 @@ private:
 std::unique_ptr<MemoryBackend> selectMemoryBackend()
 {
     CUDA_CHECK(cudaFree(nullptr));
+#if !defined(_WIN32)
     int device{-1};
     CUDA_CHECK(cudaGetDevice(&device));
     char pciBusId[64]{};
@@ -237,6 +247,7 @@ std::unique_ptr<MemoryBackend> selectMemoryBackend()
     {
         return nvml;
     }
+#endif
     return CudaMemoryBackend::create();
 }
 } // namespace
@@ -285,11 +296,20 @@ size_t MemoryMonitor::getPeakGpuMemory() const
 
 size_t MemoryMonitor::getPeakCpuMemory() const
 {
+#if defined(_WIN32)
+    PROCESS_MEMORY_COUNTERS counters{};
+    counters.cb = sizeof(counters);
+    if (GetProcessMemoryInfo(GetCurrentProcess(), &counters, sizeof(counters)))
+    {
+        return static_cast<size_t>(counters.PeakWorkingSetSize);
+    }
+#else
     struct rusage usage{};
     if (getrusage(RUSAGE_SELF, &usage) == 0)
     {
         return static_cast<size_t>(usage.ru_maxrss) * 1024;
     }
+#endif
     return 0;
 }
 

@@ -54,6 +54,11 @@ struct WrapperArg<I, Ret (*)(Args...)>
     using type = std::remove_pointer_t<std::tuple_element_t<I, std::tuple<Args...>>>;
 };
 
+template <std::size_t I, class Ret, class... Args>
+struct WrapperArg<I, Ret (&)(Args...)> : WrapperArg<I, Ret (*)(Args...)>
+{
+};
+
 template <std::size_t I, class Wrapper>
 using WrapperArgT = typename WrapperArg<I, Wrapper>::type;
 
@@ -64,6 +69,11 @@ struct WrapperArity;
 
 template <class Ret, class... Args>
 struct WrapperArity<Ret (*)(Args...)> : std::integral_constant<std::size_t, sizeof...(Args)>
+{
+};
+
+template <class Ret, class... Args>
+struct WrapperArity<Ret (&)(Args...)> : std::integral_constant<std::size_t, sizeof...(Args)>
 {
 };
 

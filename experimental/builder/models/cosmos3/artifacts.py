@@ -45,7 +45,8 @@ def _copy_tokenizer(bundle, engine_dir: str) -> None:
             "Cosmos3 policy checkpoint is missing text_tokenizer/")
     shutil.copytree(source,
                     os.path.join(engine_dir, "text_tokenizer"),
-                    dirs_exist_ok=True)
+                    dirs_exist_ok=True,
+                    copy_function=shutil.copyfile)
 
 
 def _write_und_embeddings(bundle, engine_dir: str) -> None:

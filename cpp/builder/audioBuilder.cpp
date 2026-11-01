@@ -749,7 +749,7 @@ bool AudioBuilder::setupGemma4AudioEncoderProfile(nvinfer1::IOptimizationProfile
     //
     // Inputs:
     //   input_features: [1, seq_len, mel_bins]
-    //   valid:          [1, seq_len/4]          (bool mask after 2× stride-2 subsampling)
+    //   input_features_mask: [1, seq_len]       (bool mask before subsampling)
     //
     // seq_len is mel-spectrogram frames (~16 kHz / 160 hop_length); the
     // 2× stride-2 subsampling requires divisibility by 4.
@@ -764,13 +764,8 @@ bool AudioBuilder::setupGemma4AudioEncoderProfile(nvinfer1::IOptimizationProfile
     result &= setOptimizationProfile(&profile, "input_features", createDims({kBatch, minSeqLen, mMelBins}),
         createDims({kBatch, optSeqLen, mMelBins}), createDims({kBatch, maxSeqLen, mMelBins}));
 
-    // Valid mask after subsampling: [1, seq_len/4]
-    int64_t const minValidLen = minSeqLen / kSubFactor;
-    int64_t const maxValidLen = maxSeqLen / kSubFactor;
-    int64_t const optValidLen = optSeqLen / kSubFactor;
-
-    result &= setOptimizationProfile(&profile, "valid", createDims({kBatch, minValidLen}),
-        createDims({kBatch, optValidLen}), createDims({kBatch, maxValidLen}));
+    result &= setOptimizationProfile(&profile, "input_features_mask", createDims({kBatch, minSeqLen}),
+        createDims({kBatch, optSeqLen}), createDims({kBatch, maxSeqLen}));
 
     if (!result)
     {

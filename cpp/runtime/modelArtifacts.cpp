@@ -22,6 +22,7 @@
 #include "common/safetensorsUtils.h"
 #include "runtime/config/llmEngineConfig.h"
 #include "runtime/decoding/decoderUtils.h"
+#include "runtime/exec/rtxRuntimeCache.h"
 
 #include <exception>
 #include <stdexcept>
@@ -185,7 +186,8 @@ void validateDsparkTreeMetadataBindings(DeploymentConfig const& deployment, Engi
 
 ModelArtifacts ModelArtifacts::loadFromEngineDir(std::filesystem::path const& engineDir,
     std::optional<SpecDecodeDraftingConfig> const& draftingConfig, std::filesystem::path const& checkpointDir,
-    std::filesystem::path const& draftCheckpointDir, bool contextReuseEnabled, cudaStream_t stream)
+    std::filesystem::path const& draftCheckpointDir, bool contextReuseEnabled, cudaStream_t stream,
+    std::function<void()> const& checkCancelled, std::optional<std::filesystem::path> const& runtimeCachePath)
 {
     ModelArtifacts artifacts;
     artifacts.checkpointDir = checkpointDir;
@@ -195,7 +197,8 @@ ModelArtifacts ModelArtifacts::loadFromEngineDir(std::filesystem::path const& en
         = draftingConfig.has_value() ? engineDir / "base_config.json" : engineDir / "config.json";
 
     // Finish checkpoint reads and weight conversion before any engine can run.
-    artifacts.weights.load(engineDir, baseConfigPath, stream, artifacts.checkpointDir);
+    artifacts.weights.load(
+        engineDir, baseConfigPath, stream, artifacts.checkpointDir, {}, std::nullopt, std::nullopt, checkCancelled);
     if (auto embedding = artifacts.weights.takeEmbedding())
     {
         artifacts.embedding.table = std::move(*embedding);
@@ -214,6 +217,7 @@ ModelArtifacts ModelArtifacts::loadFromEngineDir(std::filesystem::path const& en
     // EngineExecutor captures the active KV-pool geometry in its tensor registry.
     // Select the immutable runtime policy before constructing that registry.
     artifacts.deployment.selectSwaKVCacheMode(contextReuseEnabled);
+    artifacts.deployment.runtimeCachePath = runtimeCachePath;
     if (draftingConfig.has_value() && artifacts.deployment.specDecodeMode() == SpecDecodeMode::kMTP)
     {
         ELLM_CHECK(artifacts.draftCheckpointDir.empty(),
@@ -225,13 +229,18 @@ ModelArtifacts ModelArtifacts::loadFromEngineDir(std::filesystem::path const& en
         ? engineDir / "spec_base.engine"
         : (artifacts.deployment.base.isDiffusionBackbone ? engineDir / "dllm.engine" : engineDir / "llm.engine");
 
+    std::shared_ptr<RtxRuntimeCache> runtimeCache;
+#if IS_TRT_RTX
+    runtimeCache = RtxRuntimeCache::create(baseEnginePath, artifacts.deployment.runtimeCachePath);
+#endif
+
     try
     {
         std::optional<int32_t> const specDecodeBaseOutputHiddenDim = artifacts.deployment.specConfig.has_value()
             ? std::optional<int32_t>{artifacts.deployment.specConfig->baseOutputHiddenDim}
             : std::nullopt;
-        artifacts.baseExecutor
-            = EngineExecutor::createForLLM(baseEnginePath, artifacts.deployment.base, specDecodeBaseOutputHiddenDim);
+        artifacts.baseExecutor = EngineExecutor::createForLLM(
+            baseEnginePath, artifacts.deployment.base, specDecodeBaseOutputHiddenDim, runtimeCache);
     }
     catch (std::exception const& e)
     {
@@ -248,17 +257,18 @@ ModelArtifacts ModelArtifacts::loadFromEngineDir(std::filesystem::path const& en
     // Validate the draft engine ABI before its sidecar geometry is used to allocate physical cache resources.
     if (draftingConfig.has_value())
     {
-        artifacts.draftExecutor = decoder_utils::loadDraftEngine(engineDir, artifacts.deployment);
+        artifacts.draftExecutor = decoder_utils::loadDraftEngine(engineDir, artifacts.deployment, runtimeCache);
         std::filesystem::path const draftConfig = engineDir / "draft_config.json";
         if (artifacts.deployment.specDecodeMode() == SpecDecodeMode::kMTP)
         {
             // Native MTP draft weights ship inside the base checkpoint, so there is no separate target to fall back to.
-            artifacts.draftWeights.load(engineDir, draftConfig, stream, artifacts.checkpointDir);
+            artifacts.draftWeights.load(engineDir, draftConfig, stream, artifacts.checkpointDir, {}, std::nullopt,
+                std::nullopt, checkCancelled);
         }
         else
         {
-            artifacts.draftWeights.load(
-                engineDir, draftConfig, stream, artifacts.draftCheckpointDir, artifacts.checkpointDir);
+            artifacts.draftWeights.load(engineDir, draftConfig, stream, artifacts.draftCheckpointDir,
+                artifacts.checkpointDir, std::nullopt, std::nullopt, checkCancelled);
         }
         // Name the mode in the label. Loading moved here from the decoders, and each of them used to pass its own
         // ("dflash_draft", "dspark_draft", ...); one call site would otherwise report every mismatch as plain "draft"

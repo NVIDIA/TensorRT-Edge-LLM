@@ -42,7 +42,7 @@ import tempfile
 
 
 def _install_static_runtime_shim():
-    """Build the JIT runtime symbol provider from libcuda_dialect_runtime_static.a.
+    """Build the POSIX JIT runtime symbol provider from the static runtime archive.
 
     AOT export resolves ``_cudaLaunchKernelEx``-family symbols from the shared
     libraries listed in ``CUTE_DSL_LIBS``. By default the package loader points
@@ -57,6 +57,9 @@ def _install_static_runtime_shim():
     shim path, or None when unavailable (multi-flavor install, missing
     binutils, opt-out). Must run before ``import cutlass``.
     """
+    if sys.platform == "win32":
+        return None
+
     def skip(reason: str):
         print(f"[cutedsl_compile_wrapper] static runtime shim NOT installed: {reason}; "
               "falling back to libcute_dsl_runtime.so", file=sys.stderr)

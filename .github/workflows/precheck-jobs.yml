@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Precheck jobs
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  pre_commit_checks:
+    runs-on:
+      group: nv-cpu-general
+      labels: linux-amd64-cpu4
+    env:
+      PRE_COMMIT_HOME: ${{ github.workspace }}/.cache/pre-commit
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/pre-commit/
+          key: pre-commit-linux-amd64-python312-runner-${{ hashFiles('.pre-commit-config.yaml') }}
+      - name: Run pre-commit checks
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          python -m venv venv
+          venv/bin/python -m pip install pre-commit
+          venv/bin/python -m pre_commit run --all-files --show-diff-on-failure

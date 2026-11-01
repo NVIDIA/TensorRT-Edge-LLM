@@ -35,10 +35,10 @@ namespace rt
 // StreamChannel — consumer API + friend-reachable producer API
 //=============================================================================
 
-std::shared_ptr<StreamChannel> StreamChannel::create()
+std::shared_ptr<StreamChannel> StreamChannel::create(bool collectMetrics)
 {
     // std::make_shared cannot access the private constructor; use the new/shared_ptr form.
-    return std::shared_ptr<StreamChannel>(new StreamChannel());
+    return std::shared_ptr<StreamChannel>(new StreamChannel(collectMetrics));
 }
 
 void StreamChannel::push(StreamChunk chunk)
@@ -363,12 +363,22 @@ void emitChunks(DecodingInferenceContext& context, tokenizer::Tokenizer const& t
         }
 
         bool const isFinal = context.finishedStates[i] != 0;
+        // EOS/length can be set after decodePerSlot held back a possible stop prefix.
+        if (isFinal && (s.terminalReason == FinishReason::kEndId || s.terminalReason == FinishReason::kLength))
+        {
+            s.pendingEmitText.append(s.stopMatchBuffer);
+            s.stopMatchBuffer.clear();
+        }
         if (s.pendingEmitText.empty() && !isFinal)
         {
             continue;
         }
 
         StreamChunk chunk;
+        if (s.channel->getCollectMetrics())
+        {
+            chunk.metrics = s.profiler.snapshot(context.effectivePrefillLengths[i]);
+        }
         chunk.promptTokenCount = static_cast<int32_t>(context.rawBatchedInputIds[i].size());
         // Delta tokens span [lastEmittedTokenCount, sentTokenCount) — accumulates
         // across prior iterations where pendingEmitText was held back.
@@ -473,6 +483,10 @@ StreamChannelFinalizer::~StreamChannelFinalizer() noexcept
         try
         {
             StreamChunk chunk;
+            if (i < mCtx.effectivePrefillLengths.size())
+            {
+                chunk.metrics = s.profiler.snapshot(mCtx.effectivePrefillLengths[i]);
+            }
             if (i < mCtx.rawBatchedInputIds.size())
             {
                 chunk.promptTokenCount = static_cast<int32_t>(mCtx.rawBatchedInputIds[i].size());

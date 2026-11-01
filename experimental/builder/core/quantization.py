@@ -111,7 +111,8 @@ def normalize_module_name(name: str) -> str:
 def parse_quantization(model_dir: str,
                        root: dict,
                        component: dict,
-                       conversion: Optional[ModuleType] = None) -> QuantConfig:
+                       conversion: Optional[ModuleType] = None,
+                       quantize_activations: bool = True) -> QuantConfig:
     """Parse ModelOpt, AWQ, GPTQ, SmoothQuant, and mixed checkpoints."""
     hf_path = os.path.join(model_dir, "hf_quant_config.json")
     if os.path.isfile(hf_path):
@@ -120,7 +121,8 @@ def parse_quantization(model_dir: str,
         algorithm = str(quantization.get("quant_algo") or "").upper()
         if algorithm == "MIXED_PRECISION":
             dominant, group_size, overrides, layer_group_sizes = _parse_mixed_precision(
-                quantization.get("quantized_layers", {}), conversion)
+                quantization.get("quantized_layers", {}), conversion,
+                quantize_activations)
             return QuantConfig(
                 quant_type=dominant,
                 group_size=group_size,
@@ -136,7 +138,8 @@ def parse_quantization(model_dir: str,
                 is_mixed_precision=True,
             )
 
-        quant_type = _algorithm_to_type(algorithm, conversion)
+        quant_type = _activation_quant_type(
+            _algorithm_to_type(algorithm, conversion), quantize_activations)
         group_size = int(quantization.get("group_size", 1))
         if quant_type == QUANT_MXFP8 and group_size == 1:
             group_size = 32
@@ -167,7 +170,8 @@ def parse_quantization(model_dir: str,
     algorithm = str(embedded.get("quant_algo") or "").upper()
     if algorithm == "MIXED_PRECISION":
         dominant, group_size, overrides, layer_group_sizes = _parse_mixed_precision(
-            embedded.get("quantized_layers", {}), conversion)
+            embedded.get("quantized_layers", {}), conversion,
+            quantize_activations)
         return QuantConfig(
             quant_type=dominant,
             group_size=group_size,
@@ -218,7 +222,8 @@ def parse_quantization(model_dir: str,
                 name for name in _detect_plain_weights(model_dir, conversion)
                 if name not in excluded)
             return QuantConfig(
-                quant_type=QUANT_NVFP4,
+                quant_type=_activation_quant_type(QUANT_NVFP4,
+                                                  quantize_activations),
                 group_size=group_size,
                 kv_cache_quant=_resolve_kv_cache_quant(
                     model_dir,
@@ -234,7 +239,8 @@ def parse_quantization(model_dir: str,
             raise ValueError(
                 f"unsupported checkpoint quantization method {method!r}")
         return QuantConfig()
-    quant_type = _algorithm_to_type(algorithm, conversion)
+    quant_type = _activation_quant_type(
+        _algorithm_to_type(algorithm, conversion), quantize_activations)
     group_size = int(embedded.get("group_size", 1))
     config_groups = embedded.get("config_groups") or {}
     if config_groups:
@@ -299,8 +305,18 @@ def _algorithm_to_type(algorithm: str,
     return hook(str(algorithm).upper(), quant_type) if hook else quant_type
 
 
+def _activation_quant_type(quant_type: str, quantize_activations: bool) -> str:
+    """Select W4A16 when packed NVFP4 weights keep FP16 activations."""
+    if (not quantize_activations
+            and quant_type in (QUANT_NVFP4, QUANT_NVFP4_A16)):
+        return QUANT_NVFP4_A16
+    return quant_type
+
+
 def _parse_mixed_precision(
-    quantized_layers: dict, conversion: Optional[ModuleType]
+    quantized_layers: dict,
+    conversion: Optional[ModuleType],
+    quantize_activations: bool = True,
 ) -> Tuple[str, int, Dict[str, str], Dict[str, int]]:
 
     def group_size(layer_config: dict, quant_type: str) -> int:
@@ -318,7 +334,8 @@ def _parse_mixed_precision(
     for layer_config in quantized_layers.values():
         algorithm = str(layer_config.get("quant_algo", "")).upper()
         algorithm_counts[algorithm] += 1
-        quant_type = _algorithm_to_type(algorithm, conversion)
+        quant_type = _activation_quant_type(
+            _algorithm_to_type(algorithm, conversion), quantize_activations)
         group_sizes.setdefault(algorithm, group_size(layer_config, quant_type))
     if not algorithm_counts:
         return QUANT_FP16, 1, {}, {}
@@ -327,16 +344,18 @@ def _parse_mixed_precision(
     overrides: Dict[str, str] = {}
     layer_group_sizes: Dict[str, int] = {}
     for name, layer_config in quantized_layers.items():
-        quant_type = _algorithm_to_type(layer_config.get("quant_algo", ""),
-                                        conversion)
+        quant_type = _activation_quant_type(
+            _algorithm_to_type(layer_config.get("quant_algo", ""), conversion),
+            quantize_activations)
         module_group_size = group_size(layer_config, quant_type)
         short_name = _normalize_checkpoint_name(name, conversion)
         for module_name in _expand_quantized_module(short_name, conversion):
             overrides[module_name] = quant_type
             layer_group_sizes[module_name] = module_group_size
-    return (_algorithm_to_type(dominant_algorithm, conversion),
-            group_sizes.get(dominant_algorithm,
-                            1), overrides, layer_group_sizes)
+    return (_activation_quant_type(
+        _algorithm_to_type(dominant_algorithm, conversion),
+        quantize_activations), group_sizes.get(dominant_algorithm, 1),
+            overrides, layer_group_sizes)
 
 
 def _checkpoint_keys(model_dir: str) -> List[str]:

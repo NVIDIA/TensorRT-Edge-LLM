@@ -24,7 +24,7 @@ TensorRT plugins are user-defined layers that implement the `IPluginV2DynamicExt
 **Functional Description**:
 - Handles Rotary positional encoding, KVCache I/O, and MHA/GQA attention computation.
 - Implements FP16 precision and covers all supported SMs of TensorRT Edge-LLM.
-- Supports FP8 KV cache for improved memory efficiency with CUDA >= 11.8.
+- Supports FP8 KV cache on SM89, SM90, SM100, SM101, SM110, SM120, and SM121.
 - Supports prefill (normal and chunked) stage causal attention.
 - Supports vanilla decoding attention and tree decoding attention that is used by EAGLE and DFlash speculative decoding.
 - Supports linear KVCache with equal capacity within one batch.
@@ -43,7 +43,7 @@ TensorRT plugins are user-defined layers that implement the `IPluginV2DynamicExt
 |---|---:|---|
 | `PackedQKV` / `inputs_embeds` | `[T_exec, hidden]` | Token-major physical rows. QKV is packed on its last dimension. |
 | `positions` | `[T_exec]` | Absolute position for each physical row. Padding uses `-1`. |
-| `query_start_offsets` | `[N + 1]` | Physical row starts. MR1 uses entry padding, so entry `i` starts at `i * S_pad`; these are not compact logical prefix sums. |
+| `query_start_offsets` | `[N + 1]` | Physical row starts. The current implementation uses entry padding, so entry `i` starts at `i * S_pad`; these are not compact logical prefix sums. |
 | `query_lengths`, `past_lengths`, `sequence_lengths`, `attention_sequence_lengths` | `[N]` | Logical per-entry lengths. Padding changes `T_exec` and offsets, never these values or request progress. |
 | `state_indices` | `[N]` | Maps current entries to resident KV/recurrent/conv pool rows. Current entry order is independent of resident slot order. |
 | `kv_page_table` | `[N, 2, max_pages_per_sequence]` | Current-entry page-table view into the resident paged KV pools. |
@@ -73,7 +73,7 @@ Mamba, and the runtime:
 
 Old batch-major engines are not supported by this ABI. Re-export the ONNX model
 and rebuild the engine, and use export, build, plugin, and runtime artifacts
-from a compatible revision. MR1 deliberately keeps the existing plugin creator
+from the same Edge-LLM version. The current implementation keeps the existing plugin creator
 version: compatibility is enforced by ragged engine metadata, bindings, and
 tensor descriptors, not by a dual-ABI plugin implementation.
 
@@ -140,14 +140,14 @@ A simplified kernel implementation is provided for this plugin. Evaluation indic
 
 The Int4GroupwiseGemmPlugin integrates into the TensorRT Edge-LLM inference pipeline through the following stages:
 
-1. **Quantization Phase**: `tensorrt-edgellm-quantize` or a supported pre-quantized checkpoint stores linear layers in INT4 weights-only groupwise format with group size 128.
+1. **Quantization Phase**: `trtedge quantize` or a supported pre-quantized checkpoint stores linear layers in INT4 weights-only groupwise format with group size 128.
 2. **Export Phase**: During ONNX model export, `tensorrt_edgellm` emits quantized matrix multiplication custom-op nodes for Int4GroupwiseGemmPlugin.
 3. **Engine Construction**: The TensorRT engine builder identifies Int4GroupwiseGemmPlugin operations via registered plugin creators and integrates them into the optimized computation graph.
 4. **Runtime Execution**: During inference, the Int4GroupwiseGemmPlugin executes quantized GEMM/GEMV operations as nodes within the TensorRT engine's execution graph.
 
 ## Int4GroupwiseGemmPluginV2
 
-`Int4GroupwiseGemmPluginV2` is the default INT4 groupwise GEMM backend. It shares the `Int4GroupwiseGemmPlugin` GEMM semantics — INT4 weights-only groupwise quantization, group size 128, FP16 accumulation, and symmetric (zero-point-free) quantization — but dispatches to AOT-compiled CuTe DSL (cuteDSL) W4A16 kernels instead of the AWQ CUDA-C++ kernels.
+`Int4GroupwiseGemmPluginV2` is the default INT4 groupwise GEMM backend. It shares the `Int4GroupwiseGemmPlugin` GEMM semantics — INT4 weights-only groupwise quantization, group size 128, and symmetric (zero-point-free) quantization — but dispatches to AOT-compiled CuTe DSL (cuteDSL) W4A16 kernels instead of the AWQ CUDA-C++ kernels. The GEMM accumulates in FP32; the GEMV keeps FP16 partial sums.
 
 The fragment layout supports any positive output width. The final 128-channel
 fragment is bounds-predicated by both the GEMM and GEMV kernels, so narrow

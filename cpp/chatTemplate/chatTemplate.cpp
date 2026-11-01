@@ -65,30 +65,62 @@ Json parseJsonOrString(std::string const& value)
     return parsed.is_discarded() ? Json(value) : preserveJsonOrder(parsed);
 }
 
+//! Speculative-decoding engine directories carry base_config.json instead of config.json.
+std::string modelName(std::filesystem::path const& modelDir)
+{
+    for (char const* filename : {"config.json", "base_config.json"})
+    {
+        auto const configPath = modelDir / filename;
+        std::ifstream stream(configPath);
+        if (!stream)
+        {
+            continue;
+        }
+        try
+        {
+            auto const config = Json::parse(stream);
+            return config.value("model", config.value("model_type", std::string{}));
+        }
+        catch (std::exception const& error)
+        {
+            LOG_WARNING("Ignoring unparsable %s: %s", configPath.c_str(), error.what());
+            return {};
+        }
+    }
+    return {};
+}
+
 //! Qwen3-Omni Instruct checkpoints are trained never to emit reasoning tokens. Binding
 //! ``enable_thinking`` makes their provider template prepend an inert
 //! ``<think>\n\n</think>\n\n``, which also shifts the Talker prefill slices off the first
 //! spoken token. Leaving the flag undefined selects the no-injection branch, as the
 //! provider's own ``apply_chat_template`` does when the caller passes no kwarg.
-bool omitsEnableThinking(std::filesystem::path const& modelDir)
+bool omitsEnableThinking(std::string const& model)
 {
-    auto const configPath = modelDir / "config.json";
-    std::ifstream stream(configPath);
-    if (!stream)
-    {
-        return false;
-    }
-    try
-    {
-        auto const config = Json::parse(stream);
-        auto const model = config.value("model", config.value("model_type", std::string{}));
-        return model.rfind("qwen3_omni", 0) == 0;
-    }
-    catch (std::exception const& error)
-    {
-        LOG_WARNING("Ignoring unparsable %s: %s", configPath.c_str(), error.what());
-        return false;
-    }
+    return model.rfind("qwen3_omni", 0) == 0;
+}
+
+//! Gemma checkpoints expect ``<bos>`` as the first token. Their provider template emits it, so
+//! the raw (no-template) path must add it too; without it accuracy drops sharply.
+bool rawPromptNeedsBos(std::string const& model)
+{
+    return model.rfind("gemma", 0) == 0;
+}
+
+//! Muse-Glimmer's provider template has no thinking switch and the model always opens a
+//! reasoning channel first. With thinking disabled, close an empty reasoning message and
+//! open the user channel so the answer starts immediately.
+constexpr std::string_view kMuseGlimmerGenerationPrompt = "<|start|>assistant";
+constexpr std::string_view kMuseGlimmerDirectAnswer = " to=self<|message|><|eom|><|start|>assistant to=user<|message|>";
+
+bool endsWith(std::string const& value, std::string_view suffix)
+{
+    return value.size() >= suffix.size() && value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+bool opensMuseGlimmerAnswerChannel(std::string const& model)
+{
+    return model.rfind("muse_glimmer", 0) == 0;
 }
 
 std::string readTextFile(std::filesystem::path const& path)
@@ -266,8 +298,10 @@ std::string internVLContent(rt::Message const& message)
 
 std::string nemotronOmniContent(rt::Message const& message)
 {
-    // Inline each media block as its sentinel token (<image>/<audio>/<video>)
-    // for the runtime media runner to expand; text blocks pass through.
+    // Inline each media block as its tokenizer-registered sentinel special
+    // token for the runtime media runner to expand; text blocks pass
+    // through. Audio uses kSoundEmbeddingToken (sound_context_token_id).
+    constexpr std::string_view kSoundEmbeddingToken = "<so_embedding>";
     std::string result;
     for (auto const& item : message.contents)
     {
@@ -275,7 +309,11 @@ std::string nemotronOmniContent(rt::Message const& message)
         {
             result += item.content;
         }
-        else if (item.type == "image" || item.type == "audio" || item.type == "video")
+        else if (item.type == "audio")
+        {
+            result += std::string(kSoundEmbeddingToken);
+        }
+        else if (item.type == "image" || item.type == "video")
         {
             result += "<" + item.type + ">";
         }
@@ -574,7 +612,10 @@ public:
         mProviderTemplate.reset();
         mManualFamily.clear();
         mRawProcessor = RawProcessor::kNone;
-        mOmitEnableThinking = omitsEnableThinking(modelDir);
+        auto const model = modelName(modelDir);
+        mOmitEnableThinking = omitsEnableThinking(model);
+        mRawPromptBos = rawPromptNeedsBos(model);
+        mOpenMuseAnswerChannel = opensMuseGlimmerAnswerChannel(model);
         mBosToken = std::move(bosToken);
         mEosToken = std::move(eosToken);
 
@@ -661,9 +702,13 @@ public:
         {
             if (!options.applyTemplate)
             {
-                formattedRequest.formattedCompleteRequest = renderRaw(request);
+                auto const withBos = [this](std::string text) {
+                    bool const addBos = mRawPromptBos && !mBosToken.empty() && text.rfind(mBosToken, 0) != 0;
+                    return addBos ? mBosToken + text : text;
+                };
+                formattedRequest.formattedCompleteRequest = withBos(renderRaw(request));
                 formattedRequest.formattedSystemPrompt
-                    = request.messages.front().role == "system" ? textContent(request.messages.front()) : "";
+                    = request.messages.front().role == "system" ? withBos(textContent(request.messages.front())) : "";
                 return true;
             }
             if (mMode == Mode::kUninitialized)
@@ -720,7 +765,13 @@ public:
                 setInjaObjectField(inputs, "parallel_tool_calls", options.parallelToolCalls);
                 setInjaObjectField(inputs, "tool_choice", toolChoiceToJson(options.toolChoice));
                 setInjaObjectField(inputs, "continue_final_message", false);
-                return applyRawProcessor(provider->render(inputs), mRawProcessor);
+                auto rendered = applyRawProcessor(provider->render(inputs), mRawProcessor);
+                if (mOpenMuseAnswerChannel && addGenerationPrompt && !options.enableThinking
+                    && endsWith(rendered, kMuseGlimmerGenerationPrompt))
+                {
+                    rendered += kMuseGlimmerDirectAnswer;
+                }
+                return rendered;
             };
 
             formattedRequest.formattedCompleteRequest = render(*messages, options.addGenerationPrompt);
@@ -776,6 +827,8 @@ private:
     std::string mEosToken;
     RawProcessor mRawProcessor{RawProcessor::kNone};
     bool mOmitEnableThinking{false};
+    bool mRawPromptBos{false};
+    bool mOpenMuseAnswerChannel{false};
     Mode mMode{Mode::kUninitialized};
 };
 

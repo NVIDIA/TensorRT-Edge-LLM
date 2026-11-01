@@ -17,6 +17,7 @@
 from tensorrt_edgellm.dflash import DFlashVersion
 
 from ...core import config as core_config
+from ...core import contracts
 
 _EXPECTED_CONTRACT = {
     "dflash2_conv_kernel_size": 2,
@@ -25,6 +26,37 @@ _EXPECTED_CONTRACT = {
     "dflash2_selector_top_k": 16,
 }
 _EXPECTED_DRAFT_LAYERS = 5
+
+
+def component_config(root: dict, component: contracts.Component) -> dict:
+    """Normalize the provider's nested DFlash2 draft configuration."""
+    if component != contracts.Component.LLM:
+        raise ValueError(f"DFlash2 has no {component.value} configuration")
+    config = dict(root.get("transformer_layer_config") or {})
+    for key, value in root.items():
+        config.setdefault(key, value)
+    aux_layers = [
+        int(layer) for layer in root.get("aux_hidden_state_layer_ids") or []
+    ]
+    if any(layer <= 0 for layer in aux_layers):
+        raise ValueError(
+            "DFlash2 auxiliary hidden-state layer IDs must be positive")
+    dflash = dict(root.get("dflash_config") or {})
+    if not dflash.get("target_layer_ids"):
+        dflash["target_layer_ids"] = [layer - 1 for layer in aux_layers]
+    is_causal = bool(
+        dflash.get(
+            "is_causal",
+            root.get("is_causal",
+                     not bool(root.get("sliding_window_non_causal", False)))))
+    config["is_causal"] = is_causal
+    dflash["is_causal"] = is_causal
+    for name, default in (("block_size", 8), ("mask_token_id", -1),
+                          ("conv_kernel_size", 0), ("conv_group_size", 0),
+                          ("selector_rank", 0), ("selector_top_k", 0)):
+        dflash.setdefault(name, root.get(name, default))
+    config["dflash_config"] = dflash
+    return config
 
 
 def _validate_dimensions(draft, target) -> None:

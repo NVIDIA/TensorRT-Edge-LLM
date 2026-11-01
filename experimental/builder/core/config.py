@@ -171,6 +171,9 @@ class DeviceConfig:
     dflash2_conv_group_size: int = 0
     dflash2_selector_rank: int = 0
     dflash2_selector_top_k: int = 0
+    dflash_causal_head: bool = False
+    # DFlash V1 draft whose block position i predicts token i + 1 (DeepSpec).
+    dflash_shift_label: bool = False
     dspark_base: bool = False
     dspark_tree_base: bool = False
     dspark_target_layer_ids: List[int] = field(default_factory=list)
@@ -327,7 +330,8 @@ class DeviceConfig:
             component: "contracts.Component | str" = contracts.Component.LLM,
             tp_size: int = 1,
             tp_rank: int = 0,
-            num_decoder_layers: Optional[int] = None) -> "DeviceConfig":
+            num_decoder_layers: Optional[int] = None,
+            quantize_activations: bool = True) -> "DeviceConfig":
         bundle = BundleConfig.from_pretrained(model_dir)
         resolved_component = (component
                               if isinstance(component, contracts.Component)
@@ -363,7 +367,8 @@ class DeviceConfig:
         mamba_cfg = _parse_mamba_cfg(llm, layer_types, model_dir)
         gdn_cfg = _parse_gdn_cfg(llm, layer_types)
         quant = quantization.parse_quantization(model_dir, root, llm,
-                                                weight_conversion)
+                                                weight_conversion,
+                                                quantize_activations)
 
         num_experts = int(
             llm.get("num_experts", llm.get("num_local_experts", 0)) or 0)
@@ -487,6 +492,7 @@ class DeviceConfig:
                 llm.get("dflash_mask_token_id",
                         llm.get("mask_token_id", 248070)))),
             dflash_version=dflash_contract.version,
+            dflash_shift_label=dflash_contract.shift_label,
             dflash2_target_layer_ids=list((llm.get("dflash_config")
                                            or {}).get("target_layer_ids", [])),
             dflash2_block_size=int((llm.get("dflash_config")
@@ -502,6 +508,10 @@ class DeviceConfig:
                                        or {}).get("selector_rank", 0)),
             dflash2_selector_top_k=int((llm.get("dflash_config")
                                         or {}).get("selector_top_k", 0)),
+            dflash_causal_head=bool((llm.get("dflash_config")
+                                     or {}).get("causal_head",
+                                                llm.get("causal_head",
+                                                        False))),
             dspark_base=bool(llm.get("dspark_base", False)),
             dspark_tree_base=bool(llm.get("dspark_tree_base", False)),
             dspark_target_layer_ids=list(
@@ -647,18 +657,19 @@ class DeviceConfig:
 
 def _promote_llm_dict(root: Dict[str, Any]) -> Dict[str, Any]:
     """Return the dict that holds LLM architecture fields."""
-    if root.get("num_attention_heads") is not None:
+    _required = ("hidden_size", "num_hidden_layers", "num_attention_heads")
+    if all(root.get(name) is not None for name in _required):
         return root
     for name in ("text_config", "llm_config", "language_config"):
         sub = root.get(name)
-        if isinstance(sub,
-                      dict) and sub.get("num_attention_heads") is not None:
+        if isinstance(sub, dict) and all(
+                sub.get(k) is not None for k in _required):
             return sub
     supplemental = root.get("_direct_vlm_config")
     if isinstance(supplemental, dict):
         promoted = _promote_llm_dict(supplemental)
-        if promoted is not supplemental or promoted.get(
-                "num_attention_heads") is not None:
+        if promoted is not supplemental or all(
+                promoted.get(k) is not None for k in _required):
             promoted = dict(promoted)
             if root.get("vocab_size") is not None:
                 promoted["vocab_size"] = root["vocab_size"]

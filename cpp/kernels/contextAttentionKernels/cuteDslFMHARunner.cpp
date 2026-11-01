@@ -15,6 +15,11 @@
  * limitations under the License.
  */
 
+#if defined(_MSC_VER)
+// MSVC requires this before <cmath> exposes M_LOG2E.
+#define _USE_MATH_DEFINES
+#endif
+
 #ifdef CUTE_DSL_FMHA_BLACKWELL_ENABLED
 
 #include "cuteDslFMHARunner.h"

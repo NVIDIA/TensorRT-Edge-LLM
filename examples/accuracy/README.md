@@ -26,11 +26,11 @@ Build engines under the tensorrt_edgellm root directory. Use large sequence leng
 ### Text-only Models:
 ```bash
 ./build/examples/llm/llm_build \
-  --onnxDir /path/to/text/onnx/model/ \
-  --engineDir /path/to/text/engine/ \
-  --maxInputLen 8192 \
-  --maxKVCacheCapacity 10240 \
-  --maxBatchSize 1
+  --onnx-dir /path/to/text/onnx/model/ \
+  --engine-dir /path/to/text/engine/ \
+  --max-input-len 8192 \
+  --max-kv-cache-capacity 10240 \
+  --max-batch-size 1
 ```
 
 ### Multimodal Models (MMMU, MMMU_Pro):
@@ -39,20 +39,20 @@ Build both visual encoder and text engines:
 **Visual Encoder:**
 ```bash
 ./build/examples/multimodal/visual_build \
-  --onnxDir /path/to/visual/onnx/model/ \
-  --engineDir /path/to/visual/engine/ \
-  --minImageTokens 256 \
-  --maxImageTokens 8192
+  --onnx-dir /path/to/visual/onnx/model/ \
+  --engine-dir /path/to/visual/engine/ \
+  --min-image-tokens 256 \
+  --max-image-tokens 8192
 ```
 
 **Text Engine:**
 ```bash
 ./build/examples/llm/llm_build \
-  --onnxDir /path/to/text/onnx/model/ \
-  --engineDir /path/to/text/engine/ \
-  --maxInputLen 8192 \
-  --maxKVCacheCapacity 10240 \
-  --maxBatchSize 1
+  --onnx-dir /path/to/text/onnx/model/ \
+  --engine-dir /path/to/text/engine/ \
+  --max-input-len 8192 \
+  --max-kv-cache-capacity 10240 \
+  --max-batch-size 1
 ```
 
 ## Benchmark Types
@@ -70,10 +70,10 @@ python3 scripts/prepare_dataset.py \
 
 # 2. Run inference (under tensorrt_edgellm root dir)
 ./build/examples/llm/llm_inference \
-  --engineDir /path/to/engines/text_engine/ \
-  --multimodalEngineDir /path/to/multimodal/engine/ \  # For multimodal models
-  --inputFile /path/to/datasets/mmlu_output/mmlu_dataset.json \
-  --outputFile /path/to/outputs/mmlu_predictions.json
+  --engine-dir /path/to/engines/text_engine/ \
+  --multimodal-engine-dir /path/to/multimodal/engine/ \  # For multimodal models
+  --input-file /path/to/datasets/mmlu_output/mmlu_dataset.json \
+  --output-file /path/to/outputs/mmlu_predictions.json
 
 # 3. Calculate accuracy
 python3 scripts/calculate_correctness.py \
@@ -82,7 +82,7 @@ python3 scripts/calculate_correctness.py \
 ```
 
 **DART visual-token pruning comparison** (`run_dart_accuracy.py`): [visual-token pruning](../../docs/source/user_guide/features/visual-token-pruning.md)
-removes redundant visual tokens before VLM prefill (`llm_inference --visualPrune`), trading a
+removes redundant visual tokens before VLM prefill (`llm_inference --visual-prune`), trading a
 small, ratio-dependent accuracy cost for prefill speedup. This script quantifies the accuracy
 side of that trade-off: it runs a prepared multiple-choice VLM dataset (MMStar / MMMU) through
 `llm_inference` once without pruning and once per `--ratios` value, scores every run, and prints
@@ -90,7 +90,7 @@ a per-dataset markdown table — score (Δ vs baseline), average text/visual tok
 the *estimated* prefill speedup (the linear token-count ratio `baseline_ISL / pruned_ISL`).
 Pass several `--dataset_files` for one table row per dataset. It intentionally reports no timing
 — the sequential single-pass runs are not a fair benchmark; measure real latency with
-`llm_inference --dumpProfile --warmup N`:
+`llm_inference --dump-profile --warmup N`:
 
 ```bash
 python3 scripts/prepare_dataset.py --dataset MMStar --output_dir tmp/mmstar_output
@@ -117,9 +117,9 @@ python3 scripts/generate_reference.py \
 
 # 2. Run inference (under tensorrt_edgellm root dir)
 ./build/examples/llm/llm_inference \
-  --engineDir /path/to/engine/ \
-  --inputFile /path/to/dataset.json \
-  --outputFile /path/to/predictions.json
+  --engine-dir /path/to/engine/ \
+  --input-file /path/to/dataset.json \
+  --output-file /path/to/predictions.json
 
 # 3. Calculate ROUGE scores
 python scripts/calculate_rouge_score.py \
@@ -187,7 +187,7 @@ Located in `example_datasets/` directory. Use `scripts/prepare_dataset.py` to co
 
 - **Engine Building**: Use `llm_build` for text engines, `visual_build` for visual encoders
 - **Sequence Lengths**: Use large values (8192-10240) for accuracy datasets
-- **Multimodal Models**: Build both LLM and visual engines, use `--multimodalEngineDir` parameter for inference
+- **Multimodal Models**: Build both LLM and visual engines, use `--multimodal-engine-dir` parameter for inference
 - **Dataset Format**: All inputs must be in Edge LLM JSON format
 - **Binary Location**: Run inference binaries from tensorrt_edgellm root directory
 
@@ -233,24 +233,24 @@ VLMEvalKit requires larger image sizes, input lengths, and output lengths than d
 **Visual Encoder:**
 ```bash
 ./build/examples/multimodal/visual_build \
-  --onnxDir /path/to/visual/onnx/model/ \
-  --engineDir /path/to/visual/engine/ \
-  --minImageTokens 980 \
-  --maxImageTokens 19600 \
-  --maxImageTokensPerImage 3920
+  --onnx-dir /path/to/visual/onnx/model/ \
+  --engine-dir /path/to/visual/engine/ \
+  --min-image-tokens 980 \
+  --max-image-tokens 19600 \
+  --max-image-tokens-per-image 3920
 ```
 
 **Text Engine:**
 ```bash
 ./build/examples/llm/llm_build \
-  --onnxDir /path/to/text/onnx/model/ \
-  --engineDir /path/to/text/engine/ \
-  --maxInputLen 21000 \
-  --maxKVCacheCapacity 30000 \
-  --maxBatchSize 1 \
+  --onnx-dir /path/to/text/onnx/model/ \
+  --engine-dir /path/to/text/engine/ \
+  --max-input-len 21000 \
+  --max-kv-cache-capacity 30000 \
+  --max-batch-size 1 \
   --vlm \
-  --minImageTokens 980 \
-  --maxImageTokens 19600
+  --min-image-tokens 980 \
+  --max-image-tokens 19600
 ```
 
 ### 4. Run Inference
@@ -258,12 +258,12 @@ VLMEvalKit requires larger image sizes, input lengths, and output lengths than d
 **Inference:**
 ```bash
 ./build/examples/llm/llm_inference \
-  --engineDir /path/to/text/engine/ \
-  --multimodalEngineDir /path/to/visual/engine/ \
-  --inputFile /path/to/datasets/mmmu_vlmevalkit/mmmu_dataset.json \
-  --outputFile /path/to/outputs/mmmu_predictions.json \
-  --batchSize 1 \
-  --maxGenerateLength 8192
+  --engine-dir /path/to/text/engine/ \
+  --multimodal-engine-dir /path/to/visual/engine/ \
+  --input-file /path/to/datasets/mmmu_vlmevalkit/mmmu_dataset.json \
+  --output-file /path/to/outputs/mmmu_predictions.json \
+  --batch-size 1 \
+  --max-generate-length 8192
 ```
 
 **Prepare Output:**

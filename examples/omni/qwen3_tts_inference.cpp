@@ -258,49 +258,64 @@ void printUsage(char const* programName)
 {
     std::cerr << "Usage: " << programName << " [OPTIONS]\n\n"
               << "Main Options:\n"
-              << "  --help                       Display this help message\n"
-              << "  --inputFile=<path>           Path to input JSON file (text messages only)\n"
-              << "  --talkerEngineDir=<path>     Path to Talker engine directory\n"
-              << "  --code2wavEngineDir=<path>   Path to Code2Wav engine directory\n"
-              << "  --cloneEncoderDir=<path>     Voice-clone reference encoder engines (Base checkpoints)\n"
-              << "  --tokenizerDir=<path>        Path to tokenizer directory\n"
-              << "                               Defaults to --talkerEngineDir/../\n"
-              << "  --checkpointDir=<path>       HF/ModelOpt checkpoint for external model weights\n"
-              << "  --outputFile=<path>          Path to output JSON file\n"
-              << "  --outputAudioDir=<path>      Directory to save generated audio (.wav) files\n\n"
+              << "  --help                        Display this help message\n"
+              << "  --input-file=<path>           Path to input JSON file (text messages only)\n"
+              << "  --talker-engine-dir=<path>    Path to Talker engine directory\n"
+              << "  --code2wav-engine-dir=<path>  Path to Code2Wav engine directory\n"
+              << "  --clone-encoder-dir=<path>    Voice-clone reference encoder engines (Base checkpoints)\n"
+              << "  --tokenizer-dir=<path>        Path to tokenizer directory\n"
+              << "                                Defaults to --talker-engine-dir/../\n"
+              << "  --checkpoint-dir=<path>       HF/ModelOpt checkpoint for external model weights\n"
+              << "  --output-file=<path>          Path to output JSON file\n"
+              << "  --output-audio-dir=<path>     Directory to save generated audio (.wav) files\n\n"
               << "Performance Options:\n"
-              << "  --batchSize=<number>         Override batch size from input file\n"
-              << "  --streaming                  Enable streaming: RVQ chunks vocoded inline per request\n"
-              << "  --chunkFrames=<N>            Required with --streaming; frames per chunk callback\n"
-              << "  --cpSpecVerifySize=<N>       CodePredictor speculative decoding verify window: 1 committed\n"
-              << "                               position plus N-1 drafted RVQ depths. 0 disables (default).\n"
+              << "  --batch-size=<number>         Override batch size from input file\n"
+              << "  --streaming                   Enable streaming: RVQ chunks vocoded inline per request\n"
+              << "  --chunk-frames=<N>            Required with --streaming; frames per chunk callback\n"
+              << "  --cp-spec-verify-size=<N>     CodePredictor speculative decoding verify window: 1 committed\n"
+              << "                                position plus N-1 drafted RVQ depths. 0 disables (default).\n"
               << "\n"
               << "Debug Options:\n"
-              << "  --debug                      Enable verbose logging\n"
-              << "  --dumpOutput                 Print inference output to console\n"
-              << "  --dumpProfile                Print performance summary to console\n"
-              << "  --profileOutputFile=<path>   Path to profile JSON output\n"
+              << "  --debug                       Enable verbose logging\n"
+              << "  --dump-output                 Print inference output to console\n"
+              << "  --dump-profile                Print performance summary to console\n"
+              << "  --profile-output-file=<path>  Path to profile JSON output\n"
               << std::endl;
+    std::cerr << "Legacy camelCase option spellings remain accepted.\n";
 }
 
 bool parseArgs(Qwen3TTSInferenceArgs& args, int argc, char* argv[])
 {
     static struct option inferenceOptions[] = {{"help", no_argument, 0, Qwen3TTSOptionId::HELP},
+        {"input-file", required_argument, 0, Qwen3TTSOptionId::INPUT_FILE},
         {"inputFile", required_argument, 0, Qwen3TTSOptionId::INPUT_FILE},
+        {"talker-engine-dir", required_argument, 0, Qwen3TTSOptionId::TALKER_ENGINE_DIR},
         {"talkerEngineDir", required_argument, 0, Qwen3TTSOptionId::TALKER_ENGINE_DIR},
+        {"code2wav-engine-dir", required_argument, 0, Qwen3TTSOptionId::CODE2WAV_ENGINE_DIR},
         {"code2wavEngineDir", required_argument, 0, Qwen3TTSOptionId::CODE2WAV_ENGINE_DIR},
+        {"tokenizer-dir", required_argument, 0, Qwen3TTSOptionId::TOKENIZER_DIR},
         {"tokenizerDir", required_argument, 0, Qwen3TTSOptionId::TOKENIZER_DIR},
+        {"clone-encoder-dir", required_argument, 0, Qwen3TTSOptionId::CLONE_ENCODER_DIR},
         {"cloneEncoderDir", required_argument, 0, Qwen3TTSOptionId::CLONE_ENCODER_DIR},
+        {"cp-spec-verify-size", required_argument, 0, Qwen3TTSOptionId::CP_SPEC_VERIFY_SIZE},
         {"cpSpecVerifySize", required_argument, 0, Qwen3TTSOptionId::CP_SPEC_VERIFY_SIZE},
+        {"checkpoint-dir", required_argument, 0, Qwen3TTSOptionId::CHECKPOINT_DIR},
         {"checkpointDir", required_argument, 0, Qwen3TTSOptionId::CHECKPOINT_DIR},
+        {"output-file", required_argument, 0, Qwen3TTSOptionId::OUTPUT_FILE},
         {"outputFile", required_argument, 0, Qwen3TTSOptionId::OUTPUT_FILE},
+        {"output-audio-dir", required_argument, 0, Qwen3TTSOptionId::OUTPUT_AUDIO_DIR},
         {"outputAudioDir", required_argument, 0, Qwen3TTSOptionId::OUTPUT_AUDIO_DIR},
         {"debug", no_argument, 0, Qwen3TTSOptionId::DEBUG},
+        {"dump-profile", no_argument, 0, Qwen3TTSOptionId::DUMP_PROFILE},
         {"dumpProfile", no_argument, 0, Qwen3TTSOptionId::DUMP_PROFILE},
+        {"profile-output-file", required_argument, 0, Qwen3TTSOptionId::PROFILE_OUTPUT_FILE},
         {"profileOutputFile", required_argument, 0, Qwen3TTSOptionId::PROFILE_OUTPUT_FILE},
+        {"dump-output", no_argument, 0, Qwen3TTSOptionId::DUMP_OUTPUT},
         {"dumpOutput", no_argument, 0, Qwen3TTSOptionId::DUMP_OUTPUT},
+        {"batch-size", required_argument, 0, Qwen3TTSOptionId::BATCH_SIZE},
         {"batchSize", required_argument, 0, Qwen3TTSOptionId::BATCH_SIZE},
         {"streaming", no_argument, 0, Qwen3TTSOptionId::STREAMING},
+        {"chunk-frames", required_argument, 0, Qwen3TTSOptionId::CHUNK_FRAMES},
         {"chunkFrames", required_argument, 0, Qwen3TTSOptionId::CHUNK_FRAMES}, {0, 0, 0, 0}};
 
     int opt;
@@ -363,17 +378,17 @@ bool parseArgs(Qwen3TTSInferenceArgs& args, int argc, char* argv[])
     {
         if (args.inputFile.empty())
         {
-            LOG_ERROR("--inputFile is required");
+            LOG_ERROR("--input-file is required");
             return false;
         }
         if (args.talkerEngineDir.empty())
         {
-            LOG_ERROR("--talkerEngineDir is required");
+            LOG_ERROR("--talker-engine-dir is required");
             return false;
         }
         if (args.streaming && args.chunkFrames <= 0)
         {
-            LOG_ERROR("--chunkFrames=<N> is required when --streaming is set");
+            LOG_ERROR("--chunk-frames=<N> is required when --streaming is set");
             return false;
         }
     }
@@ -479,7 +494,7 @@ int main(int argc, char** argv)
     size_t failedCount = 0;
 
     // Determine how many requests to bundle into each Talker call.
-    // input.batchSize comes from `--batchSize` (or `batch_size` in input JSON, default 1).
+    // input.batchSize comes from `--batch-size` (or `batch_size` in input JSON, default 1).
     size_t const ttsBatchSize = std::max<size_t>(1, static_cast<size_t>(input.batchSize));
     LOG_INFO("Processing %zu request(s) with ttsBatchSize=%zu...", input.requests.size(), ttsBatchSize);
 

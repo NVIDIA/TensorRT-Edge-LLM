@@ -86,9 +86,11 @@ class Linear(Module):
                 raise NotImplementedError(
                     "NVFP4-A16 tensor parallelism is not implemented")
             descriptor = self._full_descriptor(quant_type, False)
-            output = F.nvfp4_a16_linear_from_weights(hidden_states, descriptor,
+            output = F.nvfp4_a16_linear_from_weights(hidden_states,
+                                                     descriptor,
                                                      rank,
-                                                     self.ctx.options.sm110)
+                                                     self.ctx.options.sm110,
+                                                     name=self.prefix)
             output = self._apply_static_adapter(hidden_states, output,
                                                 "replicated", rank)
             if self._uses_lora():
@@ -172,11 +174,15 @@ class Linear(Module):
         # segmented GDN Q/K/V projections remain engine constants.
         if self.tp_output_segments and self.cfg.tp_size > 1:
             return self.weights.linear(self.prefix, quant_type)
+        external_kind = (weight_policy.EXTERNAL_WEIGHT_NVFP4_A16
+                         if quant_type == quantization.QUANT_NVFP4_A16
+                         and not self.ctx.options.sm110 else
+                         weight_policy.EXTERNAL_WEIGHT_NVFP4_TP
+                         if use_fused_nvfp4_tp else "")
         return self.weights.linear_descriptor(
             self.prefix,
             quant_type,
-            external_kind=(weight_policy.EXTERNAL_WEIGHT_NVFP4_TP
-                           if use_fused_nvfp4_tp else ""),
+            external_kind=external_kind,
         )
 
     def has_adapter(self) -> bool:

@@ -2,11 +2,11 @@
 
 ## Overview
 
-FP8 KV cache reduces memory usage by quantizing the key-value cache from FP16 to FP8 (NVIDIA FP8 E4M3 format), achieving **~50% memory reduction** and **9--17% faster context attention** on Blackwell for d=128 models (3--7% for d=64) on Thor. On Blackwell (SM100+), the CuTe DSL FP8 FMHA kernel operates directly on FP8 Q/KV tensors, and Q quantization is fused into the RoPE kernel at zero additional cost — so the FP8 path delivers pure speedup with no overhead compared to FP16.
+FP8 KV cache reduces memory usage by quantizing the key-value cache from FP16 to FP8 (NVIDIA FP8 E4M3 format), achieving **~50% memory reduction** and **9--17% faster context attention** on Thor for d=128 models (3--7% for d=64). On SM100, SM101, and SM110, the CuTe DSL FP8 FMHA kernel operates directly on FP8 Q/KV tensors, and Q quantization is fused into the RoPE kernel at zero additional cost — so the FP8 path delivers pure speedup with no overhead compared to FP16.
 
 **Key Points**:
 - Reduces KV cache memory usage by ~50% (FP8 vs FP16)
-- Accelerates context attention by 9--17% on Blackwell (d=128 models) via FP8 CuTe DSL FMHA kernel
+- Accelerates context attention by 9--17% on Thor (d=128 models) via FP8 CuTe DSL FMHA kernel
 - Uses NVIDIA FP8 E4M3 format with per-tensor quantization scales
 - Can be used independently or combined with weight quantization
 - Automatically detected during engine build from ONNX model configuration
@@ -16,7 +16,7 @@ FP8 KV cache reduces memory usage by quantizing the key-value cache from FP16 to
 
 ## Workflow
 
-FP8 KV cache is checkpoint-driven in the `tensorrt-edgellm-quantize` ->
+FP8 KV cache is checkpoint-driven in the `trtedge quantize` ->
 `tensorrt_edgellm` workflow. If checkpoint metadata marks KV cache quantization as
 `fp8`, `tensorrt_edgellm` enables FP8 KV cache in the exported ONNX automatically.
 There is no FP8 KV export flag in this path.
@@ -24,13 +24,13 @@ There is no FP8 KV export flag in this path.
 ```bash
 export PYTHONPATH=/path/to/TensorRT-Edge-LLM:$PYTHONPATH
 
-tensorrt-edgellm-quantize llm \
-  --model_dir Qwen/Qwen3-8B \
-  --output_dir /tmp/qwen3_nvfp4_fp8kv \
+trtedge quantize llm \
+  --model-dir Qwen/Qwen3-8B \
+  --output-dir /tmp/qwen3_nvfp4_fp8kv \
   --quantization nvfp4 \
-  --kv_cache_quantization fp8
+  --kv-cache-quantization fp8
 
-tensorrt-edgellm-export \
+trtedge export \
   /tmp/qwen3_nvfp4_fp8kv \
   /tmp/qwen3_nvfp4_fp8kv_onnx
 ```
@@ -40,44 +40,44 @@ cache from the exported ONNX model configuration:
 
 ```bash
 ./build/examples/llm/llm_build \
-  --onnxDir /tmp/qwen3_nvfp4_fp8kv_onnx/llm \
-  --engineDir engines/qwen3-8b-nvfp4-fp8kv \
-  --maxBatchSize=1
+  --onnx-dir /tmp/qwen3_nvfp4_fp8kv_onnx/llm \
+  --engine-dir engines/qwen3-8b-nvfp4-fp8kv \
+  --max-batch-size=1
 ```
 
 Run inference with the built engine. No special runtime flags are needed:
 
 ```bash
 ./build/examples/llm/llm_inference \
-  --engineDir engines/qwen3-8b-nvfp4-fp8kv \
-  --inputFile tests/test_cases/llm_basic.json \
-  --outputFile output.json
+  --engine-dir engines/qwen3-8b-nvfp4-fp8kv \
+  --input-file tests/test_cases/llm_basic.json \
+  --output-file output.json
 ```
 
 ### EAGLE Speculative Decoding
 
-For EAGLE, quantize the base checkpoint with `--kv_cache_quantization fp8`,
+For EAGLE, quantize the base checkpoint with `--kv-cache-quantization fp8`,
 export it with `--eagle-base`, and export the draft checkpoint separately.
 
 ```bash
-tensorrt-edgellm-quantize llm \
-  --model_dir Qwen/Qwen3-8B \
-  --output_dir Qwen3-8B/quantized-base-nvfp4-fp8kv \
+trtedge quantize llm \
+  --model-dir Qwen/Qwen3-8B \
+  --output-dir Qwen3-8B/quantized-base-nvfp4-fp8kv \
   --quantization nvfp4 \
-  --kv_cache_quantization fp8
+  --kv-cache-quantization fp8
 
-tensorrt-edgellm-export \
+trtedge export \
   Qwen3-8B/quantized-base-nvfp4-fp8kv \
   Qwen3-8B/onnx/base \
   --eagle-base
 
-tensorrt-edgellm-export \
+trtedge export \
   /path/to/eagle3_draft \
   Qwen3-8B/onnx/draft
 ```
 
-Build the base with `--specBase`, build the draft with `--specDraft`, and run
-inference with `--specDecode` as described in
+Build the base with `--spec-base`, build the draft with `--spec-draft`, and run
+inference with `--spec-decode` as described in
 [Speculative Decoding](../examples/speculative-decoding.md).
 
 ---
@@ -105,17 +105,18 @@ The main objective of FP8 KV cache is to optimize memory usage. During inference
 - KV cache is stored in FP8 format to reduce memory footprint
 - QKV dequantization scales `[q_scale, k_scale, v_scale]` are provided to attention kernels
 - Attention output is always FP16 — downstream Q/DQ for the output projection is handled by the TRT graph
-- On Blackwell (SM100+), the CuTe DSL FP8 FMHA kernel reads FP8 Q/KV directly with dequant scales folded into softmax and output scaling
+- On SM100, SM101, and SM110, the CuTe DSL FP8 FMHA kernel reads FP8 Q/KV directly with dequant scales folded into softmax and output scaling
 - Q is quantized to FP8 using the calibrated Q scale before the FP8 FMHA kernel
+- Other GPUs dequantize K/V to FP16 before context attention
 - No accuracy degradation expected for most use cases
 
 ---
 
 ## Performance: FP8 vs FP16 FMHA on Thor
 
-When FP8 KV cache is enabled on Blackwell, context attention uses the CuTe DSL FP8 FMHA kernel, which operates directly on FP8 Q/KV tensors. Q quantization (FP16→FP8) is fused into the RoPE kernel at zero additional cost, so the kernel speedup translates directly to end-to-end savings. Attention output is always FP16.
+When FP8 KV cache is enabled on Thor, context attention uses the CuTe DSL FP8 FMHA kernel, which operates directly on FP8 Q/KV tensors. Q quantization (FP16→FP8) is fused into the RoPE kernel at zero additional cost, so the kernel speedup translates directly to end-to-end savings. Attention output is always FP16.
 
-Benchmarks were collected on a Blackwell (Thor / SM100) GPU: causal masking, persistent scheduling, cold L2 cache, FP32 accumulation, 50 warmup + 100 timed iterations.
+Benchmarks were collected on Thor (SM110): causal masking, persistent scheduling, cold L2 cache, FP32 accumulation, 50 warmup + 100 timed iterations.
 
 ### Key Findings
 
@@ -170,7 +171,7 @@ Benchmarks were collected on a Blackwell (Thor / SM100) GPU: causal masking, per
 
 ## Notes
 
-- **Calibration Required**: FP8 KV cache quantization requires text calibration data. Use `--text_dataset <name>` to select a registered text dataset (default: `cnn_dailymail`).
+- **Calibration Required**: FP8 KV cache quantization requires text calibration data. Use `--text-dataset <name>` to select a registered text dataset (default: `cnn_dailymail`).
 - **Independent of Weight Quantization**: FP8 KV cache can be enabled independently of weight quantization. You can use NVFP4 weights (or FP8 weights) with FP8 KV cache.
 - **Automatic Detection**: Engine build automatically detects FP8 KV cache from ONNX model configuration — no special build flags needed.
 - **Compatibility**: Works with the supported LLM and EAGLE flows, but accuracy should be validated per checkpoint.

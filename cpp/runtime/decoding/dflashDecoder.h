@@ -103,8 +103,7 @@ private:
     void prepareLinearBaseVerificationMetadata(int32_t batchSize, int32_t verifySize, cudaStream_t stream);
     void prepareLinearTreeBaseVerificationMetadata(int32_t batchSize, int32_t verifySize, cudaStream_t stream);
     void copyVerifyTokenIdsToBaseInput(int32_t batchSize, int32_t verifySize, cudaStream_t stream);
-    void runBaseVerificationEmbeddingLookup(
-        int32_t batchSize, int32_t verifySize, cudaStream_t stream, bool reshapeGemmaPleOutputs);
+    void runBaseVerificationEmbeddingLookup(int32_t batchSize, int32_t verifySize, cudaStream_t stream);
     bool capturePreparedBaseVerification(int32_t batchSize, int32_t verifySize, cudaStream_t stream);
     void reshapeBaseVerificationInputsOutputs(int32_t batchSize, int32_t verifySize);
     void prepareCommonBaseVerificationInputs(int32_t batchSize, int32_t verifySize);

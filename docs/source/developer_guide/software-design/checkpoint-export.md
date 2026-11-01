@@ -61,7 +61,7 @@ Supported checkpoint formats are parsed through `QuantConfig` and implemented in
 
 | Format | Exporter behavior |
 |---|---|
-| FP16/BF16 | Load tensors directly and export FP16/BF16 graph weights. |
+| FP16/BF16 | Load tensors and export FP16 graph weights; BF16 is cast to FP16. |
 | FP8 / MXFP8 | Load quantized weights and scales from checkpoint metadata. |
 | NVFP4 / FP4 | Repack low-bit floating-point checkpoint tensors for TensorRT Edge-LLM custom ops. |
 | INT4 AWQ / ModelOpt AWQ | Interpret AWQ layout variants and emit the expected packed tensor layout. |
@@ -107,7 +107,7 @@ LoRA support is implemented as a graph and weight sidecar transformation after b
 
 - Graph insertion augments supported linear projections with LoRA inputs and runtime hooks.
 - Adapter processing converts LoRA checkpoint tensors into the layout expected by the runtime.
-- Static merge uses `tensorrt-edgellm-merge-lora` before quantization for models such as Phi-4-Multimodal that ship required LoRA adapters.
+- Static merge uses `trtedge merge-lora` before quantization for models such as Phi-4-Multimodal that ship required LoRA adapters.
 - The base model export remains checkpoint-driven and does not depend on HuggingFace FX tracing.
 
 Runtime usage is documented in [LoRA](../../user_guide/features/lora.md).

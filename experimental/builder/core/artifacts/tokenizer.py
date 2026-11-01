@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import shutil
+import stat
 import tempfile
 from typing import Optional
 
@@ -84,5 +85,12 @@ def copy_tokenizer_artifacts(model_dir: str, output_dir: str) -> None:
     for filename in RUNTIME_TOKENIZER_FILENAMES:
         source = os.path.join(model_dir, filename)
         if os.path.exists(source):
-            shutil.copy2(source, os.path.join(output_dir, filename))
+            # HF shared blobs are read-only; runtime copies must remain writable.
+            with tempfile.TemporaryDirectory(dir=output_dir) as temporary_dir:
+                staged = os.path.join(temporary_dir, filename)
+                shutil.copy2(source, staged)
+                os.chmod(staged,
+                         stat.S_IMODE(os.stat(staged).st_mode)
+                         | stat.S_IWUSR)
+                os.replace(staged, os.path.join(output_dir, filename))
             logger.info("Copied %s", filename)

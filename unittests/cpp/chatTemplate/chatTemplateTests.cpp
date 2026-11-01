@@ -404,6 +404,42 @@ TEST(ChatTemplateTest, LeavesEnableThinkingUndefinedForQwen3Omni)
     }
 }
 
+TEST(ChatTemplateTest, OpensMuseGlimmerAnswerChannelWhenThinkingDisabled)
+{
+    // Generation-prompt tail of the Muse-Glimmer provider template, verbatim.
+    constexpr char kTail[] = R"JINJA({%- if add_generation_prompt -%}
+    {{- '<|start|>assistant' -}}
+{%- endif -%})JINJA";
+    rt::LLMGenerationRequest::Request request{{rt::Message{"user", {{"text", "hello"}}}}};
+    rt::LLMGenerationRequest::FormattedRequest formatted;
+    chat_template::ChatTemplate::Options options;
+
+    TemporaryTemplate model{{"chat_template.jinja", kTail}, {"config.json", R"({"model":"muse_glimmer_text"})"}};
+    chat_template::ChatTemplate renderer;
+    ASSERT_TRUE(renderer.load(model.path));
+    ASSERT_TRUE(renderer.apply(request, formatted, options));
+    EXPECT_EQ(formatted.formattedCompleteRequest,
+        "<|start|>assistant to=self<|message|><|eom|><|start|>assistant to=user<|message|>");
+
+    options.enableThinking = true;
+    ASSERT_TRUE(renderer.apply(request, formatted, options));
+    EXPECT_EQ(formatted.formattedCompleteRequest, "<|start|>assistant");
+
+    options.enableThinking = false;
+    options.addGenerationPrompt = false;
+    ASSERT_TRUE(renderer.apply(request, formatted, options));
+    EXPECT_EQ(formatted.formattedCompleteRequest, "");
+
+    // Speculative-decoding engines carry base_config.json instead of config.json.
+    TemporaryTemplate specModel{
+        {"chat_template.jinja", kTail}, {"base_config.json", R"({"model":"muse_glimmer_text"})"}};
+    chat_template::ChatTemplate specRenderer;
+    ASSERT_TRUE(specRenderer.load(specModel.path));
+    ASSERT_TRUE(specRenderer.apply(request, formatted, {}));
+    EXPECT_EQ(formatted.formattedCompleteRequest,
+        "<|start|>assistant to=self<|message|><|eom|><|start|>assistant to=user<|message|>");
+}
+
 TEST(ChatTemplateTest, ExposesReasoningUnderCurrentAndLegacyProviderKeys)
 {
     TemporaryTemplate model{{"chat_template.jinja", "{{ messages[0].reasoning }}|{{ messages[0].reasoning_content }}"}};
@@ -742,4 +778,25 @@ TEST(ChatTemplateTest, AppliesPreformattedPromptWithoutLoadedTemplate)
         renderer.apply(rt::LLMGenerationRequest::Request{{rt::Message{"user", {{"text", "preformatted prompt"}}}}},
             formatted, options));
     EXPECT_EQ(formatted.formattedCompleteRequest, "preformatted prompt");
+}
+
+TEST(ChatTemplateTest, PrependsBosToGemmaRawPrompt)
+{
+    chat_template::ChatTemplate::Options options;
+    options.applyTemplate = false;
+    auto const render = [&](char const* config, std::string const& text) {
+        TemporaryTemplate model{{"chat_template.jinja", "{{ bos_token }}"}, {"config.json", config}};
+        chat_template::ChatTemplate renderer;
+        EXPECT_TRUE(renderer.load(model.path, "<bos>"));
+        rt::LLMGenerationRequest::FormattedRequest formatted;
+        EXPECT_TRUE(renderer.apply(rt::LLMGenerationRequest::Request{{rt::Message{"system", {{"text", "sys"}}},
+                                       rt::Message{"user", {{"text", text}}}}},
+            formatted, options));
+        return formatted;
+    };
+
+    auto const gemma = render(R"({"model":"gemma4_unified_text"})", "Answer:");
+    EXPECT_EQ(gemma.formattedCompleteRequest, "<bos>sysAnswer:");
+    EXPECT_EQ(gemma.formattedSystemPrompt, "<bos>sys");
+    EXPECT_EQ(render(R"({"model":"qwen3"})", "Answer:").formattedCompleteRequest, "sysAnswer:");
 }

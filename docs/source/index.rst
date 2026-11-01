@@ -18,6 +18,7 @@ and action models on NVIDIA edge platforms.
    user_guide/getting_started/supported-models.md
    user_guide/getting_started/installation.md
    user_guide/getting_started/quick-start-guide.md
+   user_guide/getting_started/cli.md
    user_guide/getting_started/direct-engine-builder.md
    user_guide/getting_started/limitations.md
 
@@ -26,6 +27,8 @@ and action models on NVIDIA edge platforms.
    :caption: Examples
 
    user_guide/examples/index.md
+   user_guide/examples/interactive-chat.md
+   user_guide/examples/python-runtime.md
    user_guide/examples/speculative-decoding.md
    user_guide/examples/phi4.md
    user_guide/examples/asr.md

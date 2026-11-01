@@ -15,6 +15,11 @@
  * limitations under the License.
  */
 
+#if defined(_MSC_VER)
+// MSVC requires this before <cmath> exposes M_LOG2E.
+#define _USE_MATH_DEFINES
+#endif
+
 #include "cuteDslFMHAV2Runner.h"
 
 #if defined(CUTE_DSL_FMHA_ENABLED)
@@ -113,7 +118,8 @@ bool CuteDslFMHAV2Runner::canImplement(int32_t numQHeads, int32_t numKVHeads, in
     case CuteDslFMHAV2MaskType::kSLIDING_CAUSAL:
         return headSize == 64 || headSize == 128 || headSize == 256 || headSize == 512;
     case CuteDslFMHAV2MaskType::kVISION_BLOCK: return headSize == 256 || headSize == 512;
-    case CuteDslFMHAV2MaskType::kPADDING: return headSize == 256;
+    // D512 padding runs on the vision-block variant with full-KV intervals.
+    case CuteDslFMHAV2MaskType::kPADDING: return headSize == 256 || headSize == 512;
     }
     return false;
 }
@@ -286,9 +292,13 @@ bool CuteDslFMHAV2Runner::preflightPagedRagged(cudaStream_t stream, int32_t slid
 
 bool CuteDslFMHAV2Runner::preflightPadding(cudaStream_t stream)
 {
+    if (mHeadDim == 512)
+    {
+        return preflightVisionBlock(stream);
+    }
     if (mHeadDim != 256)
     {
-        LOG_ERROR("FMHA-v2 CuTe DSL padding FMHA requires head_dim=256.");
+        LOG_ERROR("FMHA-v2 CuTe DSL padding FMHA requires head_dim=256 or head_dim=512.");
         return false;
     }
     return preflightVariant<fmha_v2_d256_padding_Kernel_Module_Load, fmha_v2_d256_padding_Kernel_Module_Unload>(
@@ -859,11 +869,17 @@ bool CuteDslFMHAV2Runner::runPagedRagged(void const* qPtr, void const* pagedKVPo
 }
 
 bool CuteDslFMHAV2Runner::runPadding(void const* qPtr, void const* kPtr, void const* vPtr, void* oPtr,
-    int32_t const* cuQSeqLens, int32_t const* cuKVSeqLens, cudaStream_t stream, float attentionScale)
+    int32_t const* cuQSeqLens, int32_t const* cuKVSeqLens, cudaStream_t stream, float attentionScale,
+    int32_t const* blockBegin, int32_t const* blockEnd)
 {
+    if (mHeadDim == 512)
+    {
+        // Intervals from launchBuildPaddingBlockRanges(); keys past cuKVSeqLens are zero-filled.
+        return runVisionBlock(qPtr, kPtr, vPtr, oPtr, cuKVSeqLens, blockBegin, blockEnd, stream, attentionScale, -1);
+    }
     if (mHeadDim != 256)
     {
-        LOG_ERROR("FMHA-v2 CuTe DSL padding FMHA requires head_dim=256.");
+        LOG_ERROR("FMHA-v2 CuTe DSL padding FMHA requires head_dim=256 or head_dim=512.");
         return false;
     }
 

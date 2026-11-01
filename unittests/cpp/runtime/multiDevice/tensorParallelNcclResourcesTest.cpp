@@ -20,7 +20,6 @@
 #include "runtime/multiDevice/ncclCollectiveBackend.h"
 #include "testPluginLoader.h"
 
-#include <dlfcn.h>
 #include <exception>
 #include <gtest/gtest.h>
 
@@ -39,7 +38,7 @@ TEST(TensorParallelNcclResourcesTest, RegistersOwnedCommunicatorsWithPlugin)
     }
 
     void* const pluginHandle = loadPluginLibrary();
-    ASSERT_NE(pluginHandle, nullptr) << "Failed to load " << pluginLibraryPath() << ": " << dlerror();
+    ASSERT_NE(pluginHandle, nullptr) << "Failed to load " << pluginLibraryPath() << ": " << pluginLoadError();
 
     try
     {

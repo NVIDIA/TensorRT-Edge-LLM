@@ -1884,16 +1884,9 @@ bool LLMBuilder::setupIntermediateRecurrentStateProfiles(
 
     bool result = true;
 
-    int64_t const contextOptTokens
-        = mBuilderConfig.checkedPhysicalTokens(std::max<int64_t>(1, mBuilderConfig.maxInputLen / 2));
-    int64_t const contextMaxTokens = mBuilderConfig.checkedPhysicalTokens(mBuilderConfig.maxInputLen);
     int64_t const generationTokens = mBuilderConfig.checkedPhysicalTokens(mBuilderConfig.resolvedRoleQueryLength());
-    nvinfer1::Dims minCtxShape = createDims({1, mRecurrentStateNumHeads, mRecurrentStateHeadDim, mRecurrentStateSize});
-    nvinfer1::Dims optCtxShape
-        = createDims({contextOptTokens, mRecurrentStateNumHeads, mRecurrentStateHeadDim, mRecurrentStateSize});
-    nvinfer1::Dims maxCtxShape
-        = createDims({contextMaxTokens, mRecurrentStateNumHeads, mRecurrentStateHeadDim, mRecurrentStateSize});
-    nvinfer1::Dims minGenShape = minCtxShape;
+    nvinfer1::Dims contextShape = createDims({0, mRecurrentStateNumHeads, mRecurrentStateHeadDim, mRecurrentStateSize});
+    nvinfer1::Dims minGenShape = createDims({1, mRecurrentStateNumHeads, mRecurrentStateHeadDim, mRecurrentStateSize});
     nvinfer1::Dims optGenShape
         = createDims({generationTokens, mRecurrentStateNumHeads, mRecurrentStateHeadDim, mRecurrentStateSize});
     nvinfer1::Dims maxGenShape = optGenShape;
@@ -1901,7 +1894,7 @@ bool LLMBuilder::setupIntermediateRecurrentStateProfiles(
     for (int32_t i = 0; i < mNumLinearAttnLayers; ++i)
     {
         std::string const name = binding_names::formatIntermediateRecurrentStateName(i);
-        result &= setOptimizationProfile(&contextProfile, name.c_str(), minCtxShape, optCtxShape, maxCtxShape);
+        result &= setOptimizationProfile(&contextProfile, name.c_str(), contextShape, contextShape, contextShape);
         result &= setOptimizationProfile(&generationProfile, name.c_str(), minGenShape, optGenShape, maxGenShape);
     }
 
@@ -1919,21 +1912,16 @@ bool LLMBuilder::setupIntermediateConvStateProfiles(
 
     bool result = true;
 
-    int64_t const contextOptTokens
-        = mBuilderConfig.checkedPhysicalTokens(std::max<int64_t>(1, mBuilderConfig.maxInputLen / 2));
-    int64_t const contextMaxTokens = mBuilderConfig.checkedPhysicalTokens(mBuilderConfig.maxInputLen);
     int64_t const generationTokens = mBuilderConfig.checkedPhysicalTokens(mBuilderConfig.resolvedRoleQueryLength());
-    nvinfer1::Dims minCtxShape = createDims({1, mConvDim, mConvKernel});
-    nvinfer1::Dims optCtxShape = createDims({contextOptTokens, mConvDim, mConvKernel});
-    nvinfer1::Dims maxCtxShape = createDims({contextMaxTokens, mConvDim, mConvKernel});
-    nvinfer1::Dims minGenShape = minCtxShape;
+    nvinfer1::Dims contextShape = createDims({0, mConvDim, mConvKernel});
+    nvinfer1::Dims minGenShape = createDims({1, mConvDim, mConvKernel});
     nvinfer1::Dims optGenShape = createDims({generationTokens, mConvDim, mConvKernel});
     nvinfer1::Dims maxGenShape = optGenShape;
 
     for (int32_t i = 0; i < mNumLinearAttnLayers; ++i)
     {
         std::string const name = binding_names::formatIntermediateConvStateName(i);
-        result &= setOptimizationProfile(&contextProfile, name.c_str(), minCtxShape, optCtxShape, maxCtxShape);
+        result &= setOptimizationProfile(&contextProfile, name.c_str(), contextShape, contextShape, contextShape);
         result &= setOptimizationProfile(&generationProfile, name.c_str(), minGenShape, optGenShape, maxGenShape);
     }
 

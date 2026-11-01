@@ -240,8 +240,10 @@ def load_checkpoint_config_dicts(
     try:
         config = AutoConfig.from_pretrained(model_dir, trust_remote_code=True)
         root = config.to_dict()
-    except (ValueError, OSError) as exc:
+    except (ValueError, OSError, AttributeError) as exc:
         # Unknown / not-yet-registered model type — fall back to raw JSON.
+        # transformers' RoPE validation raises AttributeError for DeepSpec
+        # Gemma4 drafts that mix scalar and per-layer-type rope_parameters.
         logger.warning(
             "AutoConfig.from_pretrained failed for %s (%s); "
             "falling back to raw config.json.",

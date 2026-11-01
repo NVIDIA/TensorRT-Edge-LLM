@@ -260,9 +260,11 @@ def nvfp4_expert_bindings(weights, experts_prefix: str, correction_key: str,
         "fc2_alpha":
         weights.checkpoint_binding([], "generated", "fill", fill_value=1.0),
         "input_global_scale":
-        weights.checkpoint_binding([], "generated", "fill", fill_value=1.0),
+        weights.nvfp4_moe_input_scale_binding(experts_prefix, num_experts,
+                                              gate_up),
         "down_input_scale":
-        weights.checkpoint_binding([], "generated", "fill", fill_value=1.0),
+        weights.nvfp4_moe_input_scale_binding(experts_prefix, num_experts,
+                                              down),
         "e_score_correction_bias":
         correction,
     }

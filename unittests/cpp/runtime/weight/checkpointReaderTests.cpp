@@ -38,7 +38,11 @@
 
 #include <fstream>
 #include <numeric>
+#if defined(_WIN32)
+#include <windows.h>
+#else
 #include <unistd.h>
+#endif
 
 using namespace trt_edgellm;
 using namespace trt_edgellm::rt;
@@ -106,7 +110,13 @@ protected:
 
     static size_t pageSize()
     {
+#if defined(_WIN32)
+        SYSTEM_INFO info{};
+        GetSystemInfo(&info);
+        return static_cast<size_t>(info.dwPageSize);
+#else
         return static_cast<size_t>(sysconf(_SC_PAGESIZE));
+#endif
     }
 
     static std::vector<float> hostFloats(View const& view)

@@ -11,7 +11,7 @@ streaming. It is opt-in and, in this release, runs on a single device.
 Server:
 
 ```bash
-tensorrt-edgellm-serve Qwen/Qwen3-8B-FP8 \
+trtedge serve Qwen/Qwen3-8B-FP8 \
   --max-batch-size 4 \
   --enable-in-flight-batching \
   --port 8000

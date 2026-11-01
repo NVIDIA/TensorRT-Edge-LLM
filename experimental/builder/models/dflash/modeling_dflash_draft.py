@@ -38,12 +38,44 @@ def _draft_rotary_dim(cfg) -> int:
     return cfg.rope_rotary_dim(rope_config, cfg.head_dim)
 
 
+def _shift_rows_down(hidden, width: int):
+    """Return ``[hidden[0], hidden[0:N-1]]`` for token-major ``[N, width]``.
+
+    Shift-label drafts predict token i + 1 at block row i; moving each row down
+    one makes row i carry token i, and the shifted-in row lands on the anchor
+    row 0 that the runtime ignores.
+    """
+    rows = F.shape_of(hidden)[0:1]
+    zero = F.constant(np.asarray([0], dtype=np.int32), "shift_zero")
+    one = F.constant(np.asarray([1], dtype=np.int32), "shift_one")
+    first = F.dynamic_slice(hidden, (zero, 0), (one, width))
+    rest = F.dynamic_slice(hidden, (zero, 0), (rows - one, width))
+    return F.concatenate([first, rest], dim=0)
+
+
+class DFlashFP32MLP(GatedMLP):
+
+    def forward(self, hidden_states):
+        if self.down_proj.quant_type() != "fp16":
+            return super().forward(hidden_states)
+        gate = self.gate_proj(hidden_states).cast(trt.float32).activation(
+            self.activation)
+        up = self.up_proj(hidden_states).cast(trt.float32)
+        return self.down_proj.forward_f32(gate * up)
+
+
 class DFlashProposalAttention(TreeAttention):
     """Proposal attention after inserting target-hidden K/V deltas."""
 
-    def __init__(self, ctx, prefix: str, layer_index: int) -> None:
+    def __init__(self,
+                 ctx,
+                 prefix: str,
+                 layer_index: int,
+                 overflow_guard: bool = False) -> None:
         super().__init__(ctx, prefix)
         cfg = ctx.cfg
+        self.fp32_output = (overflow_guard
+                            and layer_index == cfg.num_hidden_layers - 1)
         self.attention_type = cfg.attention_type(layer_index)
         self.head_dim = cfg.layer_head_dim(layer_index)
         self.num_kv_heads = cfg.layer_num_kv_heads(layer_index)
@@ -120,6 +152,8 @@ class DFlashProposalAttention(TreeAttention):
         )
         attention = attention.reshape(
             (0, cfg.num_attention_heads * self.head_dim))
+        if self.fp32_output and self.o_proj.quant_type() == "fp16":
+            return self.o_proj.forward_f32(attention), present
         return self.o_proj(attention), present
 
 
@@ -128,19 +162,31 @@ class DFlashDecoderLayer(Module):
 
     attention_class = DFlashProposalAttention
 
-    def __init__(self, ctx, prefix: str, layer_index: int) -> None:
+    def __init__(self,
+                 ctx,
+                 prefix: str,
+                 layer_index: int,
+                 overflow_guard: bool = False) -> None:
         super().__init__(ctx, prefix)
         cfg = ctx.cfg
         self.is_gemma4 = str(cfg.model_type).startswith("gemma4")
+        self.overflow_guard = overflow_guard
         norm_class = Gemma4RMSNorm if self.is_gemma4 else RMSNorm
         self.input_norm = norm_class(ctx, self.key("input_layernorm"),
                                      cfg.rms_norm_eps)
-        self.attention = self.attention_class(ctx, self.key("self_attn"),
-                                              layer_index)
+        self.attention = (self.attention_class(ctx, self.key("self_attn"),
+                                               layer_index, True)
+                          if overflow_guard else self.attention_class(
+                              ctx, self.key("self_attn"), layer_index))
         self.post_norm = norm_class(ctx, self.key("post_attention_layernorm"),
                                     cfg.rms_norm_eps)
-        self.mlp = (Gemma4TextMLP(ctx, self.key("mlp"))
-                    if self.is_gemma4 else GatedMLP(ctx, self.key("mlp")))
+        if self.is_gemma4:
+            mlp_class = Gemma4TextMLP
+        elif overflow_guard and layer_index == cfg.num_hidden_layers - 1:
+            mlp_class = DFlashFP32MLP
+        else:
+            mlp_class = GatedMLP
+        self.mlp = mlp_class(ctx, self.key("mlp"))
         if self.is_gemma4:
             self.pre_feedforward_norm = Gemma4RMSNorm(
                 ctx, self.key("pre_feedforward_layernorm"), cfg.rms_norm_eps)
@@ -159,6 +205,11 @@ class DFlashDecoderLayer(Module):
                                             delta_token_to_sequence,
                                             attention_mask, attention_pos_id)
         if not self.is_gemma4:
+            if self.overflow_guard:
+                hidden = hidden.cast(trt.float32) + attention.cast(trt.float32)
+                feed_forward = self.mlp(
+                    self.post_norm(hidden).cast(hidden_delta.dtype))
+                return hidden + feed_forward.cast(hidden.dtype), present
             hidden = hidden + attention
             feed_forward = self.mlp(self.post_norm(hidden))
             return hidden + feed_forward, present
@@ -223,12 +274,16 @@ class DFlashDraftModel(NetworkModule):
     def __init__(self, ctx, lm_head=None) -> None:
         super().__init__(ctx)
         self._base_weights = None
+        target_type = core_config.DeviceConfig.from_pretrained(
+            ctx.args.target_model_dir).model_type
+        overflow_guard = (target_type.startswith("gemma4")
+                          and ctx.cfg.model_type == "qwen3")
         norm_class = (Gemma4RMSNorm if str(
             ctx.cfg.model_type).startswith("gemma4") else RMSNorm)
         self.fc = DFlashTargetProjection(ctx, "fc")
         self.hidden_norm = norm_class(ctx, "hidden_norm", ctx.cfg.rms_norm_eps)
         self.layers = [
-            DFlashDecoderLayer(ctx, f"layers.{index}", index)
+            DFlashDecoderLayer(ctx, f"layers.{index}", index, overflow_guard)
             for index in range(ctx.cfg.num_hidden_layers)
         ]
         self.norm = norm_class(ctx, "norm", ctx.cfg.rms_norm_eps)
@@ -286,6 +341,8 @@ class DFlashDraftModel(NetworkModule):
                                   io["delta_token_to_sequence"],
                                   io["attention_mask"], io["attention_pos_id"])
             present.append(cache)
+        if self.cfg.dflash_shift_label:
+            hidden = _shift_rows_down(hidden, self.cfg.hidden_size)
         logits = self.lm_head(self.norm(hidden)).cast(trt.float32)
         if self.cfg.final_logit_softcapping is not None:
             cap = np.float32(self.cfg.final_logit_softcapping)

@@ -20,9 +20,28 @@ torch, transformers, and modelopt.
     tensorrt-edgellm-quantize --help
 """
 
-from .models import DFlashCalibDraftModel  # noqa: F401
-from .models import Eagle3DraftModel  # noqa: F401
-from .models import quantize_and_export_dflash_draft  # noqa: F401
-from .models import quantize_and_export_draft  # noqa: F401
-from .quantization_configs import build_quant_config  # noqa: F401
-from .quantize import quantize_and_export  # noqa: F401
+_EXPORT_MODULES = {
+    "DFlashCalibDraftModel": ".models",
+    "Eagle3DraftModel": ".models",
+    "quantize_and_export_dflash_draft": ".models",
+    "quantize_and_export_draft": ".models",
+    "build_quant_config": ".quantization_configs",
+    "quantize_and_export": ".quantize",
+}
+
+__all__ = list(_EXPORT_MODULES)
+
+
+def __getattr__(name):
+    import importlib
+
+    if name not in _EXPORT_MODULES:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(importlib.import_module(_EXPORT_MODULES[name], __name__),
+                    name)
+    globals()[name] = value
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))

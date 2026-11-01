@@ -110,7 +110,8 @@ public:
         std::optional<SpecDecodeDraftingConfig> const& draftingConfig, cudaStream_t stream,
         ParallelMapping const& mapping, tokenizer::Tokenizer& tokenizer,
         chat_template::ChatTemplate const& chatTemplate, ContextCacheConfig const& contextCacheConfig,
-        std::string const& checkpointDir, std::string const& draftCheckpointDir);
+        std::string const& checkpointDir, std::string const& draftCheckpointDir,
+        std::optional<std::filesystem::path> const& runtimeCachePath = std::nullopt);
 
     LLMRankRuntime(ModelArtifacts&& artifacts, std::string const& engineDir, std::string const& multimodalEngineDir,
         std::unordered_map<std::string, std::string> const& loraWeightsMap,
@@ -517,7 +518,8 @@ private:
         std::optional<SpecDecodeDraftingConfig> const& draftingConfig, cudaStream_t stream,
         ParallelMapping const& mapping, tokenizer::Tokenizer& tokenizer,
         chat_template::ChatTemplate const& chatTemplate, ContextCacheConfig const& contextCacheConfig,
-        std::string const& checkpointDir, std::string const& draftCheckpointDir);
+        std::string const& checkpointDir, std::string const& draftCheckpointDir,
+        std::optional<std::filesystem::path> const& runtimeCachePath);
 
     void initializeCommon(ModelArtifacts&& artifacts, std::string const& engineDir,
         std::string const& multimodalEngineDir, std::unordered_map<std::string, std::string> const& loraWeightsMap,

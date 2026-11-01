@@ -26,14 +26,15 @@ from transformers.activations import ACT2FN
 
 from ...checkpoint import checkpoint_utils
 from ...config import (QUANT_INT4_AWQ, QUANT_INT4_AWQ_MODELOPT,
-                       QUANT_INT4_GPTQ, QUANT_NVFP4, ModelConfig)
+                       QUANT_INT4_GPTQ, QUANT_NVFP4, QUANT_NVFP4_A16,
+                       ModelConfig)
 from ..default.modeling_default import (MLP, Attention, CausalLM, DecoderLayer,
                                         OnnxSpec, RMSNorm,
                                         _concat_hidden_in_provider_order)
 from ..linear import TPMode, make_linear
 from ..ops import (KV_PAGE_SIZE, attention_plugin, int4_moe_plugin,
-                   nvfp4_moe_plugin, nvfp4_moe_plugin_geforce,
-                   use_geforce_nvfp4_moe)
+                   nvfp4_a16_moe_plugin, nvfp4_moe_plugin,
+                   nvfp4_moe_plugin_geforce, use_geforce_nvfp4_moe)
 
 __all__ = [
     "Gemma4Attention",
@@ -543,8 +544,11 @@ class Gemma4Attention(Attention):
         if self.enable_fp8_kv_cache:
             self.q_proj.register_buffer("q_scale", torch.ones(1))
             self.k_proj.register_buffer("k_scale", torch.ones(1))
-            if self.v_proj is not None:
-                self.v_proj.register_buffer("v_scale", torch.ones(1))
+            if self.v_proj is None:
+                # K=V values are v_norm(k_proj(x)), not K; load the calibrated
+                # v_proj.v_scale into a weightless holder.
+                self.v_proj = nn.Module()
+            self.v_proj.register_buffer("v_scale", torch.ones(1))
 
         self.o_proj = make_linear(config,
                                   self.num_heads * self.head_dim,
@@ -897,20 +901,33 @@ class Gemma4NvFP4MoEExperts(nn.Module):
     """Per-expert NVFP4 linear modules for Gemma4 MoE checkpoint loading.
 
     Mirrors :class:`Qwen3MoEExperts`: each expert has gate_proj, up_proj,
-    down_proj created via ``make_linear()`` which returns ``NVFP4Linear``
-    when ``config.quant.quant_type == QUANT_NVFP4``.
+    down_proj created via ``make_linear()`` using the selected W4A4 or W4A16
+    execution path.
     """
 
-    def __init__(self, config: ModelConfig) -> None:
+    def __init__(self, config: ModelConfig, module_prefix: str = "") -> None:
         super().__init__()
         hidden = config.hidden_size
         inter = config.moe_intermediate_size
         experts = []
-        for _ in range(config.num_experts):
+        for expert_idx in range(config.num_experts):
             expert = nn.Module()
-            expert.gate_proj = make_linear(config, hidden, inter)
-            expert.up_proj = make_linear(config, hidden, inter)
-            expert.down_proj = make_linear(config, inter, hidden)
+            prefix = (f"{module_prefix}.{expert_idx}" if module_prefix else "")
+            expert.gate_proj = make_linear(
+                config,
+                hidden,
+                inter,
+                module_name=f"{prefix}.gate_proj" if prefix else "")
+            expert.up_proj = make_linear(
+                config,
+                hidden,
+                inter,
+                module_name=f"{prefix}.up_proj" if prefix else "")
+            expert.down_proj = make_linear(
+                config,
+                inter,
+                hidden,
+                module_name=f"{prefix}.down_proj" if prefix else "")
             experts.append(expert)
         self._experts = nn.ModuleList(experts)
 
@@ -922,6 +939,27 @@ class Gemma4NvFP4MoEExperts(nn.Module):
 
     def __iter__(self):
         return iter(self._experts)
+
+
+def _stack_nvfp4_moe_input_scales(
+        experts: Gemma4NvFP4MoEExperts) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Collect calibrated FC1 and FC2 activation scales."""
+    fc1_scales = []
+    fc2_scales = []
+    for expert_idx, expert in enumerate(experts):
+        gate_scale = expert.gate_proj.input_scale.detach().float().reshape(-1)
+        up_scale = expert.up_proj.input_scale.detach().float().reshape(-1)
+        down_scale = expert.down_proj.input_scale.detach().float().reshape(-1)
+        if any(scale.numel() != 1
+               for scale in (gate_scale, up_scale, down_scale)):
+            raise ValueError("Nvfp4MoePlugin requires scalar input scales; "
+                             f"expert {expert_idx} has non-scalar values")
+        if not torch.equal(gate_scale, up_scale):
+            raise ValueError("Nvfp4MoePlugin requires matching gate/up input "
+                             f"scales for expert {expert_idx}")
+        fc1_scales.append(gate_scale[0])
+        fc2_scales.append(down_scale[0])
+    return torch.stack(fc1_scales), torch.stack(fc2_scales)
 
 
 class Gemma4DenseMoEBlock(nn.Module):
@@ -982,26 +1020,42 @@ class Gemma4NvFP4MoEBlock(nn.Module):
         self.num_experts = config.num_experts
         self.top_k = config.num_experts_per_tok
         self.moe_intermediate_size = config.moe_intermediate_size
-        self._padded_moe_intermediate_size = self.moe_intermediate_size
         self.hidden_size = config.hidden_size
         self.group_size = config.quant.group_size
+        self._is_a16 = config.quant.quant_type == QUANT_NVFP4_A16
+        self._padded_moe_intermediate_size = (
+            ((self.moe_intermediate_size + 127) // 128) *
+            128 if self._is_a16 else self.moe_intermediate_size)
         self.activation_type = _NVFP4_ACTIVATION_GEGLU
         self.backend = _NVFP4_MOE_BACKEND_AUTO
         self.io_dtype = _NVFP4_MOE_IO_DTYPE_FP16
         self.max_routed_rows = _NVFP4_MOE_MAX_ROUTED_ROWS_AUTO
 
         self.router = Gemma4Router(config, layer_idx)
-        self.experts = Gemma4NvFP4MoEExperts(config)
+        self.experts = Gemma4NvFP4MoEExperts(
+            config, f"layers.{layer_idx}.moe_block.experts")
+        if self._is_a16:
+            for expert in self.experts:
+                expert.gate_proj._skip_dense_a16_repack = True
+                expert.up_proj._skip_dense_a16_repack = True
+                expert.down_proj._skip_dense_a16_repack = True
 
     def _prepare_moe_weights(self) -> None:
         """Repack NVFP4 experts for Nvfp4MoePlugin.
 
         Called by :func:`~checkpoint.repacking._stack_moe_experts`.
         """
+        if self._is_a16:
+            self._prepare_a16_moe_weights()
+            return
+
         from ...checkpoint.repacking import (
             NVFP4_MOE_INTERLEAVE_SIZE_ALIGNMENT,
             NVFP4_MOE_INTERMEDIATE_SIZE_ALIGNMENT,
             repack_nvfp4_gated_moe_experts)
+
+        input_global_scale, down_input_scale = \
+            _stack_nvfp4_moe_input_scales(self.experts)
 
         use_geforce_plugin = use_geforce_nvfp4_moe()
         fc1_layout = "concat" if use_geforce_plugin else "interleave"
@@ -1028,17 +1082,14 @@ class Gemma4NvFP4MoEBlock(nn.Module):
         self.register_buffer("fc2_blocks_scale",
                              fc2_blocks_scale.to(device).contiguous())
 
-        # Per-expert FP32 weight_scale_2, applied as alpha in the kernel
-        # epilogue; the FP4 weights and FP8 block scales above are the
-        # checkpoint bytes. No activation quantization → input scales are 1.0.
+        # Per-expert FP32 weight_scale_2 is applied as alpha in the kernel
+        # epilogue. Activation scales retain checkpoint calibration.
         self.register_buffer("fc1_alpha", fc1_alpha.to(device).contiguous())
         self.register_buffer("fc2_alpha", fc2_alpha.to(device).contiguous())
-        self.register_buffer(
-            "input_global_scale",
-            torch.ones(self.num_experts, dtype=torch.float32, device=device))
-        self.register_buffer(
-            "down_input_scale",
-            torch.ones(self.num_experts, dtype=torch.float32, device=device))
+        self.register_buffer("input_global_scale",
+                             input_global_scale.to(device).contiguous())
+        self.register_buffer("down_input_scale",
+                             down_input_scale.to(device).contiguous())
 
         # per_expert_scale → raw scale applied post-renorm by plugin
         # (routing_mode=2 triggers multiplicative post-topk application).
@@ -1047,6 +1098,41 @@ class Gemma4NvFP4MoEBlock(nn.Module):
             self.router.per_expert_scale.data.float().to(device))
 
         # Discard per-expert modules after repacking.
+        self.experts = nn.ModuleList()
+
+    def _prepare_a16_moe_weights(self) -> None:
+        from ...checkpoint.repacking import \
+            repack_nvfp4_a16_marlin_gated_moe_experts
+
+        gate_p, gate_s, gate_g = [], [], []
+        up_p, up_s, up_g = [], [], []
+        down_p, down_s, down_g = [], [], []
+        for expert in self.experts:
+            gate = expert.gate_proj._buffers
+            gate_p.append(gate["weight"])
+            gate_s.append(gate["weight_scale"])
+            gate_g.append(gate["weight_scale_2"])
+            up = expert.up_proj._buffers
+            up_p.append(up["weight"])
+            up_s.append(up["weight_scale"])
+            up_g.append(up["weight_scale_2"])
+            down = expert.down_proj._buffers
+            down_p.append(down["weight"])
+            down_s.append(down["weight_scale"])
+            down_g.append(down["weight_scale_2"])
+
+        buffers = repack_nvfp4_a16_marlin_gated_moe_experts(
+            gate_p, gate_s, gate_g, up_p, up_s, up_g, down_p, down_s, down_g,
+            self._padded_moe_intermediate_size)
+        device = self.router.proj.weight.device
+        for name, value in zip(
+            ("fc1_qweights", "fc1_block_scales", "fc1_global_scales",
+             "fc2_qweights", "fc2_block_scales", "fc2_global_scales"),
+                buffers):
+            self.register_buffer(name, value.to(device).contiguous())
+        self.register_buffer(
+            "e_score_correction_bias",
+            self.router.per_expert_scale.data.float().to(device))
         self.experts = nn.ModuleList()
 
     def forward(self, expert_input: torch.Tensor,
@@ -1063,6 +1149,30 @@ class Gemma4NvFP4MoEBlock(nn.Module):
         scaled = normed * (self.router.scale *
                            self.router.scalar_root_size).to(normed.dtype)
         router_logits = self.router.proj(scaled).float()
+
+        if self._is_a16:
+            return nvfp4_a16_moe_plugin(
+                router_logits,
+                expert_input,
+                self.fc1_qweights,
+                self.fc1_block_scales,
+                self.fc1_global_scales,
+                self.fc2_qweights,
+                self.fc2_block_scales,
+                self.fc2_global_scales,
+                self.e_score_correction_bias,
+                self.num_experts,
+                self.top_k,
+                self.hidden_size,
+                self._padded_moe_intermediate_size,
+                self.activation_type,
+                _NVFP4_MOE_N_GROUP_FLAT,
+                _NVFP4_MOE_TOPK_GROUP_FLAT,
+                1,
+                1.0,
+                _NVFP4_ROUTING_MODE_SOFTMAX_TOPK_POST_SCALE,
+                self.max_routed_rows,
+            )
 
         moe_op = (nvfp4_moe_plugin_geforce
                   if use_geforce_nvfp4_moe() else nvfp4_moe_plugin)
@@ -1363,7 +1473,7 @@ class Gemma4DecoderLayer(DecoderLayer):
         # fallback for export smoke tests and non-quantized checkpoints.
         self.enable_moe_block = config.enable_moe_block
         if self.enable_moe_block:
-            if config.quant.quant_type == QUANT_NVFP4:
+            if config.quant.quant_type in (QUANT_NVFP4, QUANT_NVFP4_A16):
                 self.moe_block = Gemma4NvFP4MoEBlock(config, layer_idx)
             elif (config.quant.quant_type in _INT4_QUANT_TYPES
                   or getattr(config, '_use_int4_moe_plugin', False)):
@@ -1626,17 +1736,9 @@ class Gemma4Transformer(nn.Module):
                 self.hidden_size_per_layer_input,
                 config.rms_norm_eps,
             )
-            self.register_buffer(
-                "per_layer_input_scale",
-                torch.rsqrt(torch.tensor(2.0, dtype=torch.float32)),
-                persistent=False,
-            )
-            self.register_buffer(
-                "per_layer_model_projection_scale",
-                torch.tensor(float(config.hidden_size)**-0.5,
-                             dtype=torch.float32),
-                persistent=False,
-            )
+            self.per_layer_input_scale = 2.0**-0.5
+            self.per_layer_model_projection_scale = float(
+                config.hidden_size)**-0.5
 
         self.last_pre_norm_hidden_states: torch.Tensor | None = None
         self.target_hidden_concat: torch.Tensor | None = None
@@ -1649,9 +1751,7 @@ class Gemma4Transformer(nn.Module):
             return None
 
         projected = self.per_layer_model_projection(inputs_embeds)
-        scale = self.per_layer_model_projection_scale.to(
-            dtype=projected.dtype, device=projected.device)
-        projected = projected * scale
+        projected = projected * self.per_layer_model_projection_scale
         projected = projected.reshape(
             *inputs_embeds.shape[:-1],
             len(self.layers),
@@ -1676,9 +1776,7 @@ class Gemma4Transformer(nn.Module):
         combined = (projected_per_layer_inputs[..., layer_index, :] +
                     ple_token_embeds[layer_index].to(
                         dtype=projected_per_layer_inputs.dtype))
-        scale = self.per_layer_input_scale.to(dtype=combined.dtype,
-                                              device=combined.device)
-        return combined * scale
+        return combined * self.per_layer_input_scale
 
     def _select_rope_for_layer(
         self,

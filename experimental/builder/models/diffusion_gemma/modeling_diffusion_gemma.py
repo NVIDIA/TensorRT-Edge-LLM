@@ -163,6 +163,11 @@ class DiffusionGemmaExperts(GatedExperts):
             correction = (self.weights.f32(correction_key)
                           if self.weights.has(correction_key) else np.ones(
                               cfg.num_experts, dtype=np.float32))
+            if self._has_packed_nvfp4():
+                input_global_scale, down_input_scale = self.input_scales()
+            else:
+                input_global_scale = np.ones(cfg.num_experts, np.float32)
+                down_input_scale = input_global_scale.copy()
             return {
                 "fc1_qweights":
                 fc1,
@@ -177,9 +182,9 @@ class DiffusionGemmaExperts(GatedExperts):
                 "fc2_alpha":
                 fc2_alpha,
                 "input_global_scale":
-                np.ones(cfg.num_experts, dtype=np.float32),
+                input_global_scale,
                 "down_input_scale":
-                np.ones(cfg.num_experts, dtype=np.float32),
+                down_input_scale,
                 "e_score_correction_bias":
                 np.ascontiguousarray(correction, dtype=np.float32),
             }

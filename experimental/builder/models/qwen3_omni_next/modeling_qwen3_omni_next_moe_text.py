@@ -19,7 +19,9 @@ from functools import partial
 from ...core import quantization
 from ...ops import GatedExperts, GatedMLP, Linear, Module, Tensor, TopKRouter
 from ...ops import functional as F
-from ...ops import prepare_gated_int4_weights, prepare_gated_nvfp4_weights
+from ...ops import (prepare_gated_int4_weights,
+                    prepare_gated_nvfp4_a16_weights,
+                    prepare_gated_nvfp4_weights)
 from . import weights as weight_conversion
 from .modeling_qwen3_omni_next_text import (Qwen3OmniNextDecoderLayer,
                                             Qwen3OmniNextThinker,
@@ -138,18 +140,44 @@ class Qwen3OmniNextSparseMoeBlock(Module):
             zero_point_offset=cfg.quant.gptq_zero_point_offset,
         )
 
+    def _nvfp4_a16(self, hidden_states: Tensor,
+                   router_logits: Tensor) -> Tensor:
+        cfg = self.cfg
+        expert_weights, weight_bindings = prepare_gated_nvfp4_a16_weights(
+            self.ctx, self.experts)
+        return F.nvfp4_a16_moe(
+            router_logits,
+            hidden_states,
+            expert_weights,
+            cfg.num_experts,
+            cfg.num_experts_per_tok,
+            cfg.hidden_size,
+            expert_weights["padded_intermediate"],
+            F.MoeActivation.SWIGLU,
+            cfg.n_group,
+            cfg.topk_group,
+            int(cfg.norm_topk_prob),
+            cfg.routed_scaling_factor,
+            F.MoeRouting.SOFTMAX_TOPK,
+            weight_prefix=self.experts.prefix,
+            weight_bindings=weight_bindings,
+        )
+
     def forward(self, hidden_states: Tensor) -> Tensor:
         router_logits = self.gate(hidden_states)
-        if self.cfg.quant_type == quantization.QUANT_FP16:
+        expert_quant_type = self.weights.module_quant_type(self.experts.prefix)
+        if expert_quant_type == quantization.QUANT_FP16:
             routed = self._fp16(hidden_states, router_logits)
-        elif self.cfg.quant_type == quantization.QUANT_NVFP4:
+        elif expert_quant_type == quantization.QUANT_NVFP4:
             routed = self._nvfp4(hidden_states, router_logits)
-        elif self.cfg.quant_type == quantization.QUANT_INT4_GPTQ:
+        elif expert_quant_type == quantization.QUANT_NVFP4_A16:
+            routed = self._nvfp4_a16(hidden_states, router_logits)
+        elif expert_quant_type == quantization.QUANT_INT4_GPTQ:
             routed = self._int4(hidden_states, router_logits)
         else:
             raise ValueError(
                 "Qwen3-Omni-Next experts require FP16, NVFP4, or INT4 GPTQ; "
-                f"got {self.cfg.quant_type!r}")
+                f"got {expert_quant_type!r}")
         shared = self.shared_expert(hidden_states)
         shared_gate = self.shared_expert_gate(hidden_states).sigmoid()
         return routed + shared * shared_gate

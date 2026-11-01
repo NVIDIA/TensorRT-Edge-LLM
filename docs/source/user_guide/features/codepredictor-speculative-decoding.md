@@ -47,32 +47,32 @@ Speculation is off by default. Enable it by passing a verify window:
 ```bash
 # Qwen3-Omni
 ./build/examples/llm/llm_inference \
-    --engineDir $ENG/thinker \
-    --multimodalEngineDir $ENG/multimodal \
-    --enableAudioOutput \
-    --talkerEngineDir $ENG/talker \
-    --code2wavEngineDir $ENG/multimodal/code2wav \
-    --inputFile $WORKSPACE_DIR/input.json \
-    --outputFile $WORKSPACE_DIR/output.json \
-    --outputAudioDir $WORKSPACE_DIR/audio \
-    --cpSpecVerifySize 3
+    --engine-dir $ENG/thinker \
+    --multimodal-engine-dir $ENG/multimodal \
+    --enable-audio-output \
+    --talker-engine-dir $ENG/talker \
+    --code2wav-engine-dir $ENG/multimodal/code2wav \
+    --input-file $WORKSPACE_DIR/input.json \
+    --output-file $WORKSPACE_DIR/output.json \
+    --output-audio-dir $WORKSPACE_DIR/audio \
+    --cp-spec-verify-size 3
 
 # Standalone Qwen3-TTS
 ./build/examples/omni/qwen3_tts_inference \
-    --talkerEngineDir $ENG/talker \
-    --code2wavEngineDir $ENG/code2wav \
-    --tokenizerDir $ENG/talker \
-    --inputFile $WORKSPACE_DIR/input.json \
-    --outputFile $WORKSPACE_DIR/output.json \
-    --outputAudioDir $WORKSPACE_DIR/audio \
-    --cpSpecVerifySize 3
+    --talker-engine-dir $ENG/talker \
+    --code2wav-engine-dir $ENG/code2wav \
+    --tokenizer-dir $ENG/talker \
+    --input-file $WORKSPACE_DIR/input.json \
+    --output-file $WORKSPACE_DIR/output.json \
+    --output-audio-dir $WORKSPACE_DIR/audio \
+    --cp-spec-verify-size 3
 ```
 
 ### Options
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--cpSpecVerifySize N` | `0` (off) | Verify window: one committed RVQ depth plus `N-1` drafted depths. Valid range 2-8; `1` is rejected because it leaves no draft slot. |
+| `--cp-spec-verify-size N` | `0` (off) | Verify window: one committed RVQ depth plus `N-1` drafted depths. Valid range 2-8; `1` is rejected because it leaves no draft slot. |
 
 Acceptance saturates once the window passes four depths, so the useful settings are the narrow
 ones — a wider window spends verification time without returning more codes.

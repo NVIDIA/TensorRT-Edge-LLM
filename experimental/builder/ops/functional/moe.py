@@ -168,13 +168,22 @@ def int4_moe(router_logits: Tensor,
                      quantization_group_size=group_size)
 
 
-def nvfp4_a16_moe(router_logits: Tensor, hidden_states: Tensor,
-                  moe_weights: dict, num_experts: int, top_k: int,
-                  hidden_size: int, moe_inter_size: int,
-                  activation_type: MoeActivation, n_group: int,
-                  topk_group: int, norm_topk_prob: int,
-                  routed_scaling_factor: float, routing_mode: MoeRouting, *,
-                  weight_prefix: str) -> Tensor:
+def nvfp4_a16_moe(router_logits: Tensor,
+                  hidden_states: Tensor,
+                  moe_weights: dict,
+                  num_experts: int,
+                  top_k: int,
+                  hidden_size: int,
+                  moe_inter_size: int,
+                  activation_type: MoeActivation,
+                  n_group: int,
+                  topk_group: int,
+                  norm_topk_prob: int,
+                  routed_scaling_factor: float,
+                  routing_mode: MoeRouting,
+                  *,
+                  weight_prefix: str,
+                  weight_bindings: "dict[str, dict] | None" = None) -> Tensor:
     """Run weight-only NVFP4 MoE with FP16 activations."""
     _validate_token_layout(router_logits, hidden_states)
     order = [
@@ -188,8 +197,10 @@ def nvfp4_a16_moe(router_logits: Tensor, hidden_states: Tensor,
     ]
     weight_inputs = [
         parameter(weight_prefix + "." + name,
-                  _parameter_value(moe_weights[name], dtype), "nvfp4_a16_moe")
-        for name, dtype in order
+                  _parameter_value(moe_weights[name], dtype),
+                  "nvfp4_a16",
+                  recipe=(None if weight_bindings is None else
+                          weight_bindings[name])) for name, dtype in order
     ]
     return operation("nvfp4_a16_moe",
                      [router_logits, hidden_states] + weight_inputs,

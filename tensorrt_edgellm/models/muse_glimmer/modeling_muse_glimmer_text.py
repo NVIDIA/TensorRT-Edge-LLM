@@ -24,8 +24,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from ...config import (QUANT_NVFP4, ModelConfig, module_quant_group_size,
-                       module_quant_type)
+from ...config import (QUANT_NVFP4, QUANT_NVFP4_A16, ModelConfig,
+                       module_quant_group_size, module_quant_type)
 from ..default.modeling_default import OnnxSpec
 from ..linear import TPMode, make_linear
 from ..ops import KV_PAGE_SIZE, attention_plugin
@@ -327,7 +327,8 @@ class MuseGlimmerTransformer(nn.Module):
 
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
-        if module_quant_type("embed_tokens", config) == QUANT_NVFP4:
+        if module_quant_type("embed_tokens",
+                             config) in (QUANT_NVFP4, QUANT_NVFP4_A16):
             self.embed_tokens = MuseGlimmerRuntimeEmbedding(config)
         else:
             self.embed_tokens = nn.Embedding(config.vocab_size,

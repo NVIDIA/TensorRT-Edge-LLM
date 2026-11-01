@@ -31,7 +31,7 @@
 // mask input, so padded positions would leak into the gen cross-attention.
 //
 // All shape parameters (clip F/H/W, hidden size, action dims) come from the exported
-// component contracts under --engineDir; nothing is passed or hardcoded here.
+// component contracts under --engine-dir; nothing is passed or hardcoded here.
 //
 // I/O convention (project-wide):
 //   * The DEFAULT --output is a JSON action file (the inference-response INTERFACE).
@@ -114,7 +114,7 @@ struct Args
     std::vector<float> currentState;     //!< one clean current-state row for state-conditioned policy
     std::string domain{"droid_lerobot"}; //!< action domain
     std::string viewPoint{"ego_view"};   //!< camera viewpoint for the policy prompt framing
-    bool rawPrompt{false};               //!< use --prompt / --promptFile verbatim (skip JSON build)
+    bool rawPrompt{false};               //!< use --prompt / --prompt-file verbatim (skip JSON build)
     std::string promptFile;              //!< read the instruction/JSON prompt from a file
     std::string output;                  //!< action chunk out (.json default, or .safetensors for raw tensor)
     int32_t steps{4};                    //!< diffusion steps
@@ -140,79 +140,103 @@ struct PixelClipContract
 
 void printUsage(char const* programName)
 {
-    std::cerr << "Usage: " << programName
-              << " [--help] --engineDir <dir> --image <path> --prompt \"<instruction>\" [--prompt ...] "
-                 "[--output <action.json|.safetensors>] [--domain <name>] [--viewPoint <name>] [--steps <int>] [--seed "
-                 "<int>] "
-                 "[--iters <int>] [--warmup <int>] [--cudagraph]"
-              << std::endl;
+    std::cerr
+        << "Usage: " << programName
+        << " [--help] --engine-dir <dir> --image <path> --prompt \"<instruction>\" [--prompt ...] "
+           "[--output <action.json|.safetensors>] [--domain <name>] [--view-point <name>] [--steps <int>] [--seed "
+           "<int>] "
+           "[--iters <int>] [--warmup <int>] [--cudagraph]"
+        << std::endl;
     std::cerr << "Options:" << std::endl;
-    std::cerr << "  --help       Display this help message" << std::endl;
-    std::cerr << "  --engineDir  Directory with und_prefill/, vae_encoder/, gen/ engines" << std::endl;
-    std::cerr << "               (+ text_tokenizer/ and embed_tokens.safetensors). Required." << std::endl;
-    std::cerr << "  --image      Conditioning observation (PNG/JPG), shared across the batch. Required unless --video."
+    std::cerr << "  --help                    Display this help message" << std::endl;
+    std::cerr << "  --engine-dir              Directory with und_prefill/, vae_encoder/, gen/ engines" << std::endl;
+    std::cerr << "                            (+ text_tokenizer/ and embed_tokens.safetensors). Required." << std::endl;
+    std::cerr << "  --image                   Conditioning observation (PNG/JPG), shared across the batch. Required "
+                 "unless --video."
               << std::endl;
-    std::cerr << "  --video      Observation frames as a comma-separated PNG/JPG list (oldest..most-recent)."
+    std::cerr
+        << "  --video                   Observation frames as a comma-separated PNG/JPG list (oldest..most-recent)."
+        << std::endl;
+    std::cerr
+        << "                            The policy conditions image-to-video (i2v): the most-recent frame is the single"
+        << std::endl;
+    std::cerr << "                            conditioning observation; earlier frames are ignored. Mutually exclusive "
+                 "with --image."
               << std::endl;
-    std::cerr << "               The policy conditions image-to-video (i2v): the most-recent frame is the single"
+    std::cerr << "  --prompt                  Text instruction. Repeat for a batched request (batch = prompt count;"
               << std::endl;
-    std::cerr << "               conditioning observation; earlier frames are ignored. Mutually exclusive with --image."
+    std::cerr << "                            requires engines built with --max-batch-size >= count). Required."
               << std::endl;
-    std::cerr << "  --prompt     Text instruction. Repeat for a batched request (batch = prompt count;" << std::endl;
-    std::cerr << "               requires engines built with --maxBatchSize >= count). Required." << std::endl;
-    std::cerr << "  --output     Action chunk output. DEFAULT is JSON (the inference-response" << std::endl;
-    std::cerr << "               interface); a .safetensors suffix writes the raw action tensor." << std::endl;
-    std::cerr << "  --domain     Action domain. Default = droid_lerobot" << std::endl;
-    std::cerr << "  --rawPrompt  Use the prompt / --promptFile text verbatim as the instruction" << std::endl;
-    std::cerr << "               (skip structured-JSON prompt construction)." << std::endl;
-    std::cerr << "  --promptFile Read the instruction (or full JSON prompt) from a file." << std::endl;
-    std::cerr << "  --viewPoint  Camera viewpoint for the policy prompt: ego_view (default)," << std::endl;
-    std::cerr << "               third_person_view, wrist_view, or concat_view." << std::endl;
-    std::cerr << "  --steps      Diffusion denoise steps. Default = 4" << std::endl;
-    std::cerr << "  --seed       Initial-noise seed. Default = 0" << std::endl;
-    std::cerr << "  --state      Comma-separated current model-space state (Policy-DROID: 8 values)." << std::endl;
-    std::cerr << "  --iters      Benchmark iterations. Default = 1" << std::endl;
-    std::cerr << "  --warmup     Benchmark warmup rounds. Default = 2" << std::endl;
-    std::cerr << "  --cudagraph  Capture/replay the per-step GEN forward as a CUDA graph." << std::endl;
-    std::cerr << "  --guidance   Classifier-free guidance scale (guidance-interval CFG). Default 1.0 = off;"
+    std::cerr << "  --output                  Action chunk output. DEFAULT is JSON (the inference-response"
               << std::endl;
-    std::cerr << "               3.0 matches the reference (CFG on the first step, interval [960,1001])." << std::endl;
+    std::cerr << "                            interface); a .safetensors suffix writes the raw action tensor."
+              << std::endl;
+    std::cerr << "  --domain                  Action domain. Default = droid_lerobot" << std::endl;
+    std::cerr << "  --raw-prompt              Use the prompt / --prompt-file text verbatim as the instruction"
+              << std::endl;
+    std::cerr << "                            (skip structured-JSON prompt construction)." << std::endl;
+    std::cerr << "  --prompt-file             Read the instruction (or full JSON prompt) from a file." << std::endl;
+    std::cerr << "  --view-point              Camera viewpoint for the policy prompt: ego_view (default)," << std::endl;
+    std::cerr << "                            third_person_view, wrist_view, or concat_view." << std::endl;
+    std::cerr << "  --steps                   Diffusion denoise steps. Default = 4" << std::endl;
+    std::cerr << "  --seed                    Initial-noise seed. Default = 0" << std::endl;
+    std::cerr << "  --state                   Comma-separated current model-space state (Policy-DROID: 8 values)."
+              << std::endl;
+    std::cerr << "  --iters                   Benchmark iterations. Default = 1" << std::endl;
+    std::cerr << "  --warmup                  Benchmark warmup rounds. Default = 2" << std::endl;
+    std::cerr << "  --cudagraph               Capture/replay the per-step GEN forward as a CUDA graph." << std::endl;
+    std::cerr
+        << "  --guidance                Classifier-free guidance scale (guidance-interval CFG). Default 1.0 = off;"
+        << std::endl;
+    std::cerr << "                            3.0 matches the reference (CFG on the first step, interval [960,1001])."
+              << std::endl;
     std::cerr << "  --video-subsample-factor  GEN video-subsample path: ANY integer >= 1 (1 = regular, default;"
               << std::endl;
-    std::cerr << "               higher = more video subsample -> fewer GEN video tokens). One dynamic engine serves"
+    std::cerr << "                            higher = more video subsample -> fewer GEN video tokens). One dynamic "
+                 "engine serves"
               << std::endl;
-    std::cerr << "               every factor; a factor below the engine's built profile is clamped to its minimum."
+    std::cerr << "                            every factor; a factor below the engine's built profile is clamped to "
+                 "its minimum."
               << std::endl;
-    std::cerr << "               NOTE: vsf > 1 needs a subsample-trained checkpoint to be accuracy-correct; on a"
+    std::cerr
+        << "                            NOTE: vsf > 1 needs a subsample-trained checkpoint to be accuracy-correct; on a"
+        << std::endl;
+    std::cerr << "                            regular checkpoint it is speed-representative only." << std::endl;
+    std::cerr << "  --alternate-vsf           Test/benchmark only: flip vsf 1<->(--video-subsample-factor) every round."
               << std::endl;
-    std::cerr << "               regular checkpoint it is speed-representative only." << std::endl;
-    std::cerr << "  --alternate-vsf  Test/benchmark only: flip vsf 1<->(--video-subsample-factor) every round."
+    std::cerr
+        << "                            With --cudagraph, verifies the per-extent CUDA-graph cache captures each extent"
+        << std::endl;
+    std::cerr << "                            once then only replays. Requires --video-subsample-factor > 1. Not for "
+                 "deployment."
               << std::endl;
-    std::cerr << "               With --cudagraph, verifies the per-extent CUDA-graph cache captures each extent"
+    std::cerr << "  --action-chunk-size       Action-chunk length (0 = engine canonical/max, default). A positive"
               << std::endl;
-    std::cerr << "               once then only replays. Requires --video-subsample-factor > 1. Not for deployment."
+    std::cerr << "                            value is clamped into the engine's built action range; the output chunk "
+                 "follows it."
               << std::endl;
-    std::cerr << "  --action-chunk-size  Action-chunk length (0 = engine canonical/max, default). A positive"
-              << std::endl;
-    std::cerr << "               value is clamped into the engine's built action range; the output chunk follows it."
-              << std::endl;
-    std::cerr << "  --request-stream  Keep the TensorRT engines resident and read one JSON request per stdin line."
-              << std::endl;
-    std::cerr << "               Each request supplies image, prompt, state, output, and optional seed/steps."
-              << std::endl;
+    std::cerr
+        << "  --request-stream          Keep the TensorRT engines resident and read one JSON request per stdin line."
+        << std::endl;
+    std::cerr
+        << "                            Each request supplies image, prompt, state, output, and optional seed/steps."
+        << std::endl;
+    std::cerr << "Legacy camelCase option spellings remain accepted.\n";
 }
 
 bool parseArgs(Args& args, int argc, char** argv)
 {
     static struct option options[] = {{"help", no_argument, nullptr, HELP},
-        {"engineDir", required_argument, nullptr, ENGINE_DIR}, {"image", required_argument, nullptr, IMAGE},
-        {"video", required_argument, nullptr, VIDEO}, {"prompt", required_argument, nullptr, PROMPT},
-        {"domain", required_argument, nullptr, DOMAIN}, {"viewPoint", required_argument, nullptr, VIEW_POINT},
-        {"rawPrompt", no_argument, nullptr, RAW_PROMPT}, {"promptFile", required_argument, nullptr, PROMPT_FILE},
-        {"output", required_argument, nullptr, OUTPUT}, {"steps", required_argument, nullptr, STEPS},
-        {"seed", required_argument, nullptr, SEED}, {"iters", required_argument, nullptr, ITERS},
-        {"warmup", required_argument, nullptr, WARMUP}, {"cudagraph", no_argument, nullptr, CUDAGRAPH},
-        {"guidance", required_argument, nullptr, GUIDANCE},
+        {"engine-dir", required_argument, nullptr, ENGINE_DIR}, {"engineDir", required_argument, nullptr, ENGINE_DIR},
+        {"image", required_argument, nullptr, IMAGE}, {"video", required_argument, nullptr, VIDEO},
+        {"prompt", required_argument, nullptr, PROMPT}, {"domain", required_argument, nullptr, DOMAIN},
+        {"view-point", required_argument, nullptr, VIEW_POINT}, {"viewPoint", required_argument, nullptr, VIEW_POINT},
+        {"raw-prompt", no_argument, nullptr, RAW_PROMPT}, {"rawPrompt", no_argument, nullptr, RAW_PROMPT},
+        {"prompt-file", required_argument, nullptr, PROMPT_FILE},
+        {"promptFile", required_argument, nullptr, PROMPT_FILE}, {"output", required_argument, nullptr, OUTPUT},
+        {"steps", required_argument, nullptr, STEPS}, {"seed", required_argument, nullptr, SEED},
+        {"iters", required_argument, nullptr, ITERS}, {"warmup", required_argument, nullptr, WARMUP},
+        {"cudagraph", no_argument, nullptr, CUDAGRAPH}, {"guidance", required_argument, nullptr, GUIDANCE},
         {"video-subsample-factor", required_argument, nullptr, VIDEO_SUBSAMPLE},
         {"alternate-vsf", no_argument, nullptr, ALTERNATE_VSF},
         {"action-chunk-size", required_argument, nullptr, ACTION_CHUNK}, {"state", required_argument, nullptr, STATE},
@@ -334,7 +358,7 @@ std::string viewpointFraming(std::string const& viewPoint)
                "views of the scene from opposite sides, with the robot visible.";
     }
     ELLM_CHECK(false,
-        "Unsupported --viewPoint '" + viewPoint
+        "Unsupported --view-point '" + viewPoint
             + "'; expected ego_view, third_person_view, wrist_view, or concat_view.");
     return {};
 }
@@ -538,7 +562,7 @@ int main(int argc, char** argv)
     if (!args.promptFile.empty())
     {
         std::ifstream pf(args.promptFile);
-        ELLM_CHECK(pf.is_open(), "Failed to open --promptFile: " + args.promptFile);
+        ELLM_CHECK(pf.is_open(), "Failed to open --prompt-file: " + args.promptFile);
         std::stringstream ss;
         ss << pf.rdbuf();
         args.prompts.assign(1, ss.str());

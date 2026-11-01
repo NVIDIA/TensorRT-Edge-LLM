@@ -20,6 +20,7 @@ import tensorrt as trt
 from ...core import contracts
 from ...ops import Linear, Module, NetworkModule
 from ...ops import functional as F
+from . import modeling_gemma4_layers
 
 
 class Gemma4VisionNorm(Module):
@@ -52,10 +53,8 @@ class Gemma4VisionPatchEmbedder(Module):
 
     def __init__(self, ctx) -> None:
         super().__init__(ctx, "vision_tower.patch_embedder")
-        self.input_projection = Linear(ctx,
-                                       self.key("input_proj"),
-                                       rank=2,
-                                       tensor_parallel=False)
+        self.input_projection = modeling_gemma4_layers.Gemma4ClippableLinear(
+            ctx, self.key("input_proj"), rank=2)
 
     def forward(self, pixels, positions):
         pixels = (pixels - np.float16(0.5)) * np.float16(2.0)
@@ -78,22 +77,14 @@ class Gemma4VisionAttention(Module):
         self.num_heads = num_heads
         self.num_kv_heads = num_kv_heads
         self.head_dim = head_dim
-        self.q_proj = Linear(ctx,
-                             self.key("q_proj.linear"),
-                             rank=2,
-                             tensor_parallel=False)
-        self.k_proj = Linear(ctx,
-                             self.key("k_proj.linear"),
-                             rank=2,
-                             tensor_parallel=False)
-        self.v_proj = Linear(ctx,
-                             self.key("v_proj.linear"),
-                             rank=2,
-                             tensor_parallel=False)
-        self.o_proj = Linear(ctx,
-                             self.key("o_proj.linear"),
-                             rank=2,
-                             tensor_parallel=False)
+        self.q_proj = modeling_gemma4_layers.Gemma4ClippableLinear(
+            ctx, self.key("q_proj"), rank=2)
+        self.k_proj = modeling_gemma4_layers.Gemma4ClippableLinear(
+            ctx, self.key("k_proj"), rank=2)
+        self.v_proj = modeling_gemma4_layers.Gemma4ClippableLinear(
+            ctx, self.key("v_proj"), rank=2)
+        self.o_proj = modeling_gemma4_layers.Gemma4ClippableLinear(
+            ctx, self.key("o_proj"), rank=2)
         self.q_norm = Gemma4VisionNorm(ctx, self.key("q_norm"), eps, 3)
         self.k_norm = Gemma4VisionNorm(ctx, self.key("k_norm"), eps, 3)
         self.v_norm = Gemma4VisionUnitRMSNorm(ctx, head_dim, eps, 3)
@@ -139,32 +130,19 @@ class Gemma4VisionMLP(Module):
         self.hidden_activation = hidden_activation
         self.compute_fp32 = bool(
             ctx.bundle.root.get("vision_config", {}).get("standardize", False))
-        self.gate_proj = Linear(ctx,
-                                self.key("gate_proj.linear"),
-                                rank=2,
-                                tensor_parallel=False)
-        self.up_proj = Linear(ctx,
-                              self.key("up_proj.linear"),
-                              rank=2,
-                              tensor_parallel=False)
-        self.down_proj = Linear(ctx,
-                                self.key("down_proj.linear"),
-                                rank=2,
-                                tensor_parallel=False)
-
-    def project(self, projection: Linear, hidden):
-        if not self.compute_fp32:
-            return projection(hidden)
-        return F.linear_f32_from_weights(hidden,
-                                         projection.weight_descriptor(),
-                                         projection.prefix,
-                                         rank=2)
+        self.gate_proj = modeling_gemma4_layers.Gemma4ClippableLinear(
+            ctx, self.key("gate_proj"), rank=2)
+        self.up_proj = modeling_gemma4_layers.Gemma4ClippableLinear(
+            ctx, self.key("up_proj"), rank=2)
+        self.down_proj = modeling_gemma4_layers.Gemma4ClippableLinear(
+            ctx, self.key("down_proj"), rank=2)
 
     def forward(self, hidden):
-        gate = self.project(self.gate_proj,
-                            hidden).activation(self.hidden_activation)
-        up = self.project(self.up_proj, hidden)
-        return self.project(self.down_proj, gate * up)
+        gate = self.gate_proj(hidden,
+                              compute_fp32=self.compute_fp32).activation(
+                                  self.hidden_activation)
+        up = self.up_proj(hidden, compute_fp32=self.compute_fp32)
+        return self.down_proj(gate * up, compute_fp32=self.compute_fp32)
 
 
 class Gemma4VisionEncoderLayer(Module):

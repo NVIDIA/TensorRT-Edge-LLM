@@ -356,14 +356,14 @@ std::vector<uint8_t> parsePluginBytesField(char const* fieldName, PluginFieldCol
 //   3     | [B+1]                            | INT32 | paddedCuKVSeqLens   (prefill, CuTe DSL)
 //   4     | [B, 2, Hkv, Smax, D]             | HALF  | splitPagedKV out    (FP8/padding/vision)
 //   5*    | [B, S, Hq, D]                    | FP8   | fp8Q                (CuTe DSL + FP8 prefill only)
-//   6*    | [B, S] x 2                       | INT32 | blockBegin/blockEnd (vision CuTe DSL prefill)
+//   6*    | [B, S] x 2                       | INT32 | blockBegin/blockEnd (vision / D512 padding prefill)
 //
 //   * Slots 5-6 are conditionally allocated (CuTe DSL + FP8 KV cache /
-//     vision-block attention respectively).
+//     vision-block attention or context-mask selector respectively).
 //
 // Total allocation is the sum of all conditional slots (safe upper bound).
 size_t getAttentionWorkspaceSize(int64_t batchSize, int64_t seqLen, int64_t kvCacheCapacity, int32_t numQHeads,
-    int32_t numKVHeads, int32_t headSize, bool useCuteDslFMHA, bool enableFp8KVCache, bool enableVisionBlockAttention)
+    int32_t numKVHeads, int32_t headSize, bool useCuteDslFMHA, bool enableFp8KVCache, bool enableBlockRanges)
 {
     size_t workspaceSize = 0;
 
@@ -395,8 +395,8 @@ size_t getAttentionWorkspaceSize(int64_t batchSize, int64_t seqLen, int64_t kvCa
             workspaceSize, rt::Coords{batchSize, seqLen, numQHeads, headSize}, DataType::kFP8);
     }
 
-    // Per-position vision-block intervals for CuTe DSL prefill.
-    if (enableVisionBlockAttention)
+    // Per-position intervals for vision-block and FMHA-v2 D512 padding prefill.
+    if (enableBlockRanges)
     {
         workspaceSize = accumulateWorkspaceSize(workspaceSize, rt::Coords{batchSize, seqLen}, DataType::kINT32);
         workspaceSize = accumulateWorkspaceSize(workspaceSize, rt::Coords{batchSize, seqLen}, DataType::kINT32);
@@ -1297,7 +1297,7 @@ size_t AttentionPlugin::getWorkspaceSize(DynamicPluginTensorDesc const* inputs, 
     int64_t const maxKVCacheCapacity = inputs[kIN_KV_PAGE_TABLE_IDX].max.d[2] * rt::kTOKENS_PER_PAGE;
     size_t const workspaceSize = getAttentionWorkspaceSize(maxBatchSize, maxSeqLen, maxKVCacheCapacity, mNumQHeads,
         mNumKVHeads, mHeadSize, mContextFMHABackend == ContextFMHABackend::kCUTE_DSL_FMHA_BLACKWELL, mEnableFp8KVCache,
-        mEnableVisionBlockAttention != 0);
+        mEnableVisionBlockAttention != 0 || mEnableContextMaskSelector != 0);
 
     LOG_DEBUG("AttentionPlugin workspace size: %zu bytes", workspaceSize);
     return workspaceSize;
@@ -1862,16 +1862,28 @@ int32_t AttentionPlugin::enqueueImpl(PluginTensorDesc const* inputDesc, PluginTe
             cuKVSeqLensTensor, kvCacheEndIdxsTensor, paddedCuKVSeqLensTensor, runtimeSeqLen, stream);
 
         auto splitLenForFallback = [&]() {
-            // It is only safe to compact the split-KV workspace to runtimeSeqLen
-            // when the prefill starts from an empty KV cache. Chunked prefill,
-            // including DiffusionGemma's runtime-selected padding mask, must
-            // keep the existing prefix KV visible: its logical K length is
-            // kvcache_start_index + runtimeSeqLen, not just runtimeSeqLen.
-            bool const compact = executionMode == AttentionExecutionMode::kNORMAL_PREFILL;
+            // Compact to runtimeSeqLen only when prefill starts from an empty KV cache. Chunked prefill and
+            // DiffusionGemma denoise/commit (normal-prefill mode over a cached prefix) must keep the prefix.
+            bool const compact = phase == rt::ExecutionPhase::kContextPrefill;
             return compact ? runtimeSeqLen : 0;
         };
         [[maybe_unused]] auto physicalLenForFallback
             = [&]() { return splitLenForFallback() > 0 ? runtimeSeqLen : kvCacheCapacity; };
+        // FMHA-v2 D512 padding reuses the vision-block kernel with full-KV intervals.
+        auto paddingBlockRanges = [&]() -> std::pair<int32_t const*, int32_t const*> {
+            if (mHeadSize != 512)
+            {
+                return {nullptr, nullptr};
+            }
+            rt::Tensor blockBegin
+                = assignTensorFromWorkspace(alignedWorkspacePtr, {runtimeBatchSize, runtimeSeqLen}, DataType::kINT32);
+            rt::Tensor blockEnd
+                = assignTensorFromWorkspace(alignedWorkspacePtr, {runtimeBatchSize, runtimeSeqLen}, DataType::kINT32);
+            kernel::launchBuildPaddingBlockRanges(cuKVSeqLensTensor.dataPointer<int32_t>(),
+                blockBegin.dataPointer<int32_t>(), blockEnd.dataPointer<int32_t>(), runtimeBatchSize, runtimeSeqLen,
+                stream);
+            return {blockBegin.dataPointer<int32_t>(), blockEnd.dataPointer<int32_t>()};
+        };
 
         // --- Shared KV prefill: Q gets RoPE, K/V read from donor layer's cache ---
         if (sharedKV)
@@ -2005,12 +2017,13 @@ int32_t AttentionPlugin::enqueueImpl(PluginTensorDesc const* inputDesc, PluginTe
                         kvCacheEndIdxsTensor.dataPointer<int32_t>(), maxPagesPerSeq, alignedWorkspacePtr,
                         runtimeBatchSize, mNumKVHeads, kvCacheCapacity, mHeadSize, splitSeqLen, kScale, vScale, stream);
                     int32_t const kvExtent = physicalLenForFallback();
+                    auto const [blockBegin, blockEnd] = paddingBlockRanges();
                     CuteDslFMHAV2Runner runner(
                         mNumQHeads, mNumKVHeads, mHeadSize, runtimeBatchSize, runtimeSeqLen, kvExtent);
                     if (!runner.runPadding(qInputTensor.dataPointer<half>(), kSplit.dataPointer<half>(),
                             vSplit.dataPointer<half>(), attentionOutputTensor.dataPointer<half>(),
                             cuQSeqLensTensor.dataPointer<int32_t>(), cuKVSeqLensTensor.dataPointer<int32_t>(), stream,
-                            mAttentionScale))
+                            mAttentionScale, blockBegin, blockEnd))
                     {
                         return -1;
                     }
@@ -2201,13 +2214,15 @@ int32_t AttentionPlugin::enqueueImpl(PluginTensorDesc const* inputDesc, PluginTe
                     auto [kSplit, vSplit] = splitPagedKV(kvCacheTensor, pageTable,
                         kvCacheEndIdxsTensor.dataPointer<int32_t>(), maxPagesPerSeq, alignedWorkspacePtr,
                         runtimeBatchSize, mNumKVHeads, kvCacheCapacity, mHeadSize, splitSeqLen, kScale, vScale, stream);
+                    auto const [blockBegin, blockEnd]
+                        = usePaddingContextMask ? paddingBlockRanges() : std::pair<int32_t const*, int32_t const*>{};
                     CuteDslFMHAV2Runner runner(mNumQHeads, mNumKVHeads, mHeadSize, runtimeBatchSize, runtimeSeqLen,
                         physicalLenForFallback(), splitSeqLen > 0);
                     bool const ranKernel = usePaddingContextMask
                         ? runner.runPadding(qInputTensor.dataPointer<half>(), kSplit.dataPointer<half>(),
                               vSplit.dataPointer<half>(), attentionOutputTensor.dataPointer<half>(),
                               cuQSeqLensTensor.dataPointer<int32_t>(), cuKVSeqLensTensor.dataPointer<int32_t>(), stream,
-                              mAttentionScale)
+                              mAttentionScale, blockBegin, blockEnd)
                         : runner.run(qInputTensor.dataPointer<half>(), kSplit.dataPointer<half>(),
                               vSplit.dataPointer<half>(), attentionOutputTensor.dataPointer<half>(),
                               paddedCuKVSeqLensTensor.dataPointer<int32_t>(), stream, mAttentionScale, slidingWindow);

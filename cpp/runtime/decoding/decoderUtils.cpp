@@ -156,14 +156,14 @@ void prepareSpecPrefillRaggedBindings(DecodingRuntimeContext& runtime, LLMEngine
     prepareRaggedRope(io, runtime.base.sharedResources, cfg, physicalTokens, batchSize, stream);
 }
 
-std::unique_ptr<EngineExecutor> loadDraftEngine(
-    std::filesystem::path const& engineDir, DeploymentConfig const& deployment)
+std::unique_ptr<EngineExecutor> loadDraftEngine(std::filesystem::path const& engineDir,
+    DeploymentConfig const& deployment, std::shared_ptr<RtxRuntimeCache> runtimeCache)
 {
     std::filesystem::path const draftEnginePath = engineDir / "spec_draft.engine";
     std::unique_ptr<EngineExecutor> draftExecutor;
     try
     {
-        draftExecutor = EngineExecutor::createForDraft(draftEnginePath, deployment);
+        draftExecutor = EngineExecutor::createForDraft(draftEnginePath, deployment, std::move(runtimeCache));
     }
     catch (std::exception const& e)
     {

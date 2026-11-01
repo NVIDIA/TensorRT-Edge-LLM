@@ -508,7 +508,7 @@ TEST_F(Nvfp4A16BlackwellMoeRunnerTest, PdlMatchesReferenceBothBackends)
         ASSERT_EQ(withoutPdl.size(), withPdl.size());
         for (size_t i = 0; i < withPdl.size(); ++i)
         {
-            ASSERT_EQ(__half_as_ushort(withoutPdl[i]), __half_as_ushort(withPdl[i])) << "element " << i;
+            ASSERT_EQ(__half_raw(withoutPdl[i]).x, __half_raw(withPdl[i]).x) << "element " << i;
         }
     }
     {
@@ -526,7 +526,7 @@ TEST_F(Nvfp4A16BlackwellMoeRunnerTest, PdlMatchesReferenceBothBackends)
         ASSERT_EQ(withoutPdl.size(), withPdl.size());
         for (size_t i = 0; i < withPdl.size(); ++i)
         {
-            ASSERT_EQ(__half_as_ushort(withoutPdl[i]), __half_as_ushort(withPdl[i])) << "element " << i;
+            ASSERT_EQ(__half_raw(withoutPdl[i]).x, __half_raw(withPdl[i]).x) << "element " << i;
         }
     }
     {
@@ -580,7 +580,7 @@ TEST_F(Nvfp4A16BlackwellMoeRunnerTest, CudaGraphReplayMatchesEager)
             ASSERT_CUDA(cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal));
             ASSERT_CUDA(Nvfp4A16BlackwellMoeRunner::run(params, workspace.ptr, workspaceBytes, stream));
             ASSERT_CUDA(cudaStreamEndCapture(stream, &graph));
-            ASSERT_CUDA(cudaGraphInstantiate(&graphExec, graph, 0));
+            ASSERT_CUDA(instantiateCudaGraph(&graphExec, graph));
             for (int32_t replay = 0; replay < 3; ++replay)
             {
                 fixture.zeroOutput();

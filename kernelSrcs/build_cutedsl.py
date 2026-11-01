@@ -45,11 +45,12 @@ Usage (run from the repo root):
 The target GPU SM is explicit so artifact generation can run without a GPU.
 Only matching variants are built. See KERNEL_VARIANTS below for the full list.
 
-Output (under {output_dir}/{arch}/{artifact_tag}/):
-  libcutedsl_{arch}.a   — merged static archive (kernel objects + CuTe DSL
-                          runtime shim objects)
-  include/cutedsl_all.h — umbrella header (#includes every variant header)
-  metadata.json         — build provenance + group/variant list for CMake
+Output:
+  Linux:   {output_dir}/{arch}/{artifact_tag}/libcutedsl_{arch}.a
+  Windows: {output_dir}/windows/{arch}/{artifact_tag}/cutedsl_{arch}.lib
+  The static library contains the kernel and CuTe DSL runtime objects.
+  include/cutedsl_all.h is the umbrella header for every built variant.
+  metadata.json records build provenance and the CMake group/variant list.
 
 Prebuilt tarballs:
   Prebuilt CuTe DSL artifacts are shipped in the release package. When building
@@ -80,7 +81,7 @@ from pathlib import Path
 
 _SCRIPT_DIR = Path(__file__).parent.resolve()
 _DEFAULT_OUTPUT_DIR = (_SCRIPT_DIR / "../cpp/kernels/cuteDSLArtifact").resolve()
-_CUTLASS_DSL_VERSION = os.environ.get("CUTE_DSL_VERSION", "4.7.0")
+_CUTLASS_DSL_VERSION = os.environ.get("CUTE_DSL_VERSION", "4.8.0")
 _CUPY_VERSIONS = {12: ("cupy-cuda12x", "12.3.0"), 13: ("cupy-cuda13x", "13.6.0")}
 # Common flag sets for FMHA variants
 _LLM = ["--is_causal", "--is_persistent", "--export_only", "--bottom_right_align"]
@@ -102,6 +103,28 @@ _QSA_DECODE_M_BLOCK = 16
 # CTA, each with its own 1-stage cp.async gather pipeline.
 _QSA_DECODE_THREADS = 128
 _QSA_DECODE_PIPE_DEPTH = 1
+
+
+def _is_windows() -> bool:
+    return sys.platform == "win32"
+
+
+def _host_platform() -> str:
+    return "windows" if _is_windows() else "linux"
+
+
+def _runtime_static_archive_name() -> str:
+    return "cuda_dialect_runtime_static.lib" if _is_windows() else "libcuda_dialect_runtime_static.a"
+
+
+def _static_library_name(arch: str) -> str:
+    return f"cutedsl_{arch}.lib" if _is_windows() else f"libcutedsl_{arch}.a"
+
+
+def _artifact_output_dir(output_dir: Path, arch: str, artifact_tag: str) -> Path:
+    if _is_windows():
+        return output_dir / "windows" / arch / artifact_tag
+    return output_dir / arch / artifact_tag
 
 
 @dataclass
@@ -2249,13 +2272,18 @@ def default_compile_gpu_arch(sm: int) -> str:
 
 
 def default_host_target_for_arch(target_arch: str, host_arch: str) -> str:
+    if _is_windows():
+        if target_arch == "x86_64":
+            return "llvm -mtriple=x86_64-pc-windows-msvc"
+        if target_arch == "aarch64":
+            return "llvm -mtriple=aarch64-pc-windows-msvc"
     if target_arch == "aarch64" and host_arch != target_arch:
         return "linux-aarch64"
     if target_arch == "x86_64":
         # Pin a generic x86-64 host target so the exported host-side launch code uses
         # the portable baseline ISA; an empty target bakes in the build machine's
         # native ISA (e.g. AVX-512 on Zen4 runners), which SIGILLs on older deployment CPUs.
-        return  "llvm -mtriple=x86_64-unknown-linux-gnu"
+        return "llvm -mtriple=x86_64-unknown-linux-gnu"
     return ""
 
 
@@ -2304,22 +2332,25 @@ def _cutlass_dsl_lib_dir(pkg_dir, cuda_ver):
     candidates.append(pkg_dir / "lib")
 
     for candidate in candidates:
-        if (candidate / "libcuda_dialect_runtime_static.a").exists():
+        if (candidate / _runtime_static_archive_name()).exists():
             return candidate
     raise FileNotFoundError(
-        f"libcuda_dialect_runtime_static.a not found in any of: "
+        f"{_runtime_static_archive_name()} not found in any of: "
         f"{[str(c) for c in candidates]}. "
         f"Ensure nvidia-cutlass-dsl=={_CUTLASS_DSL_VERSION} is installed correctly."
     )
 
 
 def _cutlass_dsl_version_matches(version: str) -> bool:
-    """Allow dev/local wheels built from the pinned release."""
-    public_version = version.split("+", 1)[0]
-    return public_version == _CUTLASS_DSL_VERSION or public_version.startswith(
-        f"{_CUTLASS_DSL_VERSION}.dev"
-    )
+    """Require the pinned release while allowing local build metadata."""
+    return version.split("+", 1)[0] == _CUTLASS_DSL_VERSION
 
+
+def _cuda_driver_bindings_available() -> bool:
+    try:
+        return importlib.util.find_spec("cuda.bindings.driver") is not None
+    except ModuleNotFoundError:
+        return False
 
 
 def check_dependencies(sm=None, selected_groups=None, cuda_ver=None):
@@ -2430,14 +2461,18 @@ def check_dependencies(sm=None, selected_groups=None, cuda_ver=None):
     else:
         errors.append("Could not detect CUDA version (is nvcc on PATH?).")
 
-    if not shutil.which("ar"):
-        errors.append("'ar' not found on PATH. Install binutils.")
+    archiver = "lib.exe" if _is_windows() else "ar"
+    if not shutil.which(archiver):
+        errors.append(
+            f"'{archiver}' not found on PATH. "
+            + ("Run from a Visual Studio developer shell." if _is_windows() else "Install binutils.")
+        )
 
-    # cuda-python (provides `cuda.bindings.driver`, used by all GEMM/FMHA scripts)
-    try:
-        importlib.metadata.version("cuda-python")
-    except importlib.metadata.PackageNotFoundError:
-        errors.append("cuda-python not found.\n  Fix: pip install cuda-python")
+    if not _cuda_driver_bindings_available():
+        errors.append(
+            "CUDA driver bindings required by CuTe DSL were not found.\n"
+            f"  Fix: {cutlass_dsl_fix}"
+        )
 
     if errors:
         print("Dependency check failed:\n" + "\n".join(f"  • {e}" for e in errors))
@@ -2453,9 +2488,10 @@ def check_dependencies(sm=None, selected_groups=None, cuda_ver=None):
         and dsl_cuda_version_string is not None
     )
     print(
-        f"  nvidia-cutlass-dsl=={ver} (CUDA {dsl_cuda_version_string}) ✓  "
-        f"{cupy_pkg}=={cupy_ver} ✓  "
-        f"host CUDA {system_cuda_ver} ✓  artifact CUDA {cuda_ver} ✓  ar ✓"
+        f"  nvidia-cutlass-dsl=={ver} (CUDA {dsl_cuda_version_string}) OK  "
+        f"{cupy_pkg}=={cupy_ver} OK  "
+        f"host CUDA {system_cuda_ver} OK  artifact CUDA {cuda_ver} OK  "
+        f"{archiver} OK"
     )
     return (
         ver,
@@ -2557,7 +2593,8 @@ def compile_variants(variants, staging_dirs, jobs, verbose, sm, compile_gpu_arch
         }
         for future in concurrent.futures.as_completed(futures):
             name, ok, elapsed, msg = future.result()
-            print(f"  {'✓' if ok else '✗'} {name:<25} ({elapsed:.1f}s)")
+            status = "OK" if ok else "FAILED"
+            print(f"  {status:<6} {name:<25} ({elapsed:.1f}s)")
             if not ok:
                 failures.append((name, msg))
 
@@ -2565,7 +2602,6 @@ def compile_variants(variants, staging_dirs, jobs, verbose, sm, compile_gpu_arch
         for name, msg in failures:
             print(f"\n  [{name}]\n{msg}")
         sys.exit(1)
-
 
 def compile_multi_sm_variants(
     variants_by_sm, staging_dirs, jobs, verbose, compile_gpu_arches, host_target
@@ -2602,7 +2638,8 @@ def compile_multi_sm_variants(
             sm, variant = futures[future]
             _, ok, elapsed, msg = future.result()
             label = f"SM{sm}/{variant.name}"
-            print(f"  {'✓' if ok else '✗'} {label:<32} ({elapsed:.1f}s)")
+            status = "OK" if ok else "FAILED"
+            print(f"  {status:<6} {label:<32} ({elapsed:.1f}s)")
             if not ok:
                 failures.append((label, msg))
 
@@ -2611,9 +2648,9 @@ def compile_multi_sm_variants(
             print(f"\n  [{label}]\n{msg}")
         sys.exit(1)
 
-# ELF e_machine values for validating CuTe DSL runtime static objects.
+# Object-machine values for validating CuTe DSL runtime static objects.
 _ELF_MACHINE = {"x86_64": 0x3E, "aarch64": 0xB7}
-_RUNTIME_STATIC_ARCHIVE = "libcuda_dialect_runtime_static.a"
+_COFF_MACHINE = {"x86_64": 0x8664, "aarch64": 0xAA64}
 
 
 def _elf_machine(path: Path) -> int | None:
@@ -2640,24 +2677,25 @@ def _runtime_libs_package(cuda_ver: str) -> str:
 
 
 def _find_static_runtime_archive(pkg_dir: Path | None, cuda_ver: str) -> Path | None:
-    """Locate libcuda_dialect_runtime_static.a inside an installed package tree."""
+    """Locate the static CUDA dialect runtime inside an installed package tree."""
     if pkg_dir is None:
         return None
 
+    archive_name = _runtime_static_archive_name()
     cuda_variant_archive = (
-        pkg_dir / _cuda_package_variant(cuda_ver) / "lib" / _RUNTIME_STATIC_ARCHIVE
+        pkg_dir / _cuda_package_variant(cuda_ver) / "lib" / archive_name
     )
     if cuda_variant_archive.exists():
         return cuda_variant_archive
 
-    generic_archive = pkg_dir / "lib" / _RUNTIME_STATIC_ARCHIVE
+    generic_archive = pkg_dir / "lib" / archive_name
     if generic_archive.exists():
         return generic_archive
 
     return None
 
 
-def _archive_first_member_machine(archive: Path) -> int | None:
+def _elf_archive_first_member_machine(archive: Path) -> int | None:
     members = subprocess.check_output(["ar", "t", str(archive)], text=True).splitlines()
     if not members:
         return None
@@ -2666,22 +2704,61 @@ def _archive_first_member_machine(archive: Path) -> int | None:
         return _elf_machine(Path(tmp) / members[0])
 
 
+def _coff_archive_first_member_machine(archive: Path) -> int | None:
+    """Return the COFF machine of the first object in an MSVC static library."""
+    try:
+        data = archive.read_bytes()
+    except OSError:
+        return None
+    if not data.startswith(b"!<arch>\n"):
+        return None
+
+    offset = 8
+    while offset + 60 <= len(data):
+        header = data[offset:offset + 60]
+        if header[58:60] != b"`\n":
+            return None
+        try:
+            member_size = int(header[48:58].decode("ascii").strip())
+        except ValueError:
+            return None
+        name = header[:16].decode("ascii", errors="replace").rstrip()
+        member_start = offset + 60
+        member_end = member_start + member_size
+        if member_end > len(data):
+            return None
+        if name not in ("/", "//") and member_size >= 2:
+            return int.from_bytes(data[member_start:member_start + 2], "little")
+        offset = member_end + (member_size & 1)
+    return None
+
+
+def _archive_first_member_machine(archive: Path) -> int | None:
+    if _is_windows():
+        return _coff_archive_first_member_machine(archive)
+    return _elf_archive_first_member_machine(archive)
+
+
 def _validate_static_runtime_archive(archive: Path, target_arch: str) -> Path:
     if not archive.exists():
         raise FileNotFoundError(f"{archive} does not exist")
     machine = _archive_first_member_machine(archive)
-    want = _ELF_MACHINE.get(target_arch)
+    machine_names = _COFF_MACHINE if _is_windows() else _ELF_MACHINE
+    object_format = "COFF" if _is_windows() else "ELF"
+    want = machine_names.get(target_arch)
     if want is not None and machine != want:
-        got = "not-ELF" if machine is None else f"0x{machine:x}"
+        got = f"not-{object_format}" if machine is None else f"0x{machine:x}"
         raise RuntimeError(
             f"Runtime static archive architecture mismatch: {archive}\n"
-            f"  e_machine={got}, but target arch '{target_arch}' expects 0x{want:x}.\n"
+            f"  {object_format} machine={got}, but target arch '{target_arch}' expects 0x{want:x}.\n"
             "Use a nvidia-cutlass-dsl-libs package whose wheel platform matches --arch."
         )
     return archive
 
 
 def _target_wheel_platforms(target_arch: str) -> list[str]:
+    if _is_windows() and target_arch == "x86_64":
+        return ["win_amd64"]
     if target_arch == "aarch64":
         return ["manylinux_2_28_aarch64", "manylinux2014_aarch64"]
     if target_arch == "x86_64":
@@ -2761,15 +2838,16 @@ def _extract_static_runtime_archive_from_wheel(
 ) -> Path:
     with zipfile.ZipFile(wheel) as zf:
         zf.extractall(extract_dir)
+    archive_name = _runtime_static_archive_name()
     archive = (
         extract_dir
         / "nvidia_cutlass_dsl"
         / _cuda_package_variant(cuda_ver)
         / "lib"
-        / _RUNTIME_STATIC_ARCHIVE
+        / archive_name
     )
     if not archive.exists():
-        raise FileNotFoundError(f"{_RUNTIME_STATIC_ARCHIVE} not found in downloaded wheel: {wheel}")
+        raise FileNotFoundError(f"{archive_name} not found in downloaded wheel: {wheel}")
     return archive
 
 
@@ -2781,7 +2859,7 @@ def resolve_static_runtime_archive(
     dsl_ver: str,
     staging_dir: Path,
 ) -> Path:
-    """Return a target-arch libcuda_dialect_runtime_static.a.
+    """Return a target-architecture static CUDA dialect runtime.
 
     Native builds use the installed package directly. Cross builds first try the
     installed package, then download the target-arch runtime-libs wheel and use
@@ -2807,6 +2885,8 @@ def resolve_static_runtime_archive(
 # different flavor/target and merging would mislabel it.
 _METADATA_COMPAT_KEYS = (
     "arch",
+    "host_platform",
+    "object_format",
     "artifact_tag",
     "gpu_arch",
     "compile_gpu_arch",
@@ -3077,6 +3157,49 @@ def _write_multi_sm_headers_and_dispatch(
     return dispatch_source
 
 
+def _create_static_library(
+    lib_path: Path,
+    kernel_objs: list[Path],
+    runtime_archive: Path,
+    staging_dir: Path,
+    check_defined_symbols: bool = False,
+) -> None:
+    if _is_windows():
+        archiver = shutil.which("lib.exe")
+        if archiver is None:
+            raise FileNotFoundError(
+                "lib.exe not found on PATH. Run from a Visual Studio developer shell."
+            )
+        response_path = staging_dir / "cutedsl_lib.rsp"
+        response_path.write_text(
+            "\n".join(
+                ["/NOLOGO", f'/OUT:"{lib_path}"']
+                + [f'"{obj}"' for obj in kernel_objs]
+                + [f'"{runtime_archive}"']
+            )
+            + "\n"
+        )
+        try:
+            subprocess.run([archiver, f"@{response_path}"], check=True)
+        finally:
+            response_path.unlink(missing_ok=True)
+        return
+
+    runtime_obj_dir = staging_dir / "runtime_objs"
+    runtime_obj_dir.mkdir()
+    subprocess.run(["ar", "x", str(runtime_archive)], cwd=str(runtime_obj_dir), check=True)
+    runtime_objs = sorted(runtime_obj_dir.glob("*.o"))
+    _check_obj_name_collision(kernel_objs, runtime_objs)
+    if check_defined_symbols:
+        _check_defined_symbol_collision(kernel_objs + runtime_objs)
+    subprocess.run(
+        ["ar", "rcs", str(lib_path)]
+        + [str(obj) for obj in kernel_objs]
+        + [str(obj) for obj in runtime_objs],
+        check=True,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Main build logic
 # ---------------------------------------------------------------------------
@@ -3086,7 +3209,7 @@ def _build_multi_sm(args, sms):
     host_arch = detect_arch()
     arch = detect_arch(args.arch)
     artifact_tag = _multi_sm_artifact_tag(sms)
-    output_dir = Path(args.output_dir) / arch / artifact_tag
+    output_dir = _artifact_output_dir(Path(args.output_dir), arch, artifact_tag)
     host_target = default_host_target_for_arch(arch, host_arch)
     compile_gpu_arches = {sm: default_compile_gpu_arch(sm) for sm in sms}
     variants_by_sm = {sm: select_variants(sm, args.kernels) for sm in sms}
@@ -3171,23 +3294,15 @@ def _build_multi_sm(args, sms):
             runtime_libs_version,
             root_staging,
         )
-        runtime_obj_dir = root_staging / "runtime_objs"
-        runtime_obj_dir.mkdir()
-        subprocess.run(
-            ["ar", "x", str(runtime_archive)],
-            cwd=str(runtime_obj_dir),
-            check=True,
-        )
-        runtime_objs = sorted(runtime_obj_dir.glob("*.o"))
-        _check_obj_name_collision(kernel_obj_files, runtime_objs)
-        _check_defined_symbol_collision(kernel_obj_files + runtime_objs)
-
-        lib_path = staged_output_dir / f"libcutedsl_{arch}.a"
-        subprocess.run(
-            ["ar", "rcs", str(lib_path)]
-            + [str(obj) for obj in kernel_obj_files]
-            + [str(obj) for obj in runtime_objs],
-            check=True,
+        archive_staging = root_staging / "archive"
+        archive_staging.mkdir()
+        lib_path = staged_output_dir / _static_library_name(arch)
+        _create_static_library(
+            lib_path,
+            kernel_obj_files,
+            runtime_archive,
+            archive_staging,
+            check_defined_symbols=not _is_windows(),
         )
         dispatch_source = _write_multi_sm_headers_and_dispatch(
             staged_output_dir, variants_by_sm, staging_dirs, sms
@@ -3201,6 +3316,9 @@ def _build_multi_sm(args, sms):
 
         metadata = {
             "arch": arch,
+            "host_platform": _host_platform(),
+            "object_format": "coff" if _is_windows() else "elf",
+            "static_library": lib_path.name,
             "artifact_tag": artifact_tag,
             "gpu_arch": artifact_tag,
             "gpu_archs": [sm_to_artifact_tag(sm) for sm in sms],
@@ -3223,7 +3341,7 @@ def _build_multi_sm(args, sms):
             "build_date": datetime.now(timezone.utc).isoformat(),
             "groups": groups_selected,
             "variants": sorted(canonical_variants),
-            "runtime_static_archive": _RUNTIME_STATIC_ARCHIVE,
+            "runtime_static_archive": _runtime_static_archive_name(),
             "dispatch_source": dispatch_source.name,
         }
         (staged_output_dir / "metadata.json").write_text(
@@ -3252,7 +3370,7 @@ def build(args):
     arch = detect_arch(args.arch)
     is_cross_compile = arch != host_arch
     artifact_tag = sm_to_artifact_tag(sm)
-    output_dir = Path(args.output_dir) / arch / artifact_tag
+    output_dir = _artifact_output_dir(Path(args.output_dir), arch, artifact_tag)
     host_target = default_host_target_for_arch(arch, host_arch)
     compile_gpu_arch = default_compile_gpu_arch(sm)
     wrapper_gpu_arch = compile_gpu_arch
@@ -3294,6 +3412,11 @@ def build(args):
 
     if args.clean and output_dir.exists():
         shutil.rmtree(output_dir)
+    if _is_windows() and (output_dir / _static_library_name(arch)).exists():
+        raise RuntimeError(
+            "Incremental Windows CuTe DSL archive updates are not supported. "
+            "Re-run with --clean and select every required kernel group."
+        )
 
     # Per-variant staging dirs prevent .o / .h filename collisions when multiple
     # variants share the same underlying script (e.g. all fmha.py invocations).
@@ -3326,21 +3449,9 @@ def build(args):
             runtime_libs_version,
             root_staging,
         )
-        runtime_obj_dir = root_staging / "runtime_objs"
-        runtime_obj_dir.mkdir()
-        subprocess.run(["ar", "x", str(runtime_archive)], cwd=str(runtime_obj_dir), check=True)
-        runtime_objs = sorted(runtime_obj_dir.glob("*.o"))
-        _check_obj_name_collision(kernel_obj_files, runtime_objs)
-
-        # Pack kernel objects and runtime shim objects into one archive.
         output_dir.mkdir(parents=True, exist_ok=True)
-        lib_path = output_dir / f"libcutedsl_{arch}.a"
-        subprocess.run(
-            ["ar", "rcs", str(lib_path)]
-            + [str(o) for o in kernel_obj_files]
-            + [str(o) for o in runtime_objs],
-            check=True,
-        )
+        lib_path = output_dir / _static_library_name(arch)
+        _create_static_library(lib_path, kernel_obj_files, runtime_archive, root_staging)
         print(f"\n  Created {lib_path.name} ({lib_path.stat().st_size // 1024} KB)")
         print(
             f"  Embedded static runtime: {runtime_archive} "
@@ -3391,6 +3502,9 @@ def build(args):
         # the manifest keeps describing the whole artifact.
         metadata = {
             "arch": arch,
+            "host_platform": _host_platform(),
+            "object_format": "coff" if _is_windows() else "elf",
+            "static_library": lib_path.name,
             "artifact_tag": artifact_tag,
             "gpu_arch": f"sm_{sm}",
             "compile_gpu_arch": compile_gpu_arch,
@@ -3407,7 +3521,7 @@ def build(args):
             "build_date": datetime.now(timezone.utc).isoformat(),
             "groups": groups_selected,
             "variants": [o.stem for o in kernel_obj_files],
-            "runtime_static_archive": _RUNTIME_STATIC_ARCHIVE,
+            "runtime_static_archive": _runtime_static_archive_name(),
         }
         metadata_path = output_dir / "metadata.json"
         metadata = _merge_artifact_metadata(_load_existing_metadata(metadata_path), metadata)

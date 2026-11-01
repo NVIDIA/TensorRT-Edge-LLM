@@ -6,8 +6,9 @@
 add_executable(qwen3_tts_inference qwen3_tts_inference.cpp)
 
 target_include_directories(
-  qwen3_tts_inference PRIVATE ${COMMON_INCLUDE_DIRS}
-                              ${CMAKE_SOURCE_DIR}/examples/utils)
+  qwen3_tts_inference
+  PRIVATE ${COMMON_INCLUDE_DIRS} ${CMAKE_SOURCE_DIR}/examples/utils
+          $<$<PLATFORM_ID:Windows>:${CMAKE_SOURCE_DIR}/examples/utils/windows>)
 
 target_link_libraries(qwen3_tts_inference PRIVATE edgellmCore exampleUtils
                                                   commonLibraryExt)

@@ -23,6 +23,8 @@
 #include "common/logger.h"
 #include "common/trtUtils.h"
 #include "runtime/exec/registryBuilder.h"
+#include "runtime/exec/rtxRuntimeCache.h"
+#include <cstdint>
 #include <stdexcept>
 #include <string_view>
 
@@ -105,7 +107,8 @@ public:
      *
      * @throws std::runtime_error On I/O or deserialization failure
      */
-    TrtEngineExecutor(std::filesystem::path const& enginePath, TensorRegistry registry);
+    TrtEngineExecutor(std::filesystem::path const& enginePath, TensorRegistry registry,
+        std::shared_ptr<RtxRuntimeCache> runtimeCache);
 
     //! @brief Destructor -- destroys all captured CUDA graphs.
     ~TrtEngineExecutor() noexcept override;
@@ -128,6 +131,11 @@ private:
     AuxStreamSet mAuxStreams{};
     std::unique_ptr<nvinfer1::IRuntime> mRuntime;
     std::unique_ptr<nvinfer1::ICudaEngine> mEngine;
+#if IS_TRT_RTX
+    //! The config and shared cache outlive the context that JITs kernels into them.
+    std::shared_ptr<RtxRuntimeCache> mRuntimeCache;
+    std::unique_ptr<nvinfer1::IRuntimeConfig> mRuntimeConfig;
+#endif
     std::unique_ptr<nvinfer1::IExecutionContext> mContext;
     TensorRegistry mRegistry;
     int32_t mCurrentProfileIndex{-1};
@@ -150,7 +158,8 @@ private:
     BindingSnapshot snapshotBindings() const;
 };
 
-TrtEngineExecutor::TrtEngineExecutor(std::filesystem::path const& enginePath, TensorRegistry registry)
+TrtEngineExecutor::TrtEngineExecutor(std::filesystem::path const& enginePath, TensorRegistry registry,
+    [[maybe_unused]] std::shared_ptr<RtxRuntimeCache> runtimeCache)
     : mRegistry(std::move(registry))
 {
     LOG_INFO("loading engine file: %s", enginePath.string().c_str());
@@ -160,9 +169,29 @@ TrtEngineExecutor::TrtEngineExecutor(std::filesystem::path const& enginePath, Te
 
     mEngine = deserializeCudaEngineFromFile(*mRuntime, enginePath);
 
-    // Use USER_MANAGED allocation so context memory can be shared across runners.
-    mContext = std::unique_ptr<nvinfer1::IExecutionContext>(
-        mEngine->createExecutionContext(nvinfer1::ExecutionContextAllocationStrategy::kUSER_MANAGED));
+#if IS_TRT_RTX
+    mRuntimeCache = std::move(runtimeCache);
+    if (mRuntimeCache != nullptr)
+    {
+        mRuntimeConfig = mRuntimeCache->createConfig(*mEngine);
+        if (mRuntimeConfig != nullptr)
+        {
+            mContext
+                = std::unique_ptr<nvinfer1::IExecutionContext>(mEngine->createExecutionContext(mRuntimeConfig.get()));
+        }
+        if (mContext == nullptr)
+        {
+            LOG_WARNING("createExecutionContext(runtimeConfig) failed; falling back to default context");
+            mRuntimeConfig.reset();
+        }
+    }
+    if (mContext == nullptr)
+#endif
+    {
+        // Use USER_MANAGED allocation so context memory can be shared across runners.
+        mContext = std::unique_ptr<nvinfer1::IExecutionContext>(
+            mEngine->createExecutionContext(nvinfer1::ExecutionContextAllocationStrategy::kUSER_MANAGED));
+    }
     ELLM_CHECK(mContext != nullptr, "failed to create execution context");
 
     setNonBlockingAuxStreams(mContext.get(), mEngine.get(), mAuxStreams);
@@ -194,14 +223,16 @@ TrtEngineExecutor::TrtEngineExecutor(std::filesystem::path const& enginePath, Te
 }
 
 std::unique_ptr<EngineExecutor> EngineExecutor::createForLLM(std::filesystem::path const& enginePath,
-    LLMEngineConfig const& cfg, std::optional<int32_t> specDecodeBaseOutputHiddenDim)
+    LLMEngineConfig const& cfg, std::optional<int32_t> specDecodeBaseOutputHiddenDim,
+    std::shared_ptr<RtxRuntimeCache> runtimeCache)
 {
     auto registry = buildRegistryForLLM(cfg, specDecodeBaseOutputHiddenDim);
-    return std::unique_ptr<EngineExecutor>(new TrtEngineExecutor(enginePath, std::move(registry)));
+    return std::unique_ptr<EngineExecutor>(
+        new TrtEngineExecutor(enginePath, std::move(registry), std::move(runtimeCache)));
 }
 
-std::unique_ptr<EngineExecutor> EngineExecutor::createForDraft(
-    std::filesystem::path const& enginePath, DeploymentConfig const& bundle)
+std::unique_ptr<EngineExecutor> EngineExecutor::createForDraft(std::filesystem::path const& enginePath,
+    DeploymentConfig const& bundle, std::shared_ptr<RtxRuntimeCache> runtimeCache)
 {
     switch (bundle.specDecodeMode())
     {
@@ -209,23 +240,27 @@ std::unique_ptr<EngineExecutor> EngineExecutor::createForDraft(
     case SpecDecodeMode::kEAGLE:
     {
         auto registry = buildRegistryForSpecDecodeDraft(bundle);
-        return std::unique_ptr<EngineExecutor>(new TrtEngineExecutor(enginePath, std::move(registry)));
+        return std::unique_ptr<EngineExecutor>(
+            new TrtEngineExecutor(enginePath, std::move(registry), std::move(runtimeCache)));
     }
     case SpecDecodeMode::kDFlash:
     case SpecDecodeMode::kJetSpec:
     {
         auto registry = buildRegistryForDFlashDraft(bundle);
-        return std::unique_ptr<EngineExecutor>(new TrtEngineExecutor(enginePath, std::move(registry)));
+        return std::unique_ptr<EngineExecutor>(
+            new TrtEngineExecutor(enginePath, std::move(registry), std::move(runtimeCache)));
     }
     case SpecDecodeMode::kGemma4MTP:
     {
         auto registry = buildRegistryForGemma4MTPDraft(bundle);
-        return std::unique_ptr<EngineExecutor>(new TrtEngineExecutor(enginePath, std::move(registry)));
+        return std::unique_ptr<EngineExecutor>(
+            new TrtEngineExecutor(enginePath, std::move(registry), std::move(runtimeCache)));
     }
     case SpecDecodeMode::kDSpark:
     {
         auto registry = buildRegistryForDSparkDraft(bundle);
-        return std::unique_ptr<EngineExecutor>(new TrtEngineExecutor(enginePath, std::move(registry)));
+        return std::unique_ptr<EngineExecutor>(
+            new TrtEngineExecutor(enginePath, std::move(registry), std::move(runtimeCache)));
     }
     case SpecDecodeMode::kNONE:
     default: ELLM_CHECK(false, "createForDraft requires a speculative decoding deployment with a draft engine.");

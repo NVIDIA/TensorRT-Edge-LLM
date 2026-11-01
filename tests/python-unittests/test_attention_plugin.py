@@ -2848,17 +2848,21 @@ def test_ragged_prefill(label, seqlens):
 # bottom-right causal attention to dense PADDING attention. Cache starts
 # [20, 8] plus valid Q lengths [4, 3] produce the exact logical KV lengths
 # [24, 11] while the physical Q tensor remains batch-strided at S=4.
+# The runtime issues it as kDiffusionDenoise: normal-prefill mode over a cached prefix.
 @pytest.mark.skipif(_device_sm()
                     not in (80, 86, 87, 89, 90, 100, 101, 110, 120, 121),
-                    reason="D256 CuTe DSL PADDING FMHA is unsupported")
-def test_diffusion_gemma_padding_prefill():
+                    reason="CuTe DSL PADDING FMHA is unsupported")
+@pytest.mark.parametrize("head_size", [256, 512], ids=["d256", "d512"])
+@pytest.mark.parametrize("execution_phase", [None, 6],
+                         ids=["context_chunk", "diffusion_denoise"])
+def test_diffusion_gemma_padding_prefill(head_size, execution_phase):
     q_lens = [4, 3]
     cache_starts = [20, 8]
     kv_lens = [24, 11]
     cfg = dict(BASE)
     cfg["num_q_heads"] = 16
     cfg["num_kv_heads"] = 8
-    cfg["head_size"] = 256
+    cfg["head_size"] = head_size
     cfg["kv_cache_capacity"] = 32
     cfg["max_batch_size"] = len(q_lens)
     cfg["max_seq_len"] = max(q_lens)
@@ -2925,7 +2929,8 @@ def test_diffusion_gemma_padding_prefill():
                                      ctx_len,
                                      combined,
                                      cache_idx,
-                                     context_mask_selector=selector)
+                                     context_mask_selector=selector,
+                                     execution_phase=execution_phase)
     plugin_k, plugin_v = _plugin_kv_to_ref(plugin_kv, p)
 
     for b, (q_len, kv_len) in enumerate(zip(q_lens, kv_lens)):

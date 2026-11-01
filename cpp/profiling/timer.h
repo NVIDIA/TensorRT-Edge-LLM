@@ -32,7 +32,7 @@ namespace trt_edgellm
 {
 
 //! Thread-local profiling control flag
-//! When false, no profiling data (metrics or timing) will be recorded
+//! Controls aggregate counters and GPU stage timing; per-request collection is opt-in.
 //! This is useful to exclude warmup runs from benchmark statistics
 bool getProfilingEnabled() noexcept;
 void setProfilingEnabled(bool enabled) noexcept;

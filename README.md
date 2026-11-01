@@ -5,7 +5,7 @@
 **High-Performance Large Language Model Inference Framework for NVIDIA Edge Platforms**
 
 [![Documentation](https://img.shields.io/badge/docs-latest-brightgreen.svg?style=flat)](https://nvidia.github.io/TensorRT-Edge-LLM/)
-[![version](https://img.shields.io/badge/release-0.11.0-green)](https://github.com/NVIDIA/TensorRT-Edge-LLM/blob/main/tensorrt_edgellm/_version.py)
+[![version](https://img.shields.io/badge/release-0.11.1-green)](https://github.com/NVIDIA/TensorRT-Edge-LLM/blob/main/tensorrt_edgellm/_version.py)
 [![license](https://img.shields.io/badge/license-Apache%202-blue)](https://github.com/NVIDIA/TensorRT-Edge-LLM/blob/main/LICENSE)
 
 [Overview](https://nvidia.github.io/TensorRT-Edge-LLM/latest/overview.html)&nbsp;&nbsp;&nbsp;|&nbsp;&nbsp;&nbsp;[Support Matrix](https://nvidia.github.io/TensorRT-Edge-LLM/latest/user_guide/getting_started/support-matrix.html)&nbsp;&nbsp;&nbsp;|&nbsp;&nbsp;&nbsp;[Quick Start](https://nvidia.github.io/TensorRT-Edge-LLM/latest/user_guide/getting_started/quick-start-guide.html)&nbsp;&nbsp;&nbsp;|&nbsp;&nbsp;&nbsp;[Performance](https://nvidia.github.io/TensorRT-Edge-LLM/latest/user_guide/performance/performance-benchmarks.html)&nbsp;&nbsp;&nbsp;|&nbsp;&nbsp;&nbsp;[Documentation](https://nvidia.github.io/TensorRT-Edge-LLM/)&nbsp;&nbsp;&nbsp;|&nbsp;&nbsp;&nbsp;[Roadmap](https://github.com/NVIDIA/TensorRT-Edge-LLM/issues?q=is%3Aissue%20state%3Aopen%20label%3ARoadmap)
@@ -15,6 +15,7 @@
 
 ## Latest News
 
+- **[2026/10]** Release **0.11.1** adds [Nemotron 3.5 Bolt E4B](https://huggingface.co/nvidia/Nemotron-3.5-Bolt-E4B-BF16) with its [DFlash draft](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-DFlash), [Windows x64 support with TensorRT RTX](docs/source/user_guide/getting_started/installation.md#windows-x64-with-tensorrt-rtx), and JetPack 7.2.2 support.
 - **[2026/09]** [TensorRT Edge-LLM completes the MLPerf Edge Agentic benchmark 6.4x faster on Jetson AGX Thor](https://developer.nvidia.com/blog/tensorrt-edge-llm-completes-the-mlperf-edge-agentic-benchmark-6-4x-faster-on-jetson-agx-thor/).
 - **[2026/09]** Release **0.11.0** adds [published Python wheels](docs/source/user_guide/getting_started/installation.md#published-python-wheel), [Muse-Glimmer](https://huggingface.co/meta-models/Muse-Glimmer-30B), experimental [pi0.5](docs/source/user_guide/examples/vla/pi05.md), Hunyuan dense models, [guided decoding](docs/source/user_guide/examples/experimental-server.md#structured-output), opt-in [in-flight batching](docs/source/user_guide/features/in-flight-batching.md), native provider Jinja chat templates, and GPU-free CuTe DSL artifact generation.
 - **[2026/09]** Release **0.10.1** adds experimental [**TP=2 inference on Dual NVIDIA DGX Spark**](docs/source/user_guide/features/multi-device.md) and redesigns the experimental [OpenAI-compatible server](docs/source/user_guide/examples/experimental-server.md) for faster cold launches and lower memory usage.
@@ -32,17 +33,20 @@ TensorRT Edge-LLM is NVIDIA's C++ inference runtime for text, vision, audio, spe
 
 ## Getting Started
 
-Check the [**Official Support Matrix**](https://nvidia.github.io/TensorRT-Edge-LLM/latest/user_guide/getting_started/support-matrix.html), then follow the [**Quick Start Guide**](https://nvidia.github.io/TensorRT-Edge-LLM/latest/user_guide/getting_started/quick-start-guide.html). Checkpoint IDs are listed in [**Supported Models**](https://nvidia.github.io/TensorRT-Edge-LLM/latest/user_guide/getting_started/supported-models.html).
-
 For a supported target, install a [published Python wheel](docs/source/user_guide/getting_started/installation.md#published-python-wheel)
 without compiling Edge-LLM. Use `tensorrt-edgellm[server]` for the high-level
-Python API and HTTP serving; see the [extras guide](docs/source/user_guide/getting_started/installation.md#optional-python-dependencies)
-for export/tools dependencies and the minimal base workflow.
+Python API and HTTP serving. See [Optional Python dependencies](docs/source/user_guide/getting_started/installation.md#optional-python-dependencies)
+for additional tools, or [Install without optional dependencies](docs/source/user_guide/getting_started/installation.md#install-without-optional-dependencies)
+for the base installation.
 
-Install the base package from PyPI (requires a supported CUDA/TensorRT stack):
+Follow the [Quick Start Guide](docs/source/user_guide/getting_started/quick-start-guide.md)
+to start a chat or send an inference request. Checkpoint IDs are listed in
+[Supported Models](docs/source/user_guide/getting_started/supported-models.md).
+
+Install from PyPI (requires a supported CUDA/TensorRT stack):
 
 ```bash
-pip install tensorrt-edgellm==0.11.0
+python -m pip install "tensorrt-edgellm[server]"
 ```
 
 ---
@@ -60,6 +64,7 @@ pip install tensorrt-edgellm==0.11.0
 ### User Guide
 
 - **[Installation](https://nvidia.github.io/TensorRT-Edge-LLM/latest/user_guide/getting_started/installation.html)** - Set up quantization, `tensorrt_edgellm`, and the C++ runtime
+- **[trtedge CLI](docs/source/user_guide/getting_started/cli.md)** - Chat, serve models, build engines, export ONNX, and prepare checkpoints
 - **[Quick Start Guide](https://nvidia.github.io/TensorRT-Edge-LLM/latest/user_guide/getting_started/quick-start-guide.html)** - Run your first inference in ~15 minutes
 - **[Examples](https://nvidia.github.io/TensorRT-Edge-LLM/latest/user_guide/examples/index.html)** - End-to-end workflows
 - **[Quantization](https://nvidia.github.io/TensorRT-Edge-LLM/latest/user_guide/features/quantization.html)** - Create quantized checkpoints for `tensorrt_edgellm`
@@ -121,6 +126,8 @@ See the [**Performance Benchmarks**](https://nvidia.github.io/TensorRT-Edge-LLM/
 ## Featured Websites
 
 - [TensorRT Edge-LLM Jetson AI Lab tutorial](https://www.jetson-ai-lab.com/tutorials/tensorrt-edge-llm/)
+- [TensorRT Edge-LLM Completes the MLPerf Edge Agentic Benchmark 6.4x Faster on Jetson AGX Thor](https://developer.nvidia.com/blog/tensorrt-edge-llm-completes-the-mlperf-edge-agentic-benchmark-6-4x-faster-on-jetson-agx-thor/)
+- [How to Build In-Vehicle AI Agents with NVIDIA: From Cloud to Car](https://developer.nvidia.com/blog/how-to-build-in-vehicle-ai-agents-with-nvidia-from-cloud-to-car/)
 - [Maximizing Memory Efficiency to Run Bigger Models on NVIDIA Jetson](https://developer.nvidia.com/blog/maximizing-memory-efficiency-to-run-bigger-models-on-nvidia-jetson/)
 - [Build Next-Gen Physical AI with Edge-First LLMs for Autonomous Vehicles and Robotics](https://developer.nvidia.com/blog/build-next-gen-physical-ai-with-edge%E2%80%91first-llms-for-autonomous-vehicles-and-robotics/)
 - [Accelerate AI Inference for Edge and Robotics with NVIDIA Jetson T4000 and NVIDIA JetPack 7.1](https://developer.nvidia.com/blog/accelerate-ai-inference-for-edge-and-robotics-with-nvidia-jetson-t4000-and-nvidia-jetpack-7-1/)

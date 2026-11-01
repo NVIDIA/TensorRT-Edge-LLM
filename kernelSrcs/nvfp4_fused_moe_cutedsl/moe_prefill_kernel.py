@@ -2236,14 +2236,12 @@ class MoEPrefillKernel:
                                 tRS_sD[(None, None, None, epi_buffer)],
                             )
                             cute.arch.fence_proxy("async.shared", space="cta")
-                            # No cross-warp barrier needed before scatter:
-                            # StMatrix is warp-local, and each warp only reads
-                            # its own 64×64 quadrant of sC below.
+                            # CuTe DSL may assign the StMatrix stores and the manual sC reads below
+                            # to different warps. Make every staged value visible before scattering.
+                            self.epilog_sync_barrier.arrive_and_wait()
                             rows_offset = Int32(epi_m) * Int32(self.epi_tile[0])
 
-                            # Per-warp scatter: each warp scatters its own quadrant
-                            # of sC (64 M-rows × 64 N-cols). No cross-warp read
-                            # dependencies, so no pre-scatter barrier is needed.
+                            # Per-warp scatter: each warp scatters one 64x64 quadrant of sC.
                             warp_epi_rows = valid_rows - rows_offset - warp_m_base
                             if warp_epi_rows > Int32(64):
                                 warp_epi_rows = Int32(64)

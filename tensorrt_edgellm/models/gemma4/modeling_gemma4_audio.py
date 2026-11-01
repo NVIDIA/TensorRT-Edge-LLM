@@ -195,7 +195,8 @@ class Gemma4ClippableLinear(nn.Module):
 class _ConvNormBlock(nn.Module):
     """Conv2d + LayerNorm block for SubSampleConvProjection."""
 
-    def __init__(self, in_channels: int, out_channels: int) -> None:
+    def __init__(self, in_channels: int, out_channels: int,
+                 norm_eps: float) -> None:
         super().__init__()
         self.conv = nn.Conv2d(in_channels,
                               out_channels,
@@ -203,7 +204,7 @@ class _ConvNormBlock(nn.Module):
                               stride=2,
                               padding=1,
                               bias=False)
-        self.norm = nn.LayerNorm(out_channels, bias=False)
+        self.norm = nn.LayerNorm(out_channels, eps=norm_eps, bias=False)
 
 
 class Gemma4AudioSubSampleConvProjection(nn.Module):
@@ -223,36 +224,41 @@ class Gemma4AudioSubSampleConvProjection(nn.Module):
     def __init__(self,
                  num_mel_bins: int,
                  hidden_size: int,
-                 conv_channels: list = None) -> None:
+                 conv_channels: list = None,
+                 norm_eps: float = _RMS_NORM_EPS) -> None:
         super().__init__()
         if conv_channels is None:
             conv_channels = list(_ac.subsampling_conv_channels)
 
         c1, c2 = conv_channels
-        self.layer0 = _ConvNormBlock(1, c1)
-        self.layer1 = _ConvNormBlock(c1, c2)
+        self.layer0 = _ConvNormBlock(1, c1, norm_eps)
+        self.layer1 = _ConvNormBlock(c1, c2, norm_eps)
         # After 2x stride-2 on freq axis: freq_out = num_mel_bins // 4
         freq_out = num_mel_bins // 4
         self.input_proj_linear = nn.Linear(c2 * freq_out,
                                            hidden_size,
                                            bias=False)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, input_features_mask: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """[B, T, mel_bins] -> [B, T//4, hidden_size]"""
         x = x.unsqueeze(1)  # [B, 1, T, mel]
         for block in (self.layer0, self.layer1):
+            x = x * input_features_mask[:, None, :, None]
             x = block.conv(x)  # [B, C, T', F']
             # LayerNorm over channel dim: permute to [B, T', F', C]
             x = x.permute(0, 2, 3, 1)
             x = block.norm(x)
             x = x.permute(0, 3, 1, 2)  # back to [B, C, T', F']
             x = F.relu(x)
+            input_features_mask = input_features_mask[:, ::2]
         # x: [B, c2, T//4, mel//4]
         B, C, T, F_ = x.shape
         # HF uses permute(0, 2, 3, 1) → [B, T, F, C] then reshape
         x = x.permute(0, 2, 3, 1).contiguous().reshape(B, T, -1)
         x = self.input_proj_linear(x)
-        return x
+        return x, input_features_mask
 
 
 # ---------------------------------------------------------------------------
@@ -733,6 +739,7 @@ class Gemma4AudioModel(nn.Module):
         output_proj_dims = ac["output_proj_dims"]
         residual_weight = ac["residual_weight"]
         gradient_clipping = ac["gradient_clipping"]
+        rms_norm_eps = ac["rms_norm_eps"]
         num_mel_bins = ac.get("num_mel_bins", 128)
         conv_channels = ac["subsampling_conv_channels"]
         use_clipped_linears = ac.get("use_clipped_linears", True)
@@ -753,6 +760,7 @@ class Gemma4AudioModel(nn.Module):
             "output_proj_dims": output_proj_dims,
             "residual_weight": residual_weight,
             "gradient_clipping": gradient_clipping,
+            "rms_norm_eps": rms_norm_eps,
             "num_mel_bins": num_mel_bins,
             "context_size": context_size,
             "use_clipped_linears": use_clipped_linears,
@@ -763,6 +771,7 @@ class Gemma4AudioModel(nn.Module):
             hidden_size=hidden_size,
             conv_channels=list(conv_channels)
             if not isinstance(conv_channels, list) else conv_channels,
+            norm_eps=rms_norm_eps,
         )
         self.pos_enc = Gemma4AudioRelPositionalEncoding(
             hidden_size, context_size)
@@ -786,16 +795,17 @@ class Gemma4AudioModel(nn.Module):
         self.output_proj = nn.Linear(hidden_size, output_proj_dims, bias=True)
 
     def forward(self, input_features: torch.Tensor,
-                valid: torch.Tensor) -> torch.Tensor:
+                input_features_mask: torch.Tensor) -> torch.Tensor:
         """
         Args:
             input_features: [B, seq_len, num_mel_bins]
-            valid: [B, seq_len//4] bool — True for real tokens after downsample
+            input_features_mask: [B, seq_len] bool — True for real mel frames
 
         Returns:
             [B, seq_len//4, output_proj_dims]
         """
-        x = self.subsample_conv_projection(input_features)
+        x, valid = self.subsample_conv_projection(input_features,
+                                                  input_features_mask)
         pos_embed = self.pos_enc()
 
         for layer in self.layers:
@@ -815,22 +825,22 @@ class Gemma4AudioModel(nn.Module):
                                      num_mel_bins,
                                      dtype=dtype,
                                      device=device)
-        # valid mask for the downsampled sequence length (seq_len // 4)
-        down_seq_len = seq_len // 4  # after 2x stride-2 conv
-        valid = torch.ones(1, down_seq_len, dtype=torch.bool, device=device)
+        input_features_mask = torch.ones(1,
+                                         seq_len,
+                                         dtype=torch.bool,
+                                         device=device)
 
-        args = (input_features, valid)
-        input_names = ["input_features", "valid"]
+        args = (input_features, input_features_mask)
+        input_names = ["input_features", "input_features_mask"]
         output_names = ["last_hidden_state"]
 
         S = torch.export.Dim("seq_len", min=8, max=16384)
-        DS = torch.export.Dim("down_seq_len", min=2, max=4096)
         dynamic_shapes = {
             "input_features": {
                 1: S
             },
-            "valid": {
-                1: DS
+            "input_features_mask": {
+                1: S
             },
         }
         return args, input_names, output_names, dynamic_shapes
@@ -895,8 +905,8 @@ class Gemma4AudioWithEmbedder(nn.Module):
             audio_config, text_config, model_config)
 
     def forward(self, input_features: torch.Tensor,
-                valid: torch.Tensor) -> torch.Tensor:
-        hidden_states = self.audio_tower(input_features, valid)
+                input_features_mask: torch.Tensor) -> torch.Tensor:
+        hidden_states = self.audio_tower(input_features, input_features_mask)
         return self.embed_audio(hidden_states)
 
     def get_onnx_export_args(self, config: Dict[str, Any], device: str):

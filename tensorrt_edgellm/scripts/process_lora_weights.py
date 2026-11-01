@@ -20,17 +20,18 @@ to specified requirements including tensor name processing, shape corrections, a
 format conversions.
 
 Usage:
-    tensorrt-edgellm-process-lora --input_dir /path/to/adapter --output_dir /path/to/output
+    tensorrt-edgellm-process-lora --input-dir /path/to/adapter --output-dir /path/to/output
 """
 
 import argparse
 import sys
 import traceback
 
-from tensorrt_edgellm.lora.lora import process_lora_weights_and_save
+from tensorrt_edgellm.scripts import _dependency_errors
 
 
-def main() -> None:
+@_dependency_errors.optional_dependencies("tools")
+def main(argv=None, *, prog="tensorrt-edgellm-process-lora") -> None:
     """
     Main function that parses command line arguments and processes LoRA weights.
 
@@ -38,17 +39,22 @@ def main() -> None:
     and calls the process_lora_weights_and_save function with the provided parameters.
     """
     parser = argparse.ArgumentParser(
+        prog=prog,
         description="Process LoRA weights according to specifications")
-    parser.add_argument("--input_dir",
+    parser.add_argument("--input-dir",
+                        "--input_dir",
                         type=str,
                         required=True,
                         help="Directory containing input adapter files")
-    parser.add_argument("--output_dir",
+    parser.add_argument("--output-dir",
+                        "--output_dir",
                         type=str,
                         required=True,
                         help="Directory where processed files will be saved")
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+
+    from tensorrt_edgellm.lora.lora import process_lora_weights_and_save
 
     try:
         # Process LoRA weights
@@ -57,6 +63,8 @@ def main() -> None:
 
         print("LoRA weight processing completed successfully!")
 
+    except ModuleNotFoundError:
+        raise
     except Exception as e:
         print(f"Error during LoRA weight processing: {e}")
         print("Traceback:")

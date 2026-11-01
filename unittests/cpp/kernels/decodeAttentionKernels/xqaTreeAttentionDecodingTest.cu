@@ -205,6 +205,13 @@ void TestXQATreeAttentionDecodingAccuracy(int32_t batchSize, int32_t numQHeads, 
         if (options.maskPattern == XQATreeMaskPattern::kRandom)
         {
             uniformIntInitialization(treeMaski, 0, 1);
+            // Force the diagonal so every query attends at least to itself.
+            // Without this, a random row of all zeros makes softmax receive all -inf and
+            // produce NaN.  Production tree masks always include the query token.
+            for (int32_t queryIdx = 0; queryIdx < qSequenceLength; ++queryIdx)
+            {
+                treeMaski[queryIdx * qSequenceLength + queryIdx] = 1;
+            }
         }
         else if (options.maskPattern == XQATreeMaskPattern::kCausal)
         {
@@ -810,6 +817,10 @@ void TestXQATreeAttentionDecodingWithPaddedCapacity(int32_t batchSize, int32_t n
         }
 
         uniformIntInitialization(treeMaski, 0, 1);
+        for (int32_t queryIdx = 0; queryIdx < qSequenceLength; ++queryIdx)
+        {
+            treeMaski[queryIdx * qSequenceLength + queryIdx] = 1;
+        }
         auto ref = casualAttentionRef<half>(qi, kiData, viData, qSequenceLength, kvSequenceLength, numQHeads,
             numKVHeads, headSize, attentionScale, treeMaski);
 

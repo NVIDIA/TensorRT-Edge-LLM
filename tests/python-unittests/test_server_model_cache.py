@@ -18,6 +18,7 @@ import json
 import os
 import shutil
 import stat
+import types
 from pathlib import Path
 
 import pytest
@@ -167,8 +168,38 @@ def test_engine_cache_prunes_lru_and_can_be_cleared(tmp_path):
     assert checkpoint.exists()
 
 
-def test_prepare_model_builds_once_and_publishes_atomically(
-        tmp_path, monkeypatch):
+def test_builder_reports_each_component(tmp_path, monkeypatch):
+    pytest.importorskip("tensorrt")
+    from experimental.builder import cli
+    from experimental.builder.core import builder
+
+    args = types.SimpleNamespace(plugin_path="/plugin.so")
+    bundle = types.SimpleNamespace(root_model_type="qwen3_5")
+    labels = ["spec-base", "spec-draft", "visual"]
+    plan = [(label, args, bundle, label) for label in labels]
+    progress = []
+
+    def build_one(_args, _bundle, component, _plugin):
+        assert len(progress) == labels.index(component) + 1
+        path = tmp_path / (component + ".engine")
+        path.write_bytes(b"engine")
+        return str(path)
+
+    monkeypatch.setattr(cli, "_resolve_build_selection", lambda _:
+                        (bundle, []))
+    monkeypatch.setattr(cli, "_build_plan", lambda *_: plan)
+    monkeypatch.setattr(cli, "_build_one", build_one)
+    monkeypatch.setattr(builder, "load_plugin_library", lambda _: None)
+    cli._build(args, on_progress=progress.append)
+    assert len(progress) == len(labels)
+    for index, name in enumerate(["base", "draft", "vision"], 1):
+        stage = progress[index - 1]
+        assert name in stage.lower()
+        assert f"{index}/{len(labels)}" in stage
+
+
+@pytest.fixture
+def model_build(tmp_path, monkeypatch):
     checkpoint = _checkpoint(tmp_path / "checkpoint")
     cache = tmp_path / "cache"
     bundle = Path(
@@ -181,8 +212,10 @@ def test_prepare_model_builds_once_and_publishes_atomically(
     def is_ready(_model_dir, bundle_dir, _options):
         return Path(bundle_dir, "ready").is_file()
 
-    def build(argv):
+    def build(argv, *, on_progress=None):
         calls.append(argv)
+        if on_progress is not None:
+            on_progress("component progress")
         output = Path(argv[argv.index("--engine-dir") + 1])
         (output / "ready").touch()
 
@@ -190,16 +223,42 @@ def test_prepare_model_builds_once_and_publishes_atomically(
     monkeypatch.setattr(engine_build, "_resolve_plugin_path",
                         lambda _: "/plugin.so")
     monkeypatch.setattr("experimental.builder.cli.main", build)
+    return types.SimpleNamespace(checkpoint=str(checkpoint),
+                                 cache=str(cache),
+                                 calls=calls)
 
-    first = engine_build.prepare_model(str(checkpoint), str(cache))
-    second = engine_build.prepare_model(str(checkpoint), str(cache))
+
+def test_prepare_model_builds_once_and_publishes_atomically(model_build):
+    first = engine_build.prepare_model(model_build.checkpoint,
+                                       model_build.cache)
+    second = engine_build.prepare_model(model_build.checkpoint,
+                                        model_build.cache)
     assert first.built
     assert not second.built
     assert first.bundle_dir == second.bundle_dir
-    assert first.model_dir == str(checkpoint)
+    assert first.model_dir == model_build.checkpoint
     assert Path(first.bundle_dir, "ready").is_file()
     assert stat.S_IMODE(Path(first.bundle_dir).stat().st_mode) == 0o777
-    assert len(calls) == 1
+    assert len(model_build.calls) == 1
+
+
+def test_prepare_model_reports_build_and_cache_progress(model_build):
+    progress = []
+    engine_build.prepare_model(model_build.checkpoint,
+                               model_build.cache,
+                               on_progress=progress.append)
+    forwarded = progress.index("component progress")
+    assert any("building" in stage.lower() for stage in progress[:forwarded])
+    assert any("complete" in stage.lower()
+               for stage in progress[forwarded + 1:])
+
+    progress.clear()
+    engine_build.prepare_model(model_build.checkpoint,
+                               model_build.cache,
+                               on_progress=progress.append)
+    assert "reusing" in progress[-1].lower()
+    assert "cache" in progress[-1].lower()
+    assert "component progress" not in progress
 
 
 def test_cache_reuse_requires_profile_and_checkpoint_identity(tmp_path):

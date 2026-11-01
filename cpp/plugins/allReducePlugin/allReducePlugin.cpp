@@ -335,7 +335,6 @@ int32_t AllReducePlugin::enqueue(PluginTensorDesc const* inputDesc, PluginTensor
             return -1;
         }
 
-
         status = executeNcclAllReducePath(registrations.nccl, inDesc, inputs[kIN_TENSOR_IDX], outputs[kOUT_TENSOR_IDX],
             numElements, mTpSize, currentDevice, stream);
         if (status == AllReduceExecutionStatus::kSuccess)
@@ -466,4 +465,3 @@ extern "C" EDGELLM_PLUGIN_EXPORT bool edgellmUnregisterNcclCommForAllReducePlugi
 {
     return trt_edgellm::plugins::unregisterNcclAllReducePath(deviceId, ncclComm);
 }
-

@@ -750,7 +750,7 @@ TEST(RequestEngineTests, DestructorShutsDownWithoutAnExplicitCall)
 TEST(RequestEngineTests, ManyThreadsMaySubmitConcurrently)
 {
     constexpr int32_t kThreads = 8;
-    constexpr int32_t kPerThread = 25;
+    static constexpr int32_t kPerThread = 25;
     FakeScript script;
     EngineConfig config;
     config.commandQueueCapacity = 256;

@@ -25,7 +25,7 @@ namespace trt_edgellm
 
 //! \cond INTERNAL
 //! Thread-local profiling control flag accessors (defined in timer.cpp)
-//! When false, no profiling data (metrics or timing) will be recorded
+//! Controls aggregate counters and GPU stage timing; per-request collection is opt-in.
 bool getProfilingEnabled() noexcept;
 void setProfilingEnabled(bool enabled) noexcept;
 //! \endcond
@@ -68,6 +68,16 @@ inline std::string const kCODEPREDICTOR_GENERATION
 inline std::string const kTALKER_PREFILL = "talker_prefill";     //!< Talker prefill stage (single-shot)
 inline std::string const kACTION_INFERENCE = "action_inference"; //!< Action head trajectory sampling stage
 } // namespace StageNames
+
+//! Cumulative metrics for one sequence, using the runtime's existing token counts.
+struct LLMRequestMetrics
+{
+    int32_t processedPromptTokens{-1}; //!< Executed prompt tokens, excluding cached prefixes; -1 if unavailable.
+    int32_t generatedTokens{0};        //!< All output tokens, including any sampled during prefill.
+    int32_t decodedTokens{0};          //!< Output tokens sampled after prefill.
+    double promptSeconds{0.0};         //!< Wall time through prefill and first-token sampling.
+    double generationSeconds{0.0};     //!< Wall time from prefill completion through the last generated token.
+};
 
 /*!
  * @brief Base class for performance metrics

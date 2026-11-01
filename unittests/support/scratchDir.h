@@ -17,8 +17,8 @@
 
 #pragma once
 
+#include "platformCompat.h"
 #include <gtest/gtest.h>
-#include <unistd.h>
 
 #include <filesystem>
 #include <string>
@@ -34,7 +34,8 @@ inline std::filesystem::path makeScratchDir(std::string const& suite)
 {
     auto const* const info = ::testing::UnitTest::GetInstance()->current_test_info();
     auto const dir = std::filesystem::temp_directory_path()
-        / ("edgellm." + suite + "." + std::to_string(getpid()) + "." + (info != nullptr ? info->name() : "static"));
+        / ("edgellm." + suite + "." + std::to_string(trt_edgellm::test::processId()) + "."
+            + (info != nullptr ? info->name() : "static"));
     std::filesystem::remove_all(dir);
     std::filesystem::create_directories(dir);
     return dir;

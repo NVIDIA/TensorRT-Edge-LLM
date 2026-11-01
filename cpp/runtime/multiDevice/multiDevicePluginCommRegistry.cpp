@@ -18,9 +18,8 @@
 #include "runtime/multiDevice/multiDevicePluginCommRegistry.h"
 
 #include "common/logger.h"
+#include "common/trtUtils.h"
 #include "runtime/multiDevice/ncclCollectiveBackend.h"
-
-#include <dlfcn.h>
 
 namespace trt_edgellm
 {
@@ -35,12 +34,11 @@ constexpr char const* kUnregisterNcclPluginSymbol = "edgellmUnregisterNcclCommFo
 using RegisterNcclPluginFn = bool (*)(int, void*, void*);
 using UnregisterNcclPluginFn = bool (*)(int, void*);
 
-
 } // namespace
 
 bool registerNcclCommForAllReducePlugin(int32_t deviceId, void* ncclComm) noexcept
 {
-    auto registerNccl = reinterpret_cast<RegisterNcclPluginFn>(dlsym(RTLD_DEFAULT, kRegisterNcclPluginSymbol));
+    auto registerNccl = reinterpret_cast<RegisterNcclPluginFn>(getLoadedEdgellmPluginSymbol(kRegisterNcclPluginSymbol));
     if (registerNccl == nullptr)
     {
         LOG_WARNING("%s not found in plugin - skipping NCCL plugin registration.", kRegisterNcclPluginSymbol);
@@ -64,7 +62,8 @@ bool registerNcclCommForAllReducePlugin(int32_t deviceId, void* ncclComm) noexce
 
 bool unregisterNcclCommForAllReducePlugin(int32_t deviceId, void* ncclComm) noexcept
 {
-    auto unregisterNccl = reinterpret_cast<UnregisterNcclPluginFn>(dlsym(RTLD_DEFAULT, kUnregisterNcclPluginSymbol));
+    auto unregisterNccl
+        = reinterpret_cast<UnregisterNcclPluginFn>(getLoadedEdgellmPluginSymbol(kUnregisterNcclPluginSymbol));
     if (unregisterNccl == nullptr)
     {
         LOG_WARNING(
@@ -80,7 +79,6 @@ bool unregisterNcclCommForAllReducePlugin(int32_t deviceId, void* ncclComm) noex
     }
     return true;
 }
-
 
 } // namespace rt
 } // namespace trt_edgellm

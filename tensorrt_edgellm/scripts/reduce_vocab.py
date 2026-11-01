@@ -22,32 +22,28 @@ import os
 import sys
 import traceback
 
-from safetensors.torch import load_file
-
-from tensorrt_edgellm._safetensors_io import save_file
-from tensorrt_edgellm.vocab_reduction.constants import (VOCAB_INFO_NAME,
-                                                        VOCAB_MAP_NAME)
-from tensorrt_edgellm.vocab_reduction.selection import (get_vocab_size,
-                                                        reduce_vocab_size)
+from tensorrt_edgellm.scripts import _dependency_errors
 
 
-def main() -> None:
+@_dependency_errors.optional_dependencies("tools")
+def main(argv=None, *, prog="tensorrt-edgellm-reduce-vocab") -> None:
     """Generate ``vocab_map.safetensors`` from calibration data."""
-    from datasets import load_dataset
-    from transformers import AutoConfig, AutoTokenizer
 
     parser = argparse.ArgumentParser(
-        description="Reduce vocabulary size from calibration data")
+        prog=prog, description="Reduce vocabulary size from calibration data")
     parser.add_argument(
+        "--model-dir",
         "--model_dir",
         type=str,
         required=True,
         help="Path to the model directory containing tokenizer and config")
-    parser.add_argument("--output_dir",
+    parser.add_argument("--output-dir",
+                        "--output_dir",
                         type=str,
                         required=True,
                         help="Directory to save reduced-vocab artifacts")
     parser.add_argument(
+        "--reduced-vocab-size",
         "--reduced_vocab_size",
         type=int,
         required=True,
@@ -57,17 +53,29 @@ def main() -> None:
                         choices=["input_aware", "frequency"],
                         default="input_aware",
                         help="Vocabulary reduction method")
-    parser.add_argument("--max_samples",
+    parser.add_argument("--max-samples",
+                        "--max_samples",
                         type=int,
                         default=50000,
                         help="Maximum CNN/DailyMail samples to use")
     parser.add_argument(
+        "--d2t-path",
         "--d2t_path",
         type=str,
         default=None,
         help="Optional EAGLE d2t.safetensors path. Referenced base tokens "
         "are always included.")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+
+    from datasets import load_dataset
+    from safetensors.torch import load_file
+    from transformers import AutoConfig, AutoTokenizer
+
+    from tensorrt_edgellm._safetensors_io import save_file
+    from tensorrt_edgellm.vocab_reduction.constants import (VOCAB_INFO_NAME,
+                                                            VOCAB_MAP_NAME)
+    from tensorrt_edgellm.vocab_reduction.selection import (get_vocab_size,
+                                                            reduce_vocab_size)
 
     try:
         os.makedirs(args.output_dir, exist_ok=True)
@@ -147,6 +155,8 @@ def main() -> None:
               f"[{int(vocab_map.numel())}]")
         print(f"  - {VOCAB_INFO_NAME}: Vocabulary size information")
 
+    except ModuleNotFoundError:
+        raise
     except Exception as exc:
         print(f"Error during vocabulary reduction: {exc}")
         print("Traceback:")

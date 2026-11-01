@@ -1,6 +1,6 @@
 # Experimental ONNX-less Engine Build
 
-`tensorrt-edgellm-build` compiles every TensorRT engine required by a
+`trtedge build` compiles every TensorRT engine required by a
 checkpoint without writing or parsing ONNX. The command reads checkpoint
 configuration and tensor metadata directly, selects model-owned Python
 component definitions, and writes the same engine and runtime-artifact layout
@@ -9,14 +9,14 @@ original checkpoint and prepares final-layout weights once during
 initialization.
 
 This frontend is experimental. The supported workflow remains
-`tensorrt-edgellm-export` followed by the component-specific C++ builders.
+`trtedge export` followed by the component-specific C++ builders.
 
 For implementation details and instructions for adding a model or operation,
 see the [ONNX-less Builder Design](../../developer_guide/software-design/onnxless-builder.md).
 
 ## Prerequisites
 
-For a supported target, use a [base wheel](installation.md#minimal-installation-advanced).
+For a supported target, [install the wheel without optional dependencies](installation.md#install-without-optional-dependencies).
 It includes the builder and selects its bundled plugin automatically; skip
 the source-build steps below. Run commands in the activated wheel environment
 outside a source checkout.
@@ -59,7 +59,7 @@ The default `--components all` selection discovers the checkpoint family and
 builds all of its components in runtime order:
 
 ```bash
-tensorrt-edgellm-build \
+trtedge build \
   --model-dir /path/to/checkpoint \
   --engine-dir /path/to/engines \
   --max-input-len 2048 \
@@ -80,7 +80,7 @@ quantized projections.
 Use `--components` only for an intentional partial rebuild:
 
 ```bash
-tensorrt-edgellm-build \
+trtedge build \
   --model-dir /path/to/checkpoint \
   --engine-dir /path/to/engines \
   --components visual,audio
@@ -97,7 +97,7 @@ The component set and output layout are model-specific:
 | TTS | Talker, code predictor, Code2Wav, and checkpoint-owned clone encoders |
 | Alpamayo | LLM, visual, action |
 | DiffusionGemma | Diffusion backbone, visual |
-| Cosmos3 policy | Understanding prefill, generation policy, VAE encoder |
+| Cosmos3 | LLM, visual; build the policy engines with `--components und-prefill,gen,vae-encoder` |
 
 | Component | Engine path under `--engine-dir` |
 |---|---|
@@ -137,7 +137,7 @@ path while avoiding full copies of the shardable fused-plugin tensors.
 
 ## Run The Engines
 
-Wheel users can run the [native Python inference example](installation.md#minimal-installation-advanced)
+Wheel users can run the [Python runtime example](../examples/python-runtime.md#use-an-existing-engine)
 with an existing compatible text engine, or use the
 [Python server](../examples/experimental-server.md). The C++ commands below,
 including speculative inference, require a source build; wheels do not install
@@ -148,10 +148,10 @@ text-only engine runs directly from the output directory:
 
 ```bash
 build/examples/llm/llm_inference \
-  --engineDir=/path/to/engines \
-  --checkpointDir=/path/to/checkpoint \
-  --inputFile=/path/to/input.json \
-  --outputFile=/path/to/output.json
+  --engine-dir=/path/to/engines \
+  --checkpoint-dir=/path/to/checkpoint \
+  --input-file=/path/to/input.json \
+  --output-file=/path/to/output.json
 ```
 
 For VLM, ASR, and omni checkpoints, pass the same output directory as the
@@ -160,42 +160,42 @@ multimodal directory. The runtime discovers the model-specific `visual/` and
 
 ```bash
 build/examples/llm/llm_inference \
-  --engineDir=/path/to/engines \
-  --multimodalEngineDir=/path/to/engines \
-  --checkpointDir=/path/to/checkpoint \
-  --inputFile=/path/to/input.json \
-  --outputFile=/path/to/output.json
+  --engine-dir=/path/to/engines \
+  --multimodal-engine-dir=/path/to/engines \
+  --checkpoint-dir=/path/to/checkpoint \
+  --input-file=/path/to/input.json \
+  --output-file=/path/to/output.json
 ```
 
 TTS uses the model-specific runtime:
 
 ```bash
 build/examples/omni/qwen3_tts_inference \
-  --talkerEngineDir=/path/to/engines/talker \
-  --code2wavEngineDir=/path/to/engines/code2wav \
-  --tokenizerDir=/path/to/engines/talker \
-  --cloneEncoderDir=/path/to/engines/clone_encoders \
-  --checkpointDir=/path/to/checkpoint \
-  --inputFile=/path/to/input.json \
-  --outputAudioDir=/path/to/audio-output
+  --talker-engine-dir=/path/to/engines/talker \
+  --code2wav-engine-dir=/path/to/engines/code2wav \
+  --tokenizer-dir=/path/to/engines/talker \
+  --clone-encoder-dir=/path/to/engines/clone_encoders \
+  --checkpoint-dir=/path/to/checkpoint \
+  --input-file=/path/to/input.json \
+  --output-audio-dir=/path/to/audio-output
 ```
 
 Alpamayo uses the action runtime:
 
 ```bash
 build/examples/multimodal/action_inference \
-  --engineDir=/path/to/engines \
-  --multimodalEngineDir=/path/to/engines \
-  --checkpointDir=/path/to/checkpoint \
-  --inputFile=/path/to/input.json \
-  --outputFile=/path/to/output.json
+  --engine-dir=/path/to/engines \
+  --multimodal-engine-dir=/path/to/engines \
+  --checkpoint-dir=/path/to/checkpoint \
+  --input-file=/path/to/input.json \
+  --output-file=/path/to/output.json
 ```
 
 Cosmos3 policy checkpoints use their image-and-instruction runtime:
 
 ```bash
 build/experimental_models/cosmos3/examples/cosmos3_policy_inference \
-  --engineDir=/path/to/engines \
+  --engine-dir=/path/to/engines \
   --image=/path/to/observation.png \
   --prompt="Move the object into the tray." \
   --output=/path/to/action.json
@@ -203,7 +203,7 @@ build/experimental_models/cosmos3/examples/cosmos3_policy_inference \
 
 See the [examples](../examples/index.md) for each runtime's request format.
 
-`--checkpointDir` is required. During runtime initialization, Edge-LLM maps
+`--checkpoint-dir` is required. During runtime initialization, Edge-LLM maps
 provider safetensors or indexed contiguous tensor ranges from PyTorch ZIP
 `.bin` checkpoints, performs all requested casts, transposes, packing, scale
 conversion, and direct final-layout writes. It then synchronizes the
@@ -222,10 +222,10 @@ The same checkpoint-backed engines can be profiled with `llm_bench`:
 
 ```bash
 build/examples/llm/llm_bench \
-  --engineDir=/path/to/engines \
-  --checkpointDir=/path/to/checkpoint \
+  --engine-dir=/path/to/engines \
+  --checkpoint-dir=/path/to/checkpoint \
   --mode=prefill \
-  --inputLen=128
+  --input-len=128
 ```
 
 ## Speculative Decoding
@@ -236,7 +236,7 @@ target checkpoint's non-LLM components.
 EAGLE3, DFlash, JetSpec, DSpark, and Gemma4 MTP use paired checkpoints:
 
 ```bash
-tensorrt-edgellm-build \
+trtedge build \
   --model-dir /path/to/target \
   --draft-model-dir /path/to/draft \
   --spec-type eagle3 \
@@ -245,10 +245,7 @@ tensorrt-edgellm-build \
 
 Replace `eagle3` with `dflash`, `jetspec`, `dspark`, or `gemma4_mtp` as
 appropriate. DFlash2 checkpoints use `dflash`; the checkpoint architecture
-selects DFlash2, which rejects `--tree-base`. It is supported by this
-checkpoint-native direct builder only. The legacy ONNX `llm_build`
-compatibility path rejects DFlash2 rather than routing it through the DFlash v1
-graph. JetSpec reads the provider's
+selects DFlash2, which rejects `--tree-base`. JetSpec reads the provider's
 `jetspec_config` or compatible `dflash_config`, requires its causal proposal
 head, and uses `--tree-base` for the validated tree-verification path.
 MTP, JetSpec, and DSpark accept `--tree-base`; the resulting base engine
@@ -261,7 +258,7 @@ greedy-only.
 Qwen3.5 native MTP reads draft layers from the target checkpoint:
 
 ```bash
-tensorrt-edgellm-build \
+trtedge build \
   --model-dir /path/to/qwen3.5-checkpoint \
   --spec-type mtp \
   --engine-dir /path/to/engines
@@ -279,34 +276,36 @@ Native Qwen MTP uses one runtime checkpoint:
 
 ```bash
 build/examples/llm/llm_inference \
-  --engineDir=/path/to/engines \
-  --checkpointDir=/path/to/qwen3.5-checkpoint \
-  --inputFile=/path/to/input.json \
-  --outputFile=/path/to/output.json \
-  --specDecode
+  --engine-dir=/path/to/engines \
+  --checkpoint-dir=/path/to/qwen3.5-checkpoint \
+  --input-file=/path/to/input.json \
+  --output-file=/path/to/output.json \
+  --spec-decode
 ```
 
 Paired drafts use an explicit second checkpoint path:
 
 ```bash
 build/examples/llm/llm_inference \
-  --engineDir=/path/to/engines \
-  --checkpointDir=/path/to/target \
-  --draftCheckpointDir=/path/to/draft \
-  --inputFile=/path/to/input.json \
-  --outputFile=/path/to/output.json \
-  --specDecode
+  --engine-dir=/path/to/engines \
+  --checkpoint-dir=/path/to/target \
+  --draft-checkpoint-dir=/path/to/draft \
+  --input-file=/path/to/input.json \
+  --output-file=/path/to/output.json \
+  --spec-decode
 ```
 
-`--draftCheckpointDir` applies to EAGLE3, DFlash, DFlash2, JetSpec, DSpark,
+`--draft-checkpoint-dir` applies to EAGLE3, DFlash, DFlash2, JetSpec, DSpark,
 and Gemma4 MTP. It is rejected for native Qwen MTP because its draft layers
-are in `--checkpointDir`.
+are in `--checkpoint-dir`.
 
 ## Optional Features
 
 | Feature | Build option or behavior |
 |---|---|
 | Runtime LoRA inputs | `--max-lora-rank N` |
+| NVFP4 weights with FP16 activations | `--no-quantize-activations`; see [W4A4 or W4A16 selection](../features/quantization.md#select-w4a4-or-w4a16-for-nvfp4-checkpoints) |
+| Checkpoint-backed weight categories | Repeat `--externalize-weights CATEGORY`; use `--help` for supported categories |
 | Reduced vocabulary | `--reduced-vocab-dir DIR` |
 | DFlash V1 draft vocabulary | `--draft-reduced-vocab-dir DIR` |
 | FP8 embedding sidecar | `--fp8-embedding` |
@@ -359,7 +358,7 @@ CI coverage. An implemented row can still have model-specific restrictions.
 Known gaps relative to the supported ToT workflow are tracked explicitly:
 
 - Quantization and calibration are checkpoint-producing steps outside this
-  builder; run `tensorrt-edgellm-quantize` first.
+  builder; run `trtedge quantize` first.
 - The CLI does not yet orchestrate every tensor-parallel rank in one process.
 - Direct-builder CI does not yet cover every registered
   model-family/precision/feature combination.

@@ -47,8 +47,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ...config import ModelConfig
-from ..linear import (FP16Linear, NVFP4LinearMethod, ReplicatedLinear, TPMode,
-                      is_int4_linear, is_nvfp4_linear, make_linear)
+from ..linear import (FP16Linear, NVFP4A16Linear, NVFP4LinearMethod,
+                      ReplicatedLinear, TPMode, is_int4_linear,
+                      is_nvfp4_linear, make_linear)
 from ..ops import KV_PAGE_SIZE, attention_plugin, qkv_concat
 
 logger = logging.getLogger(__name__)
@@ -235,8 +236,8 @@ class Attention(nn.Module):
                                   bias=config.attention_bias,
                                   module_name=f"{module_prefix}.v_proj",
                                   tp_mode=TPMode.COL)
-        self._uses_int4_qkv = any(
-            is_int4_linear(proj)
+        self._requires_qkv_concat = any(
+            is_int4_linear(proj) or isinstance(proj, NVFP4A16Linear)
             for proj in (self.q_proj, self.k_proj, self.v_proj))
 
         # FP8 attention scales live on the projection modules (checkpoint keys
@@ -319,7 +320,7 @@ class Attention(nn.Module):
             q = self.q_proj(hidden_states)
             k = self.k_proj(hidden_states)
             v = self.v_proj(hidden_states)
-            if self._uses_int4_qkv:
+            if self._requires_qkv_concat:
                 qkv = qkv_concat(q, k, v)
             else:
                 qkv = torch.cat([q, k, v], dim=-1)
@@ -403,8 +404,8 @@ class Attention(nn.Module):
             q = self.q_proj(hidden_states)
             k = self.k_proj(hidden_states)
             v = self.v_proj(hidden_states)
-            qkv = (qkv_concat(q, k, v)
-                   if self._uses_int4_qkv else torch.cat([q, k, v], dim=-1))
+            qkv = (qkv_concat(q, k, v) if self._requires_qkv_concat else
+                   torch.cat([q, k, v], dim=-1))
         qkv = qkv.reshape(-1, qkv.shape[-1])
         kwargs: dict = {
             "num_q_heads": self.num_heads,

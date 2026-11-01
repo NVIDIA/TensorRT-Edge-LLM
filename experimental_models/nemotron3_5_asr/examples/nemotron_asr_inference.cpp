@@ -69,10 +69,10 @@ void printUsage(char const* programName)
     std::cerr << "Usage: " << programName << " [OPTIONS]\n\n"
               << "Options:\n"
               << "  --help                  Display this help message\n"
-              << "  --engineDir=<path>      Direct component bundle or flat ONNX-built bundle.\n"
-              << "  --tokenizerDir=<path>   Directory with tokenizer.json. Defaults to --engineDir.\n"
-              << "  --audioFile=<path>      Audio file to transcribe (wav/mp3/flac). Required.\n"
-              << "  --promptId=<int>        Language prompt index. Default: config default_prompt_id\n"
+              << "  --engine-dir=<path>     Direct component bundle or flat ONNX-built bundle.\n"
+              << "  --tokenizer-dir=<path>  Directory with tokenizer.json. Defaults to --engine-dir.\n"
+              << "  --audio-file=<path>     Audio file to transcribe (wav/mp3/flac). Required.\n"
+              << "  --prompt-id=<int>       Language prompt index. Default: config default_prompt_id\n"
               << "                          (automatic language detection; the model emits an\n"
               << "                          <xx-XX> language tag).\n"
               << "  --benchmark             Measure per-phase latency (mel/encoder/decode) and\n"
@@ -80,6 +80,7 @@ void printUsage(char const* programName)
               << "  --iters=<int>           Timed iterations in --benchmark mode (default 20).\n"
               << "  --warmup=<int>          Warmup iterations before timing (default 3).\n"
               << std::endl;
+    std::cerr << "Legacy camelCase option spellings remain accepted.\n";
 }
 
 enum OptionId : int
@@ -109,9 +110,13 @@ int32_t parseInt32(char const* text, char const* name)
 bool parseArgs(Args& args, int argc, char* argv[])
 {
     static struct option options[]
-        = {{"help", no_argument, 0, OptionId::HELP}, {"engineDir", required_argument, 0, OptionId::ENGINE_DIR},
+        = {{"help", no_argument, 0, OptionId::HELP}, {"engine-dir", required_argument, 0, OptionId::ENGINE_DIR},
+            {"engineDir", required_argument, 0, OptionId::ENGINE_DIR},
+            {"tokenizer-dir", required_argument, 0, OptionId::TOKENIZER_DIR},
             {"tokenizerDir", required_argument, 0, OptionId::TOKENIZER_DIR},
+            {"audio-file", required_argument, 0, OptionId::AUDIO_FILE},
             {"audioFile", required_argument, 0, OptionId::AUDIO_FILE},
+            {"prompt-id", required_argument, 0, OptionId::PROMPT_ID},
             {"promptId", required_argument, 0, OptionId::PROMPT_ID}, {"benchmark", no_argument, 0, OptionId::BENCHMARK},
             {"iters", required_argument, 0, OptionId::ITERS}, {"warmup", required_argument, 0, OptionId::WARMUP},
             {0, 0, 0, 0}};
@@ -127,7 +132,7 @@ bool parseArgs(Args& args, int argc, char* argv[])
             case OptionId::ENGINE_DIR: args.engineDir = optarg; break;
             case OptionId::TOKENIZER_DIR: args.tokenizerDir = optarg; break;
             case OptionId::AUDIO_FILE: args.audioFile = optarg; break;
-            case OptionId::PROMPT_ID: args.promptId = parseInt32(optarg, "--promptId"); break;
+            case OptionId::PROMPT_ID: args.promptId = parseInt32(optarg, "--prompt-id"); break;
             case OptionId::BENCHMARK: args.benchmark = true; break;
             case OptionId::ITERS: args.iters = parseInt32(optarg, "--iters"); break;
             case OptionId::WARMUP: args.warmup = parseInt32(optarg, "--warmup"); break;
@@ -142,7 +147,7 @@ bool parseArgs(Args& args, int argc, char* argv[])
     }
     if (args.engineDir.empty() || args.audioFile.empty())
     {
-        std::cerr << "--engineDir and --audioFile are required." << std::endl;
+        std::cerr << "--engine-dir and --audio-file are required." << std::endl;
         return false;
     }
     if (args.tokenizerDir.empty())
@@ -151,7 +156,7 @@ bool parseArgs(Args& args, int argc, char* argv[])
     }
     if (args.promptId < -1 || args.iters < 1 || args.warmup < 0)
     {
-        std::cerr << "--promptId must be >= -1, --iters must be >= 1, and --warmup must be >= 0." << std::endl;
+        std::cerr << "--prompt-id must be >= -1, --iters must be >= 1, and --warmup must be >= 0." << std::endl;
         return false;
     }
     return true;

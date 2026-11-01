@@ -36,6 +36,5 @@ bool registerNcclCommForAllReducePlugin(int32_t deviceId, void* ncclComm) noexce
  */
 bool unregisterNcclCommForAllReducePlugin(int32_t deviceId, void* ncclComm) noexcept;
 
-
 } // namespace rt
 } // namespace trt_edgellm

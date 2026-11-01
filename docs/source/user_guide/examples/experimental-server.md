@@ -10,7 +10,7 @@ Anthropic HTTP APIs. ONNX is not used by this path.
 ## Install
 
 For a supported target, follow [published-wheel installation](../getting_started/installation.md#published-python-wheel)
-and select `tensorrt-edgellm[server]==0.11.0`. The wheel includes the runtime
+and select `tensorrt-edgellm[server]`. The wheel includes the runtime
 bindings, builder, and plugin; no checkout, `native-build` extra, or CMake build
 is needed. Install the TensorRT Python bindings supported by the target
 platform before launching the server. Run the examples in that environment
@@ -67,7 +67,7 @@ for delta in llm.generate_stream(
 Pass the model checkpoint, not an engine path:
 
 ```bash
-tensorrt-edgellm-serve Qwen/Qwen3.5-0.8B \
+trtedge serve Qwen/Qwen3.5-0.8B \
   --cache-dir /data/edgellm-cache \
   --max-input-len 4096 \
   --max-kv-cache-capacity 8192 \
@@ -77,10 +77,13 @@ tensorrt-edgellm-serve Qwen/Qwen3.5-0.8B \
 Add `--enable-in-flight-batching --max-batch-size 4` to serve up to four
 requests at once; see [Runtime Concurrency](#runtime-concurrency).
 
+See the [trtedge CLI](../getting_started/cli.md) for
+command help and other model tools.
+
 The cache contains downloaded checkpoints and complete, profile-specific
 runtime bundles. A launch reuses a bundle only when the base checkpoint,
 optional draft checkpoint, and build profile all match. A cache miss runs
-`tensorrt-edgellm-build --components all` internally and publishes the
+`trtedge build --components all` internally and publishes the
 completed bundle atomically. The builder's default policy externalizes the
 weight kinds supported by each component. Direct engine and ONNX paths are
 rejected so the server cannot lose the checkpoint-to-runtime association.
@@ -105,7 +108,7 @@ proposal tokens, with one additional base-verification token.
 EAGLE3 example:
 
 ```bash
-tensorrt-edgellm-serve Qwen/Qwen3-1.7B \
+trtedge serve Qwen/Qwen3-1.7B \
   --cache-dir /data/edgellm-cache \
   --speculative-config \
   '{"method":"eagle3","model":"AngelSlim/Qwen3-1.7B_eagle3","num_speculative_tokens":3}'
@@ -114,7 +117,7 @@ tensorrt-edgellm-serve Qwen/Qwen3-1.7B \
 DFlash example:
 
 ```bash
-tensorrt-edgellm-serve Qwen/Qwen3.5-4B \
+trtedge serve Qwen/Qwen3.5-4B \
   --cache-dir /data/edgellm-cache \
   --speculative-config \
   '{"method":"dflash","model":"z-lab/Qwen3.5-4B-DFlash","num_speculative_tokens":3}'
@@ -123,17 +126,17 @@ tensorrt-edgellm-serve Qwen/Qwen3.5-4B \
 Muse-Glimmer DFlash and DFlash2 examples:
 
 ```bash
-tensorrt-edgellm-serve meta-models/Muse-Glimmer-30B \
+trtedge serve meta-models/Muse-Glimmer-30B \
   --cache-dir /data/edgellm-cache \
   --speculative-config \
   '{"method":"dflash","model":"meta-models/Muse-Glimmer-30B-assistant"}'
 
-tensorrt-edgellm-serve meta-models/Muse-Glimmer-30B \
+trtedge serve meta-models/Muse-Glimmer-30B \
   --cache-dir /data/edgellm-cache \
   --speculative-config \
   '{"method":"dflash","model":"incoai/Muse-Glimmer-30B-DFlash2"}'
 
-tensorrt-edgellm-serve RadixArk/Muse-Glimmer-NVFP4 \
+trtedge serve RadixArk/Muse-Glimmer-NVFP4 \
   --cache-dir /data/edgellm-cache \
   --speculative-config \
   '{"method":"dflash","model":"incoai/Muse-Glimmer-30B-DFlash2"}'
@@ -142,7 +145,7 @@ tensorrt-edgellm-serve RadixArk/Muse-Glimmer-NVFP4 \
 JetSpec example:
 
 ```bash
-tensorrt-edgellm-serve Qwen/Qwen3-8B \
+trtedge serve Qwen/Qwen3-8B \
   --cache-dir /data/edgellm-cache \
   --speculative-config \
   '{"method":"jetspec","model":"JetSpec/jetspec-qwen3-8b","num_speculative_tokens":16}'
@@ -151,7 +154,7 @@ tensorrt-edgellm-serve Qwen/Qwen3-8B \
 dSpark example:
 
 ```bash
-tensorrt-edgellm-serve Qwen/Qwen3-4B \
+trtedge serve Qwen/Qwen3-4B \
   --cache-dir /data/edgellm-cache \
   --speculative-config \
   '{"method":"dspark","model":"deepseek-ai/dspark_qwen3_4b_block7","num_speculative_tokens":7}'
@@ -174,12 +177,74 @@ for target-only Gemma inference.
 See [Logit Bias](../format/input-format.md#logit-bias) for speculative-decoding
 behavior and validation limits.
 
+## Streaming Metrics
+
+`LLM.generate_stream()` returns the public `experimental.server.CancellableIterator`.
+Call `cancel()` to request cancellation without closing an executing generator.
+Call `close()` to cancel and close it; if another thread is iterating, wait for
+that thread before releasing its resources.
+
+Adapters can wrap transformed deltas with
+`CancellableIterator(transformed_generator, source_stream.cancel)`. Close the
+source stream in the transformed generator's `finally` block so early closure
+also drains the native producer.
+
+The [interactive chat frontend](interactive-chat.md#timings), `trtedge chat`,
+uses this API to display per-response throughput, context usage, and latency.
+It calls `LLM.generate_stream()` directly with an `on_metrics` callback. The
+HTTP server's `EngineClient` does not supply this callback or collect these
+metrics.
+
+Pass a function as `on_metrics` to `llm.generate_stream()`. The API calls that
+function once with the final metrics after the producer stops and the stream
+is drained or closed, including after cancellation. The loop receives
+`StreamDelta` objects; the callback receives a separate `GenerationMetrics`
+object. Collection is disabled when `on_metrics` is omitted.
+
+These per-request timings measure elapsed wall-clock time. Each interval
+includes CPU work, GPU execution, and waiting within that interval. They are
+independent of `set_profiling_enabled()`, which controls aggregate counters and
+GPU stage timing measured with CUDA events. See the
+[chat timing definitions](interactive-chat.md#timings) for the measurement
+boundaries.
+
+Native callers opt in with `StreamChannel::create(true)` (Python:
+`StreamChannel.create(collect_metrics=True)`).
+
+```python
+def report_metrics(metrics):
+    print(f"\nOutput tokens: {metrics.generated_tokens}")
+    print(f"Decode tokens/s: {metrics.decode_tokens_per_second:.2f}")
+
+for delta in llm.generate_stream(
+    [{"role": "user", "content": "Hello!"}], on_metrics=report_metrics
+):
+    print(delta.text, end="", flush=True)
+```
+
+The loop prints the response text. When generation ends, the API calls
+`report_metrics(metrics)` to print the final token count and throughput.
+
+`generated_tokens` counts all output tokens, including any sampled during
+prefill. `decoded_tokens` counts only tokens produced after prefill, matching
+the interval measured by `generation_time`.
+Use `decode_tokens_per_second` for decode throughput; dividing the total output
+count by `generation_time` overstates throughput when prefill produces a token.
+An output completed during prefill has zero decode tokens, time, and throughput.
+The throughput property also returns zero when decode timing is unavailable.
+
+The existing `LLMGenerationMetrics.generated_tokens` profiler counter sums
+output tokens across sequences and recorded runs. `StreamMetrics.generated_tokens`
+counts output tokens for one sequence. Both include prefill output; their
+scope differs. The callback exposes the per-sequence count as
+`GenerationMetrics.generated_tokens`.
+
 ## KV Cache Reuse
 
 Context reuse is disabled by default. Enable it when constructing the server:
 
 ```bash
-tensorrt-edgellm-serve Qwen/Qwen3.5-0.8B \
+trtedge serve Qwen/Qwen3.5-0.8B \
   --cache-dir /data/edgellm-cache \
   --enable-context-reuse \
   --context-cache-max-records 1024
@@ -290,7 +355,7 @@ A schema keyword that the backend accepts but cannot enforce is rejected with a
 Launch automatic tool choice explicitly:
 
 ```bash
-tensorrt-edgellm-serve Qwen/Qwen3.5-0.8B \
+trtedge serve Qwen/Qwen3.5-0.8B \
   --cache-dir /data/edgellm-cache \
   --enable-auto-tool-choice \
   --tool-call-parser qwen3_xml \
@@ -316,7 +381,7 @@ Serving a multimodal checkpoint builds and attaches its model-specific visual
 and audio components automatically:
 
 ```bash
-tensorrt-edgellm-serve Qwen/Qwen3-VL-2B-Instruct \
+trtedge serve Qwen/Qwen3-VL-2B-Instruct \
   --cache-dir /data/edgellm-cache \
   --allowed-local-media-path /data/media
 ```
@@ -325,7 +390,7 @@ Muse-Glimmer image and video chat use its FP16 multimodal checkpoint; the
 NVFP4 checkpoint is text-only:
 
 ```bash
-tensorrt-edgellm-serve meta-models/Muse-Glimmer-30B \
+trtedge serve meta-models/Muse-Glimmer-30B \
   --cache-dir /data/edgellm-cache \
   --max-image-tokens 4096 \
   --max-image-tokens-per-image 4096 \
@@ -347,7 +412,7 @@ Nemotron Omni video uses its checkpoint's video patch embedder and dynamic
 aspect-preserving frame grids:
 
 ```bash
-tensorrt-edgellm-serve \
+trtedge serve \
   nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4 \
   --cache-dir /data/edgellm-cache \
   --allowed-local-media-path /data/media
@@ -413,7 +478,7 @@ TensorRT Edge-LLM.
 Launch with a stable served name, then point Claude Code at the server:
 
 ```bash
-tensorrt-edgellm-serve Qwen/Qwen3.5-0.8B \
+trtedge serve Qwen/Qwen3.5-0.8B \
   --cache-dir /data/edgellm-cache \
   --served-model-name qwen35-local
 
