@@ -19,6 +19,7 @@
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
 #include <numeric>
+#include <string>
 
 #include "common/checkMacros.h"
 #include "common/logger.h"
@@ -211,6 +212,39 @@ TEST(TensorTest, DeviceTensorNonOwnMemory)
 
     // Clean up the manually allocated memory
     CUDA_CHECK(cudaFreeAsync(devicePtr, 0));
+}
+
+// 2^38 x 16 halves is 8 TiB: beyond any device, inside int64 arithmetic, and refused by the allocator without
+// touching memory. The allocation error is not sticky; cudaGetLastError() clears it for the tests that follow.
+void expectAllocationFailureMessage(rt::DeviceType deviceType, std::string const& where)
+{
+    rt::Coords const shape({int64_t{1} << 38, 16});
+    int64_t const bytes = shape.volume() * static_cast<int64_t>(sizeof(half));
+    std::string const name = "TensorTest::impossible";
+    std::string message;
+    try
+    {
+        rt::Tensor tensor(shape, deviceType, nvinfer1::DataType::kHALF, name);
+    }
+    catch (std::runtime_error const& e)
+    {
+        message = e.what();
+    }
+    (void) cudaGetLastError();
+    ASSERT_FALSE(message.empty()) << "allocation of " << bytes << " bytes did not throw";
+    EXPECT_NE(message.find("Failed to allocate " + where + " tensor '" + name + "'"), std::string::npos) << message;
+    EXPECT_NE(message.find(std::to_string(bytes) + " bytes"), std::string::npos) << message;
+    EXPECT_NE(message.find("CUDA memory free "), std::string::npos) << message;
+}
+
+TEST(TensorTest, DeviceAllocationFailureNamesTheTensor)
+{
+    expectAllocationFailureMessage(rt::DeviceType::kGPU, "GPU");
+}
+
+TEST(TensorTest, HostAllocationFailureNamesTheTensor)
+{
+    expectAllocationFailureMessage(rt::DeviceType::kCPU, "pinned host");
 }
 
 TEST(TensorTest, TensorNameFunctionality)
