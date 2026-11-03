@@ -40,6 +40,9 @@
 #                       the plugin .so (default: <repo>/build).
 #   --python BIN        Python used for the golden + ONNX export (default: python3,
 #                       i.e. the active venv; needs torch + transformers + the TRT wheel).
+#   --golden-python BIN Python used for the PyTorch golden only (default: --python). For
+#                       checkpoints whose modeling code needs a newer transformers than the
+#                       export pin (e.g. LFM3).
 #   --workdir DIR       Where to put intermediates (default: a fresh mktemp dir).
 #   --keep              Do not delete the workdir on exit (for debugging).
 #   --cos X             Min cosine similarity threshold (default: 0.99).
@@ -100,6 +103,7 @@ NUM_LAYERS=4
 INPUT_FILE="${REPO}/tests/test_cases/ragged_batch.json"
 BUILD_DIR="${REPO}/build"
 PYBIN="python3"
+GOLDEN_PYBIN=""
 WORKDIR=""
 KEEP=0
 COS=0.99
@@ -132,6 +136,7 @@ while [[ $# -gt 0 ]]; do
     --input-file)  INPUT_FILE="$2"; shift 2 ;;
     --build-dir)   BUILD_DIR="$2"; shift 2 ;;
     --python)      PYBIN="$2"; shift 2 ;;
+    --golden-python) GOLDEN_PYBIN="$2"; shift 2 ;;
     --workdir)     WORKDIR="$2"; shift 2 ;;
     --keep)        KEEP=1; shift ;;
     --cos)         COS="$2"; shift 2 ;;
@@ -273,7 +278,7 @@ echo
 # 1. PyTorch golden
 # ---------------------------------------------------------------------------
 stage_begin "1/5 PyTorch golden"
-"${PYBIN}" "${REPO}/tests/golden_layer_dump.py" \
+"${GOLDEN_PYBIN:-${PYBIN}}" "${REPO}/tests/golden_layer_dump.py" \
   --ckpt "${MODEL}" \
   --input-file "${INPUT_FILE}" \
   --num-layers "${NUM_LAYERS}" \

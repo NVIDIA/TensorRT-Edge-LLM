@@ -130,6 +130,21 @@ def _normalize_cache_layer_types(model) -> None:
         model.config.layer_types = cache_layer_types
 
 
+def _needs_remote_code(ckpt: str) -> bool:
+    """Whether the checkpoint's family is absent from transformers (e.g. LFM3).
+
+    Families transformers ships keep its native modeling; only unknown ones load the
+    checkpoint's own code.
+    """
+    from transformers.models.auto.configuration_auto import CONFIG_MAPPING
+    config_path = os.path.join(ckpt, "config.json")
+    if not os.path.isfile(config_path):
+        return False
+    with open(config_path) as f:
+        model_type = json.load(f).get("model_type")
+    return model_type not in CONFIG_MAPPING
+
+
 def _pick_ckpt(user_ckpt: str | None) -> str:
     """Resolve the checkpoint path: prefer the user's, else the first candidate that exists."""
     if user_ckpt:
@@ -293,8 +308,11 @@ def main() -> None:
     # Use transformers' native modeling (trust_remote_code=False). Only Nemotron-H ships remote
     # code, and that copy's hybrid cache mis-sizes the Mamba state (uses expand*hidden instead of
     # mamba_num_heads*mamba_head_dim); the native NemotronH path is correct and matches EdgeLLM.
-    # Qwen3.5 / Qwen3 / Llama carry no remote code, so this is a no-op for them.
-    config = AutoConfig.from_pretrained(ckpt)
+    # Qwen3.5 / Qwen3 / Llama carry no remote code, so this is a no-op for them. Families
+    # transformers does not ship (LFM3) have no native path and load their own code.
+    trust_remote_code = _needs_remote_code(ckpt)
+    config = AutoConfig.from_pretrained(ckpt,
+                                        trust_remote_code=trust_remote_code)
     # Hybrid VLM configs (e.g. Qwen3.5) nest the decoder hyper-params under text_config; the
     # layer count / layer_types live there, not at the top level.
     layer_cfg = getattr(config, "text_config", config)
@@ -336,14 +354,17 @@ def main() -> None:
             # Quantized ckpt: HF can't load packed quant weights into nn.Linear, so build the
             # architecture empty, swap the recipe-quantized projections for fake-quant linears,
             # then load the packed weights + scales. Attention stays HF fp16.
-            m = AutoModelForCausalLM.from_config(config,
-                                                 attn_implementation=attn_impl)
+            m = AutoModelForCausalLM.from_config(
+                config,
+                attn_implementation=attn_impl,
+                trust_remote_code=trust_remote_code)
             return m.to(torch_dtype)
         return AutoModelForCausalLM.from_pretrained(
             ckpt,
             config=config,
             dtype=torch_dtype,
-            attn_implementation=attn_impl)
+            attn_implementation=attn_impl,
+            trust_remote_code=trust_remote_code)
 
     # Prefer SDPA: it accumulates QK^T in fp32 (numerically stable, matching the engine's
     # attention). Plain eager fp16 attention overflows for models without qk-norm whose K can be
@@ -464,7 +485,7 @@ def _layer_type_list(layer_cfg, num_layers: int) -> list[str]:
         out = []
         for bt in list(raw)[:num_layers]:
             s = str(bt).lower()
-            if s == "linear_attention" or "mamba" in s:
+            if s in ("linear_attention", "conv") or "mamba" in s:
                 out.append("recurrent")
             elif s == "moe":
                 out.append("moe")
@@ -494,7 +515,8 @@ def _state_at(past, abs_idx: int, ltype: str):
             layers):  # transformers 5.x unified cache.
         layer = layers[abs_idx]
         if ltype == "recurrent":
-            recurrent = layer.recurrent_states
+            # LFM short-conv layers carry a conv state only.
+            recurrent = getattr(layer, "recurrent_states", None)
             conv = getattr(layer, "conv_states", None)
             # transformers 5.14.x stores a recurrent layer's states as
             # ``{state_idx: tensor}`` (its cache layer supports multiple states);
@@ -540,8 +562,9 @@ def _dump_round(
         prefix = f"round_{round_idx}.layer_{dense}."
         a, b = _state_at(past, abs_idx, ltype)
         if ltype == "recurrent":
-            tensors[prefix +
-                    "recurrent_state"] = a.detach().to("cpu").contiguous()
+            if a is not None and a.numel() > 0:
+                tensors[prefix +
+                        "recurrent_state"] = a.detach().to("cpu").contiguous()
             if b is not None and b.numel() > 0:
                 tensors[prefix +
                         "conv_state"] = b.detach().to("cpu").contiguous()

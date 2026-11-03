@@ -24,6 +24,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <stdexcept>
 #include <vector>
@@ -57,6 +58,49 @@ TEST(HybridSnapshotStorageTests, ReportsExactBytesPerSlot)
     HybridCacheManager::Config const config = makeHybridConfig();
     EXPECT_EQ(HybridSnapshotStorage::recurrentBytesPerSlot(config.mambaConfig), 216U);
     EXPECT_EQ(HybridSnapshotStorage::partialKvBytesPerSlot(config.kvConfig), 8192U);
+}
+
+TEST(HybridSnapshotStorageTests, ConvOnlyCaptureAndRestoreAreByteExact)
+{
+    cudaStream_t stream{};
+    HybridCacheManager::Config config = makeHybridConfig();
+    config.mambaConfig.recurrentStateNumHeads = 0;
+    config.mambaConfig.recurrentStateHeadDim = 0;
+    config.mambaConfig.recurrentStateSize = 0;
+    // Convolution state only: 5 * 6 halves per layer, two layers.
+    EXPECT_EQ(HybridSnapshotStorage::recurrentBytesPerSlot(config.mambaConfig), 120U);
+
+    HybridCacheManager cacheManager(config, stream);
+    HybridSnapshotStorage storage(cacheManager, 1, 0);
+    MambaCacheManager& mamba = cacheManager.getMambaCacheManager();
+    size_t const convElements = static_cast<size_t>(config.mambaConfig.convDim) * config.mambaConfig.convKernel;
+    size_t const convBytes = convElements * sizeof(half);
+    std::vector<half> pattern(convElements);
+    for (size_t i = 0; i < convElements; ++i)
+    {
+        pattern[i] = __float2half(static_cast<float>(i + 1));
+    }
+    for (int32_t layer = 0; layer < mamba.numLayers(); ++layer)
+    {
+        auto* slot1 = static_cast<std::byte*>(mamba.getConvState(layer).rawPointer()) + convBytes;
+        CUDA_CHECK(cudaMemcpy(slot1, pattern.data(), convBytes, cudaMemcpyHostToDevice));
+    }
+
+    storage.captureRecurrent(0, 1, stream);
+    storage.zeroRecurrent(1, stream);
+    storage.restoreRecurrent(0, 0, stream);
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+
+    std::vector<half> restored(convElements);
+    for (int32_t layer = 0; layer < mamba.numLayers(); ++layer)
+    {
+        CUDA_CHECK(
+            cudaMemcpy(restored.data(), mamba.getConvState(layer).rawPointer(), convBytes, cudaMemcpyDeviceToHost));
+        for (size_t i = 0; i < convElements; ++i)
+        {
+            ASSERT_EQ(__half2float(restored[i]), __half2float(pattern[i])) << "layer " << layer << " element " << i;
+        }
+    }
 }
 
 TEST(HybridSnapshotStorageTests, RejectsLiveRecurrentShapeDrift)

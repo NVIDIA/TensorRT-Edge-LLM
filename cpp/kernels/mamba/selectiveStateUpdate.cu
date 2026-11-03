@@ -1211,7 +1211,8 @@ void invokeMambaStateClear(MambaStateLayerInfo const* deviceLayerInfos, int32_t 
     ELLM_CHECK(deviceLayerInfos != nullptr, "Mamba state layer info must not be null.");
     ELLM_CHECK(numLayers > 0 && residentRows > 0 && slot >= -1 && slot < residentRows,
         "Mamba state clear received invalid row extents.");
-    ELLM_CHECK(recurrentRowBytes > 0 && convRowBytes > 0, "Mamba state clear received an empty state row.");
+    // Convolution-only layers (no recurrent state) pass recurrentRowBytes == 0 and a null recurrent pointer.
+    ELLM_CHECK(recurrentRowBytes >= 0 && convRowBytes > 0, "Mamba state clear received an empty state row.");
 
     int64_t const rows = slot < 0 ? residentRows : 1;
     int64_t const totalBytes = rows * (recurrentRowBytes + convRowBytes);

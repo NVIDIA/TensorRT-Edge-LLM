@@ -121,12 +121,14 @@ def _infer_layers(d: dict[str, torch.Tensor], round_idx: int) -> list[int]:
     """Infer a round's layers from the keys.
 
     Attention layers: golden ``.key``/``.value``, edgellm ``.kv``. Recurrent layers (Mamba /
-    Gated DeltaNet): both sides ``.recurrent_state`` (+ ``.conv_state``).
+    Gated DeltaNet): both sides ``.recurrent_state`` (+ ``.conv_state``); LFM short-conv
+    layers: ``.conv_state`` only.
     """
     ls = set()
     for k in d:
         m = re.match(
-            rf"^round_{round_idx}\.layer_(\d+)\.(key|kv|recurrent_state)$", k)
+            rf"^round_{round_idx}\.layer_(\d+)\."
+            rf"(key|kv|recurrent_state|conv_state)$", k)
         if m:
             ls.add(int(m.group(1)))
     return sorted(ls)
@@ -356,17 +358,20 @@ def main() -> int:
                 for i in layers:
                     g_rec = f"round_{g}.layer_{i}.recurrent_state"
                     e_rec = f"round_{r}.layer_{i}.recurrent_state"
-                    if g_rec in golden and e_rec in edgellm:
+                    g_conv = f"round_{g}.layer_{i}.conv_state"
+                    e_conv = f"round_{r}.layer_{i}.conv_state"
+                    has_rec = g_rec in golden and e_rec in edgellm
+                    has_conv = g_conv in golden and e_conv in edgellm
+                    if has_rec or has_conv:
                         # Recurrent layer: fixed-size state, no sequence dim -> compare row b directly
-                        # (no left/right reconcile needed). conv_state likewise when present.
-                        round_stats.append(
-                            _compare_tensor(f"{tag}.layer_{i}.recurrent_state",
-                                            golden[g_rec][gb],
-                                            edgellm[e_rec][b], args.atol,
-                                            args.rtol))
-                        g_conv = f"round_{g}.layer_{i}.conv_state"
-                        e_conv = f"round_{r}.layer_{i}.conv_state"
-                        if g_conv in golden and e_conv in edgellm:
+                        # (no left/right reconcile needed). Short-conv layers carry conv_state only.
+                        if has_rec:
+                            round_stats.append(
+                                _compare_tensor(
+                                    f"{tag}.layer_{i}.recurrent_state",
+                                    golden[g_rec][gb], edgellm[e_rec][b],
+                                    args.atol, args.rtol))
+                        if has_conv:
                             round_stats.append(
                                 _compare_tensor(f"{tag}.layer_{i}.conv_state",
                                                 golden[g_conv][gb],
@@ -375,14 +380,17 @@ def main() -> int:
                         continue
                     # Attention layer.
                     # golden: separate key/value, [B, kv_heads, seq, head_dim], take the last valid cols.
-                    golden_key = golden[f"round_{g}.layer_{i}.key"][gb, :,
-                                                                    -valid:, :]
+                    # A sliding-window layer's golden cache keeps only its trailing window while the
+                    # engine stores the full history, so both sides compare that trailing window.
+                    golden_key_all = golden[f"round_{g}.layer_{i}.key"]
+                    kept = min(valid, golden_key_all.shape[-2])
+                    golden_key = golden_key_all[gb, :, -kept:, :]
                     golden_value = golden[f"round_{g}.layer_{i}.value"][
-                        gb, :, -valid:, :]
-                    # edgellm: combined [B, 2, kv_heads, L, head_dim], split 0/1 and take the first valid cols.
+                        gb, :, -kept:, :]
+                    # edgellm: combined [B, 2, kv_heads, L, head_dim], split 0/1 and take the valid cols.
                     edgellm_kv = edgellm[f"round_{r}.layer_{i}.kv"]
-                    edgellm_key = edgellm_kv[b, 0, :, :valid, :]
-                    edgellm_value = edgellm_kv[b, 1, :, :valid, :]
+                    edgellm_key = edgellm_kv[b, 0, :, valid - kept:valid, :]
+                    edgellm_value = edgellm_kv[b, 1, :, valid - kept:valid, :]
                     round_stats.append(
                         _compare_tensor(f"{tag}.layer_{i}.key", golden_key,
                                         edgellm_key, args.atol, args.rtol))

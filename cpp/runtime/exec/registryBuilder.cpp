@@ -193,12 +193,17 @@ TensorRegistry buildRegistryForLLM(LLMEngineConfig const& cfg, std::optional<int
                 = [&](char const* tmpl, TensorIO io, nvinfer1::DataType dtype, std::vector<ShapeDim> const& shape) {
                       reg.addTensor({std::string(tmpl) + "_" + std::to_string(localMambaIdx), io, dtype, shape});
                   };
-            // recurrent_state_%d: [residentPoolRows, recurrentStateNumHeads, recurrentStateHeadDim, stateSize]
-            std::vector<ShapeDim> const recShape{fixed(cfg.recurrentPoolRows), fixed(cfg.recurrentStateNumHeads),
-                fixed(cfg.recurrentStateHeadDim), fixed(cfg.recurrentStateSize)};
-            addMambaTensor(binding_names::kRecurrentStateTemplate, TensorIO::kInput, cfg.recurrentStateDtype, recShape);
-            addMambaTensor(
-                binding_names::kPresentRecurrentStateTemplate, TensorIO::kOutput, cfg.recurrentStateDtype, recShape);
+            // recurrent_state_%d: [residentPoolRows, recurrentStateNumHeads, recurrentStateHeadDim, stateSize].
+            // Convolution-only layers (recurrentStateNumHeads == 0) declare no recurrent binding.
+            if (cfg.recurrentStateNumHeads > 0)
+            {
+                std::vector<ShapeDim> const recShape{fixed(cfg.recurrentPoolRows), fixed(cfg.recurrentStateNumHeads),
+                    fixed(cfg.recurrentStateHeadDim), fixed(cfg.recurrentStateSize)};
+                addMambaTensor(
+                    binding_names::kRecurrentStateTemplate, TensorIO::kInput, cfg.recurrentStateDtype, recShape);
+                addMambaTensor(binding_names::kPresentRecurrentStateTemplate, TensorIO::kOutput,
+                    cfg.recurrentStateDtype, recShape);
+            }
             // conv_state_%d: [residentPoolRows, convDim, convKernel]
             std::vector<ShapeDim> const convShape{
                 fixed(cfg.recurrentPoolRows), fixed(cfg.convDim), fixed(cfg.convKernel)};

@@ -398,6 +398,42 @@ class Attention(nn.Module):
         tree_depths: "torch.Tensor | None" = None,
         valid_tree_counts: "torch.Tensor | None" = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        attn_output, present_key_value = self.attend_ragged(
+            hidden_states,
+            past_key_value,
+            rope_rotary_cos_sin,
+            query_start_offsets,
+            query_lengths,
+            past_lengths,
+            attention_sequence_lengths,
+            execution_phase_marker,
+            context_sequence_count_carrier,
+            kv_page_table,
+            skip_softmax_scale=skip_softmax_scale,
+            attention_position_ids=attention_position_ids,
+            packed_attention_mask=packed_attention_mask)
+        return self.o_proj(attn_output), present_key_value
+
+    def attend_ragged(
+        self,
+        hidden_states: torch.Tensor,
+        past_key_value: torch.Tensor,
+        rope_rotary_cos_sin: torch.Tensor,
+        query_start_offsets: torch.Tensor,
+        query_lengths: torch.Tensor,
+        past_lengths: torch.Tensor,
+        attention_sequence_lengths: torch.Tensor,
+        execution_phase_marker: torch.Tensor,
+        context_sequence_count_carrier: torch.Tensor,
+        kv_page_table: torch.Tensor,
+        skip_softmax_scale: "torch.Tensor | None" = None,
+        attention_position_ids: "torch.Tensor | None" = None,
+        packed_attention_mask: "torch.Tensor | None" = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Run the attention plugin and return its output before ``o_proj``.
+
+        The output has shape ``[*hidden_states.shape[:-1], num_heads * head_dim]``.
+        """
         if hasattr(self, "qkv_proj_fused"):
             qkv = self.qkv_proj_fused(hidden_states)
         else:
@@ -441,7 +477,7 @@ class Attention(nn.Module):
             past_lengths, kv_page_table, **kwargs)
         attn_output = attn_output.reshape(*hidden_states.shape[:-1],
                                           self.num_heads * self.head_dim)
-        return self.o_proj(attn_output), present_key_value
+        return attn_output, present_key_value
 
 
 # ---------------------------------------------------------------------------

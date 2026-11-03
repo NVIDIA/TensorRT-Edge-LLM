@@ -111,10 +111,13 @@ HybridSnapshotStorage::HybridSnapshotStorage(HybridCacheManager& cacheManager, i
     for (int32_t layer = 0; layer < mamba.numLayers(); ++layer)
     {
         std::string const layerSuffix = std::to_string(layer);
-        validateGpuTensorLayout(mamba.getRecurrentState(layer),
-            {mambaConfig.maxBatchSize, mambaConfig.recurrentStateNumHeads, mambaConfig.recurrentStateHeadDim,
-                mambaConfig.recurrentStateSize},
-            mambaConfig.recurrentStateType, recurrentBytes, "Live recurrent state layer " + layerSuffix);
+        if (mambaConfig.hasRecurrentState())
+        {
+            validateGpuTensorLayout(mamba.getRecurrentState(layer),
+                {mambaConfig.maxBatchSize, mambaConfig.recurrentStateNumHeads, mambaConfig.recurrentStateHeadDim,
+                    mambaConfig.recurrentStateSize},
+                mambaConfig.recurrentStateType, recurrentBytes, "Live recurrent state layer " + layerSuffix);
+        }
         validateGpuTensorLayout(mamba.getConvState(layer),
             {mambaConfig.maxBatchSize, mambaConfig.convDim, mambaConfig.convKernel}, mambaConfig.convStateType,
             convBytes, "Live convolution state layer " + layerSuffix);
@@ -151,17 +154,21 @@ HybridSnapshotStorage::HybridSnapshotStorage(HybridCacheManager& cacheManager, i
         mConvSnapshots.reserve(static_cast<size_t>(mamba.numLayers()));
         for (int32_t layer = 0; layer < mamba.numLayers(); ++layer)
         {
-            mRecurrentSnapshots.emplace_back(
-                Tensor({recurrentSlotCount, mambaConfig.recurrentStateNumHeads, mambaConfig.recurrentStateHeadDim,
-                           mambaConfig.recurrentStateSize},
-                    DeviceType::kGPU, mambaConfig.recurrentStateType,
-                    "HybridSnapshotStorage::recurrent_" + std::to_string(layer)));
+            if (mambaConfig.hasRecurrentState())
+            {
+                mRecurrentSnapshots.emplace_back(
+                    Tensor({recurrentSlotCount, mambaConfig.recurrentStateNumHeads, mambaConfig.recurrentStateHeadDim,
+                               mambaConfig.recurrentStateSize},
+                        DeviceType::kGPU, mambaConfig.recurrentStateType,
+                        "HybridSnapshotStorage::recurrent_" + std::to_string(layer)));
+                validateGpuTensorLayout(mRecurrentSnapshots.back(),
+                    {recurrentSlotCount, mambaConfig.recurrentStateNumHeads, mambaConfig.recurrentStateHeadDim,
+                        mambaConfig.recurrentStateSize},
+                    mambaConfig.recurrentStateType, recurrentBytes,
+                    "Recurrent snapshot layer " + std::to_string(layer));
+            }
             mConvSnapshots.emplace_back(Tensor({recurrentSlotCount, mambaConfig.convDim, mambaConfig.convKernel},
                 DeviceType::kGPU, mambaConfig.convStateType, "HybridSnapshotStorage::conv_" + std::to_string(layer)));
-            validateGpuTensorLayout(mRecurrentSnapshots.back(),
-                {recurrentSlotCount, mambaConfig.recurrentStateNumHeads, mambaConfig.recurrentStateHeadDim,
-                    mambaConfig.recurrentStateSize},
-                mambaConfig.recurrentStateType, recurrentBytes, "Recurrent snapshot layer " + std::to_string(layer));
             validateGpuTensorLayout(mConvSnapshots.back(),
                 {recurrentSlotCount, mambaConfig.convDim, mambaConfig.convKernel}, mambaConfig.convStateType, convBytes,
                 "Convolution snapshot layer " + std::to_string(layer));
@@ -267,9 +274,12 @@ void HybridSnapshotStorage::zeroRecurrent(int32_t batchSlot, cudaStream_t stream
     size_t const convBytes = convStateBytes(config);
     for (int32_t layer = 0; layer < mamba.numLayers(); ++layer)
     {
-        CUDA_CHECK(cudaMemsetAsync(
-            byteOffset(mamba.getRecurrentState(layer).rawPointer(), static_cast<size_t>(batchSlot) * recurrentBytes), 0,
-            recurrentBytes, stream));
+        if (config.hasRecurrentState())
+        {
+            CUDA_CHECK(cudaMemsetAsync(byteOffset(mamba.getRecurrentState(layer).rawPointer(),
+                                           static_cast<size_t>(batchSlot) * recurrentBytes),
+                0, recurrentBytes, stream));
+        }
         CUDA_CHECK(cudaMemsetAsync(
             byteOffset(mamba.getConvState(layer).rawPointer(), static_cast<size_t>(batchSlot) * convBytes), 0,
             convBytes, stream));
@@ -285,10 +295,14 @@ void HybridSnapshotStorage::captureRecurrent(int32_t snapshotSlot, int32_t batch
     size_t const convBytes = convStateBytes(config);
     for (int32_t layer = 0; layer < mamba.numLayers(); ++layer)
     {
-        CUDA_CHECK(cudaMemcpyAsync(byteOffset(mRecurrentSnapshots[static_cast<size_t>(layer)].rawPointer(),
-                                       static_cast<size_t>(snapshotSlot) * recurrentBytes),
-            byteOffset(mamba.getRecurrentState(layer).rawPointer(), static_cast<size_t>(batchSlot) * recurrentBytes),
-            recurrentBytes, cudaMemcpyDeviceToDevice, stream));
+        if (config.hasRecurrentState())
+        {
+            CUDA_CHECK(cudaMemcpyAsync(byteOffset(mRecurrentSnapshots[static_cast<size_t>(layer)].rawPointer(),
+                                           static_cast<size_t>(snapshotSlot) * recurrentBytes),
+                byteOffset(
+                    mamba.getRecurrentState(layer).rawPointer(), static_cast<size_t>(batchSlot) * recurrentBytes),
+                recurrentBytes, cudaMemcpyDeviceToDevice, stream));
+        }
         CUDA_CHECK(cudaMemcpyAsync(byteOffset(mConvSnapshots[static_cast<size_t>(layer)].rawPointer(),
                                        static_cast<size_t>(snapshotSlot) * convBytes),
             byteOffset(mamba.getConvState(layer).rawPointer(), static_cast<size_t>(batchSlot) * convBytes), convBytes,
@@ -305,11 +319,14 @@ void HybridSnapshotStorage::restoreRecurrent(int32_t snapshotSlot, int32_t batch
     size_t const convBytes = convStateBytes(config);
     for (int32_t layer = 0; layer < mamba.numLayers(); ++layer)
     {
-        CUDA_CHECK(cudaMemcpyAsync(
-            byteOffset(mamba.getRecurrentState(layer).rawPointer(), static_cast<size_t>(batchSlot) * recurrentBytes),
-            byteOffset(mRecurrentSnapshots[static_cast<size_t>(layer)].rawPointer(),
-                static_cast<size_t>(snapshotSlot) * recurrentBytes),
-            recurrentBytes, cudaMemcpyDeviceToDevice, stream));
+        if (config.hasRecurrentState())
+        {
+            CUDA_CHECK(cudaMemcpyAsync(byteOffset(mamba.getRecurrentState(layer).rawPointer(),
+                                           static_cast<size_t>(batchSlot) * recurrentBytes),
+                byteOffset(mRecurrentSnapshots[static_cast<size_t>(layer)].rawPointer(),
+                    static_cast<size_t>(snapshotSlot) * recurrentBytes),
+                recurrentBytes, cudaMemcpyDeviceToDevice, stream));
+        }
         CUDA_CHECK(cudaMemcpyAsync(
             byteOffset(mamba.getConvState(layer).rawPointer(), static_cast<size_t>(batchSlot) * convBytes),
             byteOffset(

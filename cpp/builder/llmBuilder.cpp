@@ -1816,7 +1816,8 @@ bool LLMBuilder::setupKVCacheProfiles(
 bool LLMBuilder::setupRecurrentStateProfiles(
     nvinfer1::IOptimizationProfile* const contextProfile, nvinfer1::IOptimizationProfile* const generationProfile)
 {
-    if (mNumLinearAttnLayers == 0)
+    // Convolution-only recurrent layers (recurrent_state_num_heads == 0) export no recurrent_state bindings.
+    if (mNumLinearAttnLayers == 0 || mRecurrentStateNumHeads == 0)
     {
         return true;
     }
@@ -1877,7 +1878,7 @@ bool LLMBuilder::setupConvStateProfiles(
 bool LLMBuilder::setupIntermediateRecurrentStateProfiles(
     nvinfer1::IOptimizationProfile& contextProfile, nvinfer1::IOptimizationProfile& generationProfile)
 {
-    if (mNumLinearAttnLayers == 0)
+    if (mNumLinearAttnLayers == 0 || mRecurrentStateNumHeads == 0)
     {
         return true;
     }

@@ -1827,14 +1827,24 @@ void validateAgainstEngine(LLMEngineConfig const& config, EngineExecutor const& 
     if (config.numLinearAttnLayers > 0)
     {
         std::string const recBindingName = binding_names::formatRecurrentStateName(/*layerIdx=*/0, /*isPast=*/true);
-        ELLM_CHECK(executor.hasIOTensor(recBindingName.c_str()),
-            std::string("Missing recurrent-state binding (") + engineLabel + "): expected '" + recBindingName + "'.");
-        auto const recEngineDtype = executor.getBindingDataType(recBindingName.c_str());
-        ELLM_CHECK(recEngineDtype == config.recurrentStateDtype,
-            std::string("Recurrent state dtype mismatch (") + engineLabel + "): config says "
-                + getDataTypeString(config.recurrentStateDtype) + ", engine reports "
-                + getDataTypeString(recEngineDtype) + " for binding '" + recBindingName
-                + "'. Re-export the engine with matching recurrent_state_dtype.");
+        if (config.recurrentStateNumHeads > 0)
+        {
+            ELLM_CHECK(executor.hasIOTensor(recBindingName.c_str()),
+                std::string("Missing recurrent-state binding (") + engineLabel + "): expected '" + recBindingName
+                    + "'.");
+            auto const recEngineDtype = executor.getBindingDataType(recBindingName.c_str());
+            ELLM_CHECK(recEngineDtype == config.recurrentStateDtype,
+                std::string("Recurrent state dtype mismatch (") + engineLabel + "): config says "
+                    + getDataTypeString(config.recurrentStateDtype) + ", engine reports "
+                    + getDataTypeString(recEngineDtype) + " for binding '" + recBindingName
+                    + "'. Re-export the engine with matching recurrent_state_dtype.");
+        }
+        else
+        {
+            ELLM_CHECK(!executor.hasIOTensor(recBindingName.c_str()),
+                std::string("Unexpected recurrent-state binding (") + engineLabel + "): '" + recBindingName
+                    + "' is present but recurrent_state_num_heads is 0 (convolution-only recurrent layers).");
+        }
 
         std::string const convBindingName = binding_names::formatConvStateName(/*layerIdx=*/0, /*isPast=*/true);
         ELLM_CHECK(executor.hasIOTensor(convBindingName.c_str()),
