@@ -129,15 +129,18 @@ both are handled automatically by export and runtime.
 <details>
 <summary><b>LFM3</b></summary>
 
-`model_type: lfm3`; text input to text output. A hybrid of gated
-short-convolution layers and sliding-window/global attention layers. The
-convolution layers carry a fixed-size convolution state and no KV cache; the
-global attention layers use partial RoPE over the full head dimension. Both are
-handled automatically by export and runtime.
+`model_type: lfm3` takes text input; `lfm3_vl` takes text and image input.
+Both produce text. The language model is a hybrid of gated short-convolution
+layers and sliding-window/global attention layers. The convolution layers carry
+a fixed-size convolution state and no KV cache; the global attention layers use
+partial RoPE over the full head dimension. The LFM3-VL vision tower interleaves
+gated depthwise convolutions with attention over each image's patch grid. All of
+this is handled automatically by export and runtime.
 
 **Original:**
 
 - [LiquidAI/LFM3-1.7B](https://huggingface.co/LiquidAI/LFM3-1.7B)
+- [LiquidAI/LFM3-VL-2B](https://huggingface.co/LiquidAI/LFM3-VL-2B)
 
 </details>
 

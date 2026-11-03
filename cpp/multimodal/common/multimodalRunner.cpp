@@ -24,6 +24,7 @@
 #include "multimodal/gemma4/gemma4UnifiedVisionRunner.h"
 #include "multimodal/gemma4/gemma4ViTRunner.h"
 #include "multimodal/internvl/internViTRunner.h"
+#include "multimodal/lfm3_vl/lfm3VlViTRunner.h"
 #include "multimodal/muse_glimmer/museGlimmerViTRunner.h"
 #include "multimodal/nemotron_omni/nemotronOmniAudioRunner.h"
 #include "multimodal/nemotron_omni/nemotronOmniViTRunner.h"
@@ -195,6 +196,11 @@ std::unique_ptr<MultimodalRunner> MultimodalRunner::create(std::string const& mu
     else if (modelType == multimodal::ModelType::MUSE_GLIMMER)
     {
         multimodalRunner = makeInitializedQwenViTRunner<MuseGlimmerViTRunner>(
+            multimodalEngineDir, llmMaxBatchSize, llmMaxPositionEmbeddings, stream, checkpointDir);
+    }
+    else if (modelType == multimodal::ModelType::LFM3_VL)
+    {
+        multimodalRunner = makeInitializedQwenViTRunner<Lfm3VlViTRunner>(
             multimodalEngineDir, llmMaxBatchSize, llmMaxPositionEmbeddings, stream, checkpointDir);
     }
     else if (modelType == multimodal::ModelType::QWEN3_OMNI_AUDIO_ENCODER

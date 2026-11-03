@@ -107,6 +107,9 @@ _VISUAL_REGISTRY: dict[str, str] = {
     # interleaved RoPE, pixel_shuffle merge + adapter/projection.
     "muse_glimmer": "muse_glimmer",
     "muse_glimmer_vision": "muse_glimmer",
+    # LFM3-VL: gated depthwise-conv + attention tower and projector, exported
+    # on the Qwen visual I/O contract plus conv_neighbor_index.
+    "lfm3_vl": "lfm3_vl",
 }
 
 # Maps family → dotted module path inside tensorrt_edgellm
@@ -125,6 +128,8 @@ _VISUAL_FAMILY_MODULE: dict[str, str] = {
     "tensorrt_edgellm.models.internvl3.modeling_internvl3_visual",
     "internvl3_5":
     "tensorrt_edgellm.models.internvl3_5.modeling_internvl3_5_visual",
+    "lfm3_vl":
+    "tensorrt_edgellm.models.lfm3_vl.modeling_lfm3_vl_visual",
     "phi4mm":
     "tensorrt_edgellm.models.phi4mm.modeling_phi4mm_visual",
     "gemma4":
@@ -154,6 +159,7 @@ _VISUAL_FAMILY_BUILD_FN: dict[str, str] = {
     "nemotron_omni": "build_nemotron_omni_visual",
     "cosmos3_reasoner": "build_cosmos3_reasoner_visual",
     "muse_glimmer": "build_muse_glimmer_visual",
+    "lfm3_vl": "build_lfm3_vl_visual",
 }
 
 # ---------------------------------------------------------------------------
@@ -205,8 +211,8 @@ def _get_visual_config(model_type: str, config: dict) -> dict:
                 or config.get("thinker_config", {}).get("vision_config")
                 or config)
     if (model_type in ("internvl", "internvl_chat", "gemma4", "gemma4_unified",
-                       "cosmos3_edge", "muse_glimmer", "muse_glimmer_vision")
-            or model_type in _NEMOTRON_OMNI_MODEL_TYPES):
+                       "cosmos3_edge", "muse_glimmer", "muse_glimmer_vision",
+                       "lfm3_vl") or model_type in _NEMOTRON_OMNI_MODEL_TYPES):
         # InternVL / Gemma4 / Nemotron-Omni / Cosmos3-Edge / Muse-Glimmer need
         # the full config (vision + text + projection/runtime fields).
         return config

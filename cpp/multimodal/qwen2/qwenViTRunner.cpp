@@ -91,7 +91,8 @@ bool QwenViTRunner::validateAndFillConfig(std::string const& engineDir)
     if (mModelType != multimodal::ModelType::QWEN2_5_VL && mModelType != multimodal::ModelType::QWEN2_VL
         && mModelType != multimodal::ModelType::QWEN3_VL && mModelType != multimodal::ModelType::QWEN3_5
         && mModelType != multimodal::ModelType::QWEN3_OMNI_VISION_ENCODER
-        && mModelType != multimodal::ModelType::COSMOS3_EDGE && mModelType != multimodal::ModelType::MUSE_GLIMMER)
+        && mModelType != multimodal::ModelType::COSMOS3_EDGE && mModelType != multimodal::ModelType::MUSE_GLIMMER
+        && mModelType != multimodal::ModelType::LFM3_VL)
     {
         LOG_ERROR("Invalid model type: %s", modelTypeStr.c_str());
         return false;
@@ -120,7 +121,8 @@ bool QwenViTRunner::validateAndFillConfig(std::string const& engineDir)
         : (subConfig.contains("rope_parameters") && subConfig["rope_parameters"].is_object())
         ? subConfig["rope_parameters"]
         : subConfig;
-    if (isMuseGlimmer)
+    bool const textMRope = usesTextMRope();
+    if (!textMRope)
     {
         mConfig.vocabSize = subConfig.value("vocab_size", int32_t{0});
         mConfig.mropeTheta = subConfig.value("rope_theta", 10000.0F);
@@ -153,10 +155,10 @@ bool QwenViTRunner::validateAndFillConfig(std::string const& engineDir)
             mConfig.mropeSectionW = section[2];
         }
     }
-    if (isMuseGlimmer)
+    if (!textMRope)
     {
-        // Muse-Glimmer uses 1D RoPE; image tokens take sequential positions, so
-        // the spatial mrope_section split does not apply. Default to 1.
+        // 1D text RoPE: image tokens take sequential positions, so the spatial
+        // mrope_section split does not apply. Default to 1.
         if (mConfig.mropeSectionH <= 0)
         {
             mConfig.mropeSectionH = 1;
@@ -790,12 +792,11 @@ bool QwenViTRunner::preprocess(rt::LLMGenerationRequest const& request,
             // Splice the image-token placeholders into the input IDs for all
             // models (needed so image embeddings land at the right positions).
             textPreprocess(request, batchedInputIds, spans, spansPerRequest, tokenizer);
-            if (mModelType == multimodal::ModelType::MUSE_GLIMMER)
+            if (!usesTextMRope())
             {
-                // Muse-Glimmer uses 1D per-layer RoPE with standard sequential
-                // positions (image tokens advance like text), so there is no
-                // Qwen 3D M-RoPE cos/sin to produce here; the LLM engine applies
-                // RoPE from its own rope cache.
+                // 1D text RoPE with sequential positions (image tokens advance like
+                // text): there is no Qwen 3D M-RoPE cos/sin to produce here; the LLM
+                // engine applies RoPE from its own rope cache.
             }
             else
             {
@@ -837,7 +838,7 @@ bool QwenViTRunner::preprocess(rt::LLMGenerationRequest const& request,
 bool QwenViTRunner::preprocessSystemPrompt(std::string const& systemPrompt, tokenizer::Tokenizer const* tokenizer,
     rt::OptionalOutputTensor mropeCosSinOut, cudaStream_t stream)
 {
-    if (systemPrompt.empty())
+    if (systemPrompt.empty() || !usesTextMRope())
     {
         return true;
     }
@@ -929,6 +930,11 @@ bool QwenViTRunner::infer(cudaStream_t stream) noexcept
 bool QwenViTRunner::validateExtraConfig(nlohmann::json const& /*jsonConfig*/)
 {
     return true;
+}
+
+bool QwenViTRunner::usesTextMRope() const
+{
+    return mModelType != multimodal::ModelType::MUSE_GLIMMER;
 }
 
 bool QwenViTRunner::usesRotaryPosEmb() const

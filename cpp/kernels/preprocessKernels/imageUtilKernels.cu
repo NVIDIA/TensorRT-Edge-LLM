@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
+#include <limits>
 #include <string>
 
 using namespace nvinfer1;
@@ -524,6 +525,66 @@ void initRotaryPosEmbQwenViT(rt::Tensor& rotaryPosEmb, std::vector<int64_t> cons
 
     initRotaryPosEmbQwenKernel<<<gridSize, blockSize, 0, stream>>>(
         rotaryPosEmb.dataPointer<float>(), T, H, W, mergeSize, startIdx, vitPosEmbDim, rotaryBaseFrequency, scale);
+}
+
+__global__ void initConvNeighborIndexLfm3VlKernel(int32_t* convNeighborIndex, int64_t const T, int64_t const H,
+    int64_t const W, int64_t const mergeSize, int64_t const startIdx, int32_t const outsideIdx)
+{
+    constexpr int64_t kTAPS = 9;
+    int64_t const tid = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (tid >= T * H * W * kTAPS)
+    {
+        return;
+    }
+    int64_t const token = tid / kTAPS;
+    int64_t const tap = tid % kTAPS;
+    int64_t const frameBase = startIdx + (token / (H * W)) * H * W;
+    int64_t const hwIdx = token % (H * W);
+
+    // Merge-block order -> raster coordinates, as in initRotaryPosEmbQwenKernel.
+    int64_t const blocksW = W / mergeSize;
+    int64_t const blockSize = mergeSize * mergeSize;
+    int64_t const y = (hwIdx / (blocksW * blockSize)) * mergeSize + (hwIdx % blockSize) / mergeSize;
+    int64_t const x = ((hwIdx % (blocksW * blockSize)) / blockSize) * mergeSize + hwIdx % mergeSize;
+
+    int64_t const ny = y + tap / 3 - 1;
+    int64_t const nx = x + tap % 3 - 1;
+    int32_t neighbor = outsideIdx;
+    if (ny >= 0 && ny < H && nx >= 0 && nx < W)
+    {
+        int64_t const block = (ny / mergeSize) * blocksW + nx / mergeSize;
+        neighbor = static_cast<int32_t>(frameBase + (block * mergeSize + ny % mergeSize) * mergeSize + nx % mergeSize);
+    }
+    convNeighborIndex[(startIdx + token) * kTAPS + tap] = neighbor;
+}
+
+void initConvNeighborIndexLfm3VlViT(rt::Tensor& convNeighborIndex, std::vector<int64_t> const& gridTHW,
+    int64_t const mergeSize, int64_t const startIdx, cudaStream_t stream)
+{
+    constexpr int64_t kTAPS = 9;
+    check::check(convNeighborIndex.getDeviceType() == rt::DeviceType::kGPU,
+        "Device type shall be GPU for the conv neighbour index tensor.");
+    check::check(
+        convNeighborIndex.getDataType() == DataType::kINT32, "Data type shall be int32 for the conv neighbour index.");
+    check::check(convNeighborIndex.getShape().getNumDims() == 2 && convNeighborIndex.getShape()[1] == kTAPS,
+        "Conv neighbour index shape shall be [totalSeqLength, 9].");
+    check::check(gridTHW.size() == 3, "gridTHW must have exactly 3 elements [T, H, W]");
+    int64_t const T = gridTHW[0];
+    int64_t const H = gridTHW[1];
+    int64_t const W = gridTHW[2];
+    check::check(mergeSize > 0 && H % mergeSize == 0 && W % mergeSize == 0,
+        "Grid height and width must be multiples of the merge size.");
+    int64_t const totalSeqLength = convNeighborIndex.getShape()[0];
+    check::check(startIdx + T * H * W <= totalSeqLength
+            && totalSeqLength <= static_cast<int64_t>(std::numeric_limits<int32_t>::max()),
+        "Conv neighbour index span exceeds the tensor.");
+
+    int64_t const totalElements = T * H * W * kTAPS;
+    uint32_t const blockSize = 256;
+    uint32_t const gridSize = static_cast<uint32_t>((totalElements + blockSize - 1) / blockSize);
+    initConvNeighborIndexLfm3VlKernel<<<gridSize, blockSize, 0, stream>>>(
+        convNeighborIndex.dataPointer<int32_t>(), T, H, W, mergeSize, startIdx, static_cast<int32_t>(totalSeqLength));
+    CUDA_CHECK(cudaGetLastError());
 }
 
 __global__ void initRotaryPosEmbGemma4Kernel(float* rotaryPosEmb, int64_t const* pixelPositionIds,

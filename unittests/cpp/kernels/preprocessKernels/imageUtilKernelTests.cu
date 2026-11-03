@@ -358,6 +358,79 @@ TEST(InitRotaryPosEmbQwen, Accuracy)
     TestInitRotaryPosEmbQwenViT();
 }
 
+TEST(InitConvNeighborIndexLfm3VlViT, MatchesMergeBlockNeighbourhood)
+{
+    cudaStream_t stream{nullptr};
+    int64_t constexpr kMergeSize = 2;
+    int64_t constexpr kTaps = 9;
+    // The second span carries two frames; each frame is an independent grid.
+    std::vector<std::vector<int64_t>> const spans{{1, 6, 8}, {2, 4, 4}, {1, 10, 2}};
+    std::vector<int64_t> spanStarts;
+    int64_t totalSeqLength = 0;
+    for (auto const& thw : spans)
+    {
+        spanStarts.push_back(totalSeqLength);
+        totalSeqLength += thw[0] * thw[1] * thw[2];
+    }
+
+    // Reference: enumerate the merge-block order to map raster (y, x) -> sequence index per frame.
+    std::vector<int32_t> expected(totalSeqLength * kTaps, static_cast<int32_t>(totalSeqLength));
+    int64_t frameStart = 0;
+    for (auto const& thw : spans)
+    {
+        int64_t const height = thw[1];
+        int64_t const width = thw[2];
+        for (int64_t frame = 0; frame < thw[0]; ++frame)
+        {
+            std::vector<int64_t> seqOf(height * width);
+            int64_t seq = frameStart;
+            for (int64_t by = 0; by < height / kMergeSize; ++by)
+            {
+                for (int64_t bx = 0; bx < width / kMergeSize; ++bx)
+                {
+                    for (int64_t my = 0; my < kMergeSize; ++my)
+                    {
+                        for (int64_t mx = 0; mx < kMergeSize; ++mx)
+                        {
+                            seqOf[(by * kMergeSize + my) * width + bx * kMergeSize + mx] = seq++;
+                        }
+                    }
+                }
+            }
+            for (int64_t y = 0; y < height; ++y)
+            {
+                for (int64_t x = 0; x < width; ++x)
+                {
+                    for (int64_t tap = 0; tap < kTaps; ++tap)
+                    {
+                        int64_t const ny = y + tap / 3 - 1;
+                        int64_t const nx = x + tap % 3 - 1;
+                        if (ny >= 0 && ny < height && nx >= 0 && nx < width)
+                        {
+                            expected[seqOf[y * width + x] * kTaps + tap] = static_cast<int32_t>(seqOf[ny * width + nx]);
+                        }
+                    }
+                }
+            }
+            frameStart += height * width;
+        }
+    }
+
+    rt::Tensor neighborDevice({totalSeqLength, kTaps}, rt::DeviceType::kGPU, nvinfer1::DataType::kINT32);
+    for (size_t i = 0; i < spans.size(); ++i)
+    {
+        kernel::initConvNeighborIndexLfm3VlViT(neighborDevice, spans[i], kMergeSize, spanStarts[i], stream);
+    }
+    std::vector<int32_t> actual(totalSeqLength * kTaps);
+    CUDA_CHECK(cudaMemcpyAsync(
+        actual.data(), neighborDevice.rawPointer(), actual.size() * sizeof(int32_t), cudaMemcpyDeviceToHost, stream));
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    EXPECT_EQ(actual, expected);
+
+    EXPECT_THROW(
+        kernel::initConvNeighborIndexLfm3VlViT(neighborDevice, {1, 5, 4}, kMergeSize, 0, stream), std::runtime_error);
+}
+
 void BenchmarkInitRotaryPosEmbQwenViT(int32_t const vitPosEmbDim = 40, int32_t const mergeSize = 2,
     float const rotaryBaseFrequency = 10000.0f, float const scale = 1.0f)
 {

@@ -46,6 +46,7 @@ enum class ModelType
     GEMMA4_AUDIO_ENCODER,          //!< Gemma4 audio encoder
     COSMOS3_EDGE,                  //!< Cosmos3-Edge reasoner vision encoder (SigLIP2 + PatchMerger)
     MUSE_GLIMMER,                  //!< Muse-Glimmer vision encoder
+    LFM3_VL,                       //!< LFM3-VL vision encoder (gated conv + attention tower, projector)
     UNKNOWN                        //!< Unknown or unsupported model type
 };
 
@@ -94,6 +95,8 @@ inline ModelType stringToModelType(std::string const& modelTypeStr)
         return ModelType::COSMOS3_EDGE;
     if (modelTypeStr == "muse_glimmer" || modelTypeStr == "muse_glimmer_vision")
         return ModelType::MUSE_GLIMMER;
+    if (modelTypeStr == "lfm3_vl" || modelTypeStr == "lfm3_vl_vision")
+        return ModelType::LFM3_VL;
     return ModelType::UNKNOWN;
 }
 
