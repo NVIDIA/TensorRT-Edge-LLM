@@ -1116,8 +1116,8 @@ bool CuteDslFMHAV2Runner::runPagedRagged(void const*, void const*, int32_t const
     return false;
 }
 
-bool CuteDslFMHAV2Runner::runPadding(
-    void const*, void const*, void const*, void*, int32_t const*, int32_t const*, cudaStream_t, float)
+bool CuteDslFMHAV2Runner::runPadding(void const*, void const*, void const*, void*, int32_t const*, int32_t const*,
+    cudaStream_t, float, int32_t const*, int32_t const*)
 {
     return false;
 }
