@@ -75,7 +75,7 @@ jobs:
         with:
           github-token: ${{ github.token }}
           script: |
-            const trustedCreatorId = 10716935;
+            const trustedCreatorId = 349994198;
             const statusContext = 'edgellm/internal-ci';
             let pipelineId;
             while (true) {
