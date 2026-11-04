@@ -636,6 +636,22 @@ def build_runtime_llm_config_dict(
             "use_rope": config.num_attn_layers > 0,
         })
 
+    sc = config.short_conv_cfg
+    if config.is_hybrid and sc is not None:
+        # Short-conv layers carry a conv state only: zero recurrent extents tell
+        # the runtime not to allocate or bind a recurrent state.
+        out.update({
+            "num_linear_attn_layers": config.num_conv_layers,
+            "num_attention_layers": config.num_attn_layers,
+            "recurrent_state_num_heads": 0,
+            "recurrent_state_head_dim": 0,
+            "recurrent_state_size": 0,
+            "recurrent_spec_verify_mode": "snapshot",
+            "conv_dim": sc.conv_dim,
+            "conv_kernel": sc.conv_kernel,
+            "use_rope": config.num_attn_layers > 0,
+        })
+
     if (not config.is_hybrid
             and config.num_attn_layers != config.num_hidden_layers):
         out["num_attention_layers"] = config.num_attn_layers
@@ -650,7 +666,7 @@ def build_runtime_llm_config_dict(
         or attention_layer_types)
     if _emit_kv_table:
         from ..config import (_VALID_ATTENTION_LAYER_TYPES, LAYER_ATTN,
-                              LAYER_GDN, LAYER_MAMBA)
+                              LAYER_CONV, LAYER_GDN, LAYER_MAMBA)
 
         gemma4_kv_layer_config = None
         if attention_layer_types:
@@ -677,7 +693,7 @@ def build_runtime_llm_config_dict(
                         "head_dim": config.head_dim,
                     }
                 kv_layer_configs.append(layer_config)
-            elif lt in (LAYER_MAMBA, LAYER_GDN):
+            elif lt in (LAYER_MAMBA, LAYER_GDN, LAYER_CONV):
                 normalized_layer_types.append("mamba")
                 kv_layer_configs.append(None)
             # Non-stateful layers (e.g. LAYER_MLP) have no cache slot and are

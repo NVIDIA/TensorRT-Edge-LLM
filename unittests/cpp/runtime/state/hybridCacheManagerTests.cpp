@@ -811,6 +811,58 @@ TEST(HybridCacheManagerTests, RestoreResidentStateTargetsTheSelectedNonIdentityS
     ASSERT_EQ(cudaStreamDestroy(stream), cudaSuccess);
 }
 
+TEST(HybridCacheManagerTests, ConvOnlyLayersKeepOnlyConvState)
+{
+    cudaStream_t stream{};
+    ASSERT_EQ(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), cudaSuccess);
+    int32_t constexpr maxSlots = 4;
+    int32_t constexpr numLayers = 2;
+    auto config = makeMambaConfig(numLayers, maxSlots);
+    config.recurrentStateNumHeads = 0;
+    config.recurrentStateHeadDim = 0;
+    config.recurrentStateSize = 0;
+    config.convKernel = 7;
+    rt::MambaCacheManager manager(config, stream);
+    ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
+    EXPECT_FALSE(manager.getConfig().hasRecurrentState());
+
+    for (int32_t layer = 0; layer < numLayers; ++layer)
+    {
+        auto const& conv = manager.getConvState(layer);
+        EXPECT_EQ(conv.getShape(), rt::Coords({maxSlots, config.convDim, config.convKernel}));
+        for (int32_t slot = 0; slot < maxSlots; ++slot)
+        {
+            fillSlotHalf(manager.getConvState(layer), slot, 10.0F * layer + slot + 1.0F);
+        }
+    }
+
+    manager.clearSlot(1, stream);
+    ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
+    for (int32_t layer = 0; layer < numLayers; ++layer)
+    {
+        for (int32_t slot = 0; slot < maxSlots; ++slot)
+        {
+            expectSlotEqHalf(
+                manager.getConvState(layer), slot, slot == 1 ? 0.0F : 10.0F * layer + slot + 1.0F, "convolution");
+        }
+    }
+
+    EXPECT_TRUE(manager.captureRecurrentStates(2, stream).empty());
+    auto savedConv = manager.captureConvStates(2, stream);
+    ASSERT_EQ(savedConv.size(), static_cast<size_t>(numLayers));
+    ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
+    manager.restoreSlot(0, {}, savedConv, stream);
+    ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
+    for (int32_t layer = 0; layer < numLayers; ++layer)
+    {
+        expectSlotEqHalf(manager.getConvState(layer), 0, 10.0F * layer + 3.0F, "convolution");
+    }
+
+    config.maxIntermediateSeqLen = 4;
+    EXPECT_THROW(rt::MambaCacheManager(config, stream), std::runtime_error);
+    ASSERT_EQ(cudaStreamDestroy(stream), cudaSuccess);
+}
+
 // --- FP8 capture/restore contract -------------------------------------------
 //
 // FP8 save/restore is not implemented — the batched copy kernel only

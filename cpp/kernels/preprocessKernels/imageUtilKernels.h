@@ -75,6 +75,19 @@ void transposeToPatchQwenViT(rt::Tensor const& originalImage, rt::Tensor& inputP
 void initRotaryPosEmbQwenViT(rt::Tensor& rotaryPosEmb, std::vector<int64_t> const& gridTHW, int64_t const mergeSize,
     int64_t const startIdx, float const rotaryBaseFrequency, float const scale, cudaStream_t stream);
 
+//! Fill the 3x3 neighbour table of one span's frames for the LFM3-VL vision convolution.
+//! Tokens are in the Qwen 2x2-merge-block order used by initRotaryPosEmbQwenViT.
+//! Inputs:
+//!     gridTHW: Span grid dimensions [T, H, W]; each of the T frames is an independent H x W grid
+//!     mergeSize: Merge size of the token order
+//!     startIdx: Sequence index of the span's first token
+//! Outputs:
+//!     convNeighborIndex [GPU, Int32]: [totalSeqLength, 9]; entry 3 * (dy + 1) + (dx + 1) of a token is the sequence
+//!     index of the patch at (y + dy, x + dx) in its frame, or totalSeqLength when outside the frame.
+//! \throws std::runtime_error if the tensor has an invalid shape, data type or location
+void initConvNeighborIndexLfm3VlViT(rt::Tensor& convNeighborIndex, std::vector<int64_t> const& gridTHW,
+    int64_t const mergeSize, int64_t const startIdx, cudaStream_t stream);
+
 //! The kernel will initialize the rotary position embeddings for Muse-Glimmer VIT.
 //! Unlike initRotaryPosEmbQwenViT (which lays out per-token frequencies as concat(freq_h, freq_w) in
 //! 2x2-merge-grouped token order with no position offset), Muse-Glimmer runs its encoder at

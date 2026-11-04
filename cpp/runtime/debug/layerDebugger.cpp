@@ -266,8 +266,11 @@ void LayerDebugger::dumpRound(HybridCacheManager& cacheManager, KVPageTable cons
         {
             // Mamba / Gated DeltaNet: fixed-size recurrent state [B, heads, headDim, stateSize] and
             // conv state [B, convDim, convKernel].
-            mTensors.push_back(copyResidentRows(
-                cacheManager.getRecurrentState(layer), residentRefs, activeBatchSize, lp + "recurrent_state", stream));
+            if (cacheManager.getMambaCacheManager().getConfig().hasRecurrentState())
+            {
+                mTensors.push_back(copyResidentRows(cacheManager.getRecurrentState(layer), residentRefs,
+                    activeBatchSize, lp + "recurrent_state", stream));
+            }
             mTensors.push_back(copyResidentRows(
                 cacheManager.getConvState(layer), residentRefs, activeBatchSize, lp + "conv_state", stream));
             continue;

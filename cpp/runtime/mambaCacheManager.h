@@ -32,6 +32,8 @@ namespace rt
 //!   - conv state:      [maxBatchSize, convDim, convKernel]
 //! The first dimension is a fixed resident-slot pool and is not compacted with the active execution batch.
 //! When numRecurrentLayers == 0 the manager is a no-op and allocates nothing.
+//! When recurrentStateNumHeads == 0 the layers are convolution-only (e.g. LFM short-conv blocks): only the conv
+//! state is allocated and getRecurrentState() must not be called.
 class MambaCacheManager
 {
 public:
@@ -59,6 +61,12 @@ public:
         //! MTP spec-verify commit mode: true → Mamba replay reconstruction (allocate the dA/u/B
         //! replay stash), false → GDN/DDTree per-token snapshot scatter.
         bool specVerifyUsesReplay{false};
+
+        //! False for convolution-only recurrent layers, which carry no recurrent state tensor.
+        bool hasRecurrentState() const noexcept
+        {
+            return recurrentStateNumHeads > 0;
+        }
     };
     //! \endcond
 

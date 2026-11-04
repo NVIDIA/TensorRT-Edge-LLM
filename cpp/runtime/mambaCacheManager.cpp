@@ -40,31 +40,39 @@ MambaCacheManager::MambaCacheManager(Config const& config, cudaStream_t stream)
         return;
     }
 
+    bool const hasRecurrent = mConfig.hasRecurrentState();
     check::check(mConfig.maxBatchSize > 0, "maxBatchSize must be positive.");
-    check::check(mConfig.recurrentStateNumHeads > 0, "recurrentStateNumHeads must be positive.");
-    check::check(mConfig.recurrentStateHeadDim > 0, "recurrentStateHeadDim must be positive.");
-    check::check(mConfig.recurrentStateSize > 0, "recurrentStateSize must be positive.");
+    check::check(mConfig.recurrentStateNumHeads >= 0, "recurrentStateNumHeads must be non-negative.");
+    check::check(!hasRecurrent || (mConfig.recurrentStateHeadDim > 0 && mConfig.recurrentStateSize > 0),
+        "recurrentStateHeadDim and recurrentStateSize must be positive when recurrent state is present.");
     check::check(mConfig.convDim > 0, "convDim must be positive.");
     check::check(mConfig.convKernel > 0, "convKernel must be positive.");
+    check::check(hasRecurrent || mConfig.maxIntermediateSeqLen == 0,
+        "Speculative-verify intermediate states are not supported for convolution-only recurrent layers.");
 
     size_t totalBytes = 0;
     size_t const recurrentElemSize = rt::utils::getTypeSize(mConfig.recurrentStateType);
     size_t const convElemSize = rt::utils::getTypeSize(mConfig.convStateType);
 
-    mRecurrentStates.reserve(mConfig.numRecurrentLayers);
+    mRecurrentStates.reserve(hasRecurrent ? mConfig.numRecurrentLayers : 0);
     mConvStates.reserve(mConfig.numRecurrentLayers);
 
     for (int32_t i = 0; i < mConfig.numRecurrentLayers; ++i)
     {
-        // Allocate recurrent state: [maxBatchSize, numHeads, headDim, stateSize]
-        int64_t const recurrentVolume = static_cast<int64_t>(mConfig.maxBatchSize) * mConfig.recurrentStateNumHeads
-            * mConfig.recurrentStateHeadDim * mConfig.recurrentStateSize;
-        size_t const recurrentBytes = static_cast<size_t>(recurrentVolume) * recurrentElemSize;
+        if (hasRecurrent)
+        {
+            // Allocate recurrent state: [maxBatchSize, numHeads, headDim, stateSize]
+            int64_t const recurrentVolume = static_cast<int64_t>(mConfig.maxBatchSize) * mConfig.recurrentStateNumHeads
+                * mConfig.recurrentStateHeadDim * mConfig.recurrentStateSize;
+            size_t const recurrentBytes = static_cast<size_t>(recurrentVolume) * recurrentElemSize;
 
-        mRecurrentStates.emplace_back(rt::Tensor({mConfig.maxBatchSize, mConfig.recurrentStateNumHeads,
-                                                     mConfig.recurrentStateHeadDim, mConfig.recurrentStateSize},
-            DeviceType::kGPU, mConfig.recurrentStateType, "MambaCacheManager::recurrentState_" + std::to_string(i)));
-        CUDA_CHECK(cudaMemsetAsync(mRecurrentStates.back().rawPointer(), 0, recurrentBytes, stream));
+            mRecurrentStates.emplace_back(rt::Tensor({mConfig.maxBatchSize, mConfig.recurrentStateNumHeads,
+                                                         mConfig.recurrentStateHeadDim, mConfig.recurrentStateSize},
+                DeviceType::kGPU, mConfig.recurrentStateType,
+                "MambaCacheManager::recurrentState_" + std::to_string(i)));
+            CUDA_CHECK(cudaMemsetAsync(mRecurrentStates.back().rawPointer(), 0, recurrentBytes, stream));
+            totalBytes += recurrentBytes;
+        }
 
         // Allocate conv state: [maxBatchSize, convDim, convKernel]
         int64_t const convVolume = static_cast<int64_t>(mConfig.maxBatchSize) * mConfig.convDim * mConfig.convKernel;
@@ -74,7 +82,7 @@ MambaCacheManager::MambaCacheManager(Config const& config, cudaStream_t stream)
             DeviceType::kGPU, mConfig.convStateType, "MambaCacheManager::convState_" + std::to_string(i)));
         CUDA_CHECK(cudaMemsetAsync(mConvStates.back().rawPointer(), 0, convBytes, stream));
 
-        totalBytes += recurrentBytes + convBytes;
+        totalBytes += convBytes;
     }
 
     // Allocate spec-verify intermediate state buffers when enabled (maxIntermediateSeqLen > 0). The
@@ -203,7 +211,8 @@ MambaCacheManager::MambaCacheManager(Config const& config, cudaStream_t stream)
     auto* const stateInfos = static_cast<mamba_ssm::MambaStateLayerInfo*>(mHostStateLayerInfos.rawPointer());
     for (int32_t layer = 0; layer < mConfig.numRecurrentLayers; ++layer)
     {
-        stateInfos[layer] = {mRecurrentStates[layer].rawPointer(), mConvStates[layer].rawPointer()};
+        stateInfos[layer]
+            = {hasRecurrent ? mRecurrentStates[layer].rawPointer() : nullptr, mConvStates[layer].rawPointer()};
     }
     CUDA_CHECK(cudaMemcpyAsync(
         mDeviceStateLayerInfos.rawPointer(), stateInfos, stateInfoBytes, cudaMemcpyHostToDevice, stream));
@@ -303,7 +312,8 @@ void MambaCacheManager::restoreSlot(int32_t slot, std::vector<rt::Tensor> const&
     std::vector<rt::Tensor> const& convStates, cudaStream_t stream)
 {
     check::check(slot >= 0 && slot < mConfig.maxBatchSize, "Resident state slot is out of range.");
-    check::check(recurrentStates.size() <= static_cast<size_t>(mConfig.numRecurrentLayers)
+    bool const hasRecurrent = mConfig.hasRecurrentState();
+    check::check(recurrentStates.size() <= static_cast<size_t>(hasRecurrent ? mConfig.numRecurrentLayers : 0)
             && convStates.size() <= static_cast<size_t>(mConfig.numRecurrentLayers),
         "Cached recurrent state contains more layers than the resident pool.");
 
@@ -320,8 +330,8 @@ void MambaCacheManager::restoreSlot(int32_t slot, std::vector<rt::Tensor> const&
     int64_t const convElements = convShape.volume();
     int64_t const recurrentElementBytes = static_cast<int64_t>(rt::utils::getTypeSize(mConfig.recurrentStateType));
     int64_t const convElementBytes = static_cast<int64_t>(rt::utils::getTypeSize(mConfig.convStateType));
-    check::check(recurrentElements > 0 && convElements > 0 && recurrentElementBytes > 0 && convElementBytes > 0
-            && recurrentElements <= std::numeric_limits<int64_t>::max() / recurrentElementBytes
+    check::check((recurrentElements > 0 || !hasRecurrent) && convElements > 0 && recurrentElementBytes > 0
+            && convElementBytes > 0 && recurrentElements <= std::numeric_limits<int64_t>::max() / recurrentElementBytes
             && convElements <= std::numeric_limits<int64_t>::max() / convElementBytes,
         "Resident state slot byte size is invalid.");
     int64_t const recurrentSlotBytes = recurrentElements * recurrentElementBytes;
@@ -337,17 +347,20 @@ void MambaCacheManager::restoreSlot(int32_t slot, std::vector<rt::Tensor> const&
 
     for (int32_t layer = 0; layer < mConfig.numRecurrentLayers; ++layer)
     {
-        auto* recurrent = static_cast<char*>(mRecurrentStates[layer].rawPointer()) + slot * recurrentSlotBytes;
+        if (hasRecurrent)
+        {
+            auto* recurrent = static_cast<char*>(mRecurrentStates[layer].rawPointer()) + slot * recurrentSlotBytes;
+            if (layer < static_cast<int32_t>(recurrentStates.size()))
+            {
+                CUDA_CHECK(cudaMemcpyAsync(recurrent, recurrentStates[layer].rawPointer(),
+                    static_cast<size_t>(recurrentSlotBytes), cudaMemcpyDeviceToDevice, stream));
+            }
+            else
+            {
+                CUDA_CHECK(cudaMemsetAsync(recurrent, 0, static_cast<size_t>(recurrentSlotBytes), stream));
+            }
+        }
         auto* conv = static_cast<char*>(mConvStates[layer].rawPointer()) + slot * convSlotBytes;
-        if (layer < static_cast<int32_t>(recurrentStates.size()))
-        {
-            CUDA_CHECK(cudaMemcpyAsync(recurrent, recurrentStates[layer].rawPointer(),
-                static_cast<size_t>(recurrentSlotBytes), cudaMemcpyDeviceToDevice, stream));
-        }
-        else
-        {
-            CUDA_CHECK(cudaMemsetAsync(recurrent, 0, static_cast<size_t>(recurrentSlotBytes), stream));
-        }
         if (layer < static_cast<int32_t>(convStates.size()))
         {
             CUDA_CHECK(cudaMemcpyAsync(conv, convStates[layer].rawPointer(), static_cast<size_t>(convSlotBytes),
@@ -363,7 +376,7 @@ void MambaCacheManager::restoreSlot(int32_t slot, std::vector<rt::Tensor> const&
 std::vector<rt::Tensor> MambaCacheManager::captureRecurrentStates(int32_t batchIdx, cudaStream_t stream)
 {
     std::vector<rt::Tensor> result;
-    if (mConfig.numRecurrentLayers == 0)
+    if (mConfig.numRecurrentLayers == 0 || !mConfig.hasRecurrentState())
     {
         return result;
     }

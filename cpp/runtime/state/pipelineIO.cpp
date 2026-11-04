@@ -511,10 +511,13 @@ static void buildTensorMapImpl(
         }
         else if (cfg.layerTypes[absIdx] == rt::HybridCacheManager::LayerType::kMamba)
         {
-            auto& rec = mambaMgr.getRecurrentState(localMambaIdx);
+            if (mambaMgr.getConfig().hasRecurrentState())
+            {
+                auto& rec = mambaMgr.getRecurrentState(localMambaIdx);
+                map.set(binding_names::formatRecurrentStateName(localMambaIdx, /*isPast=*/true), rec);
+                map.set(binding_names::formatRecurrentStateName(localMambaIdx, /*isPast=*/false), rec);
+            }
             auto& conv = mambaMgr.getConvState(localMambaIdx);
-            map.set(binding_names::formatRecurrentStateName(localMambaIdx, /*isPast=*/true), rec);
-            map.set(binding_names::formatRecurrentStateName(localMambaIdx, /*isPast=*/false), rec);
             map.set(binding_names::formatConvStateName(localMambaIdx, /*isPast=*/true), conv);
             map.set(binding_names::formatConvStateName(localMambaIdx, /*isPast=*/false), conv);
             // Spec-decode hybrid base: bind the per-layer intermediate state outputs.

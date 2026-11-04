@@ -80,8 +80,11 @@ void validateStateContract(LLMEngineConfig const& config, char const* label)
 
     if (config.numLinearAttnLayers > 0)
     {
-        ELLM_CHECK(config.recurrentStateNumHeads > 0 && config.recurrentStateHeadDim > 0
-                && config.recurrentStateSize > 0 && config.convDim > 0 && config.convKernel > 0,
+        // recurrentStateNumHeads == 0 selects convolution-only recurrent layers.
+        bool const hasRecurrentState = config.recurrentStateNumHeads > 0;
+        ELLM_CHECK(config.recurrentStateNumHeads >= 0
+                && (!hasRecurrentState || (config.recurrentStateHeadDim > 0 && config.recurrentStateSize > 0))
+                && config.convDim > 0 && config.convKernel > 0,
             std::string(label) + " has an incomplete recurrent-state schema.");
     }
     ELLM_CHECK(!config.useVisionBidirectionalAttention,

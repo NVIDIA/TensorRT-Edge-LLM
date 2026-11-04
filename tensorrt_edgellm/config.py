@@ -102,6 +102,10 @@ LAYER_MAMBA = "mamba"
 LAYER_MLP = "mlp"
 LAYER_GDN = "gdn"  # GatedDeltaNet linear attention (Qwen3.5)
 LAYER_MOE = "moe"
+LAYER_CONV = "conv"  # Gated short convolution (LFM)
+
+# LFM checkpoints carrying gated short-convolution layers.
+_LFM_MODEL_TYPES = frozenset({"lfm3"})
 
 _VALID_ATTENTION_LAYER_TYPES = ("sliding_attention", "full_attention")
 
@@ -326,7 +330,8 @@ def _get_attention_scaling(llm_dict: Dict[str, Any], head_dim: int,
 
 
 def _get_rms_norm_eps(llm_dict: Dict[str, Any], model_type: str) -> float:
-    if str(model_type).lower().startswith("nemotron_h"):
+    if (str(model_type).lower().startswith("nemotron_h")
+            or model_type in _LFM_MODEL_TYPES):
         return llm_dict.get(
             "rms_norm_eps",
             llm_dict.get("norm_eps", llm_dict.get("layer_norm_epsilon", 1e-6)))
@@ -566,6 +571,20 @@ class GdnConfig:
 
 
 @dataclass
+class ShortConvConfig:
+    """Gated short-convolution hyper-parameters for LFM hybrid models.
+
+    The conv layer projects to ``B, C, x``, convolves ``B * x`` causally over
+    time per channel, and gates the result with ``C``. It carries a conv state
+    only (no recurrent state).
+    """
+
+    conv_dim: int  # channels convolved (hidden_size)
+    conv_kernel: int  # conv_L_cache
+    conv_bias: bool  # conv_bias
+
+
+@dataclass
 class DiffusionConfig:
     """Block-diffusion generation parameters parsed at export time."""
 
@@ -739,6 +758,10 @@ class ModelConfig:
     mamba_cfg: Optional[MambaConfig] = None
     # ------------------------------------------ gdn / hybrid config
     gdn_cfg: Optional[GdnConfig] = None
+    # ------------------------------------------ short-conv / hybrid config (LFM)
+    short_conv_cfg: Optional[ShortConvConfig] = None
+    # LFM3: RMSNorm on the operator and feed-forward outputs before each residual add.
+    use_sandwich_norm: bool = False
     # ------------------------------------------ gated attention (Qwen3.5)
     attn_output_gate: bool = False
     # ------------------------------------------ MTP config
@@ -977,7 +1000,8 @@ class ModelConfig:
 
     @property
     def is_hybrid(self) -> bool:
-        return self.mamba_cfg is not None or self.gdn_cfg is not None
+        return (self.mamba_cfg is not None or self.gdn_cfg is not None
+                or self.short_conv_cfg is not None)
 
     @property
     def is_nemotron_h(self) -> bool:
@@ -1000,6 +1024,10 @@ class ModelConfig:
     @property
     def num_gdn_layers(self) -> int:
         return sum(1 for t in self.layer_types if t == LAYER_GDN)
+
+    @property
+    def num_conv_layers(self) -> int:
+        return sum(1 for t in self.layer_types if t == LAYER_CONV)
 
     @property
     def num_mlp_layers(self) -> int:
@@ -1135,10 +1163,14 @@ class ModelConfig:
             if num_global_kv_heads:
                 num_kv_heads = num_global_kv_heads
         dual_rope_configs = _get_dual_rope_configs(llm_dict)
+        if model_type in _LFM_MODEL_TYPES and dual_rope_configs:
+            dual_rope_configs = _lfm_runtime_rope_configs(dual_rope_configs)
         mamba_cfg = _parse_mamba_cfg(llm_dict,
                                      layer_types,
                                      model_dir=model_dir)
         gdn_cfg = _parse_gdn_cfg(llm_dict, layer_types)
+        short_conv_cfg = _parse_short_conv_cfg(llm_dict, layer_types,
+                                               model_type)
         has_qk_norm = _detect_has_qk_norm(model_dir, model_type)
         has_value_norm = _get_has_value_norm(llm_dict, model_type)
         default_attention_scale_value = float(
@@ -1348,6 +1380,8 @@ class ModelConfig:
             quant=quant,
             mamba_cfg=mamba_cfg,
             gdn_cfg=gdn_cfg,
+            short_conv_cfg=short_conv_cfg,
+            use_sandwich_norm=bool(llm_dict.get("use_sandwich_norm", False)),
             attn_output_gate=bool(llm_dict.get("attn_output_gate", False)),
             mtp_num_hidden_layers=mtp_num_hidden_layers,
             mtp_use_dedicated_embeddings=mtp_use_dedicated_embeddings,
@@ -1993,6 +2027,8 @@ def _canonical_layer_type(block_type: str, is_nemotron_h: bool) -> str:
         return LAYER_MAMBA
     if bt == "moe":
         return LAYER_MOE
+    if bt == LAYER_CONV:
+        return LAYER_CONV
     if "mlp" in bt:
         return LAYER_MLP
     if bt in _VALID_ATTENTION_LAYER_TYPES:
@@ -2139,6 +2175,48 @@ def _parse_gdn_cfg(config: dict,
         value_head_dim=config.get("linear_value_head_dim", 0),
         conv_kernel=config.get("linear_conv_kernel_dim", 4),
     )
+
+
+def _parse_short_conv_cfg(config: dict, layer_types: List[str],
+                          model_type: str) -> Optional[ShortConvConfig]:
+    """Return a ShortConvConfig if any layer is an LFM short-conv layer, else None."""
+    if LAYER_CONV not in layer_types:
+        return None
+    if model_type not in _LFM_MODEL_TYPES:
+        raise NotImplementedError(
+            f"Short-convolution layers are only supported for LFM checkpoints; "
+            f"got model_type {model_type!r}.")
+    return ShortConvConfig(
+        conv_dim=int(config["hidden_size"]),
+        conv_kernel=int(config["conv_L_cache"]),
+        conv_bias=bool(config.get("conv_bias", False)),
+    )
+
+
+def _lfm_runtime_rope_configs(dual_rope_configs: dict) -> dict:
+    """Map LFM partial RoPE onto the runtime's proportional RoPE.
+
+    LFM rotates the first ``partial_rotary_factor * head_dim / 2`` frequency
+    slots of the full head dimension and leaves the rest unrotated, which is
+    the runtime's proportional layout rather than a shrunken rotary prefix.
+    """
+    out = dict(dual_rope_configs)
+    for key, block in dual_rope_configs.items():
+        if block["partial_rotary_factor"] >= 1.0:
+            continue
+        rope_type = (block.get("rope_scaling")
+                     or {}).get("rope_type", "default")
+        if rope_type != "default":
+            raise NotImplementedError(
+                f"LFM partial RoPE with rope_type {rope_type!r} is not supported."
+            )
+        out[key] = dict(block)
+        out[key]["rope_scaling"] = {
+            "rope_type": "proportional",
+            "type": "proportional",
+            "partial_rotary_factor": block["partial_rotary_factor"],
+        }
+    return out
 
 
 def _get_partial_rotary_factor(llm_dict: Dict[str, Any]) -> float:

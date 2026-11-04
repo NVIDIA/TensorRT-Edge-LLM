@@ -279,7 +279,8 @@ bool VisualBuilder::setupVisualOptimizationProfile(
     case multimodal::ModelType::QWEN3_5:
     case multimodal::ModelType::QWEN3_OMNI_VISION_ENCODER:
     case multimodal::ModelType::COSMOS3_EDGE:
-    case multimodal::ModelType::MUSE_GLIMMER: result = setupQwenViTProfile(*visualProfile, network); break;
+    case multimodal::ModelType::MUSE_GLIMMER:
+    case multimodal::ModelType::LFM3_VL: result = setupQwenViTProfile(*visualProfile, network); break;
 
     case multimodal::ModelType::INTERNVL:
     case multimodal::ModelType::PHI4MM: result = setupInternPhi4ViTProfile(*visualProfile); break;
@@ -459,6 +460,12 @@ bool VisualBuilder::setupQwenViTProfile(
             createDims({4, optHW}), createDims({4, maxHW}));
         result &= setOptimizationProfile(&profile, binding_names::kFastPosEmbWeight, createDims({4, minHW}),
             createDims({4, optHW}), createDims({4, maxHW}));
+    }
+    else if (mModelType == multimodal::ModelType::LFM3_VL)
+    {
+        constexpr int64_t kCONV_TAPS = 9;
+        result &= setOptimizationProfile(&profile, binding_names::kConvNeighborIndex, createDims({minHW, kCONV_TAPS}),
+            createDims({optHW, kCONV_TAPS}), createDims({maxHW, kCONV_TAPS}));
     }
 
     if (!result)

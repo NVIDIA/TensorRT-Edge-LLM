@@ -170,6 +170,11 @@ protected:
     //! \return false on missing required fields.
     virtual bool validateExtraConfig(nlohmann::json const& jsonConfig);
 
+    //! \brief Whether the paired LLM positions text with Qwen 3D MRoPE built by this runner. Families whose LLM
+    //!        uses 1D RoPE from its own cache (image tokens advance like text) return false: no mrope_section is
+    //!        read and no MRoPE cos/sin is produced.
+    virtual bool usesTextMRope() const;
+
     //! \brief Whether this ViT consumes a rotary_pos_emb engine input — a fixed per-model property. Qwen ViTs
     //!        do; subclasses whose engine uses a learned pos-emb (e.g. SigLIP2) override this to false. The base
     //!        validates the loaded engine's inputs agree with this.

@@ -598,6 +598,14 @@ inline constexpr char const* kFastPosEmbIdx = "fast_pos_embed_idx";
 inline constexpr char const* kFastPosEmbWeight = "fast_pos_embed_weight";
 
 /*!
+ * @brief 3x3 neighbourhood of each patch for the LFM3-VL vision convolution
+ *
+ * Shape: [sequence_length, 9] (INT32). Entry 3 * (dy + 1) + (dx + 1) is the sequence index of the patch at
+ * (y + dy, x + dx) in the same frame, or sequence_length when that patch lies outside the frame.
+ */
+inline constexpr char const* kConvNeighborIndex = "conv_neighbor_index";
+
+/*!
  * @brief Deepstack features tensor for Qwen3-VL vision model (visual encoder output)
  *
  * Shape: [num_image_tokens, hidden_size] (FLOAT16)
