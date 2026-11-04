@@ -51,7 +51,8 @@ inline constexpr bool isLowPrecCacheElem = mha::is_same_v<T, int8_t> || isFp8E4M
 constexpr uint32_t kMAX_SMEM_SIZE = (99u << 10);
 #elif __CUDA_ARCH__ == 800 || __CUDA_ARCH__ == 870
 constexpr uint32_t kMAX_SMEM_SIZE = (163u << 10);
-#elif __CUDA_ARCH__ == 900 || __CUDA_ARCH__ == 1000 || __CUDA_ARCH__ == 1010 || __CUDA_ARCH__ == 1100
+#elif __CUDA_ARCH__ == 900 || __CUDA_ARCH__ == 1000 || __CUDA_ARCH__ == 1010 || __CUDA_ARCH__ == 1030          \
+    || __CUDA_ARCH__ == 1100
 constexpr uint32_t kMAX_SMEM_SIZE = (227u << 10);
 #endif
 #endif

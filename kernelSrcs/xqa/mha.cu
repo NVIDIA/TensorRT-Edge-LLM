@@ -102,7 +102,7 @@ constexpr uint32_t preferedKHeadPartBytes = tiledQKVStagingHeadDim512 ? 32 : 64;
 __constant__ constexpr uint32_t cacheVTileSeqLen
     = tiledQKVStagingHeadDim512 ? tiledQKVStagingHeadDim512VTileSeqLen : 32;
 #elif __CUDA_ARCH__ == 800 || __CUDA_ARCH__ == 870 || __CUDA_ARCH__ == 900 || __CUDA_ARCH__ == 1000                    \
-    || __CUDA_ARCH__ == 1010 || __CUDA_ARCH__ == 1100
+    || __CUDA_ARCH__ == 1010 || __CUDA_ARCH__ == 1030 || __CUDA_ARCH__ == 1100
 // This path tiles Q/K/V shared-memory staging to keep shared memory within the per-CTA budget.
 constexpr uint32_t preferedKHeadPartBytes = tiledQKVStagingHeadDim512 ? 32 : (useSmallHeadDim512Tiles ? 64 : 128);
 constexpr bool useWide2CtaHeadDim512VTile = twoCtaHeadDim512 && cacheElemSize < inputElemSize;
