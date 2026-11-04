@@ -115,7 +115,10 @@ def repack_awq_to_plugin(qweight: torch.Tensor,
 
     # Adjust nibbles: kernel does (nibble - 8) * scale; AWQ does (nibble - qzero) * scale
     # So adjusted = nibble - qzero + 8 -> kernel result = (adjusted - 8) = (nibble - qzero)
-    nibbles = (nibbles - zeros_expanded + 8).clamp(0, 15)
+    nibbles = nibbles - zeros_expanded + 8
+    if nibbles.numel() and (nibbles.min() < 0 or nibbles.max() > 15):
+        raise ValueError("AWQ weights exceed the signed INT4 range after "
+                         "subtracting zero points; repacking would lose data")
 
     # Transpose [in, out] -> [out, in] = [N, K] for pack_intweights
     nibbles_nk = nibbles.t().contiguous().numpy().astype(np.int16)  # [N, K]
