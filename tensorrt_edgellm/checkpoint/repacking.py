@@ -651,9 +651,12 @@ def _extract_gptq_for_marlin(
         group_ids = torch.arange(K, device=unpacked.device) // group_size
         zeros_expanded = zeros[group_ids.clamp(max=zeros.shape[0] - 1)]
         # actual_zero = stored_zero + zero_point_offset
-        unpacked = torch.clamp(
-            unpacked.to(torch.int32) - zeros_expanded.to(torch.int32) -
-            int(zero_point_offset) + 8, 0, 15).to(torch.int16)
+        adjusted = (unpacked.to(torch.int32) - zeros_expanded.to(torch.int32) -
+                    int(zero_point_offset) + 8)
+        if torch.any((adjusted < 0) | (adjusted > 15)):
+            raise ValueError("Int4MoePlugin cannot represent these asymmetric "
+                             "GPTQ weights without clipping")
+        unpacked = adjusted.to(torch.int16)
 
     weights = unpacked.transpose(0, 1).contiguous()  # [N, K]
     scales = proj.scales.data.to(torch.float16).transpose(0, 1).contiguous()
