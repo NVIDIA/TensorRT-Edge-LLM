@@ -16,6 +16,7 @@
  */
 
 #include "runtime/weight/checkpointWeightAssemble.h"
+#include "runtime/weight/awqInt4RangeCheck.h"
 
 #include "common/checkMacros.h"
 #include "kernels/weightsTransform/common/checkpointSourceBatch.h"
@@ -39,6 +40,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cuda_fp16.h>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -598,11 +600,22 @@ void assembleAwqFfnQweight(CheckpointReader const& checkpoint, Json const& bindi
     ELLM_CHECK(qzeros.dtype == nvinfer1::DataType::kINT32 && qzeros.shape.getNumDims() == 2
             && qzeros.shape[1] == qweight.shape[1],
         "AWQ qzeros must be INT32 [groups,N/8]");
+    ELLM_CHECK(qweight.shape[0] > 0 && qweight.shape[0] <= std::numeric_limits<int32_t>::max() && qweight.shape[1] > 0
+            && qweight.shape[1] <= std::numeric_limits<int32_t>::max() / 8,
+        "invalid AWQ qweight shape: " + keyName(keys, 0));
     int32_t const K = static_cast<int32_t>(qweight.shape[0]);
     int32_t const N = static_cast<int32_t>(qweight.shape[1]) * 8;
+    ELLM_CHECK(qzeros.shape[0] > 0 && qzeros.shape[0] <= K, "invalid AWQ group count");
     int32_t const numGroups = static_cast<int32_t>(qzeros.shape[0]);
-    ELLM_CHECK(numGroups > 0 && K % numGroups == 0, "invalid AWQ group count");
+    ELLM_CHECK(K % numGroups == 0, "invalid AWQ group count");
     int32_t const groupSize = K / numGroups;
+    size_t const packedN = static_cast<size_t>(N / 8);
+    ELLM_CHECK(qweight.bytes == static_cast<size_t>(K) * packedN * sizeof(int32_t)
+            && qzeros.bytes == static_cast<size_t>(numGroups) * packedN * sizeof(int32_t),
+        "invalid AWQ tensor byte size: " + keyName(keys, 0));
+    ELLM_CHECK(awqInt4ValuesFit(qweight.data, qzeros.data, K, static_cast<int32_t>(packedN), groupSize),
+        "AWQ weights exceed the signed INT4 range after subtracting zero points; repacking would lose data: "
+            + keyName(keys, 0));
 
     auto const* weight = reinterpret_cast<int32_t const*>(qweight.deviceData);
     auto const* zeros = reinterpret_cast<int32_t const*>(qzeros.deviceData);

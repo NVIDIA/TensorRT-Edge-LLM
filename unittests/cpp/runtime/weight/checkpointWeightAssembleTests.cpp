@@ -27,6 +27,7 @@
 // test; they are left to the kernel-level suites that already cover those
 // transforms.
 
+#include "runtime/weight/awqInt4RangeCheck.h"
 #include "runtime/weight/checkpointWeightAssemble.h"
 
 #include "common/tensor.h"
@@ -41,6 +42,8 @@
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
+#include <array>
+#include <cstring>
 #include <fstream>
 
 using namespace trt_edgellm;
@@ -593,6 +596,88 @@ TEST_F(CheckpointWeightAssembleTest, FillRejectsANonFp32Binding)
 
     EXPECT_THROW(
         loadCheckpointWeight(reader, makeBinding("engine.bias", "fill", {}), {}, output, mStream), std::runtime_error);
+}
+
+TEST(AwqInt4RangeCheck, ChecksEveryNibbleAndHandlesUnalignedInput)
+{
+    for (uint32_t value = 0; value < 16; ++value)
+    {
+        for (uint32_t zero = 0; zero < 16; ++zero)
+        {
+            for (int32_t nibble = 0; nibble < 8; ++nibble)
+            {
+                uint32_t const weightWord = value << (4 * nibble);
+                uint32_t const zeroWord = zero << (4 * nibble);
+                std::array<uint8_t, 5> weight{};
+                std::array<uint8_t, 5> zeros{};
+                std::memcpy(weight.data() + 1, &weightWord, sizeof(weightWord));
+                std::memcpy(zeros.data() + 1, &zeroWord, sizeof(zeroWord));
+                int32_t const centered = static_cast<int32_t>(value) - static_cast<int32_t>(zero);
+                EXPECT_EQ(
+                    awqInt4ValuesFit(weight.data() + 1, zeros.data() + 1, 1, 1, 1), centered >= -8 && centered <= 7)
+                    << "q=" << value << " zero=" << zero << " nibble=" << nibble;
+            }
+        }
+    }
+}
+
+TEST_F(CheckpointWeightAssembleTest, AwqExternalWeightRejectsClippingAndPreservesValidValues)
+{
+    constexpr int32_t kK = 64;
+    constexpr int32_t kPackedN = 16;
+    constexpr int32_t kGroups = 2;
+    constexpr int32_t kN = kPackedN * 8;
+    std::vector<uint32_t> weights(kK * kPackedN, 0x99999999U);
+    std::vector<uint32_t> zeros(kGroups * kPackedN, 0x88888888U);
+
+    auto writeRaw = [&] {
+        std::ofstream file(mDir / "awq.bin", std::ios::binary | std::ios::trunc);
+        file.write(reinterpret_cast<char const*>(weights.data()), weights.size() * sizeof(uint32_t));
+        file.write(reinterpret_cast<char const*>(zeros.data()), zeros.size() * sizeof(uint32_t));
+    };
+    std::vector<CheckpointReader::TensorLocation> const locations{
+        {"awq.qweight", "awq.bin", "I32", Coords{kK, kPackedN}, 0, weights.size() * sizeof(uint32_t)},
+        {"awq.qzeros", "awq.bin", "I32", Coords{kGroups, kPackedN}, weights.size() * sizeof(uint32_t),
+            zeros.size() * sizeof(uint32_t)},
+    };
+
+    for (int32_t version : {1, 2})
+    {
+        writeRaw();
+        CheckpointReader reader(mDir, locations);
+        Json binding = makeBinding("engine.weight", "awq_ffn_qweight", {"awq.qweight", "awq.qzeros"});
+        binding["int4_gemm_plugin_version"] = version;
+        Coords const shape = version == 1 ? Coords{kN / 2, kK} : Coords{8, 512};
+        Tensor output = makeOutput("engine.weight", shape, nvinfer1::DataType::kINT8);
+        loadWithCallerRegistration(reader, binding, {"awq.qweight", "awq.qzeros"}, output);
+        std::vector<uint8_t> result(static_cast<size_t>(output.getMemoryCapacity()));
+        CUDA_CHECK(cudaMemcpyAsync(result.data(), output.rawPointer(), result.size(), cudaMemcpyDeviceToHost, mStream));
+        CUDA_CHECK(cudaStreamSynchronize(mStream));
+        EXPECT_THAT(result, ::testing::Each(0x99U)) << "version=" << version;
+    }
+
+    weights.back() = 0xF8888888U;
+    zeros.back() = 0x38888888U;
+    writeRaw();
+    for (int32_t version : {1, 2})
+    {
+        CheckpointReader reader(mDir, locations);
+        Json binding = makeBinding("engine.weight", "awq_ffn_qweight", {"awq.qweight", "awq.qzeros"});
+        binding["int4_gemm_plugin_version"] = version;
+        Coords const shape = version == 1 ? Coords{kN / 2, kK} : Coords{8, 512};
+        Tensor output = makeOutput("engine.weight", shape, nvinfer1::DataType::kINT8);
+        CUDA_CHECK(cudaMemsetAsync(output.rawPointer(), 0xA5, output.getMemoryCapacity(), mStream));
+        CUDA_CHECK(cudaStreamSynchronize(mStream));
+        std::string const message
+            = messageFrom([&] { loadWithCallerRegistration(reader, binding, {"awq.qweight", "awq.qzeros"}, output); });
+        EXPECT_THAT(message, HasSubstr("AWQ weights exceed the signed INT4 range")) << "version=" << version;
+        EXPECT_THAT(message, HasSubstr("awq.qweight"));
+        EXPECT_EQ(reader.registeredBytes(), 0U);
+        std::vector<uint8_t> result(static_cast<size_t>(output.getMemoryCapacity()));
+        CUDA_CHECK(cudaMemcpyAsync(result.data(), output.rawPointer(), result.size(), cudaMemcpyDeviceToHost, mStream));
+        CUDA_CHECK(cudaStreamSynchronize(mStream));
+        EXPECT_THAT(result, ::testing::Each(0xA5U));
+    }
 }
 
 } // namespace
