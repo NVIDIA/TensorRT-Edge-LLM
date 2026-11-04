@@ -23,6 +23,7 @@ makes the zero-point offset adjustment a no-op.
 
 import os
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -35,7 +36,8 @@ if _REPO_ROOT not in sys.path:
 try:
     import torch
 
-    from tensorrt_edgellm.checkpoint.repacking import repack_gptq_to_plugin
+    from tensorrt_edgellm.checkpoint.repacking import (
+        _extract_gptq_for_marlin, repack_gptq_to_plugin)
 except ImportError as exc:  # pragma: no cover
     pytest.skip(f"tensorrt_edgellm/torch not importable: {exc}",
                 allow_module_level=True)
@@ -121,3 +123,40 @@ def test_symmetric_num_groups_falls_back_to_gidx():
 
     assert qw_gidx.shape == (out_features // 2, in_features)
     assert torch.equal(qw_gidx, qw_ref)
+
+
+@pytest.mark.parametrize("weight,zero", [(15, 3), (0, 12)])
+def test_moe_rejects_out_of_range_asymmetric_values(weight, zero):
+    packed_weight = weight * 0x11111111
+    if packed_weight >= 2**31:
+        packed_weight -= 2**32
+    packed_zero = zero * 0x11111111
+    if packed_zero >= 2**31:
+        packed_zero -= 2**32
+    projection = SimpleNamespace(
+        qweight=torch.full((16, 16), packed_weight, dtype=torch.int32),
+        qzeros=torch.full((2, 2), packed_zero, dtype=torch.int32),
+        scales=torch.ones(2, 16),
+    )
+    with pytest.raises(ValueError, match="cannot represent"):
+        _extract_gptq_for_marlin(projection, 64, zero_point_offset=0)
+
+
+@pytest.mark.parametrize("weight,zero", [(10, 3), (0, 8)])
+def test_moe_preserves_representable_asymmetric_values(weight, zero):
+    packed_weight = weight * 0x11111111
+    if packed_weight >= 2**31:
+        packed_weight -= 2**32
+    packed_zero = zero * 0x11111111
+    if packed_zero >= 2**31:
+        packed_zero -= 2**32
+    projection = SimpleNamespace(
+        qweight=torch.full((16, 16), packed_weight, dtype=torch.int32),
+        qzeros=torch.full((2, 2), packed_zero, dtype=torch.int32),
+        scales=torch.ones(2, 16),
+    )
+    weights, scales = _extract_gptq_for_marlin(projection,
+                                               64,
+                                               zero_point_offset=0)
+    assert torch.all((weights - 8) *
+                     scales.repeat_interleave(64, dim=1) == weight - zero)
