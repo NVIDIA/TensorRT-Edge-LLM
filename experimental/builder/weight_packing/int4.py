@@ -135,7 +135,7 @@ def pack_cutedsl_fragment(unpacked: np.ndarray) -> np.ndarray:
 def repack_awq(qweight: np.ndarray,
                qzeros: np.ndarray,
                plugin_version: int = 1) -> np.ndarray:
-    """Convert column-packed AWQ int32 weights to the plugin byte layout."""
+    """Convert AWQ weights to plugin bytes, rejecting unrepresentable values."""
     in_features, out_div8 = qweight.shape
     out_features = out_div8 * 8
     group_size = in_features // qzeros.shape[0]
@@ -149,7 +149,10 @@ def repack_awq(qweight: np.ndarray,
         weight_nibbles[:, channel::8] = (qweight >> (4 * bit)) & 0xF
         zero_nibbles[:, channel::8] = (qzeros >> (4 * bit)) & 0xF
     expanded_zeros = np.repeat(zero_nibbles, group_size, axis=0)
-    adjusted = np.clip(weight_nibbles - expanded_zeros + 8, 0, 15)
+    adjusted = weight_nibbles - expanded_zeros + 8
+    if adjusted.size and (adjusted.min() < 0 or adjusted.max() > 15):
+        raise ValueError("AWQ weights exceed the signed INT4 range after "
+                         "subtracting zero points; repacking would lose data")
     return _pack_for_gemm(np.ascontiguousarray(adjusted.T), plugin_version)
 
 
