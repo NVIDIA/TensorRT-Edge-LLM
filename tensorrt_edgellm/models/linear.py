@@ -558,6 +558,11 @@ class AWQLinear(LinearBase):
             torch.ones(in_features // group_size,
                        out_features,
                        dtype=torch.float16))
+        self.register_buffer("zero_correction",
+                             torch.zeros(in_features // group_size,
+                                         out_features,
+                                         dtype=torch.float32),
+                             persistent=False)
         if bias:
             self.register_buffer("bias", torch.empty(out_features))
         else:
@@ -573,6 +578,11 @@ class AWQLinear(LinearBase):
             self.in_features,
             self.group_size,
         )
+        grouped = hidden_states.to(torch.float32).reshape(
+            *hidden_states.shape[:-1], self.in_features // self.group_size,
+            self.group_size)
+        correction = torch.matmul(grouped.sum(dim=-1), self.zero_correction)
+        out = (out.to(torch.float32) + correction).to(hidden_states.dtype)
         if self.bias is not None:
             out = out + self.bias
         return out

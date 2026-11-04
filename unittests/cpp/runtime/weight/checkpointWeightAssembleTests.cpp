@@ -60,9 +60,9 @@ constexpr char const* kShard{"model.safetensors"};
 //! prerequisite. Listed so the phase and registration predicates are asserted
 //! against the whole set rather than a convenient sample.
 constexpr char const* kOrdinaryRecipes[]{"identity", "cast_to_fp32", "fill", "gptq_ffn_qweight", "gptq_qkv_qweight",
-    "gptq_qkv_scales", "awq_ffn_qweight", "modelopt_awq_ffn_qweight", "nvfp4_gated_fc1_qweight",
-    "nvfp4_gated_fc2_scale", "nvfp4_expert_qweight", "nvfp4_fc1_alpha", "int4_moe_gate_up", "int4_moe_down_scales",
-    "fp16_moe_fc1", "fp16_moe_fc2"};
+    "gptq_qkv_scales", "awq_ffn_qweight", "awq_ffn_qweight_center8", "awq_zero_correction", "modelopt_awq_ffn_qweight",
+    "nvfp4_gated_fc1_qweight", "nvfp4_gated_fc2_scale", "nvfp4_expert_qweight", "nvfp4_fc1_alpha", "int4_moe_gate_up",
+    "int4_moe_down_scales", "fp16_moe_fc1", "fp16_moe_fc2"};
 
 class CheckpointWeightAssembleTest : public ::testing::Test
 {
@@ -677,6 +677,60 @@ TEST_F(CheckpointWeightAssembleTest, AwqExternalWeightRejectsClippingAndPreserve
         CUDA_CHECK(cudaMemcpyAsync(result.data(), output.rawPointer(), result.size(), cudaMemcpyDeviceToHost, mStream));
         CUDA_CHECK(cudaStreamSynchronize(mStream));
         EXPECT_THAT(result, ::testing::Each(0xA5U));
+    }
+}
+
+TEST_F(CheckpointWeightAssembleTest, AwqExternalWeightCenterAndCorrectionPreserveAsymmetricValues)
+{
+    constexpr int32_t kK = 64;
+    constexpr int32_t kN = 128;
+    constexpr int32_t kGroups = 2;
+    writeCheckpoint({{"awq.qweight", Coords{kK, kN / 8}, nvinfer1::DataType::kINT32,
+                         std::vector<float>(kK * kN / 8, -1.0F)},
+        {"awq.qzeros", Coords{kGroups, kN / 8}, nvinfer1::DataType::kINT32, std::vector<float>(kGroups * kN / 8, 0.0F)},
+        {"awq.scales", Coords{kGroups, kN}, nvinfer1::DataType::kHALF, std::vector<float>(kGroups * kN, 0.125F)}});
+    CheckpointReader reader(mDir);
+    for (int32_t version : {1, 2})
+    {
+        Json weightBinding = makeBinding("engine.weight", "awq_ffn_qweight_center8", {"awq.qweight", "awq.qzeros"});
+        weightBinding["int4_gemm_plugin_version"] = version;
+        Coords const shape = version == 1 ? Coords{kN / 2, kK} : Coords{8, 512};
+        Tensor packed = makeOutput("engine.weight", shape, nvinfer1::DataType::kINT8);
+        loadWithCallerRegistration(reader, weightBinding, {"awq.qweight", "awq.qzeros"}, packed);
+        auto const bytes = copyDeviceToHost<uint8_t>(packed);
+        EXPECT_THAT(bytes, ::testing::Each(0xFFU)) << "version=" << version;
+    }
+    Json correctionBinding = makeBinding("engine.correction", "awq_zero_correction", {"awq.qzeros", "awq.scales"});
+    Tensor correction = makeOutput("engine.correction", Coords{kGroups, kN}, nvinfer1::DataType::kFLOAT);
+    loadWithCallerRegistration(reader, correctionBinding, {"awq.qzeros", "awq.scales"}, correction);
+    EXPECT_THAT(readOutput(correction), ::testing::Each(1.0F));
+    EXPECT_EQ(reader.registeredBytes(), 0U);
+}
+
+TEST_F(CheckpointWeightAssembleTest, AwqZeroCorrectionUsesPackedChannelOrderAndPluginScalePrecision)
+{
+    constexpr int32_t kN = 128;
+    constexpr int32_t kGroups = 2;
+    std::vector<float> const scales(kGroups * kN, 0.1F);
+    writeCheckpoint({{"awq.qzeros", Coords{kGroups, kN / 8}, nvinfer1::DataType::kINT32,
+                         std::vector<float>(kGroups * kN / 8, 12816.0F)},
+        {"scales.fp16", Coords{kGroups, kN}, nvinfer1::DataType::kHALF, scales},
+        {"scales.bf16", Coords{kGroups, kN}, nvinfer1::DataType::kBF16, scales},
+        {"scales.fp32", Coords{kGroups, kN}, nvinfer1::DataType::kFLOAT, scales}});
+    CheckpointReader reader(mDir);
+    constexpr int32_t zeros[8] = {0, 0, 1, 0, 2, 0, 3, 0};
+    for (char const* key : {"scales.fp16", "scales.bf16", "scales.fp32"})
+    {
+        float const inputScale = std::string(key) == "scales.bf16" ? __bfloat162float(__float2bfloat16(0.1F)) : 0.1F;
+        float const pluginScale = __half2float(__float2half(inputScale));
+        Json binding = makeBinding("engine.correction", "awq_zero_correction", {"awq.qzeros", key});
+        Tensor correction = makeOutput("engine.correction", Coords{kGroups, kN}, nvinfer1::DataType::kFLOAT);
+        loadWithCallerRegistration(reader, binding, {"awq.qzeros", key}, correction);
+        auto const actual = readOutput(correction);
+        for (size_t index = 0; index < actual.size(); ++index)
+        {
+            EXPECT_FLOAT_EQ(actual[index], (8 - zeros[index % 8]) * pluginScale) << key << " index=" << index;
+        }
     }
 }
 

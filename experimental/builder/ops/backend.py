@@ -1371,6 +1371,25 @@ class Net:
             }, [plugin_input, weight, scales]).get_output(0)
         if rank == 2:
             output = self.squeeze(output, 0, 3)
+        if linear_weights.zero_correction is not None:
+            groups = linear_weights.in_features // linear_weights.group_size
+            grouped = self.reshape(self.cast(x,
+                                             trt.float32), [0] * (rank - 1) +
+                                   [groups, linear_weights.group_size])
+            sums = self.reduce(grouped, trt.ReduceOperation.SUM, 1 << rank,
+                               False)
+            correction = self.parameter(name + ".zero_correction",
+                                        linear_weights.zero_correction,
+                                        "int4_ffn",
+                                        linear_weights.zero_correction_recipe)
+            if rank > 2:
+                correction = self.reshape(
+                    correction,
+                    [1] * (rank - 2) + [groups, linear_weights.out_features])
+            delta = self.matmul(sums, correction)
+            output = self.cast(
+                self.elementwise(self.cast(output, trt.float32), delta,
+                                 trt.ElementWiseOperation.SUM), trt.float16)
         return self._add_bias(output,
                               linear_weights.bias,
                               rank,

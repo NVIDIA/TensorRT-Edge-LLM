@@ -129,5 +129,15 @@ cudaError_t launchAwqInt4PluginV1Repack(int32_t const* qweightKN8, int32_t const
         AwqInt4Accessor{qweightKN8, qzerosGN8, N, groupSize}, packedNhalfK, N, K, stream);
 }
 
+cudaError_t launchAwqCenteredInt4PluginV1Repack(
+    int32_t const* qweightKN8, int8_t* packedNhalfK, int32_t N, int32_t K, cudaStream_t stream)
+{
+    if (qweightKN8 == nullptr)
+    {
+        return cudaErrorInvalidValue;
+    }
+    return launchDirectInt4PluginV1Repack(AwqInt4Accessor{qweightKN8, nullptr, N, 0}, packedNhalfK, N, K, stream);
+}
+
 } // namespace kernel
 } // namespace trt_edgellm

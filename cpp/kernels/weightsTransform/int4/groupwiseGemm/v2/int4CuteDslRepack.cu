@@ -115,5 +115,18 @@ cudaError_t launchAwqInt4CuteDslRepack(int32_t const* qweightKN8, int32_t const*
     return cudaGetLastError();
 }
 
+cudaError_t launchAwqCenteredInt4CuteDslRepack(
+    int32_t const* qweightKN8, int8_t* fragmentRows512, int32_t N, int32_t K, cudaStream_t stream)
+{
+    if (qweightKN8 == nullptr || fragmentRows512 == nullptr || N <= 0 || K <= 0 || (K % 64) != 0)
+    {
+        return cudaErrorInvalidValue;
+    }
+    int32_t const rows = int4CuteDslFragmentRows(N, K);
+    directInt4CuteDslRepackKernel<<<rows, 128, 0, stream>>>(
+        AwqInt4Accessor{qweightKN8, nullptr, N, 0}, reinterpret_cast<uint32_t*>(fragmentRows512), N, K, rows);
+    return cudaGetLastError();
+}
+
 } // namespace kernel
 } // namespace trt_edgellm
