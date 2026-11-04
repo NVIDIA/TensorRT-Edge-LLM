@@ -56,6 +56,7 @@ jobs:
     needs: security-suite
     permissions:
       contents: read
+      packages: write
     uses: ./.github/workflows/ci.yml
 
   internal-ci:
