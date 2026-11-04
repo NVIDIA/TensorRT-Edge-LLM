@@ -639,6 +639,15 @@ def _extract_gptq_for_marlin(
 
         q_marlin = q - (stored_zero + zero_point_offset) + 8
     """
+    g_idx = getattr(proj, "g_idx", None)
+    if g_idx is not None:
+        expected = torch.arange(proj.qweight.shape[0] * 8,
+                                dtype=g_idx.dtype,
+                                device=g_idx.device) // group_size
+        if not torch.equal(g_idx, expected):
+            raise ValueError("act-order GPTQ experts are not supported by "
+                             "Int4MoePlugin")
+
     unpacked = _unpack_int4_gptq(proj.qweight)  # [K, N]
 
     # Symmetric GPTQ checkpoints may omit zero points (``qzeros`` is ``None`` or
