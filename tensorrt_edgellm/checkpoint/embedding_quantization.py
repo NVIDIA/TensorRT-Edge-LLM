@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""FP8 embedding quantization for tensorrt_edgellm runtime sidecars."""
+"""Embedding quantization for tensorrt_edgellm runtime sidecars."""
 
 from __future__ import annotations
 
@@ -25,6 +25,71 @@ logger = logging.getLogger(__name__)
 
 FP8_E4M3_MAX = 448.0
 FP8_EMBEDDING_BLOCK_SIZE = 128
+INT8_SYMMETRIC_MAX = 127.0
+# Rows are quantized in chunks of this many elements so the FP32 working copy
+# stays bounded (64 MiB) for 262k-row vocabularies.
+INT8_QUANTIZATION_CHUNK_ELEMENTS = 16 * 1024 * 1024
+INT8_SIDECAR_FORMAT = "int8_symmetric_per_row"
+INT8_SIDECAR_VERSION = "1"
+INT8_SIDECAR_ROLES = frozenset(("embedding", ))
+
+
+def int8_sidecar_metadata(tensor_role: str) -> dict[str, str]:
+    """Return the versioned safetensors metadata for an INT8 sidecar."""
+    if tensor_role not in INT8_SIDECAR_ROLES:
+        raise ValueError(
+            f"Unsupported INT8 sidecar tensor role: {tensor_role!r}")
+    return {
+        "trt_edge_llm_quantization": INT8_SIDECAR_FORMAT,
+        "trt_edge_llm_quantization_version": INT8_SIDECAR_VERSION,
+        "trt_edge_llm_tensor_role": tensor_role,
+    }
+
+
+def quantize_embedding_to_int8(
+        embedding_weight: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Quantize an embedding table to symmetric INT8 with one FP32 scale per row.
+
+    The payload uses ``[-127, 127]`` so zero stays exact and the runtime
+    dequantizes as ``fp16(int8_value * row_scale)``. An all-zero row gets
+    scale 1.0 and an all-zero payload.
+    """
+    if embedding_weight.dim() != 2:
+        raise ValueError(
+            f"Embedding must be 2D, got {embedding_weight.dim()}D")
+    if embedding_weight.shape[0] <= 0 or embedding_weight.shape[1] <= 0:
+        raise ValueError(
+            f"Embedding dimensions must be positive, got {list(embedding_weight.shape)}"
+        )
+    if not embedding_weight.is_floating_point():
+        raise ValueError(
+            f"Embedding must have a floating-point dtype, got {embedding_weight.dtype}"
+        )
+
+    vocab_size, width = embedding_weight.shape
+    rows_per_chunk = max(1, INT8_QUANTIZATION_CHUNK_ELEMENTS // width)
+    embedding_int8 = torch.empty_like(embedding_weight, dtype=torch.int8)
+    scales = torch.empty(vocab_size,
+                         dtype=torch.float32,
+                         device=embedding_weight.device)
+
+    for row_start in range(0, vocab_size, rows_per_chunk):
+        row_end = min(vocab_size, row_start + rows_per_chunk)
+        weight_fp32 = embedding_weight[row_start:row_end].float()
+        if not torch.isfinite(weight_fp32).all():
+            raise ValueError("Embedding contains non-finite values")
+
+        row_amax = weight_fp32.abs().amax(dim=1)
+        row_scales = torch.where(row_amax > 0, row_amax / INT8_SYMMETRIC_MAX,
+                                 torch.ones_like(row_amax))
+        quantized = torch.round(weight_fp32 / row_scales.unsqueeze(1))
+        embedding_int8[row_start:row_end] = quantized.clamp(
+            -INT8_SYMMETRIC_MAX, INT8_SYMMETRIC_MAX).to(torch.int8)
+        scales[row_start:row_end] = row_scales
+
+    logger.info("Quantized embedding to INT8: [%d, %d], scales: [%d]",
+                vocab_size, width, vocab_size)
+    return embedding_int8, scales
 
 
 def quantize_embedding_to_fp8(

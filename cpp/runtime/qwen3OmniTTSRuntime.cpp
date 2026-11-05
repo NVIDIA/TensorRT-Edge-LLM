@@ -286,6 +286,13 @@ Qwen3OmniTTSRuntime::Qwen3OmniTTSRuntime(std::string const& talkerEngineDir, std
         bool const textEmbedLoaded = safetensors::loadSafetensors(textEmbedPath, textEmbedTensors, stream);
         ELLM_CHECK(textEmbedLoaded, "Failed to load text embedding from: " + textEmbedPath.string());
         check::check(!textEmbedTensors.empty(), "text embedding file is empty");
+        if (mIsOmni)
+        {
+            check::check(textEmbedTensors.size() == 1 && textEmbedTensors[0].getName() == "embedding"
+                    && textEmbedTensors[0].getDataType() == nvinfer1::DataType::kHALF,
+                "Qwen3-Omni Talker requires a dense FP16 thinker embedding sidecar; quantized thinker embeddings "
+                "are not supported");
+        }
         check::check(textEmbedTensors[0].getShape().getNumDims() == 2,
             "text embedding tensor should be 2D [vocabSize, hiddenSize]");
         mTextEmbeddingTable = std::move(textEmbedTensors[0]);
