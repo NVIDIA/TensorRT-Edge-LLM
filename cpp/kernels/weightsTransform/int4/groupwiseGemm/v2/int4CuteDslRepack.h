@@ -41,5 +41,8 @@ cudaError_t launchGptqInt4CuteDslRepack(int32_t const* qweightK8N, int32_t const
 cudaError_t launchAwqInt4CuteDslRepack(int32_t const* qweightKN8, int32_t const* qzerosGN8, int8_t* fragmentRows512,
     int32_t N, int32_t K, int32_t numGroups, int32_t groupSize, cudaStream_t stream);
 
+cudaError_t launchAwqCenteredInt4CuteDslRepack(
+    int32_t const* qweightKN8, int8_t* fragmentRows512, int32_t N, int32_t K, cudaStream_t stream);
+
 } // namespace kernel
 } // namespace trt_edgellm

@@ -16,11 +16,13 @@
  */
 
 #include "runtime/weight/checkpointWeightAssemble.h"
+#include "runtime/weight/awqInt4RangeCheck.h"
 
 #include "common/checkMacros.h"
 #include "kernels/weightsTransform/common/checkpointSourceBatch.h"
 #include "kernels/weightsTransform/fp16/linear/fp16LayoutConvert.h"
 #include "kernels/weightsTransform/fp16/moe/fp16MoeAssemble.h"
+#include "kernels/weightsTransform/int4/groupwiseGemm/common/awqZeroCorrection.h"
 #include "kernels/weightsTransform/int4/groupwiseGemm/common/gptqActivationPermutation.h"
 #include "kernels/weightsTransform/int4/groupwiseGemm/common/int4QkvScaleConcat.h"
 #include "kernels/weightsTransform/int4/groupwiseGemm/v1/int4PluginV1Repack.h"
@@ -39,6 +41,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cuda_fp16.h>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -598,11 +601,26 @@ void assembleAwqFfnQweight(CheckpointReader const& checkpoint, Json const& bindi
     ELLM_CHECK(qzeros.dtype == nvinfer1::DataType::kINT32 && qzeros.shape.getNumDims() == 2
             && qzeros.shape[1] == qweight.shape[1],
         "AWQ qzeros must be INT32 [groups,N/8]");
+    ELLM_CHECK(qweight.shape[0] > 0 && qweight.shape[0] <= std::numeric_limits<int32_t>::max() && qweight.shape[1] > 0
+            && qweight.shape[1] <= std::numeric_limits<int32_t>::max() / 8,
+        "invalid AWQ qweight shape: " + keyName(keys, 0));
     int32_t const K = static_cast<int32_t>(qweight.shape[0]);
     int32_t const N = static_cast<int32_t>(qweight.shape[1]) * 8;
+    ELLM_CHECK(qzeros.shape[0] > 0 && qzeros.shape[0] <= K, "invalid AWQ group count");
     int32_t const numGroups = static_cast<int32_t>(qzeros.shape[0]);
-    ELLM_CHECK(numGroups > 0 && K % numGroups == 0, "invalid AWQ group count");
+    ELLM_CHECK(K % numGroups == 0, "invalid AWQ group count");
     int32_t const groupSize = K / numGroups;
+    size_t const packedN = static_cast<size_t>(N / 8);
+    ELLM_CHECK(qweight.bytes == static_cast<size_t>(K) * packedN * sizeof(int32_t)
+            && qzeros.bytes == static_cast<size_t>(numGroups) * packedN * sizeof(int32_t),
+        "invalid AWQ tensor byte size: " + keyName(keys, 0));
+    bool const centerAtEight = binding.value("assemble", "") == "awq_ffn_qweight_center8";
+    if (!centerAtEight)
+    {
+        ELLM_CHECK(awqInt4ValuesFit(qweight.data, qzeros.data, K, static_cast<int32_t>(packedN), groupSize),
+            "AWQ weights exceed the signed INT4 range after subtracting zero points; repacking would lose data: "
+                + keyName(keys, 0));
+    }
 
     auto const* weight = reinterpret_cast<int32_t const*>(qweight.deviceData);
     auto const* zeros = reinterpret_cast<int32_t const*>(qzeros.deviceData);
@@ -610,15 +628,71 @@ void assembleAwqFfnQweight(CheckpointReader const& checkpoint, Json const& bindi
     {
         validateOutput(output, Coords{kernel::int4CuteDslFragmentRows(N, K), 512}, nvinfer1::DataType::kINT8,
             "AWQ INT4 V2 output");
-        CUDA_CHECK(kernel::launchAwqInt4CuteDslRepack(
-            weight, zeros, static_cast<int8_t*>(output.rawPointer()), N, K, numGroups, groupSize, stream));
+        if (centerAtEight)
+        {
+            CUDA_CHECK(kernel::launchAwqCenteredInt4CuteDslRepack(
+                weight, static_cast<int8_t*>(output.rawPointer()), N, K, stream));
+        }
+        else
+        {
+            CUDA_CHECK(kernel::launchAwqInt4CuteDslRepack(
+                weight, zeros, static_cast<int8_t*>(output.rawPointer()), N, K, numGroups, groupSize, stream));
+        }
     }
     else
     {
         validateOutput(output, Coords{N / 2, K}, nvinfer1::DataType::kINT8, "AWQ INT4 V1 output");
-        CUDA_CHECK(kernel::launchAwqInt4PluginV1Repack(
-            weight, zeros, static_cast<int8_t*>(output.rawPointer()), N, K, numGroups, groupSize, stream));
+        if (centerAtEight)
+        {
+            CUDA_CHECK(kernel::launchAwqCenteredInt4PluginV1Repack(
+                weight, static_cast<int8_t*>(output.rawPointer()), N, K, stream));
+        }
+        else
+        {
+            CUDA_CHECK(kernel::launchAwqInt4PluginV1Repack(
+                weight, zeros, static_cast<int8_t*>(output.rawPointer()), N, K, numGroups, groupSize, stream));
+        }
     }
+}
+
+void assembleAwqZeroCorrection(
+    CheckpointReader const& checkpoint, Json const& binding, Tensor& output, cudaStream_t stream)
+{
+    Json const& keys = checkpointKeys(binding);
+    ELLM_CHECK(keys.size() == 2, "awq_zero_correction requires qzeros and scales keys");
+    View const zeros = requireView(checkpoint, keyName(keys, 0), "AWQ qzeros");
+    View const scales = requireView(checkpoint, keyName(keys, 1), "AWQ scales");
+    ELLM_CHECK(zeros.dtype == nvinfer1::DataType::kINT32 && zeros.shape.getNumDims() == 2 && zeros.shape[0] > 0
+            && zeros.shape[0] <= std::numeric_limits<int32_t>::max() && zeros.shape[1] > 0
+            && zeros.shape[1] <= std::numeric_limits<int32_t>::max() / 8,
+        "AWQ qzeros must be INT32 [groups,N/8]");
+    int32_t const groups = static_cast<int32_t>(zeros.shape[0]);
+    int32_t const N = static_cast<int32_t>(zeros.shape[1]) * 8;
+    ELLM_CHECK((scales.shape == Coords{groups, N}), "AWQ scales must be [groups,N]");
+    kernel::AwqScaleType scaleType;
+    size_t scaleBytes;
+    if (scales.dtype == nvinfer1::DataType::kHALF)
+    {
+        scaleType = kernel::AwqScaleType::kFp16;
+        scaleBytes = 2;
+    }
+    else if (scales.dtype == nvinfer1::DataType::kBF16)
+    {
+        scaleType = kernel::AwqScaleType::kBf16;
+        scaleBytes = 2;
+    }
+    else
+    {
+        ELLM_CHECK(scales.dtype == nvinfer1::DataType::kFLOAT, "AWQ scales must be FP16, BF16, or FP32");
+        scaleType = kernel::AwqScaleType::kFp32;
+        scaleBytes = 4;
+    }
+    ELLM_CHECK(zeros.bytes == static_cast<size_t>(groups) * (N / 8) * sizeof(int32_t)
+            && scales.bytes == static_cast<size_t>(groups) * N * scaleBytes,
+        "invalid AWQ zero point or scale tensor byte size");
+    validateOutput(output, Coords{groups, N}, nvinfer1::DataType::kFLOAT, "AWQ zero correction output");
+    CUDA_CHECK(kernel::launchAwqZeroCorrection(reinterpret_cast<int32_t const*>(zeros.deviceData), scales.deviceData,
+        static_cast<float*>(output.rawPointer()), groups, N, scaleType, stream));
 }
 
 void assembleModelOptAwqFfnQweight(
@@ -1408,9 +1482,13 @@ void loadCheckpointWeight(CheckpointReader& checkpoint, Json const& binding, std
     {
         assembleGptqQkvScales(checkpoint, binding, output, stream);
     }
-    else if (assemble == "awq_ffn_qweight")
+    else if (assemble == "awq_ffn_qweight" || assemble == "awq_ffn_qweight_center8")
     {
         assembleAwqFfnQweight(checkpoint, binding, output, stream);
+    }
+    else if (assemble == "awq_zero_correction")
+    {
+        assembleAwqZeroCorrection(checkpoint, binding, output, stream);
     }
     else if (assemble == "modelopt_awq_ffn_qweight")
     {

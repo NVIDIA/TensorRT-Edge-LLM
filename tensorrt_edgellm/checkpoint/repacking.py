@@ -115,7 +115,10 @@ def repack_awq_to_plugin(qweight: torch.Tensor,
 
     # Adjust nibbles: kernel does (nibble - 8) * scale; AWQ does (nibble - qzero) * scale
     # So adjusted = nibble - qzero + 8 -> kernel result = (adjusted - 8) = (nibble - qzero)
-    nibbles = (nibbles - zeros_expanded + 8).clamp(0, 15)
+    nibbles = nibbles - zeros_expanded + 8
+    if nibbles.numel() and (nibbles.min() < 0 or nibbles.max() > 15):
+        raise ValueError("AWQ weights exceed the signed INT4 range after "
+                         "subtracting zero points; repacking would lose data")
 
     # Transpose [in, out] -> [out, in] = [N, K] for pack_intweights
     nibbles_nk = nibbles.t().contiguous().numpy().astype(np.int16)  # [N, K]
@@ -531,7 +534,7 @@ def _cast_nvfp4_weights(model: nn.Module) -> None:
 
 
 def _repack_awq_weights(model: nn.Module) -> None:
-    """Swizzle ``AWQLinear.qweight`` after load (fold zeros; pack to int8 layout).
+    """Swizzle ``AWQLinear.qweight`` and preserve groupwise zero points.
 
     Scales should already be ``[K//g, N]``; cast to float16 if needed.
     """
@@ -541,7 +544,15 @@ def _repack_awq_weights(model: nn.Module) -> None:
             qw = module._buffers.get("qweight")
             qz = module._buffers.get("qzeros")
             if qw is not None and qw.dtype == torch.int32 and qz is not None:
-                module._buffers["qweight"] = repack_awq_to_plugin(qw, qz)
+                scales = module._buffers["scales"].to(torch.float16).to(
+                    torch.float32)
+                zeros = torch.empty_like(scales, dtype=torch.int32)
+                for bit, channel in enumerate((0, 2, 4, 6, 1, 3, 5, 7)):
+                    zeros[:, channel::8] = (qz >> (4 * bit)) & 0xF
+                module._buffers["zero_correction"] = (8 - zeros).to(
+                    torch.float32) * scales
+                midpoint = torch.full_like(qz, -2004318072)
+                module._buffers["qweight"] = repack_awq_to_plugin(qw, midpoint)
                 logger.debug("Repacked AWQ qweight: %s -> %s", list(qw.shape),
                              list(module._buffers["qweight"].shape))
             sc = module._buffers.get("scales")

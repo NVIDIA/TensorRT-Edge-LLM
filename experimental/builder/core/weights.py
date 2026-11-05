@@ -76,6 +76,7 @@ class LinearWeights:
     input_scale: Optional[float] = None
     pre_quant_scale: Optional[ParameterValue] = None
     activation_permutation: Optional[ParameterValue] = None
+    zero_correction: Optional[ParameterValue] = None
     group_size: int = 1
     # How the runtime rebuilds parameters from a raw checkpoint, or None when
     # only this builder can produce the layout.
@@ -86,6 +87,7 @@ class LinearWeights:
     scale_recipe: Optional[dict] = None
     pre_quant_recipe: Optional[dict] = None
     activation_permutation_recipe: Optional[dict] = None
+    zero_correction_recipe: Optional[dict] = None
     logical_out_features: Optional[int] = None
     logical_in_features: Optional[int] = None
     weight_scale_2_recipe: Optional[dict] = None
@@ -579,18 +581,26 @@ class Weights:
             reduced = self._reduce_lm_head(prefix)
             logical_out_features = (int(self.vocab_map.size)
                                     if reduced else out_features)
-            packed = int4_pack.repack_awq(qweight, qzeros,
-                                          self.int4_gemm_plugin_version)
+            packed = int4_pack.repack_awq(qweight,
+                                          qzeros,
+                                          self.int4_gemm_plugin_version,
+                                          center_at_eight=True)
+            correction = int4_pack.awq_zero_correction(qzeros, scales)
             return LinearWeights(
                 quant_type,
                 packed,
                 bias,
                 weight_scale=scales,
+                zero_correction=correction,
                 group_size=self.module_quant_group_size(prefix),
                 weight_recipe=None if reduced else self.checkpoint_binding(
                     [prefix + ".qweight", prefix + ".qzeros"],
-                    assemble="awq_ffn_qweight",
+                    assemble="awq_ffn_qweight_center8",
                     int4_gemm_plugin_version=self.int4_gemm_plugin_version),
+                zero_correction_recipe=None
+                if reduced else self.checkpoint_binding(
+                    [prefix + ".qzeros", prefix + ".scales"],
+                    assemble="awq_zero_correction"),
                 scale_recipe=None
                 if reduced else self.checkpoint_binding([prefix + ".scales"]),
                 logical_out_features=logical_out_features,
@@ -787,6 +797,8 @@ class Weights:
         pre_quant_recipe = None
         activation_permutation = None
         activation_permutation_recipe = None
+        zero_correction = None
+        zero_correction_recipe = None
         if quant_type == quantization.QUANT_INT4_AWQ:
             qweight_shape = self.store.shape(self._resolve(prefix +
                                                            ".qweight"))
@@ -794,10 +806,14 @@ class Weights:
             out_features = int(qweight_shape[1]) * 8
             weight_recipe = self.checkpoint_binding(
                 [prefix + ".qweight", prefix + ".qzeros"],
-                assemble="awq_ffn_qweight",
+                assemble="awq_ffn_qweight_center8",
                 int4_gemm_plugin_version=self.int4_gemm_plugin_version)
             scale = self.parameter_spec(prefix + ".scales", np.float16)
             scale_recipe = self.checkpoint_binding([prefix + ".scales"])
+            zero_correction = ParameterSpec(scale.shape, np.float32)
+            zero_correction_recipe = self.checkpoint_binding(
+                [prefix + ".qzeros", prefix + ".scales"],
+                assemble="awq_zero_correction")
         elif quant_type == quantization.QUANT_INT4_AWQ_MODELOPT:
             source_shape = self.store.shape(self._resolve(prefix + ".weight"))
             in_features = int(source_shape[1])
@@ -851,11 +867,13 @@ class Weights:
             weight_scale=scale,
             pre_quant_scale=pre_quant_scale,
             activation_permutation=activation_permutation,
+            zero_correction=zero_correction,
             group_size=self.module_quant_group_size(prefix),
             weight_recipe=weight_recipe,
             scale_recipe=scale_recipe,
             pre_quant_recipe=pre_quant_recipe,
             activation_permutation_recipe=activation_permutation_recipe,
+            zero_correction_recipe=zero_correction_recipe,
             logical_out_features=out_features,
             logical_in_features=in_features,
         )
@@ -1095,6 +1113,10 @@ class Weights:
         """Return one tensor-parallel shard of a linear."""
         if tp_size == 1 or mode == "replicated":
             return linear
+        if linear.quant_type == quantization.QUANT_INT4_AWQ and linear.zero_correction is not None:
+            raise NotImplementedError(
+                "AWQ zero-point correction does not yet support tensor-parallel sharding"
+            )
         if linear.quant_type == quantization.QUANT_NVFP4_A16:
             raise NotImplementedError(
                 "NVFP4-A16 tensor parallelism requires repacking each raw shard"

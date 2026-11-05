@@ -27,6 +27,7 @@
 // test; they are left to the kernel-level suites that already cover those
 // transforms.
 
+#include "runtime/weight/awqInt4RangeCheck.h"
 #include "runtime/weight/checkpointWeightAssemble.h"
 
 #include "common/tensor.h"
@@ -41,6 +42,8 @@
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
+#include <array>
+#include <cstring>
 #include <fstream>
 
 using namespace trt_edgellm;
@@ -57,9 +60,9 @@ constexpr char const* kShard{"model.safetensors"};
 //! prerequisite. Listed so the phase and registration predicates are asserted
 //! against the whole set rather than a convenient sample.
 constexpr char const* kOrdinaryRecipes[]{"identity", "cast_to_fp32", "fill", "gptq_ffn_qweight", "gptq_qkv_qweight",
-    "gptq_qkv_scales", "awq_ffn_qweight", "modelopt_awq_ffn_qweight", "nvfp4_gated_fc1_qweight",
-    "nvfp4_gated_fc2_scale", "nvfp4_expert_qweight", "nvfp4_fc1_alpha", "int4_moe_gate_up", "int4_moe_down_scales",
-    "fp16_moe_fc1", "fp16_moe_fc2"};
+    "gptq_qkv_scales", "awq_ffn_qweight", "awq_ffn_qweight_center8", "awq_zero_correction", "modelopt_awq_ffn_qweight",
+    "nvfp4_gated_fc1_qweight", "nvfp4_gated_fc2_scale", "nvfp4_expert_qweight", "nvfp4_fc1_alpha", "int4_moe_gate_up",
+    "int4_moe_down_scales", "fp16_moe_fc1", "fp16_moe_fc2"};
 
 class CheckpointWeightAssembleTest : public ::testing::Test
 {
@@ -593,6 +596,142 @@ TEST_F(CheckpointWeightAssembleTest, FillRejectsANonFp32Binding)
 
     EXPECT_THROW(
         loadCheckpointWeight(reader, makeBinding("engine.bias", "fill", {}), {}, output, mStream), std::runtime_error);
+}
+
+TEST(AwqInt4RangeCheck, ChecksEveryNibbleAndHandlesUnalignedInput)
+{
+    for (uint32_t value = 0; value < 16; ++value)
+    {
+        for (uint32_t zero = 0; zero < 16; ++zero)
+        {
+            for (int32_t nibble = 0; nibble < 8; ++nibble)
+            {
+                uint32_t const weightWord = value << (4 * nibble);
+                uint32_t const zeroWord = zero << (4 * nibble);
+                std::array<uint8_t, 5> weight{};
+                std::array<uint8_t, 5> zeros{};
+                std::memcpy(weight.data() + 1, &weightWord, sizeof(weightWord));
+                std::memcpy(zeros.data() + 1, &zeroWord, sizeof(zeroWord));
+                int32_t const centered = static_cast<int32_t>(value) - static_cast<int32_t>(zero);
+                EXPECT_EQ(
+                    awqInt4ValuesFit(weight.data() + 1, zeros.data() + 1, 1, 1, 1), centered >= -8 && centered <= 7)
+                    << "q=" << value << " zero=" << zero << " nibble=" << nibble;
+            }
+        }
+    }
+}
+
+TEST_F(CheckpointWeightAssembleTest, AwqExternalWeightRejectsClippingAndPreservesValidValues)
+{
+    constexpr int32_t kK = 64;
+    constexpr int32_t kPackedN = 16;
+    constexpr int32_t kGroups = 2;
+    constexpr int32_t kN = kPackedN * 8;
+    std::vector<uint32_t> weights(kK * kPackedN, 0x99999999U);
+    std::vector<uint32_t> zeros(kGroups * kPackedN, 0x88888888U);
+
+    auto writeRaw = [&] {
+        std::ofstream file(mDir / "awq.bin", std::ios::binary | std::ios::trunc);
+        file.write(reinterpret_cast<char const*>(weights.data()), weights.size() * sizeof(uint32_t));
+        file.write(reinterpret_cast<char const*>(zeros.data()), zeros.size() * sizeof(uint32_t));
+    };
+    std::vector<CheckpointReader::TensorLocation> const locations{
+        {"awq.qweight", "awq.bin", "I32", Coords{kK, kPackedN}, 0, weights.size() * sizeof(uint32_t)},
+        {"awq.qzeros", "awq.bin", "I32", Coords{kGroups, kPackedN}, weights.size() * sizeof(uint32_t),
+            zeros.size() * sizeof(uint32_t)},
+    };
+
+    for (int32_t version : {1, 2})
+    {
+        writeRaw();
+        CheckpointReader reader(mDir, locations);
+        Json binding = makeBinding("engine.weight", "awq_ffn_qweight", {"awq.qweight", "awq.qzeros"});
+        binding["int4_gemm_plugin_version"] = version;
+        Coords const shape = version == 1 ? Coords{kN / 2, kK} : Coords{8, 512};
+        Tensor output = makeOutput("engine.weight", shape, nvinfer1::DataType::kINT8);
+        loadWithCallerRegistration(reader, binding, {"awq.qweight", "awq.qzeros"}, output);
+        std::vector<uint8_t> result(static_cast<size_t>(output.getMemoryCapacity()));
+        CUDA_CHECK(cudaMemcpyAsync(result.data(), output.rawPointer(), result.size(), cudaMemcpyDeviceToHost, mStream));
+        CUDA_CHECK(cudaStreamSynchronize(mStream));
+        EXPECT_THAT(result, ::testing::Each(0x99U)) << "version=" << version;
+    }
+
+    weights.back() = 0xF8888888U;
+    zeros.back() = 0x38888888U;
+    writeRaw();
+    for (int32_t version : {1, 2})
+    {
+        CheckpointReader reader(mDir, locations);
+        Json binding = makeBinding("engine.weight", "awq_ffn_qweight", {"awq.qweight", "awq.qzeros"});
+        binding["int4_gemm_plugin_version"] = version;
+        Coords const shape = version == 1 ? Coords{kN / 2, kK} : Coords{8, 512};
+        Tensor output = makeOutput("engine.weight", shape, nvinfer1::DataType::kINT8);
+        CUDA_CHECK(cudaMemsetAsync(output.rawPointer(), 0xA5, output.getMemoryCapacity(), mStream));
+        CUDA_CHECK(cudaStreamSynchronize(mStream));
+        std::string const message
+            = messageFrom([&] { loadWithCallerRegistration(reader, binding, {"awq.qweight", "awq.qzeros"}, output); });
+        EXPECT_THAT(message, HasSubstr("AWQ weights exceed the signed INT4 range")) << "version=" << version;
+        EXPECT_THAT(message, HasSubstr("awq.qweight"));
+        EXPECT_EQ(reader.registeredBytes(), 0U);
+        std::vector<uint8_t> result(static_cast<size_t>(output.getMemoryCapacity()));
+        CUDA_CHECK(cudaMemcpyAsync(result.data(), output.rawPointer(), result.size(), cudaMemcpyDeviceToHost, mStream));
+        CUDA_CHECK(cudaStreamSynchronize(mStream));
+        EXPECT_THAT(result, ::testing::Each(0xA5U));
+    }
+}
+
+TEST_F(CheckpointWeightAssembleTest, AwqExternalWeightCenterAndCorrectionPreserveAsymmetricValues)
+{
+    constexpr int32_t kK = 64;
+    constexpr int32_t kN = 128;
+    constexpr int32_t kGroups = 2;
+    writeCheckpoint({{"awq.qweight", Coords{kK, kN / 8}, nvinfer1::DataType::kINT32,
+                         std::vector<float>(kK * kN / 8, -1.0F)},
+        {"awq.qzeros", Coords{kGroups, kN / 8}, nvinfer1::DataType::kINT32, std::vector<float>(kGroups * kN / 8, 0.0F)},
+        {"awq.scales", Coords{kGroups, kN}, nvinfer1::DataType::kHALF, std::vector<float>(kGroups * kN, 0.125F)}});
+    CheckpointReader reader(mDir);
+    for (int32_t version : {1, 2})
+    {
+        Json weightBinding = makeBinding("engine.weight", "awq_ffn_qweight_center8", {"awq.qweight", "awq.qzeros"});
+        weightBinding["int4_gemm_plugin_version"] = version;
+        Coords const shape = version == 1 ? Coords{kN / 2, kK} : Coords{8, 512};
+        Tensor packed = makeOutput("engine.weight", shape, nvinfer1::DataType::kINT8);
+        loadWithCallerRegistration(reader, weightBinding, {"awq.qweight", "awq.qzeros"}, packed);
+        auto const bytes = copyDeviceToHost<uint8_t>(packed);
+        EXPECT_THAT(bytes, ::testing::Each(0xFFU)) << "version=" << version;
+    }
+    Json correctionBinding = makeBinding("engine.correction", "awq_zero_correction", {"awq.qzeros", "awq.scales"});
+    Tensor correction = makeOutput("engine.correction", Coords{kGroups, kN}, nvinfer1::DataType::kFLOAT);
+    loadWithCallerRegistration(reader, correctionBinding, {"awq.qzeros", "awq.scales"}, correction);
+    EXPECT_THAT(readOutput(correction), ::testing::Each(1.0F));
+    EXPECT_EQ(reader.registeredBytes(), 0U);
+}
+
+TEST_F(CheckpointWeightAssembleTest, AwqZeroCorrectionUsesPackedChannelOrderAndPluginScalePrecision)
+{
+    constexpr int32_t kN = 128;
+    constexpr int32_t kGroups = 2;
+    std::vector<float> const scales(kGroups * kN, 0.1F);
+    writeCheckpoint({{"awq.qzeros", Coords{kGroups, kN / 8}, nvinfer1::DataType::kINT32,
+                         std::vector<float>(kGroups * kN / 8, 12816.0F)},
+        {"scales.fp16", Coords{kGroups, kN}, nvinfer1::DataType::kHALF, scales},
+        {"scales.bf16", Coords{kGroups, kN}, nvinfer1::DataType::kBF16, scales},
+        {"scales.fp32", Coords{kGroups, kN}, nvinfer1::DataType::kFLOAT, scales}});
+    CheckpointReader reader(mDir);
+    constexpr int32_t zeros[8] = {0, 0, 1, 0, 2, 0, 3, 0};
+    for (char const* key : {"scales.fp16", "scales.bf16", "scales.fp32"})
+    {
+        float const inputScale = std::string(key) == "scales.bf16" ? __bfloat162float(__float2bfloat16(0.1F)) : 0.1F;
+        float const pluginScale = __half2float(__float2half(inputScale));
+        Json binding = makeBinding("engine.correction", "awq_zero_correction", {"awq.qzeros", key});
+        Tensor correction = makeOutput("engine.correction", Coords{kGroups, kN}, nvinfer1::DataType::kFLOAT);
+        loadWithCallerRegistration(reader, binding, {"awq.qzeros", key}, correction);
+        auto const actual = readOutput(correction);
+        for (size_t index = 0; index < actual.size(); ++index)
+        {
+            EXPECT_FLOAT_EQ(actual[index], (8 - zeros[index % 8]) * pluginScale) << key << " index=" << index;
+        }
+    }
 }
 
 } // namespace

@@ -134,8 +134,9 @@ def pack_cutedsl_fragment(unpacked: np.ndarray) -> np.ndarray:
 
 def repack_awq(qweight: np.ndarray,
                qzeros: np.ndarray,
-               plugin_version: int = 1) -> np.ndarray:
-    """Convert column-packed AWQ int32 weights to the plugin byte layout."""
+               plugin_version: int = 1,
+               center_at_eight: bool = False) -> np.ndarray:
+    """Convert AWQ weights to plugin bytes, rejecting unrepresentable values."""
     in_features, out_div8 = qweight.shape
     out_features = out_div8 * 8
     group_size = in_features // qzeros.shape[0]
@@ -149,8 +150,26 @@ def repack_awq(qweight: np.ndarray,
         weight_nibbles[:, channel::8] = (qweight >> (4 * bit)) & 0xF
         zero_nibbles[:, channel::8] = (qzeros >> (4 * bit)) & 0xF
     expanded_zeros = np.repeat(zero_nibbles, group_size, axis=0)
-    adjusted = np.clip(weight_nibbles - expanded_zeros + 8, 0, 15)
+    adjusted = weight_nibbles if center_at_eight else weight_nibbles - expanded_zeros + 8
+    if adjusted.size and (adjusted.min() < 0 or adjusted.max() > 15):
+        raise ValueError("AWQ weights exceed the signed INT4 range after "
+                         "subtracting zero points; repacking would lose data")
     return _pack_for_gemm(np.ascontiguousarray(adjusted.T), plugin_version)
+
+
+def awq_zero_correction(qzeros: np.ndarray, scales: np.ndarray) -> np.ndarray:
+    """Return FP32 groupwise coefficients for midpoint-centered AWQ weights."""
+    if qzeros.ndim != 2 or scales.shape != (qzeros.shape[0],
+                                            qzeros.shape[1] * 8):
+        raise ValueError(
+            "AWQ qzeros and scales must have matching group and output dimensions"
+        )
+    zeros = np.empty(scales.shape, dtype=np.int16)
+    qzeros = qzeros.astype(np.int32, copy=False)
+    for bit, channel in enumerate((0, 2, 4, 6, 1, 3, 5, 7)):
+        zeros[:, channel::8] = (qzeros >> (4 * bit)) & 0xF
+    return np.ascontiguousarray((8 - zeros).astype(np.float32) *
+                                scales.astype(np.float16).astype(np.float32))
 
 
 def repack_gptq(

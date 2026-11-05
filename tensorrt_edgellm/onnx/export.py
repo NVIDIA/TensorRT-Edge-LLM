@@ -892,6 +892,8 @@ def _fix_initializer_dtypes(
     """
     import numpy as np
 
+    preserve_fp32_patterns = (*preserve_fp32_patterns, "zero_correction")
+
     _onnx = __import__("onnx")
     metadata_model = _onnx.load(onnx_path, load_external_data=False)
     if not _initializer_dtype_fixup_required(
