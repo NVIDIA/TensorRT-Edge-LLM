@@ -34,6 +34,12 @@ class Cosmos3EdgeViTRunner : public Qwen3VLViTRunner
 public:
     using Qwen3VLViTRunner::Qwen3VLViTRunner;
 
+    //! Patch layout fed to the Cosmos3-Edge visual engine. The exporter adapts the SigLIP2 patch-embedding
+    //! weight to channel-first columns (tensorrt_edgellm/models/cosmos3_reasoner/modeling_cosmos3_reasoner_visual.py,
+    //! _adapt_patch_embedding_weight_for_chw_input), so patches must be flattened channel-first. Feeding
+    //! channel-last patches scrambles every patch (NVIDIA/TensorRT-Edge-LLM#232).
+    static constexpr bool kPatchChannelLast{false};
+
     //! Base load + SigLIP2 sanity: temporalPatchSize must be 1 and the engine's packed-patch input dim must
     //! equal the Linear patch-embed width 3 * patchSize * patchSize.
     bool validateAndFillConfig(std::string const& engineDir) override;
@@ -48,10 +54,10 @@ protected:
     void buildExtraInputs(std::vector<VisionSpan> const& spans, int64_t totalSeqLength, int64_t totalImageTokens,
         cudaStream_t stream) override;
 
-    //! Cosmos3 patchifies visual inputs as [H,W,C,T], matching its Hugging Face processor.
+    //! Channel-first, matching the exporter's patch-embedding weight adaptation (see kPatchChannelLast).
     bool vitPatchChannelLast() const override
     {
-        return true;
+        return kPatchChannelLast;
     }
 
     //! SigLIP2 uses full attention with a learned pos-emb — the visual engine has no rotary_pos_emb input.
