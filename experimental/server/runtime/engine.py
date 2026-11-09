@@ -719,7 +719,8 @@ def _normalize_response_format(
         if not isinstance(schema, dict):
             raise ValueError(
                 "'response_format.json_schema.schema' must be an object")
-        return ("json_schema", json.dumps(schema, sort_keys=True))
+        # Key order is kept: properties are generated in schema order.
+        return ("json_schema", json.dumps(schema))
     raise ValueError(
         f"'response_format.type' must be text, json_object or json_schema, got {kind!r}"
     )
@@ -771,7 +772,7 @@ def _normalize_guided_decoding(
             guide = value
         elif name in ("json_schema", "structural_tag") and isinstance(
                 value, dict):
-            guide = json.dumps(value, sort_keys=True)
+            guide = json.dumps(value)
         else:
             raise ValueError(f"'guided_decoding.{name}' must be a string")
 

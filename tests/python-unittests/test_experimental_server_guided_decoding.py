@@ -14,6 +14,8 @@
 # limitations under the License.
 """Tests for guided-decoding request translation and validation in the server."""
 
+import json
+
 import pytest
 
 from experimental.server.runtime.engine import (CompletionOutput,
@@ -60,9 +62,10 @@ def test_response_format_json_object_maps_to_the_json_object_mode():
                                        "json_object"}) == ("json_object", "")
 
 
-def test_response_format_json_schema_is_unwrapped_and_normalized():
-    # OpenAI nests the schema one level deeper than the low-level field does, and the
-    # dump is key-sorted so two spellings of one schema share a compiled-grammar entry.
+def test_response_format_json_schema_is_unwrapped_keeping_key_order():
+    # OpenAI nests the schema one level deeper than the low-level field does. Key order
+    # is kept: the guided decoder emits object properties in schema order, so sorting
+    # would change the field order of the generated JSON.
     assert _normalize_response_format({
         "type": "json_schema",
         "json_schema": {
@@ -72,7 +75,7 @@ def test_response_format_json_schema_is_unwrapped_and_normalized():
                 "a": 2
             },
         },
-    }) == ("json_schema", '{"a": 2, "b": 1}')
+    }) == ("json_schema", '{"b": 1, "a": 2}')
 
 
 def test_response_format_ignores_strict():
@@ -135,14 +138,28 @@ def test_guided_decoding_accepts_an_inline_schema_object():
     }}) == ("json_schema", '{"type": "object"}')
 
 
-def test_guided_decoding_normalizes_key_order_for_cache_reuse():
-    assert (_normalize_guided_decoding({"json_schema": {
-        "b": 1,
-        "a": 2
-    }}) == _normalize_guided_decoding({"json_schema": {
-        "a": 2,
-        "b": 1
-    }}))
+def test_guided_decoding_keeps_schema_property_order():
+    # Property order decides the order of the generated fields, so it must survive.
+    schema = {
+        "type": "object",
+        "properties": {
+            "text_vi": {
+                "type": "string"
+            },
+            "text_en": {
+                "type": "string"
+            }
+        },
+    }
+    _, guide = _normalize_guided_decoding({"json_schema": schema})
+    assert list(json.loads(guide)["properties"]) == ["text_vi", "text_en"]
+    _, guide = _normalize_response_format({
+        "type": "json_schema",
+        "json_schema": {
+            "schema": schema
+        }
+    })
+    assert list(json.loads(guide)["properties"]) == ["text_vi", "text_en"]
 
 
 @pytest.mark.parametrize("guided_decoding", [
