@@ -18,10 +18,6 @@
 #include "audioWriter.h"
 #include "memoryMonitor.h"
 #include "mpiUtils.h"
-#include <tensorrt_edgellm/common/checkMacros.h>
-#include <tensorrt_edgellm/common/inputLimits.h>
-#include <tensorrt_edgellm/common/trtUtils.h>
-#include <tensorrt_edgellm/common/utf8.h>
 #include "profileFormatter.h"
 #include "requestFileParser.h"
 #include "runtimeArgs.h"
@@ -39,6 +35,10 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tensorrt_edgellm/common/checkMacros.h>
+#include <tensorrt_edgellm/common/inputLimits.h>
+#include <tensorrt_edgellm/common/trtUtils.h>
+#include <tensorrt_edgellm/common/utf8.h>
 #include <tensorrt_edgellm/multimodal/qwen3_omni/code2WavRunner.h>
 #include <tensorrt_edgellm/profiling/metrics.h>
 #include <tensorrt_edgellm/profiling/nvtx_wrapper.h>

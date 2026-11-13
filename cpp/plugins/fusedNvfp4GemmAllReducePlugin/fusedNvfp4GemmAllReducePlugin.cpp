@@ -671,7 +671,6 @@ int32_t FusedNvfp4GemmAllReducePlugin::enqueue(PluginTensorDesc const* inputDesc
             outElements, stream};
         AllReduceExecutionStatus status = AllReduceExecutionStatus::kUnavailable;
 
-
         status = executeGemmNcclAllReducePath(registrations.nccl, executionContext);
         if (status == AllReduceExecutionStatus::kSuccess)
         {

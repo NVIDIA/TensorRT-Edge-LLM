@@ -48,7 +48,6 @@ namespace trt_edgellm
 namespace rt
 {
 
-
 RuntimeCoordinator::RuntimeCoordinator(Config config)
     : mConfig(std::move(config))
     , mParallelConfig(mConfig.deployment.parallelConfig)

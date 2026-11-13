@@ -14,7 +14,6 @@
 # limitations under the License.
 """Resolve test checkpoints from local storage or Hugging Face."""
 
-import importlib.util
 import json
 import os
 from contextlib import contextmanager
@@ -34,7 +33,6 @@ _MODULAR_WEIGHT_COMPONENTS = ("text_encoder", "transformer", "vae",
                               "audio_vae")
 CHECKPOINTS_BY_ID = {}
 PRIVATE_CHECKPOINT_IDS = frozenset()
-
 
 
 @contextmanager
